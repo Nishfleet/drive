@@ -69,9 +69,8 @@ through the storage provider's own versions. {{NOT_OPEN}} See
 
 Deleting a file moves it aside rather than erasing it, and a delete can be
 undone. The `drive restore` command is not in the CLI yet — see
-[Limits](/limits) — but an agent cannot delete at all, so an agent's
-mistake cannot cost you a file. See [Agents](/agents) for what a key can
-and cannot do.
+[Limits](/limits). {{AGENT_DELETE}} See [Agents](/agents) for what a key
+can and cannot do.
 
 ## How the bill is counted
 

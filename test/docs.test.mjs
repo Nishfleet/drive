@@ -15,7 +15,14 @@ import {
   monthBillCents,
   monthlyMaximumUsd,
 } from "../src/billing.js";
-import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+import {
+  agentDeleteSentence,
+  FAQ,
+  faqMarkdown,
+  markerValues,
+  RIVAL_1TB_LINE,
+  scoreboardVerdict,
+} from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
@@ -188,19 +195,20 @@ test("the agents page names the tools the CLI connects and their real powers", (
     assert.ok(page.includes(tool), `the agents page must name the ${tool} tool`);
   }
   // The key table is read from workers/api/src/keyprovider.js, so the page
-  // cannot claim a power the api Worker does not grant.
+  // cannot claim a power the api Worker does not grant, and the delete and
+  // reach sentences from what the storage enforces (test/key-truth.test.mjs).
   assert.equal(KEY_POWERS.device.canDelete, true);
   assert.equal(KEY_POWERS.agent.canDelete, false);
   assert.ok(
-    page.includes("An agent key cannot delete a file."),
-    "the agents page must say an agent key cannot delete",
+    page.includes(agentDeleteSentence()),
+    "the agents page must say what an agent key's delete really does",
   );
   assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {
   const page = shipped("security.md");
-  assert.ok(page.includes("An agent key cannot delete a file."));
+  assert.ok(page.includes(agentDeleteSentence()));
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the security page must state the default cap",

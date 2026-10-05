@@ -25,7 +25,7 @@ import {
   monthlyMaximumUsd,
 } from "./billing.js";
 import { INSTALL_LINES } from "./install-lines.js";
-import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
+import { AGENT_TOOLS, KEY_POWERS, STORAGE_POWERS } from "./keys.js";
 import { PRICE } from "./pricing.js";
 import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 import { SITE } from "./seo.js";
@@ -90,47 +90,72 @@ export const BILL_TABLE = Object.freeze(
   ].join("\n"),
 );
 
+/** @param {number} n */
+const days = (n) => (n === 1 ? "1 day" : `${n} days`);
+
 /**
- * The sentence that says what an agent key may not do. Checked against
- * KEY_POWERS rather than typed, so the page cannot claim a power the api
- * Worker's capability table (workers/api/src/keyprovider.js) does not grant,
- * or deny one it does.
+ * The sentence that says what happens when an agent key deletes a file. It is
+ * built from what the storage provider enforces (src/keys.js STORAGE_POWERS,
+ * read from the switches workers/api/src/idrive-keys.js mints with), not from
+ * the api Worker's capability table: an agent key talks to iDrive e2
+ * directly, and iDrive takes its delete (drive#502). If a mint ever sets
+ * `disable_delete_object`, this sentence changes with it.
  */
-export function agentCannotDeleteSentence() {
-  if (KEY_POWERS.agent.canDelete) {
+export function agentDeleteSentence() {
+  const agent = STORAGE_POWERS.agent;
+  if (!agent.canDelete) {
+    return "An agent key cannot delete a file.";
+  }
+  if (agent.canDestroyHidden || agent.undoDays === 0) {
     throw new Error(
-      "the agents page says an agent key cannot delete, but CAPABILITIES_BY_KIND grants it",
+      "an agent key can destroy the copy its delete hides, so no page may call its delete undoable",
     );
   }
-  return "An agent key cannot delete a file.";
+  return `An agent key can delete a file, but the storage keeps the deleted copy for ${days(agent.undoDays)}, so you can put it back from Recently deleted within that time. After ${days(agent.undoDays)} it is gone for good.`;
 }
 
 /**
- * The key table on the Security and Agents pages: one row per key kind, with
- * its powers read from the one capabilities table the api Worker enforces.
+ * The sentence that says how far a branch key reaches. iDrive e2 limits a key
+ * to a whole bucket, never to a folder in it, so a branch key reaches the
+ * whole Drive even though the branch is one folder (drive#502).
+ */
+export function branchReachSentence() {
+  if (!STORAGE_POWERS.branch.reachesWholeDrive) {
+    return "A branch key cannot reach your other files or other branches.";
+  }
+  return "The storage limits a key to your whole Drive, not to one folder, so a branch key can also read and change your other files and other branches. Work in the branch is a convention the agent follows, not a wall.";
+}
+
+/**
+ * The key table on the Security and Agents pages: one row per key kind. Read
+ * and write come from the capability table the api Worker grants. Delete and
+ * reach come from what the storage provider enforces, because that is what a
+ * key can really do (drive#502).
  * @param {keyof typeof KEY_POWERS} kind
  * @param {string} owner the person this key belongs to, in plain words
- */
-/**
- * @param {string} kind
- * @param {string} owner
  * @returns {string}
  */
 function keyRow(kind, owner) {
-  // The four kinds are this module's own table, and keyRow is called with
-  // those four literals below, so the index is a key the table holds.
-  const powers = KEY_POWERS[/** @type {keyof typeof KEY_POWERS} */ (kind)];
-  return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${yesNo(powers.canDelete)} |`;
+  const powers = KEY_POWERS[kind];
+  const storage = STORAGE_POWERS[kind];
+  return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${deleteCell(storage)} | ${storage.reachesWholeDrive ? "your whole Drive" : "its own folder"} |`;
 }
 
 /** @param {boolean|undefined} value */
 const yesNo = (value) => (value ? "yes" : "no");
 
+/** @param {import("./keys.js").StoragePowers} storage */
+function deleteCell(storage) {
+  if (!storage.canDelete) return "no";
+  if (storage.canDestroyHidden) return "yes";
+  return `yes, undoable for ${days(storage.undoDays)}`;
+}
+
 /** The keys a person meets, as a Markdown table. */
 export const KEY_TABLE = Object.freeze(
   [
-    "| Key | Belongs to | Can read | Can write | Can delete |",
-    "| --- | --- | --- | --- | --- |",
+    "| Key | Belongs to | Can read | Can write | Can delete | Reaches |",
+    "| --- | --- | --- | --- | --- | --- |",
     keyRow("device", "your machine"),
     keyRow("agent", "one agent tool"),
     keyRow("branch", "an agent in a branch"),
@@ -195,7 +220,7 @@ export const FAQ = Object.freeze([
     ],
     answer: [
       "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
-      "{{AGENT_CANNOT_DELETE}} An agent can read and write your files, so a mistaken run can change a file but cannot wipe one.",
+      "{{AGENT_DELETE}}",
       "The drive also carries a spending cap: the default is {{DEFAULT_CAP}} a month, you can change it on the usage page, and at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),
   }),
@@ -286,7 +311,8 @@ export function markerValues(extra = {}) {
     FREE_DOWNLOAD_MULTIPLE: String(BILLING_CONFIG.freeDownloadMultiplier),
     DOWNLOAD_RATE: `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`,
     AGENT_TOOLS: AGENT_TOOLS.join(", "),
-    AGENT_CANNOT_DELETE: agentCannotDeleteSentence(),
+    AGENT_DELETE: agentDeleteSentence(),
+    BRANCH_REACH: branchReachSentence(),
     KEY_TABLE: KEY_TABLE,
     BILL_TABLE: BILL_TABLE,
     // The two claims every page states and no page may contradict

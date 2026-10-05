@@ -36,10 +36,8 @@ drive approve <branch>    # copy the branch's changes back into the folder
 drive discard <branch>    # throw the branch away; the folder is untouched
 ```
 
-The agent works with its own branch key: a branch key is scoped to the
-branch's one path under `.branches/<name>/` in your account folder, so it can
-list, read and write there and cannot remove anything — the same rule every
-agent key follows. Your other files are outside its reach, and only you can
+The agent works with its own branch key, made for the branch's one path under
+`.branches/<name>/` in your account folder. {{BRANCH_REACH}} Only you can
 approve the copy back.
 
 Stop a tool with `drive agents revoke <tool>`, using the tool's own name
@@ -53,18 +51,15 @@ your own machine has:
 
 {{KEY_TABLE}}
 
-{{AGENT_CANNOT_DELETE}} An agent can create, change and rename anything in your
-Drive; it cannot remove anything, so an agent that decides a file is finished
-leaves it in place. Deleting needs a person.
+An agent can create, change and rename anything in your Drive. {{AGENT_DELETE}}
 
 ## Branch keys
 
 `drive branch <folder>` creates a server-side copy of that folder for an agent
 to work in. The branch takes the folder's name, or `--name <n>`. The agent gets a
-**branch key** limited to the branch's own prefix:
-`u/<your-id>/.branches/<branch-name>/`. It can read and write inside that
-branch, but it cannot delete — the same rule as a regular agent key. A branch
-key cannot reach your other files or other branches.
+**branch key** made for the branch's own prefix:
+`u/<your-id>/.branches/<branch-name>/`. It can read and write, and its deletes
+follow the same rule as a regular agent key. {{BRANCH_REACH}}
 
 Since a branch is a full copy, it counts against your storage until you
 discard or approve it. Measured branch times for large folders are on the

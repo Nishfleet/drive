@@ -15,9 +15,10 @@ only do what its kind of key is allowed to do. Keys are yours to revoke.
 
 {{KEY_TABLE}}
 
-The key table is read from the same capability table the server enforces
-(workers/api/src/keyprovider.js), so a page cannot grant a power the code does
-not. {{AGENT_CANNOT_DELETE}}
+Read and write come from the capability table the server grants
+(workers/api/src/keyprovider.js). Delete and reach come from what the storage
+provider enforces on the key it mints (workers/api/src/idrive-keys.js), because
+a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
 
 ## The spending cap
 

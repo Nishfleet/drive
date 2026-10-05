@@ -23,7 +23,6 @@
 // from src/pricing.js (PRICE), the single price source, so a re-priced product
 // moves this page and the pricing page together.
 import { json } from "../workers/api/src/http.js";
-import { agentCannotDeleteSentence } from "./docs.js";
 import { validatePath } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -102,8 +101,8 @@ date: {{date:YYYY-MM-DD}}
 These notes are in the user's Drive folder. Treat them as their files.
 
 - Read and write freely in this folder, and anywhere else on the drive.
-- ${agentCannotDeleteSentence()} If you decide a file is finished, leave it in
-  place. A person decides what leaves the drive.
+- Do not delete files. If you decide a file is finished, leave it in place.
+  A person decides what leaves the drive.
 - Before a large edit, take a branch: \`drive branch\` copies the folder, and
   \`drive approve\` or \`drive discard\` decides what happens to the copy.
 - One note per idea, in Markdown, with the note's own filename as its title.
