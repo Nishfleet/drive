@@ -210,15 +210,28 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
 
 /** @returns {{kind: "missing"} | {kind: "ok", bytes: number} | {kind: "empty"}} */
 function workerBundle() {
-  const dir = fileURLToPath(new URL("../.cloudflare/output/v0/workers/default/", import.meta.url));
+  // `cf build` writes the isolate script at default/bundle/index.js and the
+  // unused SQLite dialect chunks beside it under bundle/assets. Static HTML
+  // lives in default/assets and Lighthouse already budgets it.
+  const dir = fileURLToPath(
+    new URL("../.cloudflare/output/v0/workers/default/bundle/", import.meta.url),
+  );
   if (!existsSync(dir)) return { kind: "missing" };
   let bytes = 0;
-  for (const name of readdirSync(dir)) {
-    if (name === "assets") continue;
-    const path = join(dir, name);
-    const info = statSync(path);
-    if (info.isFile() && /\.(js|mjs|wasm)$/.test(name)) bytes += info.size;
+  /** @param {string} folder */
+  function walk(folder) {
+    for (const name of readdirSync(folder)) {
+      if (name === ".vite") continue;
+      const path = join(folder, name);
+      const info = statSync(path);
+      if (info.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      if (info.isFile() && /\.(js|mjs|wasm)$/.test(name)) bytes += info.size;
+    }
   }
+  walk(dir);
   return bytes === 0 ? { kind: "empty" } : { kind: "ok", bytes };
 }
 
