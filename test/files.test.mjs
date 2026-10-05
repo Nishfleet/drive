@@ -1155,6 +1155,43 @@ test("the S3 store's create-only write sends If-None-Match and reads 412 as the 
   );
 });
 
+test("an S3 endpoint that ignores If-None-Match overwrites, and that is what the store reports", async () => {
+  // drive#644, the measured half of the contract. `rclone serve s3` v1.75.1
+  // answers 200 to a PUT with If-None-Match: * on a key that is already there
+  // (measured on the build host, 2026-10-05), so on such an endpoint the
+  // header cannot detect the loss and this store answers `true` for a create
+  // that was in fact an overwrite. That is documented on the store and it is
+  // why the caller pre-checks the name first; it is pinned here so a future
+  // change cannot quietly turn the degraded path into a promised one.
+  /** @type {Map<string, string>} */
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    if (init.method === "PUT") {
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    return stored === undefined
+      ? new Response("no key", { status: 404 })
+      : new Response(stored, { status: 200, headers: { "content-type": "text/plain" } });
+  };
+  const ignoring = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), true);
+  const readBack = await ignoring.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the overwrite is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "second");
+});
+
 /**
  * Fake S3 that namespaces objects by bucket, so a write into account A's
  * bucket cannot appear in B's listing. Keys are `${bucket}/${objectKey}`.

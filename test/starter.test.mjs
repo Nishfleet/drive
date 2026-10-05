@@ -68,8 +68,9 @@ function emptyStore(written = {}) {
       written[path] = await new Response(body).text();
     },
     async writeIfAbsent(path, body) {
-      // Same record as `write`: the starter can only land when the key is
-      // free this drive had, and that is the case this fake answers.
+      // The starter seeds the drive with `write`, not this method —
+      // this fake keeps the FileStore contract honest while the
+      // starter's key is still free in this fake.
       written[path] = await new Response(body).text();
       return true;
     },
