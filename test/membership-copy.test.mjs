@@ -41,6 +41,61 @@ function dataFor(kind) {
   throw new Error(`no test data for ${kind}`);
 }
 
+// drive#466: the retired offer words fail on every shipped surface. "shipped"
+// is the whole public dir (every page and llms.txt), every docs page including
+// the changelog (vitepress builds all of docs-site/*.md), the README, the FAQ,
+// the sign-up copy, PRICE, and every rendered email. The ban is on the words a
+// customer reads, so source files that state the ban itself (this test, the
+// pricing gate) are not scanned.
+const OFFER_WORDS = [/\bmembership\b/i, /\bfree trial\b/i, /\b7 days free\b/i, /\bfirst month\b/i];
+const docsSiteDir = new URL("../docs-site/", import.meta.url);
+const docsPages = readdirSync(docsSiteDir, { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+  .map((entry) => ({
+    name: `docs-site/${entry.name}`,
+    text: readFileSync(new URL(entry.name, docsSiteDir), "utf8"),
+  }));
+const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+
+function offerSurfaces() {
+  return [
+    ...pages.map((page) => [page.name, page.text]),
+    ...docsPages.map((page) => [page.name, page.text]),
+    ["README.md", readme],
+    ["FAQ", FAQ.map((entry) => `${entry.question}\n${entry.answer}`).join("\n")],
+    ["SIGNIN_COPY", JSON.stringify(SIGNIN_COPY)],
+    ["PRICE", JSON.stringify(PRICE)],
+    ...EMAIL_KINDS.flatMap((kind) => {
+      const rendered = renderEmail(kind, dataFor(kind));
+      return [
+        [`${kind} subject`, rendered.subject],
+        [`${kind} text`, rendered.text],
+        [`${kind} html`, rendered.html],
+      ];
+    }),
+  ];
+}
+
+test("no shipped page, doc or email carries the retired offer words", () => {
+  for (const [name, text] of offerSurfaces()) {
+    for (const stale of OFFER_WORDS) {
+      assert.doesNotMatch(text, stale, `${name} carries ${stale}`);
+    }
+  }
+});
+
+test("the gate itself scans a surface that once carried the words", () => {
+  // The guard proves it can fail: the changelog is a shipped doc, and a
+  // surface that said the words must trip every phrase in OFFER_WORDS.
+  for (const stale of OFFER_WORDS) {
+    assert.match(
+      "The membership returns: a free trial, 7 days free, the first month half price.",
+      stale,
+    );
+  }
+  assert.ok(docsPages.some((page) => page.name === "docs-site/changelog.md"));
+});
+
 test("sign-up without a card is refused, in plain words", () => {
   assert.equal(hasSignupCard(undefined), false);
   assert.equal(hasSignupCard(false), false);

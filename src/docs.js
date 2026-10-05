@@ -180,6 +180,7 @@ export const FAQ = Object.freeze([
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_MINIMUM}} {{FOUNDING}} We need a card at sign-up because there is no free tier.",
+      "Files are billed for at least one hour. Bills under {{CHARGE_THRESHOLD}} roll into the next month; the card is charged when the balance reaches {{CHARGE_THRESHOLD}}.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
@@ -194,7 +195,7 @@ export const FAQ = Object.freeze([
     answer: [
       "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
       "{{AGENT_CANNOT_DELETE}} An agent can read and write your files, so a mistaken run can change a file but cannot wipe one.",
-      "The drive also carries a spending cap: at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
+      "The drive also carries a spending cap: the default is {{DEFAULT_CAP}} a month, you can change it on the usage page, and at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),
   }),
   Object.freeze({
@@ -279,6 +280,7 @@ export function markerValues(extra = {}) {
     PRICE_RULE: PRICE.rule,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
+    CHARGE_THRESHOLD: dollars(BILLING_CONFIG.chargeThresholdUsd),
     CACHE_LIMIT,
     CACHE_FLOOR,
     CACHE_COMMANDS,

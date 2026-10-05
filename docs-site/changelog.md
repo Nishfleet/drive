@@ -14,8 +14,8 @@ the live site.
   charge, spending cap default $20, and a founding slot reserved at the card
   step.
 - New pricing: pay only for what you store. {{RATE}}, never more than
-  {{MAX_PER_TB}} per TB, and no minimum. The $10 membership, the first
-  month at half price and the old ceiling are gone. Founding members pay half
+  {{MAX_PER_TB}} per TB, and no minimum. The old flat plan, its half-price
+  intro and the old ceiling are gone. Founding members pay half
   of both numbers for good.
 
 - After `drive login`, every command reads the api address it saved, so
@@ -45,10 +45,11 @@ the live site.
   slider, choose Save cap, and the new cap is written through the same api
   route `drive cap` writes. The page's confirmation is the api's own cap line,
   and an error names what to do next in plain words instead of a command.
-- The home page's worked examples read as sentences: "about $1 of storage, and
-  you pay the $10 membership", instead of "$1 → $10" and "$12 of storage → $12".
-- Membership copy: $10 a month, storage use counts toward it, founding members
-  keep $5, and sign-up asks for a card because there is no free tier.
+- The home page's worked examples read as sentences about the bill instead of
+  arrow tables of numbers.
+- The pricing copy states the bill directly: storage use sets it, founding
+  members keep half price, and sign-up asks for a card because there is no
+  free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails
   on day 0 and day 25, and lets the person cancel until then by typing their
   email on the usage page.
@@ -141,8 +142,8 @@ the live site.
 - The pricing page, with the rate, the ceiling and a waitlist sign-up.
 - The bill ceiling: the metered cost cut off at a flat $12 until the drive
   passes 1.5 TB, then $8 a TB. This replaced the older per-TB caps.
-- The membership: storage use counts toward it, and a card is needed at
-  sign-up because there is no free tier. Downloads over
+- The retired plan: storage use counted toward a monthly charge, and a card was
+  needed at sign-up because there is no free tier. Downloads over
   {{FREE_DOWNLOAD_MULTIPLE}} times what you store are charged at
   {{DOWNLOAD_RATE}}.
 - The spending cap: at your cap the drive goes read-only and nothing is
