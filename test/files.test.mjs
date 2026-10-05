@@ -1017,6 +1017,8 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
       ),
   });
   await assert.rejects(refused.list("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listPage("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
 });
 
 test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {

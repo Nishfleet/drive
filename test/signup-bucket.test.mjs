@@ -97,13 +97,20 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
   if (standin === null) {
     return t.skip("no container engine for the S3 stand-in");
   }
+  // The default migration set plus the device tables (0007), so the
+  // no-device-key claim below reads every table a key mint writes. The assert
+  // refuses to run if the default ever grows the same file, instead of
+  // applying it twice.
+  assert.ok(
+    !DRIVE_MIGRATIONS.includes("drive/0007_device_codes.sql"),
+    "this splice assumes the default set has no 0007",
+  );
+  const at = DRIVE_MIGRATIONS.indexOf("drive/0006_share_links.sql");
   const made = createTestAuth({
-    // The default set plus the device tables (0007), so the no-device-key
-    // claim below reads every table a key mint writes.
     migrations: [
-      ...DRIVE_MIGRATIONS.slice(0, DRIVE_MIGRATIONS.indexOf("drive/0006_share_links.sql") + 1),
+      ...DRIVE_MIGRATIONS.slice(0, at + 1),
       "drive/0007_device_codes.sql",
-      ...DRIVE_MIGRATIONS.slice(DRIVE_MIGRATIONS.indexOf("drive/0006_share_links.sql") + 1),
+      ...DRIVE_MIGRATIONS.slice(at + 1),
     ],
   });
   const env = storageEnv(made, standin.endpoint);
@@ -205,12 +212,27 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
   });
 
   await t.test("a returning sign-in re-provisions idempotently", async () => {
+    // Make the second provisioning call observable instead of assumed: take
+    // the hidden-version rule off the bucket first, so the only way the
+    // readback below can show it again is the verify step's own
+    // provisionBucket call — which is also the path a legacy account's next
+    // sign-in takes to catch up.
+    const stripped = await root.send("DELETE", {
+      bucket: bucketForAccount(account.id),
+      query: { lifecycle: "" },
+    });
+    assert.equal(stripped.status, 204, "the rule is off the bucket");
+    const before = await bucketConfig(bucketForAccount(account.id));
+    assert.equal(before.lifecycleDaysKnown, false, "the rule is gone before the sign-in");
+
     const start = await workerFetch(
       post({ step: "start", method: "email", email: "webonly@example.com" }),
       env,
     );
     assert.equal(start.status, 202, "the returning sign-up mails a link");
-    const verify = await workerFetch(new Request(made.sent.at(-1)?.url ?? ""), env);
+    const mailed = made.sent.at(-1);
+    assert.ok(mailed !== undefined, "the returning sign-in mailed a link");
+    const verify = await workerFetch(new Request(mailed.url), env);
     assert.equal(verify.status, 302, "the returning verify signs the person in");
     const row = await made.db
       .prepare('select id from "user" where email = ?')
@@ -223,6 +245,12 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
     );
     const config = await bucketConfig(bucketForAccount(account.id));
     assert.equal(config.versioning, "Enabled", "the bucket config survives a second call");
+    assert.equal(
+      config.lifecycleDaysKnown,
+      true,
+      "the second provisioning call put the hidden-version rule back",
+    );
+    assert.equal(config.lifecycleDays, 1, "hidden versions are kept one day");
     const listed = await workerFetch(
       new Request(`${TEST_BASE_URL}/api/files`, { headers: { cookie } }),
       env,
