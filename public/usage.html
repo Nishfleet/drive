@@ -815,6 +815,7 @@ function sayCapError(note) {
 // read that follows paints the cap now in force. No money is worked out here
 // and no sentence is written here.
 async function saveCap() {
+  if (!capAmountIsWholeDollar()) return;
   const amount = capAmount.value;
   setCapControlsDisabled(true);
   capSaveEl.disabled = true;
@@ -1072,16 +1073,21 @@ function render(summary) {
 // own `capLine`, painted as cap-value — and neither control is armed until a
 // person touches one, so a cents cap is never quietly rounded up.
 function capCeiling(usd) {
+  // The slider's max follows the typed number. The number field itself has
+  // no max, so a person can type above the month's maximum (drive#527).
   const whole = Math.max(0, Math.ceil(Number(usd)));
-  capAmount.max = String(whole);
   capSlider.max = String(whole);
   return whole;
 }
 
 function capWhole(usd) {
-  const whole = capCeiling(usd);
+  // Value only. Calling capCeiling here would shrink the slider's range to
+  // the cap in force, and a $2 cap on a $10 month would then be undraggable
+  // upward.
+  const whole = Math.max(0, Math.ceil(Number(usd)));
   capAmount.value = String(whole);
   capSlider.value = String(whole);
+  return whole;
 }
 
 function showCloseError(el, message) {
@@ -1165,11 +1171,10 @@ capAmount.addEventListener("input", () => {
   // reach what was typed, and an empty or half-typed field leaves the slider
   // alone rather than snapping it to a number nobody chose.
   const typed = Number(capAmount.value);
-  if (capAmount.value === "" || !Number.isFinite(typed)) {
-    return;
+  if (capAmount.value !== "" && Number.isFinite(typed)) {
+    capCeiling(typed);
+    capSlider.value = String(typed);
   }
-  capCeiling(typed);
-  capSlider.value = String(typed);
   showCapSave();
 });
 capSlider.addEventListener("input", () => {
@@ -1178,18 +1183,19 @@ capSlider.addEventListener("input", () => {
 });
 // The two controls share one note, because there is one unsaved cap between
 // them and one sentence that describes it.
+function capAmountIsWholeDollar() {
+  const typed = Number(capAmount.value);
+  return capAmount.value !== "" && Number.isFinite(typed) && typed >= 0 && Number.isInteger(typed);
+}
+
 function showCapSave() {
-  // A chosen number is not a saved number: the button is there to make it one,
-  // so it appears the moment the controls leave the cap in force and stays
-  // until the save lands or this page's own read catches up with it.
-  //
-  // The note goes back to its own words at the same time. A worker's sentence
-  // left sitting under the controls after it was read would answer a number
-  // the person has since changed, and it is the one line on this page that
-  // names an amount the person did not choose.
-  capSaveEl.hidden = false;
-  capNoteWhatEl.textContent = CAP_NOTE.what;
-  capNoteNextEl.textContent = CAP_NOTE.next;
+  // A chosen number is not a saved number: the button is there to make it one.
+  // An empty, negative or fractional field is not a cap, so the button stays
+  // hidden until the field holds a whole dollar.
+  capSaveEl.hidden = !capAmountIsWholeDollar();
+  if (capSaveEl.hidden) return;
+  capNoteEl.querySelector(".what").textContent = CAP_NOTE.what;
+  capNoteEl.querySelector(".next").textContent = CAP_NOTE.next;
 }
 capSaveEl.addEventListener("click", () => {
   saveCap();

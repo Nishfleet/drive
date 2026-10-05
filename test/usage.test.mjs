@@ -871,27 +871,65 @@ test("the cap has a labelled whole-dollar number input that the page reads", () 
     page,
     /<label for="cap-amount">Monthly cap, in whole dollars<\/label>\s*<input type="number" id="cap-amount" min="0" step="1"/,
   );
-  // Both controls carry one number, so neither can disagree with the other.
+  assert.doesNotMatch(
+    page,
+    /id="cap-amount"[^>]*max=/,
+    "the number field has no max, so a person can type above the month's maximum",
+  );
   assert.match(page, /const capAmount = document\.getElementById\("cap-amount"\);/);
-  assert.match(page, /function capCeiling\(usd\)[\s\S]*capAmount\.max = String\(whole\);/);
+  assert.match(page, /function capCeiling\(usd\)[\s\S]*capSlider\.max = String\(whole\);/);
+  assert.doesNotMatch(page, /function capCeiling\(usd\)[\s\S]*?capAmount\.max = String\(whole\);/);
   assert.match(page, /function capWhole\(usd\)[\s\S]*capAmount\.value = String\(whole\);/);
-  // The typed number is what gets saved, and it becomes the ceiling, so a cap
-  // above the month's maximum is reachable (the old slider's fixed max was
-  // exactly why it was not).
-  assert.match(page, /async function saveCap\(\) \{\s*const amount = capAmount\.value;/);
+  assert.match(page, /async function saveCap\(\) \{\s*if \(!capAmountIsWholeDollar\(\)\) return;/);
   assert.match(
     page,
     /capAmount\.addEventListener[\s\S]*capCeiling\(typed\);\s*capSlider\.value = String\(typed\);/,
   );
   assert.match(page, /capSlider\.addEventListener[\s\S]*capAmount\.value = capSlider\.value;/);
-  // A half-typed field never snaps the slider to a number nobody chose.
-  assert.match(page, /if \(capAmount\.value === "" \|\| !Number\.isFinite\(typed\)\) \{\s*return;/);
-  // The typed field disables with the slider, so a signed-out page cannot
-  // write a cap through either control.
   assert.match(
     page,
     /function setCapControlsDisabled\(disabled\) \{\s*capAmount\.disabled = disabled;\s*capSlider\.disabled = disabled;/,
   );
+});
+
+test("a cap below the month's maximum does not shrink the slider", async () => {
+  const made = runPage({ ...month(400, { capUsd: 2 }), uploadLine: null });
+  await settle();
+  const slider = elementOf(made.elements, "cap-slider");
+  const amount = elementOf(made.elements, "cap-amount");
+  assert.equal(slider.max, "10", "the slider's range is the month's $10 maximum");
+  assert.equal(slider.value, "2", "the thumb is the $2 cap in force");
+  assert.equal(amount.value, "2");
+  assert.equal(amount.max, "", "the number field has no max, so 50 can be typed");
+});
+
+test("typing a whole dollar raises the slider and an empty field hides Save cap", async () => {
+  const made = runPage({ ...month(400, { capUsd: 2 }), uploadLine: null });
+  await settle();
+  const slider = elementOf(made.elements, "cap-slider");
+  const amount = elementOf(made.elements, "cap-amount");
+  const save = elementOf(made.elements, "cap-save");
+  const onAmount = amount.listeners.get("input");
+  assert.ok(onAmount, "the number field must listen for input");
+
+  amount.value = "50";
+  onAmount();
+  assert.equal(slider.max, "50");
+  assert.equal(slider.value, "50");
+  assert.equal(save.hidden, false, "a whole dollar shows Save cap");
+
+  amount.value = "";
+  onAmount();
+  assert.equal(save.hidden, true, "an empty field hides Save cap");
+  assert.equal(slider.max, "50", "clearing the field does not snap the slider's range");
+
+  amount.value = "-1";
+  onAmount();
+  assert.equal(save.hidden, true, "a negative number is not a cap");
+
+  amount.value = "1.5";
+  onAmount();
+  assert.equal(save.hidden, true, "a fractional number is not a whole-dollar cap");
 });
 
 test("the cap is a control, not a readout, and it saves through the api", async () => {
@@ -924,7 +962,7 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   // note to its own words.
   assert.match(
     page,
-    /capSaveEl\.hidden = false;\s*capNoteWhatEl\.textContent = CAP_NOTE\.what;\s*capNoteNextEl\.textContent = CAP_NOTE\.next;/,
+    /capNoteEl\.querySelector\("\.what"\)\.textContent = CAP_NOTE\.what;\s*capNoteEl\.querySelector\("\.next"\)\.textContent = CAP_NOTE\.next;/,
   );
   // A minute's read does not move the cap controls back out from under the
   // person moving them, and the saved line is the endpoint's own sentence.

@@ -208,12 +208,10 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
   );
 });
 
-/** The Worker script `npm run build` (`cf build`) writes, as bytes. Assets are
- * the HTML/CSS/font files Lighthouse already budgets; this is the JS bundle
- * the Worker isolate loads, which is where unused SQLite dialects land. */
-function workerBundleBytes() {
+/** @returns {{kind: "missing"} | {kind: "ok", bytes: number} | {kind: "empty"}} */
+function workerBundle() {
   const dir = fileURLToPath(new URL("../.cloudflare/output/v0/workers/default/", import.meta.url));
-  if (!existsSync(dir)) return null;
+  if (!existsSync(dir)) return { kind: "missing" };
   let bytes = 0;
   for (const name of readdirSync(dir)) {
     if (name === "assets") continue;
@@ -221,15 +219,21 @@ function workerBundleBytes() {
     const info = statSync(path);
     if (info.isFile() && /\.(js|mjs|wasm)$/.test(name)) bytes += info.size;
   }
-  return bytes;
+  return bytes === 0 ? { kind: "empty" } : { kind: "ok", bytes };
 }
 
 test("the site Worker bundle stays within its baseline size", (t) => {
-  const bytes = workerBundleBytes();
-  if (bytes === null || bytes === 0) {
+  const found = workerBundle();
+  if (found.kind === "missing") {
     t.skip("no Worker build output; CI runs npm run build before npm test");
     return;
   }
+  assert.notEqual(
+    found.kind,
+    "empty",
+    "the Worker output directory exists but has no JS or wasm bundle; the ratchet path drifted",
+  );
+  const bytes = found.kind === "ok" ? found.bytes : 0;
   const budget = baseline.rows["site-bundle"];
   assert.ok(
     bytes <= budget.mean,

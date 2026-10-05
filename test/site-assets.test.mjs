@@ -67,11 +67,9 @@ test("public/_headers caches the hashed assets for a year and nothing else", () 
       `${path} must cache for a year, immutable`,
     );
   }
-  const paths = rules.map(([path]) => path);
-  for (const wanted of ["/docs/assets/*", "/assets/*", "/fonts/*"]) {
-    assert.ok(paths.includes(wanted), `_headers must cache ${wanted}`);
-  }
-  for (const never of ["/*", "/", "/index.html", "/docs/*"]) {
-    assert.ok(!paths.includes(never), `${never} must not be cached for a year`);
-  }
+  const cachePaths = rules
+    .filter(([, ...lines]) => lines.some((line) => line.startsWith("Cache-Control:")))
+    .map(([path]) => path)
+    .sort();
+  assert.deepEqual(cachePaths, ["/assets/*", "/docs/assets/*", "/fonts/*"]);
 });
