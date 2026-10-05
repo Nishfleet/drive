@@ -20,10 +20,14 @@ not run `npx` or `npm exec` for it: that downloads the package each time and
 fills a runner's memory limit (drive#257).
 
 A held-out run is the same command with the split's path set, once.
-`DRIVE_EVAL_SPLIT` is the setting both suites read: promptfoo gets it
-as its `--tests` flag and the end-state suite uses it as its task
-file. That path is outside this checkout, so the hill-climber (#223)
-cannot read the tasks from the repo:
+`DRIVE_EVAL_SPLIT` is the setting both suites read: npm hands it to
+promptfoo as its `--tests` flag, and the end-state suite grades the
+split's end-state entries — a split with only reading tasks leaves the
+end-state suite on its committed tasks, and the run says so. That path
+is outside this checkout, so the hill-climber (#223) cannot read the
+tasks from the repo. Never pass the split with `--` (as in
+`npm run eval:agents -- --tests <file>`): npm appends those args to the
+last command of the chained script, so they never reach promptfoo.
 
 ```sh
 DRIVE_EVAL_SPLIT=/home/nish/.local/share/drive/eval-holdout.yaml \
@@ -108,8 +112,9 @@ grader-as-a-pure-function-of-the-whole-docs-corpus test could not see.
 
 The train split is roughly two thirds of the tasks and is this file. The
 held-out test split and its answers are **not in the repository**: they live
-at `/home/nish/.local/share/drive/eval-holdout.yaml` (pass that path to
-`--tests`), so the hill-climber (#223) cannot read them from a checkout.
+at `/home/nish/.local/share/drive/eval-holdout.yaml` (set
+`DRIVE_EVAL_SPLIT` to it), so the hill-climber (#223) cannot read them
+from a checkout.
 `test/evals.test.mjs` proves no held-out file is tracked by git.
 
 ## The models
@@ -149,12 +154,15 @@ does not mint at all, so the seat moves to B2 and the proof repeats there. That
 is the one part of "the key is scoped"
 this stand-in cannot carry, and it is why the check above is a prefix check.
 
-**Warning: a model under test gets the eval host's own shell.**
-`sandbox="local"` (the default) lets it read the host's environment, repository
-and any credentials on it, and reach the stand-in's directory. Run it on a
-machine where that is acceptable and free of secrets, or move the suite to an
-Inspect compose sandbox (`DRIVE_EVAL_SANDBOX=compose`, the isolation upgrade
-this slice leaves open).
+**The model's shell is a container, not the host.** The task declares
+Inspect's Docker sandbox (`sandbox=("docker", "compose.yaml")`, the
+`compose.yaml` beside this file): each sample works in its own stock
+`python:3.12-bookworm` container, with `rclone` bind-mounted read-only, and
+the stand-in reached over the host network. The grader runs on the host and
+reads the stand-in there on purpose — the container is the agent's machine,
+and the grader must not take the agent's word for the account's state. When
+Docker is broken the run fails (`inspect` refuses to fall back to a shell on
+the host), which is the fail-closed behaviour drive#526 asks for.
 
 ## What is not done yet
 
