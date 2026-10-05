@@ -23,6 +23,26 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# A step runs only when the files it tests changed (drive#660).
+#
+# The old shape ran every heavy step on every change: 71 Lighthouse runs, 81
+# `go` jobs and 72 `verify` jobs in six hours on the own runners on
+# 2026-10-05, most of them on changes that could not affect them (a doc edit
+# still waited out 6.5 minutes of verify; a Go-only change still ran 71 s of
+# Lighthouse). Each job now opens with one `git diff --name-only` against the
+# merge base, and its heavy steps read that through an `if:`.
+#
+# Two things this deliberately is not. It is not a workflow-level `paths:`
+# filter, and not a job-level one either: a skipped required check blocks the
+# main merge queue (drive#499, drive#660), so both jobs always run and always
+# report, and only the steps inside them skip. And it is not a whole-job
+# skip: the cheap gates that answer "is this repository still sound" - the
+# helper-script ban, gofmt, the pinned gitleaks scan - run on every change.
+#
+# On `merge_group` and on a push to main the changed-files step does not run,
+# its outputs stay empty, and every `if:` below reads that as "run". Those
+# are the runs a merge waits on, so they test everything.
+
 jobs:
   verify:
     runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
@@ -40,7 +60,81 @@ jobs:
           package-manager-cache: false
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
-      - run: npm ci
+      # The one diff the heavy steps below read (drive#660). The base SHA is
+      # passed through the environment and never expanded into the script, so
+      # a payload value cannot reach the shell as text.
+      - name: What this pull request changed
+        id: changed
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null &&
+            git merge-base --is-ancestor "$BASE_SHA" HEAD; then
+            git diff --name-only "$BASE_SHA" HEAD > changed.txt
+          else
+            # The base commit is not in this checkout, so a diff of it proves
+            # nothing. Write a name no pattern below classifies, which runs
+            # every heavy step rather than none of them.
+            echo "unknown-merge-base" > changed.txt
+          fi
+          # What each heavy step tests. A file the table does not classify is
+          # a file every heavy step tests: a new input cannot stop being
+          # tested by being forgotten here, which is the failure mode of a
+          # blocklist. `.github/` is left unclassified on purpose - a change
+          # to how CI runs changes how the suite runs, so it runs the suite.
+          node=true
+          site=true
+          golang=true
+          while IFS= read -r file; do
+            case "$file" in
+              # The Go CLI, its module pins and its release config: nothing on
+              # the Node side reads them and no page is built from them.
+              cmd/* | go.mod | go.sum | .goreleaser.yaml)
+                node=false
+                site=false
+                ;;
+              # src/render-docs.js opens exactly two files under docs/ at
+              # build time, so those two stay Node inputs. Neither is a page
+              # the Lighthouse run measures.
+              docs/scoreboard.md | docs/benchmarks.md)
+                site=false
+                ;;
+              # The rest of the authored docs: read by a person, opened by
+              # nothing in the build or the tests.
+              docs/*)
+                node=false
+                site=false
+                ;;
+              # The docs project: a VitePress source the build reads and
+              # test/docs.test.mjs asserts, but Lighthouse measures the six
+              # pages in public/ and the built get-started.html, never a docs
+              # page, so a docs edit changes nothing it asserts.
+              docs-site/*)
+                site=false
+                ;;
+              # The repo's own Markdown, which test/pr-gate.test.mjs and
+              # test/docs.test.mjs read, and which is not a built page.
+              AGENTS.md | README.md)
+                site=false
+                ;;
+            esac
+            case "$file" in
+              cmd/* | go.mod | go.sum | .goreleaser.yaml) ;;
+              *) golang=false ;;
+            esac
+          done < changed.txt
+          {
+            echo "node=$node"
+            echo "site=$site"
+            echo "go=$golang"
+          } >> "$GITHUB_OUTPUT"
+          cat changed.txt
+      # rclone serves the S3 stand-in the two search and mount proofs need, so
+      # it is installed only alongside the steps that run them.
+      - if: steps.changed.outputs.node != 'false'
+        run: npm ci
       # test/standin-search.test.mjs proves the issue's number - 100,000 real
       # files, a search under a second - over a local `rclone serve s3`, and it
       # skips itself where rclone is absent. Installing it here is what keeps
@@ -48,12 +142,14 @@ jobs:
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry
       # fails the job rather than reaching it.
-      - name: Cache the rclone release
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - if: steps.changed.outputs.node != 'false'
+        name: Cache the rclone release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0  # zizmor: ignore[cache-poisoning]
         with:
           path: ${{ runner.temp }}/rclone-dl
           key: rclone-${{ env.PINNED_RCLONE_VERSION }}-linux-amd64-${{ env.PINNED_RCLONE_LINUX_AMD64_SHA256 }}
-      - name: Install rclone (the stock tool the S3 stand-in serves)
+      - if: steps.changed.outputs.node != 'false'
+        name: Install rclone (the stock tool the S3 stand-in serves)
         run: |
           zip="rclone-$PINNED_RCLONE_VERSION-linux-amd64.zip"
           mkdir -p "$RUNNER_TEMP/rclone-dl"
@@ -73,9 +169,14 @@ jobs:
       # this job, which is what makes a budget a ratchet rather than a note.
       # Lowering a number in lighthouserc.json is how a speed win gets locked
       # in; raising one needs a measurement in the PR body.
-      - run: npm run build
-      - run: npx lhci autorun
-      - run: npm test
+      # Lighthouse measures the six pages as they ship, so it runs when a page,
+      # the code that writes one or the build that emits them changed.
+      - if: steps.changed.outputs.site != 'false'
+        run: npm run build
+      - if: steps.changed.outputs.site != 'false'
+        run: npx lhci autorun
+      - if: steps.changed.outputs.node != 'false'
+        run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
         with:
@@ -96,15 +197,47 @@ jobs:
           # No cache on own runners: Go's build cache is already on this disk,
           # and saving it took 2 min per job (2026-10-05).
           cache: false
+      # The one diff the heavy steps below read (drive#660). Same shape and the
+      # same safety as the `verify` job's: it sits before every step that
+      # reads it.
+      - name: What this pull request changed
+        id: changed
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null &&
+            git merge-base --is-ancestor "$BASE_SHA" HEAD; then
+            git diff --name-only "$BASE_SHA" HEAD > changed.txt
+          else
+            echo "unknown-merge-base" > changed.txt
+          fi
+          golang=true
+          while IFS= read -r file; do
+            case "$file" in
+              # The Go CLI, its module pins and its release config: what this
+              # job tests. Anything else - a page, a Worker, a doc, a
+              # workflow - leaves it false, and this job stops after gofmt.
+              cmd/* | go.mod | go.sum | .goreleaser.yaml) ;;
+              *) golang=false ;;
+            esac
+          done < changed.txt
+          {
+            echo "go=$golang"
+          } >> "$GITHUB_OUTPUT"
+          cat changed.txt
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry
       # fails the job rather than reaching it.
-      - name: Cache the rclone release
+      - if: steps.changed.outputs.go != 'false'
+        name: Cache the rclone release
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0  # zizmor: ignore[cache-poisoning]
         with:
           path: ${{ runner.temp }}/rclone-dl
           key: rclone-${{ env.PINNED_RCLONE_VERSION }}-linux-amd64-${{ env.PINNED_RCLONE_LINUX_AMD64_SHA256 }}
-      - name: Install rclone (the stock tool the mount drives)
+      - if: steps.changed.outputs.go != 'false'
+        name: Install rclone (the stock tool the mount drives)
         run: |
           zip="rclone-$PINNED_RCLONE_VERSION-linux-amd64.zip"
           mkdir -p "$RUNNER_TEMP/rclone-dl"
@@ -126,37 +259,45 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
-      - run: go vet ./cmd/...
-      - name: staticcheck
+      - if: steps.changed.outputs.go != 'false'
+        run: go vet ./cmd/...
+      - if: steps.changed.outputs.go != 'false'
+        name: staticcheck
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
         with:
           version: "2025.1.1"
           install-go: false
       # The release config stays valid: goreleaser fails `check` on a
       # deprecated key, so a stale config shows up on the PR, not on a tag.
-      - name: goreleaser check
+      - if: steps.changed.outputs.go != 'false'
+        name: goreleaser check
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: "v2.18.2"
           args: check
       # A per-run path: the self-hosted runners share one /tmp.
-      - run: go build -o "$RUNNER_TEMP/drive" ./cmd/drive
+      - if: steps.changed.outputs.go != 'false'
+        run: go build -o "$RUNNER_TEMP/drive" ./cmd/drive
       # The Windows jobs run only by hand (windows-msi.yml, drive#486), so the
       # Windows code is still vetted and its tests compiled here, cross-built
-      # from Linux, on every PR.
-      - name: Windows code vets and its tests compile
+      # from Linux, on every pull request that touches the Go code.
+      - if: steps.changed.outputs.go != 'false'
+        name: Windows code vets and its tests compile
         env:
           GOOS: windows
         run: |
           go vet ./cmd/...
           go test -c -o /dev/null ./cmd/drive/
-      - name: Unit tests, with the race detector
+      - if: steps.changed.outputs.go != 'false'
+        name: Unit tests, with the race detector
         run: go test -race ./cmd/drive/ -short -v
       # The step-2 done-when proof: a 64 MiB file's first bytes stream back
       # before the whole object downloads, and a save survives stop/start with
       # the same checksum, against a local `rclone serve s3` stand-in.
-      - name: Stand-in mount proof
+      - if: steps.changed.outputs.go != 'false'
+        name: Stand-in mount proof
         run: go test ./cmd/drive/ -run TestStandinMountProof -v -timeout 300s
-      - name: Two-device conflict proof
+      - if: steps.changed.outputs.go != 'false'
+        name: Two-device conflict proof
         run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s
