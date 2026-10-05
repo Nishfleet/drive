@@ -137,6 +137,12 @@ export function buildPrice({
     // drive#586 retired "No minimum": a top-up is $10 or more. The balance is
     // kept until it is used.
     noPlansLine: "No plans. Your balance never expires.",
+    // drive#521: the trash billing rule, the one sentence the pricing page
+    // and docs carry verbatim. "Stop paying for what you delete" is this:
+    // the meter stops counting the hour the file lands in Recently deleted,
+    // and the nightly purge removes it for good 30 days later.
+    trashLine:
+      "A deleted file stops counting as soon as it lands in Recently deleted. After 30 days it is removed for good.",
     // drive#417: until a card is really on file the usage page says no charge has
     // been made and shows no bill as if charged. `monthBillCents()` still works
     // the bill out (money, untouched); this is the word the page and the CLI

@@ -22,6 +22,7 @@
 // test/seo.test.mjs then holds every shipped file to the value, so a domain
 // move is one edit rather than a sweep of ten files.
 import site from "../cmd/drive/site.json" with { type: "json" };
+import { LEGAL_PAGES } from "./legal.js";
 import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = site.origin;
@@ -64,7 +65,9 @@ export const SITE = Object.freeze({
  * One shipped HTML page. `root` names the pages that ship as built Vite
  * entries from the repo root rather than as verbatim assets copied out of
  * public/ (drive issue #70). Every entry without it is a public/ asset.
- * @typedef {{ path: string, indexable: boolean, root?: boolean }} Page
+ * `file` names the public/ file a clean URL is served from (the asset layer
+ * serves /terms from terms.html); without it the file is the path itself.
+ * @typedef {{ path: string, indexable: boolean, root?: boolean, file?: string }} Page
  */
 
 // Every public HTML page, and whether a crawler should index it. The order is
@@ -82,6 +85,11 @@ export const PAGES = Object.freeze([
   // surface, and the crowd it is for finds it by search, so it is indexable and
   // in the sitemap. Its price line is PRICE's, like every other page's.
   Object.freeze({ path: "/starter.html", indexable: true }),
+  // The legal and trust pages (drive#523), at the clean URLs the footers link.
+  // src/legal.js is their one list; each is indexable and in the sitemap.
+  ...LEGAL_PAGES.map((page) =>
+    Object.freeze({ path: page.path, file: page.file, indexable: true }),
+  ),
   // The first-run page is a built Vite entry at the repo root, not a public/
   // asset: issue #70 moved it there so cf build compiles the module behind it
   // instead of shipping the page verbatim, and the `root` flag is what tells

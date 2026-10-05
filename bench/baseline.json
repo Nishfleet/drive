@@ -11,6 +11,6 @@
     "big-folder-rename": { "tool": "go-bench", "mean": 0.014954, "stddev": 0.002576, "runs": 10 },
     "mount-ready": { "tool": "go-bench", "mean": 0.106818, "stddev": 0.000622, "runs": 10 },
     "cli-cold-start": { "tool": "hyperfine", "mean": 0.002389, "stddev": 0.000359, "runs": 10 },
-    "site-bundle": { "tool": "cf-build", "unit": "bytes", "mean": 2507703, "stddev": 0, "runs": 1 }
+    "site-bundle": { "tool": "cf-build", "unit": "bytes", "mean": 2560000, "stddev": 0, "runs": 1 }
   }
 }

@@ -7,9 +7,10 @@ write the same folder.
 
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
-- **Version history is not in version 1.** Saving a file again replaces it, and
-  a delete can be undone from the storage provider's own versions. The full list
-  of what version 1 does not do is on the
+- **Version history is not in version 1.** Saving a file again replaces it. A
+  delete from the Files page is restorable for 30 days in Recently deleted, and
+  a delete made any other way is recoverable for one day, by asking us. The
+  full list of what version 1 does not do is on the
   [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
 - **Agents cannot delete.** An agent gets its own key, and that key cannot
   remove a file. Only you can.

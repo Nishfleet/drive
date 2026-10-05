@@ -244,7 +244,7 @@ test("the Lighthouse budget leaves room for the beacon and nothing more", () => 
   // LHCI refuses `assertions` next to `assertMatrix`, so the site-wide budget is
   // the matrix entry that matches every URL.
   const budgets = JSON.parse(read("lighthouserc.json")).ci.assert.assertMatrix.find(
-    (entry) => entry.matchingUrlPattern === ".*",
+    (/** @type {{matchingUrlPattern: string}} */ entry) => entry.matchingUrlPattern === ".*",
   ).assertions;
   assert.deepEqual(budgets["resource-summary.third-party:count"], [
     "error",
