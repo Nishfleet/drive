@@ -22,6 +22,7 @@ import { FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../src/files.js";
 import worker from "../src/index.js";
 import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { trackProcess } from "./minio-standin.mjs";
 
 // The page under test is the shipped asset, byte for byte, because that is
 // what the asset layer serves: a copy in this file would prove this file.
@@ -141,6 +142,10 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
+  // The browser is a child process the test owns: tracking it makes a run
+  // stopped by a signal close Chrome instead of leaving it headless on the
+  // host (drive#659).
+  trackProcess(browser.process());
   t.after(async () => {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
@@ -391,6 +396,7 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
+  trackProcess(browser.process());
   t.after(async () => {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
