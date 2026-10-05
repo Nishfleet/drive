@@ -312,9 +312,21 @@ async function creditFromEvent(db, data, now, mail) {
     accountId,
     paymentId,
     amountCents,
+    grossCents: total,
     customerId: typeof customer?.customer_id === "string" ? customer.customer_id : null,
     now,
   });
+  if (!credited.accountFound) {
+    // Money moved for an account that is gone. Crediting it would strand the
+    // money under an id nobody can use, so nothing is written, the line below
+    // names the payment, and the reconciliation lists it as missing so a
+    // person refunds it. 200, because a retry cannot bring the account back.
+    console.error(
+      "billing webhook: a top-up payment names no account, so it was not credited",
+      `payment=${paymentId}`,
+    );
+    return json({ ok: false, ignored: "no such account" });
+  }
   if (credited.credited) {
     // A receipt only when money moved, and only once: a replayed event
     // credits nothing and so mails nothing (drive#586, supersedes #572).
@@ -339,7 +351,10 @@ async function creditFromEvent(db, data, now, mail) {
  */
 async function sendTopUpReceipt(db, receipt) {
   if (!receipt.mail.email || !receipt.mail.mailFrom) {
-    console.error("billing webhook: no receipt sent, because mail is not set up", `account=${receipt.accountId}`);
+    console.error(
+      "billing webhook: no receipt sent, because mail is not set up",
+      `account=${receipt.accountId}`,
+    );
     return;
   }
   try {
@@ -347,7 +362,10 @@ async function sendTopUpReceipt(db, receipt) {
       await db.prepare("SELECT email FROM accounts WHERE id = ?1").bind(receipt.accountId).first()
     );
     if (typeof row?.email !== "string" || row.email === "") {
-      console.error("billing webhook: no receipt sent, because the account has no email", `account=${receipt.accountId}`);
+      console.error(
+        "billing webhook: no receipt sent, because the account has no email",
+        `account=${receipt.accountId}`,
+      );
       return;
     }
     await sendEmail(receipt.mail.email, {
@@ -483,10 +501,32 @@ export async function handleTopUpRequest(request, account, deps) {
   }
   const session = objectOrNull(await response.json().catch(() => null));
   const url = session?.checkout_url;
-  if (typeof url !== "string" || !url.startsWith("https://")) {
+  if (typeof url !== "string" || !isDodoCheckoutUrl(url)) {
+    // Only a Dodo page is handed to the customer: a malformed or tampered
+    // answer must never become a redirect to somewhere else.
     return json({ error: failureMessage("topup-failed") }, 502);
   }
   return json({ checkout_url: url, amount_cents: cents });
+}
+
+/**
+ * Whether a checkout URL is an https page on Dodo's own domain.
+ * @param {string} value
+ */
+export function isDodoCheckoutUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname;
+  return (
+    parsed.protocol === "https:" &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    (host === "dodopayments.com" || host.endsWith(".dodopayments.com"))
+  );
 }
 
 /**

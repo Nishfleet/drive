@@ -41,6 +41,7 @@ export const TOP_UP_PAGE = "/usage";
  *   amountCents: number,
  *   idempotencyKey: string,
  *   providerPaymentId?: string|null,
+ *   providerAmountCents?: number|null,
  *   windowStart?: number|null,
  *   reason?: string|null,
  *   now?: number,
@@ -137,6 +138,10 @@ function checkedEntry(entry) {
   }
   const idempotencyKey = nonEmpty(entry.idempotencyKey, "idempotencyKey");
   const providerPaymentId = entry.providerPaymentId ?? null;
+  const providerAmountCents =
+    entry.providerAmountCents === undefined || entry.providerAmountCents === null
+      ? null
+      : wholeCents(entry.providerAmountCents, "providerAmountCents");
   const windowStart = entry.windowStart ?? null;
   const reason = entry.reason ?? null;
   if (kind === "topup") {
@@ -162,6 +167,7 @@ function checkedEntry(entry) {
     amountCents,
     idempotencyKey,
     providerPaymentId,
+    providerAmountCents,
     windowStart,
     reason,
     createdAt: nowMs(entry.now),
@@ -198,8 +204,8 @@ function insertStatement(db, row) {
     .prepare(
       `INSERT INTO balance_ledger
          (account_id, kind, amount_cents, idempotency_key, provider_payment_id,
-          window_start, reason, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+          window_start, reason, created_at, provider_amount_cents)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT (idempotency_key) DO NOTHING`,
     )
     .bind(
@@ -211,6 +217,7 @@ function insertStatement(db, row) {
       row.windowStart,
       row.reason,
       row.createdAt,
+      row.providerAmountCents,
     );
 }
 
@@ -230,20 +237,29 @@ function changedRows(result) {
  */
 async function assertSameEntry(db, row) {
   const existing = await db
-    .prepare("SELECT account_id, kind, amount_cents FROM balance_ledger WHERE idempotency_key = ?1")
+    .prepare(
+      `SELECT account_id, kind, amount_cents, provider_payment_id, window_start, reason
+         FROM balance_ledger WHERE idempotency_key = ?1`,
+    )
     .bind(row.idempotencyKey)
     .first();
   if (existing === null || existing === undefined) {
     throw new Error(`ledger: the insert for ${row.idempotencyKey} wrote nothing and found no row`);
   }
-  const found = /** @type {{account_id: unknown, kind: unknown, amount_cents: unknown}} */ (
-    existing
-  );
-  if (
-    found.account_id !== row.accountId ||
-    found.kind !== row.kind ||
-    Number(found.amount_cents) !== row.amountCents
-  ) {
+  const found = /** @type {Record<string, unknown>} */ (existing);
+  // Every field that names the movement, not only the money: the same key for
+  // another payment or another hour is a different movement, and treating it
+  // as a replay would drop it without a word.
+  const same =
+    found.account_id === row.accountId &&
+    found.kind === row.kind &&
+    Number(found.amount_cents) === row.amountCents &&
+    (found.provider_payment_id ?? null) === row.providerPaymentId &&
+    (found.window_start === null || found.window_start === undefined
+      ? null
+      : Number(found.window_start)) === row.windowStart &&
+    (found.reason ?? null) === row.reason;
+  if (!same) {
     throw new Error(
       `ledger: ${row.idempotencyKey} is already a different entry, so this one was not written`,
     );
@@ -329,9 +345,14 @@ export async function recentLedger(db, accountId, limit = 10) {
  * `accounts.first_charged_at` (the "first charge" that lifts the 1 TB limit,
  * #532/#536) and saves the provider's customer id when the account has none
  * yet (#503), both with COALESCE so a replay changes nothing.
+ *
+ * A payment for an account that no longer exists is not credited: money
+ * under an id nobody can sign in as is lost to everyone. The caller logs it,
+ * and the reconciliation lists it as missing, so a person refunds it.
  * @param {D1Database} db
- * @param {{accountId: string, paymentId: string, amountCents: number, customerId?: string|null, now?: number}} payment
- * @returns {Promise<{credited: boolean, balanceCents: number}>}
+ * @param {{accountId: string, paymentId: string, amountCents: number, grossCents?: number, customerId?: string|null, now?: number}} payment
+ *   grossCents is what the provider took, tax included (defaults to amountCents)
+ * @returns {Promise<{credited: boolean, balanceCents: number, accountFound: boolean}>}
  */
 export async function creditTopUp(db, payment) {
   if (typeof payment !== "object" || payment === null) {
@@ -343,6 +364,18 @@ export async function creditTopUp(db, payment) {
       `a top-up is at least ${MIN_TOP_UP_CENTS} cents, got ${amountCents} for ${payment.paymentId}`,
     );
   }
+  const grossCents =
+    payment.grossCents === undefined ? amountCents : wholeCents(payment.grossCents, "grossCents");
+  if (grossCents < amountCents) {
+    throw new RangeError(`a payment's total ${grossCents} is below its credit ${amountCents}`);
+  }
+  const account = await db
+    .prepare("SELECT 1 AS hit FROM accounts WHERE id = ?1")
+    .bind(nonEmpty(payment.accountId, "accountId"))
+    .first();
+  if (!account) {
+    return { credited: false, balanceCents: 0, accountFound: false };
+  }
   const at = nowMs(payment.now);
   const { inserted } = await appendLedgerEntry(db, {
     accountId: payment.accountId,
@@ -350,6 +383,7 @@ export async function creditTopUp(db, payment) {
     amountCents,
     idempotencyKey: topUpKey(payment.paymentId),
     providerPaymentId: payment.paymentId,
+    providerAmountCents: grossCents,
     now: at,
   });
   const customerId =
@@ -377,7 +411,7 @@ export async function creditTopUp(db, payment) {
       .bind(balance, LOW_BALANCE_CENTS, payment.accountId)
       .run();
   }
-  return { credited: inserted, balanceCents: balance };
+  return { credited: inserted, balanceCents: balance, accountFound: true };
 }
 
 /**
@@ -386,6 +420,11 @@ export async function creditTopUp(db, payment) {
  * a payment this ledger never credited answers `{found: false}` and writes
  * nothing (the webhook asks the provider to retry it later: an out-of-order
  * refund must wait for its payment, never invent an account).
+ *
+ * The provider refunds what it took, tax included, and the balance was
+ * credited before tax. So the balance gives back its share of the refund (the
+ * credit over the payment's total), and never more in all than the payment
+ * credited, however many partial refunds arrive.
  * @param {D1Database} db
  * @param {{refundId: string, paymentId: string, amountCents: number, reason?: string, now?: number}} refund
  * @returns {Promise<{found: false}|{found: true, recorded: boolean, accountId: string}>}
@@ -398,20 +437,53 @@ export async function recordRefund(db, refund) {
   if (amountCents <= 0) {
     throw new RangeError(`a refund amount is above 0 cents, got ${amountCents}`);
   }
-  const paid = await db
-    .prepare("SELECT account_id, amount_cents FROM balance_ledger WHERE idempotency_key = ?1")
-    .bind(topUpKey(refund.paymentId))
-    .first();
+  const paid =
+    /** @type {{account_id: unknown, amount_cents: unknown, provider_amount_cents: unknown}|null} */ (
+      await db
+        .prepare(
+          `SELECT account_id, amount_cents, provider_amount_cents
+           FROM balance_ledger WHERE idempotency_key = ?1`,
+        )
+        .bind(topUpKey(refund.paymentId))
+        .first()
+    );
   if (paid === null || paid === undefined) {
     return { found: false };
   }
-  const accountId = String(/** @type {{account_id: unknown}} */ (paid).account_id);
+  const accountId = String(paid.account_id);
+  const key = refundKey(refund.refundId);
+  // A replay is answered before the amount is worked out: the cap below counts
+  // this refund's own row, so recomputing it on a replay would give 0.
+  const seen = await db
+    .prepare("SELECT 1 AS hit FROM balance_ledger WHERE idempotency_key = ?1")
+    .bind(key)
+    .first();
+  if (seen) {
+    return { found: true, recorded: false, accountId };
+  }
+  const credited = Number(paid.amount_cents);
+  const gross = Number(paid.provider_amount_cents ?? credited) || credited;
+  const before = await db
+    .prepare(
+      `SELECT COALESCE(-SUM(amount_cents), 0) AS refunded FROM balance_ledger
+        WHERE kind = 'refund' AND provider_payment_id = ?1`,
+    )
+    .bind(refund.paymentId)
+    .first();
+  const refunded = Number(/** @type {{refunded?: unknown}|null} */ (before)?.refunded ?? 0);
+  const share = Math.round((amountCents * credited) / gross);
+  const debit = Math.min(share, credited - refunded);
+  if (debit <= 0) {
+    // Everything this payment credited is already given back.
+    return { found: true, recorded: false, accountId };
+  }
   const { inserted } = await appendLedgerEntry(db, {
     accountId,
     kind: "refund",
-    amountCents: -amountCents,
-    idempotencyKey: refundKey(refund.refundId),
+    amountCents: -debit,
+    idempotencyKey: key,
     providerPaymentId: refund.paymentId,
+    providerAmountCents: amountCents,
     reason: refund.reason && refund.reason.trim() !== "" ? refund.reason : "refund to card",
     now: refund.now,
   });

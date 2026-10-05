@@ -325,8 +325,94 @@ test("a usage draw is idempotent on the account and the hour", async () => {
     appendLedgerEntry(db, { ...draw, amountCents: -9 }),
     /already a different entry/,
   );
+  // The same key for another hour or account is the same bug.
+  await assert.rejects(
+    appendLedgerEntry(db, { ...draw, windowStart: hour + 3_600_000 }),
+    /already a different entry/,
+  );
+  await putAccount(db, "acc-other");
+  await assert.rejects(
+    appendLedgerEntry(db, { ...draw, accountId: "acc-other" }),
+    /already a different entry/,
+  );
   assert.equal(ledgerRows(sqlite).length, 2);
   assert.equal(await balanceCents(db, ACCOUNT), 993);
+});
+
+test("a taxed payment refunded in full takes back only what it credited", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const deps = { db, secret: SECRET, now: NOW };
+  // $10 credited, $1.80 tax, $11.80 taken from the card.
+  await handleBillingWebhook(
+    await signedEvent("msg_p1", paymentEvent("pay_1", 1180, { tax: 180 })),
+    deps,
+  );
+  assert.equal(await balanceCents(db, ACCOUNT), 1000);
+  const full = {
+    type: "refund.succeeded",
+    data: { refund_id: "ref_full", payment_id: "pay_1", amount: 1180, reason: "asked" },
+  };
+  const response = await handleBillingWebhook(await signedEvent("msg_r1", full), deps);
+  assert.deepEqual(await response.json(), { ok: true, recorded: true });
+  assert.equal(await balanceCents(db, ACCOUNT), 0, "never below what the payment added");
+  const row = sqlite
+    .prepare("SELECT amount_cents, provider_amount_cents FROM balance_ledger WHERE kind = 'refund'")
+    .get();
+  assert.deepEqual({ ...row }, { amount_cents: -1000, provider_amount_cents: 1180 });
+});
+
+test("partial refunds take back their share and never more than the payment credited", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const deps = { db, secret: SECRET, now: NOW };
+  await handleBillingWebhook(
+    await signedEvent("msg_p1", paymentEvent("pay_1", 1180, { tax: 180 })),
+    deps,
+  );
+  /** @param {string} id @param {number} amount */
+  const refund = (id, amount) => ({
+    type: "refund.succeeded",
+    data: { refund_id: id, payment_id: "pay_1", amount, reason: "partial" },
+  });
+  await handleBillingWebhook(await signedEvent("msg_r1", refund("ref_a", 590)), deps);
+  assert.equal(await balanceCents(db, ACCOUNT), 500, "half the total is half the credit");
+  // A replay of the first refund is not counted again.
+  await handleBillingWebhook(await signedEvent("msg_r1", refund("ref_a", 590)), deps);
+  assert.equal(await balanceCents(db, ACCOUNT), 500);
+  // A second refund that would overshoot is capped at what is left.
+  await handleBillingWebhook(await signedEvent("msg_r2", refund("ref_b", 1180)), deps);
+  assert.equal(await balanceCents(db, ACCOUNT), 0);
+  const extra = await handleBillingWebhook(await signedEvent("msg_r3", refund("ref_c", 100)), deps);
+  assert.deepEqual(await extra.json(), { ok: true, recorded: false });
+  assert.equal(await balanceCents(db, ACCOUNT), 0);
+});
+
+test("a payment for an account that no longer exists is not credited and stays visible", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const quiet = console.error;
+  /** @type {string[]} */
+  const logged = [];
+  console.error = (...args) => logged.push(args.join(" "));
+  try {
+    const response = await handleBillingWebhook(
+      await signedEvent("msg_p1", paymentEvent("pay_gone", 1000, { accountId: "acc-deleted" })),
+      { db, secret: SECRET, now: NOW },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: false, ignored: "no such account" });
+  } finally {
+    console.error = quiet;
+  }
+  assert.deepEqual(ledgerRows(sqlite), []);
+  assert.ok(
+    logged.some((line) => line.includes("pay_gone")),
+    "the log names the payment",
+  );
+  const reconciled = reconcileTopUps(await ledgerTopUps(db), [
+    { paymentId: "pay_gone", amountCents: 1000 },
+  ]);
+  assert.deepEqual(reconciled.missing, ["pay_gone"]);
 });
 
 test("the balance summary reads the sum, the recent lines and the pause", async () => {

@@ -43,7 +43,13 @@ async function putAccount(db, id, extra = {}) {
       `INSERT INTO accounts (id, email, created_at, dodo_customer_id, auto_topup_cents)
        VALUES (?1, ?2, ?3, ?4, ?5)`,
     )
-    .bind(id, `${id}@example.com`, midnight(), extra.customerId ?? null, extra.autoTopUpCents ?? null)
+    .bind(
+      id,
+      `${id}@example.com`,
+      midnight(),
+      extra.customerId ?? null,
+      extra.autoTopUpCents ?? null,
+    )
     .run();
 }
 
@@ -81,7 +87,9 @@ async function billThrough(db, hour) {
 /** @param {import("node:sqlite").DatabaseSync|import("../d1-sqlite.mjs").TestSqlite} sqlite */
 function usageRows(sqlite) {
   return sqlite
-    .prepare("SELECT amount_cents, idempotency_key FROM balance_ledger WHERE kind = 'usage' ORDER BY id")
+    .prepare(
+      "SELECT amount_cents, idempotency_key FROM balance_ledger WHERE kind = 'usage' ORDER BY id",
+    )
     .all();
 }
 
@@ -115,7 +123,10 @@ function dodoRecorder(opts = {}) {
         items: (opts.cards ?? ["pm_saved"]).map((id) => ({ payment_method_id: id })),
       });
     }
-    return Response.json({ session_id: "s_auto", checkout_url: "https://test.checkout.dodopayments.com/s" });
+    return Response.json({
+      session_id: "s_auto",
+      checkout_url: "https://test.checkout.dodopayments.com/s",
+    });
   };
   return { calls, fetchImpl };
 }
@@ -191,8 +202,15 @@ test("uploads pause at $0 and start again once a signed top-up lands", async () 
   assert.equal(await writesPaused(db, ACCOUNT), true);
   const paused = await upload("before.txt");
   assert.equal(paused.status, 402);
-  assert.deepEqual(await paused.json(), { error: failureMessage("balance-empty"), top_up: "/usage" });
-  assert.equal((await upload("switch-off.txt", false)).status, 201, "the pause is off until switched on");
+  assert.deepEqual(await paused.json(), {
+    error: failureMessage("balance-empty"),
+    top_up: "/usage",
+  });
+  assert.equal(
+    (await upload("switch-off.txt", false)).status,
+    201,
+    "the pause is off until switched on",
+  );
 
   // The top-up, as Dodo's signed webhook delivers it.
   const body = JSON.stringify({
@@ -211,7 +229,11 @@ test("uploads pause at $0 and start again once a signed top-up lands", async () 
   const credited = await handleBillingWebhook(
     new Request("https://drive.example/api/billing/webhook", {
       method: "POST",
-      headers: { "webhook-id": "msg_e2e", "webhook-timestamp": timestamp, "webhook-signature": signature },
+      headers: {
+        "webhook-id": "msg_e2e",
+        "webhook-timestamp": timestamp,
+        "webhook-signature": signature,
+      },
       body,
     }),
     { db, secret: SECRET, now },
@@ -232,7 +254,13 @@ test("uploads pause at $0 and start again once a signed top-up lands", async () 
 
 test("the pause switch is on only for the exact value", () => {
   assert.equal(prepaidPauseOn({ PREPAID_PAUSE: "on" }), true);
-  for (const env of [{}, { PREPAID_PAUSE: "off" }, { PREPAID_PAUSE: "ON" }, { PREPAID_PAUSE: "1" }, null]) {
+  for (const env of [
+    {},
+    { PREPAID_PAUSE: "off" },
+    { PREPAID_PAUSE: "ON" },
+    { PREPAID_PAUSE: "1" },
+    null,
+  ]) {
     assert.equal(prepaidPauseOn(env), false);
   }
 });
@@ -242,7 +270,12 @@ test("the $2 email goes out once per crossing, and a top-up re-arms it", async (
   await putAccount(db, ACCOUNT);
   const email = fakeEmail();
   const deps = { email, mailFrom: MAIL_FROM, now: Date.parse("2026-10-05T12:00:00Z") };
-  await creditTopUp(db, { accountId: ACCOUNT, paymentId: "pay_1", amountCents: 1000, now: deps.now });
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_1",
+    amountCents: 1000,
+    now: deps.now,
+  });
   /** @param {number} cents @param {number} hour */
   const draw = (cents, hour) =>
     appendLedgerEntry(db, {
@@ -254,18 +287,31 @@ test("the $2 email goes out once per crossing, and a top-up re-arms it", async (
       now: deps.now,
     });
   await draw(700, 0);
-  assert.equal((await settleBalance(db, ACCOUNT, deps)).lowBalanceSent, false, "$3 left is not low");
+  assert.equal(
+    (await settleBalance(db, ACCOUNT, deps)).lowBalanceSent,
+    false,
+    "$3 left is not low",
+  );
   await draw(150, HOUR_MS);
   assert.equal(await balanceCents(db, ACCOUNT), 150);
   assert.equal((await settleBalance(db, ACCOUNT, deps)).lowBalanceSent, true);
   assert.equal((await settleBalance(db, ACCOUNT, deps)).lowBalanceSent, false, "once per crossing");
   await draw(100, 2 * HOUR_MS);
-  assert.equal((await settleBalance(db, ACCOUNT, deps)).lowBalanceSent, false, "still the same crossing");
+  assert.equal(
+    (await settleBalance(db, ACCOUNT, deps)).lowBalanceSent,
+    false,
+    "still the same crossing",
+  );
   assert.equal(email.sent.length, 1);
   assert.equal(email.sent[0].to, `${ACCOUNT}@example.com`);
   assert.equal(email.sent[0].subject, "Your Drive balance is $1.50");
 
-  await creditTopUp(db, { accountId: ACCOUNT, paymentId: "pay_2", amountCents: 1000, now: deps.now });
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_2",
+    amountCents: 1000,
+    now: deps.now,
+  });
   await draw(950, 3 * HOUR_MS);
   assert.ok((await balanceCents(db, ACCOUNT)) <= LOW_BALANCE_CENTS);
   assert.equal((await settleBalance(db, ACCOUNT, deps)).lowBalanceSent, true, "a new crossing");
@@ -348,7 +394,10 @@ test("auto top-up under $2 charges the saved card once, and the webhook credit s
   const deps = { apiKey: "test-key", productId: "pdt_topup", fetch: dodo.fetchImpl, now };
   assert.equal((await settleBalance(db, ACCOUNT, deps)).autoTopUpStarted, true);
   assert.equal(dodo.calls.length, 2);
-  assert.equal(dodo.calls[0].url, "https://test.dodopayments.com/customers/cus_auto/payment-methods");
+  assert.equal(
+    dodo.calls[0].url,
+    "https://test.dodopayments.com/customers/cus_auto/payment-methods",
+  );
   assert.equal(dodo.calls[1].url, "https://test.dodopayments.com/checkouts");
   assert.deepEqual(dodo.calls[1].body, {
     product_cart: [{ product_id: "pdt_topup", quantity: 1, amount: 2500 }],
@@ -418,7 +467,8 @@ test("a started auto top-up that never lands is started again after a day", asyn
   const deps = { apiKey: "test-key", productId: "pdt_topup", fetch: dodo.fetchImpl, now };
   assert.equal((await settleBalance(db, ACCOUNT, deps)).autoTopUpStarted, true);
   assert.equal(
-    (await settleBalance(db, ACCOUNT, { ...deps, now: now + AUTO_TOPUP_RETRY_MS })).autoTopUpStarted,
+    (await settleBalance(db, ACCOUNT, { ...deps, now: now + AUTO_TOPUP_RETRY_MS }))
+      .autoTopUpStarted,
     true,
   );
 });

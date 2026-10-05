@@ -24,8 +24,8 @@ import {
   balanceCents,
   hasToppedUp,
   LOW_BALANCE_CENTS,
-  MIN_TOP_UP_CENTS,
   MAX_TOP_UP_CENTS,
+  MIN_TOP_UP_CENTS,
   usageKey,
 } from "./ledger.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
@@ -222,7 +222,15 @@ export async function settleBalance(db, accountId, deps) {
       .first()
   );
   const autoCents = autoTopUpCents(row?.auto_topup_cents);
-  const lowBalanceSent = await sendLowBalanceOnce(db, accountId, balance, autoCents, row, deps, now);
+  const lowBalanceSent = await sendLowBalanceOnce(
+    db,
+    accountId,
+    balance,
+    autoCents,
+    row,
+    deps,
+    now,
+  );
   const autoTopUpStarted =
     autoCents !== null && balance < LOW_BALANCE_CENTS
       ? await startAutoTopUp(db, accountId, autoCents, deps, now)
@@ -236,7 +244,10 @@ export async function settleBalance(db, accountId, deps) {
  */
 function autoTopUpCents(value) {
   const cents = Number(value);
-  return value !== null && value !== undefined && Number.isSafeInteger(cents) && cents >= MIN_TOP_UP_CENTS
+  return value !== null &&
+    value !== undefined &&
+    Number.isSafeInteger(cents) &&
+    cents >= MIN_TOP_UP_CENTS
     ? cents
     : null;
 }

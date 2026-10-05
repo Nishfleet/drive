@@ -10,6 +10,7 @@ import {
   DODO_CHECKOUT_PATH,
   handleBalanceRequest,
   handleTopUpRequest,
+  isDodoCheckoutUrl,
   TOPUP_ENDPOINT,
   TOPUP_PURPOSE,
 } from "../src/topup.js";
@@ -146,6 +147,10 @@ test("a failed or refused checkout answers 502 and charges nothing", async () =>
       { throws: true },
       { status: 500 },
       { body: { checkout_url: "http://not-https.example" } },
+      { body: { checkout_url: "https://evil.example/pay" } },
+      { body: { checkout_url: "https://dodopayments.com.evil.example/pay" } },
+      { body: { checkout_url: "http://checkout.dodopayments.com/s_1" } },
+      { body: { checkout_url: "https://user@checkout.dodopayments.com/s_1" } },
     ]) {
       const { fetchImpl } = recorder(reply);
       const response = await handleTopUpRequest(topUpRequest({ amount_usd: 10 }), ACCOUNT, {
@@ -159,6 +164,26 @@ test("a failed or refused checkout answers 502 and charges nothing", async () =>
     }
   } finally {
     console.error = quiet;
+  }
+});
+
+test("only an https page on Dodo's own domain is a checkout URL", () => {
+  for (const good of [
+    "https://checkout.dodopayments.com/s_1",
+    "https://test.checkout.dodopayments.com/s_1",
+    "https://dodopayments.com/buy",
+  ]) {
+    assert.equal(isDodoCheckoutUrl(good), true, good);
+  }
+  for (const bad of [
+    "https://evil.example",
+    "https://notdodopayments.com/s",
+    "https://dodopayments.com.evil.example/s",
+    "http://checkout.dodopayments.com/s",
+    "javascript:alert(1)",
+    "not a url",
+  ]) {
+    assert.equal(isDodoCheckoutUrl(bad), false, bad);
   }
 });
 
