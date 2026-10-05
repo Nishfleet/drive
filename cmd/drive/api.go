@@ -50,9 +50,11 @@ type DeviceCode struct {
 
 // MintedKey is POST /v1/keys' answer. Secret is in this response and nowhere
 // else: the api Worker keeps only a hash, so this is the one read. ExpiresAt
-// is the epoch second an agent's credential stops working at, and it is nil for
-// a kind that never expires (a person's own device key, issue #106). It is a
-// pointer so an absent field and a key with no expiry stay distinguishable.
+// is the epoch second the credential stops working at, and it is nil for a
+// kind that never expires: a device key, only when the deployment's storage
+// provider names no session of its own (drive#544). Login refuses to store a
+// key that carries one, because nothing renews a device key. It is a pointer
+// so an absent field and a key with no expiry stay distinguishable.
 type MintedKey struct {
 	KeyID        string   `json:"keyId"`
 	AccessKeyID  string   `json:"accessKeyId"`
@@ -498,7 +500,12 @@ func LoadCredentials(home string) (Credentials, error) {
 	}
 	var creds Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return Credentials{}, failDetail("unexpected", fmt.Errorf("%s is not valid JSON: %w", CredentialsPath(home), err))
+		// A named failure, not "unexpected": a machine that lost power while
+		// the file was being written leaves this shape (the atomic writer in
+		// config.go now fsyncs, drive#544), and the person reading the answer
+		// needs the file's path and the one command that rewrites it
+		// (`drive status` prints this line and keeps going).
+		return Credentials{}, failDetail("credentials-unreadable", err, CredentialsPath(home))
 	}
 	return creds, nil
 }

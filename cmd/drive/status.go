@@ -100,33 +100,43 @@ func runStatus(args []string) error {
 		fmt.Println(reason)
 	}
 	fmt.Println(transfersLine(home, on))
-	idx, err := LoadOffline(home)
-	if err != nil {
-		return err
-	}
-	if idx.Empty() {
+	idx, idxErr := LoadOffline(home)
+	if idxErr != nil {
+		// A file the drive wrote itself is not a reason to stop before
+		// printing anything (drive#544): the mount and the uploads lines
+		// above are the answers the command was opened for, so the broken
+		// file becomes one line that names it.
+		fmt.Printf("offline: unknown (%s)\n", idxErr.Error())
+	} else if idx.Empty() {
 		fmt.Println("offline: none")
 	} else {
 		usage, err := MeasureOffline(mountDir, idx.Paths)
 		if err != nil {
-			return err
+			fmt.Printf("offline: unknown (%s)\n", err.Error())
+		} else {
+			_, bytes, err := UniqueOffline(mountDir, idx.Paths)
+			if err != nil {
+				fmt.Printf("offline: unknown (%s)\n", err.Error())
+			} else {
+				printOfflineUsage(home, usage, bytes)
+			}
 		}
-		_, bytes, err := UniqueOffline(mountDir, idx.Paths)
+	}
+	creds, credsErr := LoadCredentials(home)
+	switch {
+	case credsErr != nil:
+		// A truncated credentials.json used to end the command here, so
+		// the machine that lost power mid-write got no status at all and
+		// nothing that could fix it (drive#544). The line names the file and
+		// the command that writes it back.
+		fmt.Printf("this month: unknown (%s)\n", credsErr.Error())
+	default:
+		base, err := resolveAPIBase(home, *api)
 		if err != nil {
-			return err
+			fmt.Printf("this month: unknown (%s)\n", err.Error())
+		} else if reason := readCostLine(base, creds.DeviceToken); reason != "" {
+			fmt.Printf("this month: unknown (%s)\n", reason)
 		}
-		printOfflineUsage(home, usage, bytes)
-	}
-	creds, err := LoadCredentials(home)
-	if err != nil {
-		return err
-	}
-	base, err := resolveAPIBase(home, *api)
-	if err != nil {
-		return err
-	}
-	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
-		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	return nil
 }

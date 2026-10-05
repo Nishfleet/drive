@@ -702,3 +702,47 @@ func TestLoginItemPresentFindsTheItemFile(t *testing.T) {
 		t.Errorf("LoginItemPresent(linux) after writing the item = %v, %v, want true, nil", present, err)
 	}
 }
+
+// TestWindowsTaskXMLCarriesAWorkingDirectory is drive#544: a scheduled task
+// with no WorkingDirectory runs its action from %WINDIR%\System32, and the
+// mount's command line was drive-relative (the home default read $HOME, which
+// Windows does not export), so the task started rclone from a folder where
+// none of its paths resolve. Task Scheduler accepts `<WorkingDirectory>` on the
+// Exec action, and the drive's own config folder is the one that exists before
+// the task is registered, because the rclone config and this XML are written
+// there.
+func TestWindowsTaskXMLCarriesAWorkingDirectory(t *testing.T) {
+	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p.MountDir = "Z:"
+	body, err := windowsTaskXML(p, `DESKTOP\test`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc taskXML
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("the task XML does not parse: %v\n%s", err, body)
+	}
+	wantDir := filepath.Join(DefaultConfigDir(`C:\Users\test`))
+	if doc.Actions.Exec.WorkingDirectory != wantDir {
+		t.Errorf("WorkingDirectory = %q, want the drive's config folder %q",
+			doc.Actions.Exec.WorkingDirectory, wantDir)
+	}
+	// Every path the command line hands rclone is absolute, because a task
+	// that starts in System32 cannot open a relative one.
+	for name, path := range map[string]string{
+		"--config":    p.ConfigPath,
+		"--cache-dir": p.CacheDir,
+		"--log-file":  p.LogPath,
+	} {
+		if !strings.HasPrefix(path, `C:\Users\test`) {
+			t.Errorf("%s = %q: an absolute path under the profile, not %q", name, path, strings.TrimPrefix(path, `C:\Users\test`))
+		}
+		if strings.HasPrefix(path, `\`) || strings.HasPrefix(path, ".") {
+			t.Errorf("%s = %q is relative: the login task starts from System32", name, path)
+		}
+		quoted := windowsQuoteArg(path)
+		if !strings.Contains(doc.Actions.Exec.Arguments, quoted) {
+			t.Errorf("Exec Arguments missing %s (%s):\n%s", name, quoted, doc.Actions.Exec.Arguments)
+		}
+	}
+}

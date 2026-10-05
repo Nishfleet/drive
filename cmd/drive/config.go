@@ -133,6 +133,30 @@ func SaveCacheMax(home, size string) error {
 	return WriteFileAtomic(CacheMaxPath(home), []byte(size+"\n"), 0o600)
 }
 
+// userHomeDir is the operating system's own answer to "whose home is this",
+// held in a variable so a test can stand in for the platform's answer: the
+// Windows branch cannot be run on a Linux runner, and the bug this replaced
+// was a Windows one (drive#544).
+var userHomeDir = os.UserHomeDir
+
+// DefaultHome is the home directory every default path hangs off. It is
+// os.UserHomeDir, never os.Getenv("HOME"): Windows exports no HOME, so the
+// environment read joined `.config/drive` and `.cache/drive/vfs` onto an
+// empty string, and `drive login` in PowerShell wrote
+// `\.config\drive\rclone.conf` under whatever folder the command ran from
+// (drive#544). os.UserHomeDir answers USERPROFILE on Windows and HOME on every
+// other platform, so one call is the answer on all of them, and the flag
+// default below cannot be dragged back to a relative path by a platform that
+// never sets HOME. An answer the OS cannot give stays empty, which is what
+// the environment read did when nothing was set.
+func DefaultHome() string {
+	home, err := userHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // Default paths, overridable for tests.
 func DefaultConfigDir(home string) string { return filepath.Join(home, ".config", "drive") }
 func DefaultMountDir(home string) string  { return filepath.Join(home, "Drive") }
@@ -723,10 +747,25 @@ func unquoteEnvValue(v string) string {
 		b.WriteByte('\\')
 	}
 	return b.String()
-}
+} // syncFile puts the bytes on the disk before the file is renamed into
+// place. It is a variable so a test can observe the call that a power-cut
+// proof rests on: the rename is a directory operation, so without this the
+// machine can lose a write the file system already answered "done" to, and
+// the cut leaves a zero-length credentials.json or offline.json (drive#544).
+var syncFile = func(f *os.File) error { return f.Sync() }
+
+// syncDir puts the rename itself on the disk. A new name reaching the disk is
+// a separate step from the bytes reaching it, so the directory is synced after
+// the rename or the file can come back as it was before the write: for
+// credentials.json that is "nothing was ever written" (drive#544). The
+// platform owns the implementation, because a read-only handle is what Windows
+// gives a directory (sync_unix.go, sync_windows.go).
+var syncDir = func(dir string) error { return syncDirPath(dir) }
 
 // WriteFileAtomic writes data to path via a sibling temp file and rename, with
-// 0600 for secret-bearing files.
+// 0600 for secret-bearing files. The temp file is fsynced before it is closed
+// and the directory is fsynced after the rename, because a rename is not a
+// promise that the bytes survived the machine losing power (drive#544).
 func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create dir for %s: %w", path, err)
@@ -741,6 +780,10 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 		tmp.Close()
 		return fmt.Errorf("write %s: %w", path, err)
 	}
+	if err := syncFile(tmp); err != nil {
+		tmp.Close()
+		return fmt.Errorf("save %s to the disk before renaming it into place: %w", path, err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", path, err)
 	}
@@ -749,6 +792,13 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("rename into place %s: %w", path, err)
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		// The bytes are in place and were synced above, so this is a
+		// durability the machine did not confirm, not a write that failed. The
+		// error still surfaces, because a caller that was told nothing would
+		// report a success nobody proved.
+		return fmt.Errorf("%s holds the new contents, but saving that to the disk was not confirmed: %w", path, err)
 	}
 	return nil
 }

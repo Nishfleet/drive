@@ -260,6 +260,18 @@ var messageTable = map[string][2]string{
 		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
 		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
 	},
+	"credentials-unreadable": {
+		"This device's saved drive settings could not be read ({1}).",
+		"Run `drive login` to write them back, or delete {1} by hand first if the same failure repeats.",
+	},
+	"offline-list-unreadable": {
+		"The list of files kept offline could not be read ({1}).",
+		"Delete {1} by hand, then run `drive offline` again for each file you want to keep.",
+	},
+	"device-key-expiring": {
+		"This drive's api minted this device's key to {1}, and `drive login` does not renew one.",
+		"Ask whoever runs this drive's api to mint device keys with no expiry, then run `drive login` again.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.
