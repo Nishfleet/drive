@@ -86,8 +86,9 @@ export function chargeDecision(input) {
   if (typeof input !== "object" || input === null) {
     throw new TypeError(`chargeDecision needs an object, got ${String(input)}`);
   }
-  const fields =
-    /** @type {{balanceCents?: unknown, monthsHeld?: unknown, closing?: unknown}} */ (input);
+  const fields = /** @type {{balanceCents?: unknown, monthsHeld?: unknown, closing?: unknown}} */ (
+    input
+  );
   const balanceCents = wholeCents(fields.balanceCents, "balanceCents");
   const held = wholeCents(fields.monthsHeld, "monthsHeld");
   if (fields.closing !== undefined && typeof fields.closing !== "boolean") {

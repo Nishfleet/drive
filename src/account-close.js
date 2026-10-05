@@ -136,7 +136,10 @@ export async function closeAccount(input) {
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
-  if (typeof input.devices.getUnpaid === "function" && typeof input.devices.setUnpaid === "function") {
+  if (
+    typeof input.devices.getUnpaid === "function" &&
+    typeof input.devices.setUnpaid === "function"
+  ) {
     const unpaid = await input.devices.getUnpaid(input.account.id);
     const decision = applyUnpaid({
       unpaidCents: unpaid.unpaidCents,

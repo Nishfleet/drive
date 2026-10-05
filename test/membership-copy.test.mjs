@@ -33,7 +33,14 @@ function dataFor(kind) {
   if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12 };
   if (kind === "payment-failed") return { amountUsd: 23.5 };
   if (kind === "monthly-receipt") {
-    return { billUsd: 12, addedUsd: 12, balanceUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true };
+    return {
+      billUsd: 12,
+      addedUsd: 12,
+      balanceUsd: 12,
+      meteredUsd: 16,
+      ceilingUsd: 12,
+      capped: true,
+    };
   }
   if (kind === "charge-receipt") return { chargedUsd: 5 };
   if (kind === "card-failure-warning") return { daysLeft: 30, amountUsd: 5 };

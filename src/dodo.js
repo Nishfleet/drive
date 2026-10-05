@@ -527,8 +527,7 @@ async function customersForHour(db, hour) {
       throw new TypeError("accounts has a row with no dodo_customer_id");
     }
     const unpaidRaw = row.unpaid_cents;
-    const unpaidCents =
-      unpaidRaw === null || unpaidRaw === undefined ? 0 : Number(unpaidRaw);
+    const unpaidCents = unpaidRaw === null || unpaidRaw === undefined ? 0 : Number(unpaidRaw);
     if (!Number.isSafeInteger(unpaidCents) || unpaidCents < 0) {
       throw new TypeError(
         `accounts.unpaid_cents must be whole cents or null, got ${String(unpaidRaw)}`,

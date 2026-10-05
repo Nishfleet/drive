@@ -126,6 +126,6 @@ export function usageLines(summary) {
     `${USAGE_LABELS.downloads}: ${labels.downloads}`,
     `${USAGE_LABELS.cost}: ${labels.cost}`,
     `${USAGE_LABELS.runningBalance}: ${labels.runningBalance}`,
-    labels.chargeLine,
+    `${labels.chargeLine}`,
   ]);
 }

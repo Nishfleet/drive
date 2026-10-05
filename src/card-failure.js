@@ -55,9 +55,7 @@ export function daysSincePaymentFailed(failedAtSeconds, nowMs) {
     !Number.isSafeInteger(failedAtSeconds) ||
     failedAtSeconds <= 0
   ) {
-    throw new TypeError(
-      `payment_failed_at must be unix seconds, got ${String(failedAtSeconds)}`,
-    );
+    throw new TypeError(`payment_failed_at must be unix seconds, got ${String(failedAtSeconds)}`);
   }
   if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
     throw new TypeError(`now must be epoch milliseconds, got ${String(nowMs)}`);
