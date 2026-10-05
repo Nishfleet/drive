@@ -18,9 +18,11 @@ import {
   MINUTE_MS,
   monthStart,
   monthUsageThrough,
+  pruneHiddenVersions,
   reconcileMeter,
   recordEvent,
   runMeterCron,
+  VERSION_RETENTION_DAYS,
   validateEvent,
 } from "../src/meter.js";
 import { METER_JOB_KINDS } from "../src/meter-jobs.js";
@@ -471,4 +473,39 @@ test("the consumer acks a finished job and retries a failed or malformed one", a
   );
   assert.deepEqual([reconcile.acked, reconcile.retried], [0, 1], "a failed job is retried");
   assert.deepEqual([malformed.acked, malformed.retried], [0, 1], "a malformed one too");
+});
+
+test("the retention prune waits while a re-roll still reaches back past its cutoff", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const now = midnight() + 40 * 24 * HOUR_MS;
+  const cutoff = now - VERSION_RETENTION_DAYS * 24 * HOUR_MS;
+  sqlite
+    .prepare("INSERT INTO meter_rollup_state (id, rolled_through) VALUES (1, ?1)")
+    .run(now - HOUR_MS);
+  sqlite
+    .prepare(
+      `INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
+        VALUES ('acc1', 'old', 'u/acc1/old.bin', ?1, ?2, ?3)`,
+    )
+    .run(GB, midnight(), midnight() + HOUR_MS);
+  // A correction queued a re-roll of acc1 from an hour before the cutoff:
+  // the old row is one the re-roll still has to read.
+  sqlite
+    .prepare(
+      `INSERT INTO meter_account_rerolls (account_id, from_hour, through_hour, updated_at)
+        VALUES ('acc1', ?1, ?2, ?3)`,
+    )
+    .run(midnight(), now - HOUR_MS, now);
+  const waited = await pruneHiddenVersions(db, now);
+  assert.equal(waited.pruned, 0);
+  assert.match(String(waited.skipped), /re-roll/);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n, 1);
+
+  // Once the re-roll has passed the cutoff hour, the prune runs.
+  sqlite
+    .prepare("UPDATE meter_account_rerolls SET from_hour = ?1")
+    .run(cutoff - (cutoff % HOUR_MS) + HOUR_MS);
+  const ran = await pruneHiddenVersions(db, now);
+  assert.equal(ran.skipped, null);
+  assert.equal(ran.pruned, 1);
 });

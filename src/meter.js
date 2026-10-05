@@ -1973,6 +1973,8 @@ const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
 // other half is `hidden_at IS NOT NULL`, so the index holds only the rows a
 // prune can reach, and inserting a live row pays nothing for it.
 
+const OLDEST_REROLL_SQL = "SELECT MIN(from_hour) AS from_hour FROM meter_account_rerolls";
+
 /**
  * Delete the `file_versions` rows the ledger no longer needs, and only those:
  * rows hidden more than VERSION_RETENTION_DAYS ago. The table is the meter's
@@ -2013,6 +2015,18 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
       pruned: 0,
       cutoff,
       skipped: "the rollup watermark has not covered the cutoff hour yet",
+    };
+  }
+  // The same guard for one account's re-roll (drive#519): a back-dated
+  // correction queues hours behind the global mark, and the re-roll reads
+  // the rows of those hours, so no row they still need may go first.
+  const reroll = await db.prepare(OLDEST_REROLL_SQL).first();
+  const oldestReroll = stampMillis(reroll?.from_hour);
+  if (oldestReroll !== null && oldestReroll <= hourStart(cutoff)) {
+    return {
+      pruned: 0,
+      cutoff,
+      skipped: "an account re-roll still reaches back past the cutoff hour",
     };
   }
   const result = await db.prepare(PRUNE_VERSIONS_SQL).bind(cutoff).run();
