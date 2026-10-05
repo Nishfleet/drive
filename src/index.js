@@ -47,6 +47,7 @@ import {
   METER_RECONCILE_SCHEDULE,
   reconcileMeter,
   runMeterCron,
+  toMillis,
 } from "./meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
@@ -907,6 +908,10 @@ export default {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
       const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
+      // scheduledTime through toMillis, and the draw and settle steps below
+      // take only a number, so they read the same normalised instant.
+      const now = toMillis(event.scheduledTime, "scheduledTime");
       const hours = [];
       for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
         hours.push(hour);
@@ -918,7 +923,7 @@ export default {
       // migration 0021. Awaited and not caught: a failed D1 write fails the
       // trigger, Cloudflare retries it, and the idempotency key makes the
       // retry draw nothing twice.
-      const drawn = await drawUsageHours(env.METER_DB, hours, { now: event.scheduledTime });
+      const drawn = await drawUsageHours(env.METER_DB, hours, { now });
       if (drawn.drawn > 0) {
         console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
       }
@@ -934,7 +939,7 @@ export default {
         productId: dodo.DODO_TOPUP_PRODUCT_ID,
         baseUrl: dodo.DODO_BASE_URL,
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
-        now: event.scheduledTime,
+        now,
       });
       return;
     }
