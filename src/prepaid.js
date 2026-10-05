@@ -113,6 +113,116 @@ export async function drawUsageHours(db, hours, options = {}) {
   return { drawn, cents, accounts: [...touched] };
 }
 
+// The hours an account's draw still owes (drive#519): for each calendar month
+// with rolled hours after the account's draw mark, the newest such hour. One
+// draw at a month's newest hour covers the whole month so far (drawFor draws
+// the month's bill through that hour minus what the month already drew), so
+// a month needs one draw however many hours were missed, and a month the
+// clock has left is still drawn at its own last hour with its own bill.
+const PENDING_DRAW_HOURS_SQL = `SELECT MAX(hour) AS hour FROM usage_minutes
+  WHERE account_id = ?1 AND hour > ?2 AND hour <= ?3
+  GROUP BY strftime('%Y-%m', hour / 1000, 'unixepoch')
+  ORDER BY hour`;
+const DRAW_MARK_READ_SQL = "SELECT drawn_through FROM prepaid_draw_marks WHERE account_id = ?1";
+const DRAW_MARK_WRITE_SQL = `INSERT INTO prepaid_draw_marks (account_id, drawn_through, updated_at)
+  VALUES (?1, ?2, ?3)
+  ON CONFLICT(account_id) DO UPDATE SET
+    drawn_through = MAX(drawn_through, excluded.drawn_through),
+    updated_at = excluded.updated_at`;
+
+/**
+ * Draws everything one account owes through `through`, the newest rolled
+ * hour (drive#519). It works from the account's own draw mark, not from the
+ * hours the current run rolled, so a draw that failed for any number of runs,
+ * across a month end or not, is caught up by the next run that succeeds. The
+ * mark moves only after every draw it covers is written; a run that fails
+ * part-way leaves it, and the retry draws nothing twice (one ledger row per
+ * account and hour, by key).
+ *
+ * An account with no mark yet starts at the previous calendar month: the
+ * high-water draw makes an already drawn month draw nothing, so the first run
+ * after this ships cannot double a bill.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{through: number, now?: number}} options
+ * @returns {Promise<{drawn: number, cents: number}>}
+ */
+export async function drawAccountPending(db, accountId, options) {
+  if (!db) {
+    throw new Error("prepaid draw: METER_DB binding is not configured");
+  }
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`drawAccountPending needs an account id, got ${String(accountId)}`);
+  }
+  const through = hourStart(options.through);
+  const now = options.now ?? Date.now();
+  const markRow = /** @type {{drawn_through?: unknown}|null} */ (
+    await db.prepare(DRAW_MARK_READ_SQL).bind(accountId).first()
+  );
+  const marked = Number(markRow?.drawn_through);
+  const after = markRow && Number.isFinite(marked) ? marked : previousMonthStart(through) - 1;
+  if (after >= through) {
+    return { drawn: 0, cents: 0 };
+  }
+  const pending = await db.prepare(PENDING_DRAW_HOURS_SQL).bind(accountId, after, through).all();
+  let drawn = 0;
+  let cents = 0;
+  for (const raw of pending.results ?? []) {
+    const hour = Number(/** @type {{hour: unknown}} */ (raw).hour);
+    const amount = await drawFor(db, accountId, hour, now);
+    if (amount > 0) {
+      drawn += 1;
+      cents += amount;
+    }
+  }
+  await db.prepare(DRAW_MARK_WRITE_SQL).bind(accountId, through, now).run();
+  return { drawn, cents };
+}
+
+/**
+ * The in-process draw for every account, when the meter's queue is not bound
+ * (src/meter-jobs.js does the same per message). One account's failure is
+ * kept and the walk goes on; the failures are raised at the end, so the
+ * trigger still fails and the next run retries from each account's own mark.
+ * @param {D1Database} db
+ * @param {readonly string[]} accountIds
+ * @param {{through: number, now?: number}} options
+ * @returns {Promise<{drawn: number, cents: number, accounts: string[]}>}
+ */
+export async function drawPendingHours(db, accountIds, options) {
+  let drawn = 0;
+  let cents = 0;
+  /** @type {string[]} */
+  const accounts = [];
+  /** @type {unknown[]} */
+  const failures = [];
+  for (const accountId of accountIds) {
+    try {
+      const one = await drawAccountPending(db, accountId, options);
+      if (one.drawn > 0) {
+        drawn += one.drawn;
+        cents += one.cents;
+        accounts.push(accountId);
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `prepaid draw: ${failures.length} of ${accountIds.length} account(s) failed`,
+    );
+  }
+  return { drawn, cents, accounts };
+}
+
+/** @param {number} at */
+function previousMonthStart(at) {
+  const instant = new Date(monthStart(at));
+  return Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth() - 1, 1);
+}
+
 /**
  * One account's draw for one hour. Answers the cents drawn (0 when the hour
  * was already drawn or the month's bill has not passed what was drawn).
