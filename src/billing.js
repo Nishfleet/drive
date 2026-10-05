@@ -646,6 +646,10 @@ function formatUsd(usd) {
  * gbMonths, storedDaily) and the finished labels for every number, so the
  * static page renders strings instead of repeating the arithmetic. The
  * labels are the same strings `drive usage` prints.
+ *
+ * `usage.foundingMember` (drive#488) is the account's founding flag, read off
+ * its accounts row by the caller. It is optional: absent reads as full price,
+ * the safe direction, and `monthBillCents` derives the founding half from it.
  * @param {unknown} usage
  * @param {BillingConfig} [config]
  */
@@ -813,7 +817,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, foundingMember?: boolean}|null} account the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
 export function handleUsageRequest(request, account, upload = null) {
@@ -848,6 +852,12 @@ export function handleUsageRequest(request, account, upload = null) {
     // names no card, so the check fails closed.
     cardAdded: true,
     cardOnFile: account.cardOnFile === true,
+    // The account's founding flag, read from the accounts row by the route
+    // (drive#488) and forwarded here, so the usage page's bill derives the
+    // founding half once — from the flag, never from a second price sheet
+    // (drive#482). Absent reads as full price: a caller that names no flag
+    // gets the undiscounted number.
+    foundingMember: account.foundingMember === true,
   });
   // The cap line rides on the response rather than inside usageSummary(): the
   // summary is money (numbers only, which is what the usage page's chart and

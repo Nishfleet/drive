@@ -364,6 +364,74 @@ test("Dodo receives the bill held to the maximum, never the uncapped meter", asy
   assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 2000);
 });
 
+test("the Dodo push bills a founding account half, on the real schema", async () => {
+  // The account's founding flag lives on the accounts row (drive#386) and is
+  // read per account here (drive#488): the invoice is the number the usage page
+  // and the cap read, so all three count the same half. Two drives hold the
+  // same 2 TB for the same whole month, one founding and one paying not
+  // founding: $10 against $20 (drive#463's maximum).
+  const { db, sqlite } = makeMeteredDB();
+  const founderAccount = "acc-founder";
+  const founderCustomer = "cus_acc_founder";
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  await db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, dodo_customer_id, founding)
+       VALUES (?1, ?2, ?3, ?4, 1)`,
+    )
+    .bind(founderAccount, "founder@example.com", midnight(), founderCustomer)
+    .run();
+  const hour = midnight();
+  await recordUsage(db, ACCOUNT, hour, 2000 * 43800, 2000 * BYTES_PER_GB, hour + HOUR_MS);
+  await recordUsage(db, founderAccount, hour, 2000 * 43800, 2000 * BYTES_PER_GB, hour + HOUR_MS);
+  const recorder = recordingFetch();
+  await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
+  const events = recorder.calls[0].payload.events;
+  const founder = events.find((event) => event.customer_id === founderCustomer);
+  const full = events.find((event) => event.customer_id === CUSTOMER);
+  assert.ok(founder, "the founder's event reached Dodo");
+  assert.ok(full, "the full-price event reached Dodo");
+  assert.equal(founder.metadata.amount_units, 1000, "2 TB founding is $10, not $20");
+  assert.equal(founder.metadata.total_cents, 1000);
+  assert.equal(full.metadata.amount_units, 2000, "2 TB at full price is $20");
+  assert.equal(
+    sqlite
+      .prepare("SELECT amount_units FROM billing_pushes WHERE account_id = ?1")
+      .get(founderAccount).amount_units,
+    1000,
+    "the pushed row holds the founding half",
+  );
+});
+
+test("a founding flip after a full-price push sends 0, never a negative unit", async () => {
+  // The flag is written once, at the first successful charge (drive#386), so a
+  // month pushed at full price can be re-billed at the founding half. The
+  // high-water mark keeps that lower bill from becoming a negative unit
+  // (drive#488, the push's already bookkeeping).
+  const { db, sqlite } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const hour0 = midnight();
+  const hour1 = hour0 + HOUR_MS;
+  await recordUsage(db, ACCOUNT, hour0, 2000 * 43800, 2000 * BYTES_PER_GB, hour1);
+  const recorder = recordingFetch();
+  await pushBillingHours(db, [hour0], { apiKey: KEY, fetch: recorder.fetch, now: hour1 });
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 2000);
+  sqlite.prepare("UPDATE accounts SET founding = 1 WHERE id = ?1").run(ACCOUNT);
+  await recordUsage(db, ACCOUNT, hour1, 0, 2000 * BYTES_PER_GB, hour1 + HOUR_MS);
+  await pushBillingHours(db, [hour1], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: hour1 + HOUR_MS,
+  });
+  const second = recorder.calls[1].payload.events[0].metadata.amount_units;
+  assert.equal(second, 0, "the founding bill is below what was already pushed");
+  assert.equal(
+    sqlite.prepare("SELECT amount_units FROM billing_pushes WHERE hour = ?1").get(hour1)
+      .amount_units,
+    0,
+  );
+});
+
 test("no key, and no Dodo customer, skip the ingest rather than invent one", async () => {
   const withCustomer = await storedHours(10, 1);
   const noKey = recordingFetch();

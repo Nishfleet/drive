@@ -36,6 +36,7 @@
 // would try to fix.
 
 import { monthBillCents } from "./billing.js";
+import { accountFoundingFlag } from "./founding.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
 // The test-mode host and ingest path are split so the host can be overridden
@@ -258,6 +259,11 @@ export async function pushBillingHours(db, hours, options = {}) {
   let running = new Map();
   /** @type {number|null} */
   let runningMonth = null;
+  // The founding flag is read once per account per call, not once per
+  // (account, hour): a 720-hour catch-up would otherwise hit the accounts row
+  // 720 times for one answer that cannot change mid-call (drive#488).
+  /** @type {Map<string, boolean>} */
+  const foundingFlags = new Map();
   /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, event: Record<string, unknown>}>} */
   const pending = [];
 
@@ -272,11 +278,23 @@ export async function pushBillingHours(db, hours, options = {}) {
       if (already.has(`${accountId}|${hour}`)) {
         continue;
       }
+      // The account's own founding flag, read from the accounts row (drive#488):
+      // the invoice is the number the usage page and the cap read, so all three
+      // must count the same half. accountFoundingFlag is the tolerant read the
+      // agent key cap uses (drive#482): a row that is gone reads as full price,
+      // which is the safe direction for a bill. A NULL flag (not yet decided)
+      // is full price too, never a discount nobody granted.
+      let foundingMember = foundingFlags.get(accountId);
+      if (foundingMember === undefined) {
+        foundingMember = await accountFoundingFlag(db, accountId);
+        foundingFlags.set(accountId, foundingMember);
+      }
       const usage = await monthUsageThrough(db, accountId, hour);
       const bill = monthBillCents({
         gbMinutes: usage.gbMinutes,
         downloadBytes: usage.downloadBytes,
         averageStoredGb: usage.averageStoredGb,
+        foundingMember,
       });
       const previously = running.get(accountId) ?? 0;
       // High-water: a reroll that lowered this month's bill (a late hide)

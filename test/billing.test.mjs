@@ -83,6 +83,30 @@ test("the formula edges, regular and founding, held all month", () => {
   }
 });
 
+test("the founding half is the storage only: downloads are never discounted", () => {
+  // drive#482 halves the storage rate and the maximum. The download line is
+  // not part of the founding offer, so a founding month's downloads bill the
+  // same as a paying month's. drive#488 passes the flag through; it does not
+  // price the downloads, and this pins that boundary.
+  const gbMinutes = fullMonthGbMinutes(2000);
+  const averageStoredGb = 2000;
+  // 8 TB downloaded against 2 TB stored: 3x (6 TB) is free, 2 TB bills at 1c.
+  const downloadBytes = 8000 * 1e9;
+  const full = monthBillCents({ gbMinutes, averageStoredGb, downloadBytes });
+  const founder = monthBillCents({
+    gbMinutes,
+    averageStoredGb,
+    downloadBytes,
+    foundingMember: true,
+  });
+  assert.equal(full.storageCents, 2000);
+  assert.equal(founder.storageCents, 1000, "the storage maximum halves");
+  assert.equal(full.downloadCents, 2000, "2 TB billable before the founding flag");
+  assert.equal(founder.downloadCents, full.downloadCents, "downloads are not discounted");
+  assert.equal(full.totalCents, 4000);
+  assert.equal(founder.totalCents, 3000, "only the storage half halves");
+});
+
 test("the issue's worked examples: 200 GB $4, 500 GB to 1 TB $10, 1.5 TB $15, 4 TB $40", () => {
   assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(50)), 1);
   assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(200)), 4);
