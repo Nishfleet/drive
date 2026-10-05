@@ -9,9 +9,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -72,16 +74,9 @@ func TestStandinMountProof(t *testing.T) {
 
 	port := freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port,
 		"--log-level", "INFO")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
 
 	// Seed the device's own prefix the way the api Worker will (step 1).
 	seedEnv := append(os.Environ(),
@@ -239,14 +234,8 @@ func TestStandinPauseProof(t *testing.T) {
 	// and pause/resume/status have to reach THIS mount.
 	rcAddr := "127.0.0.1:" + freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
-		"--auth-key", accessKey+","+secretKey, "--addr", "127.0.0.1:"+port)
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
+		"--auth-key", accessKey+","+secretKey)
 
 	cfg := testStorage()
 	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
@@ -511,6 +500,78 @@ func waitForPort(t testing.TB, port string) {
 	t.Fatalf("stand-in never listened on %s", port)
 }
 
+// testProcesses is every stand-in server a test started in its own process
+// group, keyed by that group's leader. TestMain's signal handler kills them
+// all, because defers and t.Cleanup do not run when the test binary is sent
+// SIGTERM by a stopping runner (drive#659).
+var testProcesses sync.Map
+
+// processStops makes stopping a stand-in exactly once. Two callers can reach
+// the same *exec.Cmd — its t.Cleanup and TestMain's signal handler — and more
+// than one caller of os.Process.Wait on one process corrupts the wait.
+var processStops sync.Map // *exec.Cmd -> *processStop
+
+type processStop struct {
+	once sync.Once
+	err  error
+}
+
+// stopProcess stops one tracked stand-in once, and never signals a process it
+// has already reaped. The entry stays in processStops for the whole run, so a
+// later sweep on the same *exec.Cmd is a no-op even after the OS has recycled
+// the pid (a stale kill would hit an unrelated process group).
+func stopProcess(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	testProcesses.Delete(cmd.Process.Pid)
+	value, _ := processStops.LoadOrStore(cmd, &processStop{})
+	stop := value.(*processStop)
+	stop.once.Do(func() {
+		stop.err = signalProcessGroup(cmd, 5*time.Second)
+	})
+	return stop.err
+}
+
+// trackTestProcess registers a started stand-in so both t.Cleanup and the
+// shutdown handler stop it. The group kill is what reaches the server and
+// anything it started.
+func trackTestProcess(tb testing.TB, cmd *exec.Cmd) {
+	tb.Helper()
+	testProcesses.Store(cmd.Process.Pid, cmd)
+	tb.Cleanup(func() { stopProcess(cmd) })
+}
+
+// stopTestProcesses stops every stand-in a test is still running.
+func stopTestProcesses() {
+	testProcesses.Range(func(_, value any) bool {
+		stopProcess(value.(*exec.Cmd))
+		return true
+	})
+}
+
+// startRcloneServe starts the stock loopback `rclone serve s3` stand-in for dir
+// on port, in its own process group, and waits until it listens. Every test and
+// benchmark starts the stand-in here, so no call site can forget the cleanup
+// and a signalled run kills the whole group (drive#659).
+func startRcloneServe(tb testing.TB, dir, port string, args ...string) *exec.Cmd {
+	tb.Helper()
+	if _, err := exec.LookPath("rclone"); err != nil {
+		tb.Skip("rclone is not installed")
+	}
+	full := append([]string{"serve", "s3", dir}, args...)
+	full = append(full, "--addr", "127.0.0.1:"+port)
+	serve := exec.Command("rclone", full...)
+	serve.SysProcAttr = ownProcessGroup()
+	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
+	if err := serve.Start(); err != nil {
+		tb.Fatal(err)
+	}
+	trackTestProcess(tb, serve)
+	waitForPort(tb, port)
+	return serve
+}
+
 // waitForMount waits for the mount to appear, on whichever platform the test
 // is running. A plain directory that never becomes a mount point while rclone
 // is still running means the host refuses the mount: FUSE without /dev/fuse on
@@ -669,24 +730,11 @@ func unmountForCleanup(mountDir string) error {
 // serving on this host.
 func standinOn(t *testing.T, root, prefix string) (StorageConfig, *exec.Cmd) {
 	t.Helper()
-	if _, err := exec.LookPath("rclone"); err != nil {
-		t.Skip("rclone is not installed")
-	}
 	cfg := testStorage()
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
 	port := freePort(t)
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
-		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = serve.Process.Kill()
-		_, _ = serve.Process.Wait()
-	})
-	waitForPort(t, port)
+	serve := startRcloneServe(t, filepath.Join(root, "data"), port,
+		"--auth-key", accessKey+","+secretKey, "--log-level", "ERROR")
 	cfg.Endpoint = "http://127.0.0.1:" + port
 	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
 	cfg.Bucket = "bucket"
@@ -1031,7 +1079,27 @@ func driveBin(t testing.TB) string {
 // TestMain removes the built binary's directory after the run, since no single
 // test owns it (any test may have been the one to build it).
 func TestMain(m *testing.M) {
+	// A run stopped by a signal (systemd or the CI runner stopping `go test`)
+	// must take its stand-ins with it: defers and t.Cleanup do not run when the
+	// binary is signalled, so this handler stops every tracked server before
+	// the process leaves (drive#659).
+	stopping := make(chan os.Signal, 1)
+	notifyShutdown(stopping)
+	go func() {
+		<-stopping
+		// A second SIGTERM must be able to end the process at once: give up
+		// the notify channel so the default handler takes over, then run the
+		// bounded cleanup below.
+		signal.Stop(stopping)
+		stopTestProcesses()
+		benchTeardown()
+		if builtBinDir != "" {
+			_ = os.RemoveAll(builtBinDir)
+		}
+		os.Exit(1)
+	}()
 	code := m.Run()
+	stopTestProcesses()
 	// The benchmark harness (bench_test.go) is started once for a -bench run
 	// and owns two child processes, so it stops them here rather than leaving
 	// orphans behind on the host.

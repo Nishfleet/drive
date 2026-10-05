@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../core/billing.js";
+import { createS3Store } from "../core/files.js";
 import {
   BYTES_PER_GB,
   EVENT_ACTIONS,
@@ -2116,6 +2117,87 @@ test("two accounts reconciled twice in a row are idempotent", async () => {
     (row) => `${row.account_id}|${row.hour}|${row.gb_minutes_live}`,
   );
   assert.deepEqual(twice, once, "a re-roll rewrites the same totals, never adds");
+});
+
+test("a version listing that ends on the next page still finds the hide", async () => {
+  const { db } = makeMeteredDB();
+  // The event stream stored the create and never the hide. The provider's
+  // listing is wide enough that the version that replaced this one sits on
+  // the next page, and the key carries an ampersand, so the marker between
+  // the two pages is escaped (drive issue #504). The nightly reconciler walks
+  // the store the product actually uses (src/files.js createS3Store), not a
+  // one-page fixture.
+  const key = "u/acc1/notes&more.md";
+  await storeCreate(db, "acc1", {
+    eventId: "evt-create",
+    b2FileId: "v-old",
+    path: "/u/acc1/notes&more.md",
+    createdAt: at("2026-09-30T00:30:00.000Z"),
+  });
+  await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight()}`).gb_minutes_live,
+    30,
+    "the create's own half hour",
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live,
+    60,
+    "and the whole hour after, billed as if it were still live",
+  );
+
+  const page1 = `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult>
+  <Version><Key>${key}</Key><VersionId>v-old</VersionId><IsLatest>false</IsLatest>
+    <Size>${GB}</Size><LastModified>2026-09-30T00:30:00.000Z</LastModified></Version>
+  <NextKeyMarker>u/acc1/notes&amp;more.md</NextKeyMarker>
+  <NextVersionIdMarker>v-old</NextVersionIdMarker>
+</ListVersionsResult>`;
+  const page2 = `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult>
+  <Version><Key>u/acc1/notes&amp;more.md</Key><VersionId>v-new</VersionId>
+    <IsLatest>true</IsLatest><Size>${GB}</Size>
+    <LastModified>2026-09-30T00:50:00.000Z</LastModified></Version>
+</ListVersionsResult>`;
+  /** @type {{url: string, method: string}[]} */
+  const calls = [];
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    /** @param {string|URL|Request} url @param {RequestInit} [init] */
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), method: init.method ?? "GET" });
+      const started = new URL(String(url)).searchParams.has("version-id-marker");
+      return new Response(started ? page2 : page1, { status: 200 });
+    },
+  });
+
+  const repaired = await reconcileMeter(db, store, at("2026-09-30T03:00:00.000Z"));
+  assert.equal(repaired.hidden, 1, "the hide the second page carried");
+  assert.equal(repaired.inserted, 1, "and the version that caused it");
+  assert.equal(calls.length, 2, "the store fetched a second page with the marker");
+  assert.match(
+    calls[1].url,
+    /key-marker=u%2Facc1%2Fnotes%26more\.md/,
+    "the marker was sent decoded from the escaped listing, then encoded for the URL",
+  );
+  assert.equal(
+    db.tables.file_versions.get("acc1|v-old").hidden_at,
+    at("2026-09-30T00:50:00.000Z"),
+    "a hide on the next page closes the row on the first",
+  );
+
+  await runMeterCron(db, at("2026-09-30T03:05:00.000Z"));
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight()}`).gb_minutes_live,
+    30,
+    "the 30 minutes the key was held, the two versions merged into one holding",
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live,
+    60,
+    "only the replacement bills the hour after its start, not both versions",
+  );
 });
 
 test("the reconciler fails loudly without a database or a version listing", async () => {
