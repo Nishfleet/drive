@@ -351,6 +351,18 @@ main {
   white-space: nowrap;
 }
 
+/* The legal links every page footer carries (drive#523). */
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+
+.legal-links a {
+  color: inherit;
+}
+
 /* The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
    use and support (src/legal.js). They share one reading column, declared
    here once so the five pages cannot drift. */
@@ -371,8 +383,7 @@ body.policy h1 {
   margin: 32px 0 12px;
 }
 
-body.policy main a,
-body.policy .footer a {
+body.policy main a {
   color: var(--accent);
 }
 
@@ -445,16 +456,4 @@ mark.to-fill {
   color: var(--ink);
   outline: 2px dashed var(--drive-orange-ink);
   padding: 0 4px;
-}
-
-/* The legal links every page footer carries (drive#523). */
-.legal-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 18px;
-  font-size: 15px;
-}
-
-.legal-links a {
-  color: inherit;
 }
