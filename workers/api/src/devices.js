@@ -474,18 +474,13 @@ export function createD1DeviceStore(db, options = {}) {
   /**
    * Closed accounts whose files are due to be deleted (drive#522).
    *
-   * Only accounts whose required notices actually landed are returned: the
-   * day-0 receipt must have been sent, or deleting the files would destroy
-   * someone's data without ever telling them the account was closing. The
-   * reminder is not required to purge, because a failed reminder is a
-   * delivery problem the receipt pass already retries — blocking a purge on
-   * it would keep data alive forever behind a mail outage.
-   *
    * Both notices have to have gone out before the files go. The day-0 receipt
    * says the account is closed, and the day-25 reminder says the files are
    * about to be deleted; the reminder is the one somebody needs in order to
    * have a chance to change their mind, so a missing reminder blocks the
-   * purge just like a missing receipt does.
+   * purge just like a missing receipt does. A failed reminder is retried by
+   * the reminder pass, so a mail outage delays the purge rather than losing
+   * the chance to cancel.
    * @param {number} atSeconds
    */
   async function listDuePurge(atSeconds) {

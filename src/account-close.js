@@ -92,15 +92,10 @@ export function purgeOnDate(closedAtSeconds) {
 }
 
 /**
- * The day an account's files were deleted, in the same words purgeOnDate uses
- * for the day they will be: "3 Nov" (drive#522). One formatter for both, so
- * the day-0 receipt's "your files go on X" and the purge's "deleted on X" can
- * never read as two different calendars.
- * @param {number} atSeconds
- * @returns {string}
- */
-/**
- * The short date a purge happened on, from the instant the purge ran.
+ * The day an account's files were deleted, from the instant the purge ran, in
+ * the same "3 Nov" words purgeOnDate uses for the day they will be (drive#522).
+ * One formatter for both, so the receipt's "your files go on X" and the purge
+ * notice's "deleted on X" never read as two different calendars.
  *
  * Not the close date plus the window: the notice says the files are gone, and
  * they are gone as of the moment this was called. Naming the window's end
@@ -108,6 +103,7 @@ export function purgeOnDate(closedAtSeconds) {
  * cron ran late, which on a retrying purge it does.
  *
  * @param {number} atSeconds
+ * @returns {string}
  */
 export function purgedOnDate(atSeconds) {
   return purgeOnDate(atSeconds);
@@ -293,10 +289,10 @@ export async function purgeAccountRecords(db, accountId) {
  * next run. Each account is now its own try/catch and the pass always
  * finishes, so one broken row cannot delay anyone else by a night.
  *
- * The purge only runs for accounts whose day-0 receipt actually landed
- * (listDuePurge), and the ones it skipped for want of a receipt are named at
- * error level: deleting a person's files without ever having told them the
- * account was closing is the one outcome this pass must not produce quietly.
+ * The purge only runs for accounts whose day-0 receipt and day-25 reminder
+ * both landed (listDuePurge), and the ones it skipped for want of either
+ * notice are named at error level: deleting a person's files without ever
+ * having warned them is the one outcome this pass must not produce quietly.
  * @param {{
  *   db: D1Database,
  *   devices: DeviceStore,
@@ -314,7 +310,6 @@ export async function runAccountCloseCron(input) {
   const dueReceipt = await input.devices.listDueCloseMail();
   const dueReminder = await input.devices.listDueReminder(at - CLOSE_REMINDER_DAYS * DAY_SECONDS);
   const purgeBefore = at - CLOSE_GRACE_DAYS * DAY_SECONDS;
-  let duePurge = [];
   let mailed = 0;
   let mailFailures = 0;
   for (const row of dueReceipt) {
@@ -364,6 +359,13 @@ export async function runAccountCloseCron(input) {
         console.error(`account ${row.id} is due a close reminder but has no closed_at`);
         continue;
       }
+      // A reminder the mailer dropped past day 25 lands here as a retry, and
+      // by day 30 the window is already over. The copy then has to say the
+      // files are due, not "in 5 days on <a date already past>": the purge
+      // runs later this same pass, and a reminder that misstates the date is
+      // worse than none (drive#522). The ordinary case, day 25 to 29, keeps
+      // the "in N days" copy.
+      const dueNow = row.closedAt + CLOSE_GRACE_DAYS * DAY_SECONDS <= at;
       const sent = await sendCloseMail(
         input.email,
         input.mailFrom,
@@ -373,6 +375,7 @@ export async function runAccountCloseCron(input) {
           graceDays: CLOSE_GRACE_DAYS,
           reminderDays: CLOSE_REMINDER_DAYS,
           purgeOn: purgeOnDate(row.closedAt),
+          due: dueNow,
         },
       );
       if (!sent) {
@@ -400,7 +403,7 @@ export async function runAccountCloseCron(input) {
   // that account for a whole day on the strength of a notice it had not been
   // sent yet, which is the delay the "purge only accounts whose notices were
   // sent" rule is meant to prevent, not create.
-  duePurge = await input.devices.listDuePurge(purgeBefore);
+  const duePurge = await input.devices.listDuePurge(purgeBefore);
   const blockedPurge = await input.devices.listBlockedPurge(purgeBefore);
   for (const row of blockedPurge) {
     const missing = [

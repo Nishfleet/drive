@@ -1204,7 +1204,7 @@ export default {
         throw new Error("the account close cron needs the drive database");
       }
       const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-      await runAccountCloseCron({
+      const close = await runAccountCloseCron({
         db: env.DRIVE_DB,
         devices: createD1DeviceStore(env.DRIVE_DB),
         store,
@@ -1212,6 +1212,21 @@ export default {
         mailFrom: secrets.MAIL_FROM ?? "",
         now: event.scheduledTime,
       });
+      // The counters the pass already returns are the operator's one line for
+      // it (drive#522). A mail outage means a receipt or a deletion notice did
+      // not go out and a purge may have been skipped; those must be visible in
+      // the cron log, not inferable only from the per-send lines above.
+      if (close.mailFailures > 0 || close.purgeFailures > 0 || close.purgeSkipped > 0) {
+        console.error(
+          `account close: mailed=${close.mailed} mailFailures=${close.mailFailures} ` +
+            `reminded=${close.reminded} purged=${close.purged} ` +
+            `purgeFailures=${close.purgeFailures} purgeSkipped=${close.purgeSkipped}`,
+        );
+      } else {
+        console.log(
+          `account close: mailed=${close.mailed} reminded=${close.reminded} purged=${close.purged}`,
+        );
+      }
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

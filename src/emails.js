@@ -30,6 +30,15 @@ const PORTAL_URL = absoluteUrl("/api/billing/portal");
 // place a person can act. Same origin the rest of the product links through
 // absoluteUrl, so a change of SITE.origin moves every email with it.
 const HOME_URL = absoluteUrl("/");
+// The usage page is where a person cancels a close, so the close-lane emails
+// link there instead of opening a drive that is closed or already gone.
+const USAGE_URL = absoluteUrl("/usage.html");
+// The default footer link every kind gets unless it names its own.
+const HOME_LINK = Object.freeze({ label: "Open your drive", url: HOME_URL });
+const USAGE_LINK = Object.freeze({
+  label: "Manage your account or cancel closing",
+  url: USAGE_URL,
+});
 
 // The sender name every drive email carries. The address itself is a
 // deployment setting (env.MAIL_FROM), because drive has no sending domain of
@@ -344,7 +353,7 @@ export function accountClosedTemplate(data = {}) {
     `<p>They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.</p>`,
     "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing.</p>",
   ];
-  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
 
 // ---------------------------------------------------------------------------
@@ -357,21 +366,31 @@ export function accountCloseReminderTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
+  // `due` is the late retry: a reminder the mailer dropped between day 25 and
+  // day 29 is re-sent on day 30 or later, when the old "in 5 days, on <date>"
+  // copy would name a date already gone and the purge runs in the same pass.
+  // The caller sets it from the real remaining window (src/account-close.js).
+  const due = data.due === true;
   const left = graceDays - reminderDays;
-  const subject = `Your Drive files will be deleted in ${left} days`;
+  const subject = due
+    ? "Your Drive files are due to be deleted"
+    : `Your Drive files will be deleted in ${left} days`;
+  const first = due
+    ? `Your Drive files are due to be deleted: the ${graceDays}-day window has passed.`
+    : `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`;
   const lines = [
-    `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`,
+    first,
     "",
     "Your account is closed and every key is already revoked.",
     "",
     "You can still cancel: open the usage page, type your email, and choose Cancel closing.",
   ];
   const html_lines = [
-    `<p>Your Drive files will be deleted in ${left} days, on ${purgeOn}.</p>`,
+    `<p>${first}</p>`,
     "<p>Your account is closed and every key is already revoked.</p>",
     "<p>You can still cancel: open the usage page, type your email, and choose Cancel closing.</p>",
   ];
-  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +401,9 @@ export function accountCloseReminderTemplate(data = {}) {
  * deletes its objects: it says the files are gone, so a person who never
  * cancelled is not left wondering whether the 30 days passed in silence.
  * There is no link to cancel — the window has closed — so the copy says what
- * is left (the account stays closed) and where to write if it was a mistake.
+ * is left (the account stays closed) and that the deletion cannot be undone.
+ * The footer link is the site, not the drive, because there is no drive to
+ * open; the reply address still reaches a person.
  * `graceDays` is the window the close module actually applied (the same
  * CLOSE_GRACE_DAYS it stamps into `closed_at`), so the email and the delete
  * cannot disagree about how long the files were kept.
@@ -397,14 +418,20 @@ export function filesDeletedTemplate(data = {}) {
     "",
     `We deleted them on ${purgedOn}, ${graceDays} days after you closed the account. This account stays closed.`,
     "",
-    "Nothing else was deleted. If you think this was a mistake, reply to this email and we will look.",
+    "Nothing else was deleted. This deletion cannot be undone.",
   ];
   const html_lines = [
     "<p>Your Drive files have been deleted.</p>",
     `<p>We deleted them on ${purgedOn}, ${graceDays} days after you closed the account. This account stays closed.</p>`,
-    "<p>Nothing else was deleted. If you think this was a mistake, reply to this email and we will look.</p>",
+    "<p>Nothing else was deleted. This deletion cannot be undone.</p>",
   ];
-  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+  return finish({
+    subject,
+    lines,
+    html_lines,
+    replyTo: data.replyTo,
+    link: { label: "Visit Drive", url: HOME_URL },
+  });
 }
 
 /**
@@ -435,27 +462,29 @@ function requireReplyTo(value) {
 // every send reads.
 //
 // The link and the reply address are here rather than in each template
-// (drive#522): ten templates each spelling its own footer is ten places for
-// a template to ship with a dead end, and the two facts — where a person goes
-// next, and where a reply lands — are the same for all of them. `finish` is
-// the only way a template returns, so this cannot be forgotten. `replyTo` is
+// (drive#522): eleven templates each spelling its own footer is eleven places
+// for a template to ship with a dead end, and the two facts — where a person
+// goes next, and where a reply lands — are the same for all of them. `finish`
+// is the only way a template returns, so this cannot be forgotten. The link
+// defaults to the home page and the close-lane templates pass the usage page
+// instead, because a closed account has no drive to open. `replyTo` is
 // supplied by sendEmail from the deployment's own sending domain.
 // ---------------------------------------------------------------------------
 /**
- * @param {{subject: string, lines: string[], html_lines: string[], replyTo: unknown, saved?: string|null}} parts
+ * @param {{subject: string, lines: string[], html_lines: string[], replyTo: unknown, saved?: string|null, link?: {label: string, url: string}}} parts
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-function finish({ subject, lines, html_lines, replyTo, saved = null }) {
+function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME_LINK }) {
   if (typeof replyTo !== "string" || replyTo === "") {
     throw new TypeError(`the ${subject} email needs a reply address`);
   }
-  // Validated here, once, so the eleven templates that pass it straight
-  // through cannot print an unvalidated value into a header or a tag.
+  // Validated here, once, so the templates that pass it straight through
+  // cannot print an unvalidated value into a header or a tag.
   const address = requireReplyTo(replyTo);
   const text = [
     ...lines,
     "",
-    `Open your drive: ${HOME_URL}`,
+    `${link.label}: ${link.url}`,
     "",
     SIGN_OFF,
     "",
@@ -467,7 +496,7 @@ function finish({ subject, lines, html_lines, replyTo, saved = null }) {
     htmlLines.push(line);
   }
   htmlLines.push(
-    `<p>Open your drive: <a href="${HOME_URL}">${HOME_URL}</a></p>`,
+    `<p>${link.label}: <a href="${link.url}">${link.url}</a></p>`,
     `<p>${SIGN_OFF}</p>`,
     `<p>Reply to this email and it reaches us: ${address}</p>`,
     "</body>",

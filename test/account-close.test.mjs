@@ -627,11 +627,13 @@ test("a first cron at day 30 still sends the reminder before it deletes the file
   });
   assert.equal(result.reminded, 1);
   assert.equal(result.purged, 1);
-  // Two mails now, not one: the day-25 reminder, then the "your files are
+  // Two mails now, not one: the reminder, then the "your files are
   // deleted" notice the purge sends once the objects are actually gone
   // (drive#522).
   assert.equal(world.email.sent.length, 2);
-  assert.match(/** @type {{text: string}} */ (world.email.sent[0]).text, /5 days/);
+  // The first cron reaches the day-30 account, so the reminder is the late
+  // copy: "due to be deleted", never a false "in 5 days" on a past date.
+  assert.match(/** @type {{text: string}} */ (world.email.sent[0]).text, /due to be deleted/);
   assert.match(/** @type {{text: string}} */ (world.email.sent[1]).text, /deleted/i);
   assert.equal(await scoped.read("/late.txt"), null);
 });
@@ -860,9 +862,9 @@ test("one account's purge failure leaves the next account's purge and mail intac
   // purge sends no deletion notice, because nothing was deleted for A.
   assert.equal(world.email.sent.length, 3);
   const reminders = world.email.sent.filter((mail) =>
-    /5 days/.test(/** @type {{text: string}} */ (mail).text),
+    /due to be deleted/.test(/** @type {{text: string}} */ (mail).text),
   );
-  assert.equal(reminders.length, 2, "both accounts got their day-25 reminder");
+  assert.equal(reminders.length, 2, "both accounts got their reminder before the purge");
   const deletions = world.email.sent.filter(
     (mail) =>
       /** @type {{subject: string}} */ (mail).subject === "Your Drive files have been deleted",
@@ -1062,7 +1064,9 @@ test("the purge waits for the close receipt, and a skipped purge is named", asyn
   const subjects = world.email.sent.map((mail) => /** @type {{subject: string}} */ (mail).subject);
   assert.deepEqual(subjects, [
     "Your Drive account is closed",
-    "Your Drive files will be deleted in 5 days",
+    // The reminder retries on day 30, so the window has passed and the copy
+    // says due, not a false "in 5 days" on a date that already went by.
+    "Your Drive files are due to be deleted",
     "Your Drive files have been deleted",
   ]);
 

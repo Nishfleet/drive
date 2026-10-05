@@ -18,10 +18,12 @@ import {
   sendEmail,
 } from "../src/email-send.js";
 import {
+  accountCloseReminderTemplate,
   capWarningTemplate,
   DEFAULT_CAP_USD,
   EMAIL_KINDS,
   FROM_NAME,
+  filesDeletedTemplate,
   monthlyReceiptTemplate,
   paymentFailedTemplate,
   RATE_USD_PER_GB,
@@ -134,6 +136,58 @@ test("every email carries one sign-off, in both parts", () => {
     assert.equal(text.split("-- Drive").length - 1, 1, `${kind} text sign-off`);
     assert.equal(html.split("-- Drive").length - 1, 1, `${kind} html sign-off`);
   }
+});
+
+test("every kind carries an absolute footer link and the reply address", () => {
+  // Bullet 5 of drive#522: no template may ship without a way back to the
+  // site and a way to reach a person. The link is absolute, because a mail
+  // client has no page to resolve a relative one against.
+  for (const kind of EMAIL_KINDS) {
+    const { text, html } = renderEmail(kind, dataFor(kind));
+    assert.match(text, /https:\/\/[^\s]+/, `${kind} needs an absolute text link`);
+    assert.match(html, /href="https:\/\/[^"]+"/, `${kind} needs an absolute HTML link`);
+    assert.ok(text.includes(REPLY_TO), `${kind} needs the reply address in text`);
+    assert.ok(html.includes(REPLY_TO), `${kind} needs the reply address in HTML`);
+  }
+});
+
+test("the reminder names the real window, and due once the window has passed", () => {
+  // The day-25 reminder counts down. A late retry (day 30 or later) must not
+  // claim "in 5 days" on a date that already went by, because the purge runs
+  // in that same pass (drive#522).
+  const onTime = accountCloseReminderTemplate({
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov",
+    replyTo: REPLY_TO,
+  });
+  assert.equal(onTime.subject, "Your Drive files will be deleted in 5 days");
+  assert.match(onTime.text, /in 5 days, on 3 Nov/);
+
+  const late = accountCloseReminderTemplate({
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov",
+    due: true,
+    replyTo: REPLY_TO,
+  });
+  assert.equal(late.subject, "Your Drive files are due to be deleted");
+  assert.match(late.text, /due to be deleted/);
+  assert.doesNotMatch(late.text, /in 5 days/);
+});
+
+test("the close lane links to the usage page, and the deletion notice cannot be undone", () => {
+  // A closed account has no drive to open, so the close-lane footer link goes
+  // to the usage page instead of the default "Open your drive" (drive#522).
+  for (const kind of ["account-closed", "account-close-reminder"]) {
+    const { text } = renderEmail(kind, dataFor(kind));
+    assert.match(text, /\/usage\.html/, `${kind} links to the usage page`);
+    assert.doesNotMatch(text, /Open your drive/, `${kind} does not open a shut drive`);
+  }
+  const deleted = filesDeletedTemplate({ purgedOn: "3 Nov", graceDays: 30, replyTo: REPLY_TO });
+  assert.match(deleted.text, /Nothing else was deleted\. This deletion cannot be undone\./);
+  assert.doesNotMatch(deleted.text, /we will look/);
+  assert.match(deleted.text, /https:\/\/[^\s]+/, "the deletion notice still has a link");
 });
 
 // ---------------------------------------------------------------------------
