@@ -236,10 +236,11 @@ export default defineConfig({
       // /api/request each get their own bound, on top of the per-account cap
       // of 50 open links the handlers enforce. 30 a minute per IP is far
       // above an owner clicking "Share" and far below a script minting tokens
-      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
+      // to walk. Namespaces 1011/1010 continue the 1001–1009 series (1009 is
+      // the health limiter above, which drive#539 took first); a reused
       // namespace fails the deploy with 10021.
       SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1011",
         simple: { limit: 30, period: 60 },
       }),
       REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
