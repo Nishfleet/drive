@@ -1047,7 +1047,7 @@ export default {
       // other. Its own per-account catches mean only a whole-cron failure
       // (D1 down) rejects here, and a failed trigger is the honest signal
       // for that: the next night retries everything it did not finish.
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      await reconcileMeter(env.METER_DB, files, event.scheduledTime);
       // Retention (drive issue #564): the reconciler has finished its
       // repairs, so the prune sees the row set the provider listings have
       // already agreed with, and a version the provider still lists is never
