@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
@@ -28,7 +27,7 @@ import {
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { handleSendEmailRequest } from "./email-send.js";
+import { handleSendEmailRequest, isSameOriginRequest } from "./email-send.js";
 import {
   createMemoryStore,
   createS3Store,
@@ -440,8 +439,9 @@ function capStateFor(_accountId) {
 // It is registered on "/api/*" alone and its own isPublic() check skips the
 // public routes declared above, so the two public POST routes keep the repo's
 // own same-origin rule (src/waitlist.js, src/email-send.js) and the token
-// lanes keep their tokens. The browser-facing write lane under /api/files
-// additionally takes Hono's built-in csrf() middleware below.
+// lanes keep their tokens. One CSRF middleware on /api/* then covers every
+// other write: the two public POSTs keep their handler copies, and every
+// other non-GET is refused here before the handler runs.
 //
 // @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
 async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
@@ -463,29 +463,36 @@ async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hon
   await next();
 }
 
-// Hono's own csrf() refuses a request with neither Origin nor Sec-Fetch-Site
-// before a custom origin/secFetchSite handler is consulted (its undefined
-// short-circuit returns false), which would refuse curl and the Go CLI — the
-// callers the repo's same-origin rule deliberately lets through, because a
-// caller that sends no browser header is not a browser and the account gate
-// is what holds it (src/email-send.js isSameOriginRequest, load-bearing in
-// src/files.js for the three state-changing routes). So the built-in
-// middleware runs only when a browser evidence header is present; a
-// non-browser request falls straight through to the handler, whose own
-// same-origin check answers with the product's sentence rather than a bare
-// "Forbidden". The browser case is still Hono's middleware deciding.
-const browserCsrf = csrf({
-  origin: (origin, c) => origin === new URL(c.req.url).origin,
-  secFetchSite: (site) => site === "same-origin",
-});
+// One CSRF rule for every non-GET /api/* route. The check is the repo's
+// same-origin function (src/email-send.js): a caller with no Origin and no
+// Sec-Fetch-Site (curl, the Go CLI) is not a browser, so it passes and the
+// account gate is what holds it; a browser that names another origin, or
+// Origin: null without Sec-Fetch-Site: same-origin, is refused with the
+// message table's cross-site words. Hono's built-in csrf() only inspects
+// form content-types, so a JSON POST would slip past it — the copies this
+// replaced were already covering that, and this middleware is that same
+// rule once, in front of every write.
+//
+// The two public POSTs keep their own handler copies (waitlist sign-up and
+// the token-gated send lane) and are skipped here so those sentences stay
+// the product's, not a second generic 403.
+const CSRF_EXEMPT_PATHS = new Set(["/api/waitlist", SEND_EMAIL_PATH]);
 /**
- * Hono's csrf(), run only when a browser evidence header is present.
+ * Same-origin CSRF on every write except the two public POSTs that keep
+ * their own handler copies.
  * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
  */
-const csrfWhenBrowser = (c, next) =>
-  c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
-    ? next()
-    : browserCsrf(c, next);
+const csrfWhenBrowser = async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
+    return next();
+  }
+  const path = c.req.path.replace(/\/+$/, "") || "/";
+  if (CSRF_EXEMPT_PATHS.has(path)) return next();
+  if (!isSameOriginRequest(c.req.raw)) {
+    return c.json({ error: failureMessage("cross-site") }, 403);
+  }
+  return next();
+};
 
 /** @param {DriveContext} c */
 const filesHandler = (c) => {
@@ -538,19 +545,13 @@ export function createApp() {
   // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
 
-  // Same-origin / CSRF protection on the browser-facing write lane, with
-  // Hono's built-in csrf() middleware. It is registered on the account-gated
-  // files lane so an anonymous request is its 401, not a 403: the gate is the
-  // outer rule. It covers exactly the requests a cross-site page can forge —
-  // a form-encoded or multipart POST to the account routes — and reads no
-  // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
-  // (curl, the Go CLI) is not a browser, so it passes this check and the
-  // account gate is what holds it.
-  app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
-  app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
-  app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
-  app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
-  app.use(AUTO_TOPUP_ENDPOINT, csrfWhenBrowser);
+  // Same-origin / CSRF protection on every non-GET /api/* route except the
+  // two public POSTs that keep their handler copies. Registered after the
+  // account gate so an anonymous request is its 401, not a 403: the gate is
+  // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
+  // Go CLI) is not a browser, so it passes this check and the account gate
+  // is what holds it.
+  app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -832,7 +833,9 @@ export function createApp() {
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
-    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env)),
+    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env), {
+      ipLimiter: c.env.SHARE_DOWNLOAD_RATE_LIMITER,
+    }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
     handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
