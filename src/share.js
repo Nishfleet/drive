@@ -433,6 +433,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -658,6 +659,17 @@ export function createD1LinkStore(db) {
             "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes " +
             `RETURNING ${REQUEST_COLUMNS}`,
           [size, token, size],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
+      async releaseUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = MAX(upload_count - 1, 0), " +
+            "upload_bytes = MAX(upload_bytes - ?1, 0) " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token],
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
@@ -1317,17 +1329,55 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  // This stat is the ordinary-duplicate answer: a drop of a name that is
+  // already stored gets the same 409 on every backend, before any bytes are
+  // reserved or written. It is NOT the race answer — the gap between this
+  // check and the write below is where drive#644's race lived, two uploads
+  // both seeing a free name and both landing. The create-only write is what
+  // decides the winner; on a backend whose PUT honors If-None-Match the
+  // race closes in the storage itself, and on one that does not, this
+  // pre-check still catches every duplicate that is not mid-race. The one
+  // observable a non-honoring backend leaves open: a true mid-race pair both
+  // answer 201, both reservations stay counted (conservative — the link
+  // fills sooner, never past its cap), and the last PUT's bytes stand, which
+  // the provider's hide-not-delete versioning keeps recoverable.
+  if ((await scoped.stat(path)) !== null) {
+    return json({ error: failureMessage("upload-name-taken") }, 409);
+  }
   const reserved = await links.requests.addUpload(checked.token, sized.bytes);
   if (!reserved) {
     return json({ error: failureMessage("upload-link-full") }, 413);
   }
+  // The create-only write, not a bare write: two uploads that got past the
+  // check above within the same instant cannot both win — the store itself
+  // decides whether the key was still free when the bytes arrived. The bytes
+  // are reserved first so a stranger cannot outrun the link total; a lost
+  // race or a failed write releases them, the same release either way.
+  let won;
   try {
-    // sized.body is a Uint8Array (or empty). FileStore.write already accepts
-    // any BodyInit: the memory store does `new Response(body).arrayBuffer()`,
-    // and the S3 stand-in PUTs the same body fetch accepts.
-    await scoped.write(path, sized.body, contentType);
+    // sized.body is a Uint8Array (or empty). FileStore.writeIfAbsent already
+    // accepts any BodyInit: the memory store does `new Response(body)
+    // .arrayBuffer()`, and the S3 stand-in PUTs the same body fetch accepts.
+    won = await scoped.writeIfAbsent(path, sized.body, contentType);
   } catch (cause) {
+    await links.requests.releaseUpload(checked.token, sized.bytes);
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
+  }
+  if (!won) {
+    // The name was taken while this upload was in flight: the winner's bytes
+    // stand, this upload stored nothing, and its reservation comes back. A
+    // release that itself fails is a 500 with the cause logged, not a clean
+    // 409 that hides a counter now reading fuller than the link's truth.
+    try {
+      await links.requests.releaseUpload(checked.token, sized.bytes);
+    } catch (cause) {
+      // No token in the log: it is a stranger's capability, and the log
+      // outlives the link. The folder and the drop's size name the event.
+      return serverFailure(
+        `releasing a lost-race reservation for a ${sized.bytes}-byte drop into ${record.folder}: ${String(cause)}`,
+      );
+    }
+    return json({ error: failureMessage("upload-name-taken") }, 409);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

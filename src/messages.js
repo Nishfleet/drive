@@ -178,6 +178,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
   }),
+  // An upload-request drop named a file the owner already has. Overwriting
+  // that file from a public link is the bug drive#518 closes.
+  "upload-name-taken": Object.freeze({
+    what: "A file with that name is already in this folder.",
+    next: "Choose another name and drop the file again.",
+  }),
   // The branch this call named does not exist on this drive.
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",

@@ -724,6 +724,9 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     write: async () => {
       throw new Error("storage write failed with 503");
     },
+    writeIfAbsent: async () => {
+      throw new Error("storage write failed with 503");
+    },
     remove: async () => {},
     removeBatch: async () => {
       throw new Error("storage batch delete failed with 503");
@@ -986,6 +989,41 @@ test("an unsigned write sends the stream as it is, without buffering it", async 
   assert.equal(sent, stream);
 });
 
+test("a missing bucket answers an empty listing, not a 500 (drive#540)", async () => {
+  // The account's bucket is created at its sign-in verify (drive#540), and an
+  // account from before that existed has none until a key mint makes one. The
+  // Files page reads it as an empty folder: S3 answers a missing bucket 404
+  // (NoSuchBucket) and a missing folder 200 with no keys, so a 404 on a list
+  // is always the bucket.
+  const { createS3Store } = await import("../src/files.js");
+  const notFound = `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async () => new Response(notFound, { status: 404 });
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl,
+  });
+  assert.deepEqual(await store.list("u/acct-1"), []);
+  assert.deepEqual(await store.listPage("u/acct-1"), { entries: [], nextCursor: null });
+  assert.deepEqual(await store.listAll("u/acct-1"), []);
+  // A non-404 refusal is still named, never read as empty.
+  const refused = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl: async () =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`,
+        { status: 403 },
+      ),
+  });
+  await assert.rejects(refused.list("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listPage("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
+});
+
 test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
@@ -1084,6 +1122,109 @@ test("the Files page names the same bucket the key provider mints into", () => {
   assert.equal(storageBucketForKey("u/v7Bp7HwejiE6XHOT/photos/x.jpg"), "drv-v7bp7hwejie6xhot");
   assert.throws(() => storageBucketForKey("note.txt"), /u\/<accountId>/);
   assert.throws(() => storageBucketForKey("../x"), /u\/<accountId>/);
+});
+
+test("the S3 store's create-only write sends If-None-Match and reads 412 as the one loss", async () => {
+  // drive#644. The create-only PUT is the stock conditional write: a request
+  // that carries If-None-Match: *, answered 412 Precondition Failed by an
+  // endpoint that enforces it when the key is already there. The fake storage
+  // answers both halves: the first call creates, the second is refused.
+  /** @type {{method: string, key: string, headers: Record<string, string>}[]} */
+  const seen = [];
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    /** @type {Record<string, string>} */
+    const headers = {};
+    for (const [name, value] of Object.entries(init.headers ?? {})) {
+      headers[String(name).toLowerCase()] = String(value);
+    }
+    seen.push({ method, key, headers });
+    if (method === "PUT") {
+      if (objects.has(key)) {
+        return new Response(
+          '<?xml version="1.0" encoding="UTF-8"?><Error><Code>PreconditionFailed</Code>' +
+            "<Message>At least one of the pre-conditions you specified did not hold</Message></Error>",
+          { status: 412 },
+        );
+      }
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+  const s3 = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+
+  // The absent key is created, and the header rides the PUT.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(seen[0].headers["if-none-match"], "*");
+  assert.equal(seen[0].headers["content-type"], "text/plain");
+
+  // A key that is already there answers false, not an error.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), false);
+  const readBack = await s3.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the winning write is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "first");
+
+  // A storage failure is still a failure, not a silent loss.
+  const failing = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response("boom", { status: 500 }),
+  });
+  await assert.rejects(
+    () => failing.writeIfAbsent("u/acct-1/x.txt", "b", "text/plain"),
+    /storage write failed with 500/,
+  );
+});
+
+test("an S3 endpoint that ignores If-None-Match overwrites, and that is what the store reports", async () => {
+  // drive#644, the measured half of the contract. `rclone serve s3` v1.75.1
+  // answers 200 to a PUT with If-None-Match: * on a key that is already there
+  // (measured on the build host, 2026-10-05), so on such an endpoint the
+  // header cannot detect the loss and this store answers `true` for a create
+  // that was in fact an overwrite. That is documented on the store and it is
+  // why the caller pre-checks the name first; it is pinned here so a future
+  // change cannot quietly turn the degraded path into a promised one.
+  /** @type {Map<string, string>} */
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    if (init.method === "PUT") {
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    return stored === undefined
+      ? new Response("no key", { status: 404 })
+      : new Response(stored, { status: 200, headers: { "content-type": "text/plain" } });
+  };
+  const ignoring = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), true);
+  const readBack = await ignoring.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the overwrite is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "second");
 });
 
 /**
