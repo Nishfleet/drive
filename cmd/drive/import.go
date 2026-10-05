@@ -37,7 +37,7 @@ func (h cacheHeadroom) Free() int64 { return h.CapBytes - h.UsedBytes }
 // because the fill loop's own cap still bounds the cache. It is a variable so
 // a test can prove the stop without a live mount.
 var importCacheHeadroom = func(home string) (cacheHeadroom, bool, error) {
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		return cacheHeadroom{}, false, err
 	}
