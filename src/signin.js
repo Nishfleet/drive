@@ -65,7 +65,6 @@ import {
   sessionAccount,
 } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
-import { foundingOfferIsOpen } from "./founding.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
@@ -148,7 +147,6 @@ export const SIGNIN_COPY = Object.freeze({
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
   noMinimumLine: PRICE.noMinimumLine,
-  foundingLine: PRICE.foundingLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
   emailButton: "Email me a link",
@@ -326,7 +324,7 @@ function readStart(body) {
  * Better Auth settings (src/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
- * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit, FOUNDING_OFFER_OPEN?: string}} SigninEnv
+ * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
  */
 
 /**
@@ -512,13 +510,12 @@ export async function handleSigninRequest(request, env) {
       "prepare" in driveDb
     ) {
       // The user row does not exist until the link is followed. The hold row
-      // (id `hold:<email>`) is the live account for uniqueness and the
-      // founding reservation until verify remaps it.
+      // (id `hold:<email>`) is the live account for the card-fingerprint
+      // check until verify remaps it.
       const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
         accountId: pendingCardAccountId(email),
         email,
         fingerprint,
-        offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
       });
       if ("error" in claimed) {
         return json({ error: claimed.error }, 400);
@@ -642,7 +639,6 @@ export async function handleSigninLinkVerify(request, env) {
         await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
           email: account.email,
           accountId: account.id,
-          offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
         });
       } catch (cause) {
         console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);

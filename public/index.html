@@ -1504,86 +1504,6 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* ---- founding members ----------------------------------------------------------- */
-
-.member {
-  background: var(--drive-orange);
-}
-
-.mem-grid {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
-  gap: 64px;
-  align-items: center;
-}
-
-.member .eyebrow,
-.member .sub {
-  color: var(--drive-ink);
-}
-
-.member .big .o {
-  display: inline-block;
-  padding: 0.04em 0.1em 0;
-  line-height: 0.9;
-  background: var(--drive-ink);
-  color: var(--drive-paper);
-}
-
-.founding {
-  margin: 14px 0 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.mem-list {
-  margin: 30px 0 0;
-  padding: 0;
-  list-style: none;
-  border-top: 2px solid var(--drive-ink);
-}
-
-.mem-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 0;
-  border-bottom: 1px solid rgba(27, 23, 18, 0.3);
-  font-weight: 600;
-}
-
-.mem-list b {
-  font-family: var(--font-code);
-  white-space: nowrap;
-}
-
-.five {
-  display: flex;
-  align-items: flex-start;
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: clamp(170px, 22vw, 320px);
-  line-height: 0.78;
-  letter-spacing: -0.03em;
-}
-
-.five sup {
-  margin-top: 0.06em;
-  font-size: 0.36em;
-}
-
-.five small {
-  align-self: flex-end;
-  max-width: 7em;
-  margin: 0 0 0.5em 12px;
-  font-family: var(--font-body);
-  font-weight: 600;
-  font-size: 22px;
-  line-height: 1.15;
-  letter-spacing: 0;
-}
-
 /* ---- FAQ and Business ----------------------------------------------------- */
 
 .faq-grid {
@@ -1809,7 +1729,6 @@ details p {
   .calc,
   .ex-grid,
   .cap-grid,
-  .mem-grid,
   .faq-grid,
   .business,
   .demos-head {
@@ -1979,10 +1898,6 @@ details p {
     align-items: flex-start;
   }
 
-  .five {
-    font-size: 140px;
-  }
-
   .field-row input,
   .field-row button {
     flex: 1 1 100%;
@@ -2073,8 +1988,8 @@ details p {
 
       <div class="ticker" aria-hidden="true">
         <div class="ticker-track">
-          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>founding members pay half</span><span>agents can never delete</span><span>macOS + Linux</span>
-          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>founding members pay half</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>agents can never delete</span><span>macOS + Linux</span>
         </div>
       </div>
     </section>
@@ -2251,23 +2166,6 @@ details p {
             <p class="r-foot">NO MINIMUM &middot; NO PLANS &middot; MACOS + LINUX</p>
           </article>
         </div>
-      </div>
-    </section>
-
-    <section class="s member" id="founding" aria-labelledby="founding-heading">
-      <div class="wrap mem-grid">
-        <div>
-          <p class="eyebrow">Founding members</p>
-          <h2 class="big" id="founding-heading"><span class="o">Half</span> price<br>for good.</h2>
-          <p class="sub">Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.</p>
-          <ul class="mem-list">
-            <li><span>Storage</span><b>1¢ a GB</b></li>
-            <li><span>Never more than</span><b>$5 per TB</b></li>
-            <li><span>How long</span><b>for good</b></li>
-          </ul>
-          <div class="cta-row"><a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a></div>
-        </div>
-        <p class="five">1¢<small>a GB, for good</small></p>
       </div>
     </section>
 

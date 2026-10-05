@@ -284,10 +284,6 @@ test("llms.txt describes the drive and the current price rule", () => {
     llms.includes(BILLING.noMinimumLine),
     "llms.txt must state the no-minimum line from config",
   );
-  assert.ok(
-    llms.includes(BILLING.foundingLine),
-    "llms.txt must state the founding line from config",
-  );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The issue's worked figures, so an answer engine cannot quote a number the
   // pricing page contradicts, each from the one bill function (drive#463).
@@ -333,7 +329,6 @@ test("the maximum in the metadata is the issue's rule, from the one price source
   assert.equal(BILLING.maxUsdPerTb, PRICE.maxUsdPerTb);
   assert.equal(BILLING.headline, PRICE.headline);
   assert.equal(BILLING.noMinimumLine, PRICE.noMinimumLine);
-  assert.equal(BILLING.foundingLine, PRICE.foundingLine);
   assert.equal(BILLING.rule, PRICE.rule);
   assert.equal(
     BILLING.headline,
