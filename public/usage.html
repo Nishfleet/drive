@@ -210,6 +210,24 @@ h2 {
   background: var(--paper-raised);
 }
 
+.cap label {
+  display: block;
+  margin: 10px 0 6px;
+}
+
+.cap input[type="number"] {
+  display: block;
+  width: 8rem;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: clamp(18px, 2.6vw, 22px);
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .cap input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
@@ -770,6 +788,13 @@ function showCapNote(note) {
   capNoteEl.querySelector(".next").textContent = note.next;
 }
 
+// The two cap controls move together: the typed number and the slider are
+// one cap, so they disable and wake as a pair (drive#527).
+function setCapControlsDisabled(disabled) {
+  capAmount.disabled = disabled;
+  capSlider.disabled = disabled;
+}
+
 // A save that failed. The Worker's sentence is the one that answers what went
 // wrong, so it is shown as it arrived, with no second sentence of ours next to
 // it -- the same shape the signed-out state uses. The button stays, so the
@@ -777,7 +802,7 @@ function showCapNote(note) {
 function sayCapError(note) {
   capSavedEl.hidden = true;
   showCapNote(note);
-  capSlider.disabled = false;
+  setCapControlsDisabled(false);
   capSaveEl.disabled = false;
   capSaveEl.hidden = false;
 }
@@ -791,7 +816,7 @@ function sayCapError(note) {
 // and no sentence is written here.
 async function saveCap() {
   const amount = capAmount.value;
-  capSlider.disabled = true;
+  setCapControlsDisabled(true);
   capSaveEl.disabled = true;
   capSavingEl.hidden = false;
   let response;
@@ -803,7 +828,7 @@ async function saveCap() {
     });
   } catch (_error) {
     capSavingEl.hidden = true;
-    capSlider.disabled = false;
+    setCapControlsDisabled(false);
     capSaveEl.hidden = false;
     capSaveEl.disabled = false;
     sayCapError(UNREACHABLE);
@@ -812,7 +837,7 @@ async function saveCap() {
   const payload = await response.json().catch(() => null);
   const error = payload && typeof payload.error === "string" ? payload.error : "";
   capSavingEl.hidden = true;
-  capSlider.disabled = false;
+  setCapControlsDisabled(false);
   if (!response.ok) {
     capSaveEl.hidden = false;
     capSaveEl.disabled = false;
@@ -853,7 +878,7 @@ function saySignedOut(message) {
   // cannot move a cap: the slider and the button that saves it both sleep, and
   // a save that was in flight when the session ended has no answer left to
   // wait for, so its two hints sleep with them.
-  capSlider.disabled = true;
+  setCapControlsDisabled(true);
   capSaveEl.hidden = true;
   capSavingEl.hidden = true;
   capSavedEl.hidden = true;
@@ -867,9 +892,9 @@ function sayReachable() {
   // so only this call's own state — a fresh `sayMonthEmpty` when the month is
   // empty, nothing at all when it has history — is what the markup carries.
   statusEl.dataset.state = "";
-  // A read that succeeded proves the account is there, so the slider the
-  // signed-out state disabled is usable again.
-  capSlider.disabled = false;
+  // A read that succeeded proves the account is there, so the cap controls
+  // the signed-out state disabled are usable again.
+  setCapControlsDisabled(false);
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;

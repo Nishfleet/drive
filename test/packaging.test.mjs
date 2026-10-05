@@ -75,6 +75,15 @@ test("the Homebrew cask depends on rclone", () => {
   );
 });
 
+test("the package homepage is the one site address", () => {
+  const origin = JSON.parse(read("cmd/drive/site.json")).origin;
+  const homepages = [...cfg.matchAll(/^\s+homepage:\s+(\S+)/gm)].map((match) => match[1]);
+  assert.ok(homepages.length >= 2, "nfpm and the Homebrew cask both name a homepage");
+  for (const url of homepages) {
+    assert.equal(url, origin, `.goreleaser.yaml homepage ${url} must be cmd/drive/site.json`);
+  }
+});
+
 test("no install script is added to the tree", () => {
   assert.doesNotMatch(
     cfg,

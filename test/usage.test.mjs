@@ -886,6 +886,12 @@ test("the cap has a labelled whole-dollar number input that the page reads", () 
   assert.match(page, /capSlider\.addEventListener[\s\S]*capAmount\.value = capSlider\.value;/);
   // A half-typed field never snaps the slider to a number nobody chose.
   assert.match(page, /if \(capAmount\.value === "" \|\| !Number\.isFinite\(typed\)\) \{\s*return;/);
+  // The typed field disables with the slider, so a signed-out page cannot
+  // write a cap through either control.
+  assert.match(
+    page,
+    /function setCapControlsDisabled\(disabled\) \{\s*capAmount\.disabled = disabled;\s*capSlider\.disabled = disabled;/,
+  );
 });
 
 test("the cap is a control, not a readout, and it saves through the api", async () => {
@@ -909,7 +915,7 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   assert.match(page, /capSavedEl\.textContent = payload/);
   // The signed-out state still disables it: an account on this browser is what a
   // write needs, so a page with none cannot move a cap.
-  assert.match(page, /capSlider\.disabled = true;\s*capSaveEl\.hidden = true;/);
+  assert.match(page, /setCapControlsDisabled\(true\);\s*capSaveEl\.hidden = true;/);
   // A save in flight when the session ends has no answer left to wait for, so
   // its two hints sleep with the slider.
   assert.match(page, /capSavingEl\.hidden = true;\s*capSavedEl\.hidden = true;/);

@@ -28,8 +28,17 @@
         "resource-summary.script:count": ["error", { "maxNumericValue": 1 }],
         "resource-summary.stylesheet:count": ["error", { "maxNumericValue": 1 }],
         "resource-summary.third-party:count": ["error", { "maxNumericValue": 1 }],
-        "resource-summary.third-party:transferSize": ["error", { "maxNumericValue": 0 }]
-      }
+        "resource-summary.third-party:transferSize": ["error", { "maxNumericValue": 0 }],
+        "categories:accessibility": ["error", { "minScore": 1 }]
+      },
+      "assertMatrix": [
+        {
+          "matchingUrlPattern": "http://localhost/index\\.html$",
+          "assertions": {
+            "categories:seo": ["error", { "minScore": 1 }]
+          }
+        }
+      ]
     }
   }
 }
