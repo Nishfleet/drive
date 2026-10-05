@@ -362,14 +362,11 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
   const address = server.address();
   assert.ok(address && typeof address === "object", "the server must bind a port");
   const origin = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (address).port}`;
-  /** @type {import("puppeteer-core").PuppeteerNode | undefined} */
-  let puppeteer;
-  try {
-    ({ default: puppeteer } = await import("puppeteer-core"));
-  } catch {
-    t.skip("puppeteer-core is not installed (it rides in through @lhci/cli)");
-    return;
-  }
+  // The browser driver is a declared devDependency, not a transitive one,
+  // so `npm ci` installs it. Without it this import fails and this proof fails
+  // with it: a skipped browser test is a main that goes red with no message
+  // that says why.
+  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: true,
