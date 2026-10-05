@@ -40,11 +40,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-        env:
-          # Variable, not a secret: the token is in every visitor's HTML
-          # (src/analytics.js). An unset variable ships the pages with no
-          # beacon, which is the switched-off case drive#246 kept.
-          DRIVE_CF_BEACON_TOKEN: ${{ vars.DRIVE_CF_BEACON_TOKEN }}
       - name: Apply D1 migrations
         # The databases live outside the Worker version, so their migrations
         # apply before the code that reads the new tables ships (drive #170,

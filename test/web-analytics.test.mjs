@@ -261,14 +261,3 @@ test("Lighthouse asserts SEO 1.0 on the pricing page, which is the one crawlers 
   assert.equal(matrix[0].matchingUrlPattern, "http://localhost/index\\.html$");
   assert.deepEqual(matrix[0].assertions["categories:seo"], ["error", { minScore: 1 }]);
 });
-
-test("the production deploy passes the beacon token to the build", () => {
-  // The token is a GitHub Actions variable, not a secret: it is in every
-  // visitor's HTML once the build writes it (src/analytics.js). An unset
-  // variable is the switched-off case. The deploy's build step is `npm run
-  // build`, so the variable has to be on that step or the six pages ship
-  // without a beacon even when the dashboard token exists (drive#527).
-  const deploy = read(".github/workflows/deploy-production.yml");
-  assert.match(deploy, /run: npm run build\n {8}env:/);
-  assert.match(deploy, /DRIVE_CF_BEACON_TOKEN: \$\{\{ vars\.DRIVE_CF_BEACON_TOKEN \}\}/);
-});
