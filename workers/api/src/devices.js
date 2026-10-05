@@ -1088,14 +1088,13 @@ export function createD1DeviceStore(db, options = {}) {
     async monthUsage(accountId, options) {
       const at = now();
       const month = await monthUsageThrough(db, accountId, at);
-      // The peak is the size the drive holds now (the page's "stored now"); the
-      // The peak is the size the drive holds now (the page's "stored now"); the
-      // bill itself reads only the GB-minutes (drive#463). The average the free
-      // download allowance follows is the month's own average, worked out from
-      // the GB-minutes over that month's minutes (`gbMonths`, billing.js) and
-      // not read out of monthUsageThrough: averaging the hour's stored-bytes
-      // marks counted a file saved six times inside one hour six times
-      // (drive#535), and no two callers could be held to one figure.
+      // The peak is the size the drive holds now (the page's "stored now"). The
+      // bill itself reads only the GB-minutes (drive#463), and the average the
+      // free download allowance follows is the month's own average, worked out
+      // from the GB-minutes over that month's minutes (`gbMonths`, billing.js)
+      // rather than read out of monthUsageThrough: averaging the hour's
+      // stored-bytes marks counted a file saved six times inside one hour six
+      // times (drive#535), and no two callers could be held to one figure.
       const peakGb = storedGb(month.peakBytes);
       const averageGb = gbMonths(month.gbMinutes, minutesInMonth(at));
       return {
