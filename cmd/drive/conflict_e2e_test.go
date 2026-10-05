@@ -131,7 +131,20 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 
 	// The earlier save is the conflict copy, on both devices. This is the
 	// "both devices are notified" half: a device that lost the save and the
-	// other one both see both files through their own mount.
+	// other one both see both files through their own mount. Device B sees
+	// the copy on the fill loop's next vfs/refresh (issue #541), not a 5s
+	// directory-cache expiry.
+	seenOnB := false
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(mountB, ConflictName(name, deviceA))); err == nil {
+			seenOnB = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !seenOnB {
+		t.Fatalf("device B never saw %s after the fill loop's vfs/refresh", ConflictName(name, deviceA))
+	}
 	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
 		got, err := os.ReadFile(filepath.Join(m.dir, ConflictName(name, deviceA)))
 		if err != nil {
