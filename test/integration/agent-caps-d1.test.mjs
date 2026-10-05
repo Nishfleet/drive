@@ -290,10 +290,20 @@ test("a founding account's agent key counts the account's half, at the real sche
 
   // The flag the cap reads is the account's own (#386), on the accounts
   // row: the same 2 TB that 403s a regular account bills a founding one $10
-  // (drive#482), under the $12 cap, so the write goes through.
+  // (drive#482), under the $12 cap, so the write goes through. Pre-stamp the
+  // agent_caps row with the $12 SQL default so the cap read on the first
+  // request is the row's, not the code default ($20) — without this the cap
+  // is $20, 2 TB is at it for both founding and full price, and the test
+  // cannot tell the flag was applied.
   sqlite
     .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
     .run(account.id, "");
+  sqlite
+    .prepare(
+      `INSERT INTO agent_caps (account_id, key_id, day_key, day_requests, monthly_cap_usd, daily_requests, updated_at)
+            VALUES (?1, ?2, ?3, 1, 12, 1000, ?4)`,
+    )
+    .run(account.id, key.keyId, "2026-09-30", new Date(AT).toISOString());
   meterAMonthOf(sqlite, account.id, 2000);
   assert.equal((await writeAt(store, key, "/u/acct_founder/under.md")).status, 201);
   assert.deepEqual(
