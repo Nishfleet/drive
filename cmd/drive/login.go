@@ -53,9 +53,18 @@ func Login(home, apiBase string, out io.Writer) error {
 		return err
 	}
 	client.Token = token
+	previous, err := LoadCredentials(home)
+	if err != nil {
+		return err
+	}
 	key, err := client.MintKey("device", deviceName())
 	if err != nil {
 		return err
+	}
+	if previous.KeyID != "" && previous.KeyID != key.KeyID {
+		if err := client.RevokeKey(previous.KeyID); err != nil && !isAPIStatus(err, "404") {
+			return fmt.Errorf("revoke the previous device key: %w", err)
+		}
 	}
 	cfg := StorageConfig{
 		Endpoint:     key.Endpoint,

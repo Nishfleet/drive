@@ -413,6 +413,41 @@ func TestFillTargetsWalksAKeptFolder(t *testing.T) {
 	}
 }
 
+func TestFillReadTreeHonoursCancel(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := fillReadTree(ctx, dir); err == nil {
+		t.Fatal("a cancelled fill walk returned no error")
+	}
+}
+
+func TestFillTargetsSkipsUnpinnedAndWholeFiles(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("pin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCached(t, home, "bucket/u/me/keep.bin", 3, false)
+	metaPath := filepath.Join(DefaultCacheDir(home), "vfsMeta", "drive", "bucket", "u", "me", "keep.bin")
+	if err := os.WriteFile(metaPath, []byte(`{"Dirty":false,"Size":3,"Fingerprint":"1,done"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targets := fillTargets{root: dir, offline: []string{"keep.bin"}, cacheDir: DefaultCacheDir(home)}
+	if !targets.pinnedFileIsWhole("keep.bin") {
+		t.Fatal("a fingerprinted cache copy must count as whole")
+	}
+	if err := targets.read("", true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // hasArg reports whether args contains flag at all.
 func hasArg(args []string, flag string) bool {
 	for _, a := range args {

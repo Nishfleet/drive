@@ -8,6 +8,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,8 +98,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			at := time.Now().Add(agentKeyTTL).Unix()
 			expiresAt = &at
 		}
+		keyID := "key_" + body.Name
+		if _, exists := f.keys[keyID]; exists {
+			keyID = fmt.Sprintf("key_%s_%d", body.Name, len(f.keys)+1)
+		}
 		key := MintedKey{
-			KeyID:        "key_" + body.Name,
+			KeyID:        keyID,
 			AccessKeyID:  "ak_" + body.Name,
 			Secret:       "sk_" + body.Name,
 			Prefix:       "u/acct_1/",

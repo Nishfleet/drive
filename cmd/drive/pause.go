@@ -34,7 +34,7 @@ import (
 // do next.
 const (
 	pausedLabel  = "Paused"
-	pausedNote   = "Uploads are stopped. Run drive resume to start them again."
+	pausedNote   = "Uploads are slowed. Run drive resume to start them again."
 	resumedLabel = "Resumed"
 	resumedNote  = "Uploads are moving again."
 )

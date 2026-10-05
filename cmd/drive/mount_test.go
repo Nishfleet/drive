@@ -897,3 +897,35 @@ func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestParkStrayMountFilesMovesLocalFiles(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(mount, "notes.txt")
+	if err := os.WriteFile(local, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	holding, names, err := parkStrayMountFiles(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.txt" {
+		t.Fatalf("names = %v, want notes.txt", names)
+	}
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Fatal("the stray file is still in the mount folder")
+	}
+	if err := restoreStrayMountFiles(holding, mount); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored %q, want the original bytes", got)
+	}
+}

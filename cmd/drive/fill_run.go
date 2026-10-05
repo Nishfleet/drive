@@ -370,14 +370,22 @@ func fillStop(stop <-chan struct{}) bool {
 // left alone: rclone's write-back is 5s, so a read of a half-written file is
 // a read of a torn file, and the fill must never be the reason a save is lost.
 func fillReader(root string) fillRead {
-	return func(_ string, _ bool) error { return fillReadTree(root) }
+	return func(_ string, _ bool) error { return fillReadTree(context.Background(), root) }
 }
 
-// fillReadTree reads every file under root through the mount, into
-// io.Discard. A file that vanished under the walk is not a fill failure:
-// somebody deleted it, and the next pass sees the new tree.
-func fillReadTree(root string) error {
+// fillReadTree reads files under root through the mount, into io.Discard.
+// It stops when ctx is done, so a pass cannot outlive fillContextTimeout.
+// A file that vanished under the walk is not a fill failure: somebody deleted
+// it, and the next pass sees the new tree.
+func fillReadTree(ctx context.Context, root string) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -411,15 +419,28 @@ type fillRead func(remote string, idle bool) error
 // nothing kept offline the read is the whole tree, exactly as it was before
 // this rule existed.
 type fillTargets struct {
-	root    string
-	offline []string
+	root     string
+	offline  []string
+	cacheDir string
+	ctx      context.Context
 }
 
-// read fills the kept-offline set on every pass and the rest of the tree only
-// on an idle pass. A path that has been deleted from the drive reads as
-// nothing rather than failing the pass: the next pass sees the new tree.
+// read fills pinned paths that are not yet whole in rclone's cache. It never
+// walks the rest of the tree: a full-tree read churns the cache on a drive
+// larger than 20 GB and ignores fillContextTimeout.
 func (t fillTargets) read(_ string, idle bool) error {
+	_ = idle
+	ctx := t.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for _, rel := range t.offline {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if t.pinnedFileIsWhole(rel) {
+			continue
+		}
 		if _, err := KeepOffline(t.root, rel); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -427,10 +448,41 @@ func (t fillTargets) read(_ string, idle bool) error {
 			return err
 		}
 	}
-	if !idle {
-		return nil
+	return nil
+}
+
+// pinnedFileIsWhole reports whether rclone already holds a complete copy of
+// the pinned path: vfs metadata with a fingerprint and Dirty false. A missing
+// cache is "not whole", so the fill still reads it.
+func (t fillTargets) pinnedFileIsWhole(rel string) bool {
+	if t.cacheDir == "" {
+		return false
 	}
-	return fillReadTree(t.root)
+	rel = filepath.ToSlash(rel)
+	metaRoot := filepath.Join(t.cacheDir, "vfsMeta")
+	whole := false
+	_ = filepath.WalkDir(metaRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		key := queueKey(t.cacheDir, p)
+		if key != rel && !strings.HasSuffix(key, "/"+rel) {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		var meta VFSMeta
+		if json.Unmarshal(data, &meta) != nil {
+			return nil
+		}
+		if !meta.Dirty && meta.Fingerprint != "" {
+			whole = true
+		}
+		return nil
+	})
+	return whole
 }
 
 // fillReadFile reads one mounted file into io.Discard, which fills rclone's
@@ -531,6 +583,8 @@ func RunFillLoop(ctx context.Context, c *rcClient, home, mountDir string) <-chan
 				}
 				continue
 			}
+			targets.ctx = passCtx
+			targets.cacheDir = DefaultCacheDir(home)
 			_, err = fillPass(passCtx, c, len(targets.offline) > 0, load1, load5, targets.read)
 			cancel()
 			if err != nil {

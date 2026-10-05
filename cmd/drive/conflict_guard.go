@@ -176,7 +176,8 @@ type ConflictResult struct {
 
 // ConflictSkip is one save the rule did not protect, and the reason:
 // the save was not in the drive any more, it was not a regular file,
-// or it was larger than the staging cap.
+// it grew past the staging cap while it was copied, or a fingerprint
+// watch had no staged bytes to copy when another version landed.
 type ConflictSkip struct {
 	Remote string
 	Reason string
@@ -197,6 +198,7 @@ type conflictGuard struct {
 	mountDir    string
 	stagingRoot string
 	seen        map[string]*pendingSave
+	synced      map[string]string // last-synced fingerprint per path
 }
 
 // newConflictGuard builds the guard for one mount. The staging root
@@ -210,6 +212,7 @@ func newConflictGuard(device, mountDir, stagingRoot string) *conflictGuard {
 		mountDir:    mountDir,
 		stagingRoot: stagingRoot,
 		seen:        map[string]*pendingSave{},
+		synced:      map[string]string{},
 	}
 }
 
@@ -250,6 +253,9 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 					return res, err
 				}
 				if reason == "" {
+					if staged != save.staged {
+						g.releaseStaged(save.staged)
+					}
 					info := g.mountStat(name)
 					save.staged, save.hash = staged, hash
 					save.stagedMtime, save.stagedSize = info.modTime, info.size
@@ -282,9 +288,21 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			res.Skipped = append(res.Skipped, ConflictSkip{Remote: name, Reason: reason})
 			continue
 		}
-		previous, err := b.remoteHash(ctx, name)
-		if err != nil {
-			return res, fmt.Errorf("conflict: read %s before the save lands: %w", name, err)
+		previous := g.synced[name]
+		if previous == "" {
+			previous, err = b.remoteHash(ctx, name)
+			if err != nil {
+				// A hash error holds this entry only: the rest of the
+				// pass still runs, and the next pass retries this path.
+				info := g.mountStat(name)
+				g.seen[name] = &pendingSave{
+					hash:        hash,
+					staged:      staged,
+					stagedMtime: info.modTime,
+					stagedSize:  info.size,
+				}
+				continue
+			}
 		}
 		info := g.mountStat(name)
 		g.seen[name] = &pendingSave{
@@ -314,7 +332,8 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		save.polls++
 		landed, err := b.remoteHash(ctx, name)
 		if err != nil {
-			return res, fmt.Errorf("conflict: read %s after the save landed: %w", name, err)
+			// Hold this entry only; other paths in the same pass still decide.
+			continue
 		}
 		switch {
 		case landed == save.hash:
@@ -326,6 +345,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// then drops the entry and its staged copy.
 			save.winPolls++
 			if save.winPolls >= conflictWinPolls {
+				g.synced[name] = landed
 				g.drop(name, save)
 			}
 		case landed == "" || landed == save.previous:
@@ -341,11 +361,21 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// The plain path holds a version that is neither this
 			// device's bytes nor the version that preceded the save:
 			// the other device's save landed. This device's bytes
-			// survive as the conflict copy.
+			// survive as the conflict copy when they were staged.
+			if save.staged == "" {
+				res.Skipped = append(res.Skipped, ConflictSkip{
+					Remote: name,
+					Reason: "the file is compared by ETag or version and a copy could not be kept",
+				})
+				g.synced[name] = landed
+				g.drop(name, save)
+				continue
+			}
 			claim, err := g.claim(ctx, b, name, save)
 			if err != nil {
 				return res, err
 			}
+			g.synced[name] = landed
 			res.Claimed = append(res.Claimed, claim)
 		}
 	}
@@ -473,8 +503,10 @@ func freeConflictName(ctx context.Context, b conflictBackend, path, device strin
 // staging root), the md5 of what it copied and a skip reason.
 //
 // A non-empty reason is a save the rule leaves alone, named: the save
-// is not in the drive any more, it is not a regular file, or it is
-// over the staging cap. None of those is a failure of the pass, and
+// is not in the drive any more, it is not a regular file, or it grew
+// past the staging cap while it was copied. A file already over the
+// cap is watched by fingerprint instead. None of those is a failure of
+// the pass, and
 // none of them may be silent, so the caller reports them once and
 // protects the saves it can. Only a real failure (a staging
 // directory that cannot be made, a read that fails) is an error.
@@ -493,7 +525,11 @@ func (g *conflictGuard) stage(path string) (staged, hash, reason string, err err
 		return "", "", fmt.Sprintf("it is a %s, not a regular file", info.Mode().Type()), nil
 	}
 	if info.Size() > conflictStageMax {
-		return "", "", fmt.Sprintf("%d bytes is over the %d-byte staging cap", info.Size(), conflictStageMax), nil
+		// Large files are compared by size and mtime (and the remote ETag
+		// via remoteHash) rather than copied: a 64 MiB staging cap would
+		// skip them entirely and a late overwrite would go unnoticed.
+		fp := fmt.Sprintf("size:%d:mtime:%d", info.Size(), info.ModTime().UnixNano())
+		return "", fp, "", nil
 	}
 	dest := filepath.Join(g.stagingRoot, filepath.FromSlash(path))
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
@@ -641,12 +677,50 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 	var reply struct {
 		Hashsum []string `json:"hashsum"`
 	}
-	if err := c.call(ctx, "operations/hashsum", map[string]string{
+	hashErr := c.call(ctx, "operations/hashsum", map[string]string{
 		"fs": c.fs, "remote": name, "hashType": "md5",
+	}, &reply)
+	if hashErr == nil {
+		hash, err := matchHashSum(reply.Hashsum, name)
+		if err == nil && hash != "" {
+			return hash, nil
+		}
+		hashErr = err
+	}
+	fp, fpErr := c.remoteFingerprint(ctx, name)
+	if fpErr != nil {
+		if hashErr != nil {
+			return "", hashErr
+		}
+		return "", fpErr
+	}
+	return fp, nil
+}
+
+// remoteFingerprint is the object's ETag or version when MD5 is missing
+// (multipart S3 uploads, web uploads). rclone's operations/stat ID is the
+// S3 ETag; size and modtime are the fallback when even that is empty.
+func (c *rcClient) remoteFingerprint(ctx context.Context, name string) (string, error) {
+	var reply struct {
+		Item struct {
+			ID      string            `json:"ID"`
+			Size    int64             `json:"Size"`
+			ModTime string            `json:"ModTime"`
+			Hashes  map[string]string `json:"Hashes"`
+		} `json:"item"`
+	}
+	if err := c.call(ctx, "operations/stat", map[string]string{
+		"fs": c.fs, "remote": name,
 	}, &reply); err != nil {
 		return "", err
 	}
-	return matchHashSum(reply.Hashsum, name)
+	if md5 := reply.Item.Hashes["MD5"]; md5 != "" {
+		return md5, nil
+	}
+	if reply.Item.ID != "" {
+		return "etag:" + reply.Item.ID, nil
+	}
+	return fmt.Sprintf("ver:%d:%s", reply.Item.Size, reply.Item.ModTime), nil
 }
 
 // matchHashSum picks the one hash of name out of a hashsum reply. The
@@ -685,9 +759,16 @@ func matchHashSum(lines []string, name string) (string, error) {
 // a path may contain spaces: "report (conflict, mac).txt" is one name, not
 // the word after the hash.
 func splitHashLine(line string) (hash, path string, ok bool) {
-	trimmed := strings.TrimSpace(line)
+	// rclone prints "hash  path" with two spaces. An empty MD5 (multipart
+	// ETag without md5 metadata) is "  path", which TrimSpace would turn
+	// into a path-only line and then into an error. Keep the two-space
+	// split so an empty hash is still a hash.
+	trimmed := strings.TrimRight(line, " \t\n")
 	if trimmed == "" {
 		return "", "", false
+	}
+	if i := strings.Index(trimmed, "  "); i >= 0 {
+		return strings.TrimSpace(trimmed[:i]), strings.TrimSpace(trimmed[i+2:]), true
 	}
 	i := strings.IndexAny(trimmed, " \t")
 	if i <= 0 {

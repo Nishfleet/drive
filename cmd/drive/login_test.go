@@ -166,3 +166,37 @@ func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
 		t.Fatalf("defaultAPIBase %q is not the origin src/seo.js ships", defaultAPIBase)
 	}
 }
+
+func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.KeyID == "" {
+		t.Fatal("the first login wrote no key id")
+	}
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.revokedIDs) != 1 || api.revokedIDs[0] != first.KeyID {
+		t.Fatalf("revoked %v, want the previous key %q", api.revokedIDs, first.KeyID)
+	}
+	second, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.KeyID == "" || second.KeyID == first.KeyID {
+		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
+	}
+}

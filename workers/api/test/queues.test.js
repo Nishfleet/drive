@@ -43,6 +43,10 @@ test("the queue table ships in the drive migrations the tests apply", () => {
     DRIVE_MIGRATIONS.includes("drive/0014_device_queues.sql"),
     "the queue table's migration is not in the list the tests apply",
   );
+  assert.ok(
+    DRIVE_MIGRATIONS.includes("drive/0020_device_queue_reports.sql"),
+    "the per-device queue table's migration is not in the list the tests apply",
+  );
 });
 
 test("a report is written and read back as the queue the pages render", async () => {
@@ -167,7 +171,7 @@ test("the sweep drops the rows no read can answer from", async () => {
   await store.record("acct_1", QUEUE);
   assert.equal(await store.sweep(), 0, "a live row is not swept");
   clock.advance(QUEUE_FRESHNESS_SECONDS + 1);
-  assert.equal(await store.sweep(), 1);
+  assert.equal(await store.sweep(), 2, "the live row and its dual-write both go");
   assert.equal(await store.latest("acct_1"), null);
 });
 
@@ -206,4 +210,19 @@ test("a row that cannot be a queue is refused rather than rendered", async () =>
   // An absent row and a row with no clock are both "no queue", not an error.
   assert.equal(uploadQueueFromRow(null, at), null);
   assert.equal(uploadQueueFromRow({}, at), null);
+});
+
+test("two devices on one account each store a report", async () => {
+  const clock = fixedClock();
+  const store = createD1QueueStore(createTestD1(), { now: clock.now });
+  assert.equal((await store.record("acct_1", QUEUE, "device-a")).stored, true);
+  assert.equal(
+    (await store.record("acct_1", { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true }, "device-b"))
+      .stored,
+    true,
+    "the second device was refused against the first device's clock",
+  );
+  const latest = await store.latest("acct_1");
+  assert.equal(latest?.files, 4);
+  assert.equal(latest?.paused, true);
 });

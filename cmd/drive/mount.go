@@ -497,6 +497,19 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return failDetail("drive-folder", err, p.MountDir)
 	}
+	holding, strays, err := parkStrayMountFiles(p.MountDir)
+	if err != nil {
+		return err
+	}
+	if len(strays) > 0 {
+		fmt.Fprintf(os.Stderr, "note: %s already had local files; they were moved to %s so the drive can mount, and they will be copied into the drive once it is up\n", p.MountDir, holding)
+	}
+	placed := false
+	defer func() {
+		if !placed && holding != "" {
+			_ = restoreStrayMountFiles(holding, p.MountDir)
+		}
+	}()
 	config := []byte(RcloneConfig(c))
 	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
 		return err
@@ -508,6 +521,13 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if foreground {
+		placed = true
+		go func() {
+			_ = waitMounted(goos, home)
+			if err := restoreStrayMountFiles(holding, p.MountDir); err != nil {
+				fmt.Fprintf(os.Stderr, "note: local files at %s could not be copied into the drive (%v); copy them by hand from that folder\n", holding, err)
+			}
+		}()
 		return mountForeground(p, home)
 	}
 	if goos == "darwin" {
@@ -536,10 +556,74 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := waitMounted(goos, home); err != nil {
 		return err
 	}
+	if err := restoreStrayMountFiles(holding, p.MountDir); err != nil {
+		fmt.Fprintf(os.Stderr, "note: local files at %s could not be copied into the drive (%v); copy them by hand from that folder\n", holding, err)
+	}
+	placed = true
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
 	printMountedLine(p.MountDir)
+	return nil
+}
+
+// strayHoldingDir is the sibling folder a non-empty mount directory's local
+// files move into so rclone can mount. rclone refuses a non-empty folder; the
+// files are not deleted, and restoreStrayMountFiles copies them into the drive
+// once the mount is up so they upload.
+func strayHoldingDir(mountDir string) string {
+	return mountDir + ".drive-local"
+}
+
+// parkStrayMountFiles moves every entry out of mountDir into a sibling folder
+// and returns that folder and the names moved. An empty directory is a no-op.
+func parkStrayMountFiles(mountDir string) (holding string, names []string, err error) {
+	entries, err := os.ReadDir(mountDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil, nil
+		}
+		return "", nil, err
+	}
+	if len(entries) == 0 {
+		return "", nil, nil
+	}
+	holding = strayHoldingDir(mountDir)
+	if err := os.MkdirAll(holding, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create a folder for the local files in %s: %w", mountDir, err)
+	}
+	for _, e := range entries {
+		from := filepath.Join(mountDir, e.Name())
+		to := filepath.Join(holding, e.Name())
+		if err := os.Rename(from, to); err != nil {
+			return holding, names, fmt.Errorf("move %s out of the way so the drive can mount: %w", from, err)
+		}
+		names = append(names, e.Name())
+	}
+	return holding, names, nil
+}
+
+// restoreStrayMountFiles copies parked local files into the (now mounted)
+// drive folder so they upload, then removes the holding folder when empty.
+func restoreStrayMountFiles(holding, mountDir string) error {
+	if holding == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(holding)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		from := filepath.Join(holding, e.Name())
+		to := filepath.Join(mountDir, e.Name())
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("copy %s into the drive: %w", e.Name(), err)
+		}
+	}
+	_ = os.Remove(holding)
 	return nil
 }
 
