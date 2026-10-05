@@ -121,9 +121,8 @@ export async function storageEventsRoute(request, ctx) {
       "www-authenticate": 'Bearer realm="drive"',
     });
   }
-  // The bucket's own token, compared through the one compare in http.js: the
-  // presented bearer token and the configured one are both raw here, so the
-  // constant-shape digest compare runs on exactly what they are.
+  // The one compare in http.js. Both sides are the raw strings this route has:
+  // the bucket's configured token and the bearer token presented with it.
   if (!(await tokensMatch(presented, token))) {
     return errorResponse(401, "Storage events need the bucket's token.", {
       "www-authenticate": 'Bearer realm="drive"',

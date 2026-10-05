@@ -522,9 +522,9 @@ export function createMemoryStore(options = {}) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
-        // The one compare in http.js, over the two digests this store has: a
-        // device is stored as its secret's hash and the request brings the
-        // secret, so the hash of that secret is the second side.
+        // The one compare in http.js. A device is stored only as the hash of
+        // its secret, so both sides here are hashes: the stored one, and the
+        // hash of the secret this request presented.
         if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
           return null;
         }

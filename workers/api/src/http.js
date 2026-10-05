@@ -145,11 +145,12 @@ export async function readLimitedBody(request, maxBytes) {
  * same equal-length digests where it does not. Either runtime answers this and
  * no caller hand-rolls a compare of its own (drive#618).
  *
- * Both sides are hashed, so a caller holding a hash hands it in as it is: the
- * api's device sites (drive#636) compare the stored secret hash with the hash
- * of the presented secret, and both sides arrive as digests. A secret beside
- * its own hash is not that shape and does not match, which is the answer a
- * caller wants when it hands the compare the wrong shape.
+ * Both sides are hashed, whatever a caller hands in, and the pair matches
+ * when the two hashed sides are equal. A site holding raw strings (the
+ * bucket's event token) hands those in. A site holding hashes (the api's
+ * device secret, drive#636, which a row stores only as the hash of its secret)
+ * hands those in too, and then the match asks whether the two hashes are the
+ * same one.
  * @param {unknown} presented
  * @param {unknown} configured
  * @returns {Promise<boolean>}
