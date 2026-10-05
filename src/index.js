@@ -36,6 +36,7 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
+  storageVarsFromEnv,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
@@ -292,27 +293,23 @@ function forwardToApi(c) {
  */
 function storeFor(env) {
   if (!filesStore) {
-    const storage = devStorage(env);
-    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    // The four storage vars read through src/files.js's one reader, the same
+    // read provisionAccountBucket makes at the sign-in verify step, so the
+    // store and the provisioning cannot name two endpoints.
+    const { endpoint, accessKeyId, secretAccessKey, region } = storageVarsFromEnv(devStorage(env));
     if (endpoint) {
-      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
-      const secretAccessKey =
-        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
-      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
       const signed =
-        typeof accessKeyId === "string" &&
-        accessKeyId !== "" &&
-        typeof secretAccessKey === "string" &&
-        secretAccessKey !== "" &&
-        typeof region === "string" &&
-        region !== "";
+        accessKeyId !== undefined && secretAccessKey !== undefined && region !== undefined;
       filesStore = createS3Store({
         endpoint,
         bucketFor: storageBucketForKey,
         ...(signed
           ? {
               region,
-              credentials: { accessKeyId, secretAccessKey },
+              credentials: {
+                accessKeyId: /** @type {string} */ (accessKeyId),
+                secretAccessKey: /** @type {string} */ (secretAccessKey),
+              },
             }
           : {}),
       });
