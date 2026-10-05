@@ -85,6 +85,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The cap notices the hourly walk sends (drive#496): cap_warned_at and
   // read_only_sent_at. Expand only, two nullable columns.
   "drive/0024_cap_notices.sql",
+  // The per-link caps and retention (drive#549): upload_requests.max_files
+  // and shares.max_download_bytes. Expand only.
+  "drive/0025_link_caps.sql",
   // The second factor's tables (drive#524): better-auth's `twoFactor` rows
   // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
   // plus the `user.twoFactorEnabled` flag. Additive only; the pin in

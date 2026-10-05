@@ -83,6 +83,7 @@ import {
   handleRequestUploadRequest,
   handleShareFileRequest,
   handleShareRequest,
+  purgeStaleLinks,
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
@@ -602,7 +603,8 @@ export function createApp() {
   // account gate so an anonymous request is its 401, not a 403: the gate is
   // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
   // Go CLI) is not a browser, so it passes this check and the account gate
-  // is what holds it.
+  // is what holds it. /api/starter is a write route under this one rule
+  // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
 
   // The sign-in family (Better Auth) under its basePath (src/auth.js),
@@ -866,7 +868,11 @@ export function createApp() {
     handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549). The per-account
+      // open-link cap lives in the handler; this is the edge limit.
+      limiter: c.env.SHARE_MINT_RATE_LIMITER,
+    }),
   );
   // DELETE revokes a link (`drive share --revoke`); the handler answers it,
   // but a route that is not registered is a 405 before the handler runs.
@@ -877,7 +883,10 @@ export function createApp() {
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549).
+      limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+    }),
   );
   app.delete(REQUEST_ENDPOINT, (c) =>
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
@@ -1194,6 +1203,19 @@ export default {
         );
       }
       if (env.DRIVE_DB) {
+        // Link retention (drive issue #549): expired and revoked rows older
+        // than 90 days are pruned nightly. A still-open row is never touched,
+        // so this cannot close a link a stranger is holding. Awaited, like
+        // the size row below: a purge that failed is a failed run, not a
+        // silent gap.
+        const purged = await purgeStaleLinks(
+          env.DRIVE_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
+        console.log(
+          `link retention: pruned ${purged.shares} share rows, ` +
+            `${purged.requests} upload-request rows`,
+        );
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
         context.waitUntil(
           runAccountCloseCron({

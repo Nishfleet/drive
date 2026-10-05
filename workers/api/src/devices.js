@@ -12,7 +12,7 @@
 // measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
 // is the whole of the withdrawal there.
 
-import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
+import { BILLING_CONFIG, minutesInMonth, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { monthStart, monthUsageThrough } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
@@ -1093,6 +1093,8 @@ export function createD1DeviceStore(db, options = {}) {
       const peakGb = storedGb(month.peakBytes);
       return {
         gbMinutes: month.gbMinutes,
+        // The month this read's minutes fell in sets the divisor (drive#531).
+        monthMinutes: minutesInMonth(at),
         storedGb: peakGb,
         storedDaily: [],
         downloadBytes: month.downloadBytes,

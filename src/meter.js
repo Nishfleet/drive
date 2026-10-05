@@ -82,7 +82,7 @@ import { accountPrefix, scopeStore } from "./files.js";
 //     it, and the two boundary hours each give up the sub-minute remainder
 //     of their overlap, so a version's booked minutes never exceed its true
 //     ones and a re-roll repeats them exactly. src/billing.js turns the
-//     rollup into money with the same 43,800-minute divisor and the same
+//     rollup into money over the minutes in that calendar month and the same
 //     decimal GB, so the meter and the invoice cannot disagree about a unit.
 
 //   - The hour's stored bytes land in usage_minutes.stored_bytes
