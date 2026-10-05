@@ -53,8 +53,8 @@ const readPage = (name) => readFileSync(fileUrl(name), "utf8");
 // Every shipped HTML page, from the config, not from the directory, so a page
 // that ships without being added to src/seo.js fails the first test below.
 const indexablePages = PAGES.filter((page) => page.indexable);
-/** @param {{path: string}} page */
-const fileFor = (page) => page.path.replace(/^\//, "") || "index.html";
+/** @param {{path: string, file?: string}} page */
+const fileFor = (page) => page.file ?? (page.path.replace(/^\//, "") || "index.html");
 
 // These read hand-maintained HTML, so they assume double-quoted attributes in
 // a fixed order. That is a real (small) coupling to the file's formatting, not

@@ -14,6 +14,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  accountStorageKey,
+  ChangedUnderUsError,
   CONTROL_OR_BACKSLASH,
   CONTROL_OR_SLASH,
   createMemoryStore,
@@ -30,6 +32,7 @@ import {
   handleFilesRequest,
   isPreviewable,
   isRestorable,
+  isTrashExpired,
   PAGE_LINE,
   PREVIEW_COPY,
   parseListObjects,
@@ -38,6 +41,7 @@ import {
   previewContentType,
   previewCopy,
   previewDisposition,
+  purgeExpiredTrash,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
@@ -47,9 +51,12 @@ import {
   splitEntries,
   storageBucketForKey,
   TRASH_PATH,
+  TRASH_PURGE_SCHEDULE,
   trashName,
   trashRows,
+  trashStorePath,
   UPLOAD_COPY,
+  UPLOAD_FILE_MAX_BYTES,
   validatePath,
   withoutTrash,
 } from "../src/files.js";
@@ -62,6 +69,7 @@ import {
   versionMarkers,
 } from "../src/s3-listing.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
@@ -456,7 +464,10 @@ test("preview: a picture comes back inline, download comes back as an attachment
   assert.equal(await preview.text(), "the-bytes");
 
   const download = await call(new Request(api("/download?path=%2Fholiday.jpg")));
-  assert.equal(download.headers.get("content-disposition"), 'attachment; filename="holiday.jpg"');
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"holiday.jpg\"; filename*=UTF-8''holiday.jpg",
+  );
   assert.equal(await download.text(), "the-bytes");
 });
 
@@ -470,7 +481,24 @@ test("preview: a file name cannot break out of the header", async () => {
   const { call, upload } = drive();
   await upload("/", 'a"b.txt', "x", "text/plain");
   const response = await call(new Request(api("/download?path=%2Fa%22b.txt")));
-  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="ab.txt"');
+  assert.equal(
+    response.headers.get("content-disposition"),
+    "attachment; filename=\"ab.txt\"; filename*=UTF-8''a%22b.txt",
+  );
+});
+
+test("download: a Japanese file name is RFC 5987, not a 500", async () => {
+  const { call, upload } = drive();
+  await upload("/", "日本.txt", "hello", "text/plain");
+  const download = await call(
+    new Request(api(`/download?path=${encodeURIComponent("/日本.txt")}`)),
+  );
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), "hello");
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"__.txt\"; filename*=UTF-8''%E6%97%A5%E6%9C%AC.txt",
+  );
 });
 
 test("preview: an uploaded page is never a page on our origin", async () => {
@@ -498,7 +526,10 @@ test("preview: an uploaded page is never a page on our origin", async () => {
     } else {
       // The download is the customer's own file, with the type they sent.
       assert.equal(page.headers.get("content-type"), "text/html");
-      assert.equal(page.headers.get("content-disposition"), 'attachment; filename="page.html"');
+      assert.equal(
+        page.headers.get("content-disposition"),
+        "attachment; filename=\"page.html\"; filename*=UTF-8''page.html",
+      );
     }
   }
   // A download is the customer's file, byte for byte, with the type they sent.
@@ -522,11 +553,62 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.equal(previewContentType("clip.mp4", "text/html"), "text/plain; charset=utf-8");
   assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
   assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
-  assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
+  // An allowlist, not a pass-through: the XML document family keeps its claimed
+  // type out of the response entirely (issue #548).
+  assert.equal(
+    previewContentType("page.xhtml", "application/xhtml+xml"),
+    "application/octet-stream",
+  );
+  assert.equal(previewContentType("page.xsl", "application/xslt+xml"), "application/octet-stream");
+  assert.equal(previewContentType("page.rdf", "application/rdf+xml"), "application/octet-stream");
+  assert.equal(
+    previewContentType("formula.mml", "application/mathml+xml"),
+    "application/octet-stream",
+  );
+  assert.equal(previewContentType("form.mht", "multipart/related"), "application/octet-stream");
+  // The XML family named as text or its own extension stays text/plain, which
+  // is on the allowlist and cannot render as a document.
+  assert.equal(previewContentType("page.xml", "application/xml"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("page.xml", "text/xml"), "text/plain; charset=utf-8");
+  // An image claim on an image kind stays inline: image/* is the allowlist's
+  // own entry, and the sandboxed preview is what keeps it from acting as a
+  // full page (the residual risk is tracked in a follow-up issue).
+  assert.equal(previewContentType("art.svgz", "image/svg+xml"), "image/svg+xml");
+  assert.equal(previewContentType("archive.zip", "application/zip"), "application/octet-stream");
   assert.throws(
     () => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"),
     TypeError,
   );
+});
+
+test("preview: the XML document family and multipart/related leave as a download", async () => {
+  // issue #548: an XHTML, XSLT, RDF, MathML or multipart/related upload served
+  // inline would put a rendered document — "Your session expired, sign in
+  // here" — on our own domain, under a preview URL or through a share link.
+  // Neither the stored claim nor the extension may open the allowlist.
+  const { call, upload } = drive();
+  const uploads = [
+    ["page.xhtml", "application/xhtml+xml"],
+    ["page.xsl", "application/xslt+xml"],
+    ["page.rdf", "application/rdf+xml"],
+    ["formula.mml", "application/mathml+xml"],
+    ["form.mht", "multipart/related"],
+  ];
+  for (const [name, type] of uploads) {
+    await upload("/", name, "<html>sign in here</html>", type);
+  }
+  for (const [name] of uploads) {
+    const response = await call(new Request(api(`/preview?path=%2F${encodeURIComponent(name)}`)));
+    assert.equal(response.status, 200, name);
+    assert.equal(response.headers.get("content-type"), "application/octet-stream", name);
+    assert.equal(
+      response.headers.get("content-disposition"),
+      `attachment; filename="${name}"; filename*=UTF-8''${name}`,
+      name,
+    );
+    assert.equal(response.headers.get("content-security-policy"), "sandbox", name);
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff", name);
+  }
 });
 
 test("preview: an SVG leaves the direct-open URL as a download and the embed URL as a picture", async () => {
@@ -544,7 +626,10 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   const preview = await call(new Request(api("/preview?path=%2Flogo.svg")));
   assert.equal(preview.status, 200);
   assert.equal(preview.headers.get("content-type"), "image/svg+xml");
-  assert.equal(preview.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  assert.equal(
+    preview.headers.get("content-disposition"),
+    "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
+  );
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
   assert.equal(preview.headers.get("content-security-policy"), "sandbox");
 
@@ -573,7 +658,10 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   ]) {
     const opened = await call(request);
     assert.equal(opened.status, 200);
-    assert.equal(opened.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+    assert.equal(
+      opened.headers.get("content-disposition"),
+      "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
+    );
   }
 
   // A raster picture and a PDF keep opening inline from the direct-open URL:
@@ -590,7 +678,10 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   }
   // The rule, as a function: only the type a browser renders as a document
   // leaves as an attachment.
-  assert.equal(previewDisposition("logo.svg", "image/svg+xml"), 'attachment; filename="logo.svg"');
+  assert.equal(
+    previewDisposition("logo.svg", "image/svg+xml"),
+    "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
+  );
   assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
   assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
   assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
@@ -599,16 +690,25 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   for (const claimed of ["image/svg+xml; charset=utf-8", "IMAGE/SVG+XML", " image/svg+xml "]) {
     assert.equal(
       previewDisposition("logo.svg", claimed),
-      'attachment; filename="logo.svg"',
+      "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
       claimed,
     );
   }
   // A filename that could end the quoted-string, or carry a header-breaking
   // control character, is stripped before it reaches the header.
-  assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
+  assert.equal(
+    previewDisposition('a"b.svg', "image/svg+xml"),
+    "attachment; filename=\"ab.svg\"; filename*=UTF-8''a%22b.svg",
+  );
   assert.equal(
     previewDisposition("a\r\nb.svg", "image/svg+xml"),
-    'attachment; filename="a--b.svg"',
+    "attachment; filename=\"a--b.svg\"; filename*=UTF-8''a--b.svg",
+  );
+  // Half a surrogate pair would throw URIError in the encoder and turn a
+  // download into a 500; UTF-8 needs the repaired U+FFFD instead (drive#539).
+  assert.equal(
+    previewDisposition("\uD800.svg", "image/svg+xml"),
+    "attachment; filename=\"_.svg\"; filename*=UTF-8''%EF%BF%BD.svg",
   );
 });
 
@@ -652,6 +752,22 @@ test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
   // The words are the message table's, not this route's own copy of them
   // (drive#158); test/messages.test.mjs walks this route for that rule.
   assert.equal((await response.json()).error, failureMessage("upload-needs-name"));
+});
+
+test("upload: a 200 MB declared size is refused before the body is read", async () => {
+  const { call, scoped } = drive();
+  const response = await call(
+    new Request(`${api("/upload")}?path=%2F&name=huge.bin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(UPLOAD_FILE_MAX_BYTES + 100_000_000),
+      },
+    }),
+  );
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error, failureMessage("body-too-large"));
+  assert.equal(await scoped.read("/huge.bin"), null);
 });
 
 test("delete: a file leaves the folder and lands in Recently deleted", async () => {
@@ -782,6 +898,371 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
   );
   assert.equal(response.status, 410);
   assert.match((await response.json()).error, /30 days/);
+});
+
+// ---------------------------------------------------------------- a move the storage makes
+
+/**
+ * The wrapper the move tests need: a store that records every call it is given,
+ * reports a size for the files named, and can do one thing at the moment a copy
+ * lands.
+ *
+ * `read` throws instead of handing back bytes, because that is the point of the
+ * change these tests cover: a delete and a restore now ask the storage to copy
+ * the file, so no body is ever pulled through the Worker (drive issue #567). A
+ * move that reads is the bug, so the wrapper makes it loud.
+ * @param {import("../src/files.js").FileStore} inner
+ * @param {{paths: string[], size: number}|null} big the storage keys a
+ *   listing reports a size for, the way a real listing reports a real size
+ * @param {() => Promise<void>} [onCopy] what happens after each copy, which is
+ *   where a save that lands mid-move is simulated
+ */
+function moveRecorder(inner, big, onCopy) {
+  /** @type {string[]} */
+  const calls = [];
+  return {
+    // Every method the move routes do not use passes straight through, so the
+    // wrapper stays a whole FileStore as the interface grows.
+    ...inner,
+    calls,
+    /** @param {string} path */
+    async list(path) {
+      calls.push(`list ${path}`);
+      const rows = await inner.list(path);
+      // The size is a claim the listing makes, exactly as a real listing makes
+      // it: the stored object stays small and the copy is sized for the claim.
+      if (big) {
+        for (const row of rows) {
+          if (big.paths.includes(row.path)) {
+            row.size = big.size;
+          }
+        }
+      }
+      return rows;
+    },
+    /** @param {string} path */
+    async read(path) {
+      calls.push(`read ${path}`);
+      throw new Error("a move the storage makes must not read the body");
+    },
+    /**
+     * @param {string} path
+     * @param {BodyInit} body
+     * @param {string} contentType
+     */
+    async write(path, body, contentType) {
+      calls.push(`write ${path}`);
+      return inner.write(path, body, contentType);
+    },
+    /**
+     * @param {string} path
+     * @param {{ifMatch?: string|null}} [options]
+     */
+    async remove(path, options) {
+      calls.push(
+        `remove ${path}${typeof options?.ifMatch === "string" ? ` if ${options.ifMatch}` : ""}`,
+      );
+      return inner.remove(path, options);
+    },
+    /**
+     * @param {string} from
+     * @param {string} to
+     * @param {number} [size]
+     */
+    async copy(from, to, size) {
+      calls.push(`copy ${from} ${to} ${size}`);
+      const done = await inner.copy(from, to, size);
+      if (onCopy) {
+        await onCopy();
+      }
+      return done;
+    },
+    /** @param {string} path */
+    async listVersions(path) {
+      return inner.listVersions(path);
+    },
+  };
+}
+
+/**
+ * The ETag one file in a listing carries, read from the store the way the two
+ * move routes read it, so a test can name the exact value the conditional
+ * remove will be held to.
+ * @param {import("../src/files.js").FileStore} scoped
+ * @param {string} folder the folder the listing is of
+ * @param {string} name the file to read the ETag of
+ * @returns {Promise<string>}
+ */
+async function etagOf(scoped, folder, name) {
+  const rows = await scoped.list(folder);
+  const row = rows.find((entry) => entry.name === name);
+  assert.ok(row, `${folder} must hold ${name}`);
+  assert.ok(row.etag, `${folder} must report an ETag for ${name}`);
+  return row.etag;
+}
+
+/**
+ * A POST to one of the two routes that move a file.
+ * @param {string} route
+ * @param {string} path
+ */
+function moveCall(route, path) {
+  return new Request(api(route), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+}
+
+test("delete and restore move a 200 MB object by copying it in the storage, not by reading it", async () => {
+  // The failure this replaces: a delete read the file and re-uploaded it, so
+  // every delete was a download plus an upload through a Worker with 128 MB of
+  // memory, and anything past about 100 MB failed with "We could not delete
+  // that file" (drive issue #567).
+  const { store, upload, scoped } = drive();
+  const big = 200 * 1024 ** 2;
+  const trash = trashName("/big.iso", now);
+  await upload("/", "big.iso", "not-really-200-mb", "application/octet-stream");
+  const moved = moveRecorder(store, {
+    paths: ["u/1/big.iso", `u/1/.trash/${trash}`],
+    size: big,
+  });
+  /** @param {Request} request */
+  const call = (request) => handleFilesRequest(request, moved, account, now);
+  const live = await etagOf(scoped, "/", "big.iso");
+
+  const deleted = await call(moveCall("/delete", "/big.iso"));
+  assert.equal(deleted.status, 200);
+  // The whole move is three calls: the parent folder is listed for the size and
+  // the ETag, the storage is asked to copy, and the key is removed only if it
+  // still holds the bytes the listing carried. No body is read.
+  assert.deepEqual(moved.calls, [
+    "list u/1/",
+    `copy u/1/big.iso u/1/.trash/${trash} ${big}`,
+    `remove u/1/big.iso if ${live}`,
+  ]);
+
+  const parked = await scoped.read(`${TRASH_PATH}/${trash}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "not-really-200-mb");
+
+  const parkedEtag = await etagOf(scoped, `${TRASH_PATH}/big.iso`, String(now));
+  const restored = await call(moveCall("/restore", "/big.iso"));
+  assert.equal(restored.status, 200);
+  assert.deepEqual(moved.calls, [
+    "list u/1/",
+    `copy u/1/big.iso u/1/.trash/${trash} ${big}`,
+    `remove u/1/big.iso if ${live}`,
+    `list u/1/.trash/big.iso`,
+    `copy u/1/.trash/${trash} u/1/big.iso ${big}`,
+    `remove u/1/.trash/${trash} if ${parkedEtag}`,
+  ]);
+  assert.ok(await scoped.read("/big.iso"));
+  // Every one of those calls is a move the storage makes for itself: the body of
+  // a 200 MB object was never in the Worker's hands, in either direction.
+  assert.deepEqual(
+    moved.calls.filter((entry) => entry.startsWith("read") || entry.startsWith("write")),
+    [],
+  );
+});
+
+test("a save that lands while a delete is moving the file is kept, and the delete says so", async () => {
+  // The other failure this replaces: the delete read the file, re-uploaded it
+  // and then removed the original, so a save that landed while the delete ran
+  // was overwritten by the older copy and thrown away with the original. The
+  // move parks the file first and removes the original only if it still holds
+  // the bytes the delete asked about (drive issue #567).
+  const { store, upload, scoped } = drive();
+  await upload("/", "notes.md", "the old text", "text/markdown");
+  const live = await etagOf(scoped, "/", "notes.md");
+  // A save of the same path that lands while the trash copy is running, which
+  // is what a Finder save of a file being deleted is.
+  const moved = moveRecorder(store, null, async () => {
+    await store.write("u/1/notes.md", "the save that landed mid-delete", "text/markdown");
+  });
+  /** @param {Request} request */
+  const call = (request) => handleFilesRequest(request, moved, account, now);
+
+  const response = await call(moveCall("/delete", "/notes.md"));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("delete-file-changed"));
+
+  // The newer bytes are still the file, byte for byte, under the same path.
+  const kept = await scoped.read("/notes.md");
+  assert.ok(kept);
+  assert.equal(await new Response(kept.body).text(), "the save that landed mid-delete");
+  // The conditional remove was asked for the bytes the listing carried, and it
+  // refused to remove the newer ones.
+  assert.equal(moved.calls[moved.calls.length - 1], `remove u/1/notes.md if ${live}`);
+  // And Recently deleted holds the older bytes the copy parked, so the delete
+  // can be asked for again instead of the file being stuck.
+  const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the old text");
+});
+
+test("a save that lands while a restore is putting the file back is kept too", async () => {
+  // The mirror of the delete guard: the parked copy holds the bytes the restore
+  // asked about, and a change to it while the copy back runs stops the restore
+  // rather than removing the newer bytes (drive issue #567).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the old text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  const trash = trashName("/notes.md", now);
+  const moved = moveRecorder(store, null, async () => {
+    await store.write(`u/1/.trash/${trash}`, "the second parked copy", "text/markdown");
+  });
+  /** @param {Request} request */
+  const call = (request) => handleFilesRequest(request, moved, account, now);
+
+  const response = await call(moveCall("/restore", "/notes.md"));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+
+  // The file is back and nothing was lost: the copy brought the parked bytes
+  // back, and the newer parked copy is still parked for the person to look at.
+  assert.ok(await scoped.read("/notes.md"), "the restore's copy put the file back");
+  const parked = await scoped.read(`${TRASH_PATH}/${trash}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the second parked copy");
+});
+
+test("a storage that answers 412 to a conditional remove is a file left alone", async () => {
+  // Every S3-shaped storage answers If-Match a key no longer satisfies with 412
+  // Precondition Failed, so the conditional delete works behind the S3 adapter
+  // and not only against the memory one (drive issue #567).
+  /** @type {string[]} */
+  const requests = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push(`${request.url} ${request.headers.get("if-match") || ""}`);
+    // The first DELETE names an ETag the bytes no longer have. Every later one
+    // carries none and is answered the way a storage answers a plain delete.
+    return new Response(null, { status: requests.length === 1 ? 412 : 204 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  const scoped = scopeStore(store, { id: "acct-a" });
+  await assert.rejects(
+    scoped.remove("/a.txt", { ifMatch: '"etag-before"' }),
+    (error) => error instanceof ChangedUnderUsError && error.path === "u/acct-a/a.txt",
+  );
+  // The ETag the listing carried is the one the signed DELETE carries.
+  assert.equal(requests[0], 'http://127.0.0.1:9000/drive/u/acct-a/a.txt "etag-before"');
+  // Without an ETag there is nothing to hold to, and the key is removed the way
+  // it always was.
+  await scoped.remove("/a.txt");
+  assert.equal(requests[1], "http://127.0.0.1:9000/drive/u/acct-a/a.txt ");
+});
+
+test("a delete the S3 store refuses answers 409, and the file is not lost", async () => {
+  // The S3 store's answer is the delete path's answer, so the two halves are
+  // read together here: a listing that names an ETag, a CopyObject that parks
+  // the file, and a DELETE the store answers 412. The route answers the person
+  // the sentence and a 409, not a 500, and both keys are still where they were
+  // (drive issue #567).
+  const liveKey = "u/acct-a/notes.md";
+  const objects = new Map([[liveKey, "the old text"]]);
+  /** @type {string[]} */
+  const deletes = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    // A key holds its own percent-encodings, so the URL's are undone the way a
+    // storage undoes them to find the object.
+    const key = decodeURIComponent(new URL(request.url).pathname).slice("/drive/".length);
+    const source = request.headers.get("x-amz-copy-source");
+    if (request.method === "PUT" && source !== null) {
+      objects.set(key, objects.get(decodeURIComponent(source).slice("/drive/".length)) ?? "");
+      return new Response('<CopyObjectResult><ETag>"copied"</ETag></CopyObjectResult>', {
+        status: 200,
+      });
+    }
+    if (request.method === "DELETE") {
+      deletes.push(`${key} ${request.headers.get("if-match") || ""}`);
+      // The bytes are no longer the ones the listing named.
+      return new Response(null, { status: 412 });
+    }
+    if (new URL(request.url).searchParams.get("prefix") === "u/acct-a/") {
+      return new Response(
+        `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Contents><Key>u/acct-a/notes.md</Key><Size>11</Size><ETag>"etag-before"</ETag><LastModified>2026-10-06T00:00:00.000Z</LastModified></Contents></ListBucketResult>`,
+        { status: 200 },
+      );
+    }
+    return new Response(null, { status: 404 });
+  };
+  const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
+  const account = { id: "acct-a", name: "A" };
+
+  // The handler is given the store, the way src/index.js gives it: it scopes
+  // the store itself, so the path the listing is asked for is the account's.
+  const response = await handleFilesRequest(moveCall("/delete", "/notes.md"), store, account, now);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("delete-file-changed"));
+  // The delete carried the ETag the listing named, and the store refused it.
+  assert.deepEqual(deletes, [`u/acct-a/notes.md "etag-before"`]);
+  // Nothing was lost: the parked copy the store made is in the store, and the
+  // key the store refused to remove is still there.
+  const parked = trashStorePath(trashName("/notes.md", now));
+  assert.ok(objects.has(`u/acct-a${parked}`), "the parked copy is in the store");
+  assert.ok(objects.has(liveKey), "the key the store refused is still there");
+});
+
+test("a path too long for a storage key is refused with its own message", async () => {
+  // `validatePath` counts characters and a storage key is counted in bytes, and
+  // a trash name percent-encodes every byte of a path that is not ASCII into
+  // three characters. So this 400-character Japanese path is a 1,200-byte path
+  // and a trash name 2,400 characters long, and the delete that used to park it
+  // got a 400 KeyTooLong from the store and answered 500 (drive issue #567).
+  const { call, upload, store, scoped } = drive();
+  const long = `/${"あ".repeat(400)}`;
+  const trash = trashName(long, now);
+  // A file that long is already in the drive, the way a Finder save leaves it:
+  // written straight into the store, because every drive path the routes
+  // accept is inside the 1,024-character limit `validatePath` counts.
+  await store.write(`u/1/${long.slice(1)}`, "already saved long ago", "text/plain");
+  await store.write(`u/1/.trash/${trash}`, "parked", "text/plain");
+
+  // The upload never starts, because a file whose own key is too long could not
+  // be moved or found again.
+  const refused = await upload("/", "あ".repeat(400), "x");
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error, failureMessage("path-too-long"));
+
+  // Both halves measure the key they would move the file to, and both refuse
+  // before they touch the storage, with the file left exactly where it was.
+  const deleted = await call(moveCall("/delete", long));
+  assert.equal(deleted.status, 400);
+  assert.equal((await deleted.json()).error, failureMessage("path-too-long"));
+  assert.ok(await scoped.read(long), "the file must still be there");
+  const restored = await call(moveCall("/restore", long));
+  assert.equal(restored.status, 400);
+  assert.equal((await restored.json()).error, failureMessage("path-too-long"));
+  assert.ok(await store.read(`u/1/.trash/${trash}`), "the parked copy must still be there");
+});
+
+test("a storage key the drive builds is measured in bytes, not characters", async () => {
+  // The cap is the store's, not this repo's: an S3-shaped storage answers a key
+  // past 1,024 bytes with 400 KeyTooLong (Amazon S3, "Object key naming
+  // guidelines"). A path that is not ASCII is more bytes than it is characters,
+  // so the count is bytes and it is the whole key, prefix included.
+  assert.deepEqual(accountStorageKey({ id: "1" }, "/a.txt"), { key: "u/1/a.txt" });
+  // 1,020 ASCII bytes plus the four of `u/1/` is inside the cap.
+  const asciiFits = `/${"a".repeat(1020)}`;
+  assert.deepEqual(accountStorageKey({ id: "1" }, asciiFits).key, `u/1${asciiFits}`);
+  const asciiTooLong = `/${"a".repeat(1024)}`;
+  assert.equal(accountStorageKey({ id: "1" }, asciiTooLong).key, "");
+  // 341 Japanese characters are 1,023 bytes, so with the four of `u/1/` the key
+  // is 1,027 bytes: a path that reads short enough for the store is refused.
+  const multibyte = `/${"あ".repeat(341)}`;
+  assert.equal(validatePath(multibyte).path, multibyte);
+  assert.equal(accountStorageKey({ id: "1" }, multibyte).error, failureMessage("path-too-long"));
+  // A name a control character makes short is refused by validatePath first.
+  assert.ok(validatePath(`/a${"\n"}b`).error);
 });
 
 test("a body that is not JSON is a 400, not a 500", async () => {
@@ -1214,7 +1695,7 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
   await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
 });
 
-test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
+test("a signed write sends the original stream and UNSIGNED-PAYLOAD", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
     start(controller) {
@@ -1222,12 +1703,11 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
       controller.close();
     },
   });
-  /** @type {Uint8Array | undefined} */
+  /** @type {Request | undefined} */
   let sent;
   /** @type {typeof fetch} */
   const fetchImpl = async (input, init) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    sent = new Uint8Array(await request.arrayBuffer());
+    sent = input instanceof Request ? input : new Request(input, init);
     return new Response(null, { status: 200 });
   };
   const store = createS3Store({
@@ -1237,12 +1717,28 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
     credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
     fetchImpl,
   });
-  await store.write("u/acct/a.txt", stream, "text/plain");
-  assert.deepEqual(sent, new TextEncoder().encode("chunk"));
+  await store.write("u/acct/a.txt", stream, "text/plain", { contentLength: 5 });
+  assert.ok(sent);
+  assert.equal(sent.headers.get("x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
+  assert.equal(sent.headers.get("content-length"), "5", "the declared size rides the PUT");
+  assert.ok(sent.body instanceof ReadableStream, "the write must not buffer the stream into bytes");
+  assert.equal(await sent.text(), "chunk");
 });
 
-test("a signed write names a body it cannot hash", async () => {
+test("a signed stream write with no declared size is refused, not buffered", async () => {
+  // A signed S3 PUT cannot send a stream of unknown length without a
+  // Content-Length (an UNSIGNED-PAYLOAD PUT with no aws-chunked framing is
+  // answered 411), and buffering it here would put an unbounded body into
+  // isolate memory. The store refuses it so the caller declares a size
+  // (drive#539); the owner upload reads a length-less body under its own
+  // ceiling and always passes one.
   const { createS3Store } = await import("../src/files.js");
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("chunk"));
+      controller.close();
+    },
+  });
   const store = createS3Store({
     endpoint: "http://127.0.0.1:9000",
     bucket: "drive",
@@ -1250,10 +1746,7 @@ test("a signed write names a body it cannot hash", async () => {
     credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
     fetchImpl: async () => new Response(null, { status: 200 }),
   });
-  await assert.rejects(
-    store.write("u/acct/a.txt", /** @type {any} */ ({ not: "a body" }), "text/plain"),
-    /cannot send a body of type/,
-  );
+  await assert.rejects(() => store.write("u/acct/a.txt", stream, "text/plain"), /contentLength/);
 });
 
 test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {
@@ -1418,6 +1911,27 @@ test("an S3 endpoint that ignores If-None-Match overwrites, and that is what the
 });
 
 /**
+ * One request header's value, case-insensitively, or null when it is not there.
+ * A `Headers` object does the case-insensitive lookup itself; a plain object
+ * from a test needs the scan, and the two are the same header to the request.
+ * @param {HeadersInit|undefined} headers
+ * @param {string} name
+ * @returns {string|null}
+ */
+function headerOf(headers, name) {
+  if (!headers) {
+    return null;
+  }
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted) {
+      return value;
+    }
+  }
+  return null;
+}
+
+/**
  * Fake S3 that namespaces objects by bucket, so a write into account A's
  * bucket cannot appear in B's listing. Keys are `${bucket}/${objectKey}`.
  * @param {Map<string, string>} objects
@@ -1434,6 +1948,25 @@ function accountBucketFetch(objects, seen) {
     const bucket = segments[0] ?? "";
     const key = segments.slice(1).join("/");
     seen.push(`${method} ${bucket}/${key}${parsed.search}`);
+    // A CopyObject is a PUT whose request body is empty and whose header names
+    // the source, and it answers a CopyObjectResult rather than an empty 200
+    // (proven against rclone serve s3, 2026-10-01). A delete and a restore both
+    // move a file this way (drive issue #567), so the fixture has to answer it.
+    const source = headerOf(init.headers, "x-amz-copy-source");
+    if (method === "PUT" && source !== null) {
+      const from = decodeURIComponent(source.replace(/^\//, "")).split("/");
+      const copied = objects.get(`${from[0]}/${from.slice(1).join("/")}`);
+      if (copied === undefined) {
+        return new Response("<Error><Code>NoSuchKey</Code><Message>no key</Message></Error>", {
+          status: 404,
+        });
+      }
+      objects.set(`${bucket}/${key}`, copied);
+      return new Response(
+        `<CopyObjectResult><LastModified>2026-10-06T00:00:00.000Z</LastModified><ETag>&#34;copied&#34;</ETag></CopyObjectResult>`,
+        { status: 200 },
+      );
+    }
     if (method === "PUT") {
       objects.set(`${bucket}/${key}`, await new Response(init.body).text());
       return new Response(null, { status: 200 });
@@ -2134,6 +2667,125 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
     "DELETE http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-3",
     "the upload is aborted after a failed part",
   );
+});
+
+// ------------------------------------------------- the nightly trash purge
+
+/**
+ * Park a file in one account's Recently deleted, the way the delete handler
+ * does: a scoped write under .trash with a trash-name key.
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} account
+ * @param {string} path
+ * @param {number} deletedAt
+ */
+async function park(store, account, path, deletedAt) {
+  const scoped = scopeStore(store, { id: account });
+  await scoped.write(trashStorePath(trashName(path, deletedAt)), "bytes", "text/plain");
+}
+
+test("a 31-day-old trash entry is gone after the purge; a fresh one stays", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-a', 'a@x.test', ?1)")
+    .bind(now)
+    .run();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-b', 'b@x.test', ?1)")
+    .bind(now)
+    .run();
+  const store = createMemoryStore();
+  await park(store, "acct-a", "/expired.txt", now - 31 * day);
+  // One millisecond past the window is past the window: the Files page
+  // already shows this one as gone (isRestorable says no), so the purge
+  // removes it the same day.
+  await park(store, "acct-a", "/edge.txt", now - 30 * day - 1);
+  await park(store, "acct-a", "/fresh.txt", now - day);
+  await park(store, "acct-b", "/other-expired.txt", now - 40 * day);
+
+  const purged = await purgeExpiredTrash(db, store, now);
+
+  assert.equal(purged.accounts, 2);
+  assert.equal(purged.purged, 3);
+  const leftA = (await scopeStore(store, { id: "acct-a" }).listAll(TRASH_PATH)).map((e) => e.name);
+  const leftB = (await scopeStore(store, { id: "acct-b" }).listAll(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(leftA, [trashName("/fresh.txt", now - day)]);
+  assert.deepEqual(leftB, []);
+});
+
+test("the purge judges by the name, so a stray file under .trash is left alone", async () => {
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-a', 'a@x.test', ?1)")
+    .bind(now)
+    .run();
+  const store = createMemoryStore();
+  const scoped = scopeStore(store, { id: "acct-a" });
+  await scoped.write(`${TRASH_PATH}/not-a-trash-key`, "bytes", "text/plain");
+  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+
+  const purged = await purgeExpiredTrash(db, store, now);
+
+  assert.equal(purged.purged, 1);
+  const left = (await scoped.listAll(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(left, ["not-a-trash-key"]);
+});
+
+test("an account with no trash folder purges nothing and fails nothing", async () => {
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('empty', 'e@x.test', ?1)")
+    .bind(now)
+    .run();
+  const purged = await purgeExpiredTrash(db, createMemoryStore(), now);
+  assert.deepEqual(purged, { accounts: 1, purged: 0 });
+});
+
+test("a purge needs its database and refuses to run without one", async () => {
+  await assert.rejects(
+    () => purgeExpiredTrash(/** @type {any} */ (null), createMemoryStore(), now),
+    TypeError,
+  );
+  await assert.rejects(
+    () => purgeExpiredTrash(/** @type {any} */ ({}), createMemoryStore(), now),
+    TypeError,
+  );
+});
+
+test("a parked file is expired past the window and never before it opens", () => {
+  const day = 24 * 60 * 60 * 1000;
+  assert.equal(isTrashExpired(now - 30 * day, now), false);
+  assert.equal(isTrashExpired(now - 30 * day - 1, now), true);
+  // A future-dated name waits for now to catch up rather than vanishing
+  // a day before its own window opens.
+  assert.equal(isTrashExpired(now + day, now), false);
+});
+
+test("the entrypoint's trash trip runs the purge on its own schedule", async () => {
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-a', 'a@x.test', ?1)")
+    .bind(now)
+    .run();
+  const store = createMemoryStore();
+  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  const env = { DRIVE_DB: db };
+  // The same direct-drive wrapper the fetch calls use above: the handler type
+  // is optional on ExportedHandler and takes the injectable store as a fourth
+  // argument, so the call is typed as made.
+  const workerScheduled =
+    /** @type {(event: {scheduledTime: number, cron: string, noRetry?: boolean}, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: unknown) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
+  await workerScheduled(
+    { scheduledTime: now, cron: TRASH_PURGE_SCHEDULE, noRetry: true },
+    env,
+    { waitUntil() {} },
+    store,
+  );
+  const left = (await scopeStore(store, { id: "acct-a" }).listAll(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(left, []);
 });
 
 // ------------------------------------------------- paging (drive#570)
