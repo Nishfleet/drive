@@ -1144,6 +1144,16 @@ test("the account's open branches stop at the cap, and the next one is refused",
     name: "work-over",
   });
   assert.equal(after.state, "open");
+  // Approving frees a slot the same way: the refusal sentence tells the
+  // person to approve or discard, so both must be able to unblock the next
+  // create. The original is untouched since these branches were made, so the
+  // approve is the clean copy-back arm.
+  await approveBranch(db, snapshots, scoped, ACCOUNT, "work-2");
+  const afterApprove = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work-after-approve",
+  });
+  assert.equal(afterApprove.state, "open");
 });
 test("a concurrent create that loses the atomic claim copies nothing", async () => {
   const { scoped, db, snapshots } = await driven();
@@ -1173,13 +1183,16 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
   // proxy over it (the same shape as the failing devices store in
   // test/signin.test.mjs) rather than a bare object that would have to restate
   // D1's interface; the loser's store is never asked to walk the folder or
-  // copy a file.
+  // copy a file. The stub matches the claim statement by its role — the one
+  // INSERT into the branches table — not by an incidental sub-select's
+  // spelling, so an edit to the claim's WHERE clause cannot silently unstub
+  // it: a dark stub answers the loser with a real insert and fails the test.
   const losingDb = new Proxy(db, {
     get(target, prop, receiver) {
       if (prop === "prepare") {
         return (/** @type {string} */ sql) => {
           const statement = target.prepare(sql);
-          if (!sql.includes("COUNT(*) FROM branches WHERE account_id = ?1")) {
+          if (!sql.startsWith("INSERT INTO branches")) {
             return statement;
           }
           return {
