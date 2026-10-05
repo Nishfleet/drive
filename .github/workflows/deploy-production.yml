@@ -85,7 +85,7 @@ jobs:
           else
             read -r status created conclusion <<<"$latest"
             if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
-              echo "::error::the newest agent eval run on main concluded $conclusion; the held-out score is under the pass bar, so the release stops here (drive#526)"
+              echo "::error::the newest agent eval run on main concluded $conclusion (a score under the pass bar, or a run that could not score); its run summary says which, and the release stops here (drive#526)"
               exit 1
             fi
             # A green score goes stale when the weekly clock stops (a runner

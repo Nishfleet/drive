@@ -198,7 +198,9 @@
         if (row === undefined) return false;
         const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
         if (cells.length < 4) return false;
-        const bill = cells[3].replace(/[$,]/g, "").replace(/\.00$/, "").replace(/\./g, "\\.");
+        const figure = cells[3].replace(/[$,]/g, "").replace(/\.00$/, "");
+        if (!/^\d+(\.\d+)?$/.test(figure)) return false;
+        const bill = figure.replace(/\./g, "\\.");
         // The figure, in either form the page's own row allows: "$10" or
         // "10 dollars".
         return new RegExp(`\\$${bill}\\b|\\b${bill} dollars\\b`).test(output);
