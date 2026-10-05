@@ -28,6 +28,7 @@ import {
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
+import { runCardFailureCron } from "./card-failure.js";
 import { billingPushGap, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
@@ -615,16 +616,14 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
+    let unpaidCents = 0;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
       capUsd = await store.getCapUsd(account.id);
-      // The card on file is the accounts row's own stamp, read the same way as
-      // the cap (drive#417). Until it is really on file the usage page says no
-      // charge has been made and shows no bill, instead of the $10 membership
-      // line a card-less account would look like it had been charged. It is
-      // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
+      const unpaid = await store.getUnpaid(account.id);
+      unpaidCents = unpaid.unpaidCents;
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -635,7 +634,7 @@ export function createApp() {
     // one.
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile },
+      { ...account, capUsd, cardOnFile, unpaidCents },
       await liveQueueFor(c.env, account),
     );
   });
@@ -842,11 +841,14 @@ export default {
         /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
           env
         );
+      const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
       const pushed = await pushBillingHours(env.METER_DB, hours, {
         apiKey: dodo.DODO_PAYMENTS_API_KEY,
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
         baseUrl: dodo.DODO_BASE_URL,
         now: event.scheduledTime,
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
       });
       // The report on the skip (drive issue #334). pushBillingHours returns
       // {pushed: 0} for a missing key on purpose, and that silence is the bug
@@ -916,6 +918,12 @@ export default {
           db: env.DRIVE_DB,
           devices: createD1DeviceStore(env.DRIVE_DB),
           store: storeFor(env),
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          now: event.scheduledTime,
+        });
+        await runCardFailureCron({
+          devices: createD1DeviceStore(env.DRIVE_DB),
           email: env.EMAIL,
           mailFrom: secrets.MAIL_FROM ?? "",
           now: event.scheduledTime,

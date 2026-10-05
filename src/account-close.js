@@ -7,6 +7,7 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
+import { applyUnpaid } from "./charge-threshold.js";
 import { sendEmail } from "./email-send.js";
 import { BRANCHES_PATH, scopeStore, TRASH_PATH } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
@@ -134,6 +135,28 @@ export async function closeAccount(input) {
   const closed = await input.devices.closeAccount({ id: input.account.id, email: expected }, at);
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
+  }
+  if (typeof input.devices.getUnpaid === "function" && typeof input.devices.setUnpaid === "function") {
+    const unpaid = await input.devices.getUnpaid(input.account.id);
+    const decision = applyUnpaid({
+      unpaidCents: unpaid.unpaidCents,
+      unpaidSince: unpaid.unpaidSince,
+      incrementCents: 0,
+      now: input.now,
+      closing: true,
+    });
+    await input.devices.setUnpaid(input.account.id, {
+      unpaidCents: decision.unpaidCents,
+      unpaidSince: decision.unpaidSince,
+    });
+    if (decision.chargeCents > 0) {
+      await sendEmail(input.email, {
+        to: expected,
+        from: input.mailFrom,
+        kind: "charge-receipt",
+        data: { chargedUsd: decision.chargeCents / 100 },
+      });
+    }
   }
   await input.devices.releaseFoundingReservation(input.account.id);
   if (closed.closeMailSentAt === null) {

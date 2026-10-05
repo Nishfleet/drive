@@ -51,6 +51,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
+  // Running unpaid balance and card-failure stamps (drive#465). Expand only,
+  // four nullable columns.
+  "drive/0020_charge_threshold.sql",
 ]);
 
 /**
@@ -94,6 +97,8 @@ export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0017_agent_caps_drop_month_key.sql",
   "drive/0017_drop_branches_snapshot.sql",
   "drive/0018_agent_caps_drop_month_spend.sql",
+  "drive/0019_abuse_guards.sql",
+  "drive/0020_charge_threshold.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */

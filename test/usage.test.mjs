@@ -254,16 +254,19 @@ test("`drive usage` prints the four lines the spec names", () => {
       "GB-months so far: 400.00",
       "Downloads: 500 GB of 1.2 TB free",
       "Cost so far: $8.00",
+      "Running balance: $0.00",
+      "Your card will be charged when this reaches $5.",
     ],
     "stored GB now, GB-months so far, downloads out of the free 3x, cost so far",
   );
   assert.equal(Object.isFrozen(lines), true);
   // A line the CLI prints is a label plus the summary's own value, so a change
   // to a number moves both surfaces together.
-  for (const line of lines) {
+  for (const line of lines.slice(0, 5)) {
     assert.equal(typeof line, "string");
     assert.match(line, /^[A-Z][^:]+: .+$/);
   }
+  assert.equal(lines[5], "Your card will be charged when this reaches $5.");
 });
 
 test("`drive usage` prints the no-charge line for a card-less month", () => {
@@ -280,9 +283,16 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   // A summary object that is missing one of the four labels it prints is not a
   // summary: it used to print "Stored GB now: undefined", which the test name
   // above promises can never happen. Each key is named when it is missing.
-  for (const key of ["storedNow", "gbMonths", "downloads", "cost"]) {
+  for (const key of ["storedNow", "gbMonths", "downloads", "cost", "runningBalance", "chargeLine"]) {
     /** @type {Record<string, string>} */
-    const labels = { storedNow: "400 GB", gbMonths: "400.00", downloads: "0 B", cost: "$8.00" };
+    const labels = {
+      storedNow: "400 GB",
+      gbMonths: "400.00",
+      downloads: "0 B",
+      cost: "$8.00",
+      runningBalance: "$0.00",
+      chargeLine: "Your card will be charged when this reaches $5.",
+    };
     delete labels[key];
     assert.throws(
       () => usageLines({ labels }),
@@ -313,9 +323,11 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   assert.deepEqual(Object.keys(body.labels).sort(), [
     "accountCap",
     "cap",
+    "chargeLine",
     "cost",
     "downloads",
     "gbMonths",
+    "runningBalance",
     "storedNow",
   ]);
   assert.equal(body.labels.storedNow, "0 B");
@@ -389,6 +401,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "saved",
     "storedDaily",
     "storedGb",
+    "unpaidCents",
     "uploadLine",
   ]);
   assert.equal(body.uploadLine, null, "no device store means no queue to report");
@@ -523,6 +536,8 @@ const PAGE_IDS = Object.freeze([
   "stored-now",
   "gb-months",
   "cost",
+  "running-balance",
+  "charge-line",
   "bill-lines",
   "downloads-line",
   "upload-line",
@@ -783,6 +798,8 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /<dd id="stored-now"><\/dd>/);
   assert.match(page, /<dd id="gb-months"><\/dd>/);
   assert.match(page, /<dd id="cost"><\/dd>/);
+  assert.match(page, /<dd id="running-balance"><\/dd>/);
+  assert.match(page, /id="charge-line"/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
   assert.match(page, /<p class="cap-value" id="cap-value"><\/p>/);
   assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
@@ -792,7 +809,7 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /function sayReachable\(\)[\s\S]*bodyEl\.hidden = false;/);
   // A payload that is not the summary reveals nothing: every label has to be a
   // string, or the page would print "undefined" where a number belongs.
-  assert.match(page, /const LABEL_KEYS = \[[^\]]*"accountCap"\]/);
+  assert.match(page, /const LABEL_KEYS = \[[^\]]*"chargeLine"\]/);
   assert.match(page, /LABEL_KEYS\.some\(\(key\) => typeof labels\[key\] !== "string"\)/);
   assert.match(page, /!Number\.isFinite\(cap\.capUsd\)/);
   assert.match(page, /typeof summary\.saved\.copy !== "string"/);

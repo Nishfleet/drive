@@ -171,13 +171,16 @@ test("resolveIngestUrl refuses a key to a non-https or non-Dodo host", () => {
 });
 
 test("a baseUrl option pushes to the configured host, not the hard-coded one", async () => {
-  const day = await storedHours(10, 1);
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const hour = midnight();
+  await recordUsage(db, ACCOUNT, hour, 250 * 43800, 250 * BYTES_PER_GB, hour + HOUR_MS);
   const recorder = recordingFetch();
-  await pushBillingHours(day.db, day.hours, {
+  await pushBillingHours(db, [hour], {
     apiKey: KEY,
     fetch: recorder.fetch,
     baseUrl: "https://live.dodopayments.com",
-    now: day.from + HOUR_MS,
+    now: hour + HOUR_MS,
   });
   assert.equal(recorder.calls[0].url, `https://live.dodopayments.com${DODO_INGEST_PATH}`);
   assert.equal(recorder.calls.length, 1);
@@ -191,7 +194,7 @@ test("the event id is the account and hour, so a retry is the same id", () => {
   assert.notEqual(billingEventId("other", hour), billingEventId(ACCOUNT, hour));
 });
 
-test("a day of stored GB pushes the bill, with storage and downloads as dollar lines", async () => {
+test("a day of stored GB under $5 is recorded and not charged", async () => {
   const day = await storedHours(400, 24);
   const recorder = recordingFetch();
   const bill = monthBillCents({ gbMinutes: 400 * 60 * 24 });
@@ -200,37 +203,8 @@ test("a day of stored GB pushes the bill, with storage and downloads as dollar l
     fetch: recorder.fetch,
     now: day.from + 24 * HOUR_MS,
   });
-  assert.equal(recorder.calls.length, 1, "one ingest request for the day");
-  const call = recorder.calls[0];
-  assert.equal(call.url, DODO_TEST_INGEST_URL);
-  assert.equal(call.method, "POST");
-  assert.equal(call.authorization, `Bearer ${KEY}`);
-  assert.equal(call.payload.events.length, 24);
-  const eventIds = call.payload.events.map((event) => event.event_id);
-  assert.equal(new Set(eventIds).size, 24, "Dodo rejects duplicate event_id values in one request");
-  const units = call.payload.events.map((event) => {
-    assert.equal(event.customer_id, CUSTOMER);
-    assert.equal(event.event_name, DODO_EVENT_NAME);
-    const metadata = /** @type {Record<string, unknown>} */ (event.metadata);
-    assert.equal(metadata.credit_label, undefined, "no membership line (drive#463)");
-    assert.equal(event.timestamp, undefined, "omit timestamp: Dodo rejects hours older than 1h");
-    return Number(metadata.amount_units);
-  });
-  const last = /** @type {Record<string, unknown>} */ (call.payload.events[23].metadata);
-  assert.equal(last.storage_cents, bill.storageCents);
-  assert.equal(last.total_cents, bill.totalCents);
-  assert.deepEqual(
-    bill.lines.map((line) => line.label),
-    ["Storage", "Downloads"],
-  );
-  assert.equal(last.storage_usd, bill.lines[0].usd);
-  assert.equal(last.downloads_usd, bill.lines[1].usd);
-  assert.equal(last.credit_usd, undefined);
-  assert.equal(
-    units.reduce((sum, n) => sum + n, 0),
-    bill.totalCents,
-    "Dodo's summed units are the month's capped bill, not the raw meter",
-  );
+  assert.ok(bill.totalCents < 500, "this day is under the $5 charge line");
+  assert.equal(recorder.calls.length, 0, "the card is not charged under $5");
   assert.equal(result.pushed, 24);
   const rows = day.sqlite
     .prepare(
@@ -242,8 +216,29 @@ test("a day of stored GB pushes the bill, with storage and downloads as dollar l
     rows.reduce((sum, row) => sum + Number(row.amount_units), 0),
     bill.totalCents,
   );
-  assert.equal(rows[0].dodo_event_id, billingEventId(ACCOUNT, day.from));
-  assert.equal(rows[0].account_id, ACCOUNT);
+  assert.equal(
+    day.sqlite.prepare("SELECT unpaid_cents FROM accounts WHERE id = ?1").get(ACCOUNT).unpaid_cents,
+    bill.totalCents,
+  );
+});
+
+test("the card is charged when the running balance reaches $5.00", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const hour = midnight();
+  const gbMinutes = 250 * 43800;
+  await recordUsage(db, ACCOUNT, hour, gbMinutes, 250 * BYTES_PER_GB, hour + HOUR_MS);
+  const bill = monthBillCents({ gbMinutes });
+  assert.equal(bill.totalCents, 500);
+  const recorder = recordingFetch();
+  await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
+  assert.equal(recorder.calls.length, 1);
+  assert.equal(recorder.calls[0].payload.events.length, 1);
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 500);
+  assert.equal(
+    sqlite.prepare("SELECT unpaid_cents FROM accounts WHERE id = ?1").get(ACCOUNT).unpaid_cents,
+    0,
+  );
 });
 
 test("a retried hour is ignored: one event id, one billing_pushes row", async () => {
@@ -252,9 +247,7 @@ test("a retried hour is ignored: one event id, one billing_pushes row", async ()
   const opts = { apiKey: KEY, fetch: recorder.fetch, now: day.from + HOUR_MS };
   await pushBillingHours(day.db, day.hours, opts);
   await pushBillingHours(day.db, day.hours, opts);
-  assert.equal(recorder.calls.length, 1, "the second run must not ingest again");
-  assert.equal(recorder.calls[0].payload.events.length, 1);
-  assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, day.from));
+  assert.equal(recorder.calls.length, 0, "under $5 there is no ingest to retry");
   assert.equal(day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
 });
 
@@ -275,10 +268,9 @@ test("an October hour does not count September's GB-minutes", async () => {
     fetch: recorder.fetch,
     now: october + HOUR_MS,
   });
-  const metadata = recorder.calls[0].payload.events[0].metadata;
+  assert.equal(recorder.calls.length, 0, "October's first hour is under $5, so it rolls");
   const octoberBill = monthBillCents({ gbMinutes: 10 * 60 });
-  assert.equal(metadata.storage_cents, octoberBill.storageCents);
-  assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
+  assert.notEqual(octoberBill.storageCents, throughSeptember.gbMinutes);
 });
 
 test("a push that spans the month boundary bills each month on its own", async () => {
@@ -302,17 +294,16 @@ test("a push that spans the month boundary bills each month on its own", async (
     fetch: recorder.fetch,
     now: october + HOUR_MS,
   });
-  const units = new Map(
-    recorder.calls[0].payload.events.map((event) => [
-      event.event_id,
-      Number(event.metadata.amount_units),
-    ]),
-  );
-  assert.equal(units.get(billingEventId(ACCOUNT, september)), septemberBill.totalCents);
+  assert.equal(recorder.calls.length, 1, "September rolls under $5; October crosses the charge line");
+  assert.equal(recorder.calls[0].payload.events.length, 1);
   assert.equal(
-    units.get(billingEventId(ACCOUNT, october)),
-    octoberBill.totalCents,
-    "October bills against October alone, never September's pushed total",
+    recorder.calls[0].payload.events[0].event_id,
+    billingEventId(ACCOUNT, october),
+  );
+  assert.equal(
+    recorder.calls[0].payload.events[0].metadata.amount_units,
+    septemberBill.totalCents + octoberBill.totalCents,
+    "October's charge includes September's rolled balance, never subtracting September's high-water from October's bill",
   );
 });
 
@@ -336,11 +327,7 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
     fetch: recorder.fetch,
     now: hour1 + HOUR_MS,
   });
-  assert.equal(recorder.calls[1].payload.events[0].metadata.amount_units, 0);
-  assert.ok(
-    recorder.calls[1].payload.events[0].metadata.amount_units >= 0,
-    "Dodo never receives a negative unit",
-  );
+  assert.equal(recorder.calls.length, 1, "a $0 increment after a charge is not a second ingest");
 });
 
 test("Dodo receives the bill held to the maximum, never the uncapped meter", async () => {
@@ -387,18 +374,21 @@ test("no key, and no Dodo customer, skip the ingest rather than invent one", asy
 });
 
 test("an ingest failure is thrown, so the cron retries, and no row is stored", async () => {
-  const day = await storedHours(10, 1);
+  const { db, sqlite } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const hour = midnight();
+  await recordUsage(db, ACCOUNT, hour, 250 * 43800, 250 * BYTES_PER_GB, hour + HOUR_MS);
   const recorder = recordingFetch({ status: 401, body: { message: "unauthorized" } });
   await assert.rejects(
     () =>
-      pushBillingHours(day.db, day.hours, {
+      pushBillingHours(db, [hour], {
         apiKey: KEY,
         fetch: recorder.fetch,
-        now: day.from + HOUR_MS,
+        now: hour + HOUR_MS,
       }),
     /Dodo test-mode ingest failed: 401/,
   );
-  assert.equal(day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
 });
 
 test("the hourly cron pushes the hour it just rolled", async () => {
@@ -416,9 +406,7 @@ test("the hourly cron pushes the hour it just rolled", async () => {
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
     { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
   );
-  assert.equal(recorder.calls.length, 1);
-  assert.equal(recorder.calls[0].url, DODO_TEST_INGEST_URL);
-  assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, midnight()));
+  assert.equal(recorder.calls.length, 0, "one hour of 1 GB is under $5, so the card is not charged");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
 });
 
@@ -515,7 +503,7 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
     },
   );
   const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
-  assert.equal(recorder.calls.length, 1, "the push itself still ran and reached Dodo");
+  assert.equal(recorder.calls.length, 0, "the hour rolled under $5, so nothing reached Dodo");
   assert.equal(
     sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
     1,
@@ -677,4 +665,45 @@ test("the skip path still returns rather than throwing, missing key or not", asy
   const gap = await billingPushGap(day.db, { apiKey: "", now: day.from + HOUR_MS });
   assert.equal(gap.hours, 1, "the detector names what the skip hid");
   assert.equal(gap.missingKey, true);
+});
+
+test("a $5 charge mails the receipt, and month-end mails a statement with no charge", async () => {
+  const sent = [];
+  const email = {
+    sent,
+    /** @param {unknown} message */
+    async send(message) {
+      sent.push(message);
+      return { messageId: "<bill@drive.example>" };
+    },
+  };
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const chargedHour = midnight();
+  await recordUsage(db, ACCOUNT, chargedHour, 250 * 43800, 250 * BYTES_PER_GB, chargedHour + HOUR_MS);
+  await pushBillingHours(db, [chargedHour], {
+    apiKey: KEY,
+    fetch: recordingFetch().fetch,
+    now: chargedHour + HOUR_MS,
+    email,
+    mailFrom: "notifications@drive.example",
+  });
+  assert.equal(sent.length, 1, "a mid-month $5 charge is a receipt, not a statement");
+  assert.match(/** @type {{subject: string}} */ (sent[0]).subject, /charged your card/i);
+
+  sent.length = 0;
+  const lastHour = Date.parse("2026-09-30T23:00:00.000Z");
+  const other = "acct-statement";
+  await putCustomer(db, other, "cus_statement");
+  await recordUsage(db, other, lastHour, 400 * 60, 400 * BYTES_PER_GB, lastHour + HOUR_MS);
+  await pushBillingHours(db, [lastHour], {
+    apiKey: KEY,
+    fetch: recordingFetch().fetch,
+    now: lastHour + HOUR_MS,
+    email,
+    mailFrom: "notifications@drive.example",
+  });
+  assert.equal(sent.length, 1, "the last hour of the month sends a statement even under $5");
+  assert.match(/** @type {{subject: string}} */ (sent[0]).subject, /statement/i);
+  assert.match(/** @type {{text: string}} */ (sent[0]).text, /running balance/i);
 });
