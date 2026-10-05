@@ -1,12 +1,13 @@
 // Copy and sign-up gates for drive issue #387, updated for drive#463: card at
 // sign-up, no $1 credit text, no membership, "minimum" only in "no minimum",
-// and no founding cap or spots count on a public surface.
+// and no founding pricing, cap or spots count on a public surface (drive#586).
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { FAQ } from "../src/docs.js";
 import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
+import { FAILURE_MESSAGES } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
 import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/signin.js";
 
@@ -44,10 +45,20 @@ function dataFor(kind) {
 // drive#466: the retired offer words fail on every shipped surface. "shipped"
 // is the whole public dir (every page and llms.txt), every docs page including
 // the changelog (vitepress builds all of docs-site/*.md), the README, the FAQ,
-// the sign-up copy, PRICE, and every rendered email. The ban is on the words a
+// get-started.html, the failure messages, the sign-up copy, PRICE, and every
+// rendered email. The ban is on the words a
 // customer reads, so source files that state the ban itself (this test, the
 // pricing gate) are not scanned.
-const OFFER_WORDS = [/\bmembership\b/i, /\bfree trial\b/i, /\b7 days free\b/i, /\bfirst month\b/i];
+// "founding" joined the list when founding pricing was removed (drive#586):
+// no shipped text may bring the offer back, in any case.
+const OFFER_WORDS = [
+  /\bmembership\b/i,
+  /\bfree trial\b/i,
+  /\b7 days free\b/i,
+  /\bfirst month\b/i,
+  /founding/i,
+];
+const getStarted = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const docsSiteDir = new URL("../docs-site/", import.meta.url);
 const docsPages = readdirSync(docsSiteDir, { withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
@@ -62,6 +73,8 @@ function offerSurfaces() {
     ...pages.map((page) => [page.name, page.text]),
     ...docsPages.map((page) => [page.name, page.text]),
     ["README.md", readme],
+    ["get-started.html", getStarted],
+    ["FAILURE_MESSAGES", JSON.stringify(FAILURE_MESSAGES)],
     ["FAQ", FAQ.map((entry) => `${entry.question}\n${entry.answer}`).join("\n")],
     ["SIGNIN_COPY", JSON.stringify(SIGNIN_COPY)],
     ["PRICE", JSON.stringify(PRICE)],
@@ -89,7 +102,7 @@ test("the gate itself scans a surface that once carried the words", () => {
   // surface that said the words must trip every phrase in OFFER_WORDS.
   for (const stale of OFFER_WORDS) {
     assert.match(
-      "The membership returns: a free trial, 7 days free, the first month half price.",
+      "The membership returns: a free trial, 7 days free, the first month half price, Founding pricing.",
       stale,
     );
   }
@@ -113,7 +126,7 @@ test("pricing copy has no membership, and says minimum only as no minimum", () =
   assert.equal(PRICE.noMinimumLine, "No minimum. No plans.");
   assert.equal("membershipLine" in PRICE, false);
   assert.equal("freeLine" in PRICE, false);
-  for (const line of [PRICE.headline, PRICE.foundingLine, PRICE.rule, PRICE.needCard]) {
+  for (const line of [PRICE.headline, PRICE.rule, PRICE.needCard]) {
     assert.doesNotMatch(line, MINIMUM_IN_PRICING);
     assert.doesNotMatch(line, MEMBERSHIP);
   }
@@ -166,7 +179,6 @@ test("the public site never contains the founding cap or a spots count", () => {
     assert.doesNotMatch(page.text, FOUNDING_LEAK, page.name);
     assert.equal(page.text.includes("1,000"), false, `${page.name} leaked 1,000`);
   }
-  assert.ok(pages.some((page) => page.text.includes(PRICE.foundingLine)));
   assert.ok(pages.some((page) => page.text.includes(PRICE.noMinimumLine)));
 });
 

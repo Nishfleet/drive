@@ -281,21 +281,20 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   );
 });
 
-test("a founding account's agent key counts the account's half, at the real schema", async () => {
+test("an agent key counts the account's one bill, at the real schema", async () => {
   const { sqlite, db } = makeMeteredDB();
   const clock = fixedClock();
   const store = storeOver(db, clock);
-  const account = { id: "acct_founder", name: "Founder drive" };
+  const account = { id: "acct_one_price", name: "One price drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
-  // The flag the cap reads is the account's own (#386), on the accounts
-  // row: the same 2 TB that 403s a regular account bills a founding one $10
-  // (drive#482), under the $12 cap, so the write goes through.
+  // 500 GB bills $10 at the one rate, under the $12 cap, so the write goes
+  // through.
   sqlite
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
     .run(account.id, "");
-  meterAMonthOf(sqlite, account.id, 2000);
-  assert.equal((await writeAt(store, key, "/u/acct_founder/under.md")).status, 201);
+  meterAMonthOf(sqlite, account.id, 500);
+  assert.equal((await writeAt(store, key, "/u/acct_one_price/under.md")).status, 201);
   assert.deepEqual(
     JSON.parse(
       String(
@@ -304,12 +303,11 @@ test("a founding account's agent key counts the account's half, at the real sche
     ),
     ["list", "read", "write"],
   );
-  // 3 TB is $15 on a founding account, past the $12 cap, so the cap still
-  // bites: the flag halves what the account pays, not what it is bounded by.
+  // 2 TB bills $20 at the same rate, past the $12 cap, so the cap bites.
   sqlite
     .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
-    .run(account.id, 3000 * MINUTES_PER_MONTH);
-  assert.equal((await writeAt(store, key, "/u/acct_founder/over.md")).status, 403);
+    .run(account.id, 2000 * MINUTES_PER_MONTH);
+  assert.equal((await writeAt(store, key, "/u/acct_one_price/over.md")).status, 403);
 });
 
 test("the next UTC day is a fresh count, with nothing running between", async () => {
