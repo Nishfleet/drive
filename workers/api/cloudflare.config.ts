@@ -110,19 +110,17 @@ export default defineWorker({
     //     --text <token> --worker drive-api
     // (--type is required: cf refuses the update without it.)
     IDRIVE_E2_API_TOKEN: bindings.secret(),
-    // No mailer is declared, and none is needed: no route this Worker mounts
-    // sends mail. The device flow starts with a code the CLI shows
-    // (POST /v1/device/code) and ends with the person approving it on
-    // /v1/device/approve, which the account gate holds behind a session the
-    // site Worker's own /api/signin mints — that route, and the sign-in link
-    // it sends through the site Worker's EMAIL binding, is the only place a
-    // drive mail leaves. Better Auth's instance over this database does read a
-    // mailer (core/auth.js `sendSigninLink`), but it is reached only through an
-    // auth endpoint, and this Worker mounts none, so the binding would be one
-    // no code reads: a name waiting to drift from the code that never calls it.
-    // When a route that mails lands here, it declares its mailer with it.
+    // Device approval mails the owner (drive#518). Same stock send_email
+    // binding the site Worker uses; MAIL_FROM stays undeclared so a missing
+    // sending domain is a skipped notice, not a refused deploy.
+    EMAIL: bindings.sendEmail(),
+    // MAIL_FROM stays undeclared: a declared secret is required at deploy, and
+    // the approval still finishes when the sending domain is unset. Set it
+    // once beside the site Worker's own:
+    //   cf workers secrets update MAIL_FROM --type secret_text \
+    //     --text <address> --worker drive-api
     //
-    // The three values this Worker reads from env that are not declared, for
+    // The other values this Worker reads from env that are not declared, for
     // the same reason the site Worker does not declare them
     // (cloudflare.config.ts): a declared secret is required at deploy, so the
     // deploy would refuse to ship until each was set, and every one of these

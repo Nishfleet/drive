@@ -67,7 +67,7 @@ import { checkedTeamRole, teamScopeFor } from "./keyprovider.js";
  * (the D1 statements are), so a caller cannot forget an `await` and read a
  * per-isolate stand-in's answer as if it were the real store's.
  * @typedef {object} TeamStore
- * @property {(account: {id: string}, name: string) => Promise<Team>|Team} createTeam
+ * @property {(account: {id: string}, name: string) => Promise<Team>} createTeam
  * @property {(account: {id: string}, teamId: string) => Promise<Team|null>|Team|null} teamForAccount
  * @property {(account: {id: string}) => Promise<Team[]>|Team[]} listTeams
  * @property {(owner: {id: string}, teamId: string, email: string, role: import("./keyprovider.js").TeamRole) => Promise<TeamMember|{error: string}>} inviteMember
@@ -149,9 +149,9 @@ export function createTeamStore(options = {}) {
      * key is scoped to, and keyprovider.js checks its shape.
      * @param {{id: string}} account
      * @param {string} name
-     * @returns {Team}
+     * @returns {Promise<Team>}
      */
-    createTeam(account, name) {
+    async createTeam(account, name) {
       const team = {
         id: newId("team"),
         ownerAccountId: account.id,
@@ -198,12 +198,12 @@ export function createTeamStore(options = {}) {
     },
 
     /**
-     * Invite a member by email with a role. The membership is `active` the
-     * moment the email is one a signed-in account already has (the store's own
-     * account lookup) — that binding is what the acceptance needs, two real
-     * accounts on one team drive. An email with no account yet stays
-     * `invited`: the row holds the address and the role, and the same call
-     * binds it when the account appears, so an invite is not a one-shot.
+     * Invite a member by email with a role. The membership stays `invited`
+     * until that person accepts: binding at invite time told a caller whether
+     * the address already had an account, and it skipped the accept step the
+     * key-mint route needs (drive#518). The account id stays empty here; the
+     * same call on an unknown address and on a signed-up one writes the same
+     * shape of row.
      * @param {{id: string}} ownerAccount
      * @param {string} teamId
      * @param {string} email
@@ -218,11 +218,11 @@ export function createTeamStore(options = {}) {
         return { error: "not-found" };
       }
       const checkedRole = checkedTeamRole(role);
-      const account = await accountForEmail(email);
+      const address = email.trim();
       const existing = [...members.values()].find(
         (member) =>
           member.teamId === team.id &&
-          member.email.toLowerCase() === email.trim().toLowerCase() &&
+          member.email.toLowerCase() === address.toLowerCase() &&
           member.state !== "removed",
       );
       if (existing !== undefined) {
@@ -236,18 +236,15 @@ export function createTeamStore(options = {}) {
       const member = {
         id: newId("member"),
         teamId: team.id,
-        accountId: account === null ? "" : account.id,
-        email: email.trim(),
+        accountId: "",
+        email: address,
         role: checkedRole,
-        state: account === null ? "invited" : "active",
+        state: "invited",
         invitedAt: at,
-        joinedAt: account === null ? null : at,
+        joinedAt: null,
         revokedAt: null,
       };
       members.set(member.id, member);
-      if (member.accountId !== "") {
-        byTeamAccount.set(`${team.id}:${member.accountId}`, member.id);
-      }
       // The random source is read so a store built with a fixed generator
       // still exercises the same path; the id above is the only random value
       // this call needs.
@@ -525,10 +522,12 @@ export function createD1TeamStore(db, options = {}) {
       }
       const checkedRole = checkedTeamRole(role);
       const address = email.trim();
-      const account = await accountForEmail(address);
       // An invite to an address already on the team moves that row's role
       // rather than adding a second seat — the same rule the memory store
-      // follows, so the two stores cannot disagree about a duplicate.
+      // follows, so the two stores cannot disagree about a duplicate. The
+      // invite stays pending until acceptInvite; looking the account up here
+      // would make the row (and the HTTP answer) differ for an address that
+      // already has an account (drive#518).
       const existing = memberRow(
         await db
           .prepare(
@@ -549,12 +548,12 @@ export function createD1TeamStore(db, options = {}) {
       const member = {
         id: newId("member"),
         teamId,
-        accountId: account === null ? "" : account.id,
+        accountId: "",
         email: address,
         role: checkedRole,
-        state: account === null ? "invited" : "active",
+        state: "invited",
         invitedAt: at,
-        joinedAt: account === null ? null : at,
+        joinedAt: null,
         revokedAt: null,
       };
       await db
@@ -582,12 +581,20 @@ export function createD1TeamStore(db, options = {}) {
      * @returns {Promise<TeamMember|null>}
      */
     async acceptInvite(teamId, accountId) {
-      // Bind every pending invite whose email is now this account. A list and a
-      // loop rather than a single UPDATE, because the bind is per-email: it
-      // needs the account lookup the resolver answers, and that is the only way
-      // an invited address becomes the signed-in account it belongs to.
-      if (!resolveAccountByEmail) {
-        return null;
+      // An already-active member must get their row back: the key-mint route
+      // calls this for every non-owner, and answering null for `active` is
+      // how production 404'd every team key (drive#518). Memory does the
+      // same check first (activeMembership).
+      const active = memberRow(
+        await db
+          .prepare(
+            "SELECT * FROM team_members WHERE team_id = ?1 AND account_id = ?2 AND state = 'active'",
+          )
+          .bind(teamId, accountId)
+          .first(),
+      );
+      if (active !== null) {
+        return active;
       }
       const pending = await db
         .prepare("SELECT * FROM team_members WHERE team_id = ?1 AND state = 'invited'")
@@ -600,7 +607,7 @@ export function createD1TeamStore(db, options = {}) {
         if (member === null) {
           continue;
         }
-        const account = await resolveAccountByEmail(member.email);
+        const account = await accountForEmail(member.email);
         if (account !== null && account.id === accountId) {
           const at = nowSeconds(now());
           await db

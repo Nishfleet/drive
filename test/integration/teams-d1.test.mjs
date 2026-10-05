@@ -91,19 +91,25 @@ test("two real accounts share one team drive, and the removal survives a fresh s
   assert.equal(stored.owner_account_id, owner.account.id);
   assert.equal(stored.name, "Design");
 
-  // The invite binds the member's REAL account, by email.
+  // The invite stays pending until accept, whether or not the email already
+  // has an account (drive#518).
   const invitedMember = invited(
     await teams.inviteMember(owner.account, team.id, member.account.email, "read_write"),
   );
-  assert.equal(invitedMember.state, "active", "the invited address is a signed-in account");
-  assert.equal(invitedMember.accountId, member.account.id);
-  const memberRow = rowIn(sqlite, "SELECT * FROM team_members WHERE id = ?", invitedMember.id);
+  assert.equal(invitedMember.state, "invited", "an invite stays pending until accept");
+  assert.equal(invitedMember.accountId, "", "the invite does not name an account");
+  const accepted = await teams.acceptInvite(team.id, member.account.id);
+  assert.notEqual(accepted, null, "accept binds the pending invite");
+  const invitedAccepted = /** @type {import("../../core/teams.js").TeamMember} */ (accepted);
+  assert.equal(invitedAccepted.state, "active");
+  assert.equal(invitedAccepted.accountId, member.account.id);
+  const memberRow = rowIn(sqlite, "SELECT * FROM team_members WHERE id = ?", invitedAccepted.id);
   assert.equal(memberRow.account_id, member.account.id);
   assert.equal(memberRow.role, "read_write");
   assert.equal(memberRow.state, "active");
 
   // The member's key scope is the team prefix with the role's capabilities.
-  const scope = teams.scopeForMember(invitedMember);
+  const scope = teams.scopeForMember(invitedAccepted);
   assert.equal(scope.prefix, `t/${team.id}/`);
   assert.deepEqual([...scope.capabilities], ["list", "read", "write"]);
 
@@ -240,9 +246,14 @@ test("the key store's team keys are revoked by account and team prefix", async (
   });
 
   const team = await teams.createTeam(owner.account, "Design");
-  const memberMember = invited(
+  const pending = invited(
     await teams.inviteMember(owner.account, team.id, member.account.email, "read_write"),
   );
+  const accepted = await teams.acceptInvite(team.id, member.account.id);
+  assert.notEqual(accepted, null, "accept binds the pending invite before mint");
+  const memberMember = /** @type {import("../../core/teams.js").TeamMember} */ (accepted);
+  assert.equal(memberMember.id, pending.id);
+  assert.equal(memberMember.state, "active");
 
   const memberKey = await keys.mintTeamKey(member.account, team.id, memberMember.role, {
     name: "member",

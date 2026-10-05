@@ -10,6 +10,7 @@
 // core/pricing.js and core/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { escapeHtml } from "./escape-html.js";
 import { TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
@@ -431,6 +432,46 @@ export function lowBalanceTemplate(data = {}) {
   return finish({ subject, lines, html_lines });
 }
 
+// ---------------------------------------------------------------------------
+// 10) Device approve notice -- a signed-in owner approved a CLI.
+//     { deviceName, requestedAt }
+// ---------------------------------------------------------------------------
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
+function requireText(value, name) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${name} must be a non-empty string, got ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function deviceApproveNoticeTemplate(data = {}) {
+  const deviceName = requireText(data.deviceName, "deviceName");
+  const requestedAt = requireText(data.requestedAt, "requestedAt");
+  const subject = "A device asked to connect to your drive";
+  const lines = [
+    `A device named ${deviceName} asked to connect to your drive.`,
+    "",
+    `It asked at ${requestedAt}.`,
+    "",
+    "If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.",
+  ];
+  const safeName = escapeHtml(deviceName);
+  const safeAt = escapeHtml(requestedAt);
+  const html_lines = [
+    `<p>A device named ${safeName} asked to connect to your drive.</p>`,
+    `<p>It asked at ${safeAt}.</p>`,
+    "<p>If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -442,6 +483,7 @@ export const EMAIL_KINDS = Object.freeze([
   "account-close-reminder",
   "top-up-receipt",
   "low-balance",
+  "device-approve-notice",
 ]);
 
 /**
@@ -457,6 +499,7 @@ const TEMPLATES = Object.freeze({
   "account-close-reminder": accountCloseReminderTemplate,
   "top-up-receipt": topUpReceiptTemplate,
   "low-balance": lowBalanceTemplate,
+  "device-approve-notice": deviceApproveNoticeTemplate,
 });
 
 /**

@@ -105,6 +105,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "account-close-reminder",
     "top-up-receipt",
     "low-balance",
+    "device-approve-notice",
   ]);
 });
 
@@ -271,6 +272,8 @@ function dataFor(kind) {
       return { amountUsd: 25, balanceUsd: 31.5, auto: false };
     case "low-balance":
       return { balanceUsd: 1.8, autoTopUpUsd: null };
+    case "device-approve-notice":
+      return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
     default:
       throw new Error(`no test data for ${kind}`);
   }

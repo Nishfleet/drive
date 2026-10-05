@@ -153,7 +153,9 @@ async function signIn(store, name) {
     ctx(),
   );
   assert.equal(page.status, 200);
-  assert.match(await page.text(), new RegExp(code.userCode));
+  const pageHtml = await page.text();
+  assert.match(pageHtml, /<input id="user_code" name="user_code" value=""/);
+  assert.doesNotMatch(pageHtml, new RegExp(code.userCode));
 
   const approved = await dispatch(
     new Request("https://api.test/v1/device/approve", {
@@ -835,6 +837,162 @@ test("a signed-out approve link goes to sign-in, never raw JSON (drive#459)", as
   const body = await page.text();
   assert.doesNotMatch(body, /"error"/);
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
+});
+
+test("the approve page shows the device name and time and never pre-fills the code", async () => {
+  const store = createMemoryStore({ now: () => Date.parse("2026-10-05T12:00:00.000Z") });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({
+    id: "acct_page",
+    name: "Page",
+    email: "page@example.com",
+  });
+  const code = await store.requestDeviceCode({ name: "office laptop" });
+  const page = await dispatch(
+    new Request(
+      `https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`,
+      { headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+    ),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /office laptop/);
+  assert.match(html, /2026-10-05T12:00:00.000Z/);
+  assert.match(html, /value=""/);
+  assert.doesNotMatch(html, new RegExp(`value="${code.userCode}"`));
+});
+
+test("approving a device mails the owner a notice", async () => {
+  const store = createMemoryStore({ now: () => Date.parse("2026-10-05T12:00:00.000Z") });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({
+    id: "acct_mail",
+    name: "Mail",
+    email: "mail@example.com",
+  });
+  const code = await store.requestDeviceCode({ name: "office laptop" });
+  /** @type {Array<Record<string, unknown>>} */
+  const sent = [];
+  const approved = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+        origin: "https://api.test",
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null, {
+      accounts,
+      env: {
+        EMAIL: {
+          send: async (/** @type {Record<string, unknown>} */ message) => {
+            sent.push(message);
+            return { messageId: "mid_notice" };
+          },
+        },
+        MAIL_FROM: "drive@example.com",
+      },
+    }),
+  );
+  assert.equal(approved.status, 200);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, "mail@example.com");
+  assert.equal(/** @type {{email: string}} */ (sent[0].from).email, "drive@example.com");
+  assert.match(String(sent[0].subject), /device asked to connect/i);
+  assert.match(String(sent[0].text), /office laptop/);
+});
+
+test("a mailer that refuses is visible, and the approval stays committed", async () => {
+  // The deliberate shape, pinned so it cannot drift (drive#518 review): the
+  // mailer's refusal is not swallowed into a success page, and it does not
+  // un-approve the device either — the approval committed first, so the
+  // owner's retry says already-approved instead of minting a second
+  // credential, and the failed notice is a log line, not a lost signal.
+  const store = createMemoryStore({ now: () => Date.parse("2026-10-05T12:00:00.000Z") });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({
+    id: "acct_mailfail",
+    name: "Mail",
+    email: "mailfail@example.com",
+  });
+  const code = await store.requestDeviceCode({ name: "office laptop" });
+  const refused = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+        origin: "https://api.test",
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null, {
+      accounts,
+      env: {
+        EMAIL: {
+          send: async () => {
+            throw new Error("vendor down");
+          },
+        },
+        MAIL_FROM: "drive@example.com",
+      },
+    }),
+  );
+  assert.equal(refused.status, 500, "a refusing mailer is not read as success");
+  const polled = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(polled.status, "approved", "the approval itself is not undone");
+});
+
+test("the approve page GET is rate limited before the store is read", async () => {
+  // The page names a pending code's device and time, so an unlimited version
+  // is an existence oracle for codes a phishing page is cycling. The GET
+  // runs its own bucket of the same edge limiter the POSTs run.
+  const store = createMemoryStore({ now: () => Date.parse("2026-10-05T12:00:00.000Z") });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({
+    id: "acct_pagelimit",
+    name: "Page",
+    email: "pagelimit@example.com",
+  });
+  const code = await store.requestDeviceCode({ name: "office laptop" });
+  /** @param {ReturnType<typeof makeRateLimiter>} limiter */
+  const get = (limiter) =>
+    dispatch(
+      new Request(
+        `https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`,
+        { headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+      ),
+      baseCtx(store, null, {
+        accounts,
+        env: {
+          DEVICE_RATE_LIMITER: limiter,
+          DEVICE_GLOBAL_RATE_LIMITER: makeRateLimiter(),
+        },
+      }),
+    );
+  const denied = await get(makeRateLimiter({ success: false }));
+  assert.equal(denied.status, 429);
+  const allowed = await get(makeRateLimiter());
+  assert.equal(allowed.status, 200);
+});
+
+test("a branch named '.' or '..' is refused with 400", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
+  for (const name of [".", ".."]) {
+    const answer = await dispatch(
+      new Request("https://api.test/v1/keys", {
+        method: "POST",
+        headers: { ...bearer(deviceToken), "content-type": "application/json" },
+        body: JSON.stringify({ kind: "branch", name }),
+      }),
+      baseCtx(store, null),
+    );
+    assert.equal(answer.status, 400, `branch name ${JSON.stringify(name)} must be 400`);
+  }
 });
 
 // ---- the one-hour agent credential (drive issue #106) ----

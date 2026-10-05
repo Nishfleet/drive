@@ -42,6 +42,7 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  *        only the in-memory store holds one, for a test that models a
  *        lost account row
  * @property {(request?: {name?: string}) => Promise<DeviceCodeResult>} requestDeviceCode
+ * @property {(userCode: string) => Promise<PendingDeviceApproval|null>} pendingDeviceApproval
  * @property {(userCode: string, account?: {id: string, name?: string, email?: string}) => Promise<ApproveResult>} approveDeviceCode
  * @property {(deviceCode: string) => Promise<PollResult>} pollDeviceCode
  * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
@@ -54,6 +55,12 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  * A freshly started device code: the CLI's secret and the short code a person
  * types on the approval page.
  * @typedef {{deviceCode: string, userCode: string, expiresIn: number, interval: number}} DeviceCodeResult
+ */
+
+/**
+ * A pending device code the approval page can name without putting the code
+ * in the form. `createdAt` and `expiresAt` are epoch seconds.
+ * @typedef {{name: string, createdAt: number, expiresAt: number}} PendingDeviceApproval
  */
 
 /**
@@ -224,6 +231,25 @@ export function createMemoryDeviceSigninStore(options = {}) {
         expiresIn: DEVICE_CODE_TTL_SECONDS,
         interval: DEVICE_CODE_INTERVAL_SECONDS,
       };
+    },
+
+    /**
+     * The pending code a person is about to approve, or null. The approval
+     * page names the device and the time from this, and never copies the
+     * user code into the form (drive#518).
+     * @param {string} userCode
+     * @returns {Promise<PendingDeviceApproval|null>}
+     */
+    async pendingDeviceApproval(userCode) {
+      const deviceCode = byUserCode.get(userCode);
+      const code = deviceCode === undefined ? undefined : byDeviceCode.get(deviceCode);
+      if (code === undefined || code.status !== "pending") {
+        return null;
+      }
+      if (code.expiresAt < nowSeconds(now())) {
+        return null;
+      }
+      return { name: code.name, createdAt: code.createdAt, expiresAt: code.expiresAt };
     },
 
     /**
@@ -484,6 +510,37 @@ export function createD1DeviceSigninStore(db, options = {}) {
         userCode,
         expiresIn: DEVICE_CODE_TTL_SECONDS,
         interval: DEVICE_CODE_INTERVAL_SECONDS,
+      };
+    },
+
+    /**
+     * The pending code a person is about to approve, or null. The approval
+     * page names the device and the time from this, and never copies the
+     * user code into the form (drive#518).
+     * @param {string} userCode
+     * @returns {Promise<PendingDeviceApproval|null>}
+     */
+    async pendingDeviceApproval(userCode) {
+      const row = await first(
+        db,
+        "SELECT name, created_at, expires_at, status FROM device_codes WHERE user_code = ?1",
+        userCode,
+      );
+      if (row === null || typeof row !== "object") {
+        return null;
+      }
+      const r = /** @type {Record<string, unknown>} */ (row);
+      if (String(r.status) !== "pending") {
+        return null;
+      }
+      const expiresAt = Number(r.expires_at);
+      if (expiresAt < nowSeconds(now())) {
+        return null;
+      }
+      return {
+        name: String(r.name ?? ""),
+        createdAt: Number(r.created_at),
+        expiresAt,
       };
     },
 
