@@ -278,6 +278,7 @@ export function markerValues(extra = {}) {
     HEADLINE: PRICE.headline,
     NO_PLANS: PRICE.noPlansLine,
     PRICE_RULE: PRICE.rule,
+    TRASH_BILLING: PRICE.trashLine,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
     CACHE_LIMIT,
