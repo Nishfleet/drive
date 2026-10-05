@@ -97,3 +97,6 @@ async function smoke() {
 }
 
 process.exitCode = await smoke();
+
+// A module, so the top-level await above type-checks.
+export {};

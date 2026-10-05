@@ -230,6 +230,12 @@ test("S3 signing is aws4fetch, not a hand-written SigV4 module", () => {
   assert.match(s3, /from "aws4fetch"/);
 });
 
+/**
+ * One line per named proof that skipped, written when CI asks for it
+ * (DRIVE_PROOF_REPORT), so CI counts it (drive#582).
+ * @param {string} name
+ * @param {string} reason
+ */
 function reportSkip(name, reason) {
   const report = process.env.DRIVE_PROOF_REPORT;
   if (report) appendFileSync(report, `${name}: ${reason}\n`);

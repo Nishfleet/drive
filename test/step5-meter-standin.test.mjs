@@ -203,6 +203,12 @@ function providerDayGbMinutes(versions, day) {
 // node:test's default 5s timeout killed startup (drive#457: 4999.68ms on PR 435).
 const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
 
+/**
+ * One line per named proof that skipped, written when CI asks for it
+ * (DRIVE_PROOF_REPORT), so CI counts it (drive#582).
+ * @param {string} name
+ * @param {string} reason
+ */
 function reportSkip(name, reason) {
   const report = process.env.DRIVE_PROOF_REPORT;
   if (report) appendFileSync(report, `${name}: ${reason}\n`);

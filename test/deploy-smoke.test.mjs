@@ -30,7 +30,7 @@ function runSmoke(env) {
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
   });
 }
 
@@ -84,7 +84,7 @@ test("a failing Worker: a stubbed 500 exits non-zero even after the retries", as
       response.end("kaboom");
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
   t.after(() => server.close());
   const { address, port } = /** @type {import("node:net").AddressInfo} */ (server.address());
 
@@ -106,7 +106,7 @@ test("a sick Worker: 200 with ok:false exits non-zero", async (t) => {
       response.end(JSON.stringify({ ok: false }));
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
   t.after(() => server.close());
   const { address, port } = /** @type {import("node:net").AddressInfo} */ (server.address());
 
@@ -125,7 +125,7 @@ test("a route that never answers fails the smoke with a report, not a hang", asy
     // Never answered: fetch fails after Node's own default and the retry
     // loop still gets its second attempt, so this proves the loop ends.
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
   t.after(() => server.close());
   const { address, port } = /** @type {import("node:net").AddressInfo} */ (server.address());
 
