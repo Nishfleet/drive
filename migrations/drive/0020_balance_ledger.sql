@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS balance_ledger (
   idempotency_key TEXT NOT NULL UNIQUE,
   -- The provider's payment id for a top-up or the refund's payment.
   provider_payment_id TEXT,
+  -- What the provider itself moved, in cents, tax included: the payment's
+  -- total for a top-up, the money sent back for a refund. amount_cents is the
+  -- balance's share of it (a top-up is credited before tax), and a refund
+  -- reverses that share in proportion, never the tax the balance never got.
+  provider_amount_cents INTEGER,
   -- Epoch milliseconds of the UTC hour a usage draw covers.
   window_start INTEGER,
   -- Why a refund or adjustment was made.
