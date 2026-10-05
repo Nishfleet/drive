@@ -1336,7 +1336,11 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // both seeing a free name and both landing. The create-only write is what
   // decides the winner; on a backend whose PUT honors If-None-Match the
   // race closes in the storage itself, and on one that does not, this
-  // pre-check still catches every duplicate that is not mid-race.
+  // pre-check still catches every duplicate that is not mid-race. The one
+  // observable a non-honoring backend leaves open: a true mid-race pair both
+  // answer 201, both reservations stay counted (conservative — the link
+  // fills sooner, never past its cap), and the last PUT's bytes stand, which
+  // the provider's hide-not-delete versioning keeps recoverable.
   if ((await scoped.stat(path)) !== null) {
     return json({ error: failureMessage("upload-name-taken") }, 409);
   }
@@ -1367,8 +1371,10 @@ export async function handleRequestUploadRequest(request, files, links, capState
     try {
       await links.requests.releaseUpload(checked.token, sized.bytes);
     } catch (cause) {
+      // No token in the log: it is a stranger's capability, and the log
+      // outlives the link. The folder and the drop's size name the event.
       return serverFailure(
-        `releasing a lost-race reservation on ${checked.token}: ${String(cause)}`,
+        `releasing a lost-race reservation for a ${sized.bytes}-byte drop into ${record.folder}: ${String(cause)}`,
       );
     }
     return json({ error: failureMessage("upload-name-taken") }, 409);

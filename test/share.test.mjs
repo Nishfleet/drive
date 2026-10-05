@@ -1485,12 +1485,14 @@ test("two uploads racing one name have exactly one winner, every run, on the sto
       () => "active",
       withLimits(),
     );
-  const [first, second] = await Promise.all([drop("one"), drop("two")]);
+  const [first, second] = await Promise.all([drop("first"), drop("second-drop-is-longer")]);
   const statuses = [first.status, second.status].sort((left, right) => left - right);
   assert.deepEqual(statuses, [201, 409]);
   const loser = first.status === 201 ? second : first;
   assert.equal((await loser.json()).error, failureMessage("upload-name-taken"));
-  const winnerBody = first.status === 201 ? "one" : "two";
+  // Different lengths, so the count proves the winner's size stayed and the
+  // loser's reservation came back — not merely that some bytes were counted.
+  const winnerBody = first.status === 201 ? "first" : "second-drop-is-longer";
   const readBack = await scopeStore(files, account).read("/race.txt");
   assert.notEqual(readBack, null);
   if (readBack === null) {
