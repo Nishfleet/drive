@@ -54,7 +54,12 @@ function storageServer() {
       async revoke(accessKeyId) {
         held.delete(accessKeyId);
       },
-      async swapToReadOnly() {},
+      // A cap swap is not this proof's claim, so the stand-in never reaches it;
+      // it is present only so the object satisfies the KeyProvider shape
+      // (keyprovider.js) rather than missing a method at the cap route.
+      async swapToReadOnly() {
+        throw new Error("swapToReadOnly is not modelled by the storage-server stand-in");
+      },
     },
     /** The storage server's own answer to "does this pair still work here?" */
     accepts(accessKeyId, secret) {
@@ -122,7 +127,7 @@ async function linkAndRequest(db, accountId, suffix) {
 }
 
 /**
- * @param {import("node:sqlite").DatabaseSync} sqlite
+ * @param {import("../d1-sqlite.mjs").TestSqlite} sqlite
  * @param {string} table
  * @param {string} token
  */
@@ -200,7 +205,10 @@ test("signing out every device revokes the key at the storage server, plus token
   // The public link and the public upload request: the site Worker's own
   // resolver reads them as revoked, and the rows carry the stamp.
   assert.equal(linkState(await myLinks.links.shares.get(myLinks.shareToken), NOW_MS), "revoked");
-  assert.equal(linkState(await myLinks.links.requests.get(myLinks.requestToken), NOW_MS), "revoked");
+  assert.equal(
+    linkState(await myLinks.links.requests.get(myLinks.requestToken), NOW_MS),
+    "revoked",
+  );
   assert.equal(revokedAt(sqlite, "shares", myLinks.shareToken), NOW);
   assert.equal(revokedAt(sqlite, "upload_requests", myLinks.requestToken), NOW);
 
