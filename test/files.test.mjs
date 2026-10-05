@@ -59,6 +59,12 @@ import {
 } from "../src/files.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import {
+  computeHiddenAt,
+  decodeEntities,
+  nextVersionMarkers,
+  versionMarkers,
+} from "../src/s3-listing.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
@@ -915,9 +921,9 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
 test("a real S3 ListObjectVersions becomes version rows", () => {
   // The shape a versioned S3 bucket answers (iDrive e2 and B2 both speak it):
   // two versions of one key newest first, and a delete marker that ended
-  // another key's latest version. The reconciler reads created_at -> hidden_at,
-  // so the older version is hidden when the newer one began, and the marker's
-  // key is hidden when the marker landed.
+  // another key's latest version. The page scan reads the rows; the stops are
+  // one pass over the whole list, because the pair that ends a version can sit
+  // on different pages (drive issue #504).
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>drive</Name><Prefix>u/1/</Prefix>
@@ -930,8 +936,15 @@ test("a real S3 ListObjectVersions becomes version rows", () => {
   <DeleteMarker><Key>u/1/gone.txt</Key><VersionId>d1</VersionId><IsLatest>true</IsLatest>
     <LastModified>2026-09-30T11:00:00.000Z</LastModified></DeleteMarker>
 </ListVersionsResult>`;
-  const versions = parseListVersions(xml);
-  assert.equal(versions.length, 3);
+  const rows = parseListVersions(xml);
+  assert.equal(rows.length, 3);
+  assert.ok(
+    rows.every((row) => row.hiddenAt === null),
+    "one page alone cannot know a version's stop",
+  );
+  const versions = computeHiddenAt(rows, versionMarkers(xml));
+  assert.notEqual(versions[0], rows[0], "the pass returns new rows and leaves the scan alone");
+  assert.equal(rows[0].hiddenAt, null, "the scan's own row is untouched");
   const newest = versions.find((version) => version.b2FileId === "v2");
   assert.ok(newest);
   assert.equal(newest.hiddenAt, null, "the newest version of its key is still live");
@@ -962,6 +975,98 @@ test("a real S3 ListObjectVersions becomes version rows", () => {
       ),
     /key, a version id or a time/,
   );
+});
+
+test("one decode pass reads every entity an S3 listing carries", () => {
+  // The five named entities the XML spec predefines, plus the numeric forms
+  // servers answer with for the same characters (MinIO, rclone serve s3 and
+  // iDrive e2 each use both).
+  assert.equal(decodeEntities("u/1/holiday.jpg"), "u/1/holiday.jpg");
+  assert.equal(decodeEntities("u/1/a&amp;b.txt"), "u/1/a&b.txt");
+  assert.equal(decodeEntities("u/1/a&lt;b&gt;c.txt"), "u/1/a<b>c.txt");
+  assert.equal(decodeEntities("u/1/&quot;q&quot;.txt"), 'u/1/"q".txt');
+  assert.equal(decodeEntities("u/1/s&amp;apos;t.txt"), "u/1/s&apos;t.txt");
+  assert.equal(decodeEntities("u/1/s&apos;t&#39;u&#x27;v.txt"), "u/1/s't'u'v.txt");
+  // One pass, not a chain of replaces: `&amp;lt;` is the key text `&lt;`, not
+  // `<`, and the api Worker's old chain of replaces decoded it twice.
+  assert.equal(decodeEntities("u/1/a&amp;lt;b"), "u/1/a&lt;b");
+  assert.equal(decodeEntities("u/1/&NotAnEntity;"), "u/1/&NotAnEntity;");
+});
+
+test("the page markers of a version listing decode with the rows", () => {
+  // What S3 answers for the next page of a listing whose key carries an
+  // ampersand. The store sends the marker back as it came, so it must read
+  // back as the key the account wrote.
+  const xml = `<ListVersionsResult>
+    <NextKeyMarker>u/1/a&amp;b</NextKeyMarker>
+    <NextVersionIdMarker>v2</NextVersionIdMarker>
+  </ListVersionsResult>`;
+  assert.deepEqual(nextVersionMarkers(xml), { keyMarker: "u/1/a&b", versionMarker: "v2" });
+  const last = "<ListVersionsResult></ListVersionsResult>";
+  assert.deepEqual(nextVersionMarkers(last), { keyMarker: "", versionMarker: "" });
+});
+
+test("a key with & < > ' round-trips the S3 store's list, read and delete", async () => {
+  // Drive issue #504, the bug: the key was answered escaped, the page showed
+  // the escaped text, and the read and delete that followed it asked S3 for a
+  // key that does not exist. Every step below goes through one fake bucket
+  // that answers exactly the XML a real one answers.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const name = "a&b <c> 'd'.txt";
+  const key = `u/acct/${name}`;
+  const escapedKey = "u/acct/a&amp;b &lt;c&gt; &apos;d&#39;.txt";
+  const listing = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>drive</Name><Prefix>u/acct/</Prefix>
+  <Contents><Key>${escapedKey}</Key><Size>5</Size>
+    <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
+</ListBucketResult>`;
+  /** @type {string[]} */
+  const asked = [];
+  let body = "";
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init) => {
+    asked.push(`${String(url)}|${init?.method ?? "GET"}`);
+    const address = new URL(String(url));
+    if (address.searchParams.has("list-type")) {
+      return new Response(listing, { status: 200 });
+    }
+    if (init?.method === "PUT") {
+      body = "hello";
+      return new Response("", { status: 200 });
+    }
+    if (init?.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(body.length) },
+    });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: /** @type {typeof fetch} */ (/** @type {unknown} */ (fetchImpl)),
+  });
+  const driveStore = scopeStore(store, { id: "acct" });
+  await driveStore.write(`/${name}`, "hello", "text/plain");
+  const entries = await driveStore.list("/");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].name, name, "the listing shows the name that was written");
+  assert.equal(entries[0].path, `/${name}`);
+  const read = await driveStore.read(`/${name}`);
+  assert.ok(read, "the decoded name reads its own bytes");
+  assert.equal(read.size, 5);
+  await driveStore.remove(`/${name}`);
+  const objectCalls = asked.filter((call) => !call.includes("list-type"));
+  assert.equal(objectCalls.length, 3, "write, read and delete");
+  for (const call of objectCalls) {
+    assert.equal(
+      decodeURIComponent(new URL(call.split("|")[0]).pathname),
+      `/drive/${key}`,
+      `the URL names the key decoded: ${call}`,
+    );
+  }
 });
 
 test("the in-memory store keeps the version history the reconciler reads", async () => {
