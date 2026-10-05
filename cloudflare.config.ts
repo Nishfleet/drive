@@ -216,7 +216,8 @@ export default defineConfig({
       // per IP is the sign-in figure: far above a monitor that polls once a
       // minute, far below a script. Namespace 1009, because 1006/1007 are the
       // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
-      // the share-download limiter below.
+      // the share-download limiter below. 1010 is the request-mint limiter, so
+      // SHARE_MINT_RATE_LIMITER below holds 1011 (drive#714).
       HEALTH_RATE_LIMITER: bindings.rateLimit({
         namespace: "1009",
         simple: { limit: 10, period: 60 },
@@ -236,10 +237,12 @@ export default defineConfig({
       // /api/request each get their own bound, on top of the per-account cap
       // of 50 open links the handlers enforce. 30 a minute per IP is far
       // above an owner clicking "Share" and far below a script minting tokens
-      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
-      // namespace fails the deploy with 10021.
+      // to walk. Namespaces 1010/1011 continue the 1001–1008 series; a reused
+      // namespace fails the deploy with 10021. 1011, not the 1009 this comment
+      // used to claim (drive#714): HEALTH_RATE_LIMITER above already holds
+      // 1009, and two bindings on one namespace fail the deploy with 10021.
       SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1011",
         simple: { limit: 30, period: 60 },
       }),
       REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
