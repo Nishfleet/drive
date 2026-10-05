@@ -1920,6 +1920,9 @@ function providerStore(versionsByPrefix) {
     async write() {
       throw new Error("the reconciler never writes a file");
     },
+    async writeIfAbsent() {
+      throw new Error("the reconciler never writes a file");
+    },
     async remove() {
       throw new Error("the reconciler never removes a file");
     },
