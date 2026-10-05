@@ -345,17 +345,6 @@ func readFileTrimmed(path string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-// fillStop is a small helper the loop uses to decide whether the host is going
-// to sleep or shut down, without a select on two channels inline.
-func fillStop(stop <-chan struct{}) bool {
-	select {
-	case <-stop:
-		return true
-	default:
-		return false
-	}
-}
-
 // fillReader returns the read the fill pass does. It reads the mounted tree
 // through the mount itself, into io.Discard, so every byte it pulls lands in
 // rclone's VFS cache and nowhere else: the fill is not a downloader, it is a
@@ -542,17 +531,4 @@ func RunFillLoop(ctx context.Context, c *rcClient, home, mountDir string) <-chan
 		}
 	}()
 	return errs
-}
-
-// idleNow reads the load averages and applies the policy in one call, so the
-// loop body is the whole rule and the test drives ShouldFill directly.
-func idleNow(offline bool) (bool, error) {
-	if offline {
-		return true, nil
-	}
-	one, five, err := readLoadAverages()
-	if err != nil {
-		return false, fmt.Errorf("fill: read load average: %w", err)
-	}
-	return ShouldFill(offline, one, five), nil
 }
