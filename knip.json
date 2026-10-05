@@ -5,6 +5,7 @@
     "workers/api/src/index.js",
     "workers/dl/src/index.js",
     "test/*.test.mjs",
+    "test/integration/*.test.mjs",
     "workers/*/test/*.test.js"
   ],
   "project": ["src/**/*.js", "workers/**/*.js"],
