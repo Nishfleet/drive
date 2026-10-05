@@ -47,12 +47,7 @@ function dataFor(kind) {
 // the sign-up copy, PRICE, and every rendered email. The ban is on the words a
 // customer reads, so source files that state the ban itself (this test, the
 // pricing gate) are not scanned.
-const OFFER_WORDS = [
-  /\bmembership\b/i,
-  /\bfree trial\b/i,
-  /\b7 days free\b/i,
-  /\bfirst month\b/i,
-];
+const OFFER_WORDS = [/\bmembership\b/i, /\bfree trial\b/i, /\b7 days free\b/i, /\bfirst month\b/i];
 const docsSiteDir = new URL("../docs-site/", import.meta.url);
 const docsPages = readdirSync(docsSiteDir, { withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
@@ -62,7 +57,6 @@ const docsPages = readdirSync(docsSiteDir, { withFileTypes: true })
   }));
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
-/** @param {string} name */
 function offerSurfaces() {
   return [
     ...pages.map((page) => [page.name, page.text]),
@@ -94,7 +88,10 @@ test("the gate itself scans a surface that once carried the words", () => {
   // The guard proves it can fail: the changelog is a shipped doc, and a
   // surface that said the words must trip every phrase in OFFER_WORDS.
   for (const stale of OFFER_WORDS) {
-    assert.match("The membership returns: a free trial, 7 days free, the first month half price.", stale);
+    assert.match(
+      "The membership returns: a free trial, 7 days free, the first month half price.",
+      stale,
+    );
   }
   assert.ok(docsPages.some((page) => page.name === "docs-site/changelog.md"));
 });
