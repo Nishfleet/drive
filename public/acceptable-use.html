@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en" class="drive">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — acceptable use</title>
+  <meta name="description" content="What Drive may not be used for, how to report a share link or abuse, and what happens to an account that breaks the rules.">
+  <!-- drive#523: a legal and trust page. src/legal.js lists these pages, and
+       test/legal.test.mjs and test/seo.test.mjs pin the tags below against
+       src/seo.js. The page's rules live in public/site.css (body.policy). -->
+  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/acceptable-use"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/acceptable-use">
+  <meta property="og:site_name" content="Drive">
+  <meta property="og:title" content="Drive — 2¢ per GB, never more than $10 per TB">
+  <meta property="og:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
+  <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Drive — Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $10 per TB">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
+  <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Drive",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "macOS, Linux",
+  "description": "A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
+  "url": "https://drive-pricing.nishant345.workers.dev/",
+  "image": "https://drive-pricing.nishant345.workers.dev/og.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "10.00",
+    "priceCurrency": "USD",
+    "priceSpecification": {
+      "@type": "UnitPriceSpecification",
+      "price": "10.00",
+      "priceCurrency": "USD",
+      "unitText": "TB-month"
+    },
+    "description": "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB. You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB."
+  }
+}
+  </script>
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <link rel="stylesheet" href="/site.css">
+  <style>
+/* Shared policy-page rules are in site.css (body.policy). This block holds
+   only the page's own side gutter. */
+body {
+  padding: 0 clamp(16px, 5vw, 72px) 72px;
+}
+  </style>
+</head>
+<body class="policy">
+  <a class="skip-link" href="#policy-heading">Skip to the page</a>
+  <header class="masthead">
+    <span class="wordmark"><i aria-hidden="true"></i>drive</span>
+    <span class="tagline">A Finder drive for people and their agents.</span>
+    <a href="/">Pricing</a>
+    <a href="/docs/">Docs</a>
+    <a href="/signin">Sign in</a>
+  </header>
+
+  <main>
+    <h1 id="policy-heading">Acceptable use</h1>
+    <p class="lede">What Drive may not carry or do, and how to report a link or an account.</p>
+    <p class="updated">Last updated 6 October 2026.</p>
+    <section>
+      <h2>Do not use Drive to</h2>
+      <ul>
+        <li>store or share material that sexually exploits children. We report it to the authorities.</li>
+        <li>store or share anything that is illegal where you or the people you share with are.</li>
+        <li>share material that breaks someone else's copyright or other rights.</li>
+        <li>spread malware, or host phishing or scam pages through share links.</li>
+        <li>harass, threaten or expose private information about other people.</li>
+        <li>attack, probe or overload Drive, or reach another account's files.</li>
+        <li>open several accounts to get around a limit or a payment.</li>
+      </ul>
+    </section>
+    
+    <section>
+      <h2>What we do</h2>
+      <p>When something breaks these rules, we can turn off a share link, pause an account, or close it. We tell the account holder by email first, unless the law or someone's safety stops us.</p>
+    </section>
+    
+    <section id="report">
+      <h2>Report a link or abuse</h2>
+      <p>Write to the address on the <a href="/support">support page</a>. Include:</p>
+      <ol>
+        <li>the share link (it starts with <code>/s/</code>) or the account it came from;</li>
+        <li>what is wrong with it;</li>
+        <li>for a copyright report: the work you own, your name and contact details, and a statement that the report is accurate and that you own the rights or act for the owner.</li>
+      </ol>
+      <p>Report a security problem in Drive itself the same way. Our <a href="/.well-known/security.txt">security.txt</a> points to the same place.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+    </nav>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
+  </footer>
+</body>
+</html>
