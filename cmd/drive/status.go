@@ -42,6 +42,13 @@ const USAGE_PATH = "/api/usage"
 // status line into a hung terminal.
 const usageTimeout = 10 * time.Second
 
+// troubleshootingDocsLine is the one line `drive status` adds when something is
+// wrong (drive issue #562): where to read about it. `drive status` is the
+// command a person runs when the drive is broken, so it is also the cheapest
+// place to put the page that answers the question, and it stays one line
+// because the command answers in under ten.
+const troubleshootingDocsLine = "what to try: " + defaultAPIBase + "/docs/troubleshooting"
+
 // runStatus is `drive status`: is it working, what is waiting, how much am I
 // spending (drive#117). Three questions, under ten lines. The rclone config
 // path, the login item path and the raw entry count are debug detail, not
@@ -121,6 +128,7 @@ func runStatus(args []string) error {
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
+	fmt.Println(troubleshootingDocsLine)
 	return nil
 }
 

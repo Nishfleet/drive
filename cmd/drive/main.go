@@ -32,13 +32,14 @@ Usage:
   drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
+  drive doctor [flags]     print the one block to paste into a support message
   drive pause [flags]      stop the bytes leaving the device; survives a restart
   drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
   drive cache              show the disk the mount's cache uses and its limit
   drive cache --max 5G     change that limit
   drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
-  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive share <file>       make a link anyone can open, logged out
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
@@ -66,9 +67,12 @@ Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
 
-Every failure prints what happened and the exact next step (drive#117).
+Every failure prints what happened and the exact next step.
 DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
 the mount's own log.
+
+When something goes wrong, the docs have a page for it:
+  https://drive-pricing.nishant345.workers.dev/docs/troubleshooting
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)
@@ -117,6 +121,10 @@ Cache flags:
 Export flags:
   --out   file to write the export to; stdout when it is not given
 
+Doctor flags:
+  --api          api Worker base URL (env DRIVE_API_URL)
+  --logs <n>     how many log lines to print (default 20, 0 for none)
+
 Import flags:
   --rclone   path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --dry-run  print the copy rclone would run, copy nothing
@@ -159,6 +167,7 @@ var commands = map[string]func([]string) error{
 	"online":    runOnline,
 	"uninstall": runUninstall,
 	"status":    runStatus,
+	"doctor":    runDoctor,
 	"pause":     runPause,
 	"resume":    runResume,
 	"cap":       runCap,

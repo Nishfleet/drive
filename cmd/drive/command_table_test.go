@@ -79,6 +79,27 @@ func noteCommands(note string) []string {
 // note (SKILL.md / steering, skillBody) may name only commands main runs, in
 // code spans or in plain words, so `drive init` can never again advertise a
 // command that does not exist.
+// TestHelpNamesNoTrackerReference refuses a tracker row id in the help text
+// (drive issue #562: `drive --help` used to point at "issue #19" and
+// "drive#117", which are private pointers that mean nothing to the person
+// reading it). The help text is what a session and a person both read, so the
+// gate is a plain-text check of every line of it: nothing in it may name a
+// tracker row. The next step is written out here rather than in the message
+// table, because the reader of this test is the one writing help text.
+func TestHelpNamesNoTrackerReference(t *testing.T) {
+	bad := trackerRefRe.FindAllString(usage, -1)
+	if len(bad) == 0 {
+		return
+	}
+	t.Errorf("`drive --help` names %d tracker reference(s) (%s). Replace each with what a reader can act on: the page or the command that answers the question, not a row in another system", len(bad), strings.Join(bad, ", "))
+}
+
+// trackerRefRe is a tracker row reference: a leading hash, or an
+// owner-then-slug form such as drive#117, followed by digits. Size suffixes
+// (5G, 500M) and dates (2026-01-02) do not match, so the gate cannot be made
+// to pass by rewriting a size.
+var trackerRefRe = regexp.MustCompile(`(#|[A-Za-z][A-Za-z0-9_-]*#)\d+`)
+
 func TestNotesNameOnlyRealCommands(t *testing.T) {
 	for _, note := range []struct{ name, body string }{
 		{"the in-folder note", noteBody("/drive")},
