@@ -10,6 +10,7 @@
 //    or its window drift from src/files.js.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
@@ -19,6 +20,7 @@ import {
   createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
+  FILES_EMBED_ENDPOINT,
   FILES_ENDPOINT,
   FILES_PATH,
   fileKind,
@@ -35,6 +37,7 @@ import {
   parseTrashName,
   previewContentType,
   previewCopy,
+  previewDisposition,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
@@ -248,11 +251,15 @@ test("an unknown name is an error, not a default path", () => {
 
 test("a deleted file's key round-trips back to its path and time", () => {
   const name = trashName("/Photos/holiday.jpg", now);
+  // The layout is nested (drive#570): the original path IS the folder chain
+  // under .trash, so restore lists one prefix instead of walking the trash.
+  assert.equal(name, `Photos/holiday.jpg/${now}`);
   const parsed = parseTrashName(name);
   assert.ok(parsed);
   assert.equal(parsed.path, "/Photos/holiday.jpg");
   assert.equal(parsed.deletedAt, now);
-  // A path with the separator and the encoder's own characters still round-trips.
+  // A path with the separator and the encoder's own characters still round-trips:
+  // the last all-digits segment is the time, everything before it is the path.
   const tricky = trashName("/a b/c%2Fd__e.txt", now);
   assert.equal(parseTrashName(tricky)?.path, "/a b/c%2Fd__e.txt");
 });
@@ -267,6 +274,23 @@ test("a key that is not ours is not restored from", () => {
   );
   assert.throws(() => trashName("a/b", now), TypeError);
   assert.throws(() => trashName("/a", 0), TypeError);
+});
+
+test("a file parked in the old flat layout still parses", () => {
+  // Before drive#570 the key was `<ts>__<encoded path>` directly under
+  // `.trash`. Nothing writes it now, but a file already parked that way has
+  // to stay readable for the 30 days it is restorable, so the parse accepts
+  // both layouts and the deleted view never drops a key.
+  const legacy = `${now}__${encodeURIComponent("/Photos/holiday.jpg")}`;
+  assert.equal(legacy, `${now}__%2FPhotos%2Fholiday.jpg`);
+  const parsed = parseTrashName(legacy);
+  assert.ok(parsed);
+  assert.equal(parsed.path, "/Photos/holiday.jpg");
+  assert.equal(parsed.deletedAt, now);
+  // The nested layout is still the one that parses for a key written now.
+  assert.equal(parseTrashName(trashName("/Photos/holiday.jpg", now))?.path, "/Photos/holiday.jpg");
+  // A flat-looking key whose time segment is not all digits is still refused.
+  assert.equal(parseTrashName(`1e3__${encodeURIComponent("/a.txt")}`), null);
 });
 
 test("the newest parked copy of a path is the one restore finds", () => {
@@ -550,6 +574,89 @@ test("preview: the XML document family and multipart/related leave as a download
   }
 });
 
+test("preview: an SVG leaves the direct-open URL as a download and the embed URL as a picture", async () => {
+  // drive#657: a top-level open of the preview URL must not render an SVG as a
+  // document on our address, because its links navigate and a fake sign-in card
+  // can hand the visitor to an attacker. The page's own <img> reads the embed
+  // URL instead, which still serves the same bytes inline.
+  const { call, upload } = drive();
+  await upload(
+    "/",
+    "logo.svg",
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="https://evil.test">Sign in</a></svg>',
+    "image/svg+xml",
+  );
+  const preview = await call(new Request(api("/preview?path=%2Flogo.svg")));
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "image/svg+xml");
+  assert.equal(preview.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(preview.headers.get("content-security-policy"), "sandbox");
+
+  // The page's own <img> asks for the embed URL, and says so with
+  // Sec-Fetch-Dest: the bytes come back inline, under the same two safety
+  // headers the preview carries.
+  for (const destination of ["image", "video", "audio"]) {
+    const embed = await call(
+      new Request(api("/embed?path=%2Flogo.svg"), {
+        headers: { "sec-fetch-dest": destination },
+      }),
+    );
+    assert.equal(embed.status, 200, destination);
+    assert.equal(embed.headers.get("content-type"), "image/svg+xml", destination);
+    assert.equal(embed.headers.get("content-disposition"), "inline", destination);
+    assert.equal(embed.headers.get("x-content-type-options"), "nosniff", destination);
+    assert.equal(embed.headers.get("content-security-policy"), "sandbox", destination);
+  }
+
+  // A navigation to the embed URL is not an embed: it falls back to the
+  // direct-open preview, so the embed URL is never a way around the download.
+  for (const request of [
+    new Request(api("/embed?path=%2Flogo.svg")),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "document" } }),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "iframe" } }),
+  ]) {
+    const opened = await call(request);
+    assert.equal(opened.status, 200);
+    assert.equal(opened.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  }
+
+  // A raster picture and a PDF keep opening inline from the direct-open URL:
+  // they cannot render a document with navigable links.
+  await upload("/", "holiday.jpg", "the-bytes", "image/jpeg");
+  await upload("/", "report.pdf", "%PDF-1.4", "application/pdf");
+  for (const [name, type] of [
+    ["holiday.jpg", "image/jpeg"],
+    ["report.pdf", "application/pdf"],
+  ]) {
+    const opened = await call(new Request(api(`/preview?path=%2F${name}`)));
+    assert.equal(opened.headers.get("content-type"), type, name);
+    assert.equal(opened.headers.get("content-disposition"), "inline", name);
+  }
+  // The rule, as a function: only the type a browser renders as a document
+  // leaves as an attachment.
+  assert.equal(previewDisposition("logo.svg", "image/svg+xml"), 'attachment; filename="logo.svg"');
+  assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
+  assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
+  assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
+  // previewContentType() normalizes the stored type, so a parameter, a case
+  // change or padding cannot slip an SVG past the attachment branch.
+  for (const claimed of ["image/svg+xml; charset=utf-8", "IMAGE/SVG+XML", " image/svg+xml "]) {
+    assert.equal(
+      previewDisposition("logo.svg", claimed),
+      'attachment; filename="logo.svg"',
+      claimed,
+    );
+  }
+  // A filename that could end the quoted-string, or carry a header-breaking
+  // control character, is stripped before it reaches the header.
+  assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
+  assert.equal(
+    previewDisposition("a\r\nb.svg", "image/svg+xml"),
+    'attachment; filename="a--b.svg"',
+  );
+});
+
 test("upload: the bytes land in the folder it was sent to", async () => {
   const { upload, scoped } = drive();
   const response = await upload("/Photos", "holiday.jpg", "the-bytes", "image/jpeg");
@@ -650,6 +757,35 @@ test("restore: one tap puts the bytes back where they were", async () => {
   assert.deepEqual(trash.rows, []);
 });
 
+test("restore: a file parked in the old flat layout is still restorable", async () => {
+  // A key the pre-drive#570 delete wrote sits directly under `.trash`, where
+  // the restore's one narrow LIST cannot reach it. Restore falls back to one
+  // deep walk only when the narrow LIST is empty, parses the flat name, and
+  // puts the bytes back — so no file a customer deleted before the upgrade
+  // becomes unreachable.
+  const { scoped, call } = drive();
+  await scoped.write(
+    `/.trash/${now}__${encodeURIComponent("/legacy.txt")}`,
+    "old-bytes",
+    "text/plain",
+  );
+  const response = await call(
+    new Request(api("/restore"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/legacy.txt" }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, path: "/legacy.txt" });
+  const back = await scoped.read("/legacy.txt");
+  assert.ok(back);
+  assert.equal(await new Response(back.body).text(), "old-bytes");
+  // The flat key is spent: neither layout still holds a copy.
+  const trash = await (await call(new Request(api("?view=deleted")))).json();
+  assert.deepEqual(trash.rows, []);
+});
+
 test("restore: a file that is not in Recently deleted says so", async () => {
   const { call } = drive();
   const response = await call(
@@ -715,16 +851,34 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     list: async () => {
       throw new Error("storage list failed with 503");
     },
+    listKeys: async () => {
+      throw new Error("storage list failed with 503");
+    },
     read: async () => {
       throw new Error("storage read failed with 503");
     },
     write: async () => {
       throw new Error("storage write failed with 503");
     },
+    writeIfAbsent: async () => {
+      throw new Error("storage write failed with 503");
+    },
     remove: async () => {},
+    removeBatch: async () => {
+      throw new Error("storage batch delete failed with 503");
+    },
     copy: async () => {},
     listVersions: async () => {
       throw new Error("storage version list failed with 503");
+    },
+    listPage: async () => {
+      throw new Error("storage list failed with 503");
+    },
+    listAll: async () => {
+      throw new Error("storage list failed with 503");
+    },
+    stat: async () => {
+      throw new Error("storage stat failed with 503");
     },
   };
   /** @param {Request} request */
@@ -971,6 +1125,41 @@ test("an unsigned write sends the stream as it is, without buffering it", async 
   assert.equal(sent, stream);
 });
 
+test("a missing bucket answers an empty listing, not a 500 (drive#540)", async () => {
+  // The account's bucket is created at its sign-in verify (drive#540), and an
+  // account from before that existed has none until a key mint makes one. The
+  // Files page reads it as an empty folder: S3 answers a missing bucket 404
+  // (NoSuchBucket) and a missing folder 200 with no keys, so a 404 on a list
+  // is always the bucket.
+  const { createS3Store } = await import("../src/files.js");
+  const notFound = `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async () => new Response(notFound, { status: 404 });
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl,
+  });
+  assert.deepEqual(await store.list("u/acct-1"), []);
+  assert.deepEqual(await store.listPage("u/acct-1"), { entries: [], nextCursor: null });
+  assert.deepEqual(await store.listAll("u/acct-1"), []);
+  // A non-404 refusal is still named, never read as empty.
+  const refused = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl: async () =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`,
+        { status: 403 },
+      ),
+  });
+  await assert.rejects(refused.list("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listPage("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
+});
+
 test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
@@ -1069,6 +1258,109 @@ test("the Files page names the same bucket the key provider mints into", () => {
   assert.equal(storageBucketForKey("u/v7Bp7HwejiE6XHOT/photos/x.jpg"), "drv-v7bp7hwejie6xhot");
   assert.throws(() => storageBucketForKey("note.txt"), /u\/<accountId>/);
   assert.throws(() => storageBucketForKey("../x"), /u\/<accountId>/);
+});
+
+test("the S3 store's create-only write sends If-None-Match and reads 412 as the one loss", async () => {
+  // drive#644. The create-only PUT is the stock conditional write: a request
+  // that carries If-None-Match: *, answered 412 Precondition Failed by an
+  // endpoint that enforces it when the key is already there. The fake storage
+  // answers both halves: the first call creates, the second is refused.
+  /** @type {{method: string, key: string, headers: Record<string, string>}[]} */
+  const seen = [];
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    /** @type {Record<string, string>} */
+    const headers = {};
+    for (const [name, value] of Object.entries(init.headers ?? {})) {
+      headers[String(name).toLowerCase()] = String(value);
+    }
+    seen.push({ method, key, headers });
+    if (method === "PUT") {
+      if (objects.has(key)) {
+        return new Response(
+          '<?xml version="1.0" encoding="UTF-8"?><Error><Code>PreconditionFailed</Code>' +
+            "<Message>At least one of the pre-conditions you specified did not hold</Message></Error>",
+          { status: 412 },
+        );
+      }
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+  const s3 = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+
+  // The absent key is created, and the header rides the PUT.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(seen[0].headers["if-none-match"], "*");
+  assert.equal(seen[0].headers["content-type"], "text/plain");
+
+  // A key that is already there answers false, not an error.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), false);
+  const readBack = await s3.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the winning write is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "first");
+
+  // A storage failure is still a failure, not a silent loss.
+  const failing = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response("boom", { status: 500 }),
+  });
+  await assert.rejects(
+    () => failing.writeIfAbsent("u/acct-1/x.txt", "b", "text/plain"),
+    /storage write failed with 500/,
+  );
+});
+
+test("an S3 endpoint that ignores If-None-Match overwrites, and that is what the store reports", async () => {
+  // drive#644, the measured half of the contract. `rclone serve s3` v1.75.1
+  // answers 200 to a PUT with If-None-Match: * on a key that is already there
+  // (measured on the build host, 2026-10-05), so on such an endpoint the
+  // header cannot detect the loss and this store answers `true` for a create
+  // that was in fact an overwrite. That is documented on the store and it is
+  // why the caller pre-checks the name first; it is pinned here so a future
+  // change cannot quietly turn the degraded path into a promised one.
+  /** @type {Map<string, string>} */
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    if (init.method === "PUT") {
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    return stored === undefined
+      ? new Response("no key", { status: 404 })
+      : new Response(stored, { status: 200, headers: { "content-type": "text/plain" } });
+  };
+  const ignoring = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), true);
+  const readBack = await ignoring.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the overwrite is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "second");
 });
 
 /**
@@ -1460,13 +1752,17 @@ test("the page shows the sign-in words the 401 sent, and carries no copy", () =>
   // A read that succeeds takes the panel away again, so the page's own
   // "this page updates on its own" is true.
   assert.ok(page.includes("function showSignedIn()"));
-  assert.match(page, /const payload = await api\(url\);\s{2,}showSignedIn\(\);/);
+  // The read runs through listPage() (drive#570) so the first page and the
+  // More click share one URL builder; the ordering this line pins is the
+  // point: showSignedIn() only runs AFTER the read answered.
+  assert.match(page, /const payload = await listPage\(null\);\s{2,}showSignedIn\(\);/);
 });
 
 test("the page's script reads the same endpoints and the same window", () => {
   assert.ok(page.includes(`const FILES_ENDPOINT = "${FILES_ENDPOINT}";`));
   for (const [name, endpoint] of [
     ["PREVIEW_ENDPOINT", `${FILES_ENDPOINT}/preview`],
+    ["EMBED_ENDPOINT", FILES_EMBED_ENDPOINT],
     ["DOWNLOAD_ENDPOINT", `${FILES_ENDPOINT}/download`],
     ["UPLOAD_ENDPOINT", `${FILES_ENDPOINT}/upload`],
     ["DELETE_ENDPOINT", `${FILES_ENDPOINT}/delete`],
@@ -1784,4 +2080,439 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
     "DELETE http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-3",
     "the upload is aborted after a failed part",
   );
+});
+
+// ------------------------------------------------- paging (drive#570)
+
+test("a 250-file folder answers 200 rows and a cursor the next call resumes from", async () => {
+  const { call, upload } = drive();
+  for (let i = 1; i <= 250; i += 1) {
+    const made = await upload("/", `f${String(i).padStart(3, "0")}.txt`, "x");
+    assert.equal(made.status, 201);
+  }
+  const first = await (await call(new Request(api("")))).json();
+  assert.equal(first.rows.length, 200, "one page is the module's page size");
+  assert.equal(typeof first.nextCursor, "string", "a fuller folder hands back a cursor");
+  const second = await call(
+    new Request(`${api("")}?cursor=${encodeURIComponent(first.nextCursor)}`),
+  );
+  assert.equal(second.status, 200);
+  const rest = await second.json();
+  assert.equal(rest.rows.length, 50, "the second page is what is left");
+  assert.equal(rest.nextCursor, null, "and then the folder is done");
+});
+
+test("the page's More control passes the cursor and hides when a view is done", () => {
+  // The shipped page: a hidden More button that listPage() turns on with the
+  // cursor the listing answered, off in the trash view (which lists whole).
+  assert.ok(page.includes('id="more"'), "the page needs the More control");
+  assert.match(page, /nextCursor = view === "folder" \? \(payload\.nextCursor \?\? null\) : null;/);
+  assert.match(
+    page,
+    /`&cursor=\$\{encodeURIComponent\(cursor\)\}`/,
+    "the More click must pass the cursor it was given",
+  );
+});
+
+// ------------------------------------------------- the trash layout (drive#570)
+
+test("a deleted file nests under its own path, so restore is one prefix LIST", async () => {
+  const { store, call, upload } = drive();
+  await upload("/", "holiday.jpg", "photo-bytes", "image/jpeg");
+  assert.equal(
+    (
+      await call(
+        new Request(api("/delete"), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "/holiday.jpg" }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  // The parked key carries the original path as FOLDERS under .trash, so the
+  // restore can ask for exactly `.trash/holiday.jpg/` and see every version.
+  // `scoped` reads drive paths, the way the page's own listing does.
+  const parked = await scopeStore(store, account).list(`${TRASH_PATH}/holiday.jpg`);
+  assert.equal(parked.length, 1);
+  assert.match(/** @type {string} */ (parked[0].name), /^[0-9]+$/);
+
+  // The restore asks that one prefix and nothing wider: no full-trash walk.
+  /** @type {string[]} */
+  const lists = [];
+  const origList = store.list.bind(store);
+  store.list = async (path) => {
+    lists.push(path);
+    return origList(path);
+  };
+  const restored = await call(
+    new Request(api("/restore"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/holiday.jpg" }),
+    }),
+  );
+  assert.equal(restored.status, 200);
+  assert.equal(lists.length, 1, "the restore is ONE listing");
+  assert.ok(
+    lists[0].includes(`${TRASH_PATH}/holiday.jpg`),
+    `the one listing is the file's own parked prefix, got ${lists[0]}`,
+  );
+});
+
+// ------------------------------------------------- Range, validators, HEAD (drive#570)
+
+test("a download forwards Range and answers 206 with exactly those bytes", async () => {
+  const { call, upload } = drive();
+  await upload("/", "digits.txt", "0123456789");
+  const slice = await call(
+    new Request(`${api("/download")}?path=%2Fdigits.txt`, { headers: { range: "bytes=2-4" } }),
+  );
+  assert.equal(slice.status, 206);
+  assert.equal(await slice.text(), "234");
+  assert.equal(slice.headers.get("content-range"), "bytes 2-4/10");
+  assert.equal(slice.headers.get("accept-ranges"), "bytes");
+  // A suffix range reads the tail.
+  const tail = await call(
+    new Request(`${api("/download")}?path=%2Fdigits.txt`, { headers: { range: "bytes=-3" } }),
+  );
+  assert.equal(await tail.text(), "789");
+  // A range past the end is refused with the object's real size.
+  const beyond = await call(
+    new Request(`${api("/download")}?path=%2Fdigits.txt`, { headers: { range: "bytes=50-" } }),
+  );
+  assert.equal(beyond.status, 416);
+  assert.equal(beyond.headers.get("content-range"), "bytes */10");
+});
+
+test("a download with a still-valid If-None-Match answers 304", async () => {
+  const { call, upload } = drive();
+  await upload("/", "digits.txt", "0123456789");
+  const first = await call(new Request(`${api("/download")}?path=%2Fdigits.txt`));
+  const etag = first.headers.get("etag");
+  assert.ok(etag);
+  const again = await call(
+    new Request(`${api("/download")}?path=%2Fdigits.txt`, { headers: { "if-none-match": etag } }),
+  );
+  assert.equal(again.status, 304);
+  assert.equal(await again.text(), "");
+  assert.equal(again.headers.get("etag"), etag);
+});
+
+test("HEAD answers the size without pulling the object (store.read never runs)", async () => {
+  const { store, call, upload } = drive();
+  await upload("/", "digits.txt", "0123456789");
+  // The point of the HEAD path: the object's bytes are never fetched to be
+  // dropped, so a read on a HEAD is a bug this test names.
+  store.read = () => {
+    throw new Error("a HEAD must not read the object");
+  };
+  const head = await call(
+    new Request(`${api("/download")}?path=%2Fdigits.txt`, { method: "HEAD" }),
+  );
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("content-length"), "10");
+  assert.ok(head.headers.get("etag"));
+});
+
+// ------------------------------------------------- the S3 store's page, read and stat
+
+test("a 2,500-key folder takes three LIST calls, and one page takes exactly one", async () => {
+  const total = 2_500;
+  const keys = Array.from(
+    { length: total },
+    (_, i) => `u/1/f${String(i + 1).padStart(4, "0")}.txt`,
+  );
+  /** @type {string[]} */
+  const urls = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    urls.push(request.url);
+    const token = new URL(request.url).searchParams.get("continuation-token");
+    const start = token === null ? 0 : Number(token) * 1_000;
+    const slice = keys.slice(start, start + 1_000);
+    const more = start + slice.length < total;
+    const contents = slice
+      .map(
+        (key) =>
+          `<Contents><Key>${key}</Key><Size>1</Size><LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>`,
+      )
+      .join("");
+    // The fake's own tokens are page numbers; a real S3 token is opaque and
+    // the store never looks inside one (the listPage test pins that).
+    const xml =
+      `<?xml version="1.0" encoding="UTF-8"?>\n<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
+      `<Name>drive</Name><Prefix>u/1/</Prefix><Delimiter>/</Delimiter><IsTruncated>${more}</IsTruncated>` +
+      (more ? `<NextContinuationToken>${start / 1_000 + 1}</NextContinuationToken>` : "") +
+      contents +
+      `</ListBucketResult>`;
+    return new Response(xml, { status: 200 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl,
+  });
+  const all = await store.list("u/1");
+  assert.equal(all.length, total, "the full walk sees every key");
+  assert.equal(urls.length, 3, "1,000 keys per LIST answer means three calls");
+  assert.ok(urls.every((url) => url.includes("delimiter=%2F")));
+
+  urls.length = 0;
+  const page = await store.listPage("u/1", { limit: 200, cursor: "1" });
+  assert.equal(urls.length, 1, "a page is ONE storage call");
+  assert.ok(urls[0].includes("max-keys=200"), "the page caps the answer");
+  assert.ok(urls[0].includes("continuation-token=1"), "the cursor is passed through opaque");
+  assert.equal(page.entries.length, 1_000, "the fake answers 1,000 keys at once");
+  assert.equal(page.nextCursor, "2");
+});
+
+test("an S3 read forwards Range and If-None-Match, and a stat is a HEAD", async () => {
+  /** @type {Array<{method: string, range: string|null, ifNoneMatch: string|null}>} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    seen.push({
+      method: request.method,
+      range: request.headers.get("range"),
+      ifNoneMatch: request.headers.get("if-none-match"),
+    });
+    if (request.method === "HEAD") {
+      return new Response(null, {
+        status: 200,
+        headers: { "content-type": "text/plain", "content-length": "10", etag: '"e1"' },
+      });
+    }
+    if (request.headers.get("if-none-match")) {
+      return new Response(null, { status: 304, headers: { etag: '"e1"' } });
+    }
+    // A body of the slice's own 3 bytes, the way a real 206 answers.
+    return new Response("234", {
+      status: 206,
+      headers: {
+        "content-type": "text/plain",
+        "content-length": "3",
+        "content-range": "bytes 2-4/10",
+        etag: '"e1"',
+      },
+    });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl,
+  });
+  const slice = await store.read("u/1/digits.txt", { range: "bytes=2-4" });
+  assert.ok(slice);
+  assert.equal(slice.status, 206);
+  assert.equal(slice.contentRange, "bytes 2-4/10");
+  assert.equal(slice.size, 10, "size stays the whole object's on a slice");
+  assert.equal(slice.contentLength, 3, "contentLength is the slice's own");
+  assert.deepEqual(seen.at(-1), { method: "GET", range: "bytes=2-4", ifNoneMatch: null });
+
+  const notModified = await store.read("u/1/digits.txt", { ifNoneMatch: '"e1"' });
+  assert.ok(notModified);
+  assert.equal(notModified.status, 304);
+  assert.deepEqual(seen.at(-1), { method: "GET", range: null, ifNoneMatch: '"e1"' });
+
+  const stat = await store.stat("u/1/digits.txt");
+  assert.ok(stat);
+  assert.equal(stat.size, 10);
+  assert.equal(stat.etag, '"e1"');
+  assert.equal(seen.at(-1)?.method, "HEAD", "a stat must be a HEAD, never a GET");
+
+  const gone = /** @type {typeof store} */ (
+    createS3Store({
+      endpoint: "http://127.0.0.1:9000",
+      bucket: "drive",
+      region: "eu-west-3",
+      credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+      fetchImpl: async () => new Response(null, { status: 404 }),
+    })
+  );
+  assert.equal(await gone.stat("u/1/none.txt"), null, "a 404 stat is no object, not a throw");
+});
+
+test("a 5xx from storage is retried once, and the retry re-signs the request", async () => {
+  /** @type {string[]} */
+  const authorizations = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization") ?? "");
+    return authorizations.length === 1
+      ? new Response(null, { status: 503 })
+      : new Response(
+          `<?xml version="1.0" encoding="UTF-8"?>\n<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></ListBucketResult>`,
+          { status: 200 },
+        );
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl,
+  });
+  const entries = await store.list("u/1");
+  assert.deepEqual(entries, []);
+  assert.equal(authorizations.length, 2, "one retry, no more");
+  for (const auth of authorizations) {
+    assert.match(auth, /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\//, "every attempt is signed");
+  }
+});
+
+test("listKeys lists flat, resumes after a start-after key, and follows the continuation token", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  /** @type {string[]} */
+  const urls = [];
+  /**
+   * @param {string[]} keys
+   * @param {string | null} token
+   */
+  const page = (keys, token) =>
+    `<?xml version="1.0" encoding="UTF-8"?>\n<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">\n` +
+    keys.map((key) => `  <Contents><Key>${key}</Key><Size>10</Size></Contents>`).join("\n") +
+    (token ? `  <NextContinuationToken>${token}</NextContinuationToken>\n` : "") +
+    `</ListBucketResult>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url) => {
+    urls.push(String(url));
+    if (urls.length === 1) {
+      return new Response(page(["u/acct/.trash/old.txt", "u/acct/a&amp;b.txt"], "token-1"), {
+        status: 200,
+      });
+    }
+    return new Response(page(["u/acct/z.txt"], null), { status: 200 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  const keys = await store.listKeys("u/acct/", { startAfter: "u/acct/a.txt", limit: 1000 });
+  // Flat and in order: the hidden trash folder is in the walk (the purge has
+  // to reach it), and `&` comes back as the character the key really has.
+  assert.deepEqual(keys, ["u/acct/.trash/old.txt", "u/acct/a&b.txt", "u/acct/z.txt"]);
+  assert.equal(urls.length, 2);
+  assert.match(
+    urls[0],
+    /list-type=2&prefix=u%2Facct%2F&start-after=u%2Facct%2Fa\.txt&max-keys=1000$/,
+  );
+  // `start-after` is a first-page parameter: the token pages carry on where
+  // the provider's own ordering left off.
+  assert.doesNotMatch(urls[1], /start-after/);
+  assert.match(urls[1], /continuation-token=token-1/);
+});
+
+test("a repeated continuation token is refused instead of holding the listing open", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Contents><Key>u/acct/a.txt</Key><Size>10</Size></Contents>
+  <NextContinuationToken>same-token</NextContinuationToken>
+</ListBucketResult>`;
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response(xml, { status: 200 }),
+  });
+  await assert.rejects(store.listKeys("u/acct/"), /repeated continuation-token/);
+});
+
+test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escaped keys", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  /** @type {{url: string, method: string, headers: Record<string, string>, body: string}[]} */
+  const sent = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    sent.push({
+      url: request.url,
+      method: request.method,
+      headers: Object.fromEntries(request.headers),
+      body: await request.text(),
+    });
+    return new Response(`<?xml version="1.0" encoding="UTF-8"?>\n<DeleteResult></DeleteResult>`, {
+      status: 200,
+    });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  await store.removeBatch(["u/acct/a.txt", "u/acct/a&b.txt"]);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].method, "POST");
+  assert.ok(sent[0].url.endsWith("/drive/?delete"));
+  assert.deepEqual(
+    sent[0].body,
+    "<Delete><Object><Key>u/acct/a.txt</Key></Object>" +
+      "<Object><Key>u/acct/a&amp;b.txt</Key></Object></Delete>",
+  );
+  // S3 refuses the whole call without the checksum, so the header must be
+  // the base64 MD5 of the exact body bytes.
+  assert.match(sent[0].headers["content-md5"], /^[A-Za-z0-9+/]{22}==$/);
+  assert.equal(
+    sent[0].headers["content-md5"],
+    createHash("md5").update(sent[0].body, "utf8").digest("base64"),
+  );
+});
+
+test("removeBatch refuses a 200 answer that carries per-key errors", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Error><Key>u/acct/stuck.txt</Key><Code>InternalError</Code><Message>We encountered an internal error</Message></Error>
+  <Deleted><Key>u/acct/gone.txt</Key></Deleted>
+</DeleteResult>`;
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response(xml, { status: 200 }),
+  });
+  await assert.rejects(
+    store.removeBatch(["u/acct/gone.txt", "u/acct/stuck.txt"]),
+    /refused "u\/acct\/stuck\.txt" with InternalError/,
+  );
+});
+
+test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket batch", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  let calls = 0;
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response("<DeleteResult></DeleteResult>", { status: 200 });
+    },
+  });
+  const tooMany = Array.from({ length: 1_001 }, (_, i) => `u/acct/f-${i}.txt`);
+  await assert.rejects(store.removeBatch(tooMany), /at most 1000 keys, got 1001/);
+  // A store can carry more than one bucket (`bucketFor` reads the key's
+  // account prefix); a batch that named two buckets would silently miss the
+  // second's keys, so the mix is refused before any call goes out.
+  const split = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: (key) => (key.startsWith("u/founding/") ? "drv-b" : "drive"),
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response("<DeleteResult></DeleteResult>", { status: 200 });
+    },
+  });
+  await assert.rejects(
+    split.removeBatch(["u/acct_mix/a.txt", "u/founding/a.txt"]),
+    /keys from one bucket/,
+  );
+  assert.equal(calls, 0, "a refused batch makes no provider call");
 });

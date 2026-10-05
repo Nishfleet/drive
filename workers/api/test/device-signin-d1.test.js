@@ -169,6 +169,10 @@ function makeFakeD1(options = {}) {
         created_at: createdAt,
         expires_at: expiresAt,
         revoked_at: null,
+        // The LEFT JOIN `accountForDeviceToken` reads for the close state
+        // (drive#497): this fake has no accounts table, so the joined column is
+        // null, which is "not closed".
+        account_state: null,
       });
       return { success: true, meta: { changes: 1 } };
     }
@@ -212,7 +216,7 @@ function makeFakeD1(options = {}) {
             if (s.includes("FROM device_codes WHERE device_code_hash")) {
               return codes.get(/** @type {string} */ (params[0])) ?? null;
             }
-            if (s.includes("FROM device_tokens WHERE token_hash")) {
+            if (s.includes("FROM device_tokens") && s.includes("token_hash")) {
               const row = tokens.get(/** @type {string} */ (params[0]));
               if (row === undefined) {
                 return null;
@@ -567,7 +571,9 @@ test("the in-memory store refuses an already approved code too", async () => {
 // (test/harness.mjs, the same D1-shaped adapter the site's own tests use), so
 // the SQL the Worker prepares runs against the DDL the deploy applies.
 test("the store's read and write paths run against the real migration", async () => {
-  const db = createTestD1({ migrations: ["drive/0007_device_codes.sql"] });
+  const db = createTestD1({
+    migrations: ["drive/0007_device_codes.sql", "drive/0010_accounts_devices.sql"],
+  });
   const sqlite = db.sqlite;
 
   // A code one instance starts, another instance approves and consumes: nothing
@@ -761,6 +767,15 @@ test("the public device routes are rate limited before they reach the database",
   );
   assert.equal(deniedPoll.status, 429);
   assert.equal(db.tokens.size, 0, "the refused poll minted nothing");
+
+  // The approve page's GET is limited in its own bucket too (drive#518
+  // review): it names a pending code's device and time, so an unlimited page
+  // is an existence oracle for codes a phishing page is cycling.
+  const deniedPage = await dispatch(
+    new Request("https://api.test/v1/device/approve?user_code=ABCD1234"),
+    ctxWith({ ...allowed, DEVICE_RATE_LIMITER: limiter(false) }),
+  );
+  assert.equal(deniedPage.status, 429);
 
   // With the bindings present the same calls run: the limit is on volume, not
   // on the flow.

@@ -68,8 +68,15 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AccessKey == "" || cfg.SecretKey == "" || cfg.Endpoint == "" {
-		t.Fatalf("rclone.conf missing keys or endpoint: %+v", cfg)
+	if cfg.AccessKey == "" || cfg.Endpoint == "" {
+		t.Fatalf("rclone.conf missing access key or endpoint: %+v", cfg)
+	}
+	secret, err := ReadSecretKey(RcloneConfigPath(home), false, strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret == "" {
+		t.Fatal("login did not write the storage secret to rclone.env")
 	}
 
 	t.Setenv("DRIVE_S3_ENDPOINT", "")
@@ -81,7 +88,7 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init/mount must work after login with no pasted keys: %v", err)
 	}
-	if loaded.AccessKey != cfg.AccessKey || loaded.SecretKey != cfg.SecretKey {
+	if loaded.AccessKey != cfg.AccessKey || loaded.SecretKey != secret {
 		t.Fatalf("loaded %+v, want the key login wrote", loaded)
 	}
 	if loaded.Endpoint != creds.Endpoint || loaded.Bucket != creds.Bucket {

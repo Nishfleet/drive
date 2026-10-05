@@ -14,7 +14,7 @@
 //     bill = min(2¢ x avg GB, $10 x max(1, avg TB))
 //
 // So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
-// bills $30. No minimum and no plans.
+// bills $30. No plans, and the prepaid balance never expires (drive#586).
 import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
@@ -34,8 +34,7 @@ export const BILLING = Object.freeze({
   // Every sentence comes from the one price source, so one edit moves the
   // tags, the JSON-LD and llms.txt together.
   headline: PRICE.headline,
-  noMinimumLine: PRICE.noMinimumLine,
-  foundingLine: PRICE.foundingLine,
+  noPlansLine: PRICE.noPlansLine,
   // The rule in words, for the offer description and llms.txt, because a
   // crawler reads prose, not a formula.
   rule: PRICE.rule,

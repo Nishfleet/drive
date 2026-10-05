@@ -2,11 +2,22 @@ name: CI
 
 on:
   pull_request:
+  # The main ruleset's merge queue runs `verify` and `go` on the merge group
+  # (drive#499). Without this trigger the queue waits on checks that never come.
+  merge_group:
   push:
     branches: [main]
 
 permissions:
   contents: read
+
+# One rclone for every job, downloaded once per runner and checked against the
+# digest rclone publishes in the release's SHA256SUMS. The Windows workflow
+# (windows-msi.yml) pins the same release; test/installer.test.mjs fails when
+# the two drift apart. An upgrade is a visible diff of both lines.
+env:
+  PINNED_RCLONE_VERSION: v1.75.1
+  PINNED_RCLONE_LINUX_AMD64_SHA256: 982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -24,7 +35,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          cache: npm
+          # No cache on own runners: npm's cache is already on this disk, and
+          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
+          package-manager-cache: false
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: npm ci
@@ -32,15 +45,26 @@ jobs:
       # files, a search under a second - over a local `rclone serve s3`, and it
       # skips itself where rclone is absent. Installing it here is what keeps
       # that proof on every PR rather than only on the host that built it.
+      # The cache holds only the release zip, and the next step checks it
+      # against the pinned digest before anything runs, so a poisoned entry
+      # fails the job rather than reaching it.
+      - name: Cache the rclone release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/rclone-dl
+          key: rclone-${{ env.PINNED_RCLONE_VERSION }}-linux-amd64-${{ env.PINNED_RCLONE_LINUX_AMD64_SHA256 }}
       - name: Install rclone (the stock tool the S3 stand-in serves)
         run: |
-          curl -sSO https://downloads.rclone.org/rclone-current-linux-amd64.zip
-          unzip -qo rclone-current-linux-amd64.zip
+          zip="rclone-$PINNED_RCLONE_VERSION-linux-amd64.zip"
+          mkdir -p "$RUNNER_TEMP/rclone-dl"
+          cd "$RUNNER_TEMP/rclone-dl"
+          test -f "$zip" || curl -fsSO "https://downloads.rclone.org/$PINNED_RCLONE_VERSION/$zip"
+          echo "$PINNED_RCLONE_LINUX_AMD64_SHA256  $zip" | sha256sum -c -
+          unzip -qo "$zip"
           # No sudo on the self-hosted runners, so install per job.
-          install -D -m 0755 rclone-*/rclone "$RUNNER_TEMP/bin/rclone"
+          install -D -m 0755 "rclone-$PINNED_RCLONE_VERSION-linux-amd64/rclone" "$RUNNER_TEMP/bin/rclone"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          export PATH="$RUNNER_TEMP/bin:$PATH"
-          rclone version
+          "$RUNNER_TEMP/bin/rclone" version
       # web-speed (drive#225): the budgets in lighthouserc.json, on the pages
       # as they actually ship. `npm run build` writes the same static-asset
       # bundle the deploy uploads, so the numbers are the site's and not a
@@ -69,20 +93,55 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.24"
-          cache: true
+          # No cache on own runners: Go's build cache is already on this disk,
+          # and saving it took 2 min per job (2026-10-05).
+          cache: false
+      # The cache holds only the release zip, and the next step checks it
+      # against the pinned digest before anything runs, so a poisoned entry
+      # fails the job rather than reaching it.
+      - name: Cache the rclone release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0  # zizmor: ignore[cache-poisoning]
+        with:
+          path: ${{ runner.temp }}/rclone-dl
+          key: rclone-${{ env.PINNED_RCLONE_VERSION }}-linux-amd64-${{ env.PINNED_RCLONE_LINUX_AMD64_SHA256 }}
       - name: Install rclone (the stock tool the mount drives)
         run: |
-          curl -sSO https://downloads.rclone.org/rclone-current-linux-amd64.zip
-          unzip -qo rclone-current-linux-amd64.zip
+          zip="rclone-$PINNED_RCLONE_VERSION-linux-amd64.zip"
+          mkdir -p "$RUNNER_TEMP/rclone-dl"
+          cd "$RUNNER_TEMP/rclone-dl"
+          test -f "$zip" || curl -fsSO "https://downloads.rclone.org/$PINNED_RCLONE_VERSION/$zip"
+          echo "$PINNED_RCLONE_LINUX_AMD64_SHA256  $zip" | sha256sum -c -
+          unzip -qo "$zip"
           # No sudo on the self-hosted runners, so install per job.
-          install -D -m 0755 rclone-*/rclone "$RUNNER_TEMP/bin/rclone"
+          install -D -m 0755 "rclone-$PINNED_RCLONE_VERSION-linux-amd64/rclone" "$RUNNER_TEMP/bin/rclone"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          export PATH="$RUNNER_TEMP/bin:$PATH"
-          rclone version
+          "$RUNNER_TEMP/bin/rclone" version
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
+      - name: Go code is gofmt-formatted
+        run: |
+          unformatted="$(gofmt -l cmd)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt -w these files:"
+            echo "$unformatted"
+            exit 1
+          fi
       - run: go vet ./cmd/...
-      - run: go build -o /tmp/drive ./cmd/drive
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
+        with:
+          version: "2025.1.1"
+          install-go: false
+      # The release config stays valid: goreleaser fails `check` on a
+      # deprecated key, so a stale config shows up on the PR, not on a tag.
+      - name: goreleaser check
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "v2.18.2"
+          args: check
+      # A per-run path: the self-hosted runners share one /tmp.
+      - run: go build -o "$RUNNER_TEMP/drive" ./cmd/drive
       # The Windows jobs run only by hand (windows-msi.yml, drive#486), so the
       # Windows code is still vetted and its tests compiled here, cross-built
       # from Linux, on every PR.
@@ -92,8 +151,8 @@ jobs:
         run: |
           go vet ./cmd/...
           go test -c -o /dev/null ./cmd/drive/
-      - name: Unit tests
-        run: go test ./cmd/drive/ -short -v
+      - name: Unit tests, with the race detector
+        run: go test -race ./cmd/drive/ -short -v
       # The step-2 done-when proof: a 64 MiB file's first bytes stream back
       # before the whole object downloads, and a save survives stop/start with
       # the same checksum, against a local `rclone serve s3` stand-in.

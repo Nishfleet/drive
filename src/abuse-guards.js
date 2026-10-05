@@ -1,9 +1,7 @@
 // Abuse guards (drive#464): one active account per card fingerprint, and the
 // 1 TB storage limit until the first successful charge.
 //
-// Founding-slot reserve / confirm / release live in src/founding.js, the
-// module that already owns that flag, so this file does not grow a second
-// counter. The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
+// The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
 //
 // The real card capture still waits on the Dodo key (#417). The fingerprint
 // here is the test double: a posted `cardFingerprint` (kept as
@@ -13,7 +11,6 @@
 // equalling another person's stand-in, so nobody can lock an address out.
 
 import { GB_PER_TB } from "./billing.js";
-import { reserveFoundingSlot } from "./founding.js";
 import { failureMessage } from "./messages.js";
 
 /** 1 TB in decimal bytes, the same GB the bill uses. */
@@ -32,7 +29,7 @@ export const HOLD_TTL_SECONDS = 24 * 60 * 60;
 /**
  * The accounts.id the card step writes before the magic-link is followed.
  * Better Auth only creates the user when the link is opened, so uniqueness
- * and the founding reservation have to live on a hold row until then. The
+ * has to live on a hold row until then. The
  * id is the email, not the fingerprint: two addresses that post the same
  * card must be two rows so the unique index can refuse the second.
  * @param {string} email
@@ -103,12 +100,11 @@ export async function cardFingerprintTaken(db, fingerprint, exceptAccountId) {
 }
 
 /**
- * Record the card fingerprint on this account, stamp card_added_at, and
- * reserve a founding slot. A second live account with the same fingerprint
- * is refused with the message table's words and writes nothing.
+ * Record the card fingerprint on this account and stamp card_added_at. A
+ * second live account with the same fingerprint is refused with the message table's words and writes nothing.
  * @param {D1Database} db
- * @param {{accountId: string, email: string, fingerprint: string, offerOpen: boolean, now?: number}} options
- * @returns {Promise<{error: string}|{fingerprint: string, reserved: boolean}>}
+ * @param {{accountId: string, email: string, fingerprint: string, now?: number}} options
+ * @returns {Promise<{error: string}|{fingerprint: string}>}
  */
 export async function claimCardFingerprint(db, options) {
   if (typeof options !== "object" || options === null) {
@@ -125,9 +121,6 @@ export async function claimCardFingerprint(db, options) {
   }
   if (typeof fingerprint !== "string" || fingerprint === "") {
     throw new TypeError(`claimCardFingerprint needs a fingerprint, got ${String(fingerprint)}`);
-  }
-  if (typeof options.offerOpen !== "boolean") {
-    throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
   }
   const nowMs = options.now === undefined ? Date.now() : options.now;
   if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
@@ -191,26 +184,15 @@ export async function claimCardFingerprint(db, options) {
   ) {
     return { error: failureMessage("card-in-use") };
   }
-  // A hold is an address nobody has proven yet, so it reserves no founding
-  // slot: attachPendingCardAccount reserves once the link is followed. Else a
-  // script could fill the 1,000 slots with addresses it never opens.
-  if (accountId.startsWith(PENDING_CARD_ACCOUNT_PREFIX)) {
-    return { fingerprint, reserved: false };
-  }
-  const reserved = await reserveFoundingSlot(db, accountId, {
-    offerOpen: options.offerOpen,
-    now: nowMs,
-  });
-  return { fingerprint, reserved: reserved.reserved };
+  return { fingerprint };
 }
 
 /**
  * Moves the card-step hold onto the Better Auth user id after the magic-link
- * is followed, then reserves the founding slot for the now-proven address.
- * The fingerprint and first-charge stamp stay on the same row. A missing hold
+ * is followed. The fingerprint and first-charge stamp stay on the same row. A missing hold
  * is a no-op: returning sign-ins never created one.
  * @param {D1Database} db
- * @param {{email: string, accountId: string, offerOpen: boolean, now?: number}} options
+ * @param {{email: string, accountId: string}} options
  * @returns {Promise<void>}
  */
 export async function attachPendingCardAccount(db, options) {
@@ -225,11 +207,6 @@ export async function attachPendingCardAccount(db, options) {
   if (typeof accountId !== "string" || accountId === "") {
     throw new TypeError(`attachPendingCardAccount needs an account id, got ${String(accountId)}`);
   }
-  if (typeof options.offerOpen !== "boolean") {
-    throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
-  }
-  const reserve = () =>
-    reserveFoundingSlot(db, accountId, { offerOpen: options.offerOpen, now: options.now });
   const hold = await db
     .prepare(
       `SELECT id FROM accounts
@@ -247,12 +224,11 @@ export async function attachPendingCardAccount(db, options) {
     throw new TypeError(`attachPendingCardAccount read a hold with no id for ${email}`);
   }
   if (holdId === accountId) {
-    await reserve();
     return;
   }
   const holdFields = await db
     .prepare(
-      `SELECT card_fingerprint, founding_reserved, first_charged_at, card_added_at
+      `SELECT card_fingerprint, first_charged_at, card_added_at
          FROM accounts WHERE id = ?1`,
     )
     .bind(holdId)
@@ -280,25 +256,21 @@ export async function attachPendingCardAccount(db, options) {
       .prepare(
         `UPDATE accounts
             SET card_fingerprint = COALESCE(card_fingerprint, ?1),
-                founding_reserved = COALESCE(founding_reserved, ?2),
-                first_charged_at = COALESCE(first_charged_at, ?3),
-                card_added_at = COALESCE(card_added_at, ?4)
-          WHERE id = ?5`,
+                first_charged_at = COALESCE(first_charged_at, ?2),
+                card_added_at = COALESCE(card_added_at, ?3)
+          WHERE id = ?4`,
       )
       .bind(
         holdFp ?? null,
-        /** @type {{founding_reserved?: unknown}} */ (holdFields).founding_reserved ?? null,
         /** @type {{first_charged_at?: unknown}} */ (holdFields).first_charged_at ?? null,
         /** @type {{card_added_at?: unknown}} */ (holdFields).card_added_at ?? null,
         accountId,
       )
       .run();
     await db.prepare("DELETE FROM accounts WHERE id = ?1").bind(holdId).run();
-    await reserve();
     return;
   }
   await db.prepare("UPDATE accounts SET id = ?1 WHERE id = ?2").bind(accountId, holdId).run();
-  await reserve();
 }
 
 /**

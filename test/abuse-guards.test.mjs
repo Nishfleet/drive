@@ -1,6 +1,5 @@
 // Abuse guards (drive#464): one card fingerprint per active account, 1 TB
-// until the first charge, spending-cap default $20, founding slot reserved
-// at the card step. Pure rules first, then D1 writes through the same
+// until the first charge, spending-cap default $20. Pure rules first, then D1 writes through the same
 // functions the Worker runs.
 
 import assert from "node:assert/strict";
@@ -21,13 +20,6 @@ import {
 } from "../src/abuse-guards.js";
 import { BILLING_CONFIG, GB_PER_TB } from "../src/billing.js";
 import { createMemoryStore, handleFilesRequest } from "../src/files.js";
-import {
-  accountFounding,
-  confirmFounding,
-  markAccountPaying,
-  releaseFoundingReservation,
-  reserveFoundingSlot,
-} from "../src/founding.js";
 import { failureMessage } from "../src/messages.js";
 import { BYTES_PER_GB } from "../src/meter.js";
 import { hasSignupCard } from "../src/signin.js";
@@ -38,19 +30,31 @@ const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 /**
  * @param {import("./d1-sqlite.mjs").MeteredD1} db
  * @param {string} id
- * @param {{founding?: 0|1|null, state?: string, fingerprint?: string|null}} [fields]
+ * @param {{state?: string, fingerprint?: string|null}} [fields]
  */
 async function insertAccount(db, id, fields = {}) {
-  const founding = fields.founding === undefined ? null : fields.founding;
   const state = fields.state ?? "active";
   const fingerprint = fields.fingerprint === undefined ? null : fields.fingerprint;
   await db
     .prepare(
-      `INSERT INTO accounts (id, email, created_at, founding, state, card_fingerprint)
-       VALUES (?1, ?2, 0, ?3, ?4, ?5)`,
+      `INSERT INTO accounts (id, email, created_at, state, card_fingerprint)
+       VALUES (?1, ?2, 0, ?3, ?4)`,
     )
-    .bind(id, `${id}@example.com`, founding, state, fingerprint)
+    .bind(id, `${id}@example.com`, state, fingerprint)
     .run();
+}
+
+/**
+ * The first-charge stamp, written directly: the top-up flow that stamps it in
+ * production is not part of this module.
+ * @param {import("./d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} id
+ * @param {number} nowMs
+ */
+function stampFirstCharge(sqlite, id, nowMs) {
+  sqlite
+    .prepare("UPDATE accounts SET first_charged_at = ?1 WHERE id = ?2")
+    .run(Math.floor(nowMs / 1000), id);
 }
 
 test("the spending cap default is $20, in the one billing config", () => {
@@ -79,7 +83,6 @@ test("a second active account with the same card fingerprint is refused in plain
     accountId: "first",
     email: "first@example.com",
     fingerprint: "fp_same",
-    offerOpen: true,
     now: NOW,
   });
   assert.equal("error" in first, false, JSON.stringify(first));
@@ -94,7 +97,6 @@ test("a second active account with the same card fingerprint is refused in plain
     accountId: "second",
     email: "second@example.com",
     fingerprint: "fp_same",
-    offerOpen: true,
     now: NOW,
   });
   assert.deepEqual(second, { error: failureMessage("card-in-use") });
@@ -115,7 +117,6 @@ test("a closed account does not hold the card fingerprint, so the same card can 
     accountId: "new",
     email: "new@example.com",
     fingerprint: "fp_reuse",
-    offerOpen: true,
     now: NOW,
   });
   assert.equal("error" in claimed, false, JSON.stringify(claimed));
@@ -129,29 +130,20 @@ test("the card-step hold remaps onto the user id when the magic-link is followed
     accountId: holdId,
     email: "new@example.com",
     fingerprint,
-    offerOpen: true,
     now: NOW,
   });
   assert.equal("error" in claimed, false, JSON.stringify(claimed));
-  // An address nobody has proven yet holds no founding slot.
-  assert.equal("reserved" in claimed && claimed.reserved, false);
-  assert.equal(
-    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get(holdId)
-      .founding_reserved,
-    null,
-  );
   await attachPendingCardAccount(db, {
     email: "New@example.com",
     accountId: "user_1",
-    offerOpen: true,
   });
   const hold = sqlite.prepare("SELECT id FROM accounts WHERE id = ?").get(holdId);
   assert.equal(hold, undefined);
   const live = sqlite
-    .prepare("SELECT id, card_fingerprint, founding_reserved FROM accounts WHERE id = ?")
+    .prepare("SELECT id, card_fingerprint, card_added_at FROM accounts WHERE id = ?")
     .get("user_1");
   assert.equal(live.card_fingerprint, fingerprint);
-  assert.equal(live.founding_reserved, 1);
+  assert.equal(live.card_added_at, Math.floor(NOW / 1000), "the card stamp moves with the hold");
 });
 
 test("the hold copies onto an accounts row the user id already has", async () => {
@@ -162,21 +154,19 @@ test("the hold copies onto an accounts row the user id already has", async () =>
     accountId: holdId,
     email: "merge@example.com",
     fingerprint,
-    offerOpen: true,
     now: NOW,
   });
   await insertAccount(db, "user_merge");
   await attachPendingCardAccount(db, {
     email: "merge@example.com",
     accountId: "user_merge",
-    offerOpen: true,
   });
   assert.equal(sqlite.prepare("SELECT id FROM accounts WHERE id = ?").get(holdId), undefined);
   const live = sqlite
-    .prepare("SELECT card_fingerprint, founding_reserved FROM accounts WHERE id = ?")
+    .prepare("SELECT card_fingerprint, card_added_at FROM accounts WHERE id = ?")
     .get("user_merge");
   assert.equal(live.card_fingerprint, fingerprint);
-  assert.equal(live.founding_reserved, 1);
+  assert.equal(live.card_added_at, Math.floor(NOW / 1000));
 });
 
 test("the hold refuses to replace a different fingerprint already on the user", async () => {
@@ -186,7 +176,6 @@ test("the hold refuses to replace a different fingerprint already on the user", 
     accountId: holdId,
     email: "clash@example.com",
     fingerprint: "fp_hold",
-    offerOpen: true,
     now: NOW,
   });
   await insertAccount(db, "user_clash", { fingerprint: "fp_other" });
@@ -195,7 +184,6 @@ test("the hold refuses to replace a different fingerprint already on the user", 
       attachPendingCardAccount(db, {
         email: "clash@example.com",
         accountId: "user_clash",
-        offerOpen: true,
       }),
     /replace user_clash's fingerprint/,
   );
@@ -247,58 +235,25 @@ test("accountStoredBytes sums the file index for one account", async () => {
   assert.equal(await accountStoredBytes(db, "empty"), 0);
 });
 
-test("a founding slot is reserved at the card step, confirmed at first charge, and released on close before paying", async () => {
+test("claiming a card stamps card_added_at and nothing else about the price", async () => {
   const { db, sqlite } = makeMeteredDB();
   await insertAccount(db, "acct");
-  const reserved = await reserveFoundingSlot(db, "acct", { offerOpen: true, now: NOW });
-  assert.deepEqual(reserved, { founding: false, reserved: true });
-  const reservedRow = sqlite
+  const claimed = await claimCardFingerprint(db, {
+    accountId: "acct",
+    email: "acct@example.com",
+    fingerprint: "fp_stamp",
+    now: NOW,
+  });
+  assert.deepEqual(claimed, { fingerprint: "fp_stamp" });
+  const row = sqlite
     .prepare(
       "SELECT founding, founding_reserved, card_added_at, first_charged_at FROM accounts WHERE id = ?",
     )
     .get("acct");
-  assert.equal(reservedRow.founding, null);
-  assert.equal(reservedRow.founding_reserved, 1);
-  assert.equal(reservedRow.card_added_at, Math.floor(NOW / 1000));
-  assert.equal(reservedRow.first_charged_at, null);
-  assert.deepEqual(await accountFounding(db, "acct"), { founding: false });
-
-  const confirmed = await confirmFounding(db, "acct", { now: NOW + 1000 });
-  assert.deepEqual(confirmed, { founding: true });
-  const paid = sqlite
-    .prepare("SELECT founding, first_charged_at FROM accounts WHERE id = ?")
-    .get("acct");
-  assert.equal(paid.founding, 1);
-  assert.equal(paid.first_charged_at, Math.floor((NOW + 1000) / 1000));
-  assert.deepEqual(await accountFounding(db, "acct"), { founding: true });
-  assert.deepEqual(JSON.parse(JSON.stringify(confirmed)), { founding: true });
-  assert.equal(JSON.stringify(confirmed).includes("1000"), false);
-});
-
-test("closing before the first charge releases the reserved slot so a later account can take it", async () => {
-  const { db, sqlite } = makeMeteredDB();
-  await insertAccount(db, "early");
-  await reserveFoundingSlot(db, "early", { offerOpen: true, now: NOW });
-  await db.prepare("UPDATE accounts SET state = 'closed' WHERE id = ?1").bind("early").run();
-  await releaseFoundingReservation(db, "early");
-  assert.equal(
-    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get("early")
-      .founding_reserved,
-    null,
-  );
-
-  await insertAccount(db, "next");
-  const next = await reserveFoundingSlot(db, "next", { offerOpen: true, now: NOW });
-  assert.deepEqual(next, { founding: false, reserved: true });
-});
-
-test("markAccountPaying still confirms a reserved slot, so the paying path stays one function", async () => {
-  const { db } = makeMeteredDB();
-  await insertAccount(db, "acct");
-  await reserveFoundingSlot(db, "acct", { offerOpen: true, now: NOW });
-  assert.deepEqual(await markAccountPaying(db, "acct", { offerOpen: true, now: NOW }), {
-    founding: true,
-  });
+  assert.equal(row.card_added_at, Math.floor(NOW / 1000));
+  assert.equal(row.first_charged_at, null);
+  assert.equal(row.founding, null, "the retired founding columns are never written");
+  assert.equal(row.founding_reserved, null, "the retired founding columns are never written");
 });
 
 test("a posted fingerprint can never equal another address's checkbox stand-in", async () => {
@@ -314,7 +269,6 @@ test("a posted fingerprint can never equal another address's checkbox stand-in",
     accountId: pendingCardAccountId("attacker@example.com"),
     email: "attacker@example.com",
     fingerprint: /** @type {string} */ (posted),
-    offerOpen: true,
     now: NOW,
   });
   assert.equal("error" in attacker, false);
@@ -324,7 +278,6 @@ test("a posted fingerprint can never equal another address's checkbox stand-in",
     fingerprint: /** @type {string} */ (
       signupCardFingerprint({ card: true, email: "victim@example.com" })
     ),
-    offerOpen: true,
     now: NOW,
   });
   assert.equal("error" in victim, false, JSON.stringify(victim));
@@ -336,7 +289,6 @@ test("a card-step hold nobody followed gives its card back after a day", async (
     accountId: pendingCardAccountId("left@example.com"),
     email: "left@example.com",
     fingerprint: "fp_left",
-    offerOpen: true,
     now: NOW,
   });
   assert.equal("error" in first, false);
@@ -344,7 +296,6 @@ test("a card-step hold nobody followed gives its card back after a day", async (
     accountId: pendingCardAccountId("other@example.com"),
     email: "other@example.com",
     fingerprint: "fp_left",
-    offerOpen: true,
     now: NOW + (HOLD_TTL_SECONDS - 60) * 1000,
   });
   assert.deepEqual(soon, { error: failureMessage("card-in-use") }, "a live hold keeps its card");
@@ -352,7 +303,6 @@ test("a card-step hold nobody followed gives its card back after a day", async (
     accountId: pendingCardAccountId("other@example.com"),
     email: "other@example.com",
     fingerprint: "fp_left",
-    offerOpen: true,
     now: NOW + (HOLD_TTL_SECONDS + 60) * 1000,
   });
   assert.equal("error" in later, false, JSON.stringify(later));
@@ -367,27 +317,13 @@ test("a card-step hold nobody followed gives its card back after a day", async (
 
 test("a paid account from before the abuse guards gets its first-charge stamp, so 1 TB never holds it", async () => {
   const { db, sqlite } = makeMeteredDB();
-  await insertAccount(db, "paid-before", { founding: 0 });
+  await insertAccount(db, "paid-before");
   assert.equal(await accountFirstChargedAt(db, "paid-before"), null);
-  assert.deepEqual(await confirmFounding(db, "paid-before", { now: NOW }), { founding: false });
+  stampFirstCharge(sqlite, "paid-before", NOW);
   assert.equal(
     sqlite.prepare("SELECT first_charged_at FROM accounts WHERE id = ?").get("paid-before")
       .first_charged_at,
     Math.floor(NOW / 1000),
-  );
-});
-
-test("a card added before the abuse guards still gets a founding slot at its first charge", async () => {
-  // founding NULL and founding_reserved NULL: carded, never reserved, unpaid.
-  const { db } = makeMeteredDB();
-  await insertAccount(db, "carded-before");
-  assert.deepEqual(await markAccountPaying(db, "carded-before", { offerOpen: true, now: NOW }), {
-    founding: true,
-  });
-  await insertAccount(db, "carded-closed-offer");
-  assert.deepEqual(
-    await markAccountPaying(db, "carded-closed-offer", { offerOpen: false, now: NOW }),
-    { founding: false },
   );
 });
 
@@ -413,7 +349,7 @@ test("the upload route holds a pre-charge account at 1 TB even with no length he
   // The client's length header is a claim. A body sent with none, while the
   // drive sits 4 bytes under 1 TB, is counted as it passes and refused at the
   // fifth byte; after the first charge the same upload lands.
-  const { db } = makeMeteredDB();
+  const { db, sqlite } = makeMeteredDB();
   await insertAccount(db, "near");
   await db
     .prepare(
@@ -439,6 +375,6 @@ test("the upload route holds a pre-charge account at 1 TB even with no length he
   const held = await upload("over.bin");
   assert.equal(held.status, 403);
   assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
-  await confirmFounding(db, "near", { now: NOW });
+  stampFirstCharge(sqlite, "near", NOW);
   assert.equal((await upload("after.bin")).status, 201, "the first charge lifts the limit");
 });
