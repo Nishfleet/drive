@@ -34,6 +34,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
   createBranch,
   createKvSnapshotStore,
@@ -42,8 +44,6 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../src/branches.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import { failureMessage } from "../src/messages.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -543,7 +543,7 @@ function failingRun(failure) {
 
 /**
  * A scoped drive with one small file, over a fresh D1.
- * @returns {Promise<{db: import("./harness.mjs").TestD1, store: import("../src/files.js").FileStore}>}
+ * @returns {Promise<{db: import("./harness.mjs").TestD1, store: import("../core/files.js").FileStore}>}
  */
 async function driveWithOneFile() {
   const db = createTestD1();

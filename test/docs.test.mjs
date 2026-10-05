@@ -14,12 +14,12 @@ import {
   meteredMonthlyBillUsd,
   monthBillCents,
   monthlyMaximumUsd,
-} from "../src/billing.js";
+} from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
+import { PAGES, SITE } from "../core/seo.js";
 import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
-import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
-import { PAGES, SITE } from "../src/seo.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer

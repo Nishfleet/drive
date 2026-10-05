@@ -15,8 +15,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DOC_PAGES as SEO_DOC_PAGES } from "../core/seo.js";
 import { faqMarkdown, markerValues } from "./docs.js";
-import { DOC_PAGES as SEO_DOC_PAGES } from "./seo.js";
 
 // The pages that make up the docs, in the order the sitemap and the docs home
 // list them. The list itself lives in src/seo.js, with the sitemap and the root

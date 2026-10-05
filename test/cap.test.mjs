@@ -23,7 +23,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../src/billing.js";
+import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../core/billing.js";
 import {
   applyCapSwap,
   capSwapPlan,
@@ -33,9 +33,9 @@ import {
   parseCapUsd,
   READ_ONLY_CAPABILITIES,
   WRITE_SCOPE_BY_KIND,
-} from "../src/cap.js";
+} from "../core/cap.js";
+import { failureMessage as tableMessage } from "../core/messages.js";
 import worker from "../src/index.js";
-import { failureMessage as tableMessage } from "../src/messages.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies

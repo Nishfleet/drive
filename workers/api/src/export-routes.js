@@ -21,8 +21,8 @@
 // out every device — the other two lifecycle items, both customer-data
 // deletion — are Nish-reserved and are not part of this route.
 
-import { all } from "./db.js";
-import { errorResponse, json } from "./http.js";
+import { all } from "../../../core/db.js";
+import { errorResponse, json } from "../../../core/http.js";
 
 /**
  * How many rows one export page carries. A Worker response cannot hold a

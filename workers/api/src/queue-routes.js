@@ -29,8 +29,8 @@
 // workers/api/src/event-routes.js uses for its bucket), so they are
 // deliberately NOT the one user-facing table in src/messages.js.
 
-import { failureMessage } from "../../../src/messages.js";
-import { errorResponse, json, readJsonObject } from "./http.js";
+import { errorResponse, json, readJsonObject } from "../../../core/http.js";
+import { failureMessage } from "../../../core/messages.js";
 
 /** The queue-report body, as the mount sends it. JSON names, so the Go CLI and
  * the Worker agree on the wire without a second name list.

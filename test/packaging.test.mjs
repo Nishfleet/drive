@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { INSTALL_LINES } from "../src/install-lines.js";
+import { INSTALL_LINES } from "../core/install-lines.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");

@@ -48,8 +48,8 @@ import {
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
-} from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
+} from "../core/abuse-guards.js";
+import { isSameOriginRequest } from "../core/email-send.js";
 import {
   etagMatches,
   joinPath,
@@ -58,10 +58,10 @@ import {
   scopeStore,
   TRASH_PATH,
   validatePath,
-} from "./files.js";
-import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
-import { formatBytes, unauthorizedResponse } from "./status.js";
+} from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
+import { formatBytes, unauthorizedResponse } from "../core/status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
 export const SHARE_LINK_PREFIX = "/s";
@@ -833,7 +833,7 @@ export function baseFromRequest(request) {
  * answer comes from the same interface every other read uses. The root always
  * exists. This is the paved path: the Files page asks the same listing the
  * same way, so there is no second way to know a folder is there.
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {string} path a validated folder path
  */
 export async function folderExists(files, path) {
@@ -873,7 +873,7 @@ export function folderDisplayName(folder) {
  * Reading is safe to repeat, so only the two that change the drive — minting
  * and revoking — carry the cross-site rule src/files.js already uses.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string}} [options]
@@ -973,7 +973,7 @@ export async function handleShareRequest(request, files, links, account, options
  * still opens in the tab for a picture or a PDF, which is what "a link that
  * opens the file" means; what it cannot do is run as a page on our domain.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{now?: number}} [options]
  */
@@ -1120,7 +1120,7 @@ function shareHeaders(path, contentType, extra = {}) {
  * folder is looked at through scopeStore(files, account), so a request can
  * only ever open an upload page for a folder inside the signed-in account.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string}} [options]
@@ -1265,7 +1265,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * request row and against the owner's spending cap — the same capStatus()
  * resolver the owner's own uploads use.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
  * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database}} [options]

@@ -24,9 +24,10 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
-} from "../src/files.js";
+} from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { failureMessage } from "../core/messages.js";
 import { createApp } from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
 import {
   base64url,
   createD1LinkStore,
@@ -62,7 +63,6 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createTestD1 } from "./harness.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 

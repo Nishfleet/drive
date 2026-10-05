@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { createAuth } from "../core/auth.js";
 
 /** Every migration that applies to the customer database, in order. */
 export const DRIVE_MIGRATIONS = Object.freeze([
@@ -297,7 +297,7 @@ export function createTestD1(options = {}) {
  *
  * @typedef {{to: string, url: string}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);

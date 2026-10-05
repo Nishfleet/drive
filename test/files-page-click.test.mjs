@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_ENDPOINT } from "../src/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
 import worker from "../src/index.js";
 import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";

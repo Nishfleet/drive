@@ -13,8 +13,8 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthlyBillForStoredTb } from "../src/billing.js";
-import { PRICE } from "../src/pricing.js";
+import { monthlyBillForStoredTb } from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
 import {
   absoluteUrl,
   BILLING,
@@ -24,7 +24,7 @@ import {
   ROOT_PAGES,
   SITE,
   softwareApplicationLd,
-} from "../src/seo.js";
+} from "../core/seo.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 /** @param {string} name */

@@ -25,10 +25,12 @@ import {
   createAuth,
   SIGNIN_LINK_PATH,
   safeAfterSigninPath,
-} from "../src/auth.js";
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -41,8 +43,6 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import {
   createTestAuth,
   DRIVE_SCHEMA_MIGRATIONS,

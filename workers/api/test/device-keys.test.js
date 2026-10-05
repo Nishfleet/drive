@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
-import { failureMessage } from "../../../src/messages.js";
-import { dispatch } from "../src/index.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   createMemoryStore,
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
-} from "../src/keystore.js";
+} from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
+import { dispatch } from "../src/index.js";
 
 // A clock the test owns, so a device token can be pushed past its TTL without
 // sleeping; the store reads `now` from the context it is given.

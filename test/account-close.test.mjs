@@ -8,6 +8,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { createD1DeviceStore } from "../core/devices.js";
+import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
+import { createMemoryStore as createFileStore, scopeStore } from "../core/files.js";
+import { createMemoryStore as createKeyStore } from "../core/keystore.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_COPY,
@@ -22,11 +26,7 @@ import {
   purgeOnDate,
   runAccountCloseCron,
 } from "../src/account-close.js";
-import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
-import { createMemoryStore as createFileStore, scopeStore } from "../src/files.js";
 import worker from "../src/index.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { createMemoryStore as createKeyStore } from "../workers/api/src/keystore.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 

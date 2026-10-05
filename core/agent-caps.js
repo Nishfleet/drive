@@ -25,15 +25,9 @@
 // and a tool still looping after its first refusal is exactly what the number
 // should show.
 
-import {
-  agentCapPlan,
-  agentCapStatus,
-  asMillis,
-  dayKey,
-  monthKey,
-} from "../../../src/agentcaps.js";
-import { monthUsageThrough } from "../../../src/meter.js";
+import { agentCapPlan, agentCapStatus, asMillis, dayKey, monthKey } from "./agentcaps.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
+import { monthUsageThrough } from "./meter.js";
 
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
 // key is an integration and a `branch` key is the app's own undo credential:

@@ -11,9 +11,9 @@
 // POST /customers/{customer_id}/customer-portal/session, bearer auth, optional
 // `return_url` query parameter, and a 200 body of { "link": string }.
 
+import { failureMessage } from "../core/messages.js";
+import { unauthorizedResponse } from "../core/status.js";
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
-import { failureMessage } from "./messages.js";
-import { unauthorizedResponse } from "./status.js";
 
 export const PORTAL_ENDPOINT = "/api/billing/portal";
 

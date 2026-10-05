@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createS3Store, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { createS3Store, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../core/files.js";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 // The two ways in, so the skip and the startup read the same values: real
@@ -127,7 +127,7 @@ const rcloneShaped = (objects, bucket) => {
   return { endpoint: "https://rclone.test", fetchImpl, prefixes };
 };
 
-/** @param {import("../src/files.js").FileStore} store @returns {Promise<string[]>} */
+/** @param {import("../core/files.js").FileStore} store @returns {Promise<string[]>} */
 const names = async (store) => (await store.list("/")).map((entry) => entry.name).sort();
 
 // The shared stand-in against a real `rclone serve s3` capture, so the fake

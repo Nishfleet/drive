@@ -50,10 +50,10 @@ import {
   UPLOAD_COPY,
   validatePath,
   withoutTrash,
-} from "../src/files.js";
+} from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
@@ -316,7 +316,7 @@ test("a deleted file is restorable for 30 days and not one day later", () => {
 test("a file past the 30 days has no Restore button and says why", () => {
   const day = 24 * 60 * 60 * 1000;
   const [fresh, stale] = trashRows(
-    /** @type {import("../src/files.js").FileEntry[]} */ ([
+    /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/fresh.md", now - day), path: "/fresh.md", kind: "file" },
       { name: trashName("/stale.md", now - 31 * day), path: "/stale.md", kind: "file" },
     ]),
@@ -352,7 +352,7 @@ test("the trash folder is hidden in the drive root, not deeper in it", () => {
 
 test("Recently deleted says when a file was deleted and until when", () => {
   const rows = trashRows(
-    /** @type {import("../src/files.js").FileEntry[]} */ ([
+    /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/a.txt", now - 60_000), path: "/a.txt", kind: "file", size: 1200 },
       { name: "not-ours", path: "/not-ours", kind: "file", size: 0 },
     ]),
@@ -872,7 +872,7 @@ test("a real S3 ListObjectVersions becomes version rows", () => {
 });
 
 test("the in-memory store keeps the version history the reconciler reads", async () => {
-  const { createMemoryStore } = await import("../src/files.js");
+  const { createMemoryStore } = await import("../core/files.js");
   const store = createMemoryStore();
   await store.write("u/1/a.txt", "one", "text/plain");
   await store.write("u/1/a.txt", "two", "text/plain");
@@ -895,7 +895,7 @@ test("the in-memory store keeps the version history the reconciler reads", async
 });
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   assert.throws(
     () =>
       createS3Store({
@@ -909,7 +909,7 @@ test("the S3 stand-in needs an endpoint and a bucket", async () => {
 });
 
 test("the S3 store needs both a region and a credential, or neither", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   assert.throws(
     () =>
       createS3Store({
@@ -931,7 +931,7 @@ test("the S3 store needs both a region and a credential, or neither", async () =
 });
 
 test("a credentialed S3 store signs every request and still uses fetchImpl", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   /** @type {string[]} */
   const authorizations = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -963,7 +963,7 @@ test("a credentialed S3 store signs every request and still uses fetchImpl", asy
 });
 
 test("an unsigned write sends the stream as it is, without buffering it", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -987,7 +987,7 @@ test("an unsigned write sends the stream as it is, without buffering it", async 
 });
 
 test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -1014,7 +1014,7 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
 });
 
 test("a signed write names a body it cannot hash", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const store = createS3Store({
     endpoint: "http://127.0.0.1:9000",
     bucket: "drive",
@@ -1032,7 +1032,7 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   // The bucket is one namespace for every account, so this is the layer where
   // a missing prefix would actually cross accounts (drive issue #73). The fake
   // fetch records the URLs, and the assertion is on the storage keys in them.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   /** @type {Array<{url: string, method: string}>} */
   const urls = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -1245,7 +1245,7 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // 100,000-file drive indexed 20,000 of them (drive issue #18). The fake
   // storage here answers two pages, so the test fails on a store that stops at
   // the first one.
-  const { createS3Store, nextContinuationToken } = await import("../src/files.js");
+  const { createS3Store, nextContinuationToken } = await import("../core/files.js");
   /** @param {string[]} names @param {string|null} next */
   const page = (names, next) => {
     const contents = names
@@ -1580,7 +1580,7 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   // `drive branch` calls FileStore.copy (build step 7): on the real store that
   // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
   // The header form is the one proven against `rclone serve s3` on 2026-10-01.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   /** @type {Array<{method: string, url: string, headers: Record<string, string>}>} */
   const calls = [];
   /** @type {typeof fetch} */
@@ -1710,7 +1710,7 @@ test("a copy the storage refuses as too big becomes a multipart copy, even with 
   // source over its 5 GiB single-copy ceiling is the signal, and the byte
   // length comes from the source's own HEAD. Without that answer the copy is a
   // named failure, not a copy that silently moved nothing.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   const sixGb = 6 * 1024 ** 3;
   /** @type {string[]} */
   const seen = [];
@@ -1763,7 +1763,7 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
   // Every S3-shaped provider bills the parts of an unfinished multipart upload,
   // and `drive branch` copies whole folders: a copy that gave up halfway must
   // not leave that bill behind, and must say which part failed.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   /** @type {string[]} */
   const seen = [];
   /** @type {typeof fetch} */
@@ -2093,7 +2093,7 @@ test("a 5xx from storage is retried once, and the retry re-signs the request", a
 });
 
 test("listKeys lists flat, resumes after a start-after key, and follows the continuation token", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   /** @type {string[]} */
   const urls = [];
   /**
@@ -2136,7 +2136,7 @@ test("listKeys lists flat, resumes after a start-after key, and follows the cont
 });
 
 test("a repeated continuation token is refused instead of holding the listing open", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Contents><Key>u/acct/a.txt</Key><Size>10</Size></Contents>
@@ -2151,7 +2151,7 @@ test("a repeated continuation token is refused instead of holding the listing op
 });
 
 test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escaped keys", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   /** @type {{url: string, method: string, headers: Record<string, string>, body: string}[]} */
   const sent = [];
   /** @type {typeof fetch} */
@@ -2191,7 +2191,7 @@ test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escap
 });
 
 test("removeBatch refuses a 200 answer that carries per-key errors", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Error><Key>u/acct/stuck.txt</Key><Code>InternalError</Code><Message>We encountered an internal error</Message></Error>
@@ -2209,7 +2209,7 @@ test("removeBatch refuses a 200 answer that carries per-key errors", async () =>
 });
 
 test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket batch", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   let calls = 0;
   const store = createS3Store({
     endpoint: "http://127.0.0.1:9000",

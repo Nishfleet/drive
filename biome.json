@@ -47,6 +47,48 @@
           }
         }
       }
+    },
+    {
+      "includes": ["src/**/*.js", "core/**/*.js"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/workers/**", "!core/**"],
+                    "importNamePattern": ".*",
+                    "message": "a module in src/ or core/ must not import a Worker directory. Move what is shared into core/ and import it from there (drive#616)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["workers/*/src/**/*.js"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/src/**", "!workers/**", "!core/**"],
+                    "importNamePattern": ".*",
+                    "message": "a Worker must not import the site Worker's src/. Move what is shared into core/ and import it from there (drive#616)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "assist": {

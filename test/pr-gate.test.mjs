@@ -13,29 +13,49 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { monthBillCents, USAGE_ENDPOINT } from "../src/billing.js";
+import { monthBillCents, USAGE_ENDPOINT } from "../core/billing.js";
 import {
   createMemoryStore,
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
   storageBucketForKey,
-} from "../src/files.js";
+} from "../core/files.js";
+import { FAILURE_MESSAGES } from "../core/messages.js";
+import { STATUS_ENDPOINT } from "../core/status.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 /** @param {string} path @returns {string} */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 /** @param {string} name @returns {string} */
 const srcFile = (name) => read(`src/${name}`);
+// drive#616: the modules that cross the two Workers live in the shared core
+// tree, so a gate that proves one of them must find it there. productFile
+// resolves a module name to whichever tree holds it, so this gate keeps
+// covering the same code after the move instead of reading a path that is gone.
+const PRODUCT_TREES = ["core", "src"];
+/** @param {string} name @returns {string} */
+const productFile = (name) => {
+  const tree = PRODUCT_TREES.find((t) => existsSync(new URL(`../${t}/${name}`, import.meta.url)));
+  if (!tree) throw new Error(`no module named ${name} in core/ or src/`);
+  return read(`${tree}/${name}`);
+};
 const publicPages = () =>
   readdirSync(new URL("../public/", import.meta.url)).filter((name) => name.endsWith(".html"));
+// Every product-JS module as a repo-relative path, across the core and the
+// site Worker's own tree.
+/** @returns {string[]} */
+const productModules = () =>
+  PRODUCT_TREES.flatMap((tree) =>
+    readdirSync(new URL(`../${tree}/`, import.meta.url))
+      .filter((name) => name.endsWith(".js"))
+      .map((name) => `${tree}/${name}`),
+  );
 
 // A pointer in the list is a repo path, not a function name and not the
 // storage prefix (`u/${account}`), so the shape check can tell them apart.
@@ -100,16 +120,16 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   assert.match(srcFile("index.js"), /export default \{\s{2,}async fetch/);
   /** @type {Array<[string, RegExp]>} */
   const required = [
-    ["src/status.js", /export async function signedInAccount\(request, store\)/],
-    ["src/files.js", /export function createS3Store\(config\)/],
+    ["core/status.js", /export async function signedInAccount\(request, store\)/],
+    ["core/files.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
-    ["src/files.js", /const toKey = \(path\) => \{/],
-    ["src/billing.js", /export function monthBillCents\(/],
-    ["src/messages.js", /export function failureMessage\(key\)/],
+    ["core/files.js", /const toKey = \(path\) => \{/],
+    ["core/billing.js", /export function monthBillCents\(/],
+    ["core/messages.js", /export function failureMessage\(key\)/],
   ];
   for (const [file, gate] of required) {
-    assert.match(srcFile(file.slice(4)), gate, `${file} must keep its gate`);
+    assert.match(read(file), gate, `${file} must keep its gate`);
   }
   assert.match(
     read("test/own-words.test.mjs"),
@@ -162,8 +182,8 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
       `${route.method} ${route.path} must be in the route table`,
     );
     assert.ok(
-      srcFile(route.source).includes(route.path),
-      `src/${route.source} must name ${route.path}, the path it handles`,
+      productFile(route.source).includes(route.path),
+      `${route.source} must name ${route.path}, the path it handles`,
     );
   }
   // Every known base path is gated (public routes are the exception).
@@ -199,7 +219,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // every other account route (issue #73): the one gate, so a request that
   // cannot prove an account is a 401 rather than an empty month.
   assert.match(
-    srcFile("billing.js"),
+    productFile("billing.js"),
     /export function handleUsageRequest\(request, account, upload = null\)/,
   );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);
@@ -209,7 +229,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   });
   // The send-email route's gate is its deployment token, not a session: only
   // POST is served, and with no token configured every POST is closed.
-  assert.match(srcFile("email-send.js"), /EMAIL_SEND_TOKEN/);
+  assert.match(productFile("email-send.js"), /EMAIL_SEND_TOKEN/);
   const send = await workerFetch(
     new Request("https://drive.test/api/emails/send", {
       method: "POST",
@@ -223,7 +243,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // The files route's account comes from the one gate, never from a header the
   // caller sends: the storage prefix is applied by scopeStore from the account
   // the gate resolved, and nothing in the request can name it (issue #73).
-  assert.match(srcFile("files.js"), /export function scopeStore\(store, account\)/);
+  assert.match(productFile("files.js"), /export function scopeStore\(store, account\)/);
   assert.ok(!index.includes("x-drive-account"), "no caller-supplied account header");
 });
 
@@ -278,7 +298,7 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   /** @param {string} suffix @returns {string} */
   const api = (suffix) => `https://drive.test${FILES_ENDPOINT}${suffix}`;
   /**
-   * @param {import("../src/files.js").FileStore} store
+   * @param {import("../core/files.js").FileStore} store
    * @param {{id: string, name: string}} account
    * @param {string} folder
    * @param {string} name
@@ -299,7 +319,7 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
       account,
     );
   /**
-   * @param {import("../src/files.js").FileStore} store
+   * @param {import("../core/files.js").FileStore} store
    * @param {{id: string, name: string}} account
    * @param {string} route
    * @param {string} path
@@ -374,7 +394,7 @@ test("gate 2b: Files page and share reads use the account's own bucket", async (
   // the boundary the key provider already uses. A file written the way Finder
   // writes (into drv-<id>) must show on GET /api/files for that account and
   // must be unreachable from the other account's bucket.
-  assert.match(srcFile("files.js"), /export function storageBucketForKey\(/);
+  assert.match(productFile("files.js"), /export function storageBucketForKey\(/);
   assert.match(srcFile("index.js"), /bucketFor:\s*storageBucketForKey/);
   assert.doesNotMatch(srcFile("index.js"), /bucket:\s*(dev|storage)\.FILES_S3_BUCKET/);
   const objects = new Map();
@@ -551,7 +571,7 @@ test("gate 4: the secret scan is wired, and nothing tracked carries a token", ()
 // ------------------------------------------------ 5. money in whole cents
 
 test("gate 5: the bill is whole cents out of the one billing function", () => {
-  const billing = srcFile("billing.js");
+  const billing = productFile("billing.js");
   assert.match(billing, /export function monthBillCents\(/, "the one billing function");
   // The storage bill is read out of it rather than worked out a second time.
   assert.match(billing, /function monthlyStorageBillUsd[\s\S]{0,400}return monthBillCents\(/);
@@ -721,17 +741,17 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
 // ------------------------------------------- 7. one table of words
 
 test("gate 7: failure words come from the one table", () => {
-  // Every key src/ names is a key the table has; failureMessage throws on an
-  // unknown one, so this catches the drift before a request does. Quoting is
-  // not load-bearing, so single quotes, double quotes and backticks all scan.
-  for (const name of readdirSync(new URL("../src/", import.meta.url))) {
-    if (!name.endsWith(".js")) {
-      continue;
-    }
-    for (const [, key] of srcFile(name).matchAll(/failureMessage\(\s*["'`]([^"'`]+)["'`]\s*\)/g)) {
+  // Every key either product tree names is a key the table has; failureMessage
+  // throws on an unknown one, so this catches the drift before a request does.
+  // Quoting is not load-bearing, so single quotes, double quotes and backticks
+  // all scan. The walk covers core/ as well as src/ (drive#616): most of the
+  // modules that name a failure key moved into the shared core, and a walk of
+  // src/ alone would stop seeing them.
+  for (const rel of productModules()) {
+    for (const [, key] of read(rel).matchAll(/failureMessage\(\s*["'`]([^"'`]+)["'`]\s*\)/g)) {
       assert.ok(
         Object.hasOwn(FAILURE_MESSAGES, key),
-        `src/${name} names "${key}", which the table must have`,
+        `${rel} names "${key}", which the table must have`,
       );
     }
   }
@@ -755,5 +775,75 @@ test("gate 7: failure words come from the one table", () => {
       !read(`public/${name}`).includes(FAILURE_MESSAGES.unauthorized.what),
       `${name} must not carry a second copy of the API's signed-out words`,
     );
+  }
+});
+
+test("gate 8: the two Worker trees cannot import each other, only core", () => {
+  // drive#616. The site Worker and the api Worker each had their own src/, and
+  // the code they shared lived in one of the two, so a change to a shared
+  // behaviour meant finding which tree happened to own it. The shared modules
+  // now live in core/, and biome.json refuses an import in either direction so
+  // the two cannot drift back.
+  //
+  // The rule is proved here by planting each crossing and running the real
+  // `npm run lint` command, rather than by reading biome.json and believing
+  // it: a pattern that stops matching the paths it was written for would leave
+  // the file looking correct and the boundary open. Every probe is removed
+  // again whatever the outcome, so a failure here cannot poison the checkout.
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const probe = "zz-boundary-probe.js";
+  const cases = [
+    {
+      file: `src/${probe}`,
+      code: 'import { bearerToken } from "../workers/api/src/http.js";\n\nexport const p = bearerToken;\n',
+      why: "a site module must not import the api Worker",
+    },
+    {
+      file: `core/${probe}`,
+      code: 'import { bearerToken } from "../workers/api/src/http.js";\n\nexport const p = bearerToken;\n',
+      why: "a shared module must not import one Worker",
+    },
+    {
+      file: `workers/api/src/${probe}`,
+      code: 'import { USAGE_ENDPOINT } from "../../../src/index.js";\n\nexport const p = USAGE_ENDPOINT;\n',
+      why: "a Worker must not import the site Worker's src",
+    },
+  ];
+  // The one crossing that must stay open: core is how the two meet.
+  const allowed = {
+    file: `core/${probe}`,
+    code: 'import { monthBillCents } from "./billing.js";\n\nexport const p = monthBillCents;\n',
+    why: "core is the shared tree, so core importing core is not a crossing",
+  };
+  /** @param {string} rel @returns {{code: number, out: string}} */
+  const lintOne = (rel) => {
+    try {
+      const out = execFileSync("npx", ["biome", "check", rel], { cwd: root, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = /** @type {{status?: number, stdout?: string, stderr?: string}} */ (err);
+      return { code: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  try {
+    for (const { file, code, why } of cases) {
+      const path = new URL(`../${file}`, import.meta.url);
+      writeFileSync(path, code);
+      const { code: status, out } = lintOne(file);
+      assert.notEqual(status, 0, `${file} must fail \`biome check\`, because ${why}`);
+      assert.match(
+        out,
+        /noRestrictedImports/,
+        `${file} must fail on the boundary rule itself, not on some other finding`,
+      );
+      rmSync(path, { force: true });
+    }
+    const path = new URL(`../${allowed.file}`, import.meta.url);
+    writeFileSync(path, allowed.code);
+    const { code: status, out } = lintOne(allowed.file);
+    assert.equal(status, 0, `${allowed.file} must pass, because ${allowed.why}:\n${out}`);
+    rmSync(path, { force: true });
+  } finally {
+    for (const { file } of [...cases, allowed]) rmSync(new URL(`../${file}`, import.meta.url), { force: true });
   }
 });

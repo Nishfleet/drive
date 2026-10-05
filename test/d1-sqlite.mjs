@@ -13,7 +13,7 @@
 // checked against the whole schema the drive database will actually have.
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { BYTES_PER_GB } from "../src/meter.js";
+import { BYTES_PER_GB } from "../core/meter.js";
 
 // The drive database's migration files, in the numeric order the deploy
 // applies them in.

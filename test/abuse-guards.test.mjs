@@ -17,11 +17,11 @@ import {
   preChargeLimitStream,
   preChargeUploadBlocked,
   signupCardFingerprint,
-} from "../src/abuse-guards.js";
-import { BILLING_CONFIG, GB_PER_TB } from "../src/billing.js";
-import { createMemoryStore, handleFilesRequest } from "../src/files.js";
-import { failureMessage } from "../src/messages.js";
-import { BYTES_PER_GB } from "../src/meter.js";
+} from "../core/abuse-guards.js";
+import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
+import { createMemoryStore, handleFilesRequest } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
+import { BYTES_PER_GB } from "../core/meter.js";
 import { hasSignupCard } from "../src/signin.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 

@@ -16,13 +16,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-
-import { failureMessage } from "../../src/messages.js";
+import { createD1DeviceSigninStore } from "../../core/device-signin.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
+import { failureMessage } from "../../core/messages.js";
 import { createD1LinkStore, linkState } from "../../src/share.js";
-import { createD1DeviceSigninStore } from "../../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { dispatch } from "../../workers/api/src/index.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
@@ -36,7 +35,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * mint until the api revokes it, which is the behaviour the vendor's
  * `remove_access_key` gives (workers/api/src/idrive-keys.js) and the S3 path
  * gets from a short session instead.
- * @returns {{provider: import("../../workers/api/src/keyprovider.js").KeyProvider, accepts: (accessKeyId: string, secret: string) => boolean, live: () => number}}
+ * @returns {{provider: import("../../core/keyprovider.js").KeyProvider, accepts: (accessKeyId: string, secret: string) => boolean, live: () => number}}
  */
 function storageServer() {
   /** @type {Map<string, string>} accessKeyId -> secret */

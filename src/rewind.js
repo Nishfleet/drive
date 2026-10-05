@@ -32,6 +32,10 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
+
+import { RECENTLY_DELETED_DAYS } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
+import { unauthorizedResponse } from "../core/status.js";
 import {
   diffBranch,
   discardBranch,
@@ -39,9 +43,6 @@ import {
   readSnapshot,
   readSnapshotObject,
 } from "./branches.js";
-import { RECENTLY_DELETED_DAYS } from "./files.js";
-import { failureMessage } from "./messages.js";
-import { unauthorizedResponse } from "./status.js";
 
 /** The route family the rewind screen and the CLI read. */
 export const REWIND_ENDPOINT = "/api/rewind";

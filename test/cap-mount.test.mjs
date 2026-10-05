@@ -26,13 +26,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { MINUTES_PER_MONTH } from "../src/billing.js";
-import { dollarsToCapCents, handleCapRequest } from "../src/cap.js";
-import { monthStart } from "../src/meter.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
-import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
+import { MINUTES_PER_MONTH } from "../core/billing.js";
+import { dollarsToCapCents, handleCapRequest } from "../core/cap.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { monthStart } from "../core/meter.js";
+import { createS3Client, provisionBucket } from "../core/s3.js";
+import { createS3KeyProvider } from "../core/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 

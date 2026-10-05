@@ -26,7 +26,7 @@ import {
   syncStatus,
   UPLOAD_LABEL,
   uploadProgress,
-} from "./status.js";
+} from "../core/status.js";
 // The pending-close banner is one shared file. The other signed-in pages load
 // it with <script type="module" src="/close-banner.js">. This page already
 // loads one module, and lighthouserc.json allows only one script resource, so

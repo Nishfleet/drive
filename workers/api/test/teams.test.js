@@ -16,10 +16,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
+import { TEAM_ROLE_CAPABILITIES, teamScopeFor } from "../../../core/keyprovider.js";
+import { canDelete, createMemoryStore } from "../../../core/keystore.js";
 import { dispatch } from "../src/index.js";
-import { TEAM_ROLE_CAPABILITIES, teamScopeFor } from "../src/keyprovider.js";
-import { canDelete, createMemoryStore } from "../src/keystore.js";
 
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 

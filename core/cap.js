@@ -45,9 +45,9 @@
 // implements swapToReadOnly() is used for the cap swap rather than this module
 // re-doing revoke-then-mint by hand.
 
-import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 import { capLine, usageSummary } from "./billing.js";
 import { isSameOriginRequest } from "./email-send.js";
+import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -59,10 +59,7 @@ export const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
 // What a capped key keeps: the same prefix, list and read. A capped account
 // still reads every file it paid for; it just cannot change them.
 export const READ_ONLY_CAPABILITIES = Object.freeze(
-  /** @type {ReadonlyArray<import("../workers/api/src/keyprovider.js").Capability>} */ ([
-    "list",
-    "read",
-  ]),
+  /** @type {ReadonlyArray<import("./keyprovider.js").Capability>} */ (["list", "read"]),
 );
 
 // The full capability set each kind of key gets, from build-spec.md "Keys and

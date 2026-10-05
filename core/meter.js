@@ -13,7 +13,7 @@
 // Worker's own event route are the same bytes, and reading them two ways is
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
-import { decodeNotificationKey } from "../workers/api/src/event-routes.js";
+import { decodeNotificationKey } from "./event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 //
 // Three jobs, in the order the issue lists them:

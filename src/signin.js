@@ -48,14 +48,12 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
   pendingCardAccountId,
   signupCardFingerprint,
-} from "./abuse-guards.js";
+} from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
@@ -63,14 +61,16 @@ import {
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
   sessionAccount,
-} from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
-import { failureMessage } from "./messages.js";
-import { PRICE } from "./pricing.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import { failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
 
-/** @typedef {import("./auth.js").Auth} Auth */
+/** @typedef {import("../core/auth.js").Auth} Auth */
 
 /**
  * What a caller is told when the address is not one a link can be sent to. One

@@ -11,8 +11,8 @@
 // explicit scope (keyprovider.js `teamScopeFor`), so a member's key carries
 // the capabilities its role grants and the storage write route refuses the
 // read-only one. Nothing here keeps a second copy of the capability rule.
-import { errorResponse, json, readJsonObject } from "./http.js";
-import { checkedTeamRole, teamScopeFor } from "./keyprovider.js";
+import { errorResponse, json, readJsonObject } from "../../../core/http.js";
+import { checkedTeamRole, teamScopeFor } from "../../../core/keyprovider.js";
 
 /**
  * POST /v1/teams — create a team owned by the signed-in account.
@@ -46,7 +46,7 @@ export function listTeamsRoute(request, ctx) {
   }
   return ctx.store.teams
     .listTeams(ctx.account)
-    .then((/** @type {import("./teams.js").Team[]} */ teams) =>
+    .then((/** @type {import("../../../core/teams.js").Team[]} */ teams) =>
       json({ teams: teams.map(publicTeam) }),
     );
 }
@@ -169,7 +169,7 @@ export function publicMember(member) {
     // The prefix and capabilities the role would mint, so the owner can see
     // what a member's key can do without minting one.
     scope: teamScopeFor(
-      /** @type {import("./keyprovider.js").TeamRole} */ (member.role),
+      /** @type {import("../../../core/keyprovider.js").TeamRole} */ (member.role),
       member.teamId,
     ),
   };
@@ -207,7 +207,7 @@ export async function mintTeamKeyRoute(request, ctx) {
   }
   const role = isOwner
     ? "read_write"
-    : /** @type {import("./keyprovider.js").TeamRole} */ (membership?.role);
+    : /** @type {import("../../../core/keyprovider.js").TeamRole} */ (membership?.role);
   const read = await readJsonObject(request);
   if ("error" in read) {
     return errorResponse(400, read.error);

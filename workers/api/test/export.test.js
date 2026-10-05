@@ -5,12 +5,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import "urlpattern-polyfill";
+import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
+import { createMemoryStore } from "../../../core/keystore.js";
 import { applyMigrations, d1Over } from "../../../test/d1-sqlite.mjs";
 import { sqlitePlaceholders } from "../../../test/harness.mjs";
-import { createD1DeviceSigninStore } from "../src/device-signin.js";
 import { EXPORT_ROW_CAP } from "../src/export-routes.js";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 
 // A clock the test owns, so a device token can be pushed past its TTL
 // without sleeping; the store reads `now` from the context it is given.

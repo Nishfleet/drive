@@ -30,7 +30,7 @@ import {
   rollupHour,
   runMeterCron,
   validateEvent,
-} from "../../src/meter.js";
+} from "../../core/meter.js";
 import { at, GB, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 // The real migration files of the drive database (drive issue #170: customer

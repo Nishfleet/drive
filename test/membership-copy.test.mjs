@@ -5,10 +5,10 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
+import { FAILURE_MESSAGES } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import { FAQ } from "../src/docs.js";
-import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/signin.js";
 
 const CREDIT_TEXT =

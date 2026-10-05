@@ -17,27 +17,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import {
-  ageMs,
-  connectionLine,
-  connectionStateForStatus,
-  connectionStates,
-  deviceSyncState,
-  emptyState,
-  installCommand,
-  installLines,
-  isConnected,
-  lastSyncText,
-  pollIntervalMs,
-  stateCellText,
-  statusEndpoint,
-  stepLines,
-  syncErrorNotification,
-  uploadFragments,
-  uploadLine,
-} from "../src/get-started.js";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -60,9 +42,27 @@ import {
   syncStatus,
   UPLOAD_LABEL,
   uploadProgress,
-} from "../src/status.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
+} from "../core/status.js";
+import {
+  ageMs,
+  connectionLine,
+  connectionStateForStatus,
+  connectionStates,
+  deviceSyncState,
+  emptyState,
+  installCommand,
+  installLines,
+  isConnected,
+  lastSyncText,
+  pollIntervalMs,
+  stateCellText,
+  statusEndpoint,
+  stepLines,
+  syncErrorNotification,
+  uploadFragments,
+  uploadLine,
+} from "../src/get-started.js";
+import worker from "../src/index.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's

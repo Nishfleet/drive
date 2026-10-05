@@ -16,8 +16,6 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { contentMd5 } from "../workers/api/src/s3.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -28,7 +26,9 @@ import {
 } from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
+import { bucketForAccount } from "./keyprovider.js";
 import { failureMessage } from "./messages.js";
+import { contentMd5 } from "./s3.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */

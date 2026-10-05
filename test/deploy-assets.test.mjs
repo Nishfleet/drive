@@ -24,13 +24,13 @@ import { createServer } from "node:http";
 import { extname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createMemoryStore } from "../core/keystore.js";
+import { failureMessage } from "../core/messages.js";
+import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../core/seo.js";
 import worker from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
 import { DOC_PAGES } from "../src/render-docs.js";
-import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../src/seo.js";
 import { TOPUP_ENDPOINT } from "../src/topup.js";
 import apiWorker, { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
 import { API_PREFIX } from "../workers/api/src/routes.js";
 
 /** @param {string} path @returns {string} */

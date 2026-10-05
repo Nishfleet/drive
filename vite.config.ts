@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
+import { FIRST_RUN_COMMAND, FIRST_RUN_STEPS } from "./core/status.js";
 import {
   assertSingleBeacon,
   BEACON_PAGES,
@@ -9,7 +10,6 @@ import {
   beaconToken,
   withBeacon,
 } from "./src/analytics.js";
-import { FIRST_RUN_COMMAND, FIRST_RUN_STEPS } from "./src/status.js";
 import apiWorker from "./workers/api/cloudflare.config.ts";
 
 export default defineConfig({
@@ -148,7 +148,7 @@ function staticFirstRunShell(): Plugin {
           (step) => `        <li><h3>${text(step.title)}</h3><p>${text(step.body)}</p></li>`,
         ).join("\n");
         const withSteps = html.replace(
-          '      <ol class="steps" id="steps">\n        <!-- Filled by get-started.js from src/status.js -->\n      </ol>',
+          '      <ol class="steps" id="steps">\n        <!-- Filled by get-started.js from core/status.js -->\n      </ol>',
           `      <ol class="steps" id="steps">\n${steps}\n      </ol>`,
         );
         const withCommand = withSteps.replace(

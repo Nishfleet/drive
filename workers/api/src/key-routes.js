@@ -9,13 +9,14 @@
 // (build step 1, drive#2), and presents them with HTTP Basic. That route is
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
-import { failureMessage } from "../../../src/messages.js";
-import { errorResponse, json, readJsonObject } from "./http.js";
-import { authorizePath } from "./keystore.js";
+
+import { errorResponse, json, readJsonObject } from "../../../core/http.js";
+import { authorizePath } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
 
 /** The stand-in store: what src/keystore.js `createMemoryStore` returns and
  * what D1's adapter will have to match (drive#2). */
-/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+/** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
 /**
  * GET /v1/keys — the account's keys, no secret (the store keeps only a hash).
@@ -63,7 +64,7 @@ export async function mintKeyRoute(request, ctx) {
   // the string has been read; it does not make it valid.
   const kind =
     typeof read.body.kind === "string"
-      ? /** @type {import("./keyprovider.js").KeyKind} */ (read.body.kind)
+      ? /** @type {import("../../../core/keyprovider.js").KeyKind} */ (read.body.kind)
       : "agent";
   const name =
     typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : undefined;

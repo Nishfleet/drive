@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { WRITE_SCOPE_BY_KIND } from "../src/cap.js";
-import { CAPABILITIES_BY_KIND as KEYPROVIDER_TABLE } from "../workers/api/src/keyprovider.js";
+import { WRITE_SCOPE_BY_KIND } from "../core/cap.js";
+import { CAPABILITIES_BY_KIND as KEYPROVIDER_TABLE } from "../core/keyprovider.js";
 
 // drive#77: the api Worker is one table of kind to capabilities, and the
 // pricing Worker reads that same table rather than keeping its own copy.

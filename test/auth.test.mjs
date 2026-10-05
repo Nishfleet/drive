@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
-import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
+import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../core/auth.js";
 import worker from "../src/index.js";
 import { createTestAuth, createTestD1, signIn, TEST_BASE_URL } from "./harness.mjs";
 

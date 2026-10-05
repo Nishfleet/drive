@@ -1,17 +1,17 @@
 import { Hono } from "hono";
 import { methodNotAllowed } from "hono/method-not-allowed";
 
-import { authFor } from "../../../src/auth.js";
-import { failureMessage } from "../../../src/messages.js";
-import { signedInAccount } from "../../../src/status.js";
-import { createD1DeviceSigninStore } from "./device-signin.js";
-import { createD1DeviceStore } from "./devices.js";
-import { bearerToken, errorResponse } from "./http.js";
-import { keyProviderFor, storageLocationFromEnv } from "./keyprovider-env.js";
-import { createMemoryStore } from "./keystore.js";
-import { createD1QueueStore } from "./queues.js";
+import { authFor } from "../../../core/auth.js";
+import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
+import { createD1DeviceStore } from "../../../core/devices.js";
+import { bearerToken, errorResponse } from "../../../core/http.js";
+import { keyProviderFor, storageLocationFromEnv } from "../../../core/keyprovider-env.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
+import { createD1QueueStore } from "../../../core/queues.js";
+import { signedInAccount } from "../../../core/status.js";
+import { createD1TeamStore } from "../../../core/teams.js";
 import { routes } from "./routes.js";
-import { createD1TeamStore } from "./teams.js";
 
 // Kept as a named export of this entry: it was one before the provider choice
 // moved to keyprovider-env.js, and an importer of this Worker's entry should
@@ -37,7 +37,7 @@ export { storageLocationFromEnv };
  * `queues` is the D1-backed upload-queue report store (queues.js), or null
  * where no database is bound: the queue report route refuses rather than
  * answering as though it had stored a row.
- * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL, queues?: ReturnType<typeof import("./queues.js").createD1QueueStore>|null}} Ctx
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL, queues?: ReturnType<typeof import("../../../core/queues.js").createD1QueueStore>|null}} Ctx
  *
  * The per-request value Hono's context carries. `account` is resolved once by
  * the gate middleware and read from the context by every handler, so a handler

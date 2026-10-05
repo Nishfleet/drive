@@ -18,8 +18,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
-import worker from "../src/index.js";
+import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../core/billing.js";
 import {
   BYTES_PER_GB,
   bearerToken,
@@ -52,7 +51,8 @@ import {
   validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -1909,8 +1909,8 @@ test("a move whose successor event arrives late is corrected, not billed twice",
 // test as in production. The real provider's field mapping is #60's to
 // confirm; this fake is the listing the reconciler is defined against.
 /**
- * @param {Record<string, import("../src/files.js").StorageVersion[]>} versionsByPrefix
- * @returns {import("../src/files.js").FileStore}
+ * @param {Record<string, import("../core/files.js").StorageVersion[]>} versionsByPrefix
+ * @returns {import("../core/files.js").FileStore}
  */
 function providerStore(versionsByPrefix) {
   return {
@@ -2102,7 +2102,7 @@ test("the reconciler fails loudly without a database or a version listing", asyn
   await assert.rejects(() => reconcileMeter(undefined, providerStore({})), /METER_DB/);
   await assert.rejects(() => reconcileMeter(db, undefined), /list versions/);
   await assert.rejects(
-    () => reconcileMeter(db, /** @type {import("../src/files.js").FileStore} */ ({})),
+    () => reconcileMeter(db, /** @type {import("../core/files.js").FileStore} */ ({})),
     /list versions/,
   );
 });

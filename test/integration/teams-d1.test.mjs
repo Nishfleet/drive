@@ -25,10 +25,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
+import { createD1TeamStore } from "../../core/teams.js";
 import { accountByEmail } from "../../workers/api/src/index.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
-import { createD1TeamStore } from "../../workers/api/src/teams.js";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn, sqlitePlaceholders } from "../harness.mjs";
 
 // The teams migration is in the harness's default list (test/harness.mjs
@@ -54,12 +54,12 @@ function rowIn(sqlite, sql, ...params) {
  * The member from an invite answer, failing the test when the call refused.
  * The store returns a union (`TeamMember|{error}`), so this narrows once for
  * every caller rather than each call site re-checking the same shape.
- * @param {import("../../workers/api/src/teams.js").TeamMember|{error: string}} answer
- * @returns {import("../../workers/api/src/teams.js").TeamMember}
+ * @param {import("../../core/teams.js").TeamMember|{error: string}} answer
+ * @returns {import("../../core/teams.js").TeamMember}
  */
 function invited(answer) {
   assert.ok(!("error" in answer), `the invite was refused: ${JSON.stringify(answer)}`);
-  return /** @type {import("../../workers/api/src/teams.js").TeamMember} */ (answer);
+  return /** @type {import("../../core/teams.js").TeamMember} */ (answer);
 }
 
 /**
@@ -68,7 +68,7 @@ function invited(answer) {
  * table by the Worker's own `accountByEmail` (workers/api/src/index.js). Using
  * the exported resolver rather than a lookalike here is the point: the query
  * this test exercises is the one the deployment runs.
- * @param {import("../../test/harness.mjs").TestD1} db
+ * @param {import("../harness.mjs").TestD1} db
  */
 function resolverFor(db) {
   return accountByEmail(/** @type {any} */ (db));
@@ -121,10 +121,7 @@ test("two real accounts share one team drive, and the removal survives a fresh s
 
   const seenByFresh = await fresh.teamForAccount(member.account, team.id);
   assert.notEqual(seenByFresh, null, "a team on one instance is visible on the next");
-  assert.equal(
-    /** @type {import("../../workers/api/src/teams.js").Team} */ (seenByFresh).id,
-    team.id,
-  );
+  assert.equal(/** @type {import("../../core/teams.js").Team} */ (seenByFresh).id, team.id);
 
   const membersFromFresh = await fresh.listMembers(owner.account, team.id);
   assert.equal(membersFromFresh.length, 2, "both members are rows, seen from a new instance");

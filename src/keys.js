@@ -7,7 +7,7 @@
 // of its own; it turns that table into the plain booleans the docs pages need,
 // so the Security and Agents pages and the enforcement code read the same
 // source instead of two copies that can drift.
-import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
+import { CAPABILITIES_BY_KIND } from "../core/keyprovider.js";
 
 // The agent tools `drive init` connects. The CLI's own list is in Go
 // (cmd/drive/tools.go); the docs cannot import Go, so the list is declared

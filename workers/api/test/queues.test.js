@@ -7,13 +7,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createTestD1, DRIVE_MIGRATIONS } from "../../../test/harness.mjs";
 import {
   createD1QueueStore,
   QUEUE_FRESHNESS_SECONDS,
   QUEUE_REPORT_INTERVAL_SECONDS,
   uploadQueueFromRow,
-} from "../src/queues.js";
+} from "../../../core/queues.js";
+import { createTestD1, DRIVE_MIGRATIONS } from "../../../test/harness.mjs";
 
 // A clock the test owns, so the interval and the freshness window can be
 // crossed without sleeping. It is the same shape the other api stores' tests

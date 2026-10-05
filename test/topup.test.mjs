@@ -4,8 +4,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { failureMessage } from "../core/messages.js";
 import { DODO_TEST_BASE_URL } from "../src/dodo.js";
-import { failureMessage } from "../src/messages.js";
 import {
   DODO_CHECKOUT_PATH,
   handleBalanceRequest,

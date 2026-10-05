@@ -4,11 +4,45 @@ import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { bearerToken, errorResponse } from "../workers/api/src/http.js";
-import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
-import { createD1QueueStore } from "../workers/api/src/queues.js";
+import { authFor, SIGNIN_LINK_PATH } from "../core/auth.js";
+import {
+  BILLING_CONFIG,
+  handleQuoteRequest,
+  handleUsageRequest,
+  QUOTE_ENDPOINT,
+  USAGE_ENDPOINT,
+  usageSummary,
+} from "../core/billing.js";
+import { CAP_ENDPOINT, handleCapRequest } from "../core/cap.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { handleSendEmailRequest } from "../core/email-send.js";
+import {
+  createMemoryStore,
+  createS3Store,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+  storageBucketForKey,
+} from "../core/files.js";
+import { bearerToken, errorResponse } from "../core/http.js";
+import { keyProviderFor } from "../core/keyprovider-env.js";
+import { failureMessage } from "../core/messages.js";
+import {
+  HOUR_MS,
+  handleStorageEventRequest,
+  METER_CRON,
+  METER_RECONCILE_SCHEDULE,
+  reconcileMeter,
+  runMeterCron,
+} from "../core/meter.js";
+import { createD1QueueStore } from "../core/queues.js";
+import {
+  handleFirstRunStatusRequest,
+  STATUS_ENDPOINT,
+  signedInAccount,
+  unauthorizedResponse,
+} from "../core/status.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -17,37 +51,9 @@ import {
   handleCloseStatusRequest,
   runAccountCloseCron,
 } from "./account-close.js";
-import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
-import {
-  BILLING_CONFIG,
-  handleQuoteRequest,
-  handleUsageRequest,
-  QUOTE_ENDPOINT,
-  USAGE_ENDPOINT,
-  usageSummary,
-} from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
-import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
 import { billingPushGap, pushBillingHours } from "./dodo.js";
-import { handleSendEmailRequest } from "./email-send.js";
-import {
-  createMemoryStore,
-  createS3Store,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-  storageBucketForKey,
-} from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
-import { failureMessage } from "./messages.js";
-import {
-  HOUR_MS,
-  handleStorageEventRequest,
-  METER_CRON,
-  METER_RECONCILE_SCHEDULE,
-  reconcileMeter,
-  runMeterCron,
-} from "./meter.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
@@ -70,12 +76,6 @@ import {
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
-import {
-  handleFirstRunStatusRequest,
-  STATUS_ENDPOINT,
-  signedInAccount,
-  unauthorizedResponse,
-} from "./status.js";
 import {
   BALANCE_ENDPOINT,
   BILLING_WEBHOOK_PATH,
@@ -184,7 +184,7 @@ function isPublic(pathname) {
 // storageBucketForKey / bucketForAccount), which is the same name a Finder
 // key is minted into (drive#371 / #460). The account prefix is still
 // scopeStore's job (src/files.js).
-/** @type {import("./files.js").FileStore|undefined} */
+/** @type {import("../core/files.js").FileStore|undefined} */
 let filesStore;
 /**
  * Storage config vars. They are set per deployment, never declared as
@@ -279,7 +279,7 @@ function forwardToApi(c) {
 
 /**
  * @param {Env} env
- * @returns {import("./files.js").FileStore}
+ * @returns {import("../core/files.js").FileStore}
  */
 function storeFor(env) {
   if (!filesStore) {
@@ -368,7 +368,7 @@ function snapshotsFor(env) {
 /**
  * @param {Env} env
  * @param {{id: string}} account
- * @returns {Promise<import("../workers/api/src/queues.js").UploadQueue|null>}
+ * @returns {Promise<import("../core/queues.js").UploadQueue|null>}
  */
 async function liveQueueFor(env, account) {
   if (!env.DRIVE_DB) {
@@ -918,7 +918,7 @@ export default {
    * @param {ScheduledController} event
    * @param {Env} env
    * @param {ExecutionContext} context
-   * @param {import("./files.js").FileStore} [store] the storage store,
+   * @param {import("../core/files.js").FileStore} [store] the storage store,
    *   injectable so the reindex's own tests hand one in instead of standing
    *   in the runtime's fetch
    * @returns {Promise<void>}

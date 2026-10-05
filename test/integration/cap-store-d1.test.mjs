@@ -17,15 +17,15 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MINUTES_PER_MONTH } from "../../src/billing.js";
+import { MINUTES_PER_MONTH } from "../../core/billing.js";
 import {
   dollarsToCapCents,
   enforceCap,
   handleCapRequest,
   READ_ONLY_CAPABILITIES,
-} from "../../src/cap.js";
-import { monthStart } from "../../src/meter.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+} from "../../core/cap.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { monthStart } from "../../core/meter.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**

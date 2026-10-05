@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { errorResponse, json, readJsonObject } from "../src/http.js";
+import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 
 // drive#77 finding 5: http.js had no test at all. These pin the error shape
 // every api route answers with, the no-store rule, and the three ways a body

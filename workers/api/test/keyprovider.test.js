@@ -9,7 +9,7 @@ import {
   mintTtlSeconds,
   renewTtlSeconds,
   scopeFor,
-} from "../src/keyprovider.js";
+} from "../../../core/keyprovider.js";
 
 // drive#77 finding 4: the storage prefix is the safety boundary, so scopeFor
 // validates the account id and the branch name instead of trusting them.
@@ -158,11 +158,12 @@ test("the one lifetime table covers every kind, and only a device key never expi
 
 test("an unknown kind is refused a lifetime rather than handed an immortal credential", () => {
   assert.throws(
-    () => keyTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root")),
+    () => keyTtlSeconds(/** @type {import("../../../core/keyprovider.js").KeyKind} */ ("root")),
     /lifetime/i,
   );
   assert.throws(
-    () => mintTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root"), 900),
+    () =>
+      mintTtlSeconds(/** @type {import("../../../core/keyprovider.js").KeyKind} */ ("root"), 900),
     /lifetime/i,
   );
   // The renewal rule is handed the kind's ceiling rather than the kind, so it

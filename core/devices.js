@@ -12,13 +12,13 @@
 // measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
 // is the whole of the withdrawal there.
 
-import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
-import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
+import { BILLING_CONFIG, storedGb } from "./billing.js";
+import { applyCapSwap, READ_ONLY_CAPABILITIES } from "./cap.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
+import { monthStart, monthUsageRollup } from "./meter.js";
 
 const CLOSE_CRON_LIMIT = 100;
 

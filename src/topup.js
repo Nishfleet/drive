@@ -25,8 +25,11 @@
 // No live charge runs from here while DODO_PAYMENTS_API_KEY is unset: the
 // checkout route answers 503 with the message table's words.
 
+import { isSameOriginRequest } from "../core/email-send.js";
+import { failureMessage } from "../core/messages.js";
+import { PREPAID } from "../core/pricing.js";
+import { unauthorizedResponse } from "../core/status.js";
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
-import { isSameOriginRequest } from "./email-send.js";
 import {
   balanceCents,
   creditTopUp,
@@ -36,9 +39,6 @@ import {
   recentLedger,
   recordRefund,
 } from "./ledger.js";
-import { failureMessage } from "./messages.js";
-import { PREPAID } from "./pricing.js";
-import { unauthorizedResponse } from "./status.js";
 
 export const TOPUP_ENDPOINT = "/api/topup";
 export const BALANCE_ENDPOINT = "/api/balance";

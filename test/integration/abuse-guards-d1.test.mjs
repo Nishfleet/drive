@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { claimCardFingerprint } from "../../src/abuse-guards.js";
+import { claimCardFingerprint } from "../../core/abuse-guards.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");

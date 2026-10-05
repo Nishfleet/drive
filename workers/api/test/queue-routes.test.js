@@ -11,13 +11,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
-import { failureMessage } from "../../../src/messages.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
+import { createD1QueueStore, QUEUE_REPORT_INTERVAL_SECONDS } from "../../../core/queues.js";
 import { createTestD1 } from "../../../test/harness.mjs";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 import { parseQueueReport, reportUploadQueueRoute } from "../src/queue-routes.js";
-import { createD1QueueStore, QUEUE_REPORT_INTERVAL_SECONDS } from "../src/queues.js";
 
 const QUEUE = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
 
@@ -83,7 +83,7 @@ function accountsFor(token, account) {
  * the CLI keeps, the way cmd/drive/report.go reads it.
  * @param {ReturnType<typeof createMemoryStore>} store
  * @param {ReturnType<typeof fixedClock>} clock
- * @param {ReturnType<typeof import("../src/queues.js").createD1QueueStore>|null} queues
+ * @param {ReturnType<typeof import("../../../core/queues.js").createD1QueueStore>|null} queues
  * @param {{id: string, name: string}} account
  * @returns {Promise<{token: string, sessionToken: string}>}
  */

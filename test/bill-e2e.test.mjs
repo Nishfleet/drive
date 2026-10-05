@@ -33,7 +33,7 @@ import {
   monthBillCents,
   monthlyMaximumUsd,
   storedGb,
-} from "../src/billing.js";
+} from "../core/billing.js";
 import {
   gbMinutesInHour,
   MINUTE_MS,
@@ -44,7 +44,7 @@ import {
   runMeterCron,
   toVersion,
   validateEvent,
-} from "../src/meter.js";
+} from "../core/meter.js";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
 
 const TB = 1000 * GB;

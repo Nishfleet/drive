@@ -30,16 +30,16 @@
 // caller's own token from its own bearer header, so there is nothing for a
 // stranger to spend.
 
-import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
-import { isSameOriginRequest } from "../../../src/email-send.js";
-import { failureMessage } from "../../../src/messages.js";
-import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
-import { signedInAccount } from "../../../src/status.js";
-import { bearerToken, errorResponse, json } from "./http.js";
+import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../core/auth.js";
+import { isSameOriginRequest } from "../../../core/email-send.js";
+import { bearerToken, errorResponse, json } from "../../../core/http.js";
+import { failureMessage } from "../../../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
+import { signedInAccount } from "../../../core/status.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
-/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+/** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
 /**
  * The per-request context these handlers read. `store` and `url` are set by the

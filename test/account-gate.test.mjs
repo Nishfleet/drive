@@ -20,21 +20,26 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { handleUsageRequest, USAGE_ENDPOINT } from "../core/billing.js";
+import { CAP_ENDPOINT } from "../core/cap.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { STATUS_ENDPOINT } from "../core/status.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
-import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
-import { CAP_ENDPOINT } from "../src/cap.js";
-import { isSameOriginRequest } from "../src/email-send.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
@@ -708,7 +713,7 @@ test("an anonymous files request never reaches the store", async () => {
 test("scopeStore puts every drive path under the account's own prefix", async () => {
   /** @type {Array<string[]>} */
   const seen = [];
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const recorder = {
     /** @param {string} path */
     async list(path) {

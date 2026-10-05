@@ -26,14 +26,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
   createBranch,
   createKvSnapshotStore,
   handleBranchesRequest,
   snapshotKey,
 } from "../src/branches.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
   handleRewindRequest,
   REWIND_ENDPOINT,
@@ -251,7 +251,7 @@ function makeD1() {
  * The bytes a scoped store holds at `path`, as text. A read that answers null
  * is a real miss, so it throws rather than resolving an empty string the
  * assertions below could not tell from a genuinely empty file.
- * @param {import("../src/files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {string} path
  * @returns {Promise<string>}
  */
@@ -523,7 +523,7 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
 /**
  * @param {D1Database} db
  * @param {import("../src/branches.js").SnapshotStore|null} snapshots
- * @param {import("../src/files.js").FileStore} raw
+ * @param {import("../core/files.js").FileStore} raw
  * @param {string} name
  * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
  */

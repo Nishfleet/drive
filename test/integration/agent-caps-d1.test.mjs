@@ -21,14 +21,14 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agentCaps } from "../../src/agentcaps.js";
-import { failureMessage } from "../../src/messages.js";
-import { BYTES_PER_GB } from "../../src/meter.js";
-import { readAgentCaps, stampAgentRequest } from "../../workers/api/src/agent-caps.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { readAgentCaps, stampAgentRequest } from "../../core/agent-caps.js";
+import { agentCaps } from "../../core/agentcaps.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
+import { failureMessage } from "../../core/messages.js";
+import { BYTES_PER_GB } from "../../core/meter.js";
 import apiWorker from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 // Midday UTC, clear of either midnight, so a day boundary in these tests is a

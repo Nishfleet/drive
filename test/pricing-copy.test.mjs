@@ -20,9 +20,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { billingConfigFor, monthlyBillForStoredTb } from "../src/billing.js";
-import { buildPrice, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
-import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
+import { billingConfigFor, monthlyBillForStoredTb } from "../core/billing.js";
+import { buildPrice, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
+import { BILLING, SITE, softwareApplicationLd } from "../core/seo.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const llms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");

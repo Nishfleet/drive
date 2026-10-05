@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PREPAID } from "../core/pricing.js";
 import {
   appendLedgerEntry,
   LOW_BALANCE_CENTS,
@@ -15,7 +16,6 @@ import {
   topUpKey,
   usageKey,
 } from "../src/ledger.js";
-import { PREPAID } from "../src/pricing.js";
 import { formatCents, parseTopUpCents, signWebhook, verifyWebhook } from "../src/topup.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 

@@ -11,7 +11,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { monthBillCents } from "../core/billing.js";
+import {
+  BYTES_PER_GB,
+  METER_CRON,
+  MINUTE_MS,
+  monthUsageThrough,
+  recordUsage,
+} from "../core/meter.js";
 import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
@@ -25,13 +32,6 @@ import {
   unpushedBillingHours,
 } from "../src/dodo.js";
 import workerModule from "../src/index.js";
-import {
-  BYTES_PER_GB,
-  METER_CRON,
-  MINUTE_MS,
-  monthUsageThrough,
-  recordUsage,
-} from "../src/meter.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 // The Worker entrypoint as this file drives it: `scheduled` is optional on the
@@ -96,7 +96,7 @@ function recordingFetch(opts = {}) {
 }
 
 /**
- * @param {import("../test/d1-sqlite.mjs").MeteredD1} db
+ * @param {import("./d1-sqlite.mjs").MeteredD1} db
  * @param {string} accountId
  * @param {string} customerId
  */

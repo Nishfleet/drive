@@ -25,10 +25,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sha256Hex } from "../../workers/api/src/db.js";
-import { createD1DeviceStore, renewKeyRow } from "../../workers/api/src/devices.js";
-import { AGENT_KEY_TTL_SECONDS } from "../../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
+import { sha256Hex } from "../../core/db.js";
+import { createD1DeviceStore, renewKeyRow } from "../../core/devices.js";
+import { AGENT_KEY_TTL_SECONDS } from "../../core/keyprovider.js";
+import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**
@@ -394,9 +394,7 @@ test("a provider session shorter than the hour is the lifetime every renewal mea
   const store = createMemoryStore({
     now: clock.now,
     keyProvider: {
-      mint /** @param {import("../../workers/api/src/keyprovider.js").KeyScope} scope */: async (
-        scope,
-      ) => ({
+      mint /** @param {import("../../core/keyprovider.js").KeyScope} scope */: async (scope) => ({
         accessKeyId: `ak_${scope.prefix}`,
         secret: "sk_provider",
         sessionToken: "sess_provider",

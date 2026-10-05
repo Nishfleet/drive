@@ -10,7 +10,7 @@
 // the page sets and the CLI prints arrives finished in the summary's `labels`
 // (src/billing.js). This module holds only the words, so a dollar can never be
 // written down twice.
-import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "./billing.js";
+import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
 /**
  * The usage page itself, served from public/usage.html by the asset layer.
@@ -88,7 +88,7 @@ export const USAGE_LABELS = Object.freeze({
 // field named rather than rendered as "undefined". The keys are the summary's
 // own label names, so the check below indexes the labels with a key they
 // actually hold rather than with an arbitrary string.
-/** @type {ReadonlyArray<keyof ReturnType<typeof import("./billing.js").usageSummary>["labels"]>} */
+/** @type {ReadonlyArray<keyof ReturnType<typeof import("../core/billing.js").usageSummary>["labels"]>} */
 const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
 
 /**

@@ -21,12 +21,12 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
-import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
-import { failureMessage } from "./messages.js";
+import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 
 /** One account's file store, the shape src/files.js exports and every helper
  * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
-/** @typedef {import("./files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One row of the file index, as it is written to D1. */
 /**
  * @typedef {{account_id: string, path: string, name: string, parent: string,

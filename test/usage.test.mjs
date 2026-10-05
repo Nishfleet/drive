@@ -25,15 +25,15 @@ import {
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
   usageSummary,
-} from "../src/billing.js";
-import { CAP_ENDPOINT } from "../src/cap.js";
+} from "../core/billing.js";
+import { CAP_ENDPOINT } from "../core/cap.js";
+import { PRICE } from "../core/pricing.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
+import { UPLOAD_LABEL, uploadProgress } from "../core/status.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
-import { PRICE } from "../src/pricing.js";
 import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
-import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
-import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's

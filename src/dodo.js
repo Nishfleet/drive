@@ -36,9 +36,9 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { monthBillCents } from "./billing.js";
-import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
-import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { monthBillCents } from "../core/billing.js";
+import { fetchWithTimeoutAndRetry } from "../core/fetch-retry.js";
+import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "../core/meter.js";
 
 // The two hosts Dodo serves its API on, named once because the check that
 // guards the bearer key is an exact match against them and nothing else

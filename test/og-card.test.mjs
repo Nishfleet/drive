@@ -18,7 +18,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { PRICE } from "../src/pricing.js";
+import { PRICE } from "../core/pricing.js";
 
 const card = readFileSync(new URL("../public/og-card.html", import.meta.url), "utf8");
 const png = readFileSync(new URL("../public/og.png", import.meta.url));

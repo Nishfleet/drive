@@ -2,8 +2,8 @@
 // so node --test can exercise every branch without a running runtime.
 
 import isEmail from "validator/lib/isEmail.js";
-import { failureMessage } from "./messages.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+import { failureMessage } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
 export const SOURCES = ["pricing-page", "business"];
 

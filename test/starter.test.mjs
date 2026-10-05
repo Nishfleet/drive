@@ -20,8 +20,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createMemoryStore } from "../src/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { createMemoryStore } from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
   createStarter,
   handleStarterRequest,
@@ -41,7 +41,7 @@ import {
  * test writes by hand.
  * @param {Record<string, string>} [written] filled by a create, when a test
  *   needs to see what landed
- * @returns {import("../src/files.js").FileStore}
+ * @returns {import("../core/files.js").FileStore}
  */
 function emptyStore(written = {}) {
   return {
@@ -94,7 +94,7 @@ const account = Object.freeze({ id: "acct-s", name: "Starter account" });
  * GET's describe still works (it reads the list, not the drive).
  * @param {string} [reason] the text the fake throws, so a test can prove the
  *   cause never reaches the caller
- * @returns {import("../src/files.js").FileStore}
+ * @returns {import("../core/files.js").FileStore}
  */
 function failingStore(reason = "the storage backend refused the key") {
   return {
@@ -141,7 +141,7 @@ test("starterFiles validates every file sits inside the starter folder", () => {
 });
 
 test("the starter writes four files and only missing ones on re-run, in the account's own prefix", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   /**
    * The real in-memory store (src/files.js createMemoryStore) under the real
    * scope, so the account prefix is scopeStore's work and not a prefix this
@@ -247,7 +247,7 @@ test("the handler answers 503 without a store", async () => {
 });
 
 test("GET describes the template and writes nothing", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`),
@@ -266,7 +266,7 @@ test("GET describes the template and writes nothing", async () => {
 });
 
 test("POST with action=create fills missing files only", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   /** @type {Record<string, string>} */
   const written = {};
   const store = scopeStore(emptyStore(written), account);
@@ -292,7 +292,7 @@ test("POST with action=create fills missing files only", async () => {
 });
 
 test("POST with the wrong action refuses", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
@@ -307,7 +307,7 @@ test("POST with the wrong action refuses", async () => {
 });
 
 test("POST with invalid JSON refuses", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
@@ -322,7 +322,7 @@ test("POST with invalid JSON refuses", async () => {
 });
 
 test("the handler refuses unknown methods", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, { method: "PATCH" }),
@@ -409,7 +409,7 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
 
   // The real S3 store over the real server, scoped the way src/index.js's
   // starterHandler scopes it: the account prefix is scopeStore's work.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   const store = scopeStore(
     createS3Store({ endpoint: `http://127.0.0.1:${port}`, bucket }),
     account,
@@ -575,7 +575,7 @@ test("the shipped page carries the starter endpoint, the file list and the copy"
 });
 
 test("the endpoint answers a create with the copy the page shows, and no second copy of it", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   /** @type {Record<string, string>} */
   const written = {};
   const store = scopeStore(emptyStore(written), account);
@@ -620,7 +620,7 @@ test("the endpoint answers a create with the copy the page shows, and no second 
 });
 
 test("the handler's refusals are the message table's, never a second copy", async () => {
-  const { scopeStore } = await import("../src/files.js");
+  const { scopeStore } = await import("../core/files.js");
   const store = scopeStore(emptyStore(), account);
   const post = (/** @type {string} */ body) =>
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {

@@ -44,8 +44,8 @@
 
 import { Hono } from "hono";
 
-import { failureMessage } from "../../../src/messages.js";
-import { folderAccount, recordDownloadBytes } from "../../../src/meter.js";
+import { failureMessage } from "../../../core/messages.js";
+import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
 
 /**
  * The storage the Worker streams from: the same `FileStore` the pricing
@@ -53,7 +53,7 @@ import { folderAccount, recordDownloadBytes } from "../../../src/meter.js";
  * are full storage keys (`u/<id>/…`), not drive paths, so the scoping that
  * `scopeStore` does is not applied here — the account prefix in the key *is*
  * the scoping, and it is the one the spec mints every key into.
- * @typedef {import("../../../src/files.js").FileStore} FileStore
+ * @typedef {import("../../../core/files.js").FileStore} FileStore
  */
 
 /**
@@ -175,7 +175,7 @@ export async function handleDownload(request, ctx, platform) {
     // exist.
     return notFound();
   }
-  /** @type {import("../../../src/files.js").FileRead} */
+  /** @type {import("../../../core/files.js").FileRead} */
   let object;
   try {
     object = await ctx.store.read(named.key);

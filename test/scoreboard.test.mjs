@@ -25,7 +25,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { monthBillCents } from "../core/billing.js";
 
 const MINUTES_PER_MONTH = 43800;
 /** @param {string} path */

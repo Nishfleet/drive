@@ -23,12 +23,12 @@ import {
   meteredMonthlyBillUsd,
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
-} from "./billing.js";
-import { INSTALL_LINES } from "./install-lines.js";
+} from "../core/billing.js";
+import { INSTALL_LINES } from "../core/install-lines.js";
+import { PRICE } from "../core/pricing.js";
+import { SITE } from "../core/seo.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
-import { PRICE } from "./pricing.js";
 import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
-import { SITE } from "./seo.js";
 
 /**
  * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,

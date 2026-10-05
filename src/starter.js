@@ -22,10 +22,11 @@
 // No price is written down here. The one line the page shows about cost comes
 // from src/pricing.js (PRICE), the single price source, so a re-priced product
 // moves this page and the pricing page together.
+
+import { validatePath } from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import { agentCannotDeleteSentence } from "./docs.js";
-import { validatePath } from "./files.js";
-import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
-import { PRICE } from "./pricing.js";
 
 // The page itself is public/starter.html, served by the asset layer's HTML
 // handling (/starter serves /starter.html, the same way /get-started serves
@@ -212,7 +213,7 @@ export function readStarterRequest(body) {
  * and a retry self-heals, because every file already written is found by the
  * read check and kept.
  *
- * @param {import("./files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @returns {Promise<{created: string[], kept: string[]}>}
  */
 export async function createStarter(store) {
@@ -301,7 +302,7 @@ function describeFailed(cause) {
  * here. `store` is the account's own scoped store.
  *
  * @param {Request} request
- * @param {import("./files.js").FileStore|null} store
+ * @param {import("../core/files.js").FileStore|null} store
  * @param {{id: string}|null} account
  * @returns {Promise<Response>}
  */

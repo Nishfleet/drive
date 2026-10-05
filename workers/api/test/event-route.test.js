@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseStorageEvents } from "../src/event-routes.js";
+import { parseStorageEvents } from "../../../core/event-routes.js";
 import { dispatch } from "../src/index.js";
 
 // The event intake is a public route because the caller is the storage server,

@@ -56,11 +56,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { dollarsToCapCents, enforceCap } from "../../src/cap.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
-import { bucketForAccount } from "../../workers/api/src/keyprovider.js";
-import { createS3Client, provisionBucket } from "../../workers/api/src/s3.js";
-import { createS3KeyProvider } from "../../workers/api/src/s3-keys.js";
+import { dollarsToCapCents, enforceCap } from "../../core/cap.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { bucketForAccount } from "../../core/keyprovider.js";
+import { createS3Client, provisionBucket } from "../../core/s3.js";
+import { createS3KeyProvider } from "../../core/s3-keys.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 import { startMinioStandin } from "../minio-standin.mjs";
 
@@ -752,7 +752,7 @@ test("the straddling month really does straddle the cap", async () => {
   // it. If a pricing change moved the maximum, that would silently stop being
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
-  const { capStatus } = await import("../../src/billing.js");
+  const { capStatus } = await import("../../core/billing.js");
   assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_BEFORE).state, "read_only");
   assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_AFTER).state, "active");
 });

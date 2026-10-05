@@ -32,6 +32,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../../core/files.js";
 import {
   approveBranch,
   createBranch,
@@ -41,7 +42,6 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../../src/branches.js";
-import { createMemoryStore, scopeStore } from "../../src/files.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };
@@ -58,7 +58,7 @@ const FILES = 100000;
  * the snapshot it builds is the one a 100,000-file folder produces. The bytes
  * are the in-memory store's (this is not a claim about copying 100,000 files'
  * worth of data — drive#157 measured the copy side against a real MinIO).
- * @returns {Promise<{scoped: import("../../src/files.js").FileStore, files: number}>}
+ * @returns {Promise<{scoped: import("../../core/files.js").FileStore, files: number}>}
  */
 async function driveWithManyFiles() {
   const store = scopeStore(createMemoryStore(), ACCOUNT);
@@ -101,7 +101,7 @@ async function driveWithManyFiles() {
       ...entry,
       path: `${base}/${entry.path.slice("/Photos/".length)}`,
     }));
-  /** @type {import("../../src/files.js").FileStore} */
+  /** @type {import("../../core/files.js").FileStore} */
   const store2 = {
     ...real,
     async list(path) {
@@ -342,7 +342,7 @@ test("the pointer path survives the snapshot column being dropped", async () => 
       modified: AFTER_AT,
     };
   };
-  const scoped = /** @type {import("../../src/files.js").FileStore} */ ({
+  const scoped = /** @type {import("../../core/files.js").FileStore} */ ({
     ...scope,
     async list(path) {
       if (path === "/") {
