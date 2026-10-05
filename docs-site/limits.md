@@ -72,8 +72,8 @@ would rather you read it here than find out in week three.
   The default cap is {{DEFAULT_CAP}}.
 - **The maximum.** The bill is never more than {{MAX_PER_TB}} for each TB you
   store, so a full drive cannot surprise you.
-- **Agents cannot delete.** An agent key cannot remove a file; only a person
-  can, and a person's delete is restorable.
+- **An agent's delete is undoable for a short time only.** {{AGENT_DELETE}}
+- **A branch key is not a wall.** {{BRANCH_REACH}}
 - **A branch is a real copy.** `drive branch` copies every byte of the folder,
   so a branch counts against your storage until you `discard` it or `approve`
   it, and `approve` stops with a list of conflicting files instead of a
