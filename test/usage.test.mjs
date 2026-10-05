@@ -34,7 +34,7 @@ import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
-import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -376,6 +376,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     account,
   ).json();
   assert.deepEqual(Object.keys(body).sort(), [
+    "balanceLine",
     "billCents",
     "billUsd",
     "cap",
@@ -405,6 +406,15 @@ test("the upload line rides the usage answer beside capLine", async () => {
   ).json();
   assert.equal(reported.uploadLine, uploadProgress(queue).label);
   assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.equal(body.balanceLine, null, "no balance store means no balance line");
+  // The prepaid balance line (drive#586) rides beside the cap line as given.
+  const withBalance = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    "Balance $1.50. Top up to keep adding files.",
+  ).json();
+  assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
   assert.throws(
     () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
     TypeError,
@@ -1080,7 +1090,9 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // poll reads the same row and renders it into `uploadLine`. The line is the
   // one word table's (src/status.js UPLOAD_LABEL), so the page, the first-run
   // page and `drive status` all say the same sentence about the same queue.
-  const made = createTestAuth();
+  // The full schema: /api/usage reads the account's metered month (drive#496),
+  // and that month lives in 0005_meter's usage_minutes.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie, account: signedInAccount } = await signIn(made, "usage@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -1145,14 +1157,12 @@ test("the usage page shows the queue a device reported, through the Worker's own
   assert.equal((await (await read()).json()).uploadLine, null, "a stale report still shows a line");
 });
 
-test("the usage read reads the founding flag off the account's own row (drive#488)", async () => {
-  // The account row the read already loads for cardOnFile (drive#417) is the
-  // same row that carries the founding flag (drive#386). Before the fix the
-  // page answered as if every account paid full price. The flag comes off that
-  // row: NULL or 0 reads as full price, 1 as founding, and a missing row is
-  // full price (the safe direction).
-  const made = createTestAuth();
-  const { cookie, account: signedInAccount } = await signIn(made, "founder@example.com");
+test("the usage read ignores the retired founding column on the account's row", async () => {
+  // Every account reads the one price. The accounts row still carries the
+  // retired founding column (drive#586), and the read neither uses it nor
+  // reports it: the bill is the same with the column null, 0 or 1.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account: signedInAccount } = await signIn(made, "one-price@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
@@ -1164,17 +1174,18 @@ test("the usage read reads the founding flag off the account's own row (drive#48
       await workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env)
     ).json();
 
-  assert.equal((await read()).billCents.foundingMember, false, "no row reads as full price");
+  const noRow = await read();
+  assert.equal("foundingMember" in noRow.billCents, false, "the bill carries no founding field");
 
   await made.db
     .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 0)")
     .bind(signedInAccount.id, signedInAccount.email)
     .run();
-  assert.equal((await read()).billCents.foundingMember, false, "a paying account is not founding");
+  assert.deepEqual((await read()).billCents, noRow.billCents);
 
   await made.db
     .prepare("UPDATE accounts SET founding = 1 WHERE id = ?1")
     .bind(signedInAccount.id)
     .run();
-  assert.equal((await read()).billCents.foundingMember, true, "a founding account's page says so");
+  assert.deepEqual((await read()).billCents, noRow.billCents, "the column changes nothing");
 });

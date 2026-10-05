@@ -50,6 +50,7 @@
 
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { json } from "../workers/api/src/http.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
@@ -64,8 +65,7 @@ import {
   safeAfterSigninPath,
   sessionAccount,
 } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
-import { foundingOfferIsOpen } from "./founding.js";
+import { provisionAccountBucket } from "./files.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
@@ -147,8 +147,7 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
-  noMinimumLine: PRICE.noMinimumLine,
-  foundingLine: PRICE.foundingLine,
+  noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
   emailButton: "Email me a link",
@@ -326,7 +325,7 @@ function readStart(body) {
  * Better Auth settings (src/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
- * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit, FOUNDING_OFFER_OPEN?: string}} SigninEnv
+ * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
  */
 
 /**
@@ -353,11 +352,6 @@ export async function handleSigninRequest(request, env) {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
-  }
-  // State-changing and cookie-changing, so it refuses a request another site
-  // made on the visitor's behalf, the same rule the send route uses.
-  if (!isSameOriginRequest(request)) {
-    return json({ error: failureMessage("cross-site") }, 403);
   }
   // The edge limits, in the same place the waitlist runs its own: after the
   // guards that refuse a request outright (a refused cross-site post spends no
@@ -512,13 +506,12 @@ export async function handleSigninRequest(request, env) {
       "prepare" in driveDb
     ) {
       // The user row does not exist until the link is followed. The hold row
-      // (id `hold:<email>`) is the live account for uniqueness and the
-      // founding reservation until verify remaps it.
+      // (id `hold:<email>`) is the live account for the card-fingerprint
+      // check until verify remaps it.
       const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
         accountId: pendingCardAccountId(email),
         email,
         fingerprint,
-        offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
       });
       if ("error" in claimed) {
         return json({ error: claimed.error }, 400);
@@ -642,10 +635,25 @@ export async function handleSigninLinkVerify(request, env) {
         await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
           email: account.email,
           accountId: account.id,
-          offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
         });
       } catch (cause) {
         console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
+      }
+      // The account's own bucket exists from the first sign-in (drive#540):
+      // the verify step provisions `drv-<id>` through the one provisionBucket
+      // call the key mint also makes, so a customer who only ever uses the
+      // website has a bucket for the Files page and web upload, with no device
+      // key minted. Idempotent, so a returning sign-in re-checks the bucket for
+      // free and an account from before this call existed catches up here. A
+      // provisioning failure is logged loudly and the sign-in lands anyway —
+      // the Files page answers an empty folder for a bucket that is not there
+      // yet, and the key mint keeps its own call as the safety net.
+      try {
+        await provisionAccountBucket(env, account.id);
+      } catch (cause) {
+        console.error(
+          `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,
+        );
       }
     }
   }
@@ -763,23 +771,5 @@ function redirect(location, extraHeaders = {}) {
       "cache-control": "no-store",
       ...extraHeaders,
     },
-  });
-}
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} status
- * @param {Record<string, string|string[]>} [extraHeaders]
- * @returns {Response}
- */
-function json(body, status, extraHeaders = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...extraHeaders },
   });
 }

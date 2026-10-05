@@ -13,6 +13,10 @@
 // secret, a key, another user's path, or raw error text. test/messages.test.mjs
 // enforces both shapes on every entry, so a new entry cannot ship a stack, a
 // token or a two-step fix-it list.
+// The one top-up prompt (drive#586): the $0 pause, the low balance line, the
+// "$2 left" email and the CLI all say it in these words.
+export const TOP_UP_PROMPT = "Top up to keep adding files.";
+
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
   offline: Object.freeze({
@@ -125,6 +129,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "You are not signed in to your drive.",
     next: "Sign in, then this page updates on its own.",
   }),
+  // A mint, or any signed-in call that needs a live account, arrived for an
+  // account whose close has landed. Close revokes every key and token
+  // (drive#497), so a new one must not be handed out, and the one next step is
+  // to cancel the close while the account is still inside its 30-day window.
+  "account-closed": Object.freeze({
+    what: "This account is closed, so it cannot make a new key.",
+    next: "Cancel the close while the account is still in its 30-day window to use it again.",
+  }),
   // A share link or upload page that does not open: unknown, revoked or past
   // its 7-day window (issue #19). One entry for all three on purpose — the
   // public routes must not tell a stranger which of those it was, and the one
@@ -166,6 +178,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
   }),
+  // An upload-request drop named a file the owner already has. Overwriting
+  // that file from a public link is the bug drive#518 closes.
+  "upload-name-taken": Object.freeze({
+    what: "A file with that name is already in this folder.",
+    next: "Choose another name and drop the file again.",
+  }),
   // The branch this call named does not exist on this drive.
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
@@ -183,6 +201,31 @@ export const FAILURE_MESSAGES = Object.freeze({
   "file-not-found": Object.freeze({
     what: "That file is not here.",
     next: "Open the folder again to see what is in it.",
+  }),
+  // The storage key this path lives at is longer than the store can hold, so the
+  // file cannot be written, parked or put back. `validatePath` counts
+  // characters and a key is counted in bytes, and the trash name percent-encodes
+  // every non-ASCII byte into three characters, so a long path that is not ASCII
+  // becomes a key the storage refuses (drive issue #567). It is the file's own
+  // name that has to change, not the drive.
+  "path-too-long": Object.freeze({
+    what: "That path is too long for this drive to store.",
+    next: "Shorten the name or move the file to a shorter folder.",
+  }),
+  // The bytes at this path changed while a delete was moving them, so the
+  // original was left alone rather than removed: the newer bytes are a save
+  // that landed while the delete ran (drive issue #567). Nothing was lost, and
+  // the delete is safe to ask for again.
+  "delete-file-changed": Object.freeze({
+    what: "That file changed while it was being deleted, so it was left alone.",
+    next: "Try the delete again.",
+  }),
+  // The same refusal on the restore half: the copy in Recently deleted
+  // changed under the restore, so it is still parked rather than removed, and
+  // the copy that ran first is what the drive holds (drive issue #567).
+  "restore-file-changed": Object.freeze({
+    what: "That file in Recently deleted changed while it was being put back.",
+    next: "Try the restore again.",
   }),
   // The branch was already approved or discarded, so there is nothing left to
   // apply or throw away.
@@ -285,6 +328,61 @@ export const FAILURE_MESSAGES = Object.freeze({
   "pre-charge-storage-limit": Object.freeze({
     what: "New accounts can store 1 TB until the first payment goes through.",
     next: "Ask support if you need more storage before then.",
+  }),
+  // A top-up amount outside $10 to $1,000, or not a dollar amount at all
+  // (drive#586). Nothing reached the payment page.
+  "topup-amount": Object.freeze({
+    what: "Top-ups start at $10 and go up to $1,000.",
+    next: "Pick an amount from $10 to $1,000 and try again.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // checkout can open (drive#586, the Dodo key waits on Nish, #325).
+  "topup-not-open": Object.freeze({
+    what: "Adding money is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the checkout request.
+  "topup-failed": Object.freeze({
+    what: "The payment page did not open, and nothing was charged.",
+    next: "Try again in a minute.",
+  }),
+  // The prepaid balance is $0 or less, so uploads and new writes pause
+  // (drive#586). Reads, downloads and restore keep working, and nothing is
+  // deleted. The same words on the web, in the CLI and in an agent key error.
+  "balance-empty": Object.freeze({
+    what: "Your balance is $0, so uploads are paused while your files stay safe and downloads keep working.",
+    next: TOP_UP_PROMPT,
+  }),
+  // Auto top-up charges the card saved by a top-up, so it cannot be turned on
+  // before the first one (drive#586).
+  "auto-topup-needs-card": Object.freeze({
+    what: "Auto top-up uses the card from your first top-up, and there is none yet.",
+    next: "Top up once, then turn auto top-up on.",
+  }),
+  // The same pause seen by a stranger on a public upload page: they cannot top
+  // up someone else's drive, so they are told who can act.
+  "upload-paused-balance": Object.freeze({
+    what: "This drive is not taking uploads right now.",
+    next: "Tell the person who shared this page and try again later.",
+  }),
+  // The billing portal (drive#575) for an account with no Dodo customer yet:
+  // there is no card to update and no invoice to read, so the next step is the
+  // first top-up, which is what creates the customer.
+  "portal-no-card": Object.freeze({
+    what: "This account has no card or payment on file yet.",
+    next: "Top up once, then the billing portal will have your card.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // customer-portal session can be created (the Dodo key waits on Nish, #325).
+  "portal-not-open": Object.freeze({
+    what: "The billing portal is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the customer-portal session
+  // request, so no portal opened and no card was changed.
+  "portal-failed": Object.freeze({
+    what: "The billing portal did not open, and no card was changed.",
+    next: "Try again in a minute.",
   }),
 });
 

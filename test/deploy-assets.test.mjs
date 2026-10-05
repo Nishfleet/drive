@@ -216,6 +216,22 @@ test("the site's own asset files ship, and the API is left to the Worker", () =>
   }
 });
 
+test("the built assets carry CSP, frame-ancestors, nosniff, Referrer-Policy and HSTS", () => {
+  // public/ is the directory cf build copies into the asset layer
+  // (cloudflare.config.ts assets, this file's own comment). `_headers` is the
+  // stock Workers Static Assets file that layer parses; it is not itself a
+  // page. A missing file, or a file that drops one of these headers, is the
+  // gap drive#506 names: files, usage, sign-in and upload ship with none of
+  // them today because runWorkerFirst never sees those paths.
+  const headers = read("public/_headers");
+  assert.match(headers, /^\/\*/m, "the rules apply to every static path");
+  assert.match(headers, /Content-Security-Policy:/);
+  assert.match(headers, /frame-ancestors 'none'/);
+  assert.match(headers, /X-Content-Type-Options:\s*nosniff/i);
+  assert.match(headers, /Referrer-Policy:\s*no-referrer/i);
+  assert.match(headers, /Strict-Transport-Security:/);
+});
+
 // ------------------------------------------------------------ served, not built
 
 /**
@@ -501,19 +517,12 @@ test("this Worker mounts one /api/* route ahead of the gate, and it is the revok
   // order; a middlewares array is a library detail.
 
   // The account lane's own mounts, as paths, in the order Hono runs them: the
-  // forwarded route, the gate, and the account lane's own CSRF middleware.
+  // forwarded route, the gate, and one CSRF middleware on every /api/* write
+  // (drive#506), after the gate so an anonymous request is 401 not 403.
   const lane = routes
     .filter((r) => r.method === "ALL" && r.path.startsWith("/api/"))
     .map((r) => r.path);
-  // The account-close pair (drive#235) adds two CSRF mounts, both after the
-  // gate, so the revoke is still the only /api/* route ahead of it.
-  assert.deepEqual(lane, [
-    REVOKE_PATH,
-    "/api/*",
-    "/api/files/*",
-    "/api/account/close",
-    "/api/account/close/cancel",
-  ]);
+  assert.deepEqual(lane, [REVOKE_PATH, "/api/*", "/api/*"]);
   const forward = routes.findIndex((r) => r.path === REVOKE_PATH);
   const gate = routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
   assert.ok(

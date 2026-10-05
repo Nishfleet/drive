@@ -45,10 +45,6 @@ import (
 // "notes.txt" on a device named "mac" becomes "notes (conflict, mac).txt".
 const conflictSeparator = " (conflict, "
 
-// conflictMarker names what a conflict copy is, so a listing reads as one
-// thing: "report (conflict, mac).txt", "report (conflict, mac 2).txt".
-const conflictMarker = "conflict"
-
 // SanitizeDevice turns a device name into text that is safe inside a
 // filename on every filesystem this product mounts. A hostname can carry
 // characters a mount will not take (a macOS host's ':' becomes '/', and

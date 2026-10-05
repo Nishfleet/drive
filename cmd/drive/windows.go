@@ -101,7 +101,7 @@ func WindowsDriveLetter(override string, free func(string) bool) (string, error)
 			return letter, nil
 		}
 	}
-	return "", errors.New("no free drive letter between D: and Z:")
+	return "", errors.New("no free drive letter: D: to Z: are all taken")
 }
 
 // normalizeDriveLetter turns "z", "Z" or "z:" into "Z:" and refuses anything
@@ -109,7 +109,7 @@ func WindowsDriveLetter(override string, free func(string) bool) (string, error)
 func normalizeDriveLetter(s string) (string, error) {
 	letter := strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(s), ":"))
 	if len(letter) != 1 || letter[0] < 'A' || letter[0] > 'Z' {
-		return "", fmt.Errorf("%q is not a drive letter between A: and Z:", s)
+		return "", fmt.Errorf("%q is not a drive letter (A: to Z: only)", s)
 	}
 	return letter + ":", nil
 }
@@ -185,7 +185,7 @@ func windowsVolumeRoot(letter string) string {
 // and `schtasks /Query` renders that pair back as one command line, so this
 // is the display form and the string the letter-finding reads.
 func WindowsTaskCommandLine(p MountPlan) string {
-	parts := append([]string{p.RcloneBin}, p.Args()...)
+	parts := append([]string{p.RcloneBin}, windowsMountArgs(p)...)
 	for i, a := range parts {
 		parts[i] = windowsQuoteArg(a)
 	}
@@ -312,8 +312,8 @@ func windowsTaskXMLPath(p MountPlan) string {
 // unchanged. userName is the login user the trigger fires for, in the
 // DOMAIN\user form Task Scheduler requires.
 func windowsTaskXML(p MountPlan, userName string) (string, error) {
-	quoted := make([]string, 0, len(p.Args()))
-	for _, a := range p.Args() {
+	quoted := make([]string, 0, len(p.Args())+2)
+	for _, a := range windowsMountArgs(p) {
 		quoted = append(quoted, windowsQuoteArg(a))
 	}
 	doc := taskXML{
@@ -520,13 +520,26 @@ func runSchtasks(args ...string) error {
 // wait for the kernel to report the drive letter. A foreground mount runs
 // rclone in this process instead, which is what the mount proof and debugging
 // use.
+func windowsMountArgs(p MountPlan) []string {
+	args := p.Args()
+	// The task XML is mode 0600 (windows.go WriteFileAtomic). Task Scheduler
+	// has no EnvironmentFile, so the storage secret is rclone's own
+	// --s3-secret-access-key on that 0600 file rather than an Environment=
+	// line in a world-readable unit (drive#498).
+	if p.SecretKey != "" {
+		args = append(args, "--s3-secret-access-key", p.SecretKey)
+	}
+	return args
+}
+
 func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun bool) error {
 	if err := CheckWinFsp(p.GOOS, fileExists); err != nil {
 		return err
 	}
-	commandLine := WindowsTaskCommandLine(p)
 	taskXMLPath := windowsTaskXMLPath(p)
 	if dryRun {
+		p.RCUser, p.RCPass = "<redacted>", "<redacted>"
+		commandLine := WindowsTaskCommandLine(p)
 		userName, err := windowsTaskUser()
 		if err != nil {
 			return err
@@ -536,10 +549,14 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 			return err
 		}
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
+		fmt.Printf("--- %s ---\n%s", RcloneEnvPath(home), rcloneEnvRedacted(p))
 		fmt.Printf("--- Task Scheduler task %s (XML: %s) ---\n%s\n", WindowsTaskName, taskXMLPath, commandLine)
 		fmt.Printf("--- task XML ---\n%s\n", taskXMLBody)
 		fmt.Printf("--- would run ---\n%s\n", windowsSchtasksQuoted(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath)...))
 		return nil
+	}
+	if err := prepareMountAuth(home, &p, c); err != nil {
+		return err
 	}
 	// The cache holds transient bytes by design (issue #561): mark it so a
 	// backup tool that walks the profile skips it, on every platform.
