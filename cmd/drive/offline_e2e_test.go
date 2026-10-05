@@ -146,7 +146,7 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 	targets := fillTargets{root: mountDir, offline: []string{"keep.bin"}}
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := targets.read(false, 0); err != nil {
+		if _, err := targets.read(false, 0); err != nil {
 			t.Fatalf("keep-warm: %v", err)
 		}
 		time.Sleep(500 * time.Millisecond)

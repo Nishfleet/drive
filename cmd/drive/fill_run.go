@@ -225,7 +225,9 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	res.Idle = ShouldFill(offline, load1, load5)
 	// A non-recursive root refresh, and never a recursive one: a whole-tree
 	// refresh every minute is what listed the drive and re-read it forever
-	// (drive#568). The mount's own --dir-cache-time covers the subdirectories.
+	// (drive#568). A file newly kept inside an existing subdirectory needs no
+	// recursive refresh: the mount's own --dir-cache-time (5s) expires that
+	// subdirectory's listing long before the next 10s offline pass.
 	if err := c.refresh(ctx, false); err != nil {
 		return res, fmt.Errorf("fill: refresh directory cache: %w", err)
 	}
@@ -233,19 +235,30 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 
 	// The per-pass budget is this pass's headroom under the cap, capped at
 	// fillPassBudget, so a drive larger than the cache is filled over several
-	// passes and a pass stops when the next read would evict. The kept-offline
-	// set is read without the budget: #115 promises it in full, and re-reading
-	// a file rclone already has downloads nothing.
+	// passes and a pass stops when the next file would not fit. (One file larger
+	// than the remaining headroom is still read and can evict; rclone cannot be
+	// stopped mid-read, and the over-cap check below names that pass.) The
+	// kept-offline set is read without the budget: #115 promises it in full, and
+	// re-reading a file rclone already has downloads nothing.
 	budget := fillPassBudget
 	if res.CapBytes > 0 {
 		if head := res.CapBytes - res.BytesBefore; head < budget {
 			budget = head
 		}
 	}
+	// The window budget: a window fills at most one cache's worth of
+	// recently-opened files, so a drive larger than the cache is downloaded
+	// once and not again after rclone evicts (drive#568).
+	if targets.opens != nil && res.CapBytes > 0 {
+		if left := res.CapBytes - targets.opens.windowBytes(); left < budget {
+			budget = left
+		}
+	}
 	if budget < 0 {
 		budget = 0
 	}
-	if err := targets.read(fillRecent, budget); err != nil {
+	recentBytes, err := targets.read(fillRecent, budget)
+	if err != nil {
 		return res, fmt.Errorf("fill: read into cache: %w", err)
 	}
 
@@ -261,11 +274,12 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	// The cap is rclone's own --vfs-cache-max-size, read live from the mount.
 	// rclone evicts over the cap on its cache poll. A keep-warm of the
 	// kept-offline set is allowed to sit at or over the cap: that is rclone
-	// evicting everything else. A fill of the rest of the tree that crossed
-	// the cap is a named failure, because that pass was supposed to stop.
-	if fillRecent && res.CapBytes > 0 && res.BytesAfter > res.CapBytes {
+	// evicting everything else. Only the recently-opened read is budgeted, so
+	// only it can be a named failure when it crossed the cap; keying on
+	// BytesAfter would blame the unbudgeted offline read (drive#568 review).
+	if fillRecent && res.CapBytes > 0 && res.BytesBefore+recentBytes > res.CapBytes {
 		return res, fmt.Errorf("fill: cache %s is over the %s cap; refusing to fill further",
-			FormatBytes(res.BytesAfter), FormatBytes(res.CapBytes))
+			FormatBytes(res.BytesBefore+recentBytes), FormatBytes(res.CapBytes))
 	}
 	return res, nil
 }
@@ -404,9 +418,15 @@ type recentOpens struct {
 	mu     sync.Mutex
 	opened map[string]time.Time
 	filled map[string]time.Time
+	// sizes is the byte count the fill read for each filled path, and bytes is
+	// their sum. It is the fill window's download budget: a window fills at
+	// most one cache's worth, so a drive larger than the cache stops after the
+	// first cache and does not chase rclone's evictions (drive#568).
+	sizes map[string]int64
+	bytes int64
 }
 
-var mountOpens = &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}}
+var mountOpens = &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}, sizes: map[string]int64{}}
 
 // record notes that path was opened through the mount. An open the fill itself
 // just made (the fill reads through the mount) is ignored, so the fill does
@@ -422,10 +442,26 @@ func (r *recentOpens) record(path string) {
 
 // markFilled notes that the fill just read path, so the open event its read
 // generates is not taken as a fresh open.
-func (r *recentOpens) markFilled(path string) {
+func (r *recentOpens) markFilled(path string, n int64) {
 	r.mu.Lock()
+	if r.sizes == nil {
+		r.sizes = map[string]int64{}
+	}
+	if _, ok := r.filled[path]; !ok {
+		r.bytes += n
+	}
 	r.filled[path] = time.Now()
+	r.sizes[path] = n
 	r.mu.Unlock()
+}
+
+// windowBytes is the number of bytes the fill has read for the recently-opened
+// set in this window. The fill stops once it reaches the cache size, so a drive
+// larger than the cache is downloaded once, not on every pass.
+func (r *recentOpens) windowBytes() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bytes
 }
 
 // since returns the paths opened within age, as slash paths relative to root,
@@ -447,13 +483,35 @@ func (r *recentOpens) since(root string, now time.Time, age time.Duration) []str
 			delete(r.filled, p)
 		}
 		rel, err := filepath.Rel(root, p)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
 		out = append(out, filepath.ToSlash(rel))
 	}
+	// Prune the filled set on its own clock: a path can be filled without ever
+	// being recorded as opened, so the opened loop above cannot be the only
+	// place it is reclaimed. The window byte budget shrinks with it, so a new
+	// window can fill a fresh cache's worth.
+	for p, ft := range r.filled {
+		if now.Sub(ft) > age {
+			delete(r.filled, p)
+			if n, ok := r.sizes[p]; ok {
+				r.bytes -= n
+				delete(r.sizes, p)
+			}
+		}
+	}
 	sort.Strings(out)
 	return out
+}
+
+// forget drops path from the open set. The fill calls it when the file it
+// tried to read is gone: a deleted file is not a target the next pass should
+// probe again.
+func (r *recentOpens) forget(path string) {
+	r.mu.Lock()
+	delete(r.opened, path)
+	r.mu.Unlock()
 }
 
 // fillTargets is what one pass may fill: the paths somebody kept offline
@@ -481,16 +539,18 @@ type fillTargets struct {
 }
 
 // read fills the kept-offline set on every pass and the recently-opened files
-// only when this pass is filling them, under budget bytes. A path that has
-// been deleted from the drive reads as nothing rather than failing the pass:
-// the next pass sees the new tree.
-func (t fillTargets) read(includeRecent bool, budget int64) error {
+// only when this pass is filling them, under budget bytes. It returns the bytes
+// it read for the recently-opened set, so the caller can tell whether that read
+// is what pushed the cache over the cap. A path that has been deleted from the
+// drive reads as nothing rather than failing the pass: the next pass sees the
+// new tree.
+func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
+	var spent int64
 	if includeRecent && budget > 0 {
 		read := t.readFile
 		if read == nil {
 			read = fillReadFile
 		}
-		var spent int64
 		for _, rel := range t.recent {
 			if spent >= budget {
 				break
@@ -499,13 +559,16 @@ func (t fillTargets) read(includeRecent bool, budget int64) error {
 			n, err := read(abs)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
+					if t.opens != nil {
+						t.opens.forget(abs)
+					}
 					continue
 				}
-				return err
+				return spent, err
 			}
 			spent += n
 			if t.opens != nil {
-				t.opens.markFilled(abs)
+				t.opens.markFilled(abs, n)
 			}
 		}
 	}
@@ -514,10 +577,10 @@ func (t fillTargets) read(includeRecent bool, budget int64) error {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return err
+			return spent, err
 		}
 	}
-	return nil
+	return spent, nil
 }
 
 // fillReadFile reads one mounted file into io.Discard, which fills rclone's

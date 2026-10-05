@@ -187,7 +187,7 @@ func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	}
 	// The budget stops after the first file: one pass reads at most budget
 	// bytes, so a drive larger than the cache is filled over several passes.
-	if err := targets.read(true, 60); err != nil {
+	if _, err := targets.read(true, 60); err != nil {
 		t.Fatalf("read under the budget: %v", err)
 	}
 	if len(read) != 1 || read[0] != "a.bin" {
@@ -195,7 +195,7 @@ func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	}
 	// A pass that is not filling the recently-opened set reads none of them.
 	read = nil
-	if err := targets.read(false, 1<<20); err != nil {
+	if _, err := targets.read(false, 1<<20); err != nil {
 		t.Fatalf("read with the recent set off: %v", err)
 	}
 	if len(read) != 0 {
@@ -205,7 +205,7 @@ func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	// next pass sees the new tree. Reading a directory as a file is an error.
 	targets.recent = []string{"gone.bin"}
 	targets.readFile = nil
-	if err := targets.read(true, 1<<20); err != nil {
+	if _, err := targets.read(true, 1<<20); err != nil {
 		t.Errorf("a removed file failed the fill: %v", err)
 	}
 	if _, err := fillReadFile(dir); err == nil {
@@ -430,13 +430,13 @@ func TestFillTargetsWalksAKeptFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	targets := fillTargets{root: dir, offline: []string{"keep"}}
-	if err := targets.read(false, 0); err != nil {
+	if _, err := targets.read(false, 0); err != nil {
 		t.Fatalf("walking a kept-offline folder: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "keep", "new.txt"), []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.read(false, 0); err != nil {
+	if _, err := targets.read(false, 0); err != nil {
 		t.Fatalf("a new file inside a kept-offline folder failed the keep-warm: %v", err)
 	}
 }
@@ -445,7 +445,7 @@ func TestFillTargetsWalksAKeptFolder(t *testing.T) {
 // and its filled set is the guard that stops the fill's own read from looking
 // like a fresh open (drive#568).
 func TestRecentOpensTracksAndDropsOpens(t *testing.T) {
-	r := &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}}
+	r := &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}, sizes: map[string]int64{}}
 	now := time.Now()
 	r.record("/m/a.bin")
 	r.record("/m/sub/b.bin")
@@ -455,7 +455,10 @@ func TestRecentOpensTracksAndDropsOpens(t *testing.T) {
 	}
 	// A file the fill just read is not a target again in the window: this is
 	// the guard against the fill re-arming its own read.
-	r.markFilled("/m/a.bin")
+	r.markFilled("/m/a.bin", 10)
+	if got := r.windowBytes(); got != 10 {
+		t.Errorf("windowBytes = %d after filling one file, want 10", got)
+	}
 	if got := strings.Join(r.since("/m", now.Add(time.Second), 24*time.Hour), ","); got != "sub/b.bin" {
 		t.Errorf("after markFilled, since = %q, want %q", got, "sub/b.bin")
 	}
@@ -463,12 +466,19 @@ func TestRecentOpensTracksAndDropsOpens(t *testing.T) {
 	if got := r.since("/m", now.Add(48*time.Hour), 24*time.Hour); len(got) != 0 {
 		t.Errorf("a stale open was still a target: %v", got)
 	}
+	if got := r.windowBytes(); got != 0 {
+		t.Errorf("windowBytes = %d after the window aged out, want 0", got)
+	}
 }
 
 // A drive twice the cache size, idle for ten passes, must download the cache
-// size at most once. Pass one fills the recently-opened set up to the cap,
-// and every later pass sees no headroom and reads nothing, instead of the old
-// whole-tree fill that re-read the drive from the top each minute (drive#568).
+// size at most once. The fill reads the recently-opened set up to the cache
+// size in the window, marks each file filled, and every later pass sees either
+// no headroom, an already-filled set, or an exhausted window budget, so it
+// reads nothing, instead of the old whole-tree fill that re-read the drive from
+// the top each minute (drive#568). The fake cache evicts between passes the way
+// rclone's own poll does, so the test cannot pass merely because the cache is
+// still full.
 func TestFillDoesNotReDownloadADriveLargerThanTheCache(t *testing.T) {
 	capBytes, err := parseSizeSuffix("1G")
 	if err != nil {
@@ -476,39 +486,108 @@ func TestFillDoesNotReDownloadADriveLargerThanTheCache(t *testing.T) {
 	}
 	const fileSize = int64(64 << 20)
 	// 32 x 64 MiB is 2 GiB, twice the 1 GiB cap.
-	var recent []string
+	root := "/drive"
+	opens := &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}, sizes: map[string]int64{}}
 	for i := 0; i < 32; i++ {
-		recent = append(recent, fmt.Sprintf("f%02d.bin", i))
+		n := fmt.Sprintf("f%02d.bin", i)
+		opens.record(filepath.Join(root, n))
 	}
 	b := &countedBackend{used: 0, cap: capBytes}
-	var downloads int64
-	cached := map[string]bool{}
+	cache := &fakeCache{cap: capBytes, fileSize: fileSize}
+	reads := 0
 	targets := fillTargets{
-		recent: recent,
+		root:  root,
+		opens: opens,
 		readFile: func(p string) (int64, error) {
-			if !cached[p] {
-				cached[p] = true
-				downloads += fileSize
-				b.used += fileSize
-			}
-			return fileSize, nil
+			reads++
+			n, err := cache.read(p)
+			b.used = cache.used
+			return n, err
 		},
 	}
 	for pass := 0; pass < 10; pass++ {
+		// rclone's own cache poll evicts over the cap between passes, which is
+		// what made the old whole-tree fill download the drive again.
+		cache.evictTo(capBytes / 2)
+		b.used = cache.used
+		targets.recent = opens.since(root, time.Now(), fillRecentAge)
 		if _, err := fillPass(context.Background(), b, targets, 0.1, 0.1); err != nil {
 			t.Fatalf("idle pass %d: %v", pass+1, err)
 		}
 	}
-	if downloads > capBytes {
-		t.Errorf("ten idle passes downloaded %s of a %s drive, want at most the %s cache once",
-			FormatBytes(downloads), FormatBytes(2*capBytes), FormatBytes(capBytes))
+	// A fill that ignored the window budget, the per-pass budget or the filled
+	// set would read the drive again on each pass and download far more than
+	// the cache once.
+	if cache.downloads != capBytes {
+		t.Errorf("ten idle passes downloaded %s of a %s drive, want exactly the %s cache once",
+			FormatBytes(cache.downloads), FormatBytes(2*capBytes), FormatBytes(capBytes))
 	}
-	if downloads != capBytes {
-		t.Errorf("ten idle passes downloaded %s, want exactly the %s cache once", FormatBytes(downloads), FormatBytes(capBytes))
+	if reads != 16 {
+		t.Errorf("ten idle passes read %d files, want exactly the %d files in one cache", reads, capBytes/fileSize)
 	}
 	if b.recursiveRefreshes != 0 {
 		t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
 	}
+}
+
+// fakeCache models rclone's own VFS cache for the budget test: it holds at
+// most cap bytes, evicts the least-recently-used file when a read needs room,
+// and counts a download only for a file that is not already cached. The
+// eviction matters: without it a re-read of a cached file downloads nothing,
+// and the old whole-tree fill only downloaded continuously because rclone
+// evicted between passes (drive#568).
+type fakeCache struct {
+	cap       int64
+	fileSize  int64
+	used      int64
+	order     []string
+	cached    map[string]bool
+	downloads int64
+}
+
+func (c *fakeCache) read(p string) (int64, error) {
+	if c.cached == nil {
+		c.cached = map[string]bool{}
+	}
+	if !c.cached[p] {
+		c.downloads += c.fileSize
+	}
+	for c.used+c.fileSize > c.cap && len(c.order) > 0 {
+		c.evictOldest()
+	}
+	if !c.cached[p] {
+		c.cached[p] = true
+		c.used += c.fileSize
+	}
+	c.touch(p)
+	return c.fileSize, nil
+}
+
+// evictTo drops least-recently-used files until used is at most want, the way
+// rclone's own cache poll reclaims space between fill passes.
+func (c *fakeCache) evictTo(want int64) {
+	for c.used > want && len(c.order) > 0 {
+		c.evictOldest()
+	}
+}
+
+func (c *fakeCache) evictOldest() {
+	victim := c.order[0]
+	c.order = c.order[1:]
+	if c.cached[victim] {
+		delete(c.cached, victim)
+		c.used -= c.fileSize
+	}
+}
+
+func (c *fakeCache) touch(p string) {
+	for i, q := range c.order {
+		if q == p {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.order = append(c.order, p)
 }
 
 // A pass with nothing kept offline and nothing opened in the window must not
