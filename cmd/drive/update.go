@@ -253,12 +253,12 @@ func updateDrive(o updateOptions) error {
 // restartMountAfterUpdate restarts this machine's drive mount after the
 // binary changed under it, because a mount keeps running the code it started
 // with. It is the same restart `drive cap` runs: rclone from the flag or
-// PATH, the secret from the environment or this CLI's own 0600 config in
-// that order and never a fourth, then the one RestartMount call that unmounts
-// without touching the VFS cache its queued uploads live in. It is written
-// out here rather than shared with cap.go's swap restart, because cap's
-// restart is money-touching (the spending cap) and this change does not
-// modify that path.
+// PATH, the secret through ReadSecretKey's fixed order (the environment, then
+// this CLI's own 0600 config, then rclone.conf) and never off the pipe, then
+// the one RestartMount call that unmounts without touching the VFS cache its
+// queued uploads live in. It is written out here rather than shared with
+// cap.go's swap restart, because cap's restart is money-touching (the
+// spending cap) and this change does not modify that path.
 func restartMountAfterUpdate(rcloneFlag, home string) error {
 	rcloneBin, err := ResolveRclone(rcloneFlag)
 	if err != nil {

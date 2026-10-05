@@ -74,6 +74,7 @@ type updateNoticeOptions struct {
 	home         string
 	now          func() time.Time     // nil: time.Now
 	updateExists func() (bool, error) // nil: the package manager route
+	probeTimeout time.Duration       // zero: updateProbeTimeout
 	out          io.Writer            // nil: os.Stdout
 	path         string               // nil: updateCheckPath(home)
 }
@@ -105,6 +106,11 @@ func noticeUpdateOnceADay(o updateNoticeOptions) bool {
 		path = updateCheckPath(o.home)
 	}
 
+	probeTimeout := o.probeTimeout
+	if probeTimeout <= 0 {
+		probeTimeout = updateProbeTimeout
+	}
+
 	unlock, err := lockUpdateCheck(path + ".lock")
 	if err != nil {
 		// Tomorrow's run owns the lock unheld; this one stays quiet.
@@ -118,7 +124,7 @@ func noticeUpdateOnceADay(o updateNoticeOptions) bool {
 		return false
 	}
 
-	newer, err := existsFn()
+	newer, err := updateExistsWithin(existsFn, probeTimeout)
 	rec := updateCheckRecord{CheckedAt: now.Unix(), NotifiedAt: before.NotifiedAt}
 	if err != nil {
 		// A quiet miss: write the checked-at stamp, so a package manager
@@ -147,6 +153,37 @@ func noticeUpdateOnceADay(o updateNoticeOptions) bool {
 	}
 	fmt.Fprintln(out, updateNoticeWords)
 	return true
+}
+
+// updateProbeTimeout is how long the notice lets the package manager take to
+// answer. `drive status` is the quick look-at-your-drive command, and the
+// notice is one line at the bottom of it: a package manager that will not
+// answer must not be able to hang the command it rides on. The remedy is
+// tomorrow's check, the same one a failed ask gets.
+const updateProbeTimeout = 10 * time.Second
+
+// updateExistsWithin asks one update question and gives up on it after d.
+// On a timeout the caller treats the run as the quiet miss it already treats
+// a failed ask as, so a hung package manager costs one printed line a day,
+// not one hung status.
+func updateExistsWithin(exists func() (bool, error), d time.Duration) (bool, error) {
+	type answer struct {
+		newer bool
+		err   error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		newer, err := exists()
+		done <- answer{newer: newer, err: err}
+	}()
+	select {
+	case a := <-done:
+		return a.newer, a.err
+	case <-time.After(d):
+		// The ask keeps its own clock and the command leaves without it; the
+		// buffered channel means that goroutine, not this one, waits.
+		return false, fmt.Errorf("the update check did not answer within %s", d)
+	}
 }
 
 // readUpdateCheck reads the state file. Anything unreadable or corrupt is the

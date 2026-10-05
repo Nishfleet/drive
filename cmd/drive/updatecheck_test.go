@@ -416,6 +416,52 @@ func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 	}
 }
 
+// TestAHungPackageManagerDoesNotHangStatus pins the probe's time bound: the
+// notice rides on `drive status`, which is the quick look-at-your-drive
+// command, so a package manager that never answers must cost the notice its
+// own turn, not the command its hang. The bounded ask answers within the
+// window, the notice stays quiet, and the state records a check so tomorrow
+// retries.
+func TestAHungPackageManagerDoesNotHangStatus(t *testing.T) {
+	home := t.TempDir()
+	path := updateCheckPath(home)
+	now, _ := stepClock(t, time.Unix(1_700_000_000, 0))
+	never := make(chan struct{})
+	defer close(never)
+	var buf bytes.Buffer
+	started := time.Now()
+	if noticeUpdateOnceADay(updateNoticeOptions{
+		home:         home,
+		path:         path,
+		now:          now,
+		probeTimeout: 20 * time.Millisecond,
+		updateExists: func() (bool, error) {
+			<-never // a package manager that never answers
+			return true, nil
+		},
+		out: &buf,
+	}) {
+		t.Fatal("a hung package manager must not print the notice")
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("status waited %s for a hung package manager", elapsed)
+	}
+	if buf.String() != "" {
+		t.Errorf("printed %q, want silence", buf.String())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec updateCheckRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.CheckedAt != now().Unix() {
+		t.Errorf("the state records checkedAt %d, want %d, so tomorrow retries", rec.CheckedAt, now().Unix())
+	}
+}
+
 // TestAStateFileFromTheFutureCountsAsNeverChecked is the other half of the
 // drive#560 notice's resilience: a state file this machine cannot possibly
 // have written (a clock rolled back, a file copied from another machine)
