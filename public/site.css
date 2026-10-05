@@ -74,7 +74,7 @@ html.drive {
   --paper-raised: var(--drive-card);
   --ink: var(--drive-ink);
   --ink-soft: var(--drive-ink-soft);
-  --ink-faint: var(--drive-term-dim);
+  --ink-faint: var(--drive-ink-soft);
   --rule: var(--drive-line);
   --accent: var(--drive-orange-ink);
   --accent-soft: var(--drive-orange-wash);
