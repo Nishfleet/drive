@@ -213,7 +213,11 @@ export function createTestD1(options = {}) {
       if (row === undefined) {
         return null;
       }
-      return column === undefined ? row : (/** @type {Record<string, unknown>} */ (row)[column] ?? null);
+      if (column === undefined) {
+        return row;
+      }
+      const asRow = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
+      return asRow[column] ?? null;
     },
     async run() {
       return runOne(sqlite, sql, params);

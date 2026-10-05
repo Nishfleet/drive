@@ -64,7 +64,10 @@ test("the harness's migration list IS the folder, read from disk", () => {
   for (const table of ["events_seen", "device_tokens", "billing_pushes"]) {
     assert.ok(tables.includes(table), `the default schema has no ${table} table`);
   }
-  const guards = db.sqlite.prepare("PRAGMA table_info(accounts)").all().map((row) => row.name);
+  const guards = db.sqlite
+    .prepare("PRAGMA table_info(accounts)")
+    .all()
+    .map((row) => row.name);
   assert.ok(guards.includes("card_fingerprint"), "accounts carries no card_fingerprint column");
 });
 
@@ -91,15 +94,29 @@ test("the harness refuses a bind value D1 refuses, in D1's own words", async () 
   // true, and reads it back as 1. Coercing it is matching D1, not hiding it,
   // so the adapter keeps doing it - what it must not do is refuse a bind the
   // database takes, because then a passing test would mean nothing.
-  assert.equal((await db.prepare("SELECT ?1 AS v").bind(true).first()).v, 1);
-  assert.equal((await db.prepare("SELECT ?1 AS v").bind(false).first()).v, 0);
-  assert.equal((await db.prepare("SELECT ?1 AS v").bind("x").first()).v, "x");
-  assert.equal((await db.prepare("SELECT ?1 AS v").bind(null).first()).v, null);
+  /**
+   * The value a bind comes back as, through one `SELECT ?1`.
+   * @param {unknown} value
+   */
+  const bound = async (value) => {
+    const row = await db.prepare("SELECT ?1 AS v").bind(value).first();
+    return /** @type {{v: unknown}} */ (row).v;
+  };
+  assert.equal(await bound(true), 1);
+  assert.equal(await bound(false), 0);
+  assert.equal(await bound("x"), "x");
+  assert.equal(await bound(null), null);
+  assert.equal(await bound(42), 42);
 });
 
 test("the harness's batch is a transaction: a failure leaves no rows behind", async () => {
   const db = createTestD1();
-  const rows = () => db.sqlite.prepare("SELECT COUNT(*) AS n FROM events_seen").get().n;
+  /** @returns {number} */
+  const rows = () =>
+    Number(
+      /** @type {{n: number}} */ (db.sqlite.prepare("SELECT COUNT(*) AS n FROM events_seen").get())
+        .n,
+    );
   assert.equal(rows(), 0);
   // The second statement is not SQL. D1 sends a batch as one transaction, so
   // the first statement's row rolls back with it. Run as two independent
@@ -118,12 +135,8 @@ test("the harness's batch is a transaction: a failure leaves no rows behind", as
   assert.equal(rows(), 0, "the first statement's row rolled back with the failed batch");
   // A batch that does commit commits every statement, order preserved.
   const results = await db.batch([
-    db
-      .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
-      .bind("one", 1),
-    db
-      .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
-      .bind("two", 2),
+    db.prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)").bind("one", 1),
+    db.prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)").bind("two", 2),
   ]);
   assert.equal(results.length, 2);
   assert.equal(rows(), 2);
@@ -134,15 +147,15 @@ test("an INSERT ... RETURNING comes back as the row it wrote, under both adapter
   // with the row in `results`; the meter's adapter used to route every write
   // through `run()` and answer `results: []`, so the row read back as no row
   // at all - a link created and immediately looked up came back missing.
-  const sql = "INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2) RETURNING b2_event_id, received_at";
-  for (const [name, db] of [
+  const sql =
+    "INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2) RETURNING b2_event_id, received_at";
+  /** @type {[string, D1Database][]} */
+  const adapters = [
     ["harness", createTestD1()],
     ["meter adapter", makeMeteredDB().db],
-  ]) {
-    const written = await db
-      .prepare(sql)
-      .bind(`evt-${name}`, 1_800_000_000_000)
-      .run();
+  ];
+  for (const [name, db] of adapters) {
+    const written = await db.prepare(sql).bind(`evt-${name}`, 1_800_000_000_000).run();
     assert.equal(written.results.length, 1, `${name} returned no row for the row it wrote`);
     assert.equal(written.results[0].b2_event_id, `evt-${name}`);
     assert.equal(written.results[0].received_at, 1_800_000_000_000);
@@ -164,7 +177,10 @@ test("an INSERT ... RETURNING comes back as the row it wrote, under both adapter
     assert.equal(column, 1_800_000_000_000, `${name} ignored first()'s column`);
     // And no row is null, in both adapters.
     assert.equal(
-      await db.prepare("SELECT b2_event_id FROM events_seen WHERE b2_event_id = ?1").bind("nope").first(),
+      await db
+        .prepare("SELECT b2_event_id FROM events_seen WHERE b2_event_id = ?1")
+        .bind("nope")
+        .first(),
       null,
     );
     assert.equal(
@@ -178,11 +194,16 @@ test("an INSERT ... RETURNING comes back as the row it wrote, under both adapter
 });
 
 test("the harness's default schema and the meter adapter's are the same schema", () => {
+  /**
+   * @param {{prepare(sql: string): {all(): Record<string, unknown>[]}}} sqlite
+   */
   const tablesOf = (sqlite) =>
     sqlite
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
       .all()
-      .map((row) => row.name);
+      .map((row) => String(row.name));
   assert.deepEqual(
     tablesOf(createTestD1().sqlite),
     tablesOf(makeMeteredDB().sqlite),

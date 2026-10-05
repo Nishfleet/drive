@@ -204,14 +204,13 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   // every migration in the folder (drive#579). This is the D1 row the deploy's
   // migrations produced (0012 adds the pointer columns, 0017 drops the JSON),
   // read off the same engine.
-  const row =
-    /** @type {{snapshot_key: string, snapshot_bytes: number, state: string}} */ (
-      db.sqlite
-        .prepare(
-          "SELECT snapshot_key, snapshot_bytes, state FROM branches WHERE account_id = ? AND name = ?",
-        )
-        .get(ACCOUNT.id, "hundred-k")
-    );
+  const row = /** @type {{snapshot_key: string, snapshot_bytes: number, state: string}} */ (
+    db.sqlite
+      .prepare(
+        "SELECT snapshot_key, snapshot_bytes, state FROM branches WHERE account_id = ? AND name = ?",
+      )
+      .get(ACCOUNT.id, "hundred-k")
+  );
   assert.equal(row.state, "open");
   assert.ok(
     !branchColumns(db).includes("snapshot"),

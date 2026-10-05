@@ -156,11 +156,15 @@ export function d1Over(sqlite, { onQuery } = {}) {
         meta: { rows_written: 0, changes: 0, last_row_id: 0 },
       };
     }
-    const changes = Number(changesOf.get().n);
+    const changes = Number(/** @type {{n: number}} */ (changesOf.get()).n);
     return {
       results,
       success: true,
-      meta: { changes, rows_written: changes, last_row_id: Number(rowIdOf.get().n) },
+      meta: {
+        changes,
+        rows_written: changes,
+        last_row_id: Number(/** @type {{n: number}} */ (rowIdOf.get()).n),
+      },
     };
   }
 
@@ -273,7 +277,10 @@ export function d1Over(sqlite, { onQuery } = {}) {
             if (row === undefined || row === null) {
               return null;
             }
-            return column === undefined ? row : (/** @type {Row} */ (row)[column] ?? null);
+            if (column === undefined) {
+              return row;
+            }
+            return /** @type {Row} */ (row)[column] ?? null;
           },
           async run() {
             onQuery?.();

@@ -58,9 +58,10 @@ import { createTestD1, createTestKv } from "./harness.mjs";
 // list is still read off the folder, so it cannot drift from what the deploy
 // applies up to that point.
 const WITH_LEFTOVER_COLUMN = Object.freeze(
-  DRIVE_MIGRATION_NAMES.slice(0, DRIVE_MIGRATION_NAMES.indexOf("0017_drop_branches_snapshot.sql")).map(
-    (name) => `drive/${name}`,
-  ),
+  DRIVE_MIGRATION_NAMES.slice(
+    0,
+    DRIVE_MIGRATION_NAMES.indexOf("0017_drop_branches_snapshot.sql"),
+  ).map((name) => `drive/${name}`),
 );
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };

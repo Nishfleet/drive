@@ -34,9 +34,7 @@ export const DRIVE_MIGRATION_NAMES = Object.freeze(
  * The same list as the paths `createTestD1` applies, relative to
  * `migrations/`, which is the shape a test hands it.
  */
-export const DRIVE_MIGRATIONS = Object.freeze(
-  DRIVE_MIGRATION_NAMES.map((name) => `drive/${name}`),
-);
+export const DRIVE_MIGRATIONS = Object.freeze(DRIVE_MIGRATION_NAMES.map((name) => `drive/${name}`));
 
 /**
  * Every drive migration applied to a real SQLite database, in order.
