@@ -142,7 +142,7 @@ the live site.
 - The pricing page, with the rate, the ceiling and a waitlist sign-up.
 - The bill ceiling: the metered cost cut off at a flat $12 until the drive
   passes 1.5 TB, then $8 a TB. This replaced the older per-TB caps.
-- The first plan: storage use counted toward a monthly charge, and a card was
+- The retired plan: storage use counted toward a monthly charge, and a card was
   needed at sign-up because there is no free tier. Downloads over
   {{FREE_DOWNLOAD_MULTIPLE}} times what you store are charged at
   {{DOWNLOAD_RATE}}.
