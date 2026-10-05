@@ -28,10 +28,10 @@ const pages = readdirSync(publicDir)
     text: readFileSync(new URL(name, publicDir), "utf8"),
   }));
 
-/** @param {string} kind */
 // The month every date-bearing email fixture states (drive#559).
 const MONTH_ISO = "2026-10-01T00:00:00.000Z";
 
+/** @param {string} kind */
 function dataFor(kind) {
   if (kind === "welcome") return {};
   if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12 };

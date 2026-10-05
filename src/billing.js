@@ -790,9 +790,15 @@ const USAGE_HEADERS = Object.freeze({
  *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
- * @param {string} monthIso the month's own first instant as the Worker sends it ("2026-10-01T00:00:00.000Z"), from the one boundary the meter, the cap walk and the invoice read (src/index.js, src/meter.js monthStart). The caller owns the month so this module carries no second answer to what month the numbers belong to.
+ * @param {string} [monthIso] the month's own first instant as the Worker sends it ("2026-10-01T00:00:00.000Z"), from the one boundary the meter, the cap walk and the invoice read (src/index.js, src/meter.js monthStart). The caller owns the month so this module carries no second answer to what month the numbers belong to. It sits behind the two defaults above, so it is written `[monthIso]` and defaults to empty: a caller that leaves it out is refused below by name, the same as one that sends a day that is not an instant.
  */
-export function handleUsageRequest(request, account, upload = null, balanceLine = null, monthIso) {
+export function handleUsageRequest(
+  request,
+  account,
+  upload = null,
+  balanceLine = null,
+  monthIso = "",
+) {
   // The gate is first, before the method: an anonymous request learns nothing
   // about whether it could write, only that it is not signed in.
   if (!account) {

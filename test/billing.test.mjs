@@ -398,6 +398,30 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   assert.equal(posted.headers.get("allow"), "GET");
 });
 
+test("the usage endpoint refuses a month that is not an instant, and one it was not given", () => {
+  // drive#559: the month is the caller's (src/index.js owns the one boundary)
+  // and the answer names it, so a caller that hands over nothing, or a day
+  // that is not an instant, is a caller bug the read refuses by name rather
+  // than shipping a heading nobody can check a statement against. The gate is
+  // first (account-gate.test.mjs pins the 401 below it), so the account here
+  // is signed in and only the month is wrong.
+  const account = { id: "1", name: "Your drive" };
+  const withNone = () =>
+    handleUsageRequest(new Request("https://drive.test/api/usage"), account, null, null, "");
+  assert.throws(withNone, /handleUsageRequest needs the month's first instant/);
+  assert.throws(
+    () =>
+      handleUsageRequest(
+        new Request("https://drive.test/api/usage"),
+        account,
+        null,
+        null,
+        "next month",
+      ),
+    /handleUsageRequest needs the month's first instant/,
+  );
+});
+
 test("the Worker routes the usage read to the handler", async () => {
   // /api/* runs the Worker, so an unrouted path would fall through to the
   // assets and 404 on every read of the usage page. The handler's gate answers

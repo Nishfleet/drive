@@ -394,21 +394,27 @@ test("a row sends the instant, not a sentence, and an entry with no date sends n
   // sends the instant and the page writes the words (public/files.html
   // whenLabel/dayLabel). What moves here is not a label but the shape.
   assert.equal(
-    fileRows([{ name: "a.txt", kind: "text", size: 1, modified: 0 }])[0].modifiedIso,
+    fileRows([{ name: "a.txt", path: "/a.txt", kind: "text", size: 1, modified: 0 }])[0]
+      .modifiedIso,
     "",
   );
   // S3's LastModified is optional in a listing, so a server that reports none
   // is answering the spec: the row ships no instant, and the page writes
   // nothing rather than a moment that is not the file's.
-  assert.equal(fileRows([{ name: "a.txt", kind: "text", size: 1 }])[0].modifiedIso, "");
+  assert.equal(
+    fileRows([{ name: "a.txt", path: "/a.txt", kind: "text", size: 1 }])[0].modifiedIso,
+    "",
+  );
   // A value that is not a date at all is a bug, not a spec-legal answer: it is
   // named rather than turned into "Invalid Date".
   assert.throws(
     () =>
       fileRows(
-        /** @type {import("../src/files.js").FileEntry[]} */ ([
-          { name: "a.txt", kind: "text", size: 1, modified: "2026-10-08" },
-        ]),
+        /** @type {import("../src/files.js").FileEntry[]} */ (
+          /** @type {unknown} */ ([
+            { name: "a.txt", kind: "text", size: 1, modified: "2026-10-08" },
+          ])
+        ),
       ),
     TypeError,
   );
@@ -417,37 +423,77 @@ test("a row sends the instant, not a sentence, and an entry with no date sends n
 // ---------------------------------------------------------------- times
 
 /**
+ * @typedef {object} StubElement
+ * @property {string} tag
+ * @property {string} className
+ * @property {string} href
+ * @property {string} text
+ * @property {string} textContent
+ * @property {Record<string, string>} dataset
+ * @property {Record<string, string>} attributes
+ * @property {boolean} disabled
+ * @property {Record<string, (event: any) => any>} listeners
+ * @property {{add(): void, toggle(): void, contains: () => boolean}} classList
+ * @property {StubElement[]} appended
+ * @property {(child: StubElement) => StubElement} append
+ * @property {(key: string, value: string) => void} setAttribute
+ * @property {(name: string, handler: (event: any) => any) => void} addEventListener
+ */
+
+/**
  * A stub element, the same one test/account-balance.test.mjs uses: it records
  * what the page writes into it and what gets appended, so a row the page
  * rendered can be read back.
  * @param {string} tag
+ * @returns {StubElement}
  */
-function stubTag(tag = "div") {
+function stubTag(tag) {
+  /** @type {StubElement[]} */
+  const appended = [];
+  /** @type {Record<string, string>} */
+  const attributes = {};
+  /** @type {Record<string, string>} */
+  const dataset = {};
+  /** @type {Record<string, (event: any) => any>} */
+  const listeners = {};
+  // The one string both words hold, so the two accessors are not each other's
+  // return type: the page writes `text` and reads `textContent` back, and the
+  // test reads `textContent` off the row it rendered.
+  /** @type {string} */
+  let written = "";
   const el = {
     tag,
-    appended: [],
-    attributes: {},
+    className: "",
+    href: "",
+    attributes,
+    dataset,
+    listeners,
     disabled: false,
-    listeners: {},
-    dataset: {},
     classList: { add() {}, toggle() {}, contains: () => false },
-    append: function append(child) {
+    appended,
+    append: /** @param {StubElement} child */ (child) => {
       el.appended.push(child);
       return child;
     },
-    // Setting the text is how the page empties a node before it fills it again,
-    // so a cleared list is an empty list of rows.
+    get text() {
+      return written;
+    },
+    set text(value) {
+      written = value;
+    },
     get textContent() {
-      return el.text;
+      return written;
     },
     set textContent(value) {
-      el.text = value;
+      written = value;
+      // Setting the text is how the page empties a node before it fills it
+      // again, so a cleared list is an empty list of rows.
       if (value === "") el.appended.length = 0;
     },
-    setAttribute(key, value) {
+    setAttribute: /** @param {string} key, @param {string} value */ (key, value) => {
       el.attributes[key] = value;
     },
-    addEventListener(name, handler) {
+    addEventListener: /** @param {string} name, @param {any} handler */ (name, handler) => {
       el.listeners[name] = handler;
     },
   };
@@ -455,19 +501,26 @@ function stubTag(tag = "div") {
 }
 
 /** The page's own script, loaded with enough browser stubbed to run. */
+/** @returns {{sandbox: Record<string, any>, listed: StubElement}} */
 function loadFilesPage() {
   const listed = stubTag("ul");
+  /** @type {Map<string, StubElement>} */
   const elements = new Map();
+  /**
+   * @param {string} id
+   * @returns {StubElement}
+   */
   const stub = (id) => {
     const el = stubTag(id);
     elements.set(id, el);
     return el;
   };
+  /** @type {Record<string, any>} */
   const sandbox = {
     console,
     document: {
-      getElementById: (id) => elements.get(id) ?? stub(id),
-      createElement: stubTag,
+      getElementById: (/** @type {string} */ id) => elements.get(id) ?? stub(id),
+      createElement: (/** @type {string} */ tag) => stubTag(tag),
     },
     location: { search: "" },
     navigator: { onLine: true },
@@ -475,7 +528,7 @@ function loadFilesPage() {
     // The session nav and the session list read their own routes at load; both
     // answer with the words the page's own copy of the gate's table names, so
     // the read lands rather than leaving the page in its signed-out state.
-    fetch: async (url) => {
+    fetch: async (/** @type {string} */ url) => {
       const where = String(url);
       if (where.includes("view=deleted")) {
         return { ok: true, status: 200, json: async () => ({ rows: [], nextCursor: null }) };
@@ -503,16 +556,23 @@ test("a row rendered in the browser's own zone shows the local day", () => {
   // is on the 9th, whatever the daylight saving season, and both are this
   // year, which is the day-and-month shape the page writes.
   const instant = Date.UTC(new Date().getFullYear(), 9, 9, 1, 30);
-  const row = fileRows([{ name: "note.txt", kind: "text", size: 5, modified: instant }])[0];
+  const row = fileRows([
+    { name: "note.txt", path: "/note.txt", kind: "text", size: 5, modified: instant },
+  ])[0];
   /** @param {string} zone */
   const dayIn = (zone) => new Intl.DateTimeFormat(undefined, { timeZone: zone, day: "numeric" });
+  /** @param {string} zone */
   const shortIn = (zone) =>
     new Intl.DateTimeFormat(undefined, { timeZone: zone, day: "numeric", month: "short" });
-  const sub = () =>
-    listed.appended
+  /** @returns {StubElement} */
+  const sub = () => {
+    const found = listed.appended
       .flatMap((li) => li.appended)
       .flatMap((node) => node.appended)
       .find((node) => node.className === "sub");
+    assert.ok(found, "the page rendered a row whose meta line can be read back");
+    return found;
+  };
 
   process.env.TZ = "America/New_York";
   try {
@@ -525,7 +585,7 @@ test("a row rendered in the browser's own zone shows the local day", () => {
     assert.equal(dayIn("Europe/London").format(instant), "9", "London is on the 9th: a day over");
     // A row with no instant sent writes no date at all, rather than a moment
     // that is not the folder's.
-    const folder = fileRows([{ name: "Photos", kind: "folder" }])[0];
+    const folder = fileRows([{ name: "Photos", path: "/Photos", kind: "folder" }])[0];
     sandbox.renderRows([folder]);
     assert.equal(sub().textContent, "Folder");
   } finally {
