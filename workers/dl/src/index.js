@@ -266,6 +266,8 @@ export function createApp() {
  * request is dispatched onto it.
  * @type {ExportedHandler<DlContext & {platform?: ExecutionContext}>}
  */
+const app = createApp();
+
 export default {
-  fetch: (request, env, ctx) => createApp().fetch(request, /** @type {DlContext} */ (env), ctx),
+  fetch: (request, env, ctx) => app.fetch(request, /** @type {DlContext} */ (env), ctx),
 };

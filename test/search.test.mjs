@@ -844,6 +844,32 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   assert.equal(bSeesA.count, 0, "B never sees A's file");
 });
 
+test("scheduled throws on an unknown cron and does not start the reindex", async () => {
+  /** @type {Promise<unknown>[]} */
+  const waits = [];
+  const workerScheduled =
+    /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
+  await assert.rejects(
+    () =>
+      workerScheduled(
+        /** @type {ScheduledController} */ (
+          /** @type {unknown} */ ({ cron: "1 2 3 4 5", scheduledTime: Date.now() })
+        ),
+        { DRIVE_DB: makeD1() },
+        {
+          /** @param {Promise<unknown>} promise */
+          waitUntil(promise) {
+            waits.push(promise);
+          },
+        },
+      ),
+    /unknown cron/,
+  );
+  assert.equal(waits.length, 0, "an unknown cron must not queue the reindex");
+});
+
 test("the deployed cron schedule is the one the module names", () => {
   // The reconciler's own quiet hour, asserted rather than read back from the
   // config: the config takes the schedule from this module's own constant, so

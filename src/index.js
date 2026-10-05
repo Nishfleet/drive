@@ -53,6 +53,7 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_SCHEDULE,
   reconcileIndex,
   SEARCH_ENDPOINT,
   withIndex,
@@ -871,6 +872,11 @@ export function createApp() {
   return app;
 }
 
+// One app per isolate. createApp takes no env and closes over no request, so
+// the compiled router is safe to share across fetches (same shape as the api
+// Worker's appFor cache).
+const app = createApp();
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
 // Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
@@ -882,7 +888,7 @@ export function createApp() {
  */
 export default {
   async fetch(request, env) {
-    return createApp().fetch(request, env);
+    return app.fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string
@@ -1043,17 +1049,21 @@ export default {
     // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
     // whose JSON the sweep could still move. Dropping the column is #339.
 
-    context.waitUntil(
-      (async () => {
-        if (!env.DRIVE_DB) {
-          throw new Error("the nightly reindex needs the file index database");
-        }
-        for (const account of await indexAccounts(env.DRIVE_DB)) {
-          await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
-        }
-      })().catch((error) => {
-        throw new Error(`the nightly reindex failed: ${error.message}`);
-      }),
-    );
+    if (event.cron === REINDEX_SCHEDULE) {
+      context.waitUntil(
+        (async () => {
+          if (!env.DRIVE_DB) {
+            throw new Error("the nightly reindex needs the file index database");
+          }
+          for (const account of await indexAccounts(env.DRIVE_DB)) {
+            await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+          }
+        })().catch((error) => {
+          throw new Error(`the nightly reindex failed: ${error.message}`);
+        }),
+      );
+      return;
+    }
+    throw new Error(`unknown cron: ${event.cron}`);
   },
 };
