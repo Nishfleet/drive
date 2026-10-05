@@ -802,6 +802,59 @@ test("done when: a real file opens from a share link, logged out", async () => {
   assert.equal(afterHead.downloadBytes, "the real bytes".length);
 });
 
+test("a share link serves the XML document family as a download, never a page", async () => {
+  // issue #548: /s/<token> is our own address and a stranger can host a
+  // sign-in page under it by uploading an XHTML, XSLT, RDF, MathML or
+  // multipart/related file. Those leave as an octet-stream attachment, while
+  // a picture, a PDF and plain text still open in the tab.
+  const { upload, share, files, links } = drive();
+  const uploads = [
+    ["page.xhtml", "application/xhtml+xml"],
+    ["page.xsl", "application/xslt+xml"],
+    ["page.rdf", "application/rdf+xml"],
+    ["formula.mml", "application/mathml+xml"],
+    ["form.mht", "multipart/related"],
+  ];
+  for (const [name, type] of uploads) {
+    await upload("/", name, "<html>Your session expired, sign in here</html>", type);
+  }
+  for (const [name] of uploads) {
+    const made = await (await share(`/${name}`)).json();
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
+    assert.equal(opened.status, 200, name);
+    assert.equal(opened.headers.get("content-type"), "application/octet-stream", name);
+    assert.equal(opened.headers.get("content-disposition"), `attachment; filename="${name}"`, name);
+    assert.equal(opened.headers.get("x-content-type-options"), "nosniff", name);
+    assert.equal(opened.headers.get("content-security-policy"), "sandbox", name);
+  }
+  // The allowlist still opens: a picture, a PDF and plain text are inline.
+  for (const [name, type] of [
+    ["holiday.jpg", "image/jpeg"],
+    ["report.pdf", "application/pdf"],
+    ["note.txt", "text/plain"],
+  ]) {
+    await upload("/", name, "the real bytes", type);
+    const made = await (await share(`/${name}`)).json();
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
+    assert.equal(
+      opened.headers.get("content-type"),
+      name === "note.txt" ? "text/plain; charset=utf-8" : type,
+      name,
+    );
+    assert.equal(opened.headers.get("content-disposition"), "inline", name);
+  }
+});
+
 test("a share link downloads from the owner's bucket, and another account cannot see the file", async () => {
   // drive#460: share-link creation and download must resolve the owner's
   // bucket the same way the key provider does, not the old shared store.

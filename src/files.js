@@ -200,19 +200,40 @@ export function isPreviewable(kind) {
 }
 
 // What an inline preview may be served as. A file the customer uploaded is
-// never a page on our origin, so the served type follows the file's kind
-// rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
-// and media keeps its own type only when it matches its kind. Anything else is
-// octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest, and
-// previewDisposition() below takes the one type that can still act as a
-// document — an .svg, whose links navigate — out of the direct-open preview
-// and a share link, while the page's <img> reads it inline from the embed URL
-// (drive#657).
+// never a page on our origin, so the served type is an allowlist rather than a
+// decision: image/*, video/*, audio/*, application/pdf and text/plain are the
+// only types a preview may open with, and a type is one of those when the
+// file's kind says so, not when the upload claimed it. Every other type — the
+// XML family an XHTML, XSLT, RDF, MathML or multipart/related upload carries,
+// and every "file" kind that would otherwise pass its claimed type through —
+// is served as `application/octet-stream`, previewContentType()'s one value
+// that is not an inline type, which previewDisposition() turns into a
+// download (issue #548). The header pair in readRequest() (nosniff, and a
+// sandboxed preview) covers the rest, and previewDisposition() also takes the
+// one allowlisted type that can still act as a document — an .svg, whose
+// links navigate — out of the direct-open preview and a share link, while the
+// page's <img> reads it inline from the embed URL (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
 });
+
+/** The one served type that is not an inline type, so it never opens in a tab. */
+const PREVIEW_OCTET_STREAM = "application/octet-stream";
+
+/**
+ * The disposition an attachment leaves with, with the name's quotes stripped.
+ * @param {string} name
+ * @returns {string}
+ */
+function attachmentDisposition(name) {
+  // A header value cannot carry a control character or a backslash, and
+  // safeFileName() strips both (and a stray slash); the quotes go too, so the
+  // filename cannot end the quoted-string early. validatePath() already
+  // refuses those characters on the way in, and this keeps the function safe
+  // on its own (drive#657).
+  return `attachment; filename="${safeFileName(String(name || "")).replace(/"/g, "")}"`;
+}
 
 /**
  * The content type an inline preview is served as, never a document type.
@@ -230,41 +251,44 @@ export function previewContentType(name, storedContentType = "") {
   if (pinned) {
     return pinned;
   }
-  if (kind === "image" && !stored.startsWith("image/")) {
-    return "application/octet-stream";
+  if (kind === "image" && stored.startsWith("image/")) {
+    return stored;
   }
-  if (kind === "video" && !stored.startsWith("video/")) {
-    return "application/octet-stream";
+  if (kind === "video" && stored.startsWith("video/")) {
+    return stored;
   }
-  if (kind === "audio" && !stored.startsWith("audio/")) {
-    return "application/octet-stream";
+  if (kind === "audio" && stored.startsWith("audio/")) {
+    return stored;
   }
-  return stored || "application/octet-stream";
+  // An allowlist, not a pass-through: a type the file's kind did not claim as
+  // media, a PDF or text is octet-stream, and the disposition below makes it
+  // a download. This is what an XHTML, XSLT, RDF, MathML or multipart/related
+  // upload hits, because the kind is "file" and its claimed type is not in the
+  // allowlist (issue #548).
+  return PREVIEW_OCTET_STREAM;
 }
 
 /**
- * How an inline preview leaves: inline for every type a browser draws as a
- * picture, a player, a PDF or plain text, and an attachment for the one type
- * that can still act as a document — an SVG, which a browser renders as a
- * styled document whose links navigate. An SVG therefore leaves the
- * direct-open preview URL and a share link as a download, so a link can never
- * hand a stranger a rendered document on our address to phish a password
- * from; the page's own <img> reads the same bytes inline from the embed URL
- * (drive#657).
- * @param {string} name
+ * How a preview response leaves: inline for every allowlisted type a browser
+ * draws as a picture, a player, a PDF or plain text, and an attachment with
+ * the file's name for two cases. The first is octet-stream, every type that
+ * missed the allowlist (the XML document family, issue #548), because a
+ * browser downloads an attachment instead of rendering it as a page. The
+ * second is the one allowlisted type that can still act as a document — an
+ * SVG, which a browser renders as a styled document whose links navigate — so
+ * a direct-open preview URL or a share link can never hand a stranger a
+ * rendered document on our address to phish a password from; the page's own
+ * <img> reads the same bytes inline from the embed URL (drive#657).
+ * @param {string} name the file's own name, as the attachment's filename
  * @param {string} [storedContentType]
  * @returns {string}
  */
 export function previewDisposition(name, storedContentType = "") {
-  if (previewContentType(name, storedContentType) !== "image/svg+xml") {
+  const type = previewContentType(name, storedContentType);
+  if (type !== PREVIEW_OCTET_STREAM && type !== "image/svg+xml") {
     return "inline";
   }
-  // A header value cannot carry a control character or a backslash, and
-  // safeFileName() strips both (and a stray slash); the quotes go too, so the
-  // filename cannot end the quoted-string early. validatePath() already
-  // refuses those characters on the way in, and this keeps the function safe
-  // on its own (drive#657).
-  return `attachment; filename="${safeFileName(name).replace(/"/g, "")}"`;
+  return attachmentDisposition(name);
 }
 
 // ---------------------------------------------------------------- the words
@@ -2313,10 +2337,13 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean}} [options] the customer
- *   database, so the 1 TB pre-charge storage limit (drive#464) can read
- *   stored bytes, and whether the pause at a $0 balance is on (drive#586).
- *   Tests that do not pass a database skip both checks.
+ * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">}} [options]
+ *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
+ *   can read stored bytes, whether the pause at a $0 balance is on
+ *   (drive#586), and the account's own state, so a read-only drive refuses a
+ *   web write (drive#496). Tests that do not pass a database skip the first
+ *   two checks; tests that do not pass a resolver are answering for a drive
+ *   that is not read-only.
  */
 export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
@@ -2327,6 +2354,34 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
+  // Only the three routes that change the drive carry the cap's read-only
+  // rule. The decision is by route, not by method, so a mislabelled method on
+  // a listing still cannot smuggle a write through. The cross-site rule is the
+  // app-wide CSRF middleware's (src/index.js).
+  const stateChanging =
+    route === `${FILES_ENDPOINT}/upload` ||
+    route === `${FILES_ENDPOINT}/delete` ||
+    route === `${FILES_ENDPOINT}/restore`;
+  // The cap makes the whole web write lane read-only (drive#496). The account
+  // row's own `state`, saved by the hourly walk (src/cap.js), is the rule: at
+  // the cap it is `read_only` and a signed-in person cannot write through the
+  // page either. Reads are untouched — a read-only drive is readable by
+  // definition, and the cap deletes nothing.
+  //
+  // The CSRF middleware runs first, so a cross-site POST to a read-only drive
+  // still gets the cross-site answer and not a message about a cap the
+  // stranger has no business knowing. A closed account is refused the same
+  // way: it is not writable either, and its files are on their way out.
+  //
+  // No resolver means no cap state to read (a deployment with no DRIVE_DB, or
+  // a unit test driving the handler directly), so the lane is writable and the
+  // account gate above is what holds it.
+  if (stateChanging && typeof options.accountState === "function") {
+    const state = await options.accountState(account.id);
+    if (state === "read_only" || state === "closed") {
+      return json({ error: failureMessage("cap-reached") }, 403);
+    }
+  }
   const scoped = scopeStore(store, account);
   if (route === FILES_ENDPOINT) {
     return listRequest(request, url, scoped, now);
@@ -2528,7 +2583,7 @@ async function readRequest(request, url, store, download, embed = false) {
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
       "content-disposition": download
-        ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
+        ? attachmentDisposition(name)
         : embedded
           ? "inline"
           : previewDisposition(name || "", contentType),
