@@ -28,7 +28,6 @@ import {
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { billingPushGap, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -39,6 +38,7 @@ import {
   storageBucketForKey,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { balanceCents } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import {
   HOUR_MS,
@@ -47,8 +47,16 @@ import {
   METER_RECONCILE_SCHEDULE,
   reconcileMeter,
   runMeterCron,
+  toMillis,
 } from "./meter.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
+import {
+  AUTO_TOPUP_ENDPOINT,
+  drawUsageHours,
+  handleAutoTopUpRequest,
+  prepaidPauseOn,
+  settleBalances,
+} from "./prepaid.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -79,6 +87,7 @@ import {
 import {
   BALANCE_ENDPOINT,
   BILLING_WEBHOOK_PATH,
+  balanceLine,
   handleBalanceRequest,
   handleBillingWebhook,
   handleTopUpRequest,
@@ -162,7 +171,7 @@ export const PUBLIC_ROUTES = Object.freeze([
  * @param {Env} env
  */
 function dodoEnv(env) {
-  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch}} */ (
+  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string}} */ (
     /** @type {unknown} */ (env)
   );
 }
@@ -496,7 +505,7 @@ const filesHandler = (c) => {
     account ? withIndex(storeFor(c.env), c.env.DRIVE_DB, account) : null,
     account,
     Date.now(),
-    { db: c.env.DRIVE_DB },
+    { db: c.env.DRIVE_DB, prepaidPause: prepaidPauseOn(c.env) },
   );
 };
 
@@ -551,6 +560,7 @@ export function createApp() {
   app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
   app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
   app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
+  app.use(AUTO_TOPUP_ENDPOINT, csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -695,10 +705,18 @@ export function createApp() {
     // whose no device has signed in yet or whose mount is gone (drive issue
     // #308), so the usage page hides the line rather than showing a stale
     // one.
+    // The prepaid balance line rides beside the cap line (drive#586), so
+    // `drive status` prints the Worker's words, the top-up prompt included.
+    const balance = c.env.DRIVE_DB
+      ? balanceLine(await balanceCents(c.env.DRIVE_DB, account.id), {
+          pauseOn: prepaidPauseOn(c.env),
+        })
+      : null;
     return handleUsageRequest(
       c.req.raw,
       { ...account, capUsd, cardOnFile },
       await liveQueueFor(c.env, account),
+      balance,
     );
   });
 
@@ -706,7 +724,12 @@ export function createApp() {
   // a top-up's checkout. The balance is credited only by the signed webhook
   // below, never by this route or the checkout's redirect.
   app.get(BALANCE_ENDPOINT, (c) =>
-    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
+      pauseOn: prepaidPauseOn(c.env),
+    }),
+  );
+  app.post(AUTO_TOPUP_ENDPOINT, (c) =>
+    handleAutoTopUpRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
   );
   app.post(TOPUP_ENDPOINT, (c) => {
     const dodo = dodoEnv(c.env);
@@ -829,6 +852,7 @@ export function createApp() {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
       db: c.env.DRIVE_DB,
+      prepaidPause: prepaidPauseOn(c.env),
     }),
   );
 
@@ -838,6 +862,8 @@ export function createApp() {
     handleBillingWebhook(c.req.raw, {
       db: c.env.DRIVE_DB,
       secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
+      email: c.env.EMAIL,
+      mailFrom: dodoEnv(c.env).MAIL_FROM ?? "",
     }),
   );
 
@@ -931,79 +957,39 @@ export default {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
       const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
+      // scheduledTime through toMillis, and the draw and settle steps below
+      // take only a number, so they read the same normalised instant.
+      const now = toMillis(event.scheduledTime, "scheduledTime");
       const hours = [];
       for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
         hours.push(hour);
       }
-      // Test-mode Dodo ingest for the hours this run rolled (drive issue #51).
-      // A missing key skips rather than failing the rollup; a failed ingest
-      // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
-      // the unit tests can record the request without reaching the network.
-      // DODO_BASE_URL overrides the test host (drive issue #323, owner comment
-      // 2026-10-03T06:35Z); it defaults to test.dodopayments.com when unset.
-      const dodo =
-        /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
-          env
-        );
-      const pushed = await pushBillingHours(env.METER_DB, hours, {
-        apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
-        baseUrl: dodo.DODO_BASE_URL,
-        now: event.scheduledTime,
-      });
-      // The report on the skip (drive issue #334). pushBillingHours returns
-      // {pushed: 0} for a missing key on purpose, and that silence is the bug
-      // this names: a deploy whose key was never set, or was set on the wrong
-      // Worker, rolls metered hours and bills nobody while /api/health stays
-      // green, because health deliberately does not look at secrets.
-      //
-      // It runs on the cron, beside the skip, and reaches a person reading
-      // Worker logs (/api/health cannot: a billing-config gap is not an outage,
-      // and health's contract is one failure at a time, not a second opinion).
-      // It runs after the push is awaited, and deliberately not under a try:
-      // a push that throws on purpose (Cloudflare retries the rollup) also
-      // ends this run, so the report is suppressed for that cycle and speaks
-      // on the next one. That is fine because a throwing push is itself the
-      // loud event; the report answers the silent path only.
-      //
-      // Guarded on purpose. The push above may throw - Cloudflare retries the
-      // rollup, because an unpushed hour should be retried. The report must
-      // not: a detector that fails the work it is reporting on is worse than
-      // no detector, because a transient D1 error, a schema change or a bad
-      // trigger time would then retry a rollup that already billed everyone
-      // correctly. Every failure path in billingPushGap is logged and dropped.
-      const gap = await billingPushGap(env.METER_DB, {
-        apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        now: event.scheduledTime,
-      }).catch((error) => {
-        console.error(
-          "billing: the gap report failed, so it says nothing about this run",
-          error instanceof Error ? error.message : String(error),
-        );
-        return null;
-      });
-      if (gap && gap.hours > 0) {
-        // Value-free: hours, the oldest one, and which of the two causes the
-        // issue names. Never the key, never an account id.
-        console.error(
-          "billing: metered hours reached nobody",
-          gap.missingKey
-            ? "DODO_PAYMENTS_API_KEY is not set on this Worker, so the push skipped"
-            : "DODO_PAYMENTS_API_KEY is set but hours are still unpushed; check the key is the right one for this Worker",
-          `hours=${gap.hours}`,
-          `oldest=${new Date(gap.since ?? event.scheduledTime).toISOString()}`,
-        );
-      } else if (gap && pushed.pushed > 0) {
-        // The healthy counter-case, so the absence of the line above is
-        // meaningful: a person tailing logs can tell "nothing wrong" from
-        // "the report stopped running". `gap` is non-null here, so the gap
-        // was measured and came back zero; a report that failed prints its own
-        // line above and must not be followed by an all-clear. console.log,
-        // not console.error - error level is for actionable failures, and
-        // training an operator to ignore the error channel is how the next gap
-        // goes unseen.
-        console.log(`billing: push working, ${pushed.pushed} hour(s) ingested this run`);
+      // The prepaid draw (drive#586): each account's usage for the hours this
+      // run rolled is drawn from its balance, at most once per account per
+      // hour (src/prepaid.js). This replaces the old after-the-fact usage push
+      // to the provider (#51, #334), whose billing_pushes table is retired by
+      // migration 0021. Awaited and not caught: a failed D1 write fails the
+      // trigger, Cloudflare retries it, and the idempotency key makes the
+      // retry draw nothing twice.
+      const drawn = await drawUsageHours(env.METER_DB, hours, { now });
+      if (drawn.drawn > 0) {
+        console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
       }
+      // The "$2 left" email and the auto top-up for the accounts just drawn.
+      // Each account's failure is logged inside and never fails the trigger:
+      // the draws above are written, and a retry must not wait on a mail
+      // outage.
+      const dodo = dodoEnv(env);
+      await settleBalances(env.METER_DB, drawn.accounts, {
+        email: env.EMAIL,
+        mailFrom: dodo.MAIL_FROM ?? "",
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        productId: dodo.DODO_TOPUP_PRODUCT_ID,
+        baseUrl: dodo.DODO_BASE_URL,
+        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        now,
+      });
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
