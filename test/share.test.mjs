@@ -225,6 +225,11 @@ function withLimits(options = {}) {
   };
 }
 
+/** Options a share-link GET/HEAD needs in tests: the edge limiter production binds. */
+function shareOpts(extra = {}) {
+  return { now, ipLimiter: allowLimiter(), ...extra };
+}
+
 // ---------------------------------------------------------------- tokens
 
 test("a link token is 22 base64url characters and only that shape is accepted", () => {
@@ -406,7 +411,7 @@ test("only the methods each route offers are allowed", async () => {
     new Request(`https://drive.test/s/${TOKEN}`, { method: "POST" }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(post.status, 405);
   const postInfo = await handleRequestInfoRequest(
@@ -744,7 +749,12 @@ test("done when: a real file opens from a share link, logged out", async () => {
 
   // No cookie, no account, no Authorization header: exactly what a logged-out
   // browser sends to a link someone pasted it.
-  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const opened = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(opened.status, 200);
   assert.equal(opened.headers.get("content-type"), "image/jpeg");
   assert.equal(opened.headers.get("content-disposition"), "inline");
@@ -778,7 +788,7 @@ test("done when: a real file opens from a share link, logged out", async () => {
     new Request(made.share.url, { method: "HEAD" }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
@@ -790,6 +800,59 @@ test("done when: a real file opens from a share link, logged out", async () => {
   // and the dl Worker's byte rollup (#58) is what measures bytes
   // actually served.
   assert.equal(afterHead.downloadBytes, "the real bytes".length);
+});
+
+test("a share link serves the XML document family as a download, never a page", async () => {
+  // issue #548: /s/<token> is our own address and a stranger can host a
+  // sign-in page under it by uploading an XHTML, XSLT, RDF, MathML or
+  // multipart/related file. Those leave as an octet-stream attachment, while
+  // a picture, a PDF and plain text still open in the tab.
+  const { upload, share, files, links } = drive();
+  const uploads = [
+    ["page.xhtml", "application/xhtml+xml"],
+    ["page.xsl", "application/xslt+xml"],
+    ["page.rdf", "application/rdf+xml"],
+    ["formula.mml", "application/mathml+xml"],
+    ["form.mht", "multipart/related"],
+  ];
+  for (const [name, type] of uploads) {
+    await upload("/", name, "<html>Your session expired, sign in here</html>", type);
+  }
+  for (const [name] of uploads) {
+    const made = await (await share(`/${name}`)).json();
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
+    assert.equal(opened.status, 200, name);
+    assert.equal(opened.headers.get("content-type"), "application/octet-stream", name);
+    assert.equal(opened.headers.get("content-disposition"), `attachment; filename="${name}"`, name);
+    assert.equal(opened.headers.get("x-content-type-options"), "nosniff", name);
+    assert.equal(opened.headers.get("content-security-policy"), "sandbox", name);
+  }
+  // The allowlist still opens: a picture, a PDF and plain text are inline.
+  for (const [name, type] of [
+    ["holiday.jpg", "image/jpeg"],
+    ["report.pdf", "application/pdf"],
+    ["note.txt", "text/plain"],
+  ]) {
+    await upload("/", name, "the real bytes", type);
+    const made = await (await share(`/${name}`)).json();
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
+    assert.equal(
+      opened.headers.get("content-type"),
+      name === "note.txt" ? "text/plain; charset=utf-8" : type,
+      name,
+    );
+    assert.equal(opened.headers.get("content-disposition"), "inline", name);
+  }
 });
 
 test("a share link downloads from the owner's bucket, and another account cannot see the file", async () => {
@@ -867,7 +930,7 @@ test("a share link downloads from the owner's bucket, and another account cannot
     new Request((await made.json()).share.url),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(opened.status, 200);
   assert.equal(await opened.text(), "the signed pages");
@@ -907,7 +970,12 @@ test("a shared file can never act as a page on our origin", async () => {
   for (const [name, token] of Object.entries(byName)) {
     const made = await (await share(`/${name}`, { token })).json();
     assert.equal(made.share.url, `https://drive.test${SHARE_LINK_PREFIX}/${token}`);
-    const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
     assert.equal(opened.status, 200, `share ${name}`);
     assert.equal(
       opened.headers.get("x-content-type-options"),
@@ -945,11 +1013,16 @@ test("done when: a revoked link returns 404", async () => {
   await upload("/", "secret.txt", "private");
   const made = await (await share("/secret.txt", { token: TOKEN })).json();
 
-  const live = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const live = await handleShareFileRequest(new Request(made.share.url), files, links, shareOpts());
   assert.equal(live.status, 200);
 
   await revoke(TOKEN);
-  const revoked = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const revoked = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(revoked.status, 404);
   assert.equal(await revoked.text(), failureMessage("link-not-found"));
   assert.equal(revoked.headers.get("cache-control"), "no-store");
@@ -958,20 +1031,21 @@ test("done when: a revoked link returns 404", async () => {
   // route never tells a stranger which one it was.
   const expired = await handleShareFileRequest(new Request(made.share.url), files, links, {
     now: now + (DEFAULT_LINK_DAYS + 1) * DAY_MS,
+    ipLimiter: allowLimiter(),
   });
   assert.equal(expired.status, 404);
   const unknown = await handleShareFileRequest(
     new Request(`https://drive.test/s/CCCCCCCCCCCCCCCCCCCCCC`),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(unknown.status, 404);
   const junk = await handleShareFileRequest(
     new Request("https://drive.test/s/not-a-token"),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(junk.status, 404);
   // Nothing was read out of a revoked link.
@@ -1254,6 +1328,33 @@ test("an upload that declares a small size but sends more is refused before any 
   assert.equal(upload.status, 413);
   assert.equal((await upload.json()).error, failureMessage("upload-link-full"));
   assert.deepEqual(await store.list("/"), []);
+});
+
+test("a share download without its rate-limit binding is refused before the file is read", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "holiday.jpg", "the real bytes", "image/jpeg");
+  const made = await (await share("/holiday.jpg", { token: TOKEN })).json();
+  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  assert.equal(opened.status, 503);
+  assert.equal((await opened.json()).error, failureMessage("unexpected"));
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 0, "a closed door must not count as an open");
+});
+
+test("a rate-limited share download is refused before the file is read", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "holiday.jpg", "the real bytes", "image/jpeg");
+  const made = await (await share("/holiday.jpg", { token: TOKEN })).json();
+  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, {
+    now,
+    ipLimiter: denyLimiter(),
+  });
+  assert.equal(opened.status, 429);
+  assert.equal((await opened.json()).error, failureMessage("rate-limited"));
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 0, "a rate-limited open must not count as an open");
 });
 
 test("a public upload without its rate-limit bindings is refused before any bytes are stored", async () => {
@@ -1734,7 +1835,7 @@ test("a share link answers a Range with 206 and counts only the bytes it sent", 
     new Request(made.share.url, { headers: { range: "bytes=2-4" } }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(opened.status, 206);
   assert.equal(await opened.text(), "234");
@@ -1753,7 +1854,12 @@ test("a share link answers a still-valid If-None-Match with 304 and no download"
   await upload("/", "song.mp3", "0123456789", "audio/mpeg");
   const made = await (await share("/song.mp3", { token: TOKEN })).json();
 
-  const first = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const first = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(first.status, 200);
   const etag = first.headers.get("etag");
   assert.ok(etag, "the share answers carries an etag to re-validate with");
@@ -1762,7 +1868,7 @@ test("a share link answers a still-valid If-None-Match with 304 and no download"
     new Request(made.share.url, { headers: { "if-none-match": etag } }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(again.status, 304);
   assert.equal(await again.text(), "");

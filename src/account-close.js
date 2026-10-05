@@ -27,11 +27,12 @@ const DAY_SECONDS = 24 * 60 * 60;
 // reconcile trip (drive#522). Sharing the reconcile's trigger meant the two
 // had one blast radius: a reconcileMeter throw, or the cron simply running
 // late behind it, delayed every close receipt, reminder and purge on the same
-// night. 05:00 UTC is an hour after the reconcile (src/meter.js
-// METER_RECONCILE_SCHEDULE) so the two never contend, and cloudflare.config.ts
-// declares this same string as the Worker's fourth cron trigger, which
-// test/meter.test.mjs pins the way it pins the other two.
-export const CLOSE_SCHEDULE = "0 5 * * *";
+// night. 06:00 UTC is two hours after the reconcile (src/meter.js
+// METER_RECONCILE_SCHEDULE) and an hour after the nightly trash purge
+// (src/files.js TRASH_PURGE_SCHEDULE) so the three never contend, and
+// cloudflare.config.ts declares this same string as the Worker's fifth cron
+// trigger, which test/meter.test.mjs pins the way it pins the others.
+export const CLOSE_SCHEDULE = "0 6 * * *";
 
 export const CLOSE_COPY = Object.freeze({
   heading: "Close your account",

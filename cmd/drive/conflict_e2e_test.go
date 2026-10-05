@@ -388,12 +388,8 @@ type standinRestart struct {
 
 // stop takes the storage away.
 func (r *standinRestart) stop() error {
-	if err := r.serve.Process.Kill(); err != nil {
+	if err := stopProcess(r.serve); err != nil {
 		return fmt.Errorf("take the storage away: %w", err)
-	}
-	if _, err := r.serve.Process.Wait(); err != nil {
-		// An already-gone process is a normal race with its own cleanup.
-		_ = err
 	}
 	return nil
 }
@@ -412,18 +408,7 @@ func (r *standinRestart) start(t *testing.T) error {
 	if port == "" {
 		return fmt.Errorf("the stand-in endpoint %s carries no port", r.cfg.Endpoint)
 	}
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(r.root, "data"),
-		"--auth-key", r.cfg.AccessKey+","+r.cfg.SecretKey,
-		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		return fmt.Errorf("bring the storage back: %w", err)
-	}
-	t.Cleanup(func() {
-		_ = serve.Process.Kill()
-		_, _ = serve.Process.Wait()
-	})
-	r.serve = serve
-	waitForPort(t, port)
+	r.serve = startRcloneServe(t, filepath.Join(r.root, "data"), port,
+		"--auth-key", r.cfg.AccessKey+","+r.cfg.SecretKey, "--log-level", "ERROR")
 	return nil
 }
