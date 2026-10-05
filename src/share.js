@@ -51,7 +51,7 @@ import {
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { DAY_MS } from "./auth.js";
-import { BYTES_PER_GB } from "./billing.js";
+import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
 // The decimal GB and the day are imported rather than restated: the storage
 // limit, the per-link upload total and the meter all divide by the same GB, and
 // every expiry in the repo is measured in the same day. The GB is
@@ -113,8 +113,9 @@ export const REQUEST_MAX_FILES = 100;
 export const REQUEST_NAME_MAX_LENGTH = 255;
 // A per-link total above this is a number the owner cannot mean (drive issue
 // #549): 1 TB is the pre-charge storage ceiling, so a link promising more
-// could never be honoured anyway.
-const REQUEST_TOTAL_MAX_CEILING_BYTES = 1_000_000_000_000;
+// could never be honoured anyway. The TB is the billing one, so a promise can
+// never outrun the ceiling it is checked against.
+const REQUEST_TOTAL_MAX_CEILING_BYTES = GB_PER_TB * BYTES_PER_GB;
 // How many times a shared file's own size a link may serve before it stops
 // (drive issue #549): a share is for showing a file, not for hosting it as a
 // seed, and 30x a file is far above the handful of opens a person makes.

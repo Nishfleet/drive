@@ -52,6 +52,9 @@ import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 // 1.019 TB and billed $10.19, which broke "never more than $10 per TB". So
 // there is no month constant: every function below takes the month's length
 // as input, and minutesInMonth() is the one place it is worked out.
+// A minute is spelled MINUTE_MS here rather than imported from src/meter.js
+// for the same reason the GB below is declared here: the constant's real home is
+// behind this module in the import graph, so importing it would close a cycle.
 const MINUTE_MS = 60_000;
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
 // The month a "kept all month" quote is worked over when the caller names

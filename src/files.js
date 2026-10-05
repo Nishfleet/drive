@@ -676,7 +676,7 @@ export const TRASH_PURGE_SCHEDULE = "0 5 * * *";
  * @param {number} now epoch milliseconds
  */
 export function isTrashExpired(deletedAt, now = Date.now()) {
-  return now - deletedAt > RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
+  return now - deletedAt > RECENTLY_DELETED_DAYS * DAY_MS;
 }
 
 /**

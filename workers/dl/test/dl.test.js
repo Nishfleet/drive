@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { recordUsage } from "../../../src/meter.js";
+import { MINUTE_MS, recordUsage } from "../../../src/meter.js";
 import { makeMeteredDB, midnight } from "../../../test/d1-sqlite.mjs";
 import { downloadKey, handleDownload } from "../src/index.js";
 
@@ -122,7 +122,7 @@ test("the counter adds across an hour and never touches the rollup's column", as
     midnight(),
     42.5,
     1000,
-    midnight() + 60_000,
+    midnight() + MINUTE_MS,
   );
   const harness = makeCtx(db, { "u/acct_alice/a.bin": { bytes: bytesOf(1000) } });
   for (let read = 0; read < 2; read++) {
