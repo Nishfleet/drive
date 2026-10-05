@@ -178,7 +178,7 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
 test("reportPurgeFailures raises an error naming the failed purges, and none when all landed", () => {
   const sentry = fakeSentry();
   reportPurgeFailures(0, 3, sentry);
-  assert.deepEqual(sentry.calls, []);
+  assert.equal(sentry.calls.length, 0);
   reportPurgeFailures(2, 1, sentry);
   assert.deepEqual(
     sentry.calls.map((c) => c.method),

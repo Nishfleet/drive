@@ -86,12 +86,32 @@ escapes, cheapest first:
 ## The weekly backup
 
 `d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads
-`waitlist-<date>.sql` and `drive-<date>.sql` as the `d1-backup` GitHub
-artifact, kept 90 days — the copy that survives a wrong restore, a deleted
-database or a provider problem. Restore from it:
+`waitlist-<date>.sql.age` and `drive-<date>.sql.age` as the `d1-backup`
+GitHub artifact, kept 90 days — the copy that survives a wrong restore, a
+deleted database or a provider problem. The dumps are sealed with `age`
+before upload: anyone with read access to this private repository can
+download its workflow artifacts, so only the ciphertext leaves the runner.
+
+**One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
+machine you keep keys on, and put the public key line it prints (`age1…`)
+into the repository variable `AGE_RECIPIENT` (Settings → Secrets and
+variables → Actions → Variables). Keep the private file off GitHub and off
+the runner. Until `AGE_RECIPIENT` is set the weekly run fails loud on
+purpose — a backup that quietly shipped plaintext, or quietly shipped
+nothing, is the invisibility drive#520 exists to end.
+
+Restore from a dump:
 
 1. Download the artifact from the run's summary page.
-2. Small dumps, or a table at a time, go back through the CLI:
+2. Decrypt it with the private key, and check the sha256 the run log
+   printed against the decrypted file:
+
+   ```sh
+   age -d -i d1-backup-key.txt -o drive-<date>.sql drive-<date>.sql.age
+   sha256sum drive-<date>.sql
+   ```
+
+3. Small dumps, or a table at a time, go back through the CLI:
 
    ```sh
    npx cf d1 query <database-id> --sql "$(cat dump.sql)"
@@ -100,7 +120,7 @@ database or a provider problem. Restore from it:
    `--sql` carries the statements in the command line, so split a large dump
    into statement-sized files rather than growing one argument past the
    shell's limit.
-3. A whole-database import of a large dump is the D1 import API's
+4. A whole-database import of a large dump is the D1 import API's
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.
 

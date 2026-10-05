@@ -40,6 +40,7 @@ that same step, and on a step that holds more than one download.
 | rclone, Linux zip | `ci.yml` (two jobs) | `PINNED_RCLONE_LINUX_AMD64_SHA256` |
 | rclone, Windows zip | `windows-msi.yml` (two jobs) | `RCLONE_WINDOWS_AMD64_SHA256` |
 | WinFsp MSI | `windows-msi.yml` (two jobs) | `WINFSP_MSI_SHA256` |
+| age, Linux amd64 tar.gz | `d1-export.yml` | `AGE_LINUX_AMD64_SHA256` |
 | gitleaks | `ci.yml` | container image digest |
 | Lighthouse CI | `ci.yml` | container image digest |
 | rclone, in the two-mount test | `test/two-mount-sync.test.mjs` | `RCLONE_ZIPS`, and only with `DRIVE_STANDIN_FETCH_RCLONE=1` |

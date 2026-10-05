@@ -83,7 +83,9 @@ test("the dump is fetched as data by the runtime, never as a curl executable dow
   // (drive#581, test/workflow-downloads.test.mjs) is about assets that run.
   // The dump is written to the runner's temp and shipped as an artifact,
   // never executed, so the runtime's own fetch takes it — and this file
-  // fails if that fetch is ever swapped for a curl/wget download.
+  // fails if that fetch is ever swapped for a curl/wget download. The age
+  // release download later in the file is a different fetch on purpose: it
+  // is digest-pinned in its own test below, not counted here.
   const downloads =
     WF.match(
       /\bnode -e 'const fs=require\("fs"\);\(async\(\)=>\{const r=await fetch\(process\.argv\[1\]\)/g,
@@ -91,4 +93,31 @@ test("the dump is fetched as data by the runtime, never as a curl executable dow
   assert.equal(downloads.length, 1, "exactly one fetch of the signed URL");
   assert.doesNotMatch(WF, /\bcurl\b[^\n]*\s-o\s|\bcurl\b[^\n|>]*\|/);
   assert.doesNotMatch(WF, /\bwget\b/);
+});
+
+test("the dumps are encrypted before they touch an artifact", () => {
+  // The weekly dump is customer data, and a GitHub artifact is readable by
+  // everyone with repo read, so only ciphertext ships (review finding on PR
+  // #697). The recipient is the repo variable `AGE_RECIPIENT` — a public
+  // key, never a secret — and a run without it fails loud instead of
+  // shipping plaintext or quietly skipping the backup.
+  assert.match(WF, /\$\{\{ vars\.AGE_RECIPIENT \}\}/);
+  assert.match(WF, /the age recipient is unset/);
+  assert.match(WF, /age-bin\/age" -r "\$AGE_RECIPIENT" -o "\$file\.age" "\$file"/);
+  assert.match(WF, /rm -f "\$file"/);
+  // The artifact carries only the .age files.
+  assert.match(WF, /path: \$\{\{ runner\.temp \}\}\/d1-export\/\*\.sql\.age$/m);
+  assert.doesNotMatch(WF, /path: \$\{\{ runner\.temp \}\}\/d1-export\/\*\.sql$/m);
+});
+
+test("the age binary is a digest-pinned release download", () => {
+  // docs/security.md's gate: an executable a workflow downloads is checked
+  // against a digest pinned in this repository, in the same step.
+  assert.match(WF, /AGE_VERSION: v\d+\.\d+\.\d+/);
+  assert.match(
+    WF,
+    /echo "\$AGE_LINUX_AMD64_SHA256 {2}\$RUNNER_TEMP\/age\.tar\.gz" \| sha256sum -c -/,
+  );
+  const pins = readFileSync(new URL("../docs/security.md", import.meta.url), "utf8");
+  assert.match(pins, /AGE_LINUX_AMD64_SHA256/);
 });
