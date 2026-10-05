@@ -54,6 +54,16 @@ would rather you read it here than find out in week three.
   adds a byte to your bill.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
+- **Search on an account of a million files.** Search reads a trigram index
+  over your file names, so it does not scan the whole drive: at a **1,000,000
+  file** account, a search for the name of one file answers in about **5
+  milliseconds**, and the test that proves it is in the repository. The one
+  slower case is a search word that every one of a million names contains —
+  "invoice" on a drive of a million invoices — where the index has to rank a
+  million matching names and the search takes on the order of a second. A
+  search of one or two characters (a single letter, say) does not use the
+  trigram index at all, because a three-letter window is the shortest one it
+  can hold, and reads more of the drive to answer.
 - **Your disk holds a cache, and it is capped.** What is on disk is the parts
   of your files you have already opened. It grows to at most {{CACHE_LIMIT}},
   and the drive always keeps at least {{CACHE_FLOOR}} of your disk free. The

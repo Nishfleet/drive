@@ -1,7 +1,8 @@
 // Search: find any file by name in under a second (drive issue #18,
 // build-spec.md "Against Space"). One D1 table (`file_index`, migration
 // 0002) holds one row per file the drive knows about, and the search reads
-// only that table — it never lists the bucket. The two feeds the spec names
+// only that table and the trigram index beside it (`file_index_fts`,
+// migration 0025) — it never lists the bucket. The two feeds the spec names
 // are here too:
 //
 //   * the write path — `withIndex(store, db, account)` wraps a FileStore so
@@ -11,6 +12,12 @@
 //     store once and rebuilds the account's rows, so an event the drive
 //     missed is corrected within a day. The Worker's scheduled trigger calls
 //     it (REINDEX_SCHEDULE); no request can.
+//
+// The search itself is a trigram FTS5 match (drive issue #571). It used to be
+// `name LIKE '%word%'`, which no B-tree index can serve, so every search read
+// every row the account had — about a million rows on a million-file drive.
+// The trigram index reads the words a search names and the rows they match,
+// and the bar in test/search.test.mjs is measured on a million-file account.
 //
 // Plain data and functions, no Worker-only import: node --test exercises the
 // query, the feeds and every route against a real SQLite engine (the D1
@@ -60,6 +67,15 @@ const ROWS_PER_STATEMENT = 14;
 /** Statements per db.batch call, so a 100,000-file drive does not build one
  * giant batch. */
 const STATEMENTS_PER_BATCH = 64;
+/**
+ * The shortest word the FTS5 trigram index can find. The trigram tokenizer
+ * indexes every three-character window of a name, so a word of one or two
+ * characters matches no window at all and a search for it would come back
+ * empty on a drive that holds the file. A query with such a word takes the
+ * LIKE path instead, which reads every row of the account: correct, and the
+ * price of a one- or two-character query is named in docs-site/limits.md.
+ */
+export const MIN_FTS_WORD_LENGTH = 3;
 
 // ---------------------------------------------------------------- the query
 
@@ -108,18 +124,76 @@ export function parseQuery(input) {
 }
 
 /**
- * The one SQL the search runs: every word must appear in the name (AND), and
- * a whole-name match and a prefix match sort above a match in the middle.
+ * One word as an FTS5 query term. FTS5 reads a bare word as text with its own
+ * operators, so a word is wrapped in double quotes and an embedded quote is
+ * doubled; that makes every character in it literal, which is the fold the
+ * LIKE path gave for free. A space between two quoted terms is FTS5's AND, so
+ * every word appearing in the name is the same rule the search already ran.
+ * @param {string[]} words
+ * @returns {string}
+ */
+export function ftsQuery(words) {
+  return words.map((word) => `"${word.replace(/"/g, '""')}"`).join(" ");
+}
+
+/** True when every word is long enough for the trigram index to hold it. One
+ * word of fewer than {@link MIN_FTS_WORD_LENGTH} characters sends the whole
+ * query down the LIKE path, because FTS5 would answer it with nothing.
+ * @param {string[]} words */
+function ftsCanAnswer(words) {
+  return words.every((word) => [...word].length >= MIN_FTS_WORD_LENGTH);
+}
+
+/**
+ * The one SQL the search runs, in one of two shapes.
+ *
+ * The FTS5 shape (the one a normal query takes) matches through the trigram
+ * index on `file_index_fts`, so the database reads the index and the rows it
+ * names rather than every row the account has. Ranking is unchanged: a
+ * whole-name match first, then a prefix match, then a match in the middle,
+ * then the name. The two columns a result carries but the trigram index does
+ * not keep — the size and the date — are read back from `file_index` by a
+ * correlated subquery on its (account_id, path) primary key, which SQLite
+ * evaluates only for the rows that survive the LIMIT.
+ *
+ * The LIKE shape answers a query with a word of one or two characters, which
+ * the trigram tokenizer cannot index at all. It is the old statement, kept
+ * whole, so a short query is still correct.
+ *
  * `params` is returned so a test can assert the statement and the caller
- * cannot build SQL from input.
+ * cannot build SQL from input; `engine` names the shape so the caller and the
+ * test can tell which one ran.
  * @param {string[]} words
  * @param {{accountId: string, limit: number}} options
+ * @returns {{sql: string, params: Array<string|number>, engine: "fts"|"like"}}
  */
 export function searchSql(words, { accountId, limit }) {
   if (!Array.isArray(words) || words.length === 0) {
     throw new Error("searchSql needs at least one word");
   }
   const joined = escapeLike(words.join(" "));
+  if (ftsCanAnswer(words)) {
+    // Params are [accountId (?1), the MATCH expression (?2), the whole query
+    // (?3), the whole query as a prefix (?4), the limit (?5)], so the two
+    // ranking parameters are ?3 and ?4 and the limit is ?5.
+    const exact = 3;
+    const prefix = exact + 1;
+    return {
+      sql:
+        `SELECT path, name, ` +
+        `(SELECT size_bytes FROM file_index ` +
+        `WHERE account_id = ?1 AND path = file_index_fts.path) AS size_bytes, ` +
+        `(SELECT modified_at FROM file_index ` +
+        `WHERE account_id = ?1 AND path = file_index_fts.path) AS modified_at ` +
+        `FROM file_index_fts ` +
+        `WHERE file_index_fts MATCH ?2 AND account_id = ?1 ` +
+        `ORDER BY CASE WHEN name = ?${exact} THEN 0 ` +
+        `WHEN name LIKE ?${prefix} ESCAPE '\\' THEN 1 ELSE 2 END, name ` +
+        `LIMIT ?${prefix + 1}`,
+      params: [accountId, ftsQuery(words), joined, `${joined}%`, limit + 1],
+      engine: "fts",
+    };
+  }
   /** @type {Array<string|number>} */
   const params = [accountId, ...words.map((word) => `%${escapeLike(word)}%`)];
   const clauses = words.map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`).join(" AND ");
@@ -134,6 +208,7 @@ export function searchSql(words, { accountId, limit }) {
       `WHEN name LIKE ?${prefix} ESCAPE '\\' THEN 1 ELSE 2 END, name ` +
       `LIMIT ?${prefix + 1}`,
     params,
+    engine: "like",
   };
 }
 
@@ -233,6 +308,77 @@ const UPSERT_UPDATE =
 // Seven placeholders a row, reused row by row inside one statement.
 const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
 
+// The trigram table's rowid mirrors file_index's own rowid, so one row is
+// found by that integer and a delete is a rowid seek rather than a scan of
+// the whole table. FTS5 has no unique constraint and no ON CONFLICT, so a
+// write is a delete followed by an insert, both keyed to the rowid the
+// upsert into file_index kept or took.
+const FTS_COLUMNS = "(rowid, name, account_id, path)";
+
+/**
+ * The delete and insert pair that replaces one file_index row in the trigram
+ * table, keyed to the rowid that row holds. A row is never left in one table
+ * and not the other.
+ * @param {D1Database} db
+ * @param {{rowid: number, account_id: string, name: string, path: string}} row
+ * @returns {D1PreparedStatement[]}
+ */
+function ftsReplaceStatements(db, row) {
+  return [
+    db.prepare("DELETE FROM file_index_fts WHERE rowid = ?").bind(row.rowid),
+    db
+      .prepare(`INSERT INTO file_index_fts ${FTS_COLUMNS} VALUES (?1, ?2, ?3, ?4)`)
+      .bind(row.rowid, row.name, row.account_id, row.path),
+  ];
+}
+
+/**
+ * Resolve the rowids for a chunk of rows and build every delete+insert pair.
+ * The SELECT is a separate batch (it must see the upsert) and the pairs are
+ * returned in the caller's order. A path with no row (never here: the caller
+ * upserts first) is skipped rather than bound with a null rowid.
+ * @param {D1Database} db
+ * @param {FileRow[]} rows
+ * @returns {Promise<D1PreparedStatement[]>}
+ */
+async function ftsReplaceForRows(db, rows) {
+  if (rows.length === 0) {
+    return [];
+  }
+  const accountId = rows[0].account_id;
+  const paths = rows.map((row) => row.path);
+  const inList = paths.map(() => "?").join(", ");
+  const found = await db
+    .prepare(
+      `SELECT rowid, path, name FROM file_index WHERE account_id = ? AND path IN (${inList})`,
+    )
+    .bind(accountId, ...paths)
+    .all();
+  const byPath = new Map(
+    /** @type {Array<Record<string, unknown>>} */ (found?.results ?? []).map((row) => [
+      String(row.path),
+      row,
+    ]),
+  );
+  /** @type {D1PreparedStatement[]} */
+  const statements = [];
+  for (const row of rows) {
+    const hit = byPath.get(row.path);
+    if (!hit) {
+      continue;
+    }
+    statements.push(
+      ...ftsReplaceStatements(db, {
+        rowid: Number(hit.rowid),
+        account_id: accountId,
+        name: String(hit.name),
+        path: row.path,
+      }),
+    );
+  }
+  return statements;
+}
+
 /** The prepared statements that write a chunk of rows. Exported so the test
  * can run them through the D1 shape, and the caller cannot build SQL.
  * @param {D1Database} db
@@ -269,14 +415,35 @@ export function upsertStatements(db, rows) {
   return statements;
 }
 
-/** The one prepared statement that drops one row.
+/** The one prepared statement that drops one row, in both tables. The trigram
+ * table is keyed by file_index's rowid, and a DELETE ... RETURNING gives that
+ * rowid back in the same statement, so the search row goes with the index row
+ * and a scan of the trigram table is never needed.
  * @param {D1Database} db
  * @param {{id: string}} account
  * @param {string} path */
 export function deleteStatement(db, account, path) {
   return db
-    .prepare("DELETE FROM file_index WHERE account_id = ?1 AND path = ?2")
+    .prepare(
+      `DELETE FROM file_index WHERE account_id = ?1 AND path = ?2 ` +
+        `RETURNING rowid, name, account_id, path`,
+    )
     .bind(account.id, path);
+}
+
+/**
+ * The statements that remove one file's row from the trigram table, given the
+ * row a DELETE ... RETURNING handed back. Called with nothing when the file
+ * had no index row, so a remove of a file that was never indexed is a no-op.
+ * @param {D1Database} db
+ * @param {Record<string, unknown>|null} row the RETURNING row, or null
+ * @returns {D1PreparedStatement[]}
+ */
+export function deleteFtsStatements(db, row) {
+  if (!row) {
+    return [];
+  }
+  return [db.prepare("DELETE FROM file_index_fts WHERE rowid = ?").bind(Number(row.rowid))];
 }
 
 /**
@@ -328,10 +495,18 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  await db.batch([db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id)]);
+  // The trigram table is rebuilt with the index, not left stale: the rows it
+  // holds mirror file_index's rowids, and this rebuild re-creates those rows,
+  // so the old rowids are dropped first or a search would answer from rows
+  // the store no longer has.
+  await db.batch([
+    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id),
+    db.prepare("DELETE FROM file_index_fts WHERE account_id = ?1").bind(account.id),
+  ]);
   for (let start = 0; start < rows.length; start += batchSize * ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * ROWS_PER_STATEMENT);
     await db.batch(upsertStatements(db, slice));
+    await db.batch(await ftsReplaceForRows(db, slice));
   }
   return { indexed: rows.length, folders, tookMs: now() - at };
 }
@@ -471,14 +646,16 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       // wrapper gets without a second request for a HEAD — the same second a
       // folder listing renders.
       const at = now();
-      await db.batch(
-        upsertStatements(db, [fileRow(account, path, { size: counted.bytes(), modified: at }, at)]),
-      );
+      const row = fileRow(account, path, { size: counted.bytes(), modified: at }, at);
+      await db.batch(upsertStatements(db, [row]));
+      await db.batch(await ftsReplaceForRows(db, [row]));
     },
     /** @param {string} key */
     async remove(key) {
       await remove(key);
-      await db.batch([deleteStatement(db, account, drivePathFromKey(key, account))]);
+      const dropped = await deleteStatement(db, account, drivePathFromKey(key, account)).all();
+      const row = /** @type {Array<Record<string, unknown>>} */ (dropped?.results ?? [])[0] ?? null;
+      await db.batch(deleteFtsStatements(db, row));
     },
   };
 }

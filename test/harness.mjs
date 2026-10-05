@@ -84,6 +84,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The cap notices the hourly walk sends (drive#496): cap_warned_at and
   // read_only_sent_at. Expand only, two nullable columns.
   "drive/0024_cap_notices.sql",
+  // The trigram table `src/search.js` now answers a search from (drive issue
+  // #571): the search reads this table on every query, so it belongs in the
+  // default list or the default schema is one the Worker cannot run against.
+  "drive/0025_file_index_fts.sql",
 ]);
 
 /**

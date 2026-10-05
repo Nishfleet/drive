@@ -239,6 +239,28 @@ test("the security page answers whether writing resumes once the cap is raised",
   );
 });
 
+test("the limits page states the account size search stays under a second at (drive#571)", () => {
+  const page = shipped("limits.md");
+  // The issue asks for the size, so the number is pinned here: a search under
+  // one second is claimed for an account of a million files, and the number
+  // must not drift off the figure test/search.test.mjs measures.
+  assert.match(
+    page,
+    /Search on an account of a million files/i,
+    "the limits page must name the account size search stays under a second at",
+  );
+  assert.match(
+    page,
+    /1,000,000\s*\n?\s*file/,
+    "the limits page must state the figure as one million files",
+  );
+  assert.match(
+    page,
+    /milliseconds/,
+    "the limits page must give the measured time, not only the size",
+  );
+});
+
 test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
   const page = shipped("limits.md");
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");

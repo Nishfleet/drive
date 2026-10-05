@@ -47,7 +47,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store, scopeStore } from "../src/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
-import { sqlitePlaceholders } from "./harness.mjs";
+import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const FOLDERS = 20;
@@ -71,7 +71,11 @@ const BUDGET_MS = 1000;
  */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
+  for (const name of [
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0025_file_index_fts.sql",
+  ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   /** The D1 meta a run answers with: every required field of the runtime's
@@ -92,9 +96,17 @@ function makeD1() {
    * @returns {{results: Record<string, unknown>[], changes: number}}
    */
   const runOne = (sql, params = []) => {
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    // D1 numbers its placeholders: the same ?1 can appear three times, so the
+    // bound values follow the placeholder appearances rather than the array
+    // order. That is what `searchSql` relies on now that the trigram query
+    // reuses ?1 for the account filter (drive#571).
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (
+      sqliteBoundValues(sql, params)
+    );
     const prepared = sqlitePlaceholders(sql);
-    if (/^\s*(SELECT|WITH)/i.test(sql)) {
+    // A DELETE/UPDATE with a RETURNING clause is a query as far as D1 is
+    // concerned, and the delete path reads the rowid back that way.
+    if (/^\s*(SELECT|WITH)/i.test(sql) || /\bRETURNING\b/i.test(sql)) {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
