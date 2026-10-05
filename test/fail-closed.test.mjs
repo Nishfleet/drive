@@ -11,6 +11,7 @@ import worker from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
 import { METER_RECONCILE_SCHEDULE } from "../src/meter.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
+import { STARTER_ENDPOINT } from "../src/starter.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 const workerFetch =
@@ -36,8 +37,43 @@ test("a signed-in files request without a storage endpoint is 503 and logs", asy
   const made = createTestAuth();
   const { cookie } = await signIn(made, "noconfig@example.com");
   const errorMock = t.mock.method(console, "error");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: TEST_BASE_URL,
+  };
   const response = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+    ctx,
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: failureMessage("drive-not-configured") });
+  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.ok(
+    logged.some((line) => line.includes("no storage endpoint")),
+    `the Worker must log the missing storage endpoint, got ${JSON.stringify(logged)}`,
+  );
+  const again = await workerFetch(
+    new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+    ctx,
+  );
+  assert.equal(again.status, 503);
+  const loggedAgain = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.equal(
+    loggedAgain.filter((line) => line.includes("no storage endpoint")).length,
+    1,
+    `the missing-endpoint line is once per env, got ${JSON.stringify(loggedAgain)}`,
+  );
+});
+
+test("a signed-in starter request without a storage endpoint is 503", async () => {
+  const made = createTestAuth();
+  const { cookie } = await signIn(made, "starter-noconfig@example.com");
+  const response = await workerFetch(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, { headers: { cookie } }),
     {
       ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
       DRIVE_DB: made.db,
@@ -48,11 +84,6 @@ test("a signed-in files request without a storage endpoint is 503 and logs", asy
   );
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: failureMessage("drive-not-configured") });
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
-  assert.ok(
-    logged.some((line) => line.includes("no storage endpoint")),
-    `the Worker must log the missing storage endpoint, got ${JSON.stringify(logged)}`,
-  );
 });
 
 test("nightly jobs without a storage endpoint fail the trigger", async (t) => {

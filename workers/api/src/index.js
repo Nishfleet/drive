@@ -20,6 +20,8 @@ export { storageLocationFromEnv };
 
 /** Tests that need the in-memory key store pass it on env; production never does. */
 export const TEST_KEY_STORE = Symbol("drive.testKeyStore");
+/** One missing-config line per isolate env, not per request. */
+const missingApiStoreLogged = new WeakSet();
 
 /**
  * What a route in the registry carries. Shared with routes.js so the registry
@@ -466,9 +468,12 @@ function storeFor(env) {
   }
   const missing = missingProductionStore(env);
   if (missing.length > 0) {
-    console.error(
-      `api: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not configured`,
-    );
+    if (!missingApiStoreLogged.has(env)) {
+      missingApiStoreLogged.add(env);
+      console.error(
+        `api: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not configured`,
+      );
+    }
     return null;
   }
   if (keyStore === undefined || keyStoreDb !== env.DRIVE_DB) {

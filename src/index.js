@@ -187,13 +187,15 @@ function isPublic(pathname) {
 export const TEST_FILES_STORE = Symbol("drive.testFilesStore");
 /** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
+/** One missing-endpoint line per isolate env, not per request. */
+const missingFilesStoreLogged = new WeakSet();
 /**
  * Storage config vars. They are set per deployment, never declared as
  * bindings in cloudflare.config.ts: a declared secret is required at deploy,
- * and the Files page already answers from the in-memory store when they are
- * unset. The names match the api Worker's iDrive pair so the site Worker can
- * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
- * pair a local `rclone serve s3` still uses.
+ * and a deployment with none of them answers 503 rather than an in-memory
+ * store (drive#505). The names match the api Worker's iDrive pair so the site
+ * Worker can read the buckets a minted key writes to, plus the older FILES_S3_*
+ * stand-in pair a local `rclone serve s3` still uses.
  * @typedef {Env & {
  *   FILES_S3_ENDPOINT?: string,
  *   FILES_S3_BUCKET?: string,
@@ -298,7 +300,10 @@ function storeFor(env) {
     const storage = devStorage(env);
     const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
     if (!endpoint) {
-      console.error("files: no storage endpoint is set, so this deployment cannot serve files");
+      if (!missingFilesStoreLogged.has(env)) {
+        missingFilesStoreLogged.add(env);
+        console.error("files: no storage endpoint is set, so this deployment cannot serve files");
+      }
       return null;
     }
     const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
@@ -653,11 +658,11 @@ export function createApp() {
   /** @param {DriveContext} c */
   const starterHandler = (c) => {
     const account = c.get("account");
-    const store = account ? storeFor(c.env) : null;
-    return handleStarterRequest(
-      c.req.raw,
-      account && store ? scopeStore(store, account) : null,
-      account,
+    if (!account) {
+      return handleStarterRequest(c.req.raw, null, account);
+    }
+    return withFileStore(c, (store) =>
+      handleStarterRequest(c.req.raw, scopeStore(store, account), account),
     );
   };
   app.get(STARTER_ENDPOINT, starterHandler);
