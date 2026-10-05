@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -305,7 +305,13 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // Both bindings the hourly trip reads, the way the other scheduled tests bind
+  // them (test/abuse-guards.test.mjs): the pre-charge limit sweep runs in the
+  // same hourly run as the draw (drive#536), so a test that bound only the meter
+  // would fail this for a missing binding instead of for the outage. One
+  // database stands behind both, so the ledger outage is the sweep's outage too.
+  const metered = ledgerOutage(db, down);
+  const env = { METER_DB: metered, DRIVE_DB: metered };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -327,8 +333,13 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    // The month's own minutes (drive#531), the divisor every bill for that
+    // month reads: September and October differ, and a bill built on one
+    // month's length for the other's hours is wrong by a day.
+    const monthMinutes = minutesInMonth(hour);
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes,
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
     }).totalCents;
