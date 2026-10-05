@@ -52,7 +52,7 @@ export const CONTROL_OR_SLASH = new RegExp(
   `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
   "g",
 );
-/** The listing, download, upload and restore API. */
+/** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
 /**
  * Where the page's media elements read their bytes. It is the preview URL with
@@ -245,7 +245,12 @@ export function previewDisposition(name, storedContentType = "") {
   if (previewContentType(name, storedContentType) !== "image/svg+xml") {
     return "inline";
   }
-  return `attachment; filename="${String(name || "").replace(/"/g, "")}"`;
+  // A header value cannot carry a control character or a backslash, and
+  // safeFileName() strips both (and a stray slash); the quotes go too, so the
+  // filename cannot end the quoted-string early. validatePath() already
+  // refuses those characters on the way in, and this keeps the function safe
+  // on its own (drive#657).
+  return `attachment; filename="${safeFileName(name).replace(/"/g, "")}"`;
 }
 
 // ---------------------------------------------------------------- the words
@@ -2580,8 +2585,9 @@ async function listRequest(request, url, store, now) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {boolean} download
- * @param {boolean} [embed] the page's media URL: serve inline, never the
- *   attachment previewDisposition() sends a document-capable type out with
+ * @param {boolean} [embed] the page's media URL: serve inline when a media
+ *   element asked for it, and otherwise the attachment previewDisposition()
+ *   sends a document-capable type out with
  * @returns {Promise<Response>}
  */
 async function readRequest(request, url, store, download, embed = false) {
@@ -2596,6 +2602,16 @@ async function readRequest(request, url, store, download, embed = false) {
   // below reads, and a union property is not narrowed across an await.
   const drivePath = checked.path;
   const name = drivePath.split("/").pop() || "";
+  // The embed URL is for the page's own <img>, <video> and <audio> only. A
+  // navigation to it — a top-level open, or an <iframe> — falls back to the
+  // direct-open preview's disposition, so the embed URL is never a way around
+  // the download an SVG leaves with (drive#657). Sec-Fetch-Dest is the
+  // browser's own statement of what asked for the bytes.
+  const destination = String(request.headers.get("sec-fetch-dest") || "")
+    .trim()
+    .toLowerCase();
+  const embedded =
+    embed && (destination === "image" || destination === "video" || destination === "audio");
   /**
    * The headers every 200/206/HEAD answer carries, from the type the store
    * named. One builder for all three, so the two safety headers below cannot
@@ -2607,19 +2623,20 @@ async function readRequest(request, url, store, download, embed = false) {
     /** @type {Record<string, string>} */
     const headers = {
       // The bytes leave as a file: an attachment to download, and an inline
-      // preview the page renders in a media element. The embed URL is always
-      // inline; the direct-open preview URL sends the one document-capable
-      // type (an SVG) as an attachment instead, so a top-level open downloads
-      // it. Neither is a document on our origin, and the two headers below
-      // keep it that way when the preview URL is opened directly: nosniff
-      // honors the type above, and the sandbox policy gives a document an
-      // opaque origin with no script of its own.
+      // preview the page renders in a media element. The embed URL is inline
+      // for a media element only; the direct-open preview URL, and a
+      // navigation to the embed URL, send the one document-capable type (an
+      // SVG) as an attachment instead, so a top-level open downloads it.
+      // Neither is a document on our origin, and the two headers below keep it
+      // that way when the preview URL is opened directly: nosniff honors the
+      // type above, and the sandbox policy gives a document an opaque origin
+      // with no script of its own.
       "content-type": download
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
       "content-disposition": download
         ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-        : embed
+        : embedded
           ? "inline"
           : previewDisposition(name || "", contentType),
       "x-content-type-options": "nosniff",

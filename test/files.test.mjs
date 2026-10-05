@@ -542,10 +542,33 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
   assert.equal(preview.headers.get("content-security-policy"), "sandbox");
 
-  const embed = await call(new Request(api("/embed?path=%2Flogo.svg")));
-  assert.equal(embed.status, 200);
-  assert.equal(embed.headers.get("content-type"), "image/svg+xml");
-  assert.equal(embed.headers.get("content-disposition"), "inline");
+  // The page's own <img> asks for the embed URL, and says so with
+  // Sec-Fetch-Dest: the bytes come back inline, under the same two safety
+  // headers the preview carries.
+  for (const destination of ["image", "video", "audio"]) {
+    const embed = await call(
+      new Request(api("/embed?path=%2Flogo.svg"), {
+        headers: { "sec-fetch-dest": destination },
+      }),
+    );
+    assert.equal(embed.status, 200, destination);
+    assert.equal(embed.headers.get("content-type"), "image/svg+xml", destination);
+    assert.equal(embed.headers.get("content-disposition"), "inline", destination);
+    assert.equal(embed.headers.get("x-content-type-options"), "nosniff", destination);
+    assert.equal(embed.headers.get("content-security-policy"), "sandbox", destination);
+  }
+
+  // A navigation to the embed URL is not an embed: it falls back to the
+  // direct-open preview, so the embed URL is never a way around the download.
+  for (const request of [
+    new Request(api("/embed?path=%2Flogo.svg")),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "document" } }),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "iframe" } }),
+  ]) {
+    const opened = await call(request);
+    assert.equal(opened.status, 200);
+    assert.equal(opened.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  }
 
   // A raster picture and a PDF keep opening inline from the direct-open URL:
   // they cannot render a document with navigable links.
@@ -565,7 +588,22 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
   assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
   assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
+  // previewContentType() normalizes the stored type, so a parameter, a case
+  // change or padding cannot slip an SVG past the attachment branch.
+  for (const claimed of ["image/svg+xml; charset=utf-8", "IMAGE/SVG+XML", " image/svg+xml "]) {
+    assert.equal(
+      previewDisposition("logo.svg", claimed),
+      'attachment; filename="logo.svg"',
+      claimed,
+    );
+  }
+  // A filename that could end the quoted-string, or carry a header-breaking
+  // control character, is stripped before it reaches the header.
   assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
+  assert.equal(
+    previewDisposition("a\r\nb.svg", "image/svg+xml"),
+    'attachment; filename="a--b.svg"',
+  );
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
