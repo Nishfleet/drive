@@ -28,23 +28,33 @@ const pages = readdirSync(publicDir)
     text: readFileSync(new URL(name, publicDir), "utf8"),
   }));
 
+// The address every template footer names (drive#522), so the gates below
+// read every sentence a customer can be sent.
+const REPLY_TO = "support@drive.example";
+
 /** @param {string} kind */
 function dataFor(kind) {
-  if (kind === "welcome") return {};
-  if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12 };
-  if (kind === "payment-failed") return { amountUsd: 23.5 };
+  if (kind === "welcome") return { replyTo: REPLY_TO };
+  if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12, replyTo: REPLY_TO };
+  if (kind === "payment-failed") return { amountUsd: 23.5, replyTo: REPLY_TO };
   if (kind === "monthly-receipt") {
-    return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true };
+    return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true, replyTo: REPLY_TO };
   }
   if (kind === "account-closed" || kind === "account-close-reminder") {
-    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
+    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov", replyTo: REPLY_TO };
   }
+  if (kind === "files-deleted") return { purgedOn: "3 Nov", graceDays: 30, replyTo: REPLY_TO };
   // drive#586: the prepaid emails, both auto top-up states, so the gates
   // read every sentence a customer can be sent.
-  if (kind === "top-up-receipt") return { amountUsd: 25, balanceUsd: 31.5, auto: true };
-  if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null };
+  if (kind === "top-up-receipt")
+    return { amountUsd: 25, balanceUsd: 31.5, auto: true, replyTo: REPLY_TO };
+  if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null, replyTo: REPLY_TO };
   if (kind === "device-approve-notice") {
-    return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+    return {
+      deviceName: "office laptop",
+      requestedAt: "2026-10-05T12:00:00.000Z",
+      replyTo: REPLY_TO,
+    };
   }
   throw new Error(`no test data for ${kind}`);
 }

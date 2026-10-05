@@ -81,6 +81,11 @@ export default defineConfig({
       triggers.scheduled({ schedule: "5 * * * *" }),
       triggers.scheduled({ schedule: "0 4 * * *" }),
       triggers.scheduled({ schedule: "0 3 * * *" }),
+      // The account close cron, on its own trip (drive#522, CLOSE_SCHEDULE
+      // in src/account-close.js). It used to share the 04:00 reconcile's
+      // trigger, which gave a metering failure one blast radius big enough to
+      // delay every close receipt, reminder and purge behind it.
+      triggers.scheduled({ schedule: "0 5 * * *" }),
     ],
     env: {
       ASSETS: bindings.assets(),

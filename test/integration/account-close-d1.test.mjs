@@ -94,10 +94,38 @@ test("the purge cursor is written mid-purge, read by a fresh store, and cleared 
   assert.equal(row.purged_at, null);
   assert.equal(row.purge_cursor, "/f-0999.txt");
 
+  const reader = createD1DeviceStore(db, { now: clock.now });
+  // An account whose day-0 receipt never landed is not due for its purge
+  // (drive#522). Deleting the files before the person was ever told the
+  // account was closing is the one outcome the gate exists to prevent, so
+  // this is proved against the real schema rather than the fake store.
+  const silent = { id: "acct_silent", email: "silent@example.com" };
+  await writer.closeAccount(silent, START_MS / 1000);
+  const cutoff = START_MS / 1000 + 30 * 24 * 60 * 60;
+  const stillDue = await reader.listDuePurge(cutoff);
+  assert.ok(
+    !stillDue.some((entry) => entry.id === silent.id),
+    "a closed account whose receipt never landed is not due for its purge",
+  );
+  const blocked = await reader.listBlockedPurge(cutoff);
+  assert.ok(
+    blocked.some((entry) => entry.id === silent.id),
+    "the same account is reported as blocked, so the cron can name it",
+  );
+  // Once the receipt lands, the same account becomes due.
+  await writer.markCloseMailSent(silent.id, START_MS / 1000 + 5);
+  const nowDue = await reader.listDuePurge(cutoff);
+  assert.ok(
+    nowDue.some((entry) => entry.id === silent.id),
+    "sending the receipt makes the account due for its purge",
+  );
+  const stillBlocked = await reader.listBlockedPurge(cutoff);
+  assert.ok(!stillBlocked.some((entry) => entry.id === silent.id));
+
   // Night two's isolate reads the same boundary and resumes after it. The
   // account is due 30 days after its close, so the cutoff is close + 30d.
-  const reader = createD1DeviceStore(db, { now: clock.now });
-  const due = await reader.listDuePurge(START_MS / 1000 + 30 * 24 * 60 * 60);
+  await writer.markCloseMailSent(account.id, START_MS / 1000 + 5);
+  const due = await reader.listDuePurge(cutoff);
   const seen = due.find((entry) => entry.id === account.id);
   assert.ok(seen, "the closed account is due for its purge");
   assert.equal(seen.purgeCursor, "/f-0999.txt");

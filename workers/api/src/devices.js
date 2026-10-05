@@ -430,6 +430,14 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Closed accounts whose files are due to be deleted (drive#522).
+   *
+   * Only accounts whose required notices actually landed are returned: the
+   * day-0 receipt must have been sent, or deleting the files would destroy
+   * someone's data without ever telling them the account was closing. The
+   * reminder is not required to purge, because a failed reminder is a
+   * delivery problem the receipt pass already retries — blocking a purge on
+   * it would keep data alive forever behind a mail outage.
    * @param {number} atSeconds
    */
   async function listDuePurge(atSeconds) {
@@ -439,6 +447,31 @@ export function createD1DeviceStore(db, options = {}) {
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
+           AND close_mail_sent_at IS NOT NULL
+           AND closed_at <= ?1
+         LIMIT ?2`,
+      atSeconds,
+      CLOSE_CRON_LIMIT,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * Accounts past the grace window whose day-0 receipt never landed, so the
+   * close pass can skip them out loud rather than deleting the files in
+   * silence (drive#522). The receipt pass retries the same rows; this list is
+   * what the alert names, because "skipped" is the state a person needs to
+   * see.
+   * @param {number} atSeconds
+   */
+  async function listBlockedPurge(atSeconds) {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND purged_at IS NULL
+           AND close_mail_sent_at IS NULL
            AND closed_at <= ?1
          LIMIT ?2`,
       atSeconds,
@@ -1033,6 +1066,7 @@ export function createD1DeviceStore(db, options = {}) {
     cancelClose,
     listDueReminder,
     listDuePurge,
+    listBlockedPurge,
     listDueCloseMail,
     markReminderSent,
     markCloseMailSent,

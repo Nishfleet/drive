@@ -12,6 +12,7 @@ import { createD1QueueStore } from "../workers/api/src/queues.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
+  CLOSE_SCHEDULE,
   handleCloseCancelRequest,
   handleCloseRequest,
   handleCloseStatusRequest,
@@ -988,13 +989,11 @@ export default {
     // `reconcileMeter` scopes it per account, so the provider listing never
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
-      // The account close cron is its own waitUntil (drive#565), registered
-      // before the reconcile runs: a reconcileMeter throw used to leave every
-      // close receipt, reminder and purge undone for that night, and the
-      // purge is resumable now, so the two trips have nothing to say to each
-      // other. Its own per-account catches mean only a whole-cron failure
-      // (D1 down) rejects here, and a failed trigger is the honest signal
-      // for that: the next night retries everything it did not finish.
+      // The account close cron no longer rides this trip (drive#522): it has
+      // its own schedule and its own branch below, so a reconcileMeter, prune
+      // or size-record failure here cannot leave every close receipt,
+      // reminder and purge undone for that night. The purge is resumable, so
+      // the next night finishes whatever did not.
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       // Retention (drive issue #564): the reconciler has finished its
       // repairs, so the prune sees the row set the provider listings have
@@ -1013,21 +1012,6 @@ export default {
             `${new Date(pruned.cutoff).toISOString()}`,
         );
       }
-      if (env.DRIVE_DB) {
-        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        context.waitUntil(
-          runAccountCloseCron({
-            db: env.DRIVE_DB,
-            devices: createD1DeviceStore(env.DRIVE_DB),
-            store,
-            email: env.EMAIL,
-            mailFrom: secrets.MAIL_FROM ?? "",
-            now: event.scheduledTime,
-          }).catch((error) => {
-            throw new Error(`the account close cron failed: ${error.message}`);
-          }),
-        );
-      }
       // The nightly size row (drive issue #564): the growth numbers the
       // spec's decision watches, written to nightly_sizes and printed here,
       // where an operator reading Worker logs sees one line a day. Awaited
@@ -1039,6 +1023,26 @@ export default {
           `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
           `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
       );
+      return;
+    }
+    // The account close cron, on its own trip (drive#522, CLOSE_SCHEDULE).
+    // Awaited, not a waitUntil: this trip exists to run this job and nothing
+    // else, so there is no other work for the isolate to stay alive for, and
+    // a failure has to fail the trigger for Cloudflare to retry the night's
+    // work rather than disappear into a background promise.
+    if (event.cron === CLOSE_SCHEDULE) {
+      if (!env.DRIVE_DB) {
+        throw new Error("the account close cron needs the drive database");
+      }
+      const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+      await runAccountCloseCron({
+        db: env.DRIVE_DB,
+        devices: createD1DeviceStore(env.DRIVE_DB),
+        store,
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        now: event.scheduledTime,
+      });
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

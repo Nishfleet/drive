@@ -53,6 +53,7 @@ import {
   versionGbMinutesInHour,
   versionLifetimeMinutes,
 } from "../src/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -2317,7 +2318,11 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.equal(METER_CRON, "5 * * * *");
   assert.equal(METER_RECONCILE_SCHEDULE, "0 4 * * *");
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *");
-  const schedules = [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE];
+  // The account close cron runs on its own trip (drive#522). It used to share
+  // the reconciler's trigger, so one metering failure could leave every close
+  // receipt, reminder and purge undone behind it.
+  assert.equal(CLOSE_SCHEDULE, "0 5 * * *");
+  const schedules = [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, CLOSE_SCHEDULE];
   assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
   assert.notEqual(
@@ -2326,6 +2331,7 @@ test("the cron trigger the config declares is the one the meter exports", () => 
     "the two nightly walks do not share a trip",
   );
   assert.notEqual(METER_RECONCILE_SCHEDULE, METER_CRON, "the reconciler is not the hourly rollup");
+  assert.notEqual(CLOSE_SCHEDULE, METER_RECONCILE_SCHEDULE, "the close cron is not the reconciler");
   // The config spells the same three strings the modules export, so a changed
   // schedule cannot drift from the trigger that runs it: src/index.js tells
   // the three trips apart by the cron string the platform hands it.
@@ -2342,8 +2348,8 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.deepEqual(
     declared,
-    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE],
-    "cloudflare.config.ts declares the schedules the meter and the index export",
+    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, CLOSE_SCHEDULE],
+    "cloudflare.config.ts declares the schedules the meter, the index and the close cron export",
   );
 
   // The gate that stops drive#432 coming back: an import of the Worker's own
