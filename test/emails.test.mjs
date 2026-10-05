@@ -18,6 +18,7 @@ import {
 } from "../src/email-send.js";
 import {
   capWarningTemplate,
+  chargeReceiptTemplate,
   DEFAULT_CAP_USD,
   EMAIL_KINDS,
   FROM_NAME,
@@ -29,7 +30,6 @@ import {
   SAVED_COPY,
   savedLine,
   welcomeTemplate,
-  chargeReceiptTemplate,
 } from "../src/emails.js";
 
 // The deployment's sending address, set per deployment (the sending domain is

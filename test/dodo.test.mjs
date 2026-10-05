@@ -294,12 +294,13 @@ test("a push that spans the month boundary bills each month on its own", async (
     fetch: recorder.fetch,
     now: october + HOUR_MS,
   });
-  assert.equal(recorder.calls.length, 1, "September rolls under $5; October crosses the charge line");
-  assert.equal(recorder.calls[0].payload.events.length, 1);
   assert.equal(
-    recorder.calls[0].payload.events[0].event_id,
-    billingEventId(ACCOUNT, october),
+    recorder.calls.length,
+    1,
+    "September rolls under $5; October crosses the charge line",
   );
+  assert.equal(recorder.calls[0].payload.events.length, 1);
+  assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, october));
   assert.equal(
     recorder.calls[0].payload.events[0].metadata.amount_units,
     septemberBill.totalCents + octoberBill.totalCents,
@@ -474,7 +475,11 @@ test("the hourly cron pushes the hour it just rolled", async () => {
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
     { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
   );
-  assert.equal(recorder.calls.length, 0, "one hour of 1 GB is under $5, so the card is not charged");
+  assert.equal(
+    recorder.calls.length,
+    0,
+    "one hour of 1 GB is under $5, so the card is not charged",
+  );
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
 });
 
@@ -736,6 +741,7 @@ test("the skip path still returns rather than throwing, missing key or not", asy
 });
 
 test("a $5 charge mails the receipt, and month-end mails a statement with no charge", async () => {
+  /** @type {unknown[]} */
   const sent = [];
   const email = {
     sent,
@@ -748,7 +754,14 @@ test("a $5 charge mails the receipt, and month-end mails a statement with no cha
   const { db } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   const chargedHour = midnight();
-  await recordUsage(db, ACCOUNT, chargedHour, 250 * 43800, 250 * BYTES_PER_GB, chargedHour + HOUR_MS);
+  await recordUsage(
+    db,
+    ACCOUNT,
+    chargedHour,
+    250 * 43800,
+    250 * BYTES_PER_GB,
+    chargedHour + HOUR_MS,
+  );
   await pushBillingHours(db, [chargedHour], {
     apiKey: KEY,
     fetch: recordingFetch().fetch,

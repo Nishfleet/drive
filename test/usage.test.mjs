@@ -283,7 +283,14 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   // A summary object that is missing one of the four labels it prints is not a
   // summary: it used to print "Stored GB now: undefined", which the test name
   // above promises can never happen. Each key is named when it is missing.
-  for (const key of ["storedNow", "gbMonths", "downloads", "cost", "runningBalance", "chargeLine"]) {
+  for (const key of [
+    "storedNow",
+    "gbMonths",
+    "downloads",
+    "cost",
+    "runningBalance",
+    "chargeLine",
+  ]) {
     /** @type {Record<string, string>} */
     const labels = {
       storedNow: "400 GB",

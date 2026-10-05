@@ -18,7 +18,9 @@ test("the real migrations add the four nullable charge-threshold columns", () =>
   );
   const { sqlite } = makeMeteredDB();
   for (const name of ["unpaid_cents", "unpaid_since", "payment_failed_at", "card_fail_purge_at"]) {
-    const row = sqlite.prepare("SELECT * FROM pragma_table_info('accounts') WHERE name = ?1").get(name);
+    const row = sqlite
+      .prepare("SELECT * FROM pragma_table_info('accounts') WHERE name = ?1")
+      .get(name);
     assert.ok(row, `accounts.${name} is missing`);
     assert.equal(row.notnull, 0, `accounts.${name} must stay nullable so old rows keep serving`);
     assert.equal(row.dflt_value, null, `accounts.${name} has no default`);

@@ -57,6 +57,7 @@ test("the nightly walk warns at 30 days and stamps deletion at 60 without touchi
     )
     .bind("acct-fail", "fail@example.com", failedAt * 1000, 499, failedAt)
     .run();
+  /** @type {unknown[]} */
   const sent = [];
   const email = {
     sent,
