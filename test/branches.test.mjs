@@ -1283,6 +1283,68 @@ test("a pre-charge account at 900 GB cannot branch a 200 GB folder", async () =>
 
 // --------------------------------------------------- the create limiter (#553)
 
+test("branch bytes already held count toward the pre-charge limit", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // An unpaid account 900 GB into the 1 TB pre-charge limit makes one small
+  // branch, then that branch's own listing reports 200 GB. A 1 GB create sits
+  // at 901 GB on its own and would pass; with the branch's 200 GB counted it is
+  // over. Branch copies are written without withIndex, so the guard's index
+  // read cannot see them: this is the store sum that catches them, and the
+  // discard control below shows the same create passes once they are gone.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 900 * GB, 1);
+  const held = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "held",
+  });
+  assert.equal(held.state, "open");
+  const branchBytes = 200 * GB;
+  const folderBytes = 1 * GB;
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../src/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      // One file under the branch reports 200 GB, and the folder about to be
+      // branched reports 1 GB; no such bytes exist here.
+      return entries.map((entry) => {
+        if (entry.name !== "a.txt") {
+          return entry;
+        }
+        if (path.startsWith(`${BRANCHES_ROOT}/`)) {
+          return { ...entry, size: branchBytes };
+        }
+        if (path === "/Photos") {
+          return { ...entry, size: folderBytes };
+        }
+        return entry;
+      });
+    },
+  };
+  const blocked = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(blocked.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(blocked.status, 403);
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
+  // The branch's bytes were the whole difference: discard it and the same
+  // create is 901 GB, under the limit, and lands.
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "held");
+  const allowed = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(allowed.state, "open");
+});
+
 test("the branch route limits a create and fails closed without a limiter", async () => {
   const { raw, db, snapshots } = await driven();
   const create = () =>
