@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-05
 
+- Prepaid balance: add $10 or more, and storage and downloads are drawn
+  from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
+  balance never expires. Nothing is charged to your card after use. The
+  account page shows the balance, top-up, auto top-up and recent lines.
 - An agent key the app makes for you is capped at the published $20 a month,
   not the $12 an old schema default had been setting on its row. The daily
   count also adds each request in the database itself, so a tool sending many

@@ -163,6 +163,11 @@ function drive() {
     open: (links, at) =>
       handleShareFileRequest(new Request(api(`${SHARE_LINK_PREFIX}/${TOKEN}`)), files, links, {
         now: at,
+        ipLimiter: {
+          async limit() {
+            return { success: true };
+          },
+        },
       }),
   };
 }

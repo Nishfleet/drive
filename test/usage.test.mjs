@@ -34,7 +34,7 @@ import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
-import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -376,6 +376,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     account,
   ).json();
   assert.deepEqual(Object.keys(body).sort(), [
+    "balanceLine",
     "billCents",
     "billUsd",
     "cap",
@@ -405,6 +406,15 @@ test("the upload line rides the usage answer beside capLine", async () => {
   ).json();
   assert.equal(reported.uploadLine, uploadProgress(queue).label);
   assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.equal(body.balanceLine, null, "no balance store means no balance line");
+  // The prepaid balance line (drive#586) rides beside the cap line as given.
+  const withBalance = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    "Balance $1.50. Top up to keep adding files.",
+  ).json();
+  assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
   assert.throws(
     () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
     TypeError,
@@ -1080,7 +1090,9 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // poll reads the same row and renders it into `uploadLine`. The line is the
   // one word table's (src/status.js UPLOAD_LABEL), so the page, the first-run
   // page and `drive status` all say the same sentence about the same queue.
-  const made = createTestAuth();
+  // The full schema: /api/usage reads the account's metered month (drive#496),
+  // and that month lives in 0005_meter's usage_minutes.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie, account: signedInAccount } = await signIn(made, "usage@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -1149,7 +1161,7 @@ test("the usage read ignores the retired founding column on the account's row", 
   // Every account reads the one price. The accounts row still carries the
   // retired founding column (drive#586), and the read neither uses it nor
   // reports it: the bill is the same with the column null, 0 or 1.
-  const made = createTestAuth();
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie, account: signedInAccount } = await signIn(made, "one-price@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },

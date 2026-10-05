@@ -20,6 +20,7 @@ import {
   createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
+  FILES_EMBED_ENDPOINT,
   FILES_ENDPOINT,
   FILES_PATH,
   fileKind,
@@ -36,6 +37,7 @@ import {
   parseTrashName,
   previewContentType,
   previewCopy,
+  previewDisposition,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
@@ -53,6 +55,12 @@ import {
 } from "../src/files.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import {
+  computeHiddenAt,
+  decodeEntities,
+  nextVersionMarkers,
+  versionMarkers,
+} from "../src/s3-listing.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
@@ -521,6 +529,89 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   );
 });
 
+test("preview: an SVG leaves the direct-open URL as a download and the embed URL as a picture", async () => {
+  // drive#657: a top-level open of the preview URL must not render an SVG as a
+  // document on our address, because its links navigate and a fake sign-in card
+  // can hand the visitor to an attacker. The page's own <img> reads the embed
+  // URL instead, which still serves the same bytes inline.
+  const { call, upload } = drive();
+  await upload(
+    "/",
+    "logo.svg",
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="https://evil.test">Sign in</a></svg>',
+    "image/svg+xml",
+  );
+  const preview = await call(new Request(api("/preview?path=%2Flogo.svg")));
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "image/svg+xml");
+  assert.equal(preview.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(preview.headers.get("content-security-policy"), "sandbox");
+
+  // The page's own <img> asks for the embed URL, and says so with
+  // Sec-Fetch-Dest: the bytes come back inline, under the same two safety
+  // headers the preview carries.
+  for (const destination of ["image", "video", "audio"]) {
+    const embed = await call(
+      new Request(api("/embed?path=%2Flogo.svg"), {
+        headers: { "sec-fetch-dest": destination },
+      }),
+    );
+    assert.equal(embed.status, 200, destination);
+    assert.equal(embed.headers.get("content-type"), "image/svg+xml", destination);
+    assert.equal(embed.headers.get("content-disposition"), "inline", destination);
+    assert.equal(embed.headers.get("x-content-type-options"), "nosniff", destination);
+    assert.equal(embed.headers.get("content-security-policy"), "sandbox", destination);
+  }
+
+  // A navigation to the embed URL is not an embed: it falls back to the
+  // direct-open preview, so the embed URL is never a way around the download.
+  for (const request of [
+    new Request(api("/embed?path=%2Flogo.svg")),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "document" } }),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "iframe" } }),
+  ]) {
+    const opened = await call(request);
+    assert.equal(opened.status, 200);
+    assert.equal(opened.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  }
+
+  // A raster picture and a PDF keep opening inline from the direct-open URL:
+  // they cannot render a document with navigable links.
+  await upload("/", "holiday.jpg", "the-bytes", "image/jpeg");
+  await upload("/", "report.pdf", "%PDF-1.4", "application/pdf");
+  for (const [name, type] of [
+    ["holiday.jpg", "image/jpeg"],
+    ["report.pdf", "application/pdf"],
+  ]) {
+    const opened = await call(new Request(api(`/preview?path=%2F${name}`)));
+    assert.equal(opened.headers.get("content-type"), type, name);
+    assert.equal(opened.headers.get("content-disposition"), "inline", name);
+  }
+  // The rule, as a function: only the type a browser renders as a document
+  // leaves as an attachment.
+  assert.equal(previewDisposition("logo.svg", "image/svg+xml"), 'attachment; filename="logo.svg"');
+  assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
+  assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
+  assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
+  // previewContentType() normalizes the stored type, so a parameter, a case
+  // change or padding cannot slip an SVG past the attachment branch.
+  for (const claimed of ["image/svg+xml; charset=utf-8", "IMAGE/SVG+XML", " image/svg+xml "]) {
+    assert.equal(
+      previewDisposition("logo.svg", claimed),
+      'attachment; filename="logo.svg"',
+      claimed,
+    );
+  }
+  // A filename that could end the quoted-string, or carry a header-breaking
+  // control character, is stripped before it reaches the header.
+  assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
+  assert.equal(
+    previewDisposition("a\r\nb.svg", "image/svg+xml"),
+    'attachment; filename="a--b.svg"',
+  );
+});
+
 test("upload: the bytes land in the folder it was sent to", async () => {
   const { upload, scoped } = drive();
   const response = await upload("/Photos", "holiday.jpg", "the-bytes", "image/jpeg");
@@ -724,6 +815,9 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     write: async () => {
       throw new Error("storage write failed with 503");
     },
+    writeIfAbsent: async () => {
+      throw new Error("storage write failed with 503");
+    },
     remove: async () => {},
     removeBatch: async () => {
       throw new Error("storage batch delete failed with 503");
@@ -822,9 +916,9 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
 test("a real S3 ListObjectVersions becomes version rows", () => {
   // The shape a versioned S3 bucket answers (iDrive e2 and B2 both speak it):
   // two versions of one key newest first, and a delete marker that ended
-  // another key's latest version. The reconciler reads created_at -> hidden_at,
-  // so the older version is hidden when the newer one began, and the marker's
-  // key is hidden when the marker landed.
+  // another key's latest version. The page scan reads the rows; the stops are
+  // one pass over the whole list, because the pair that ends a version can sit
+  // on different pages (drive issue #504).
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>drive</Name><Prefix>u/1/</Prefix>
@@ -837,8 +931,15 @@ test("a real S3 ListObjectVersions becomes version rows", () => {
   <DeleteMarker><Key>u/1/gone.txt</Key><VersionId>d1</VersionId><IsLatest>true</IsLatest>
     <LastModified>2026-09-30T11:00:00.000Z</LastModified></DeleteMarker>
 </ListVersionsResult>`;
-  const versions = parseListVersions(xml);
-  assert.equal(versions.length, 3);
+  const rows = parseListVersions(xml);
+  assert.equal(rows.length, 3);
+  assert.ok(
+    rows.every((row) => row.hiddenAt === null),
+    "one page alone cannot know a version's stop",
+  );
+  const versions = computeHiddenAt(rows, versionMarkers(xml));
+  assert.notEqual(versions[0], rows[0], "the pass returns new rows and leaves the scan alone");
+  assert.equal(rows[0].hiddenAt, null, "the scan's own row is untouched");
   const newest = versions.find((version) => version.b2FileId === "v2");
   assert.ok(newest);
   assert.equal(newest.hiddenAt, null, "the newest version of its key is still live");
@@ -869,6 +970,98 @@ test("a real S3 ListObjectVersions becomes version rows", () => {
       ),
     /key, a version id or a time/,
   );
+});
+
+test("one decode pass reads every entity an S3 listing carries", () => {
+  // The five named entities the XML spec predefines, plus the numeric forms
+  // servers answer with for the same characters (MinIO, rclone serve s3 and
+  // iDrive e2 each use both).
+  assert.equal(decodeEntities("u/1/holiday.jpg"), "u/1/holiday.jpg");
+  assert.equal(decodeEntities("u/1/a&amp;b.txt"), "u/1/a&b.txt");
+  assert.equal(decodeEntities("u/1/a&lt;b&gt;c.txt"), "u/1/a<b>c.txt");
+  assert.equal(decodeEntities("u/1/&quot;q&quot;.txt"), 'u/1/"q".txt');
+  assert.equal(decodeEntities("u/1/s&amp;apos;t.txt"), "u/1/s&apos;t.txt");
+  assert.equal(decodeEntities("u/1/s&apos;t&#39;u&#x27;v.txt"), "u/1/s't'u'v.txt");
+  // One pass, not a chain of replaces: `&amp;lt;` is the key text `&lt;`, not
+  // `<`, and the api Worker's old chain of replaces decoded it twice.
+  assert.equal(decodeEntities("u/1/a&amp;lt;b"), "u/1/a&lt;b");
+  assert.equal(decodeEntities("u/1/&NotAnEntity;"), "u/1/&NotAnEntity;");
+});
+
+test("the page markers of a version listing decode with the rows", () => {
+  // What S3 answers for the next page of a listing whose key carries an
+  // ampersand. The store sends the marker back as it came, so it must read
+  // back as the key the account wrote.
+  const xml = `<ListVersionsResult>
+    <NextKeyMarker>u/1/a&amp;b</NextKeyMarker>
+    <NextVersionIdMarker>v2</NextVersionIdMarker>
+  </ListVersionsResult>`;
+  assert.deepEqual(nextVersionMarkers(xml), { keyMarker: "u/1/a&b", versionMarker: "v2" });
+  const last = "<ListVersionsResult></ListVersionsResult>";
+  assert.deepEqual(nextVersionMarkers(last), { keyMarker: "", versionMarker: "" });
+});
+
+test("a key with & < > ' round-trips the S3 store's list, read and delete", async () => {
+  // Drive issue #504, the bug: the key was answered escaped, the page showed
+  // the escaped text, and the read and delete that followed it asked S3 for a
+  // key that does not exist. Every step below goes through one fake bucket
+  // that answers exactly the XML a real one answers.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const name = "a&b <c> 'd'.txt";
+  const key = `u/acct/${name}`;
+  const escapedKey = "u/acct/a&amp;b &lt;c&gt; &apos;d&#39;.txt";
+  const listing = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>drive</Name><Prefix>u/acct/</Prefix>
+  <Contents><Key>${escapedKey}</Key><Size>5</Size>
+    <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
+</ListBucketResult>`;
+  /** @type {string[]} */
+  const asked = [];
+  let body = "";
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init) => {
+    asked.push(`${String(url)}|${init?.method ?? "GET"}`);
+    const address = new URL(String(url));
+    if (address.searchParams.has("list-type")) {
+      return new Response(listing, { status: 200 });
+    }
+    if (init?.method === "PUT") {
+      body = "hello";
+      return new Response("", { status: 200 });
+    }
+    if (init?.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(body.length) },
+    });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: /** @type {typeof fetch} */ (/** @type {unknown} */ (fetchImpl)),
+  });
+  const driveStore = scopeStore(store, { id: "acct" });
+  await driveStore.write(`/${name}`, "hello", "text/plain");
+  const entries = await driveStore.list("/");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].name, name, "the listing shows the name that was written");
+  assert.equal(entries[0].path, `/${name}`);
+  const read = await driveStore.read(`/${name}`);
+  assert.ok(read, "the decoded name reads its own bytes");
+  assert.equal(read.size, 5);
+  await driveStore.remove(`/${name}`);
+  const objectCalls = asked.filter((call) => !call.includes("list-type"));
+  assert.equal(objectCalls.length, 3, "write, read and delete");
+  for (const call of objectCalls) {
+    assert.equal(
+      decodeURIComponent(new URL(call.split("|")[0]).pathname),
+      `/drive/${key}`,
+      `the URL names the key decoded: ${call}`,
+    );
+  }
 });
 
 test("the in-memory store keeps the version history the reconciler reads", async () => {
@@ -986,6 +1179,41 @@ test("an unsigned write sends the stream as it is, without buffering it", async 
   assert.equal(sent, stream);
 });
 
+test("a missing bucket answers an empty listing, not a 500 (drive#540)", async () => {
+  // The account's bucket is created at its sign-in verify (drive#540), and an
+  // account from before that existed has none until a key mint makes one. The
+  // Files page reads it as an empty folder: S3 answers a missing bucket 404
+  // (NoSuchBucket) and a missing folder 200 with no keys, so a 404 on a list
+  // is always the bucket.
+  const { createS3Store } = await import("../src/files.js");
+  const notFound = `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async () => new Response(notFound, { status: 404 });
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl,
+  });
+  assert.deepEqual(await store.list("u/acct-1"), []);
+  assert.deepEqual(await store.listPage("u/acct-1"), { entries: [], nextCursor: null });
+  assert.deepEqual(await store.listAll("u/acct-1"), []);
+  // A non-404 refusal is still named, never read as empty.
+  const refused = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl: async () =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`,
+        { status: 403 },
+      ),
+  });
+  await assert.rejects(refused.list("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listPage("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
+});
+
 test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
@@ -1084,6 +1312,109 @@ test("the Files page names the same bucket the key provider mints into", () => {
   assert.equal(storageBucketForKey("u/v7Bp7HwejiE6XHOT/photos/x.jpg"), "drv-v7bp7hwejie6xhot");
   assert.throws(() => storageBucketForKey("note.txt"), /u\/<accountId>/);
   assert.throws(() => storageBucketForKey("../x"), /u\/<accountId>/);
+});
+
+test("the S3 store's create-only write sends If-None-Match and reads 412 as the one loss", async () => {
+  // drive#644. The create-only PUT is the stock conditional write: a request
+  // that carries If-None-Match: *, answered 412 Precondition Failed by an
+  // endpoint that enforces it when the key is already there. The fake storage
+  // answers both halves: the first call creates, the second is refused.
+  /** @type {{method: string, key: string, headers: Record<string, string>}[]} */
+  const seen = [];
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    /** @type {Record<string, string>} */
+    const headers = {};
+    for (const [name, value] of Object.entries(init.headers ?? {})) {
+      headers[String(name).toLowerCase()] = String(value);
+    }
+    seen.push({ method, key, headers });
+    if (method === "PUT") {
+      if (objects.has(key)) {
+        return new Response(
+          '<?xml version="1.0" encoding="UTF-8"?><Error><Code>PreconditionFailed</Code>' +
+            "<Message>At least one of the pre-conditions you specified did not hold</Message></Error>",
+          { status: 412 },
+        );
+      }
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+  const s3 = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+
+  // The absent key is created, and the header rides the PUT.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(seen[0].headers["if-none-match"], "*");
+  assert.equal(seen[0].headers["content-type"], "text/plain");
+
+  // A key that is already there answers false, not an error.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), false);
+  const readBack = await s3.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the winning write is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "first");
+
+  // A storage failure is still a failure, not a silent loss.
+  const failing = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response("boom", { status: 500 }),
+  });
+  await assert.rejects(
+    () => failing.writeIfAbsent("u/acct-1/x.txt", "b", "text/plain"),
+    /storage write failed with 500/,
+  );
+});
+
+test("an S3 endpoint that ignores If-None-Match overwrites, and that is what the store reports", async () => {
+  // drive#644, the measured half of the contract. `rclone serve s3` v1.75.1
+  // answers 200 to a PUT with If-None-Match: * on a key that is already there
+  // (measured on the build host, 2026-10-05), so on such an endpoint the
+  // header cannot detect the loss and this store answers `true` for a create
+  // that was in fact an overwrite. That is documented on the store and it is
+  // why the caller pre-checks the name first; it is pinned here so a future
+  // change cannot quietly turn the degraded path into a promised one.
+  /** @type {Map<string, string>} */
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    if (init.method === "PUT") {
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    return stored === undefined
+      ? new Response("no key", { status: 404 })
+      : new Response(stored, { status: 200, headers: { "content-type": "text/plain" } });
+  };
+  const ignoring = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(await ignoring.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), true);
+  const readBack = await ignoring.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the overwrite is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "second");
 });
 
 /**
@@ -1485,6 +1816,7 @@ test("the page's script reads the same endpoints and the same window", () => {
   assert.ok(page.includes(`const FILES_ENDPOINT = "${FILES_ENDPOINT}";`));
   for (const [name, endpoint] of [
     ["PREVIEW_ENDPOINT", `${FILES_ENDPOINT}/preview`],
+    ["EMBED_ENDPOINT", FILES_EMBED_ENDPOINT],
     ["DOWNLOAD_ENDPOINT", `${FILES_ENDPOINT}/download`],
     ["UPLOAD_ENDPOINT", `${FILES_ENDPOINT}/upload`],
     ["DELETE_ENDPOINT", `${FILES_ENDPOINT}/delete`],

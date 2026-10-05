@@ -13,6 +13,7 @@ import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
+  indexAccounts,
   MAX_LIMIT,
   MAX_WORDS,
   parseQuery,
@@ -71,7 +72,11 @@ const errorOf = (parsed) => ("error" in parsed ? parsed.error : undefined);
  */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
+  for (const name of [
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0010_accounts_devices.sql",
+  ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   /** The D1 meta a run answers with: every required field of the runtime's
@@ -810,6 +815,15 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   // Two files the write path never touched, one per account.
   await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", new Blob(["x"]).stream(), "text/plain");
   await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", new Blob(["x"]).stream(), "text/plain");
+  // The nightly walk lists the accounts table (drive issue #564), so the
+  // test signs both accounts up the way production does - the drive serves
+  // accounts that exist, and a walk before sign-up has nothing to walk.
+  for (const account of [ACCOUNT, ACCOUNT_B]) {
+    await db
+      .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+      .bind(account.id, `${account.id}@drive.test`)
+      .run();
+  }
 
   /** @type {Promise<unknown>[]} */
   const waits = [];
@@ -868,6 +882,58 @@ test("scheduled throws on an unknown cron and does not start the reindex", async
     /unknown cron/,
   );
   assert.equal(waits.length, 0, "an unknown cron must not queue the reindex");
+});
+
+test("the nightly walk's account list is the accounts table, versions or not", async () => {
+  // The list once read the index's own DISTINCT account ids, which grew with
+  // every row ever indexed and was blind to an account whose files are all
+  // deleted (drive issue #564). The accounts table is the one list of who the
+  // drive serves: an account that signed up and never indexed anything still
+  // gets its (empty, one-listing) walk, and an index row without an account
+  // row is not an account.
+  const db = makeD1();
+  assert.deepEqual(await indexAccounts(db), [], "no accounts, no walk");
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-quiet", "quiet@drive.test")
+    .run();
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-loud", "loud@drive.test")
+    .run();
+  await db
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(
+      "acc-loud",
+      "/loud/file.txt",
+      "file.txt",
+      "/loud",
+      1,
+      "2026-09-30T00:00:00.000Z",
+      "2026-09-30T00:00:00.000Z",
+    )
+    .run();
+  // An index row whose account row is gone (a deleted account's rows outlive
+  // it until the index catches up) names no walk.
+  await db
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(
+      "acc-orphan",
+      "/orphan/file.txt",
+      "file.txt",
+      "/orphan",
+      1,
+      "2026-09-30T00:00:00.000Z",
+      "2026-09-30T00:00:00.000Z",
+    )
+    .run();
+  assert.deepEqual(await indexAccounts(db), [{ id: "acc-loud" }, { id: "acc-quiet" }]);
 });
 
 test("the deployed cron schedule is the one the module names", () => {

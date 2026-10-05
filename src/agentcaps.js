@@ -151,7 +151,7 @@ function checkedUsd(value, name) {
  * call usageSummary() makes.
  *
  * @param {{
- *   usage: {gbMinutes: number},
+ *   usage: {gbMinutes: number, downloadBytes?: number, averageStoredGb?: number},
  *   caps?: {monthly_cap_usd?: unknown, daily_requests?: unknown},
  *   requestsToday?: number,
  *   day?: string,
@@ -172,7 +172,12 @@ export function agentCapStatus(agent) {
     throw new TypeError(`agentCapStatus needs usage {gbMinutes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
-  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd, BILLING_CONFIG);
+  // The whole bill, downloads included, the same way the account's own cap
+  // counts it (drive#496).
+  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd, BILLING_CONFIG, {
+    downloadBytes: usage.downloadBytes,
+    averageStoredGb: usage.averageStoredGb,
+  });
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({

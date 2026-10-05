@@ -16,8 +16,24 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
+import {
+  computeHiddenAt,
+  decodeEntities,
+  nextContinuationToken,
+  nextVersionMarkers,
+  parseListVersions,
+  tagValue,
+  versionMarkers,
+} from "./s3-listing.js";
+
+// The listing parser itself now lives in src/s3-listing.js, which the api
+// Worker reads too (drive issue #504: one parser, decoded, for both Workers).
+// These re-exports keep the names every caller already imports from here.
+export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-listing.js";
+
+import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { contentMd5 } from "../workers/api/src/s3.js";
+import { contentMd5, createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -26,8 +42,8 @@ import {
   preChargeLimitStream,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
+import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
@@ -50,8 +66,15 @@ export const CONTROL_OR_SLASH = new RegExp(
   `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
   "g",
 );
-/** The listing, download, upload and restore API. */
+/** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
+/**
+ * Where the page's media elements read their bytes. It is the preview URL with
+ * one difference: a picture is served inline here so the page can draw it, and
+ * the direct-open preview URL serves the one type that can act as a document —
+ * an .svg — as an attachment instead. See previewDisposition() (drive#657).
+ */
+export const FILES_EMBED_ENDPOINT = `${FILES_ENDPOINT}/embed`;
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
 export const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
@@ -181,9 +204,11 @@ export function isPreviewable(kind) {
 // rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
 // and media keeps its own type only when it matches its kind. Anything else is
 // octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
-// uploaded .svg is still an image in the page's <img>, but opening the preview
-// URL directly gets it a sandboxed document instead of our origin.
+// in readRequest() (nosniff, and a sandboxed preview) covers the rest, and
+// previewDisposition() below takes the one type that can still act as a
+// document — an .svg, whose links navigate — out of the direct-open preview
+// and a share link, while the page's <img> reads it inline from the embed URL
+// (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
@@ -215,6 +240,31 @@ export function previewContentType(name, storedContentType = "") {
     return "application/octet-stream";
   }
   return stored || "application/octet-stream";
+}
+
+/**
+ * How an inline preview leaves: inline for every type a browser draws as a
+ * picture, a player, a PDF or plain text, and an attachment for the one type
+ * that can still act as a document — an SVG, which a browser renders as a
+ * styled document whose links navigate. An SVG therefore leaves the
+ * direct-open preview URL and a share link as a download, so a link can never
+ * hand a stranger a rendered document on our address to phish a password
+ * from; the page's own <img> reads the same bytes inline from the embed URL
+ * (drive#657).
+ * @param {string} name
+ * @param {string} [storedContentType]
+ * @returns {string}
+ */
+export function previewDisposition(name, storedContentType = "") {
+  if (previewContentType(name, storedContentType) !== "image/svg+xml") {
+    return "inline";
+  }
+  // A header value cannot carry a control character or a backslash, and
+  // safeFileName() strips both (and a stray slash); the quotes go too, so the
+  // filename cannot end the quoted-string early. validatePath() already
+  // refuses those characters on the way in, and this keeps the function safe
+  // on its own (drive#657).
+  return `attachment; filename="${safeFileName(name).replace(/"/g, "")}"`;
 }
 
 // ---------------------------------------------------------------- the words
@@ -578,8 +628,7 @@ export function restorableUntil(deletedAt) {
  * @typedef {{body: ReadableStream|null, contentType: string, size: number,
  *   etag?: string|null, status?: number, contentRange?: string,
  *   contentLength?: number}|null} FileRead
- * @typedef {{b2FileId: string, path: string, sizeBytes: number,
- *   createdAt: number, hiddenAt: number|null, deletedAt: number|null}} StorageVersion
+ * @typedef {import("./s3-listing.js").S3VersionRow} StorageVersion
  * One version of one stored file, in the provider's own listing: the version
  * id the meter keys `file_versions` on, the key it lives at, its size in
  * bytes, and the instants its life begins and stops. The meter's reconciler
@@ -610,6 +659,22 @@ export function restorableUntil(deletedAt) {
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<boolean>} writeIfAbsent
+ *   The create-only write: it stores the bytes only when the key is not there
+ *   yet, and answers `true` when this call is the one that put them there and
+ *   `false` when something was already stored under that path. It is the
+ *   authority on which of two concurrent creates wins, because the decision
+ *   happens in one store call: a `stat` followed by a `write` is two storage
+ *   round-trips, and between them a second request can create the same key,
+ *   so both writes land and the loser silently overwrites the winner
+ *   (drive#644). A create site that must not overwrite calls this instead of
+ *   writing blind; pairing it with a pre-check `stat` is fine, and is how an
+ *   ordinary duplicate gets its 409 on backends whose PUT cannot be made
+ *   conditional — but the pre-check alone is never the answer to a race.
+ *   A store whose provider cannot make the write conditional does not pretend
+ *   to: see `createS3Store`'s `writeIfAbsent` for what the S3 path can
+ *   honestly offer, and its `write` for the overwrite that remains its
+ *   backstop.
  * @property {(path: string) => Promise<void>} remove
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
@@ -786,6 +851,12 @@ export function scopeStore(store, account) {
     },
     async write(path, body, contentType) {
       return store.write(toKey(path), body, contentType);
+    },
+    // Scoped like every other write: the destination is rewritten to this
+    // account's own key before the store sees it, so a create-only write can
+    // no more land outside the prefix than an ordinary one.
+    async writeIfAbsent(path, body, contentType) {
+      return store.writeIfAbsent(toKey(path), body, contentType);
     },
     async remove(path) {
       return store.remove(toKey(path));
@@ -1023,6 +1094,28 @@ export function createMemoryStore() {
         etag: await memoryEtag(bytes),
       });
     },
+    async writeIfAbsent(path, body, contentType) {
+      // The bytes are read first, then two exists-checks bracket the etag:
+      // the first short-circuits an ordinary duplicate before any fingerprint
+      // is worth computing, and the second is the atomic one — it runs with
+      // nothing awaited between it and the set below, so inside one JS event
+      // loop two concurrent creates on one key cannot both see the key as
+      // absent and both land (drive#644). The winner starts a version exactly
+      // like `write`; the loser answers false without touching the live
+      // object or its versions.
+      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      if (objects.has(path)) {
+        return false;
+      }
+      const etag = await memoryEtag(bytes);
+      if (objects.has(path)) {
+        return false;
+      }
+      const now = Date.now();
+      startVersion(path, bytes.byteLength, now);
+      objects.set(path, { body: bytes, contentType, modified: now, etag });
+      return true;
+    },
     async remove(path) {
       // A delete hides the live version rather than forgetting it, exactly as
       // the drive's storage lifecycle does (build-spec.md "Old versions"), so
@@ -1181,6 +1274,88 @@ export function storageBucketForKey(key) {
 }
 
 /**
+ * Storage config vars. They are set per deployment, never declared as bindings
+ * in cloudflare.config.ts: a declared secret is required at deploy, and the
+ * Files page already answers from the in-memory store when they are unset. The
+ * names match the api Worker's iDrive pair so the site Worker can read the
+ * buckets a minted key writes to, plus the older FILES_S3_* stand-in pair a
+ * local `rclone serve s3` still uses. The one definition lives here so the
+ * store and the sign-in verify step's provisioning read the same shape
+ * (src/index.js's devStorage casts to it).
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
+ */
+
+/**
+ * The storage settings a deployment carries, read in one place so the Files
+ * page's store (storeFor in src/index.js) and the sign-in verify step's bucket
+ * provisioning (provisionAccountBucket below) read the same four names in the
+ * same order. A second reader of these vars is a second thing to drift, the
+ * same reason keyprovider-env.js is the api Worker's one reader of its own.
+ * @param {StorageEnv} env
+ * @returns {{endpoint: string|undefined, accessKeyId: string|undefined,
+ *   secretAccessKey: string|undefined, region: string|undefined}}
+ */
+export function storageVarsFromEnv(env) {
+  /** @param {string|undefined} value */
+  const read = (value) => (value && value !== "" ? value : undefined);
+  return {
+    endpoint: read(env.IDRIVE_S3_ENDPOINT) || read(env.FILES_S3_ENDPOINT),
+    accessKeyId: read(env.IDRIVE_S3_ACCESS_KEY_ID) || read(env.FILES_S3_ACCESS_KEY_ID),
+    secretAccessKey: read(env.IDRIVE_S3_SECRET_ACCESS_KEY) || read(env.FILES_S3_SECRET_ACCESS_KEY),
+    region: read(env.IDRIVE_S3_REGION) || read(env.FILES_S3_REGION),
+  };
+}
+
+/**
+ * The account's own bucket, provisioned through the one `provisionBucket`
+ * call the api Worker's key mint also makes (workers/api/src/s3.js): versioning
+ * on and the hidden-version rule set, idempotent, so a returning sign-in's
+ * second call is a no-op and an account from before this call existed catches
+ * up at its next sign-in (drive#540). The store reads and writes this same
+ * bucket by name (storageBucketForKey), so a customer who never runs
+ * `drive login` has a bucket from the minute the account does.
+ *
+ * A deployment with no storage master credential provisions nothing and
+ * answers false — no credential means no provisioning call, never a call with
+ * half a credential (the rule keyprovider-env.js states for the mint). The key
+ * mint keeps its own provisioning as the safety net, and the Files page
+ * answers an empty folder for a bucket that is not there yet.
+ * @param {StorageEnv} env
+ * @param {string} accountId
+ * @param {{fetchImpl?: typeof fetch}} [options]
+ * @returns {Promise<boolean>} whether the provisioning call ran
+ */
+export async function provisionAccountBucket(env, accountId, options = {}) {
+  const vars = storageVarsFromEnv(env);
+  if (
+    vars.endpoint === undefined ||
+    vars.accessKeyId === undefined ||
+    vars.secretAccessKey === undefined ||
+    vars.region === undefined
+  ) {
+    return false;
+  }
+  const client = createS3Client({
+    endpoint: vars.endpoint,
+    region: vars.region,
+    credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  });
+  await provisionBucket(client, { bucket: bucketForAccount(accountId) });
+  return true;
+}
+
+/**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs
@@ -1325,6 +1500,16 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // A bucket that is not there yet is an empty drive, not a failure
+          // (drive#540): a brand-new account's `drv-<id>` is created at its
+          // sign-in verify (provisionAccountBucket), and an account from before
+          // that existed — or on a deployment whose site Worker carries no
+          // storage master credential — has no bucket until a key mint creates
+          // one. S3 answers a missing bucket 404 and a missing folder 200 with
+          // no keys, so a 404 here is always the bucket.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1360,6 +1545,11 @@ export function createS3Store(config) {
         `&max-keys=${limit}` +
         (options.cursor ? `&continuation-token=${encodeURIComponent(options.cursor)}` : "");
       const response = await request(`${baseFor(prefix)}${query}`);
+      if (response.status === 404) {
+        // The missing bucket is an empty page, not a 500 (drive#540); the
+        // long form is in `list` above.
+        return { entries: [], nextCursor: null };
+      }
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
@@ -1384,6 +1574,11 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // The missing bucket is an empty walk, not a 500 (drive#540); the
+          // long form is in `list` above.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1469,6 +1664,42 @@ export function createS3Store(config) {
         throw new Error(`storage write failed with ${response.status}`);
       }
     },
+    async writeIfAbsent(path, body, contentType) {
+      // The stock S3 create-only request: one PUT carrying If-None-Match: *,
+      // which a compliant endpoint refuses with 412 Precondition Failed when
+      // the key is already there. What THIS endpoint can honestly offer is
+      // narrower than the contract's words, and it is measured, not assumed:
+      //
+      //   - `rclone serve s3` (v1.75.1, the stand-in on the build host)
+      //     answered 200 to both the absent and the already-present PUT on
+      //     2026-10-05 — it ignores If-None-Match on a PUT — so a `true`
+      //     from that server is not a proof of create-only;
+      //   - iDrive e2, the primary vendor, was never asked: its keys are
+      //     Nish's alone, and the standing direction is to build without
+      //     them. Its answer to the header is unverified.
+      //
+      // The header still rides every call, so on any endpoint that enforces
+      // the conditional the race closes at the storage itself; where one does
+      // not, this degrades to the overwrite `write` always was, and the
+      // provider's hide-not-delete versioning stays the backstop that makes
+      // an overwrite recoverable. A caller on such an endpoint pairs a
+      // pre-check `stat` (the stranger-upload route does) so an ordinary
+      // duplicate is still refused there; only a true mid-race pair is left to
+      // this endpoint's own answer. A 412 is the only answer that proves the
+      // key was already there, so it is the only false.
+      const response = await request(urlFor(path), {
+        method: "PUT",
+        headers: { "content-type": contentType, "if-none-match": "*" },
+        body,
+      });
+      if (response.status === 412) {
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`storage write failed with ${response.status}`);
+      }
+      return true;
+    },
     async remove(path) {
       const response = await request(urlFor(path), { method: "DELETE" });
       if (!response.ok && response.status !== 404) {
@@ -1500,7 +1731,7 @@ export function createS3Store(config) {
         }
         const xml = await response.text();
         for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
-          const key = unescapeXmlText(tagValue(match[1], "Key"));
+          const key = decodeEntities(tagValue(match[1], "Key"));
           if (key !== "") {
             keys.push(key);
           }
@@ -1565,7 +1796,7 @@ export function createS3Store(config) {
       }
       const xml = await response.text();
       for (const match of xml.matchAll(/<Error>([\s\S]*?)<\/Error>/g)) {
-        const key = unescapeXmlText(tagValue(match[1], "Key"));
+        const key = decodeEntities(tagValue(match[1], "Key"));
         const code = tagValue(match[1], "Code");
         throw new Error(`storage batch delete refused "${key}" with ${code || "an error"}`);
       }
@@ -1645,6 +1876,8 @@ export function createS3Store(config) {
     async listVersions(path) {
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const versions = [];
+      /** @type {Array<{path: string, at: number}>} */
+      const markers = [];
       let keyMarker = null;
       let versionMarker = null;
       let seen = null;
@@ -1661,11 +1894,20 @@ export function createS3Store(config) {
           throw new Error(`storage version list failed with ${response.status}`);
         }
         const xml = await response.text();
+        // Rows and delete markers are collected from every page and the stops
+        // are computed once, here, over the whole list: a version's stop is the
+        // next version of its own key, and that pair can sit on two different
+        // pages, so a per-page pass would bill an old version as still live
+        // (drive issue #504). The markers are decoded with the rows, so a key
+        // that pages on through an escaped character comes back the way the
+        // account wrote it.
         versions.push(...parseListVersions(xml));
-        keyMarker = tagValue(xml, "NextKeyMarker");
-        versionMarker = tagValue(xml, "NextVersionIdMarker");
+        markers.push(...versionMarkers(xml));
+        const next = nextVersionMarkers(xml);
+        keyMarker = next.keyMarker;
+        versionMarker = next.versionMarker;
         if (keyMarker === "" || versionMarker === "") {
-          return versions;
+          return computeHiddenAt(versions, markers);
         }
         if (`${keyMarker}\u0000${versionMarker}` === seen) {
           throw new Error(
@@ -1866,14 +2108,17 @@ export function parseListObjects(xml, prefix, path, options = {}) {
   const entries = [];
   const common = /<CommonPrefixes>\s*<Prefix>([\s\S]*?)<\/Prefix>\s*<\/CommonPrefixes>/g;
   for (const match of xml.matchAll(common)) {
-    const name = match[1].slice(prefix.length).replace(/\/$/, "");
+    // S3 escapes the XML characters in every listing element, so a folder
+    // named `a&b` is answered as `a&amp;b`; the folder this page shows is
+    // the name the account wrote (drive issue #504).
+    const name = decodeEntities(match[1]).slice(prefix.length).replace(/\/$/, "");
     if (name) {
       entries.push({ name, path: `${path === "/" ? "" : path}/${name}`, kind: "folder" });
     }
   }
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     const block = match[1];
-    const name = tagValue(block, "Key").slice(prefix.length);
+    const name = decodeEntities(tagValue(block, "Key")).slice(prefix.length);
     if (!name || (name.includes("/") && !options.deep)) {
       continue;
     }
@@ -1896,90 +2141,6 @@ export function parseListObjects(xml, prefix, path, options = {}) {
 }
 
 /**
- * S3 answers a ListObjectVersions as XML; this turns its two shapes
- * (`<Version>` and the `<DeleteMarker>` that hid one) into the version rows
- * the reconciler reads. A version is hidden at the instant the next version of
- * the same key began, and a delete marker is that hide for the key's newest
- * version; the listing is newest first, so one pass collects the times and a
- * second assigns each version its stop. Kept small and separate so a test can
- * feed it a captured S3 response without a bucket.
- * @param {string} xml
- * @returns {Array<{b2FileId: string, path: string, sizeBytes: number, createdAt: number, hiddenAt: number|null, deletedAt: number|null}>}
- */
-export function parseListVersions(xml) {
-  if (typeof xml !== "string") {
-    throw new TypeError("parseListVersions needs the XML body");
-  }
-  /** @type {Array<{b2FileId: string, path: string, sizeBytes: number, createdAt: number, hiddenAt: number|null, deletedAt: number|null}>} */
-  const versions = [];
-  // Delete markers, keyed by the key they ended: the instant the version below
-  // them stopped being live.
-  const markers = new Map();
-  for (const match of xml.matchAll(/<DeleteMarker>([\s\S]*?)<\/DeleteMarker>/g)) {
-    const block = match[1];
-    const key = tagValue(block, "Key");
-    const at = Date.parse(tagValue(block, "LastModified"));
-    if (key !== "" && Number.isFinite(at)) {
-      const earliest = markers.get(key);
-      if (earliest === undefined || at < earliest) {
-        markers.set(key, at);
-      }
-    }
-  }
-  for (const match of xml.matchAll(/<Version>([\s\S]*?)<\/Version>/g)) {
-    const block = match[1];
-    const path = tagValue(block, "Key");
-    const b2FileId = tagValue(block, "VersionId");
-    const createdAt = Date.parse(tagValue(block, "LastModified"));
-    if (path === "" || b2FileId === "" || !Number.isFinite(createdAt)) {
-      // A version with no key, no id or no time cannot be compared with a row
-      // and cannot be billed; naming it is better than a silent drop.
-      throw new Error("S3 listed a version without a key, a version id or a time");
-    }
-    versions.push({
-      b2FileId,
-      path,
-      sizeBytes: Number(tagValue(block, "Size") || 0),
-      createdAt,
-      hiddenAt: null,
-      deletedAt: null,
-    });
-  }
-  // Newest first as S3 answers: each version's stop is the newest start among
-  // the later versions of its own key, and the key's newest version is hidden
-  // by a delete marker when one names it.
-  for (const version of versions) {
-    let hiddenAt = markers.get(version.path) ?? null;
-    for (const other of versions) {
-      if (other.path === version.path && other.createdAt > version.createdAt) {
-        if (hiddenAt === null || other.createdAt < hiddenAt) {
-          hiddenAt = other.createdAt;
-        }
-      }
-    }
-    version.hiddenAt = hiddenAt;
-  }
-  return versions;
-}
-
-/**
- * The text inside one tag of an S3 listing: indexOf rather than a pattern built
- * from a string, and the three tags it is called with are S3's own.
- * @param {string} block
- * @param {string} tag
- * @returns {string}
- */
-function tagValue(block, tag) {
-  const open = block.indexOf(`<${tag}>`);
-  if (open === -1) {
-    return "";
-  }
-  const from = open + tag.length + 2;
-  const close = block.indexOf(`</${tag}>`, from);
-  return close === -1 ? "" : block.slice(from, close).trim();
-}
-
-/**
  * Text for inside one XML element, with the characters XML reserves escaped.
  * A storage key can carry `<` or `&` (validatePath allows both), and a Delete
  * body that sends them raw is a parse error on the provider side.
@@ -1988,39 +2149,6 @@ function tagValue(block, tag) {
  */
 function escapeXmlText(text) {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
-/**
- * The inverse, for the text an S3 XML answer carries back in `<Key>` values.
- * `&quot;` and `&apos;` never appear in element text, but they unescape
- * cleanly all the same; `&amp;` is replaced last so `&amp;lt;` reads `<`.
- * @param {string} text
- * @returns {string}
- */
-function unescapeXmlText(text) {
-  return text
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'")
-    .replaceAll("&amp;", "&");
-}
-
-/**
- * The token that fetches the page after this one, or null when the listing is
- * the last page. S3 caps one ListObjectsV2 answer at 1,000 keys and says so by
- * returning `<NextContinuationToken>`; without it a folder is truncated at the
- * cap and the caller cannot tell. An empty element counts as no next page, so a
- * server that sends the tag empty ends the loop rather than asking for "".
- * @param {string} xml
- * @returns {string|null}
- */
-export function nextContinuationToken(xml) {
-  if (typeof xml !== "string") {
-    throw new TypeError("nextContinuationToken needs the XML body");
-  }
-  const token = tagValue(xml, "NextContinuationToken");
-  return token === "" ? null : token;
 }
 
 /**
@@ -2154,20 +2282,6 @@ export function parseByteRange(header, total) {
 
 // ---------------------------------------------------------------- handlers
 
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @returns {Response}
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
-
 /**
  * @param {string} message
  * @param {number} status
@@ -2199,9 +2313,13 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database}} [options] the customer database, so the 1 TB
- *   pre-charge storage limit (drive#464) can read stored bytes. Tests that
- *   do not pass a database skip that check.
+ * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">}} [options]
+ *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
+ *   can read stored bytes, whether the pause at a $0 balance is on
+ *   (drive#586), and the account's own state, so a read-only drive refuses a
+ *   web write (drive#496). Tests that do not pass a database skip the first
+ *   two checks; tests that do not pass a resolver are answering for a drive
+ *   that is not read-only.
  */
 export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
@@ -2212,29 +2330,50 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
-  // Reading is safe to repeat, so only the three that change the drive carry
-  // the cross-site rule. The decision is by route, not by method, so a
-  // mislabelled method on a listing still cannot smuggle a write through.
+  // Only the three routes that change the drive carry the cap's read-only
+  // rule. The decision is by route, not by method, so a mislabelled method on
+  // a listing still cannot smuggle a write through. The cross-site rule is the
+  // app-wide CSRF middleware's (src/index.js).
   const stateChanging =
     route === `${FILES_ENDPOINT}/upload` ||
     route === `${FILES_ENDPOINT}/delete` ||
     route === `${FILES_ENDPOINT}/restore`;
-  if (stateChanging && !isSameOriginRequest(request)) {
-    // A specific line rather than the table's generic fallback: "try again in
-    // a moment" would be advice to retry a request that will always be
-    // refused, and the one next step is to do it from the drive page, the same
-    // way src/waitlist.js and src/email-send.js answer their cross-site calls.
-    return json(
-      { error: "Uploads, deletes and restores are only accepted from the drive page." },
-      403,
-    );
+  // The cap makes the whole web write lane read-only (drive#496). The account
+  // row's own `state`, saved by the hourly walk (src/cap.js), is the rule: at
+  // the cap it is `read_only` and a signed-in person cannot write through the
+  // page either. Reads are untouched — a read-only drive is readable by
+  // definition, and the cap deletes nothing.
+  //
+  // The CSRF middleware runs first, so a cross-site POST to a read-only drive
+  // still gets the cross-site answer and not a message about a cap the
+  // stranger has no business knowing. A closed account is refused the same
+  // way: it is not writable either, and its files are on their way out.
+  //
+  // No resolver means no cap state to read (a deployment with no DRIVE_DB, or
+  // a unit test driving the handler directly), so the lane is writable and the
+  // account gate above is what holds it.
+  if (stateChanging && typeof options.accountState === "function") {
+    const state = await options.accountState(account.id);
+    if (state === "read_only" || state === "closed") {
+      return json({ error: failureMessage("cap-reached") }, 403);
+    }
   }
   const scoped = scopeStore(store, account);
   if (route === FILES_ENDPOINT) {
     return listRequest(request, url, scoped, now);
   }
-  if (route === `${FILES_ENDPOINT}/download` || route === `${FILES_ENDPOINT}/preview`) {
-    return readRequest(request, url, scoped, route.endsWith("download"));
+  if (
+    route === `${FILES_ENDPOINT}/download` ||
+    route === `${FILES_ENDPOINT}/preview` ||
+    route === FILES_EMBED_ENDPOINT
+  ) {
+    return readRequest(
+      request,
+      url,
+      scoped,
+      route.endsWith("download"),
+      route === FILES_EMBED_ENDPOINT,
+    );
   }
   if (route === `${FILES_ENDPOINT}/upload`) {
     return uploadRequest(request, url, scoped, account, options);
@@ -2277,31 +2416,6 @@ export function joinPath(folder, name) {
 }
 
 /**
- * @param {Request} request
- * @returns {Promise<{body: {path?: string, name?: string}, error?: undefined}|{error: string, body?: undefined}>}
- *   the parsed object, or the sentence to show. Both arms are named so the
- *   `if (body === undefined)` each caller writes is the narrowing, and
- *   `error` is there for the one that wants the sentence.
- */
-async function readJsonObject(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    // A body that is not JSON at all is the same failure as a body that is
-    // JSON but not an object: both are "this request did not carry a JSON
-    // object", and both routes that read a body say it in the table's words, so
-    // a form, an array, a bare value and a mangled body all read the same on
-    // every account route (drive#158).
-    return { error: failureMessage("json-object-needed") };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: failureMessage("json-object-needed") };
-  }
-  return { body };
-}
-
-/**
  * Handles every method on /api/files and always answers. The gate is in front
  * of it (see handleFilesRequest): the account is required, the store it reads
  * is scoped to that account, and a state change also has to be same-origin.
@@ -2311,6 +2425,7 @@ async function readJsonObject(request) {
  *   GET  /api/files?view=deleted      Recently deleted
  *   GET  /api/files/download?path=…   the bytes, as an attachment
  *   GET  /api/files/preview?path=…    the bytes, inline, for the viewer
+ *   GET  /api/files/embed?path=…      the bytes, inline, for the page's media
  *   POST /api/files/upload?path=/&name=…   the request body is the file
  *   POST /api/files/delete  {path}    move a file to Recently deleted
  *   POST /api/files/restore {path}    put it back where it was
@@ -2394,9 +2509,12 @@ async function listRequest(request, url, store, now) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {boolean} download
+ * @param {boolean} [embed] the page's media URL: serve inline when a media
+ *   element asked for it, and otherwise the attachment previewDisposition()
+ *   sends a document-capable type out with
  * @returns {Promise<Response>}
  */
-async function readRequest(request, url, store, download) {
+async function readRequest(request, url, store, download, embed = false) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return plain("Method not allowed. GET a file.", 405);
   }
@@ -2408,6 +2526,16 @@ async function readRequest(request, url, store, download) {
   // below reads, and a union property is not narrowed across an await.
   const drivePath = checked.path;
   const name = drivePath.split("/").pop() || "";
+  // The embed URL is for the page's own <img>, <video> and <audio> only. A
+  // navigation to it — a top-level open, or an <iframe> — falls back to the
+  // direct-open preview's disposition, so the embed URL is never a way around
+  // the download an SVG leaves with (drive#657). Sec-Fetch-Dest is the
+  // browser's own statement of what asked for the bytes.
+  const destination = String(request.headers.get("sec-fetch-dest") || "")
+    .trim()
+    .toLowerCase();
+  const embedded =
+    embed && (destination === "image" || destination === "video" || destination === "audio");
   /**
    * The headers every 200/206/HEAD answer carries, from the type the store
    * named. One builder for all three, so the two safety headers below cannot
@@ -2419,16 +2547,22 @@ async function readRequest(request, url, store, download) {
     /** @type {Record<string, string>} */
     const headers = {
       // The bytes leave as a file: an attachment to download, and an inline
-      // preview the page renders in a media element. Neither is a document on
-      // our origin, and the two headers below keep it that way when the preview
-      // URL is opened directly: nosniff honors the type above, and the sandbox
-      // policy gives a document an opaque origin with no script of its own.
+      // preview the page renders in a media element. The embed URL is inline
+      // for a media element only; the direct-open preview URL, and a
+      // navigation to the embed URL, send the one document-capable type (an
+      // SVG) as an attachment instead, so a top-level open downloads it.
+      // Neither is a document on our origin, and the two headers below keep it
+      // that way when the preview URL is opened directly: nosniff honors the
+      // type above, and the sandbox policy gives a document an opaque origin
+      // with no script of its own.
       "content-type": download
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
       "content-disposition": download
         ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-        : "inline",
+        : embedded
+          ? "inline"
+          : previewDisposition(name || "", contentType),
       "x-content-type-options": "nosniff",
       "cache-control": "private, no-store",
       // What a player or a resuming downloader may ask for next: one slice.
@@ -2512,7 +2646,7 @@ async function readRequest(request, url, store, download) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -2529,6 +2663,12 @@ async function uploadRequest(request, url, store, account, options = {}) {
   }
   /** @type {number|null} bytes this upload may still add before the first charge */
   let allowance = null;
+  if (options.db && options.prepaidPause && (await balanceCents(options.db, account.id)) <= 0) {
+    // The prepaid balance is empty (drive#586): the upload pauses, and only
+    // the upload. Listing, downloads, deletes and restores never come here.
+    // 402, so a client can tell "add money" from every other refusal.
+    return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
+  }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
     const header = Number(request.headers.get("content-length") ?? "");
@@ -2579,13 +2719,16 @@ async function deleteRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to delete.", 405);
   }
-  const { body, error } = await readJsonObject(request);
-  if (body === undefined) {
-    // The `if` is the narrowing: readJsonObject's error arm is the only one
-    // without a body, so error is a string here and there is nothing to fall
-    // back to, and no second copy of the sentence to keep in step.
-    return json({ error }, 400);
+  const read = await readJsonObject(request);
+  if ("error" in read) {
+    // The `if` is the narrowing: the error arm is the only one with a
+    // sentence. The reader (drive#618) writes the api's own words, so the
+    // account routes say the same thing in the table's words instead, and a
+    // form, an array, a bare value and a mangled body all read the same on
+    // every account route (drive#158).
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
+  const { body } = read;
   const checked = validatePath(body.path);
   if (checked.error) {
     return json({ error: checked.error }, 400);
@@ -2622,12 +2765,13 @@ async function restoreRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to restore.", 405);
   }
-  const { body, error } = await readJsonObject(request);
-  if (body === undefined) {
+  const read = await readJsonObject(request);
+  if ("error" in read) {
     // The same narrowing as the delete path above, and the same words: the
     // restore route reads a body exactly as the delete route does.
-    return json({ error }, 400);
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
+  const { body } = read;
   const checked = validatePath(body.path);
   if (checked.error) {
     return json({ error: checked.error }, 400);
