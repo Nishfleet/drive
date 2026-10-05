@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+  # The main ruleset's merge queue runs `verify` and `go` on the merge group
+  # (drive#499). Without this trigger the queue waits on checks that never come.
+  merge_group:
   push:
     branches: [main]
 
@@ -32,7 +35,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          cache: npm
+          # No cache on own runners: npm's cache is already on this disk, and
+          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
+          package-manager-cache: false
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: npm ci
@@ -85,12 +90,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # goreleaser below runs `check` only and publishes nothing, so the Go
-      # cache this job keeps never reaches a release artifact.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.24"
-          cache: true
+          # No cache on own runners: Go's build cache is already on this disk,
+          # and saving it took 2 min per job (2026-10-05).
+          cache: false
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry
       # fails the job rather than reaching it.

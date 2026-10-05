@@ -1042,13 +1042,13 @@ test("the freshness read is one D1 round trip on the meter binding", async () =>
   // One statement, two subqueries: the watermark beside the oldest version.
   // The check runs on every poll (the outside monitor's budget), so it stays
   // a single read.
-  const env = HEALTHY_ENV();
+  const meterDb = fakeD1("ok");
+  const env = { ...HEALTHY_ENV(), METER_DB: meterDb };
   await handleHealthRequest(GET(), env);
-  const meter = env.METER_DB;
-  const fresh = meter.calls.filter((sql) => sql.includes("rolled_through"));
+  const fresh = meterDb.calls.filter((sql) => sql.includes("rolled_through"));
   assert.equal(fresh.length, 1, `one freshness read, got ${fresh.length}`);
-  assert.match(fresh[0], /meter_rollup_state/);
-  assert.match(fresh[0], /file_versions/);
+  assert.match(fresh[0] ?? "", /meter_rollup_state/);
+  assert.match(fresh[0] ?? "", /file_versions/);
 });
 
 // --- the storage endpoint (drive issue #520) ------------------------------

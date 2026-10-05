@@ -98,6 +98,10 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/`,
   `${FILES_ENDPOINT}/download?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/preview?path=%2Fa.txt`,
+  // drive#657: the page's media URL. It names files in the account's own
+  // drive like the preview URL, so the walk requires it to answer 401
+  // anonymously too.
+  `${FILES_ENDPOINT}/embed?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/upload?path=%2F&name=a.txt`,
   `${FILES_ENDPOINT}/delete`,
   `${FILES_ENDPOINT}/restore`,
@@ -742,6 +746,11 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     async write(path, _body, _contentType) {
       seen.push(["write", path]);
     },
+    /** @param {string} path @param {BodyInit} _body @param {string} _contentType */
+    async writeIfAbsent(path, _body, _contentType) {
+      seen.push(["writeIfAbsent", path]);
+      return true;
+    },
     /** @param {string} path */
     async remove(path) {
       seen.push(["remove", path]);
@@ -775,11 +784,13 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
   await scoped.list("/");
   await scoped.read("/notes.txt");
   await scoped.write("/docs/a b.txt", new Blob([""]).stream(), "text/plain");
+  await scoped.writeIfAbsent("/docs/a b.txt", new Blob([""]).stream(), "text/plain");
   await scoped.remove("/.trash/1__%2Fnotes.txt");
   assert.deepEqual(seen, [
     ["list", "u/acct-9/"],
     ["read", "u/acct-9/notes.txt"],
     ["write", "u/acct-9/docs/a b.txt"],
+    ["writeIfAbsent", "u/acct-9/docs/a b.txt"],
     ["remove", "u/acct-9/.trash/1__%2Fnotes.txt"],
   ]);
   // Versions go through the scope too: the store is asked under this

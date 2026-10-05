@@ -40,8 +40,15 @@ const stockSentry = { captureCheckIn, captureException, captureMessage };
  * second consecutive failure and resolves on the first good run.
  *
  * @param {string} cron the cron string the trigger fired for
- * @param {{checkinMargin: number, maxRuntime: number}} [bounds]
- * @returns {import("@sentry/cloudflare").MonitorConfig}
+ * @param {{checkinMargin?: number, maxRuntime?: number}} [bounds]
+ * @returns {NonNullable<Parameters<typeof captureCheckIn>[1]>} the config
+ *   `captureCheckIn` upserts with. Its type is read off the SDK's own
+ *   signature rather than named, because `@sentry/cloudflare` re-exports the
+ *   function and not the config interface, so importing `MonitorConfig` would
+ *   name a path the package does not publish (issue #520's first CI run:
+ *   TS2694). The keys are the SDK's camelCase names — it maps them onto the
+ *   snake_case `monitor_config` on the wire itself (server-runtime-client.js),
+ *   so writing the wire names here would silently drop both thresholds.
  */
 export function monitorConfig(cron, bounds) {
   return {

@@ -96,6 +96,7 @@ test("an account id that could point outside its own folder is refused", () => {
 const badBranchNames = [
   "../../x",
   "a/b",
+  ".",
   "..",
   "../..",
   "x..y",

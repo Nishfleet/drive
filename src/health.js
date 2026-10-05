@@ -1,4 +1,4 @@
-import { storageEndpoint } from "./files.js";
+import { storageVarsFromEnv } from "./files.js";
 import { meterFreshness } from "./meter.js";
 
 // The health endpoint the outage alert watches (drive issue #96, north star
@@ -75,9 +75,10 @@ import { meterFreshness } from "./meter.js";
 //     store: a drive that forgets everything on redeploy and shares nothing
 //     between isolates, while every page still renders. That is the exact
 //     failure a health check exists to name, so it is a 503 naming
-//     "storage" (src/files.js storageEndpoint, the one place the fallback
-//     is decided). In local dev without storage vars this check is red by
-//     design; the runbook says so.
+//     "storage". The question is asked through src/files.js's one reader,
+//     storageVarsFromEnv, so this endpoint and the store cannot disagree
+//     about what "no endpoint" means. In local dev without storage vars this
+//     check is red by design; the runbook says so.
 //
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
 //   - Secrets. Their presence is a deployment shape, not a reachability
@@ -395,10 +396,11 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   }
   // The storage endpoint (issue #520): with no S3 endpoint among the
   // per-deployment vars, the Files handlers answer from the in-memory store
-  // (src/files.js storageEndpoint is the one place that fallback is decided).
+  // (src/files.js storageVarsFromEnv is the one reader this and storeFor use).
   // That drive forgets everything on redeploy, so it fails here by name
   // rather than serving a silently empty Files page.
-  if (storageEndpoint(env) === null) {
+  const storageEnv = /** @type {import("./files.js").StorageEnv} */ (/** @type {unknown} */ (env));
+  if (storageVarsFromEnv(storageEnv).endpoint === undefined) {
     return { ok: false, failing: "storage" };
   }
   const checks = /** @type {{name: string, run: (left: number) => Promise<void>}[]} */ ([]);
