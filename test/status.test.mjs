@@ -159,18 +159,8 @@ test("the page leads with one pasted install line per system", () => {
       `the install line for ${row.os} must be one package-manager invocation`,
     );
   }
-  // The detail a line cannot carry (the tap, the module path, the Windows
-  // installer name) belongs in the docs' "Other ways" section, so no customer
-  // page shows an internal name. test/own-words.test.mjs walks the pages; this
-  // is the same rule at the source of the page's copy.
-  for (const row of INSTALL_LINES) {
-    assert.doesNotMatch(row.line, /nishfleet/i, `the install line for ${row.os} must not name us`);
-    assert.doesNotMatch(
-      row.line,
-      /launchd|\/tap\//,
-      `the install line for ${row.os} must stay one line`,
-    );
-  }
+  // drive#509: the line is the one .goreleaser.yaml publishes, including the
+  // tap path. A short `brew install drive` cannot resolve after a release.
 });
 
 test("the renderer hands the page one row per system", () => {

@@ -24,19 +24,21 @@ advance.
 macOS, with Homebrew:
 
 ```sh
-brew install drive
+{{INSTALL_MACOS}}
 ```
 
-Linux, Debian or Ubuntu:
+Linux, Debian or Ubuntu — download the `.deb` for your CPU from the GitHub
+release, then:
 
 ```sh
-sudo apt install drive
+{{INSTALL_DEBIAN}}
 ```
 
-Linux, Fedora or RHEL:
+Linux, Fedora or RHEL — download the `.rpm` for your CPU from the GitHub
+release, then:
 
 ```sh
-sudo dnf install drive
+{{INSTALL_FEDORA}}
 ```
 
 One line per system, and nothing else to do by hand: the command and the parts
@@ -46,12 +48,10 @@ package declares the parts it needs and the package manager resolves them.
 prints the fix, so the version talk lives in [Other ways](#other-ways-to-install)
 and not in your way.
 
-These packages are not published yet — they land with the first release, and the
-line above is the one to paste once your package manager can resolve them.
-Until then use one of the [other ways](#other-ways-to-install).
-
-Windows installs with an installer that puts the command on your PATH and
-registers the logon task; it comes with the first published release.
+These packages publish on a `v*` tag. Linux still needs the file from that
+release sitting in the folder you run the line from. Windows installs with an
+installer that puts the command on your PATH and registers the logon task; it
+comes with the first published release.
 
 When a new version ships, one command moves you to it:
 
@@ -106,7 +106,8 @@ worked sizes.
 drive update
 ```
 
-`drive update` installs the newest released version and prints the version the
+`drive update` asks the package manager that installed this binary (Homebrew,
+apt, dnf or winget) for the newest released package and prints the version the
 installed binary now reports. `drive update --check` says whether a newer
 version exists and changes nothing.
 
@@ -134,12 +135,11 @@ The one-line install above asks your package manager for the released package.
 The packages come from the same tagged release, so these are the ways when
 that release has not run yet, or you would rather build the command yourself:
 
-- Build the command from the source with the Go toolchain. `drive --help` prints
-  the exact route, and `drive update` runs the same build when a new version
-  ships, so it leaves the old binary in place until the new one is built.
 - Build the Linux and macOS packages on your machine with
   `goreleaser release --snapshot --clean`, then install the file the build
   writes under `dist/`.
+- Build the command from this repository's source with the Go toolchain
+  (`drive --help` prints the module path). That route needs a public module.
 - Windows installs with an MSI built with the stock WiX toolchain: it puts the
   command and rclone on your PATH, brings WinFsp in through WinFsp's own
   package dependency, and registers the logon task.

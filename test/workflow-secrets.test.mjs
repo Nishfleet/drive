@@ -36,6 +36,17 @@ const OTHER_SECRETS = new Set([
   "NISHFLEET_WORKER_PRIVATE_KEY",
   // GitHub's own per-run token, not a stored secret.
   "GITHUB_TOKEN",
+  // Release pipeline (drive#509). The release workflow only runs on v* tags,
+  // and signing/notarize/tap publish stay off when these are empty. They are
+  // not deploy credentials, so they are not bound to environment: production.
+  "GPG_PRIVATE_KEY",
+  "GPG_PASSPHRASE",
+  "HOMEBREW_TAP_TOKEN",
+  "MACOS_SIGN_P12",
+  "MACOS_SIGN_PASSWORD",
+  "MACOS_NOTARY_KEY",
+  "MACOS_NOTARY_KEY_ID",
+  "MACOS_NOTARY_ISSUER_ID",
 ]);
 
 /**

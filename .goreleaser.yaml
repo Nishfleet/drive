@@ -4,11 +4,12 @@
 # Stock release tooling, no hand-written install script: the .deb and .rpm
 # declare `Depends: rclone`, and the Homebrew formula in the tap declares a
 # `rclone` dependency, so the package manager installs both in one command.
-# A v* tag triggers it through a release workflow; that workflow file is a
-# follow-up (fleet-ops#105 blocks a worker token from adding a file under
-# .github/workflows, so the coordinator adds it). The consumer commands are
-# in docs-site/quickstart.md; on Linux they were run against the packages
-# below, and the Homebrew one is pending the tap.
+# A v* tag triggers it through .github/workflows/release.yml (drive#509).
+# Signing and notarize stay off until their secrets exist, so a pre-release
+# tag still publishes GitHub release assets. The consumer commands are
+# generated from this file (src/install-lines.js, test/packaging.test.mjs).
+# On Linux they were run against the packages below, and the Homebrew one is
+# pending the tap.
 #
 # What was searched before choosing this: rclone's own install docs
 # (https://rclone.org/install/), the GoReleaser docs
@@ -55,6 +56,41 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Checksum signatures. The release workflow passes `--skip=sign` when
+# GPG_PRIVATE_KEY is unset, so a pre-release without a signing key still
+# publishes. The block is the stock goreleaser GPG sign of checksums.txt.
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--yes"
+      - "-u"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
+# Cross-platform binary notarize (quill). Off until MACOS_SIGN_P12 is a real
+# cert: an Apple developer account is a spend decision, and the workflow
+# sets NOTARIZE=false when that secret is empty. goreleaser-pro is not used.
+notarize:
+  macos:
+    - ids: [drive]
+      enabled: '{{ eq .Env.NOTARIZE "true" }}'
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: false
+
+release:
+  prerelease: auto
+
 # The Linux packages. `dependencies: [rclone]` is the whole of the one-command
 # promise on Linux: `apt install ./drive_x.deb` (or `dnf install ./drive_x.rpm`)
 # reaches back to the archive and installs rclone, the version `drive init`
@@ -90,6 +126,9 @@ homebrew_casks:
       owner: nish3451
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # auto: skip the tap push on a pre-release, so proving the pipeline with
+    # a v0.0.0-* tag does not need the tap repository to exist yet.
+    skip_upload: auto
     directory: Casks
     homepage: https://drive-pricing.nishant345.workers.dev
     description: A Finder drive for people and their agents, mounted with stock rclone.

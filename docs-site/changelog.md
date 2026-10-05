@@ -99,10 +99,10 @@ the live site.
   resumes from rclone's VFS cache, a full cache disk fails with the table's
   disk-full words and loses nothing already saved, and a killed mount still
   shows the waiting files until they go up.
-- `drive update` and `drive version`: an update replaces the installed CLI
-  with the latest released version by the same `go install` command a person
-  installs with, and `drive version` prints the version the binary was built
-  and installed at, so an update is visible.
+- `drive update` and `drive version`: an update hands off to the package
+  manager that installed the CLI (brew, apt, dnf or winget), and `drive
+  version` prints the version the binary was built and installed at, so an
+  update is visible.
 - Windows gets the same `drive mount` the Mac and Linux have had: `rclone
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),

@@ -1,456 +1,296 @@
 package main
 
 import (
-	"archive/zip"
-	"encoding/json"
+	"fmt"
 	"io"
-	"io/fs"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
 
-// makeProxyZip writes a module-proxy zip of this repository's drive module,
-// tagged v0.9.9, into t.TempDir() and returns the zip path. The layout is the
-// module-proxy protocol's, so a real `go install` can fetch a tagged version
-// of this module through localProxy below, and the update test exercises the
-// whole install path instead of a stub of it. The module source in the zip is
-// the working tree's cmd/drive (minus _test.go files, which a build does not
-// need), so the installed binary is this package.
-func makeProxyZip(t *testing.T) string {
-	t.Helper()
-	const (
-		ver    = "v0.9.9"
-		prefix = "github.com/Nishfleet/drive@" + ver
-	)
-	modDir := filepath.Join(t.TempDir(), "github.com", "!nishfleet", "drive", "@v")
-	if err := os.MkdirAll(modDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	infoJSON, err := json.Marshal(struct{ Version string }{Version: ver})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gomod, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	files := map[string][]byte{
-		"list":        []byte(ver + "\n"),
-		ver + ".info": infoJSON,
-		ver + ".mod":  gomod,
-	}
-	names, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	zp := filepath.Join(modDir, ver+".zip")
-	z, err := os.Create(zp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zw := zip.NewWriter(z)
-	for _, d := range []string{prefix + "/", prefix + "/cmd/", prefix + "/cmd/drive/"} {
-		if _, err := zw.Create(d); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write := func(name string, body []byte) {
-		t.Helper()
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write(body); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(prefix+"/go.mod", gomod)
-	for _, n := range names {
-		if n.IsDir() || !strings.HasSuffix(n.Name(), ".go") || strings.HasSuffix(n.Name(), "_test.go") {
-			continue
-		}
-		body, err := os.ReadFile(n.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		write(prefix+"/cmd/drive/"+n.Name(), body)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := z.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(modDir, name), body, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return zp
+type fakeBin struct {
+	present map[string]bool
+	out     map[string]string
+	err     map[string]error
+	ran     []string
 }
 
-// localProxy serves a module-proxy directory over HTTP: the zip at zipPath,
-// plus the list/info/mod files beside it, and a 404 for anything else (which
-// is how the toolchain learns to fall back from the package path to the module
-// root). It returns the server URL and a cleanup function.
-func localProxy(t *testing.T, zipPath string) (string, func()) {
-	t.Helper()
-	zipBody, err := os.ReadFile(zipPath)
-	if err != nil {
-		t.Fatal(err)
+func (f *fakeBin) lookPath(name string) (string, error) {
+	if f.present[name] {
+		return "/bin/" + name, nil
 	}
-	gomod, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The toolchain resolves `go install <package path>@latest` by asking
-	// the proxy for the package path first and falling back to the module
-	// root, so every request for either path is answered with this module's
-	// files: the published proxy answers a package path the same way.
-	infoJSON, err := json.Marshal(struct{ Version string }{Version: "v0.9.9"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// This proxy speaks only for the module root. A request for the package
-	// path used as a module path answers 404, which is what makes the
-	// toolchain fall back to the module root — the same way
-	// proxy.golang.org behaves.
-	const module = "/github.com/!nishfleet/drive"
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		rest := strings.TrimPrefix(r.URL.Path, module)
-		switch rest {
-		case "/@latest", "/@v/v0.9.9.info":
-			w.Header().Set("content-type", "application/json")
-			_, _ = w.Write(infoJSON)
-		case "/@v/list":
-			_, _ = w.Write([]byte("v0.9.9\n"))
-		case "/@v/v0.9.9.mod":
-			_, _ = w.Write(gomod)
-		case "/@v/v0.9.9.zip":
-			_, _ = w.Write(zipBody)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	srv := httptest.NewServer(mux)
-	return srv.URL, srv.Close
+	return "", fmt.Errorf("not found: %s", name)
 }
 
-// updateTestDir is a temporary directory the test's own cleanup can delete.
-// The Go module cache and build cache write their files read-only, so a
-// plain t.TempDir() would fail to remove them; the chmod pass runs first
-// (cleanups are last-in, first-out) and makes the removal possible.
-func updateTestDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Cleanup(func() {
-		_ = filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
-			if err == nil {
-				_ = os.Chmod(p, 0o700)
-			}
-			return nil
-		})
-	})
-	return dir
+func key(name string, args []string) string {
+	return name + " " + strings.Join(args, " ")
 }
 
-// updateTestEnv is the environment a `go install` runs with in these tests:
-// GOPATH, GOBIN, GOCACHE and GOPROXY pinned to the test so the install
-// touches nothing outside it, and checksums off because the local proxy has
-// no checksum database. The unnamed `go` on PATH is the toolchain CI installs.
-func updateTestEnv(t *testing.T, proxyURL string) []string {
-	t.Helper()
-	gopath := updateTestDir(t)
-	return append(cleanGoEnv(),
-		"GOPATH="+gopath,
-		"GOBIN="+filepath.Join(gopath, "bin"),
-		"GOCACHE="+updateTestDir(t),
-		"GOPROXY="+proxyURL,
-		"GOSUMDB=off",
-		"GOTOOLCHAIN=local",
-		"GOFLAGS=",
-	)
+func (f *fakeBin) capture(name string, args []string) (string, error) {
+	k := key(name, args)
+	f.ran = append(f.ran, k)
+	if err, ok := f.err[k]; ok {
+		return f.out[k], err
+	}
+	if out, ok := f.out[k]; ok {
+		return out, nil
+	}
+	return "", fmt.Errorf("unexpected command %q", k)
 }
 
-// cleanGoEnv is this process's environment with every Go toolchain setting
-// removed. A test that pins GOPROXY, GOPATH or GOBIN must replace the value
-// the host exported, not sit beside it: an environment with two entries of the
-// same name is resolved differently by different systems, so a test that left
-// the host's setting in could read it instead of the one it pinned.
-func cleanGoEnv() []string {
-	drop := map[string]bool{
-		"GOPATH": true, "GOBIN": true, "GOCACHE": true, "GOPROXY": true,
-		"GOSUMDB": true, "GOTOOLCHAIN": true, "GOFLAGS": true,
+func (f *fakeBin) run(name string, args []string, out, errw io.Writer) error {
+	k := key(name, args)
+	f.ran = append(f.ran, k)
+	if err, ok := f.err[k]; ok {
+		return err
 	}
-	env := make([]string, 0, len(os.Environ()))
-	for _, e := range os.Environ() {
-		name := e
-		if i := strings.Index(e, "="); i >= 0 {
-			name = e[:i]
-		}
-		if drop[name] {
-			continue
-		}
-		env = append(env, e)
+	if body, ok := f.out[k]; ok {
+		_, _ = io.WriteString(out, body)
+		return nil
 	}
-	return env
+	return fmt.Errorf("unexpected command %q", k)
 }
 
-// envValue reads one NAME=value out of an environment.
-func envValue(t *testing.T, env []string, name string) string {
-	t.Helper()
-	for _, e := range env {
-		if strings.HasPrefix(e, name+"=") {
-			return strings.TrimPrefix(e, name+"=")
-		}
+func brewBins() *fakeBin {
+	return &fakeBin{
+		present: map[string]bool{"brew": true},
+		out: map[string]string{
+			"brew list --cask drive":                  "drive",
+			"brew outdated --cask nish3451/tap/drive": "",
+			"brew upgrade --cask nish3451/tap/drive":  "",
+		},
+		err: map[string]error{},
 	}
-	t.Fatalf("%s not in the test environment", name)
-	return ""
 }
 
-// A real `go install` against a local module proxy that serves a tagged
-// version of this module: the released version is discovered, the binary is
-// replaced, and the installed binary reports the new version both to this
-// command and to `drive version` in its own process. This is the issue's
-// finish line, run end to end.
-func TestUpdateInstallsTheLatestRelease(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go not on PATH")
-	}
-	zipPath := makeProxyZip(t)
-	proxyURL, cleanup := localProxy(t, zipPath)
-	defer cleanup()
-	env := updateTestEnv(t, proxyURL)
+func TestUpdateHandsOffToBrew(t *testing.T) {
+	f := brewBins()
 	out := new(strings.Builder)
 	if err := updateDrive(updateOptions{
-		proxyBase: proxyURL,
-		goEnv:     env,
-		dir:       t.TempDir(),
-		out:       out,
-		err:       os.Stderr,
+		from:     "0.1.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      out,
+		err:      io.Discard,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "updated drive 0.1.0 -> v0.9.9") {
-		t.Fatalf("update output = %q, want the old and new versions", got)
+	if !strings.Contains(out.String(), "updating drive with brew upgrade --cask nish3451/tap/drive") {
+		t.Fatalf("output = %q, want the brew upgrade line", out.String())
 	}
-	bin := filepath.Join(envValue(t, env, "GOBIN"), "drive")
-	if _, err := os.Stat(bin); err != nil {
-		t.Fatalf("the update did not install a binary at %s: %v", bin, err)
-	}
-	v, err := binaryVersionAt(bin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v != "v0.9.9" {
-		t.Fatalf("installed binary reports %q, want v0.9.9", v)
-	}
-	// The finish line's second half, from the binary's own process.
-	cmd := exec.Command(bin, "version")
-	cmd.Env = env
-	raw, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("drive version: %v\n%s", err, raw)
-	}
-	if got := strings.TrimSpace(string(raw)); got != "v0.9.9" {
-		t.Fatalf("drive version printed %q, want v0.9.9", got)
+	if !strings.Contains(strings.Join(f.ran, "\n"), "brew upgrade --cask nish3451/tap/drive") {
+		t.Fatalf("ran %v, want brew upgrade", f.ran)
 	}
 }
 
-// --check names the newer release and installs nothing.
-func TestUpdateCheckOnly(t *testing.T) {
-	zipPath := makeProxyZip(t)
-	proxyURL, cleanup := localProxy(t, zipPath)
-	defer cleanup()
-	env := updateTestEnv(t, proxyURL)
+func TestUpdateCheckOnlyBrewUpToDate(t *testing.T) {
+	f := brewBins()
 	out := new(strings.Builder)
 	if err := updateDrive(updateOptions{
-		proxyBase: proxyURL,
-		goEnv:     env,
-		dir:       t.TempDir(),
-		out:       out,
+		from:      "v1.0.0",
 		checkOnly: true,
+		lookPath:  f.lookPath,
+		run:       f.run,
+		capture:   f.capture,
+		out:       out,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := "a newer drive is available: v0.9.9 (this machine runs 0.1.0)"
+	if got := out.String(); !strings.Contains(got, "drive is up to date (v1.0.0)") {
+		t.Fatalf("--check output = %q", got)
+	}
+	for _, c := range f.ran {
+		if strings.Contains(c, "upgrade") {
+			t.Fatalf("--check must not upgrade, ran %v", f.ran)
+		}
+	}
+}
+
+func TestUpdateCheckOnlyBrewNewer(t *testing.T) {
+	f := brewBins()
+	f.out["brew outdated --cask nish3451/tap/drive"] = "drive (1.0.0) < 1.1.0"
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:      "v1.0.0",
+		checkOnly: true,
+		lookPath:  f.lookPath,
+		run:       f.run,
+		capture:   f.capture,
+		out:       out,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := "a newer drive is available via brew (this machine runs v1.0.0)"
 	if got := out.String(); !strings.Contains(got, want) {
 		t.Fatalf("--check output = %q, want %q", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(envValue(t, env, "GOBIN"), "drive")); !os.IsNotExist(err) {
-		t.Fatal("--check must not install a binary")
+}
+
+func TestUpdateHandsOffToApt(t *testing.T) {
+	f := &fakeBin{
+		present: map[string]bool{"dpkg-query": true},
+		out: map[string]string{
+			"dpkg-query -W -f ${Status} drive":      "install ok installed",
+			"sudo apt install --only-upgrade drive": "",
+		},
+	}
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:     "0.1.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      out,
+		err:      io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "sudo apt install --only-upgrade drive") {
+		t.Fatalf("output = %q", out.String())
 	}
 }
 
-// A caller that leaves the writers out of updateOptions gets the console,
-// not a panic: the zero value is the production path, not a nil dereference.
-// Only --check runs here, so nothing is installed while the defaults apply.
+func TestUpdateHandsOffToDnf(t *testing.T) {
+	f := &fakeBin{
+		present: map[string]bool{"rpm": true},
+		out: map[string]string{
+			"rpm -q drive":           "drive-1.0.0-1.x86_64",
+			"sudo dnf upgrade drive": "",
+		},
+	}
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:     "0.1.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      out,
+		err:      io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "sudo dnf upgrade drive") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestUpdateHandsOffToWinget(t *testing.T) {
+	f := &fakeBin{
+		present: map[string]bool{"winget": true},
+		out: map[string]string{
+			"winget list --id Nishfleet.Drive --disable-interactivity":    "Nishfleet.Drive 1.0.0",
+			"winget upgrade --id Nishfleet.Drive --disable-interactivity": "",
+		},
+	}
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:     "0.1.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      out,
+		err:      io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "winget upgrade --id Nishfleet.Drive") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+type exitError100 struct{}
+
+func (e *exitError100) Error() string { return "exit status 100" }
+func (e *exitError100) ExitCode() int { return 100 }
+
+func TestUpdateCheckOnlyDnfNewer(t *testing.T) {
+	f := &fakeBin{
+		present: map[string]bool{"rpm": true},
+		out: map[string]string{
+			"rpm -q drive": "drive-1.0.0-1.x86_64",
+		},
+		err: map[string]error{
+			"dnf check-update drive": &exitError100{},
+		},
+	}
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:      "v1.0.0",
+		checkOnly: true,
+		lookPath:  f.lookPath,
+		run:       f.run,
+		capture:   f.capture,
+		out:       out,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "a newer drive is available via dnf") {
+		t.Fatalf("--check output = %q", got)
+	}
+}
+
+func TestUpdateUnknownInstallNamesTheInstallLines(t *testing.T) {
+	f := &fakeBin{present: map[string]bool{}}
+	err := updateDrive(updateOptions{
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      io.Discard,
+		err:      io.Discard,
+	})
+	if err == nil {
+		t.Fatal("an unknown install must be an error")
+	}
+	for _, line := range []string{brewInstallLine, aptInstallLine, dnfInstallLine} {
+		if !strings.Contains(err.Error(), line) {
+			t.Fatalf("error %v must name %q", err, line)
+		}
+	}
+}
+
 func TestUpdateDefaultsTheWriters(t *testing.T) {
-	zipPath := makeProxyZip(t)
-	proxyURL, cleanup := localProxy(t, zipPath)
-	defer cleanup()
+	f := brewBins()
 	if err := updateDrive(updateOptions{
-		proxyBase: proxyURL,
-		goEnv:     updateTestEnv(t, proxyURL),
-		dir:       t.TempDir(),
+		from:      "v1.0.0",
 		checkOnly: true,
+		lookPath:  f.lookPath,
+		run:       f.run,
+		capture:   f.capture,
 	}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// A machine already on the released version installs nothing.
-func TestUpdateAlreadyUpToDate(t *testing.T) {
-	zipPath := makeProxyZip(t)
-	proxyURL, cleanup := localProxy(t, zipPath)
-	defer cleanup()
-	env := updateTestEnv(t, proxyURL)
-	out := new(strings.Builder)
-	if err := updateDrive(updateOptions{
-		proxyBase: proxyURL,
-		goEnv:     env,
-		dir:       t.TempDir(),
-		out:       out,
-		from:      "v0.9.9",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); !strings.Contains(got, "drive is up to date (v0.9.9)") {
-		t.Fatalf("up-to-date output = %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(envValue(t, env, "GOBIN"), "drive")); !os.IsNotExist(err) {
-		t.Fatal("an up-to-date machine must not install")
-	}
-}
-
-// A proxy that refuses is a named error, never a silent "up to date".
-func TestUpdateFailsOnProxyError(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-	err := updateDrive(updateOptions{proxyBase: srv.URL, out: io.Discard, err: io.Discard})
-	if err == nil {
-		t.Fatal("a proxy that answers 404 must be an error")
-	}
-	if !strings.Contains(err.Error(), srv.URL) {
-		t.Fatalf("the error should name the proxy it could not read, got: %v", err)
-	}
-}
-
-// No Go toolchain: the command says so and installs nothing. PATH points at
-// an empty directory, not at a system path a Go install could live on, so the
-// test proves the missing-toolchain path wherever it runs.
-func TestUpdateFailsWhenGoIsMissing(t *testing.T) {
-	zipPath := makeProxyZip(t)
-	proxyURL, cleanup := localProxy(t, zipPath)
-	defer cleanup()
-	env := updateTestEnv(t, proxyURL)
-	// Two paths serve two purposes here: t.Setenv sets the PATH this
-	// process's exec.LookPath reads, which is what resolveGo consults, and
-	// env is the environment any child the install would start would get
-	// (this test never reaches the install).
-	t.Setenv("PATH", t.TempDir())
-	out := new(strings.Builder)
+func TestUpdateFailsWhenUpgradeFails(t *testing.T) {
+	f := brewBins()
+	f.err["brew upgrade --cask nish3451/tap/drive"] = fmt.Errorf("brew failed")
 	err := updateDrive(updateOptions{
-		proxyBase: proxyURL,
-		goEnv:     env,
-		dir:       t.TempDir(),
-		out:       out,
-		err:       io.Discard,
+		from:     "0.1.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      io.Discard,
+		err:      io.Discard,
 	})
 	if err == nil {
-		t.Fatal("no go toolchain must be an error")
+		t.Fatal("a failed upgrade must be an error")
 	}
-	if !strings.Contains(err.Error(), "go not found on PATH") {
-		t.Fatalf("the error should name the missing toolchain, got: %v", err)
-	}
-	if strings.Contains(out.String(), "installing") {
-		t.Fatal("a missing toolchain must not reach the install")
+	if !strings.Contains(err.Error(), "brew") {
+		t.Fatalf("the error should name brew, got: %v", err)
 	}
 }
 
-// The version check reads the proxy the toolchain will install through, not a
-// hard-coded one: with GOPROXY pointed at the local proxy and no proxyBase
-// override, --check finds the release the local proxy serves. If the check
-// ignored GOPROXY it would ask proxy.golang.org, which 404s for this module,
-// and the test would fail.
-func TestUpdateResolvesTheProxyFromTheToolchain(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go not on PATH")
+func TestModuleVersionEmptyAndDevel(t *testing.T) {
+	if got := moduleVersion(&debug.BuildInfo{Main: debug.Module{Version: ""}}); got != "" {
+		t.Fatalf("empty version = %q", got)
 	}
-	zipPath := makeProxyZip(t)
-	proxyURL, cleanup := localProxy(t, zipPath)
-	defer cleanup()
-	out := new(strings.Builder)
-	if err := updateDrive(updateOptions{
-		goEnv:     updateTestEnv(t, proxyURL),
-		dir:       t.TempDir(),
-		out:       out,
-		checkOnly: true,
-	}); err != nil {
-		t.Fatal(err)
+	if got := moduleVersion(&debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}); got != "" {
+		t.Fatalf("devel version = %q", got)
 	}
-	want := "a newer drive is available: v0.9.9 (this machine runs 0.1.0)"
-	if got := out.String(); !strings.Contains(got, want) {
-		t.Fatalf("--check output = %q, want %q", got, want)
-	}
-}
-
-// A machine whose GOPROXY names no module proxy has no released version to
-// read, and the command says exactly that rather than reading some other
-// source the install could not use.
-func TestUpdateFailsWhenTheToolchainHasNoProxy(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go not on PATH")
-	}
-	err := updateDrive(updateOptions{
-		goEnv:     updateTestEnv(t, "off"),
-		dir:       t.TempDir(),
-		out:       io.Discard,
-		err:       io.Discard,
-		checkOnly: true,
-	})
-	if err == nil {
-		t.Fatal("GOPROXY=off must be an error, not a silent version read")
-	}
-	if !strings.Contains(err.Error(), "GOPROXY") {
-		t.Fatalf("the error should name GOPROXY, got: %v", err)
-	}
-}
-
-// The toolchain installs into the first entry of a multi-entry GOPATH, so the
-// path this command reports from must be the first entry too.
-func TestInstalledDrivePathUsesTheFirstGOPATHEntry(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go not on PATH")
-	}
-	root := t.TempDir()
-	first := filepath.Join(root, "first")
-	second := filepath.Join(root, "second")
-	env := append(cleanGoEnv(),
-		"GOPATH="+first+string(os.PathListSeparator)+second,
-		"GOBIN=",
-	)
-	got, err := installedDrivePath("go", env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(filepath.Join(first, "bin"), "drive")
-	if got != want {
-		t.Fatalf("installedDrivePath = %q, want the first GOPATH entry %q", got, want)
-	}
-}
-
-// The proxy URL form is the module path's, not the file system's: uppercase
-// letters are escaped as `!x`.
-func TestModuleProxyPathEscapes(t *testing.T) {
-	if got, want := moduleProxyPath("github.com/Nishfleet/drive"), "github.com/!nishfleet/drive"; got != want {
-		t.Fatalf("moduleProxyPath = %q, want %q", got, want)
+	if got := moduleVersion(&debug.BuildInfo{Main: debug.Module{Version: "v1.2.3"}}); got != "v1.2.3" {
+		t.Fatalf("released version = %q", got)
 	}
 }
 
@@ -461,7 +301,7 @@ func TestDriveVersionFallbackForACheckoutBuild(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")
 	}
-	bin := filepath.Join(t.TempDir(), "drive")
+	bin := t.TempDir() + "/drive"
 	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin, ".")
 	if raw, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, raw)
@@ -476,8 +316,7 @@ func TestDriveVersionFallbackForACheckoutBuild(t *testing.T) {
 }
 
 // A binary built from a dirty checkout carries the toolchain's own
-// pseudo-version, which is that binary's real identity — the update line then
-// compares it against the released version and offers the release.
+// pseudo-version, which is that binary's real identity.
 func TestDriveVersionReportsTheWorkingTreeVersion(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")

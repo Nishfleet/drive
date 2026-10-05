@@ -40,15 +40,15 @@
     - type: javascript
       value: "/never a flag|--secret-key.{0,12}is refused|shell history|\\bps\\b/i.test(output)"
 
-- description: install the command with no install script yet
+- description: install the command from a tagged release
   vars:
     task: >
-      There is no release download and no install script. What is the one way
-      to get the drive command on my machine today?
+      How do I install the drive command on macOS or Linux from a tagged
+      release? Give the exact one-line command for my system.
     source: docs-site/quickstart.md, "1. Install the command"
   assert:
     - type: javascript
-      value: "/go install github.com\\/Nishfleet\\/drive\\/cmd\\/drive/.test(output)"
+      value: "/brew install nish3451\\/tap\\/drive/.test(output) || /apt install \\.\\/drive_\\*\\.deb/.test(output) || /dnf install \\.\\/drive_\\*\\.rpm/.test(output)"
 
 - description: connect the agent tools that are already installed
   vars:
