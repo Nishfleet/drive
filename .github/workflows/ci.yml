@@ -73,8 +73,19 @@ jobs:
       # this job, which is what makes a budget a ratchet rather than a note.
       # Lowering a number in lighthouserc.json is how a speed win gets locked
       # in; raising one needs a measurement in the PR body.
+      # LHCI runs in its own throwaway container, pinned by digest, not from
+      # node_modules: @lhci/cli 0.15.1 is the newest release and its
+      # dependency chain (tmp, inquirer, lighthouse, puppeteer) carries high
+      # npm advisories with no fix (drive#581). The container sees only this
+      # checkout and runs as the runner's own user, so its reports stay
+      # removable. Chrome needs the larger /dev/shm, or the tab crashes.
       - run: npm run build
-      - run: npx lhci autorun
+      - name: Lighthouse CI (in a throwaway container)
+        run: >-
+          docker run --rm --shm-size=1g --user "$(id -u):$(id -g)" -e HOME=/tmp
+          -v "$PWD:/w" -w /w
+          patrickhulce/lhci-client:0.15.1@sha256:558210c5e422a7babaaa09c285b7469da3f00fac1a9880c37883c65d666a7fc9
+          lhci autorun --collect.settings.chromeFlags="--no-sandbox --headless=new"
       - run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b

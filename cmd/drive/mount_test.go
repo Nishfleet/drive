@@ -720,19 +720,10 @@ func startStandin(t *testing.T, rows []hillClimbRow, set string) *hillStandin {
 	}
 	port := freePort(t)
 	h.cfg.Endpoint = "http://127.0.0.1:" + port
-	h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	h.serve = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
-		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	serveLog, err := os.Create(filepath.Join(root, "serve.out"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.serve.Stdout, h.serve.Stderr = serveLog, serveLog
-	if err := h.serve.Start(); err != nil {
-		t.Fatal(err)
-	}
+		"--log-level", "ERROR")
 	t.Cleanup(h.close)
-	waitForPort(t, port)
 	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
 		h.close()
 		t.Fatal(err)

@@ -81,6 +81,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0021_agent_caps_nullable_cap.sql",
   // The prepaid draws (drive#586): low-balance and auto top-up columns.
   "drive/0021_prepaid_draws.sql",
+  // The cap notices the hourly walk sends (drive#496): cap_warned_at and
+  // read_only_sent_at. Expand only, two nullable columns.
+  "drive/0024_cap_notices.sql",
 ]);
 
 /**
