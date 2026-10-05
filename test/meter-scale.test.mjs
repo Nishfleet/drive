@@ -332,9 +332,10 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   await hourly("2026-10-01T01:05:00.000Z");
 
   // The bill is the month the hour falls in, and its divisor is that month's
-  // own minutes (drive#531; required since #678): a fixed 31 days over-bills
-  // February and under-bills July, so the outage test has to ask for the month
-  // it is in, the same call src/dodo.js makes.
+  // own minutes (drive#531; required since #678): a fixed 31 days divides a
+  // 30-day month's minutes by too large a number, so September bills under what
+  // it should and February worst of all. The outage test has to ask for the
+  // month it is in, the same call src/dodo.js makes.
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
     return monthBillCents({

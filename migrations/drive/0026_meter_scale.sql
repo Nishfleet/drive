@@ -11,10 +11,11 @@
 --
 -- Every statement below is `IF NOT EXISTS`, so the rename re-runs nothing even
 -- on a database whose applied-migrations table already records the old name:
--- the second apply finds the index and both tables present and writes the
--- same rows. test/integration/meter-schema.test.mjs applies this file a second
--- time and proves the schema does not move, which is what keeps the renumber
--- from being a D1 change behind an operator's back.
+-- the second apply finds the index and both tables already there and creates no
+-- object. It has no INSERT, and it must never gain one, because those databases
+-- run this file twice. test/integration/meter-schema.test.mjs applies this file
+-- a second time and proves the schema does not move, which is what keeps the
+-- renumber from being a D1 change behind an operator's back.
 
 -- The live rows the hourly rollup reads every hour. The hourly statements
 -- read live rows (`hidden_at IS NULL`) from this index and recently hidden
