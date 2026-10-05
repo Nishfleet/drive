@@ -21,6 +21,8 @@ signin, starter, get-started, upload, docs, 404.
 files, usage.
 
 - Same tokens, same wordmark, same body face.
+- Headings still read `--serif`, which the alias points at the display
+  face. They stay small, so the face is not a shout.
 - Headings stay smaller. No uppercase display shout, no ticker, no orange
   field.
 - The files page keeps its sticky bar, 44px taps and the folder path. The

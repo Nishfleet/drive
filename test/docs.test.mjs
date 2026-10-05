@@ -640,6 +640,14 @@ test("the README describes the drive and points at the docs", () => {
   }
 });
 
+test("the shipped docs do not preload Inter", () => {
+  // VitePress's default theme preloads Inter. transformHtml strips those
+  // tags (drive#458 CLS). A path-shape change that lets a tag through fails
+  // here rather than shipping a 0.015 layout shift.
+  const html = shipped("index.html");
+  assert.doesNotMatch(html, /inter-/i, "the docs HTML must not preload or link Inter");
+});
+
 test("the docs carry the home page's design tokens, not a different palette", () => {
   // The site palette lives in the shared stylesheet (public/site.css, drive
   // #71 / #152 / #458), which the pricing page links; the docs site cannot

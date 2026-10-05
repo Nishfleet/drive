@@ -95,7 +95,7 @@ export default defineConfig({
   // and that extra preload was a 0.015 layout shift (drive#458, budget 0.01).
   transformHtml(code) {
     return code.replace(
-      /<link rel="preload" href="\/docs\/assets\/inter-roman-latin[^"]*" as="font"[^>]*>/g,
+      /<link rel="preload" href="\/docs\/assets\/inter-[^"]*" as="font"[^>]*>/g,
       "",
     );
   },

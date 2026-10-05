@@ -312,7 +312,12 @@ test("part-2 pages adopt the home-page look", () => {
   // drive#458: every public page a visitor can reach from the home page, plus
   // the signed-in pages, sets class="drive" and carries the wordmark mark.
   // The home page already reads --drive-* directly and is the source, not an
-  // adopter.
+  // adopter. PAGES is a directory walk, so a new public page is covered; the
+  // 404 page is named so a rename that drops it from the walk fails here.
+  assert.ok(
+    PAGES.some(([name]) => name === "public/404.html"),
+    "the 404 page must be in the page walk so class=drive is gated",
+  );
   const skip = new Set(["public/index.html"]);
   for (const [name, url] of PAGES) {
     if (skip.has(name)) continue;

@@ -10,6 +10,7 @@
        stylesheet (public/site.css, drive #71); what is left in this page's
        style block is its own components only, and it loads after the shared
        file so an override still works (test/site-styles.test.mjs). -->
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
 /* Upload request page (drive issue #19). Shared base from /site.css; what is
