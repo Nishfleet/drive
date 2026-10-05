@@ -144,6 +144,13 @@ export async function readLimitedBody(request, maxBytes) {
  * runtime provides it, and an accumulator with no byte-count exit over those
  * same equal-length digests where it does not. Either runtime answers this and
  * no caller hand-rolls a compare of its own (drive#618).
+ *
+ * Both sides are hashed, whatever a caller hands in, and the pair matches
+ * when the two hashed sides are equal. A site holding raw strings (the
+ * bucket's event token) hands those in. A site holding hashes (the api's
+ * device secret, drive#636, which a row stores only as the hash of its secret)
+ * hands those in too, and then the match asks whether the two hashes are the
+ * same one.
  * @param {unknown} presented
  * @param {unknown} configured
  * @returns {Promise<boolean>}

@@ -291,16 +291,9 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 
 	port := freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port,
 		"--log-level", "INFO")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
 
 	// Seed the stand-in so there is something in the drive to read. The seed
 	// runs after the server is up and writes through the rclone config the

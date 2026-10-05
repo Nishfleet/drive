@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
+import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /** Every migration that applies to the customer database, in order. */
 export const DRIVE_MIGRATIONS = Object.freeze([
@@ -64,6 +65,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0021_agent_caps_nullable_cap.sql",
   // The prepaid draws (drive#586): low-balance and auto top-up columns.
   "drive/0021_prepaid_draws.sql",
+  // The cap notices the hourly walk sends (drive#496): cap_warned_at and
+  // read_only_sent_at. Expand only, two nullable columns.
+  "drive/0024_cap_notices.sql",
 ]);
 
 /**
@@ -84,34 +88,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
  * another order: `0012_agent_key_ttl.sql` lands before
  * `0012_branch_snapshot_kv.sql` here exactly as the filenames sort.
  */
-export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
-  "drive/0002_file_index.sql",
-  "drive/0003_branches.sql",
-  "drive/0004_agent_undo.sql",
-  "drive/0005_better_auth.sql",
-  "drive/0005_meter.sql",
-  "drive/0006_share_links.sql",
-  "drive/0006_usage_stored_bytes.sql",
-  "drive/0007_device_codes.sql",
-  "drive/0008_teams.sql",
-  "drive/0009_upload_request_caps.sql",
-  "drive/0010_accounts_devices.sql",
-  "drive/0011_rate_limit.sql",
-  "drive/0012_agent_key_ttl.sql",
-  "drive/0012_branch_snapshot_kv.sql",
-  "drive/0013_billing_pushes.sql",
-  "drive/0014_device_queues.sql",
-  "drive/0015_branch_row_id.sql",
-  "drive/0016_founding.sql",
-  "drive/0017_account_close.sql",
-  "drive/0017_agent_caps_drop_month_key.sql",
-  "drive/0017_drop_branches_snapshot.sql",
-  "drive/0018_agent_caps_drop_month_spend.sql",
-  // The per-agent monthly cap's schema default, cleared (drive#534). The cap
-  // tests read this row, so the subset carries the file that makes the column
-  // nullable and clears the 0004 default.
-  "drive/0021_agent_caps_nullable_cap.sql",
-]);
+export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze(
+  MIGRATION_FILES.map((name) => `drive/${name}`),
+);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";

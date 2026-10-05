@@ -178,6 +178,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
   }),
+  // An upload-request drop named a file the owner already has. Overwriting
+  // that file from a public link is the bug drive#518 closes.
+  "upload-name-taken": Object.freeze({
+    what: "A file with that name is already in this folder.",
+    next: "Choose another name and drop the file again.",
+  }),
   // The branch this call named does not exist on this drive.
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
@@ -195,6 +201,31 @@ export const FAILURE_MESSAGES = Object.freeze({
   "file-not-found": Object.freeze({
     what: "That file is not here.",
     next: "Open the folder again to see what is in it.",
+  }),
+  // The storage key this path lives at is longer than the store can hold, so the
+  // file cannot be written, parked or put back. `validatePath` counts
+  // characters and a key is counted in bytes, and the trash name percent-encodes
+  // every non-ASCII byte into three characters, so a long path that is not ASCII
+  // becomes a key the storage refuses (drive issue #567). It is the file's own
+  // name that has to change, not the drive.
+  "path-too-long": Object.freeze({
+    what: "That path is too long for this drive to store.",
+    next: "Shorten the name or move the file to a shorter folder.",
+  }),
+  // The bytes at this path changed while a delete was moving them, so the
+  // original was left alone rather than removed: the newer bytes are a save
+  // that landed while the delete ran (drive issue #567). Nothing was lost, and
+  // the delete is safe to ask for again.
+  "delete-file-changed": Object.freeze({
+    what: "That file changed while it was being deleted, so it was left alone.",
+    next: "Try the delete again.",
+  }),
+  // The same refusal on the restore half: the copy in Recently deleted
+  // changed under the restore, so it is still parked rather than removed, and
+  // the copy that ran first is what the drive holds (drive issue #567).
+  "restore-file-changed": Object.freeze({
+    what: "That file in Recently deleted changed while it was being put back.",
+    next: "Try the restore again.",
   }),
   // The branch was already approved or discarded, so there is nothing left to
   // apply or throw away.

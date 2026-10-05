@@ -78,11 +78,6 @@ export function billingConfigFor(price) {
     // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
-    // A bill under this rolls into the next month, and the card is charged
-    // when the running balance reaches it. One number the FAQ's words and the
-    // future collection step both read, so the copy cannot name a threshold
-    // the ledger does not use.
-    chargeThresholdUsd: 5,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
@@ -428,23 +423,30 @@ export function savedLine(bill, gbMinutes) {
 
 /**
  * The bill so far, compared with the cap, and whether the drive is read-only.
- * The cap counts the storage line of monthBillCents() — min(metered so far,
- * maximum) — not the raw meter, so the cap can never pass what the invoice
- * will be. At the cap the api Worker deletes each write-capable key and mints
- * read-only ones; the CLI restarts the mount. Nothing is deleted.
+ * The cap counts the total of monthBillCents() — the storage line, min(metered
+ * so far, maximum), plus the download line — not the raw meter, so the cap can
+ * never pass what the invoice will be, and a month of downloads alone reaches
+ * the cap the way a month of storage does (drive#496). At the cap the api
+ * Worker deletes each write-capable key and mints read-only ones; the CLI
+ * restarts the mount. Nothing is deleted.
  * @param {unknown} gbMinutes metered so far this month
  * @param {unknown} capUsd the account's cap in dollars
  * @param {BillingConfig} [config=BILLING_CONFIG]
+ * @param {{downloadBytes?: number, averageStoredGb?: number}} [downloads] the
+ *   month's download bytes and average stored size; omitted is a storage-only
+ *   month
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
-export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG) {
+export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG, downloads = {}) {
   const minutes = checked(gbMinutes, "gbMinutes");
   const cap = checked(capUsd, "capUsd");
   const counted =
     monthBillCents({
       gbMinutes: minutes,
+      downloadBytes: downloads.downloadBytes ?? 0,
+      averageStoredGb: downloads.averageStoredGb ?? 0,
       config: billingConfig(config),
-    }).storageCents / 100;
+    }).totalCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it: a bill
   // that lands exactly on the cap is what the person agreed to pay. Passing the
   // cap is what cuts writes off.
@@ -615,7 +617,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       billableBytes: downloads.billableBytes,
       usd: downloads.usd,
     }),
-    cap: capStatus(gbMinutes, effectiveCap, config),
+    cap: capStatus(gbMinutes, effectiveCap, config, { downloadBytes, averageStoredGb }),
     // The finished strings the page sets and `drive usage` prints. One place
     // formats each number, so a change here moves both surfaces together.
     labels: Object.freeze({
@@ -714,7 +716,9 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null}|null} account the signed-in account, or null when signed out. `usage` is the
+ *   month's own metered numbers, read by the route from the account store's
+ *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
  */
@@ -734,23 +738,40 @@ export function handleUsageRequest(request, account, upload = null, balanceLine 
     typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
       ? account.capUsd
       : BILLING_CONFIG.defaultCapUsd;
-  const empty = usageSummary({
-    gbMinutes: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd,
-    // The write-cap basis is a provisioned account's own (unchanged): the cap
-    // line this endpoint reports still matches the cap enforceCap() stops
-    // writes at (src/index.js capStateFor). The card on file is the account's
-    // own stamp, read from the accounts row (drive#417); until it is really on
-    // file there is no charge to report, so the honest label is "no charge
-    // yet" and the page shows no bill. It is absent (false) for a caller that
-    // names no card, so the check fails closed.
-    cardAdded: true,
-    cardOnFile: account.cardOnFile === true,
-  });
+  // The month's own numbers, when the route read them (drive#496). The route
+  // passes the account store's `monthUsage` result — `monthUsageThrough` behind
+  // `usageSummary`'s shape, the same metered month the cap and the invoice
+  // read — so /api/usage reports what the drive actually holds and has
+  // downloaded rather than the empty month this used to build. Without it
+  // (the unit tests that call the handler directly, and a deployment with no
+  // DRIVE_DB) the empty month stands and the response is still well formed;
+  // a real deployment always has the binding, and the route passes the read
+  // whenever it can.
+  const metered = account.usage;
+  const empty =
+    metered !== null && typeof metered === "object"
+      ? usageSummary(
+          /** @type {Parameters<typeof usageSummary>[0]} */ (
+            /** @type {Record<string, unknown>} */ (metered)
+          ),
+        )
+      : usageSummary({
+          gbMinutes: 0,
+          storedGb: 0,
+          storedDaily: [],
+          downloadBytes: 0,
+          averageStoredGb: 0,
+          capUsd,
+          // The write-cap basis is a provisioned account's own (unchanged): the cap
+          // line this endpoint reports still matches the cap enforceCap() stops
+          // writes at (src/index.js capStateFor). The card on file is the account's
+          // own stamp, read from the accounts row (drive#417); until it is really on
+          // file there is no charge to report, so the honest label is "no charge
+          // yet" and the page shows no bill. It is absent (false) for a caller that
+          // names no card, so the check fails closed.
+          cardAdded: true,
+          cardOnFile: account.cardOnFile === true,
+        });
   // The cap line rides on the response rather than inside usageSummary(): the
   // summary is money (numbers only, which is what the usage page's chart and
   // the invoice read), and building the line here is what lets the Go CLI print

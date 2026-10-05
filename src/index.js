@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
@@ -24,18 +23,20 @@ import {
   handleUsageRequest,
   QUOTE_ENDPOINT,
   USAGE_ENDPOINT,
-  usageSummary,
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
-import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { handleSendEmailRequest } from "./email-send.js";
+import { CAP_ENDPOINT, capStateForAccount, handleCapRequest, runCapEnforcement } from "./cap.js";
+import { handleSendEmailRequest, isSameOriginRequest } from "./email-send.js";
 import {
   createMemoryStore,
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
+  purgeExpiredTrash,
   scopeStore,
   storageBucketForKey,
+  storageVarsFromEnv,
+  TRASH_PURGE_SCHEDULE,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
@@ -45,7 +46,9 @@ import {
   handleStorageEventRequest,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  pruneHiddenVersions,
   reconcileMeter,
+  recordNightlySizes,
   runMeterCron,
   toMillis,
 } from "./meter.js";
@@ -201,18 +204,9 @@ let filesStore;
  * and the Files page already answers from the in-memory store when they are
  * unset. The names match the api Worker's iDrive pair so the site Worker can
  * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
- * pair a local `rclone serve s3` still uses.
- * @typedef {Env & {
- *   FILES_S3_ENDPOINT?: string,
- *   FILES_S3_BUCKET?: string,
- *   FILES_S3_REGION?: string,
- *   FILES_S3_ACCESS_KEY_ID?: string,
- *   FILES_S3_SECRET_ACCESS_KEY?: string,
- *   IDRIVE_S3_ENDPOINT?: string,
- *   IDRIVE_S3_REGION?: string,
- *   IDRIVE_S3_ACCESS_KEY_ID?: string,
- *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
- * }} StorageEnv
+ * pair a local `rclone serve s3` still uses. The typedef's one definition is
+ * src/files.js's, beside the one reader of the vars.
+ * @typedef {import("./files.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */
@@ -292,27 +286,23 @@ function forwardToApi(c) {
  */
 function storeFor(env) {
   if (!filesStore) {
-    const storage = devStorage(env);
-    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    // The four storage vars read through src/files.js's one reader, the same
+    // read provisionAccountBucket makes at the sign-in verify step, so the
+    // store and the provisioning cannot name two endpoints.
+    const { endpoint, accessKeyId, secretAccessKey, region } = storageVarsFromEnv(devStorage(env));
     if (endpoint) {
-      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
-      const secretAccessKey =
-        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
-      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
       const signed =
-        typeof accessKeyId === "string" &&
-        accessKeyId !== "" &&
-        typeof secretAccessKey === "string" &&
-        secretAccessKey !== "" &&
-        typeof region === "string" &&
-        region !== "";
+        accessKeyId !== undefined && secretAccessKey !== undefined && region !== undefined;
       filesStore = createS3Store({
         endpoint,
         bucketFor: storageBucketForKey,
         ...(signed
           ? {
               region,
-              credentials: { accessKeyId, secretAccessKey },
+              credentials: {
+                accessKeyId: /** @type {string} */ (accessKeyId),
+                secretAccessKey: /** @type {string} */ (secretAccessKey),
+              },
             }
           : {}),
       });
@@ -420,23 +410,27 @@ async function liveDevicesFor(env, account) {
 // it reads the token owner's usage_minutes rows and answers their cap, and no
 // upload route changes.
 /**
- * The `_accountId` is the swap point's seam: the meter (issue #6) will read
- * the named account's usage_minutes rows here, and until it lands every
- * account gets the empty month the usage endpoint answers with.
+ * The resolver the public upload-request links ask about the account that owns
+ * the link (`capStateForAccount`, src/cap.js, drive#496). It is bound to the
+ * environment because the cap is in D1, so the answer for one deployment's
+ * account has to come from that deployment's rows and not from a module-level
+ * constant.
  *
- * @param {string} _accountId
+ * Before the meter, this answered the empty month for every account, so
+ * "active", and a public upload link never stopped at its owner's cap. It now
+ * reads the account's own cap and the metered month the invoice reads, which
+ * is what makes the 403 below a real refusal rather than a rehearsal.
+ *
+ * The device store is built per call rather than cached, because the
+ * resolver is handed straight to the route table and a Worker isolates globals
+ * across requests; a per-request store is also the only store that can be
+ * built for the env a particular request carries.
+ *
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<"active"|"read_only">}
  */
-function capStateFor(_accountId) {
-  const empty = usageSummary({
-    gbMinutes: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
-    cardAdded: true,
-  });
-  return empty.cap.state;
+function capStateFor(env) {
+  return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
@@ -450,8 +444,9 @@ function capStateFor(_accountId) {
 // It is registered on "/api/*" alone and its own isPublic() check skips the
 // public routes declared above, so the two public POST routes keep the repo's
 // own same-origin rule (src/waitlist.js, src/email-send.js) and the token
-// lanes keep their tokens. The browser-facing write lane under /api/files
-// additionally takes Hono's built-in csrf() middleware below.
+// lanes keep their tokens. One CSRF middleware on /api/* then covers every
+// other write: the two public POSTs keep their handler copies, and every
+// other non-GET is refused here before the handler runs.
 //
 // @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
 async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
@@ -473,39 +468,57 @@ async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hon
   await next();
 }
 
-// Hono's own csrf() refuses a request with neither Origin nor Sec-Fetch-Site
-// before a custom origin/secFetchSite handler is consulted (its undefined
-// short-circuit returns false), which would refuse curl and the Go CLI — the
-// callers the repo's same-origin rule deliberately lets through, because a
-// caller that sends no browser header is not a browser and the account gate
-// is what holds it (src/email-send.js isSameOriginRequest, load-bearing in
-// src/files.js for the three state-changing routes). So the built-in
-// middleware runs only when a browser evidence header is present; a
-// non-browser request falls straight through to the handler, whose own
-// same-origin check answers with the product's sentence rather than a bare
-// "Forbidden". The browser case is still Hono's middleware deciding.
-const browserCsrf = csrf({
-  origin: (origin, c) => origin === new URL(c.req.url).origin,
-  secFetchSite: (site) => site === "same-origin",
-});
+// One CSRF rule for every non-GET /api/* route. The check is the repo's
+// same-origin function (src/email-send.js): a caller with no Origin and no
+// Sec-Fetch-Site (curl, the Go CLI) is not a browser, so it passes and the
+// account gate is what holds it; a browser that names another origin, or
+// Origin: null without Sec-Fetch-Site: same-origin, is refused with the
+// message table's cross-site words. Hono's built-in csrf() only inspects
+// form content-types, so a JSON POST would slip past it — the copies this
+// replaced were already covering that, and this middleware is that same
+// rule once, in front of every write.
+//
+// The two public POSTs keep their own handler copies (waitlist sign-up and
+// the token-gated send lane) and are skipped here so those sentences stay
+// the product's, not a second generic 403.
+const CSRF_EXEMPT_PATHS = new Set(["/api/waitlist", SEND_EMAIL_PATH]);
 /**
- * Hono's csrf(), run only when a browser evidence header is present.
+ * Same-origin CSRF on every write except the two public POSTs that keep
+ * their own handler copies.
  * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
  */
-const csrfWhenBrowser = (c, next) =>
-  c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
-    ? next()
-    : browserCsrf(c, next);
+const csrfWhenBrowser = async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
+    return next();
+  }
+  const path = c.req.path.replace(/\/+$/, "") || "/";
+  if (CSRF_EXEMPT_PATHS.has(path)) return next();
+  if (!isSameOriginRequest(c.req.raw)) {
+    return c.json({ error: failureMessage("cross-site") }, 403);
+  }
+  return next();
+};
 
 /** @param {DriveContext} c */
-const filesHandler = (c) => {
+const filesHandler = async (c) => {
   const account = c.get("account");
+  // The account's own state, read from the accounts row the cap saves
+  // (drive#496). The handler asks for it rather than reading D1 itself, so the
+  // write refusal below is one rule with one source and the tests can drive it
+  // with a store they control. No DRIVE_DB means no cap state to enforce, so
+  // the options carry no resolver and the account gate is what holds the route.
   return handleFilesRequest(
     c.req.raw,
     account ? withIndex(storeFor(c.env), c.env.DRIVE_DB, account) : null,
     account,
     Date.now(),
-    { db: c.env.DRIVE_DB, prepaidPause: prepaidPauseOn(c.env) },
+    c.env.DRIVE_DB
+      ? {
+          db: c.env.DRIVE_DB,
+          prepaidPause: prepaidPauseOn(c.env),
+          accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
+        }
+      : { prepaidPause: prepaidPauseOn(c.env) },
   );
 };
 
@@ -548,20 +561,14 @@ export function createApp() {
   // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
 
-  // Same-origin / CSRF protection on the browser-facing write lane, with
-  // Hono's built-in csrf() middleware. It is registered on the account-gated
-  // files lane so an anonymous request is its 401, not a 403: the gate is the
-  // outer rule. It covers exactly the requests a cross-site page can forge —
-  // a form-encoded or multipart POST to the account routes — and reads no
-  // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
-  // (curl, the Go CLI) is not a browser, so it passes this check and the
-  // account gate is what holds it.
-  app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
-  app.use(STARTER_ENDPOINT, csrfWhenBrowser);
-  app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
-  app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
-  app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
-  app.use(AUTO_TOPUP_ENDPOINT, csrfWhenBrowser);
+  // Same-origin / CSRF protection on every non-GET /api/* route except the
+  // two public POSTs that keep their handler copies. Registered after the
+  // account gate so an anonymous request is its 401, not a 403: the gate is
+  // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
+  // Go CLI) is not a browser, so it passes this check and the account gate
+  // is what holds it. /api/starter is a write route under this one rule
+  // (drive#539), so it carries the check without its own registration.
+  app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -688,6 +695,14 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
+    // The month's own metered numbers, read from the same store and the same
+    // `monthUsageThrough` the cap walk and the invoice read (drive#496). This
+    // is what turns /api/usage from an empty month into the account's real
+    // one, including the download bytes the earlier read dropped. It is null
+    // when there is no binding, so the handler falls back to the empty month
+    // rather than failing the page.
+    /** @type {Record<string, unknown>|null} */
+    let usage = null;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
@@ -698,6 +713,9 @@ export function createApp() {
       // line a card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
+      usage = /** @type {Record<string, unknown>} */ (
+        await store.monthUsage(account.id, { capUsd })
+      );
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -715,7 +733,7 @@ export function createApp() {
       : null;
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile },
+      { ...account, capUsd, cardOnFile, usage },
       await liveQueueFor(c.env, account),
       balance,
     );
@@ -763,6 +781,10 @@ export function createApp() {
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
+    // The full two-provider choice (S3, else iDrive), not the S3 one alone
+    // (drive#496): on an iDrive deployment a store wired to the S3 provider
+    // alone has no provider that can revoke at the storage side, so the swap
+    // that a cap write performs was a no-op on the drive itself.
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
@@ -843,13 +865,15 @@ export function createApp() {
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
-    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env)),
+    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env), {
+      ipLimiter: c.env.SHARE_DOWNLOAD_RATE_LIMITER,
+    }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
-    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
+    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor(c.env), {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
       db: c.env.DRIVE_DB,
@@ -958,6 +982,38 @@ export default {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
       const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      // The cap walk, right after the rollup and before the push (drive#496).
+      // The order is the whole point: the rollup is what makes the current
+      // hour count, so a walk that ran before it would enforce the previous
+      // hour's spend and then wait a full hour to catch up. The push is after
+      // it so the invoice for those hours is built from the same rows the cap
+      // was decided on.
+      //
+      // A cap that threw would be retried by Cloudflare with the whole
+      // trigger, rollup included, which is the same contract the rollup above
+      // has: an enforced cap that did not happen must be a failed trigger and
+      // not a quiet zero. The walk's own state saves are guarded and its
+      // notice stamps are written after the send, so a retry neither
+      // re-sends a notice that went nor un-swaps a swap that happened.
+      /** @type {ReadonlyArray<{id: string, error: unknown}>} */
+      let capFailures = [];
+      if (env.DRIVE_DB) {
+        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const cap = await runCapEnforcement({
+          store: createD1DeviceStore(env.DRIVE_DB, {
+            keyProvider: keyProviderFor(env) ?? undefined,
+          }),
+          now: event.scheduledTime,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+        });
+        if (cap.mailed > 0 || cap.readOnly > 0) {
+          console.log(
+            `cap: ${cap.readOnly} of ${cap.accounts} metered account(s) at their cap, ${cap.mailed} notice(s) sent`,
+          );
+        }
+        capFailures = cap.failures;
+      }
       // The trip's clock, once, as epoch milliseconds: runMeterCron reads
       // scheduledTime through toMillis, and the draw and settle steps below
       // take only a number, so they read the same normalised instant.
@@ -991,6 +1047,15 @@ export default {
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
         now,
       });
+      // A cap step that failed for some accounts is raised last, after every
+      // other account was decided and the hours were drawn and settled, so Cloudflare
+      // records a failed trigger and the next run retries those accounts.
+      if (capFailures.length > 0) {
+        throw new AggregateError(
+          capFailures.map((failure) => failure.error),
+          `cap: enforcement failed for ${capFailures.length} account(s)`,
+        );
+      }
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
@@ -1006,6 +1071,24 @@ export default {
       // other. Its own per-account catches mean only a whole-cron failure
       // (D1 down) rejects here, and a failed trigger is the honest signal
       // for that: the next night retries everything it did not finish.
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // Retention (drive issue #564): the reconciler has finished its
+      // repairs, so the prune sees the row set the provider listings have
+      // already agreed with, and a version the provider still lists is never
+      // deleted from under it. A skipped prune is reported, not thrown: the
+      // hours the cutoff needs are still being booked by the hourly rollup,
+      // and the next nightly run tries again. The rows the prune would have
+      // deleted keep being summed into usage_minutes meanwhile, so skipping
+      // loses nothing but the space.
+      const pruned = await pruneHiddenVersions(env.METER_DB, event.scheduledTime);
+      if (pruned.skipped !== null) {
+        console.log(`meter retention: skipped, ${pruned.skipped}`);
+      } else {
+        console.log(
+          `meter retention: pruned=${pruned.pruned} hidden rows before ` +
+            `${new Date(pruned.cutoff).toISOString()}`,
+        );
+      }
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
         context.waitUntil(
@@ -1021,7 +1104,17 @@ export default {
           }),
         );
       }
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The nightly size row (drive issue #564): the growth numbers the
+      // spec's decision watches, written to nightly_sizes and printed here,
+      // where an operator reading Worker logs sees one line a day. Awaited
+      // like everything else on this trip: a size row that failed must be a
+      // failed run, not a silent gap in the table.
+      const sizes = await recordNightlySizes(env.METER_DB, event.scheduledTime);
+      console.log(
+        `nightly sizes: day=${sizes.day} ` +
+          `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
+          `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
+      );
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
@@ -1029,6 +1122,23 @@ export default {
     // 2026-10-04T08:37:56Z had `empty_pointer_open=0`, `open_rows=0`,
     // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
     // whose JSON the sweep could still move. Dropping the column is #339.
+
+    // The nightly trash purge (drive issue #521). Awaited for the same reason
+    // as the meter's trips: a purge that failed must be a failed trigger
+    // Cloudflare retries, not a run that logged success having removed
+    // nothing, because a parked file past 30 days is one the page has
+    // already told its person is gone. The store is scoped per account
+    // inside `purgeExpiredTrash`, so the listing never crosses accounts.
+    if (event.cron === TRASH_PURGE_SCHEDULE) {
+      if (!env.DRIVE_DB) {
+        throw new Error("the nightly trash purge needs the customer database");
+      }
+      const purged = await purgeExpiredTrash(env.DRIVE_DB, store, event.scheduledTime);
+      console.log(
+        `trash: removed ${purged.purged} expired file(s) across ${purged.accounts} account(s)`,
+      );
+      return;
+    }
 
     context.waitUntil(
       (async () => {

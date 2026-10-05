@@ -50,11 +50,11 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
 import {
   etagMatches,
   joinPath,
   previewContentType,
+  previewDisposition,
   safeFileName,
   scopeStore,
   TRASH_PATH,
@@ -433,6 +433,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -661,6 +662,17 @@ export function createD1LinkStore(db) {
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
+      async releaseUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = MAX(upload_count - 1, 0), " +
+            "upload_bytes = MAX(upload_bytes - ?1, 0) " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
     },
   };
 }
@@ -776,18 +788,6 @@ async function capStateFor(resolver, accountId) {
   return state;
 }
 
-// The one refusal for a state-changing link request that came from another
-// origin. A specific line rather than the table's generic fallback: "try
-// again in a moment" would be advice to retry a request that will always be
-// refused, and the one next step is to do it from the drive page — the same
-// shape src/files.js answers its cross-site upload, delete and restore with.
-function crossSiteRefused() {
-  return json(
-    { error: "Sharing and upload requests are only accepted from your drive page." },
-    403,
-  );
-}
-
 /** The request's own origin: the links are absolute so they can be copied.
  *
  * @param {Request} request
@@ -839,8 +839,9 @@ export function folderDisplayName(folder) {
  * the account prefix is applied, so a share can only ever name a path inside
  * the account that minted it.
  *
- * Reading is safe to repeat, so only the two that change the drive — minting
- * and revoking — carry the cross-site rule src/files.js already uses.
+ * Reading is safe to repeat. Cross-site writes are the Worker's CSRF
+ * middleware (src/index.js csrfWhenBrowser), not a second copy of the
+ * same-origin rule here.
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
@@ -855,9 +856,6 @@ export async function handleShareRequest(request, files, links, account, options
   const base = baseFromRequest(request);
   const store = links.shares;
   const scoped = scopeStore(files, account);
-  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
-    return crossSiteRefused();
-  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -944,12 +942,25 @@ export async function handleShareRequest(request, files, links, account, options
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{now?: number}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 export async function handleShareFileRequest(request, files, links, options = {}) {
   const now = options.now ?? Date.now();
   if (request.method !== "GET" && request.method !== "HEAD") {
     return methodNotAllowed("GET", "GET this link to open the file.");
+  }
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: options.ipLimiter,
+        key: clientIpKey(request, "share-download"),
+        name: "SHARE_DOWNLOAD_RATE_LIMITER",
+      },
+    ],
+    "share-download",
+  );
+  if (limited) {
+    return limited;
   }
   const token = new URL(request.url).pathname.slice(SHARE_LINK_PREFIX.length + 1);
   const checked = validateToken(token);
@@ -1034,10 +1045,15 @@ export async function handleShareFileRequest(request, files, links, options = {}
  * unknown type as octet-stream, and an .html named as text/html does not come
  * back as a page. The header pair is the same one the preview path carries:
  * nosniff honors the type above, and the sandbox policy gives a document an
- * opaque origin with no script of its own — which is what keeps an uploaded
- * .svg from acting as a page on our origin when the link is opened directly.
- * A picture or a PDF still opens in the tab, which is what "a link that opens
- * the file" means.
+ * opaque origin with no script of its own. The disposition is
+ * previewDisposition()'s: a picture, a PDF and plain text still open in the
+ * tab, which is what "a link that opens the file" means, while the one type
+ * that can still act as a document — an .svg, whose links navigate — leaves as
+ * an attachment, so a link can never hand a stranger a rendered document on
+ * our address to phish a password from (drive#657). Every type the preview
+ * allowlist refuses — the XML document family (XHTML, XSLT, RDF, MathML and
+ * multipart/related uploads, issue #548) — is octet-stream, and leaves as an
+ * attachment for the same reason.
  * @param {string} path the shared file's drive path, for the type's kind
  * @param {string} contentType the type the store reported
  * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
@@ -1050,7 +1066,7 @@ function shareHeaders(path, contentType, extra = {}) {
   /** @type {Record<string, string>} */
   const headers = {
     "content-type": previewContentType(path, contentType),
-    "content-disposition": "inline",
+    "content-disposition": previewDisposition(path.split("/").pop() || "", contentType),
     "cache-control": "private, no-store",
     "x-content-type-options": "nosniff",
     "content-security-policy": "sandbox",
@@ -1102,9 +1118,6 @@ export async function handleRequestRequest(request, files, links, account, optio
   const base = baseFromRequest(request);
   const store = links.requests;
   const scoped = scopeStore(files, account);
-  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
-    return crossSiteRefused();
-  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -1317,17 +1330,55 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  // This stat is the ordinary-duplicate answer: a drop of a name that is
+  // already stored gets the same 409 on every backend, before any bytes are
+  // reserved or written. It is NOT the race answer — the gap between this
+  // check and the write below is where drive#644's race lived, two uploads
+  // both seeing a free name and both landing. The create-only write is what
+  // decides the winner; on a backend whose PUT honors If-None-Match the
+  // race closes in the storage itself, and on one that does not, this
+  // pre-check still catches every duplicate that is not mid-race. The one
+  // observable a non-honoring backend leaves open: a true mid-race pair both
+  // answer 201, both reservations stay counted (conservative — the link
+  // fills sooner, never past its cap), and the last PUT's bytes stand, which
+  // the provider's hide-not-delete versioning keeps recoverable.
+  if ((await scoped.stat(path)) !== null) {
+    return json({ error: failureMessage("upload-name-taken") }, 409);
+  }
   const reserved = await links.requests.addUpload(checked.token, sized.bytes);
   if (!reserved) {
     return json({ error: failureMessage("upload-link-full") }, 413);
   }
+  // The create-only write, not a bare write: two uploads that got past the
+  // check above within the same instant cannot both win — the store itself
+  // decides whether the key was still free when the bytes arrived. The bytes
+  // are reserved first so a stranger cannot outrun the link total; a lost
+  // race or a failed write releases them, the same release either way.
+  let won;
   try {
-    // sized.body is a Uint8Array (or empty). FileStore.write already accepts
-    // any BodyInit: the memory store does `new Response(body).arrayBuffer()`,
-    // and the S3 stand-in PUTs the same body fetch accepts.
-    await scoped.write(path, sized.body, contentType);
+    // sized.body is a Uint8Array (or empty). FileStore.writeIfAbsent already
+    // accepts any BodyInit: the memory store does `new Response(body)
+    // .arrayBuffer()`, and the S3 stand-in PUTs the same body fetch accepts.
+    won = await scoped.writeIfAbsent(path, sized.body, contentType);
   } catch (cause) {
+    await links.requests.releaseUpload(checked.token, sized.bytes);
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
+  }
+  if (!won) {
+    // The name was taken while this upload was in flight: the winner's bytes
+    // stand, this upload stored nothing, and its reservation comes back. A
+    // release that itself fails is a 500 with the cause logged, not a clean
+    // 409 that hides a counter now reading fuller than the link's truth.
+    try {
+      await links.requests.releaseUpload(checked.token, sized.bytes);
+    } catch (cause) {
+      // No token in the log: it is a stranger's capability, and the log
+      // outlives the link. The folder and the drop's size name the event.
+      return serverFailure(
+        `releasing a lost-race reservation for a ${sized.bytes}-byte drop into ${record.folder}: ${String(cause)}`,
+      );
+    }
+    return json({ error: failureMessage("upload-name-taken") }, 409);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

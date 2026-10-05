@@ -250,6 +250,19 @@ Who builds it: queue workers, one issue per step, in a new product repo created 
 | NFS mount quirks on macOS | Medium | Proven in step 2; the Swift app replaces it later |
 | Two saves clash | Medium | The last save wins, and the earlier one stays in version history; the Swift app should keep both side by side |
 
+### The meter database at scale (decided 2026-10-05, drive #564)
+
+The one shared D1 database stays. `file_versions` is the fast grower — every upload, overwrite and delete is a row — so the nightly meter trip now deletes rows hidden more than 35 days (the 30-day restore window plus the provider's own 30-day version keep, plus 5 days of margin) once every hourly rollup has booked their minutes into `usage_minutes`, and writes one size row a day (`nightly_sizes`, also printed to the Worker log) so growth is watched, not discovered. The delete reads the partial index on `hidden_at` that ships with the retention migration, so it walks the rows it deletes, not the table.
+
+**The size row's exact counts are the point, and their cost is accepted.** `COUNT(*)` on `file_versions` scans the table, so the day's row costs one full scan per growing table, off the request path, once a night. A sampled or estimated counter would dodge that scan only by keeping the exact number unknown — the number the trigger below acts on — so the scan stays, and the trigger's own act bounds it: at the split, every scan the watch depends on shrinks to the account's share.
+
+Two alternatives were rejected:
+
+- **Per-account D1 databases.** The rollup groups every account's versions in one GROUP BY, the caps and month usage read across accounts, and the rollup watermark is one row. D1 has no cross-database query, so a split turns each hourly run into N queries plus a directory of which account lives where — a standing cost on every hour, bought against a size limit measured nightly instead.
+- **A per-account manifest object in the account's bucket.** The meter's answers are SQL aggregates (per-hour grouping, MIN/MAX, the same-size waiver's NOT EXISTS). A manifest object cannot answer those without loading every account's full manifest every hour, which is the DISTINCT scan this decision removes, moved to slower storage.
+
+**Trigger to revisit:** act when the nightly size row shows `file_version_rows` above 20 million (about 5 GB of rows and indexes, half of D1's 10 GB per-database cap) for a week, or the Cloudflare dashboard shows the drive database above 5 GB, whichever comes first. Below that line the nightly prune and the accounts-table lists keep every scan proportional to live data, not to history.
+
 ## Rules
 
 - Do not queue build work until Nish says go. Reuse this spec and `../machine/plan.md` instead of re-researching.

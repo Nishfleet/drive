@@ -43,6 +43,9 @@ function dataFor(kind) {
   // read every sentence a customer can be sent.
   if (kind === "top-up-receipt") return { amountUsd: 25, balanceUsd: 31.5, auto: true };
   if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null };
+  if (kind === "device-approve-notice") {
+    return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 
@@ -61,6 +64,15 @@ const OFFER_WORDS = [
   /\b7 days free\b/i,
   /\bfirst month\b/i,
   /founding/i,
+];
+// drive#586: the balance is prepaid, so nothing is charged to a card after use.
+// The retired "charge the card when the balance reaches $5" model must not
+// come back in any wording: "charged when the balance reaches $5", "charge at
+// $5", "bills under $5 roll into the next month".
+const CHARGE_AT_THRESHOLD = [
+  /\bcharged?\b[^.]{0,40}\b(when|once|at|after)\b[^.]{0,30}\$\d/i,
+  /\bbalance (reaches|hits|gets to) \$\d/i,
+  /\bunder \$\d+ roll/i,
 ];
 const getStarted = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const docsSiteDir = new URL("../docs-site/", import.meta.url);
@@ -113,6 +125,34 @@ test("the gate itself scans a surface that once carried the words", () => {
   assert.ok(docsPages.some((page) => page.name === "docs-site/changelog.md"));
 });
 
+test("no shipped page, doc, FAQ or email charges a card at a balance threshold", () => {
+  for (const [name, text] of offerSurfaces()) {
+    for (const stale of CHARGE_AT_THRESHOLD) {
+      assert.doesNotMatch(text, stale, `${name} carries the retired charge-at-$5 wording`);
+    }
+  }
+});
+
+test("the charge-at-$5 gate trips on the retired wording and passes the prepaid copy", () => {
+  // The gate proves it can fail, on the exact sentence the FAQ used to carry.
+  const retired = [
+    "Bills under $5 roll into the next month; the card is charged when the balance reaches $5.",
+    "We charge at $5.",
+    "Your card is charged once you owe $5.",
+  ];
+  for (const sentence of retired) {
+    assert.ok(
+      CHARGE_AT_THRESHOLD.some((pattern) => pattern.test(sentence)),
+      `the gate must catch "${sentence}"`,
+    );
+  }
+  for (const sentence of [PRICE.headline, PRICE.needCard, PRICE.noPlansLine, PRICE.rule]) {
+    for (const pattern of CHARGE_AT_THRESHOLD) {
+      assert.doesNotMatch(sentence, pattern);
+    }
+  }
+});
+
 test("sign-up without a card is refused, in plain words", () => {
   assert.equal(hasSignupCard(undefined), false);
   assert.equal(hasSignupCard(false), false);
@@ -127,7 +167,7 @@ test("sign-up without a card is refused, in plain words", () => {
 });
 
 test("pricing copy has no membership, and says minimum only as no minimum", () => {
-  assert.equal(PRICE.noMinimumLine, "No minimum. No plans.");
+  assert.equal(PRICE.noPlansLine, "No plans. Your balance never expires.");
   assert.equal("membershipLine" in PRICE, false);
   assert.equal("freeLine" in PRICE, false);
   for (const line of [PRICE.headline, PRICE.rule, PRICE.needCard]) {
@@ -135,7 +175,7 @@ test("pricing copy has no membership, and says minimum only as no minimum", () =
     assert.doesNotMatch(line, MEMBERSHIP);
   }
   // The guard itself: it lets "no minimum" through and stops everything else.
-  assert.doesNotMatch("No minimum. No plans.", MINIMUM_IN_PRICING);
+  assert.doesNotMatch("No plans. Your balance never expires.", MINIMUM_IN_PRICING);
   assert.match("a $10 minimum", MINIMUM_IN_PRICING);
 });
 
@@ -171,7 +211,7 @@ test("site, FAQ, emails, build-spec and README carry no $1 credit text", () => {
 test("the README states the headline and the card at sign-up", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   assert.ok(readme.includes(PRICE.headline), "README is missing the headline");
-  assert.ok(readme.includes(PRICE.noMinimumLine), "README is missing the no-minimum line");
+  assert.ok(readme.includes(PRICE.noPlansLine), "README is missing the no-minimum line");
   assert.doesNotMatch(readme, MEMBERSHIP, "README still names a membership");
   assert.ok(readme.includes(PRICE.needCard), "README is missing the card-at-sign-up line");
   assert.doesNotMatch(readme, CREDIT_TEXT, "README still carries $1 credit text");
@@ -183,7 +223,7 @@ test("the public site never contains the founding cap or a spots count", () => {
     assert.doesNotMatch(page.text, FOUNDING_LEAK, page.name);
     assert.equal(page.text.includes("1,000"), false, `${page.name} leaked 1,000`);
   }
-  assert.ok(pages.some((page) => page.text.includes(PRICE.noMinimumLine)));
+  assert.ok(pages.some((page) => page.text.includes(PRICE.noPlansLine)));
 });
 
 test("the public site never names a rival or quotes a rival's price", () => {

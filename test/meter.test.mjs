@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
+import { createS3Store, TRASH_PURGE_SCHEDULE } from "../src/files.js";
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
@@ -31,6 +32,7 @@ import {
   HOUR_GB_MINUTES_SQL,
   handleStorageEventRequest,
   hourStart,
+  isTrashPath,
   listMeteredAccounts,
   looksLikeNotificationRecord,
   MAX_CATCHUP_HOURS,
@@ -38,10 +40,13 @@ import {
   METER_RECONCILE_SCHEDULE,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
+  monthUsageRollup,
   notificationRecord,
   notificationRecords,
+  pruneHiddenVersions,
   reconcileMeter,
   recordEvent,
+  recordNightlySizes,
   recordUsage,
   rollupHour,
   runMeterCron,
@@ -92,6 +97,15 @@ async function storeCreate(db, accountId, overrides = {}) {
   const receivedAt = overrides.createdAt ?? midnight();
   const event = validateEvent(createEvent(accountId, overrides));
   assert.equal(event.error, undefined, event.error);
+  // The account row exists before any version of it can: sign-up makes the
+  // account, the drive serves it, and only then does an upload fire an event
+  // (drive issue #564 - the metered account list is read off `accounts`).
+  // OR IGNORE because a test that re-stores the same account's versions
+  // re-mints nothing.
+  await db
+    .prepare("INSERT OR IGNORE INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, `${accountId}@drive.test`, midnight())
+    .run();
   return recordEvent(db, event, receivedAt);
 }
 
@@ -871,12 +885,30 @@ test("one account's hour is summed from its own versions, and only that account'
   assert.equal(db.tables.usage_minutes.get(`other|${midnight()}`).gb_minutes_live, 100 * 60);
 });
 
-test("an account with nothing stored never gets a row", async () => {
+test("an account with nothing stored never gets a usage_minutes row", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc123");
+  // The account list is the accounts table (drive issue #564): the account
+  // exists, so it is listed with no version of it anywhere.
   assert.deepEqual(await listMeteredAccounts(db), ["abc123"]);
   const empty = makeMeteredDB();
   assert.deepEqual(await listMeteredAccounts(empty.db), []);
+});
+
+test("the metered account list is the accounts table, versions or not", async () => {
+  const { db } = makeMeteredDB();
+  // No accounts, no list - and no version scan to run to learn it.
+  assert.deepEqual(await listMeteredAccounts(db), []);
+  // An account that signed up and never uploaded is still the drive's to
+  // serve, and the reconciler walks it: one provider listing that comes
+  // back empty. The old DISTINCT-over-versions list could not see this
+  // account at all.
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("quiet", "quiet@drive.test")
+    .run();
+  await storeCreate(db, "loud");
+  assert.deepEqual(await listMeteredAccounts(db), ["loud", "quiet"]);
 });
 
 test("an hour with nothing live in it clears its row rather than keeping a stale number", async () => {
@@ -1692,6 +1724,111 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
   }
 });
 
+// --- The trash billing rule (drive issue #521) ------------------------
+
+// A web delete parks the file at u/<account>/.trash/<timestamp>__<name> and
+// the page promises the deletion stops the charge. These tests drive the
+// shipping rollup over the real migrations, so the rule is proven where the
+// money is computed, not on a hand-made read.
+test("a file parked in Recently deleted stops counting the hour it is parked", async () => {
+  const { db } = makeMeteredDB();
+  const hour = midnight();
+  const hourEnd = hour + 60 * MINUTE_MS;
+  // A live 1 GB file and a parked 2 GB file, both present the whole hour:
+  // only the live one is billed, even though the parked copy's bytes are
+  // still in the bucket.
+  db.insertVersion({
+    fileId: "live",
+    path: "u/acct0/keep.mov",
+    sizeBytes: GB,
+    createdAt: hour,
+    hiddenAt: null,
+  });
+  db.insertVersion({
+    fileId: "parked",
+    path: `u/acct0/.trash/${hour}__old.mov`,
+    sizeBytes: 2 * GB,
+    createdAt: hour,
+    hiddenAt: null,
+  });
+  // A person's own folder named .trash deeper in the tree is theirs, not the
+  // trash folder, and keeps billing. A % wildcard crosses /, so the check
+  // must be one exact segment under the account.
+  db.insertVersion({
+    fileId: "theirs",
+    path: "u/acct0/photos/.trash/keep.mov",
+    sizeBytes: GB,
+    createdAt: hour,
+    hiddenAt: null,
+  });
+
+  const rolled = await rollupHour(db, hour, hourEnd);
+
+  const row = db.tables.usage_minutes.get(`acct0|${hour}`);
+  assert.ok(row);
+  // 2 GB live for 60 minutes; the parked 2 GB books nothing.
+  assert.equal(row.gb_minutes_live, 120);
+  assert.equal(row.stored_bytes, 2 * GB);
+  assert.equal(rolled.accounts, 1);
+});
+
+test("an account whose every version is parked is an empty hour, not an unmeasured month", async () => {
+  const { db } = makeMeteredDB();
+  const hour = midnight();
+  db.insertVersion({
+    fileId: "parked",
+    path: `u/acct0/.trash/${hour}__old.mov`,
+    sizeBytes: 2 * GB,
+    createdAt: hour,
+    hiddenAt: null,
+  });
+
+  const rolled = await rollupHour(db, hour, hour + 60 * MINUTE_MS);
+
+  // The account has version rows, so without the trash rule its hour would
+  // read as a mark the month's peak could hang on. With it, no row is
+  // written and the month reads as genuinely empty.
+  assert.equal(rolled.accounts, 0);
+  assert.equal(db.tables.usage_minutes.get(`acct0|${hour}`), undefined);
+  const month = await monthUsageRollup(db, "acct0", hour, hour + 60 * MINUTE_MS);
+  assert.equal(month.peakBytes, 0, "measured-empty, not a RangeError about an unmeasured month");
+});
+
+test("the JS reference and the SQL agree that a parked file books nothing", async () => {
+  const hour = midnight();
+  const now = hour + 60 * MINUTE_MS;
+  const shapes = [
+    { sizeBytes: GB, createdAt: hour, hiddenAt: null },
+    {
+      sizeBytes: 2 * GB,
+      createdAt: hour,
+      hiddenAt: hour + 30 * MINUTE_MS,
+      // Parked mid-hour: the SQL must bill neither its minutes nor its mark,
+      // and the reference must drop the same row.
+      path: `u/acct0/.trash/${hour + 30 * MINUTE_MS}__old.mov`,
+    },
+  ];
+  const { db } = makeMeteredDB();
+  for (const [index, shape] of shapes.entries()) {
+    db.insertVersion({ fileId: `f${index}`, ...shape });
+  }
+  const expected = gbMinutesInHour(shapes, hour, now);
+  const rolled = await rollupHour(db, hour, now);
+  assert.equal(rolled.gbMinutes, expected, "both sides exclude the parked file");
+  assert.equal(rolled.gbMinutes, 60, "the live 1 GB books its 60 minutes alone");
+});
+
+test("isTrashPath is the second segment under the account, nothing wider", () => {
+  assert.equal(isTrashPath("u/acct/.trash/123__a.txt"), true);
+  assert.equal(isTrashPath("/u/acct/.trash/123__a.txt"), true);
+  // Deeper in the tree it is a person's own folder, and it bills.
+  assert.equal(isTrashPath("u/acct/photos/.trash/123__a.txt"), false);
+  assert.equal(isTrashPath("u/acct/keep.txt"), false);
+  assert.equal(isTrashPath("/u/acct/.trash"), false);
+  assert.equal(isTrashPath(undefined), false);
+  assert.equal(isTrashPath(42), false);
+});
+
 // A folder move through the mount is a server-side copy to the new key, then
 // a delete of the old one (measured 2026-10-03, docs/research/folder-moves.md:
 // 10 server-side copies for a 10 GB folder, zero bytes through the machine).
@@ -1920,6 +2057,9 @@ function providerStore(versionsByPrefix) {
     async write() {
       throw new Error("the reconciler never writes a file");
     },
+    async writeIfAbsent() {
+      throw new Error("the reconciler never writes a file");
+    },
     async remove() {
       throw new Error("the reconciler never removes a file");
     },
@@ -2086,6 +2226,87 @@ test("two accounts reconciled twice in a row are idempotent", async () => {
   assert.deepEqual(twice, once, "a re-roll rewrites the same totals, never adds");
 });
 
+test("a version listing that ends on the next page still finds the hide", async () => {
+  const { db } = makeMeteredDB();
+  // The event stream stored the create and never the hide. The provider's
+  // listing is wide enough that the version that replaced this one sits on
+  // the next page, and the key carries an ampersand, so the marker between
+  // the two pages is escaped (drive issue #504). The nightly reconciler walks
+  // the store the product actually uses (src/files.js createS3Store), not a
+  // one-page fixture.
+  const key = "u/acc1/notes&more.md";
+  await storeCreate(db, "acc1", {
+    eventId: "evt-create",
+    b2FileId: "v-old",
+    path: "/u/acc1/notes&more.md",
+    createdAt: at("2026-09-30T00:30:00.000Z"),
+  });
+  await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight()}`).gb_minutes_live,
+    30,
+    "the create's own half hour",
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live,
+    60,
+    "and the whole hour after, billed as if it were still live",
+  );
+
+  const page1 = `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult>
+  <Version><Key>${key}</Key><VersionId>v-old</VersionId><IsLatest>false</IsLatest>
+    <Size>${GB}</Size><LastModified>2026-09-30T00:30:00.000Z</LastModified></Version>
+  <NextKeyMarker>u/acc1/notes&amp;more.md</NextKeyMarker>
+  <NextVersionIdMarker>v-old</NextVersionIdMarker>
+</ListVersionsResult>`;
+  const page2 = `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult>
+  <Version><Key>u/acc1/notes&amp;more.md</Key><VersionId>v-new</VersionId>
+    <IsLatest>true</IsLatest><Size>${GB}</Size>
+    <LastModified>2026-09-30T00:50:00.000Z</LastModified></Version>
+</ListVersionsResult>`;
+  /** @type {{url: string, method: string}[]} */
+  const calls = [];
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    /** @param {string|URL|Request} url @param {RequestInit} [init] */
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), method: init.method ?? "GET" });
+      const started = new URL(String(url)).searchParams.has("version-id-marker");
+      return new Response(started ? page2 : page1, { status: 200 });
+    },
+  });
+
+  const repaired = await reconcileMeter(db, store, at("2026-09-30T03:00:00.000Z"));
+  assert.equal(repaired.hidden, 1, "the hide the second page carried");
+  assert.equal(repaired.inserted, 1, "and the version that caused it");
+  assert.equal(calls.length, 2, "the store fetched a second page with the marker");
+  assert.match(
+    calls[1].url,
+    /key-marker=u%2Facc1%2Fnotes%26more\.md/,
+    "the marker was sent decoded from the escaped listing, then encoded for the URL",
+  );
+  assert.equal(
+    db.tables.file_versions.get("acc1|v-old").hidden_at,
+    at("2026-09-30T00:50:00.000Z"),
+    "a hide on the next page closes the row on the first",
+  );
+
+  await runMeterCron(db, at("2026-09-30T03:05:00.000Z"));
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight()}`).gb_minutes_live,
+    30,
+    "the 30 minutes the key was held, the two versions merged into one holding",
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(`acc1|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live,
+    60,
+    "only the replacement bills the hour after its start, not both versions",
+  );
+});
+
 test("the reconciler fails loudly without a database or a version listing", async () => {
   const { db } = makeMeteredDB();
   await assert.rejects(() => reconcileMeter(undefined, providerStore({})), /METER_DB/);
@@ -2096,6 +2317,188 @@ test("the reconciler fails loudly without a database or a version listing", asyn
   );
 });
 
+// --- Retention: hidden versions leave the ledger (drive issue #564) ------
+
+test("the prune deletes exactly the rows hidden past the window, and the booked minutes survive", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const day = 24 * 60 * MINUTE_MS;
+  // Four versions around the cutoff (now = midnight + 40 days, so the cutoff
+  // is midnight + 5 days): one hidden a month before it, one hidden an hour
+  // before it - both pruned - one hidden exactly at it, and one never hidden.
+  // The rule is strictly older, so the edge row stays, and a live row is
+  // never the prune's business.
+  /**
+   * @param {string} id
+   * @param {number} when
+   */
+  const created = (id, when) =>
+    recordEvent(
+      db,
+      validateEvent({
+        eventId: `evt-${id}`,
+        keyName: "/u/abc123/",
+        path: `/u/abc123/${id}.bin`,
+        b2FileId: id,
+        sizeBytes: GB,
+        createdAt: when,
+        action: "uploaded",
+      }),
+      when,
+    );
+  /**
+   * @param {string} id
+   * @param {number} when
+   */
+  const hidden = (id, when) =>
+    recordEvent(
+      db,
+      validateEvent({
+        eventId: `evt-${id}-hidden`,
+        keyName: "/u/abc123/",
+        path: `/u/abc123/${id}.bin`,
+        b2FileId: id,
+        action: "file hidden",
+        hiddenAt: when,
+        eventTimestamp: when,
+      }),
+      when,
+    );
+  await created("v-old", midnight() - day);
+  await hidden("v-old", midnight() - day + 12 * 60 * MINUTE_MS);
+  await created("v-pre", midnight());
+  await hidden("v-pre", midnight() + 5 * day - 60 * MINUTE_MS);
+  await created("v-edge", midnight());
+  await hidden("v-edge", midnight() + 5 * day);
+  await created("v-live", midnight());
+
+  // Book every hour the versions lived, the way the hourly trigger does, so
+  // the watermark ends ahead of the cutoff: the "after summarising them"
+  // half of the rule, proven rather than assumed.
+  for (let t = midnight(); t <= midnight() + 7 * day; t += MAX_CATCHUP_HOURS * 60 * MINUTE_MS) {
+    await runMeterCron(db, t);
+  }
+  const minutesBefore = sqlite
+    .prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes")
+    .get().s;
+
+  const pruned = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(pruned.skipped, null, "a caught-up rollup lets the prune run");
+  assert.equal(pruned.pruned, 2, "the two rows hidden before the cutoff");
+  assert.deepEqual(
+    sqlite
+      .prepare("SELECT b2_file_id FROM file_versions ORDER BY b2_file_id")
+      .all()
+      .map((row) => row.b2_file_id),
+    ["v-edge", "v-live"],
+    "the row hidden at the cutoff and the live row stay",
+  );
+  const minutesAfter = sqlite
+    .prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes")
+    .get().s;
+  assert.equal(minutesAfter, minutesBefore, "deleting rows does not touch booked minutes");
+});
+
+test("the prune skips while the rollup has not booked the cutoff's hours yet", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const day = 24 * 60 * MINUTE_MS;
+  const seen = () => sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n;
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-old",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/old.bin",
+      b2FileId: "v-old",
+      sizeBytes: GB,
+      createdAt: midnight() - day,
+      action: "uploaded",
+    }),
+    midnight() - day,
+  );
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-old-hidden",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/old.bin",
+      b2FileId: "v-old",
+      action: "file hidden",
+      hiddenAt: midnight(),
+      eventTimestamp: midnight(),
+    }),
+    midnight(),
+  );
+  // No rollup has ever run, so no watermark exists: no hour is provably
+  // booked, and nothing is deleted no matter how old the hidden row is.
+  const first = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(first.pruned, 0);
+  assert.notEqual(first.skipped, null);
+  assert.equal(seen(), 1);
+
+  // A watermark behind the cutoff hour skips the same way.
+  await db
+    .prepare(
+      "INSERT INTO meter_rollup_state (id, rolled_through) VALUES (1, ?1) " +
+        "ON CONFLICT(id) DO UPDATE SET rolled_through = ?1",
+    )
+    .bind(midnight() + day)
+    .run();
+  const second = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(second.pruned, 0);
+  assert.notEqual(second.skipped, null);
+  assert.equal(seen(), 1);
+
+  // The same watermark caught up to the cutoff hour lets the prune run.
+  await db
+    .prepare("UPDATE meter_rollup_state SET rolled_through = ?1 WHERE id = 1")
+    .bind(midnight() + 5 * day)
+    .run();
+  const third = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(third.skipped, null);
+  assert.equal(third.pruned, 1);
+  assert.equal(seen(), 0);
+});
+
+test("the nightly size row counts the tables once a day, and a retry rewrites the day", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await storeCreate(db, "abc123");
+  await runMeterCron(db, midnight() + 60 * MINUTE_MS);
+  const sizes = await recordNightlySizes(db, midnight() + 90 * MINUTE_MS);
+  assert.equal(sizes.day, "2026-09-30");
+  assert.equal(sizes.fileVersionRows, 1);
+  assert.equal(sizes.fileVersionBytes, GB);
+  assert.equal(sizes.usageMinuteRows, 1);
+  assert.equal(sizes.fileIndexRows, 0);
+
+  // A retried run in the same UTC day rewrites the day's row - the size row
+  // is a reading of today, not an event that happened.
+  await recordNightlySizes(db, midnight() + 2 * 60 * MINUTE_MS);
+  let rows = sqlite
+    .prepare(
+      "SELECT day, file_version_rows, file_version_bytes, usage_minute_rows, file_index_rows " +
+        "FROM nightly_sizes ORDER BY day",
+    )
+    .all()
+    .map((row) => ({ ...row }));
+  assert.deepEqual(rows, [
+    {
+      day: "2026-09-30",
+      file_version_rows: 1,
+      file_version_bytes: GB,
+      usage_minute_rows: 1,
+      file_index_rows: 0,
+    },
+  ]);
+
+  // The next UTC day is its own row.
+  await recordNightlySizes(db, midnight() + 24 * 60 * MINUTE_MS);
+  rows = sqlite.prepare("SELECT day FROM nightly_sizes ORDER BY day").all();
+  assert.deepEqual(
+    rows.map((row) => row.day),
+    ["2026-09-30", "2026-10-01"],
+  );
+});
+
 // --- The wiring the repo can see -----------------------------------------
 
 test("the cron trigger the config declares is the one the meter exports", () => {
@@ -2103,7 +2506,8 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.equal(METER_CRON, "5 * * * *");
   assert.equal(METER_RECONCILE_SCHEDULE, "0 4 * * *");
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *");
-  const schedules = [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE];
+  assert.equal(TRASH_PURGE_SCHEDULE, "0 5 * * *");
+  const schedules = [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE];
   assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
   assert.notEqual(
@@ -2112,9 +2516,16 @@ test("the cron trigger the config declares is the one the meter exports", () => 
     "the two nightly walks do not share a trip",
   );
   assert.notEqual(METER_RECONCILE_SCHEDULE, METER_CRON, "the reconciler is not the hourly rollup");
-  // The config spells the same three strings the modules export, so a changed
+  assert.notEqual(
+    TRASH_PURGE_SCHEDULE,
+    METER_RECONCILE_SCHEDULE,
+    "the trash purge is not the meter's reconciler",
+  );
+  assert.notEqual(TRASH_PURGE_SCHEDULE, REINDEX_SCHEDULE, "the trash purge is not the reindex");
+  assert.notEqual(TRASH_PURGE_SCHEDULE, METER_CRON, "the trash purge is not the hourly rollup");
+  // The config spells the same four strings the modules export, so a changed
   // schedule cannot drift from the trigger that runs it: src/index.js tells
-  // the three trips apart by the cron string the platform hands it.
+  // the four trips apart by the cron string the platform hands it.
   //
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
@@ -2128,7 +2539,7 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.deepEqual(
     declared,
-    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE],
+    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE],
     "cloudflare.config.ts declares the schedules the meter and the index export",
   );
 

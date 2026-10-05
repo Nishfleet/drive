@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   BodyTooLargeError,
@@ -123,8 +124,39 @@ test("the token compare is constant-shape and never a prefix match", async () =>
   assert.equal(await tokensMatch(TOKEN, TOKEN), true);
   assert.equal(await tokensMatch(`${TOKEN}x`, TOKEN), false, "a longer token is not the token");
   assert.equal(await tokensMatch(TOKEN.slice(0, -1), TOKEN), false, "a prefix is not the token");
+  assert.equal(
+    await tokensMatch(TOKEN.slice(0, 4), TOKEN),
+    false,
+    "a shorter token is not the token",
+  );
   assert.equal(await tokensMatch("", TOKEN), false);
   assert.equal(await tokensMatch(undefined, TOKEN), false);
   assert.equal(await tokensMatch(TOKEN, undefined), false);
   assert.equal(await tokensMatch(TOKEN, ""), false);
+});
+
+// drive#636: the compare's home is the one place all three api token checks
+// read it from, so the shapes the three sites actually hand it are pinned here
+// rather than only through a route. The bucket's notification route passes two
+// raw strings. The other two (the device secret in `keystore.js` and
+// `devices.js`) pass digests, because a device is stored as its secret's hash:
+// the stored hash and the hash of the presented secret.
+test("the token compare answers the api's three call sites", async () => {
+  const storedDigest = createHash("sha256").update(TOKEN).digest("hex");
+  const presentedDigest = createHash("sha256").update(TOKEN).digest("hex");
+  assert.equal(
+    await tokensMatch(storedDigest, presentedDigest),
+    true,
+    "the stored hash and the hash of the presented secret",
+  );
+  assert.equal(
+    await tokensMatch(storedDigest, createHash("sha256").update(`${TOKEN}x`).digest("hex")),
+    false,
+    "another secret's hash does not match the stored hash",
+  );
+  assert.equal(
+    await tokensMatch(TOKEN, storedDigest),
+    false,
+    "a raw secret beside a digest is not the shape those two sites use",
+  );
 });

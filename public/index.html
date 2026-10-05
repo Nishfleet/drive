@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — 2¢ per GB, never more than $10 per TB</title>
-  <meta name="description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
+  <meta name="description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
        in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
@@ -23,14 +23,14 @@
   <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
   <meta property="og:site_name" content="Drive">
   <meta property="og:title" content="Drive — 2¢ per GB, never more than $10 per TB">
-  <meta property="og:description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
+  <meta property="og:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
   <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Drive — Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
+  <meta property="og:image:alt" content="Drive — Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $10 per TB">
-  <meta name="twitter:description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
   <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <script type="application/ld+json">
 {
@@ -39,7 +39,7 @@
   "name": "Drive",
   "applicationCategory": "BusinessApplication",
   "operatingSystem": "macOS, Linux",
-  "description": "A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
+  "description": "A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
   "url": "https://drive-pricing.nishant345.workers.dev/",
   "image": "https://drive-pricing.nishant345.workers.dev/og.png",
   "offers": {
@@ -52,7 +52,7 @@
       "priceCurrency": "USD",
       "unitText": "TB-month"
     },
-    "description": "Pay only for what you store. 2 cents per GB. Never more than $10 per TB. You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB."
+    "description": "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB. You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB."
   }
 }
   </script>
@@ -266,10 +266,13 @@ a {
   text-transform: uppercase;
 }
 
+/* drive#586: the rate line is a sentence now ("Pay 2 cents per GB from your
+   balance."), so it is set smaller than the old two-word number to stay
+   within the hero column. */
 .price-heading .amount {
   display: block;
-  font-size: clamp(88px, 8.6vw, 128px);
-  line-height: 0.84;
+  font-size: clamp(48px, 5vw, 76px);
+  line-height: 0.9;
   letter-spacing: -0.015em;
   text-transform: uppercase;
 }
@@ -1806,7 +1809,7 @@ details p {
   }
 
   .price-heading .amount {
-    font-size: min(24vw, 112px);
+    font-size: min(11.5vw, 60px);
   }
 
   .price-heading .unit {
@@ -1940,15 +1943,15 @@ details p {
         <div>
           <p class="kicker">For Mac &amp; Linux &middot; big files &middot; AI agents</p>
           <h1 class="price-heading" id="price-heading">
-            <span class="lead">Pay only for what you store.</span>
-            <span class="amount">2 cents per&nbsp;GB.</span>
+            <span class="lead">Add $10 or more.</span>
+            <span class="amount">Pay 2 cents per&nbsp;GB from your balance.</span>
             <span class="unit">Never more than $10 per TB.</span>
           </h1>
-          <p class="slogan">Terabytes in Finder.<br><span>No minimum. No plans.</span></p>
+          <p class="slogan">Terabytes in Finder.<br><span>No plans. Your balance never expires.</span></p>
           <p class="lede">A drive for your video, datasets and archives. It uses almost no disk, and your agents can read and write it. Your first file is there about 1 second after install.</p>
           <div class="cta-row">
             <a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a>
-            <p class="cta-note">Add a card, store 200&nbsp;GB, pay $4 a month.</p>
+            <p class="cta-note">Add $10, store 200&nbsp;GB, and it draws $4 a month.</p>
           </div>
           <p class="open-note">The drive is not open yet. Sign-ups on the pricing page go to a waitlist. <a href="#waitlist" data-waitlist-source="pricing-page">Join the waitlist</a>.</p>
         </div>
@@ -1988,8 +1991,8 @@ details p {
 
       <div class="ticker" aria-hidden="true">
         <div class="ticker-track">
-          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>agents can never delete</span><span>macOS + Linux</span>
-          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>2¢ a GB</span><span>add $10 or more</span><span>no plans</span><span>never more than $10 per TB</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>2¢ a GB</span><span>add $10 or more</span><span>no plans</span><span>never more than $10 per TB</span><span>agents can never delete</span><span>macOS + Linux</span>
         </div>
       </div>
     </section>
@@ -2135,6 +2138,7 @@ details p {
             </div>
           </dl>
           <p class="examples-note">You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.</p>
+          <p class="examples-note">A deleted file stops counting as soon as it lands in Recently deleted. After 30 days it is removed for good. <a href="/docs/how-it-works#restore">How deletes and restores work</a>.</p>
           <p class="examples-note">Version history is not in version 1. <a href="/docs/limits">What version 1 does not do</a>.</p>
         </div>
       </div>
@@ -2177,7 +2181,7 @@ details p {
             <h2 class="big" id="faq-heading">Short<br>answers.</h2>
           </div>
           <div>
-            <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No minimum. No plans.</p></details>
+            <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No plans. Your balance never expires.</p></details>
             <details><summary>Can my agents wreck my files?</summary><p>No. Agent keys can list, read and write. They can never delete.</p></details>
             <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When the bill would pass it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
             <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
@@ -2220,7 +2224,7 @@ details p {
           <a href="/signin">Sign in</a>
           <a href="/get-started">Get started</a>
         </nav>
-        <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.</p>
+        <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
       </div>
     </div>
   </footer>
