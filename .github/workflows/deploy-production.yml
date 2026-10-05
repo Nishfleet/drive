@@ -115,13 +115,19 @@ jobs:
         # fails the deploy instead, before any migration or ship. It reads the
         # secret NAMES the Worker has, never a value. Red until drive#667 sets
         # MAIL_FROM, which is the point.
+        # A CLI or parse failure is reported as itself, never as a missing
+        # sender: the name check exits 3 only when the list read fine.
         run: |
-          npx cf workers secrets list --worker drive-pricing --quiet |
-            node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.exit(s.some((x)=>x.name==="MAIL_FROM")?0:1)' || {
-            echo "::error::MAIL_FROM is not set on drive-pricing, so every customer email would fail. Set it per drive#667."
-            exit 1
-          }
-          echo "MAIL_FROM is set on drive-pricing"
+          names=$(npx cf workers secrets list --worker drive-pricing --quiet) ||
+            { echo "::error::could not list the secret names on drive-pricing; the cf error is above"; exit 1; }
+          rc=0
+          printf '%s' "$names" |
+            node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.exit(s.some((x)=>x.name==="MAIL_FROM")?0:3)' || rc=$?
+          case $rc in
+            0) echo "MAIL_FROM is set on drive-pricing" ;;
+            3) echo "::error::MAIL_FROM is not set on drive-pricing, so every customer email would fail. Set it per drive#667."; exit 1 ;;
+            *) echo "::error::the secret list from drive-pricing was not the JSON array this check reads"; exit 1 ;;
+          esac
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
