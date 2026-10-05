@@ -13,6 +13,10 @@
 // secret, a key, another user's path, or raw error text. test/messages.test.mjs
 // enforces both shapes on every entry, so a new entry cannot ship a stack, a
 // token or a two-step fix-it list.
+// The one top-up prompt (drive#586): the $0 pause, the low balance line, the
+// "$2 left" email and the CLI all say it in these words.
+export const TOP_UP_PROMPT = "Top up to keep adding files.";
+
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
   offline: Object.freeze({
@@ -174,6 +178,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
   }),
+  // An upload-request drop named a file the owner already has. Overwriting
+  // that file from a public link is the bug drive#518 closes.
+  "upload-name-taken": Object.freeze({
+    what: "A file with that name is already in this folder.",
+    next: "Choose another name and drop the file again.",
+  }),
   // The branch this call named does not exist on this drive.
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
@@ -334,6 +344,44 @@ export const FAILURE_MESSAGES = Object.freeze({
   // The provider refused or did not answer the checkout request.
   "topup-failed": Object.freeze({
     what: "The payment page did not open, and nothing was charged.",
+    next: "Try again in a minute.",
+  }),
+  // The prepaid balance is $0 or less, so uploads and new writes pause
+  // (drive#586). Reads, downloads and restore keep working, and nothing is
+  // deleted. The same words on the web, in the CLI and in an agent key error.
+  "balance-empty": Object.freeze({
+    what: "Your balance is $0, so uploads are paused while your files stay safe and downloads keep working.",
+    next: TOP_UP_PROMPT,
+  }),
+  // Auto top-up charges the card saved by a top-up, so it cannot be turned on
+  // before the first one (drive#586).
+  "auto-topup-needs-card": Object.freeze({
+    what: "Auto top-up uses the card from your first top-up, and there is none yet.",
+    next: "Top up once, then turn auto top-up on.",
+  }),
+  // The same pause seen by a stranger on a public upload page: they cannot top
+  // up someone else's drive, so they are told who can act.
+  "upload-paused-balance": Object.freeze({
+    what: "This drive is not taking uploads right now.",
+    next: "Tell the person who shared this page and try again later.",
+  }),
+  // The billing portal (drive#575) for an account with no Dodo customer yet:
+  // there is no card to update and no invoice to read, so the next step is the
+  // first top-up, which is what creates the customer.
+  "portal-no-card": Object.freeze({
+    what: "This account has no card or payment on file yet.",
+    next: "Top up once, then the billing portal will have your card.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // customer-portal session can be created (the Dodo key waits on Nish, #325).
+  "portal-not-open": Object.freeze({
+    what: "The billing portal is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the customer-portal session
+  // request, so no portal opened and no card was changed.
+  "portal-failed": Object.freeze({
+    what: "The billing portal did not open, and no card was changed.",
     next: "Try again in a minute.",
   }),
 });

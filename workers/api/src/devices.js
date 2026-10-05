@@ -17,6 +17,7 @@ import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
@@ -101,23 +102,6 @@ function deviceFromRow(row) {
 }
 
 /**
- * Constant-time hex comparison, the same loop keystore.js uses, so a secret
- * hash cannot leak through timing just because the row moved to D1.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
-/**
  * Move one row's window forward: the later of the expiry this call computed and
  * the expiry the row already holds.
  *
@@ -165,6 +149,10 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
+  // One provider revoke, retried: enough for a blip, small enough that a
+  // request is not held long when the vendor is down for real.
+  const PROVIDER_REVOKE_ATTEMPTS = 3;
+  const PROVIDER_REVOKE_PAUSE_MS = 100;
 
   /**
    * @param {Device} device
@@ -246,8 +234,12 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * `purgeCursor` is the drive path the purge of this account stopped after
+   * (drive#565): NULL before the first batch and once the purge finished, so
+   * NULL `purged_at` with a non-NULL cursor reads "partially purged, resume
+   * after this path".
    * @param {unknown} row
-   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null}|null}
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null, purgeCursor: string|null}|null}
    */
   function closeStateFromRow(row) {
     if (!row || typeof row !== "object") {
@@ -271,6 +263,8 @@ export function createD1DeviceStore(db, options = {}) {
           ? null
           : Number(r.close_mail_sent_at),
       purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
+      purgeCursor:
+        typeof r.purge_cursor === "string" && r.purge_cursor !== "" ? r.purge_cursor : null,
     };
   }
 
@@ -281,7 +275,7 @@ export function createD1DeviceStore(db, options = {}) {
     return closeStateFromRow(
       await first(
         db,
-        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?1",
+        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts WHERE id = ?1",
         accountId,
       ),
     );
@@ -405,7 +399,7 @@ export function createD1DeviceStore(db, options = {}) {
       db,
       `UPDATE accounts
          SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
-             close_mail_sent_at = NULL
+             close_mail_sent_at = NULL, purge_cursor = NULL
        WHERE id = ?1`,
       accountId,
     );
@@ -422,7 +416,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueReminder(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND reminder_sent_at IS NULL
@@ -441,7 +435,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDuePurge(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
@@ -461,7 +455,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueCloseMail() {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND close_mail_sent_at IS NULL
@@ -499,13 +493,32 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Records how far one account's purge got (drive#565): the last drive path
+   * whose objects the batch delete removed. The next nightly pass lists from
+   * after that path instead of starting over. Conditional on
+   * `purged_at IS NULL`, so a late write can never reopen a purged account.
+   * @param {string} accountId
+   * @param {string} cursor
+   */
+  async function markPurgeProgress(accountId, cursor) {
+    await run(
+      db,
+      "UPDATE accounts SET purge_cursor = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      cursor,
+      accountId,
+    );
+  }
+
+  /**
    * @param {string} accountId
    * @param {number} atSeconds
    */
   async function markPurged(accountId, atSeconds) {
+    // The cursor is cleared with the stamp: a purged account has no progress
+    // to resume, and a NULL cursor with `purged_at` set reads as finished.
     await run(
       db,
-      "UPDATE accounts SET purged_at = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      "UPDATE accounts SET purged_at = ?1, purge_cursor = NULL WHERE id = ?2 AND purged_at IS NULL",
       atSeconds,
       accountId,
     );
@@ -543,13 +556,29 @@ export function createD1DeviceStore(db, options = {}) {
    * provider that refuses is not swallowed: the api's own row is already
    * revoked (the caller is refused at once), and the refusal is thrown so the
    * failure is visible rather than read as a clean revoke.
+   *
+   * A refused call is retried a short, bounded number of times first
+   * (drive#518 review): a vendor blip must not strand a live credential
+   * behind rows that already say revoked, and a stranded one is exactly the
+   * hole drive#497 and this issue close. The last refusal is re-thrown, so a
+   * persistent outage still surfaces on the route that asked for the revoke.
    * @param {string} accessKeyId
    */
   async function revokeCredentialAtProvider(accessKeyId) {
     if (inner === undefined || typeof inner.revoke !== "function") {
       return;
     }
-    await inner.revoke(accessKeyId);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await inner.revoke(accessKeyId);
+        return;
+      } catch (error) {
+        if (attempt >= PROVIDER_REVOKE_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PROVIDER_REVOKE_PAUSE_MS));
+      }
+    }
   }
 
   /**
@@ -601,10 +630,33 @@ export function createD1DeviceStore(db, options = {}) {
     return { device: swapped ?? device, capped: true };
   }
 
+  // The account's live device rows, oldest first, as this module reads them: one
+  // statement for every answer about a device that is still signed in
+  // (`listCapKeys` for the cap plan, `listLive` for the first-run page's poll),
+  // so the two cannot disagree about which rows are live.
+  /**
+   * @param {string} accountId
+   * @returns {Promise<Device[]>}
+   */
+  async function liveDevices(accountId) {
+    const result = await db
+      .prepare(
+        "SELECT * FROM devices WHERE account_id = ?1 AND revoked_at IS NULL ORDER BY created_at",
+      )
+      .bind(accountId)
+      .all();
+    return /** @type {Device[]} */ (
+      (result.results ?? []).map(deviceFromRow).filter((device) => device !== null)
+    );
+  }
+
   const store = {
     put,
 
     /**
+     * Every device row the account holds, live and revoked, in the public
+     * shape the agent key list reads. `listLive` is the answer for a device
+     * that is still signed in.
      * @param {{id: string}} account
      * @returns {Promise<ReturnType<typeof publicDevice>[]>}
      */
@@ -626,30 +678,63 @@ export function createD1DeviceStore(db, options = {}) {
      * @param {string} accountId
      */
     async listCapKeys(accountId) {
-      const result = await db
-        .prepare(
-          "SELECT * FROM devices WHERE account_id = ?1 AND revoked_at IS NULL ORDER BY created_at",
-        )
-        .bind(accountId)
-        .all();
-      return (result.results ?? [])
-        .map(deviceFromRow)
-        .filter((device) => device !== null)
-        .map((device) =>
-          Object.freeze({
-            keyId: device.id,
-            kind: device.kind,
-            prefix: device.prefix,
-            // The bucket this row's own prefix puts it in. A cap swap mints
-            // its replacement against this bucket (src/cap.js
-            // `applyCapSwap`), so a team key stays in the team's bucket and
-            // an account key stays in the account's, whatever the cap does
-            // (drive#462).
-            bucket: bucketForKeyPrefix(accountId, device.prefix),
-            capabilities: Object.freeze([...device.capabilities]),
-            ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
-          }),
-        );
+      const devices = await liveDevices(accountId);
+      return devices.map((device) =>
+        Object.freeze({
+          keyId: device.id,
+          kind: device.kind,
+          prefix: device.prefix,
+          // The bucket this row's own prefix puts it in. A cap swap mints
+          // its replacement against this bucket (src/cap.js
+          // `applyCapSwap`), so a team key stays in the team's bucket and
+          // an account key stays in the account's, whatever the cap does
+          // (drive#462).
+          bucket: bucketForKeyPrefix(accountId, device.prefix),
+          capabilities: Object.freeze([...device.capabilities]),
+          ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
+        }),
+      );
+    },
+
+    /**
+     * The account's live device rows, oldest first, in the shape the first-run
+     * page's poll reads: `id`, `name`, `kind` and `lastSeenAt`. Whether a
+     * device reads as connected is not answered here — that window is
+     * src/status.js `connectionStatus`'s own, so the page, the route and the
+     * CLI share the one rule. The columns behind the answer are this store's:
+     * the api Worker's `authenticate` and `renewKey` stamp `last_seen_at` on
+     * the row a request authenticated, and drive issue #556 reads it back for
+     * the page.
+     *
+     * `lastSeenAt` is epoch **milliseconds**, because that is the clock
+     * src/status.js `connectionStatus` compares against `Date.now()`: the
+     * column is epoch seconds (written by `nowSeconds()`), and this is the one
+     * read whose answer is that payload, so the conversion happens here once
+     * instead of in every caller. A row that never signed in has null. Revoked
+     * rows are left out for the same reason as `listCapKeys`: a device whose
+     * key was revoked has signed out, so it must not read as connected.
+     *
+     * Only a machine's own key answers this read (kind `device`). The other
+     * kinds in this table are credentials for tools and storage, and every
+     * request one authenticates stamps `last_seen_at` on its row
+     * (devices.js `authenticate`, `renewKey`), so an agent key would flip the
+     * first-run page to "your drive is mounted on this Mac" while the machine
+     * has not signed in at all (drive issue #556). The question this read
+     * answers is the one `drive login` mints a key to answer.
+     *
+     * @param {{id: string}} account
+     * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
+     */
+    async listLive(account) {
+      const devices = await liveDevices(account.id);
+      return devices
+        .filter((device) => device.kind === "device")
+        .map((device) => ({
+          id: device.id,
+          name: device.name,
+          kind: device.kind,
+          lastSeenAt: device.lastSeenAt === null ? null : device.lastSeenAt * 1000,
+        }));
     },
 
     /**
@@ -684,7 +769,10 @@ export function createD1DeviceStore(db, options = {}) {
       if (device === null || device.secretHash === "") {
         return null;
       }
-      if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+      // The one compare in http.js. A device is stored only as the hash of its
+      // secret, so both sides here are hashes: the stored one, and the hash of
+      // the secret this request presented.
+      if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
         return null;
       }
       const seen = nowSeconds(now());
@@ -732,6 +820,7 @@ export function createD1DeviceStore(db, options = {}) {
       }
       if (device.revokedAt === null) {
         await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
+        await revokeCredentialAtProvider(device.accessKeyId);
       }
       return { revoked: true };
     },
@@ -792,13 +881,26 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<{revoked: number}>}
      */
     async revokeTeamKeys(accountId, teamId) {
+      const prefix = teamPrefix(teamId);
+      const live = await all(
+        db,
+        "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND prefix = ?2 AND revoked_at IS NULL",
+        accountId,
+        prefix,
+      );
       const changed = await run(
         db,
         "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND prefix = ?3 AND revoked_at IS NULL",
         nowSeconds(now()),
         accountId,
-        teamPrefix(teamId),
+        prefix,
       );
+      for (const row of live) {
+        const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
+        if (typeof accessKeyId === "string" && accessKeyId !== "") {
+          await revokeCredentialAtProvider(accessKeyId);
+        }
+      }
       return {
         revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
       };
@@ -934,6 +1036,7 @@ export function createD1DeviceStore(db, options = {}) {
     listDueCloseMail,
     markReminderSent,
     markCloseMailSent,
+    markPurgeProgress,
     markPurged,
 
     /**

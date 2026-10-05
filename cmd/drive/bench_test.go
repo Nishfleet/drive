@@ -207,7 +207,7 @@ func benchStart(tb testing.TB) *benchStandin {
 		h.close()
 		tb.Fatal(err)
 	}
-	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 
 	h.mount = exec.Command(driveBin(tb), "mount",
 		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,
@@ -433,7 +433,6 @@ func BenchmarkSaveReachesStorage(b *testing.B) {
 // times each until the new size is in storage. Space publishes the 64 MiB case.
 func BenchmarkSmallEdit(b *testing.B) {
 	h := benchSetup(b)
-	const edit = "bench-edit.txt"
 	const size = 4096
 	for _, c := range []struct {
 		scenario, name string
