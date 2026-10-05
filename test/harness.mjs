@@ -55,6 +55,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // delete stopped after. Nullable expand; getCloseState and listDuePurge
   // read it, so any test that opens a close state needs the column.
   "drive/0020_account_purge_cursor.sql",
+  // The per-agent monthly cap's schema default, cleared (drive#534). Rebuilds
+  // `agent_caps` so `monthly_cap_usd` is nullable with no default, then clears
+  // the 0004 default (12.0) off the rows that never chose a cap.
+  "drive/0021_agent_caps_nullable_cap.sql",
 ]);
 
 /**
@@ -98,6 +102,10 @@ export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0017_agent_caps_drop_month_key.sql",
   "drive/0017_drop_branches_snapshot.sql",
   "drive/0018_agent_caps_drop_month_spend.sql",
+  // The per-agent monthly cap's schema default, cleared (drive#534). The cap
+  // tests read this row, so the subset carries the file that makes the column
+  // nullable and clears the 0004 default.
+  "drive/0021_agent_caps_nullable_cap.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
