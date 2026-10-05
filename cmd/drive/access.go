@@ -224,3 +224,5 @@ func writeJSONObject(path string, doc map[string]any) error {
 	}
 	return nil
 }
+
+// proof drive#660: a Go-only change, do not merge.
