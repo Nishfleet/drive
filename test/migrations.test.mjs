@@ -4,10 +4,10 @@
 //
 // The deploy orders migrations by full filename — the order `wrangler d1
 // migrations apply` uses — and so must the tests. A numeric-prefix sort
-// (Number.parseInt) ties on shared prefixes (0005, 0006, 0012, 0017 and 0020
-// on main) and leaves the tie to the filesystem, so the same schema could be
-// built in different orders on different machines. These tests pin the folder
-// to the deploy's rule and reject any *new* duplicate prefix.
+// (Number.parseInt) ties on shared prefixes (0005, 0006, 0012, 0017, 0020 and
+// 0021 on main) and leaves the tie to the filesystem, so the same schema could
+// be built in different orders on different machines. These tests pin the
+// folder to the deploy's rule and reject any *new* duplicate prefix.
 
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
@@ -15,9 +15,14 @@ import { test } from "node:test";
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 import { DRIVE_SCHEMA_MIGRATIONS } from "./harness.mjs";
 
-// The four leading digits are a migration's identity: production tracks a file
-// by its filename, so a shared number is a collision that must not be renamed
-// away (a rename re-runs the SQL in D1).
+/**
+ * The four leading digits are a migration's identity: production tracks a file
+ * by its filename, so a shared number is a collision that must not be renamed
+ * away (a rename re-runs the SQL in D1).
+ *
+ * @param {string} name
+ * @returns {string}
+ */
 const prefixOf = (name) => (name.match(/^(\d{4})/) || ["", ""])[1];
 
 // Prefixes this schema already shares, each with the number of files it
@@ -33,6 +38,7 @@ const ALLOWED_DUPLICATES = new Map([
   ["0017", 3], // 0017_account_close, 0017_agent_caps_drop_month_key,
   // 0017_drop_branches_snapshot
   ["0020", 2], // 0020_account_purge_cursor.sql, 0020_balance_ledger.sql
+  ["0021", 2], // 0021_agent_caps_nullable_cap.sql, 0021_prepaid_draws.sql (#591)
 ]);
 
 test("the migration directory is read in full-filename order, like wrangler", () => {
