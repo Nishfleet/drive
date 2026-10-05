@@ -82,6 +82,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0005_meter.sql",
     "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",

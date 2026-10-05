@@ -430,9 +430,9 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     "REQUEST_UPLOAD_RATE_LIMITER",
     "REQUEST_UPLOAD_LINK_RATE_LIMITER",
     "SHARE_DOWNLOAD_RATE_LIMITER",
-  "SHARE_MINT_RATE_LIMITER",
-  "REQUEST_MINT_RATE_LIMITER",
-  "BRANCH_RATE_LIMITER",
+    "SHARE_MINT_RATE_LIMITER",
+    "REQUEST_MINT_RATE_LIMITER",
+    "BRANCH_RATE_LIMITER",
   ]) {
     const bound = env[name];
     if (

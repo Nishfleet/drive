@@ -53,6 +53,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0005_meter.sql",
     "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
@@ -1151,16 +1152,17 @@ test("a pre-charge account at 900 GB cannot branch a 200 GB folder", async () =>
   const { scoped, db, snapshots } = await driven();
   const GB = 1e9;
   // The account is unpaid (first_charged_at is null), so the 1 TB pre-charge
-  // limit applies. The search index already holds 900 GB for it, and the
-  // folder about to be branched reports 200 GB from its listing, so the copy
-  // would take the account past the limit. The branch bytes live outside the
-  // index, so the guard reads them from the store too; there are none yet.
+  // limit applies. The live file_versions rows already hold 900 GB for it, and
+  // the folder about to be branched reports 200 GB from its listing, so the
+  // copy would take the account past the limit. The branch bytes live outside
+  // the index, so the guard reads them from the store too; there are none yet.
   db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
   db.sqlite
     .prepare(
-      "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1,?2,?3,?4,?5)",
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
     )
-    .run(ACCOUNT.id, "/big.bin", "big.bin", "/", 900 * GB);
+    .run(ACCOUNT.id, "big-file", "/big.bin", 900 * GB, 1);
   const folderBytes = 200 * GB;
   /** @type {Array<unknown>} */
   const copies = [];
