@@ -78,11 +78,6 @@ export function billingConfigFor(price) {
     // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
-    // A bill under this rolls into the next month, and the card is charged
-    // when the running balance reaches it. One number the FAQ's words and the
-    // future collection step both read, so the copy cannot name a threshold
-    // the ledger does not use.
-    chargeThresholdUsd: 5,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
@@ -725,8 +720,9 @@ const USAGE_HEADERS = Object.freeze({
  *   month's own metered numbers, read by the route from the account store's
  *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
+ * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
  */
-export function handleUsageRequest(request, account, upload = null) {
+export function handleUsageRequest(request, account, upload = null, balanceLine = null) {
   // The gate is first, before the method: an anonymous request learns nothing
   // about whether it could write, only that it is not signed in.
   if (!account) {
@@ -788,7 +784,7 @@ export function handleUsageRequest(request, account, upload = null) {
   // throws on a value that is not a queue, so a broken report fails the read
   // rather than printing a plausible line about bytes nobody counted.
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
-  const body = { ...empty, capLine: capLine(empty.cap), uploadLine };
+  const body = { ...empty, capLine: capLine(empty.cap), uploadLine, balanceLine };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
 

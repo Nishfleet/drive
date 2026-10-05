@@ -47,7 +47,7 @@
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 import { capLine, usageSummary } from "./billing.js";
-import { isSameOriginRequest, sendEmail } from "./email-send.js";
+import { sendEmail } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -446,7 +446,7 @@ export const CAP_WARNING_RATIO = 0.8;
  *      account, so a closed drive is never made active again by its own cap;
  *   4. the two emails go out ONCE per state change, not once per hour. The
  *      record of that is the account row itself (`cap_warned_at` and
- *      `read_only_sent_at`, migrations/drive/0022_cap_notices.sql), the same
+ *      `read_only_sent_at`, migrations/drive/0024_cap_notices.sql), the same
  *      way src/account-close.js records a sent close notice: a stamp is
  *      written after the send, so a run that is retried mails nothing the
  *      first run already sent, and a run whose send failed leaves the stamp
@@ -798,20 +798,6 @@ export async function handleCapRequest(request, account, capStore) {
     return new Response("Method not allowed. POST this endpoint to set the spending cap.", {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
-  // no Origin header through, so the CLI ('drive cap 20', no browser
-  // evidence) still reaches this handler — the account gate is what
-  // identifies it, not the header.
-  if (!isSameOriginRequest(request)) {
-    // A specific line rather than the generic one: "try again in a moment"
-    // would be advice to retry a request that is always refused, and the one
-    // next step is to do it from the drive page. The words are the one message
-    // table's, the way every other user-facing failure sentence in this repo
-    // is (drive#421).
-    return jsonCapError(failureMessage("cap-from-page"), 403, {
-      "cache-control": "no-store",
     });
   }
   /** @type {unknown} */
