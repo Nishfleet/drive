@@ -55,7 +55,10 @@ type StorageConfig struct {
 // read-ahead, transfers). TestVFSArgsPinsTheSafetyFlags fails if a round
 // trades away a pinned value. Write-back must still land inside the 5s
 // window docs/build-spec.md names, and nothing may be cached past
-// vfsCacheMaxValue.
+// vfsCacheMaxValue. The chunk pair is bounded too (issue #543): rclone's
+// parallel reader allocates one chunk buffer per stream, so chunk size x
+// streams must stay at or under 128 MiB per open file, and
+// TestVFSReadChunkingBoundsPerFileMemory fails on a bigger product.
 const (
 	vfsCacheModeValue        = "full"
 	vfsWriteBackValue        = "5s"
@@ -63,7 +66,7 @@ const (
 	vfsDirCacheTimeValue     = "5s"   // see VFSArgs: S3 sends no change notifications
 	vfsChunkStreamSize       = "32M"  // --buffer-size: in-memory buffer per transfer
 	vfsReadAheadValue        = "128k" // first-chunk size: small files stay one VFS read; a video is not pulled in
-	vfsReadChunkSizeValue    = "128M" // rclone's own default, named so a round has a value to climb
+	vfsReadChunkSizeValue    = "32M"  // one read buffer per stream; 32M x 2 streams = 64 MiB per open file (issue #543)
 	vfsReadChunkStreamsValue = "2"    // Two streams is what main shipped (issue #227); rclone's own default is 4.
 	vfsTransfersValue        = "4"    // rclone's own default, named so a round has a value to climb
 

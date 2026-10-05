@@ -134,11 +134,16 @@ func (c *rcClient) BwLimit(ctx context.Context) (BwLimit, error) {
 
 // QueueItem is one file rclone has in its VFS upload queue (rc vfs/queue).
 // Size is the file's size; Uploading is rclone's own word for the one it is
-// sending now.
+// sending now. Tries is how many times rclone has tried and failed to send it,
+// and Delay is the seconds until it tries again (issue #543): rclone retries
+// forever with a 5-minute backoff, so a save that keeps failing is invisible
+// without these two.
 type QueueItem struct {
-	Name      string `json:"name"`
-	Size      int64  `json:"size"`
-	Uploading bool   `json:"uploading"`
+	Name      string  `json:"name"`
+	Size      int64   `json:"size"`
+	Uploading bool    `json:"uploading"`
+	Tries     int     `json:"tries"`
+	Delay     float64 `json:"delay"`
 }
 
 // Queue is the whole vfs/queue answer.
@@ -157,7 +162,7 @@ func (c *rcClient) ReadQueue(ctx context.Context) (Queue, error) {
 	}
 	items := make([]QueueItem, len(entries))
 	for i, e := range entries {
-		items[i] = QueueItem{Name: e.Name, Size: e.Size, Uploading: e.Uploading}
+		items[i] = QueueItem{Name: e.Name, Size: e.Size, Uploading: e.Uploading, Tries: e.Tries, Delay: e.Delay}
 	}
 	return Queue{Queue: items}, nil
 }
@@ -224,15 +229,27 @@ type Stats struct {
 // second full-disk detector. fs is omitted when empty: vfs/stats defaults to
 // the mounted VFS, which is what status is asking about.
 func (c *rcClient) cacheOutOfSpace(ctx context.Context) (bool, error) {
+	s, err := c.cacheStats(ctx)
+	if err != nil {
+		return false, err
+	}
+	return s.DiskCache.OutOfSpace, nil
+}
+
+// cacheStats is the mount's own vfs/stats block: the live cache size, the
+// limit in force and the uploads queued. fs is omitted when empty, so a
+// status client asks the mounted VFS the same way cacheOutOfSpace does; the
+// fill loop's client carries the remote and passes it.
+func (c *rcClient) cacheStats(ctx context.Context) (vfsStats, error) {
 	var s vfsStats
 	params := map[string]string{}
 	if c.fs != "" {
 		params["fs"] = c.fs
 	}
 	if err := c.call(ctx, "vfs/stats", params, &s); err != nil {
-		return false, err
+		return vfsStats{}, err
 	}
-	return s.DiskCache.OutOfSpace, nil
+	return s, nil
 }
 
 // ReadStats asks the mount for its transfer totals and the file in flight.

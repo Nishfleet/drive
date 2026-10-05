@@ -203,8 +203,8 @@ export const FAQ = Object.freeze([
     question: "Will this fill my disk?",
     scoreboard: ["disk use"],
     answer: [
-      "Your disk never fills up; the cache is capped at a size you choose.",
       "What is on disk is the parts of files you have already opened, held in a cache of at most {{CACHE_LIMIT}}, and the drive always keeps at least {{CACHE_FLOOR}} of your disk free.",
+      "The cap covers only what has already uploaded: a save that has not gone up yet stays on disk past the cap until it uploads, so uploads that are paused or behind can use more disk than the cap.",
       "`drive cache` shows the disk in use and the limit; `drive cache --max <size>` changes it; `drive cache --clear` empties it without touching a file still waiting to upload.",
       "`drive status` shows the same cache use.",
       "Files you keep offline with `drive offline` stay on this computer, are never evicted, and count toward that limit.",
