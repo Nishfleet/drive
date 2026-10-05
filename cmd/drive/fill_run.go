@@ -178,8 +178,13 @@ func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 // left alone. operations/list with no recurse is one directory, the same
 // shape vfs/refresh uses when it is safe to call.
 func (c *rcClient) reachable(ctx context.Context) error {
+	// A dead S3 endpoint can hang operations/list until the fill's 30s
+	// pass budget; three seconds is enough to see a live stand-in and
+	// short enough that a dropped link does not stall keep-warm.
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	var reply map[string]any
-	return c.call(ctx, "operations/list", map[string]string{"fs": c.fs, "remote": ""}, &reply)
+	return c.call(probeCtx, "operations/list", map[string]string{"fs": c.fs, "remote": ""}, &reply)
 }
 
 // loopbackRCAddr is the address the mount's remote control binds. rclone's
