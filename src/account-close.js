@@ -117,6 +117,7 @@ function requireMatchingEmail(expected, typed) {
  *   account: {id: string, name?: string, email?: string|null},
  *   typedEmail: unknown,
  *   now: number,
+ *   onCharge?: (input: {accountId: string, chargeCents: number, now: number}) => Promise<{charged: boolean}>,
  * }} CloseInput
  */
 
@@ -148,11 +149,20 @@ export async function closeAccount(input) {
       now: input.now,
       closing: true,
     });
+    let charged = false;
+    if (decision.chargeCents > 0 && typeof input.onCharge === "function") {
+      const result = await input.onCharge({
+        accountId: input.account.id,
+        chargeCents: decision.chargeCents,
+        now: input.now,
+      });
+      charged = result.charged === true;
+    }
     await input.devices.setUnpaid(input.account.id, {
       unpaidCents: decision.unpaidCents,
       unpaidSince: decision.unpaidSince,
     });
-    if (decision.chargeCents > 0) {
+    if (charged) {
       await sendEmail(input.email, {
         to: expected,
         from: input.mailFrom,
@@ -362,7 +372,7 @@ async function readEmailBody(request) {
 }
 
 /**
- * @typedef {{devices: DeviceStore, store: FileStore, email: unknown, mailFrom: string, now: () => number}} CloseDeps
+ * @typedef {{devices: DeviceStore, store: FileStore, email: unknown, mailFrom: string, now: () => number, onCharge?: CloseInput["onCharge"]}} CloseDeps
  */
 
 /**
@@ -407,6 +417,7 @@ export async function handleCloseRequest(request, account, deps) {
       account,
       typedEmail: read.email,
       now: deps.now(),
+      onCharge: deps.onCharge,
     });
     return json(closePayload(account, closed));
   } catch (error) {

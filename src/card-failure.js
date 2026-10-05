@@ -71,15 +71,19 @@ export function daysSincePaymentFailed(failedAtSeconds, nowMs) {
  * Nightly walk of the card-failure ladder (drive#465). Warns at 30, 45 and
  * 55 days, and stamps `card_fail_purge_at` at 60. Nothing here deletes
  * files: the stamp is the schedule, and a later close-style purge is a
- * different job.
+ * different job. One broken row is logged and skipped so the rest still run.
  * @param {{
  *   devices: {
  *     listPaymentFailed(): Promise<Array<{id: string, email: string, unpaidCents: number, paymentFailedAt: number}>>,
  *     setCardFailPurgeAt(accountId: string, atSeconds: number): Promise<unknown>,
+ *     clearPaymentFailed?(accountId: string): Promise<unknown>,
+ *     setUnpaid?(accountId: string, unpaid: {unpaidCents: number, unpaidSince: number|null}): Promise<unknown>,
+ *     freezeWrites?(accountId: string): Promise<unknown>,
  *   },
  *   email: unknown,
  *   mailFrom: string,
  *   now: number,
+ *   onRetry?: (input: {accountId: string, chargeCents: number, now: number}) => Promise<{charged: boolean}>,
  * }} input
  * @returns {Promise<{warned: number, scheduled: number, retry: number, readOnly: number}>}
  */
@@ -91,33 +95,59 @@ export async function runCardFailureCron(input) {
   let retry = 0;
   let readOnly = 0;
   for (const row of rows) {
-    const days = daysSincePaymentFailed(row.paymentFailedAt, input.now);
-    const step = cardFailureStep(days);
-    if (step.retry) {
-      retry += 1;
-    }
-    if (step.readOnly) {
-      readOnly += 1;
-    }
-    if (step.warnDaysLeft !== null) {
-      if (row.email.trim().length === 0) {
-        console.error(`account ${row.id} is due a card-failure warning but has no email`);
-      } else {
-        await sendEmail(input.email, {
-          to: row.email,
-          from: input.mailFrom,
-          kind: "card-failure-warning",
-          data: {
-            daysLeft: step.warnDaysLeft,
-            amountUsd: row.unpaidCents / 100,
-          },
-        });
-        warned += 1;
+    try {
+      const days = daysSincePaymentFailed(row.paymentFailedAt, input.now);
+      const step = cardFailureStep(days);
+      if (step.retry) {
+        retry += 1;
+        if (typeof input.onRetry === "function" && row.unpaidCents > 0) {
+          const result = await input.onRetry({
+            accountId: row.id,
+            chargeCents: row.unpaidCents,
+            now: input.now,
+          });
+          if (result.charged === true) {
+            if (typeof input.devices.clearPaymentFailed === "function") {
+              await input.devices.clearPaymentFailed(row.id);
+            }
+            if (typeof input.devices.setUnpaid === "function") {
+              await input.devices.setUnpaid(row.id, { unpaidCents: 0, unpaidSince: null });
+            }
+            continue;
+          }
+        }
       }
-    }
-    if (step.scheduleDeletion) {
-      await input.devices.setCardFailPurgeAt(row.id, at);
-      scheduled += 1;
+      if (step.readOnly) {
+        readOnly += 1;
+        if (typeof input.devices.freezeWrites === "function") {
+          await input.devices.freezeWrites(row.id);
+        }
+      }
+      if (step.warnDaysLeft !== null) {
+        if (row.email.trim().length === 0) {
+          console.error(`account ${row.id} is due a card-failure warning but has no email`);
+        } else {
+          await sendEmail(input.email, {
+            to: row.email,
+            from: input.mailFrom,
+            kind: "card-failure-warning",
+            data: {
+              daysLeft: step.warnDaysLeft,
+              amountUsd: row.unpaidCents / 100,
+            },
+          });
+          warned += 1;
+        }
+      }
+      if (step.scheduleDeletion) {
+        await input.devices.setCardFailPurgeAt(row.id, at);
+        scheduled += 1;
+      }
+    } catch (error) {
+      console.error(
+        "card-failure: one account failed the walk",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
   return { warned, scheduled, retry, readOnly };
