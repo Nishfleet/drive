@@ -20,11 +20,13 @@
 // All three POSTs are rate limited, one bucket each: the two public ones write
 // or read a row for a caller that holds no credential, so an unlimited
 // version of them is a way to fill the table or burn reads from anywhere. The
-// limit runs before the body is read, so a refused call costs no parse and, on
-// the code route, no row. The limiter is the one edge limiter (src/rate-limit.js
+// approve page's GET is limited in its own bucket too: it names a pending
+// code's device and time, so an unlimited page is an existence oracle for
+// codes a phishing site is cycling (drive#518 review). Each limit runs before
+// the body is read, so a refused call costs no parse and, on the code route,
+// no row. The limiter is the one edge limiter (src/rate-limit.js
 // `enforceEdgeLimits`), the same guard the waitlist and the sign-in route run
 // behind, so the fail-closed posture and the 429 answer are written once.
-//
 // The DELETE below is the fourth device route and is the only one that is
 // neither public nor rate limited: the account gate has already resolved the
 // caller's own token from its own bearer header, so there is nothing for a
@@ -32,6 +34,7 @@
 
 import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
 import { isSameOriginRequest, sendEmail } from "../../../src/email-send.js";
+import { escapeHtml } from "../../../src/escape-html.js";
 import { failureMessage } from "../../../src/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
 import { signedInAccount } from "../../../src/status.js";
@@ -115,31 +118,9 @@ const APPROVE_INTRO =
 const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
 
 // The characters an HTML text or attribute value must not contain, and what
-// they become. One pass over the string, so nothing is escaped twice and no
-// character is left for a second call to miss.
-const HTML_ESCAPES = Object.freeze({
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-});
-
-/**
- * The two values a page render can put into HTML are this function's whole
- * job, and they are escaped for a fixed, closed set of characters — the code
- * the person typed and one of a fixed list of sentences this file writes.
- * There is no untrusted HTML, no attribute context and no URL context, so a
- * sanitization library (a new dependency this issue does not allow) would be a
- * large parser solving a problem this page does not have.
- * @param {unknown} text
- */
-function escapeHtml(text) {
-  return String(text).replace(
-    /[&<>"']/g,
-    (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)],
-  );
-}
+// they become, live in src/escape-html.js now: the transactional emails put
+// store-provided text into HTML too, and one escaper cannot drift from the
+// other (drive#518 review).
 
 /**
  * The approval page. A static shell; the code from the query string is never
@@ -230,13 +211,21 @@ async function sendApproveNotice(ctx, account, pending) {
   const binding = ctx.env.EMAIL;
   const mailFrom = ctx.env.MAIL_FROM;
   if (binding === undefined || binding === null) {
+    // The skip is loud on purpose (drive#518 review): the notice is the
+    // owner's one signal that a device asked in, so a deployment that can
+    // never send it should say so in the logs on every skipped approval.
+    console.warn("device-approve: no EMAIL binding; the owner's approve notice was not sent");
     return;
   }
   if (typeof mailFrom !== "string" || mailFrom.trim() === "") {
+    console.warn("device-approve: MAIL_FROM is not set; the owner's approve notice was not sent");
     return;
   }
   const to = typeof account.email === "string" ? account.email.trim() : "";
   if (to === "") {
+    console.warn(
+      "device-approve: the approving account has no email; the approve notice was not sent",
+    );
     return;
   }
   const fields = pendingPageFields(pending);
@@ -400,6 +389,13 @@ export async function pollDeviceTokenRoute(request, ctx) {
  * @param {DeviceCtx} ctx
  */
 export async function approvePageRoute(request, ctx) {
+  // The page names a pending code's device and time, so an unlimited GET is
+  // an existence oracle for codes a phishing page is cycling (drive#518
+  // review). One bucket of the one edge limiter, before anything reads.
+  const limited = await deviceLimitRefused(request, ctx, "device-approve-page");
+  if (limited) {
+    return limited;
+  }
   const userCode = ctx.url.searchParams.get("user_code") ?? "";
   let account = ctx.account ?? null;
   if (account == null && ctx.accounts) {

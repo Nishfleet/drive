@@ -10,6 +10,7 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { escapeHtml } from "./escape-html.js";
 import { TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
@@ -445,17 +446,6 @@ function requireText(value, name) {
     throw new TypeError(`${name} must be a non-empty string, got ${String(value)}`);
   }
   return value;
-}
-
-/**
- * @param {string} text
- */
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 /**

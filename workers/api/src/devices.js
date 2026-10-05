@@ -149,6 +149,10 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
+  // One provider revoke, retried: enough for a blip, small enough that a
+  // request is not held long when the vendor is down for real.
+  const PROVIDER_REVOKE_ATTEMPTS = 3;
+  const PROVIDER_REVOKE_PAUSE_MS = 100;
 
   /**
    * @param {Device} device
@@ -552,13 +556,29 @@ export function createD1DeviceStore(db, options = {}) {
    * provider that refuses is not swallowed: the api's own row is already
    * revoked (the caller is refused at once), and the refusal is thrown so the
    * failure is visible rather than read as a clean revoke.
+   *
+   * A refused call is retried a short, bounded number of times first
+   * (drive#518 review): a vendor blip must not strand a live credential
+   * behind rows that already say revoked, and a stranded one is exactly the
+   * hole drive#497 and this issue close. The last refusal is re-thrown, so a
+   * persistent outage still surfaces on the route that asked for the revoke.
    * @param {string} accessKeyId
    */
   async function revokeCredentialAtProvider(accessKeyId) {
     if (inner === undefined || typeof inner.revoke !== "function") {
       return;
     }
-    await inner.revoke(accessKeyId);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await inner.revoke(accessKeyId);
+        return;
+      } catch (error) {
+        if (attempt >= PROVIDER_REVOKE_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PROVIDER_REVOKE_PAUSE_MS));
+      }
+    }
   }
 
   /**

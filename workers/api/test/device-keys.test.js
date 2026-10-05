@@ -905,6 +905,80 @@ test("approving a device mails the owner a notice", async () => {
   assert.match(String(sent[0].text), /office laptop/);
 });
 
+test("a mailer that refuses is visible, and the approval stays committed", async () => {
+  // The deliberate shape, pinned so it cannot drift (drive#518 review): the
+  // mailer's refusal is not swallowed into a success page, and it does not
+  // un-approve the device either — the approval committed first, so the
+  // owner's retry says already-approved instead of minting a second
+  // credential, and the failed notice is a log line, not a lost signal.
+  const store = createMemoryStore({ now: () => Date.parse("2026-10-05T12:00:00.000Z") });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({
+    id: "acct_mailfail",
+    name: "Mail",
+    email: "mailfail@example.com",
+  });
+  const code = await store.requestDeviceCode({ name: "office laptop" });
+  const refused = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+        origin: "https://api.test",
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null, {
+      accounts,
+      env: {
+        EMAIL: {
+          send: async () => {
+            throw new Error("vendor down");
+          },
+        },
+        MAIL_FROM: "drive@example.com",
+      },
+    }),
+  );
+  assert.equal(refused.status, 500, "a refusing mailer is not read as success");
+  const polled = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(polled.status, "approved", "the approval itself is not undone");
+});
+
+test("the approve page GET is rate limited before the store is read", async () => {
+  // The page names a pending code's device and time, so an unlimited version
+  // is an existence oracle for codes a phishing page is cycling. The GET
+  // runs its own bucket of the same edge limiter the POSTs run.
+  const store = createMemoryStore({ now: () => Date.parse("2026-10-05T12:00:00.000Z") });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({
+    id: "acct_pagelimit",
+    name: "Page",
+    email: "pagelimit@example.com",
+  });
+  const code = await store.requestDeviceCode({ name: "office laptop" });
+  /** @param {ReturnType<typeof makeRateLimiter>} limiter */
+  const get = (limiter) =>
+    dispatch(
+      new Request(
+        `https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`,
+        { headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+      ),
+      baseCtx(store, null, {
+        accounts,
+        env: {
+          DEVICE_RATE_LIMITER: limiter,
+          DEVICE_GLOBAL_RATE_LIMITER: makeRateLimiter(),
+        },
+      }),
+    );
+  const denied = await get(makeRateLimiter({ success: false }));
+  assert.equal(denied.status, 429);
+  const allowed = await get(makeRateLimiter());
+  assert.equal(allowed.status, 200);
+});
+
 test("a branch named '.' or '..' is refused with 400", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { deviceToken } = await signIn(store, "Nish's MacBook");
