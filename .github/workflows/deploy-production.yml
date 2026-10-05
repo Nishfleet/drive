@@ -72,7 +72,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          cache: npm
+          # No cache on own runners: npm's cache is already on this disk, and
+          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
+          package-manager-cache: false
       - run: npm ci
       - run: npm run build
       - name: Remember the live Worker version
