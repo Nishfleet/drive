@@ -51,6 +51,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0020_signin_return.sql",
 ]);
 
 /**
@@ -94,6 +98,8 @@ export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0017_agent_caps_drop_month_key.sql",
   "drive/0017_drop_branches_snapshot.sql",
   "drive/0018_agent_caps_drop_month_spend.sql",
+  // The device-approval return path (drive#558). See DRIVE_MIGRATIONS above.
+  "drive/0020_signin_return.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
@@ -283,7 +289,7 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
+ * @typedef {{to: string, url: string, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */

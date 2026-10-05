@@ -143,9 +143,12 @@ function escapeHtml(text) {
 
 /**
  * The approval page. A static shell with the code from the query string
- * echoed into the form, escaped; nothing else is rendered from the request.
- * @param {{userCode?: string, notice?: string}} [options]
- */ function approvePage({ userCode = "", notice = "" } = {}) {
+ * echoed into the form, escaped; nothing else is rendered from the request
+ * except the device name the store holds for that code (drive#558), also
+ * escaped — a person approving from a second device reads which terminal
+ * asked rather than guessing, and the code they need is already in the box.
+ * @param {{userCode?: string, notice?: string, deviceName?: string}} [options]
+ */ function approvePage({ userCode = "", notice = "", deviceName = "" } = {}) {
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
@@ -154,6 +157,7 @@ function escapeHtml(text) {
     `<title>${APPROVE_TITLE}</title>\n</head>\n<body>\n` +
     `<main>\n<h1>${APPROVE_TITLE}</h1>\n` +
     `<p>${APPROVE_INTRO}</p>\n` +
+    (deviceName ? `<p>Device waiting for approval: ${escapeHtml(deviceName)}.</p>\n` : "") +
     (notice ? `<p role="status">${escapeHtml(notice)}</p>\n` : "") +
     `<form method="post" action="/v1/device/approve">\n` +
     `<label for="user_code">Code from the terminal</label>\n` +
@@ -366,7 +370,15 @@ export async function approvePageRoute(request, ctx) {
       },
     });
   }
-  return approvePage({ userCode });
+  // The signed-in page names the device the code belongs to (drive#558), so
+  // whichever screen the sign-in happened on shows what it is approving. A
+  // code the store never held renders without the line; the approval itself
+  // is still the POST's job, and it re-checks the code against the store.
+  const described = await ctx.store.describeUserCode(userCode);
+  return approvePage({
+    userCode,
+    deviceName: described === null ? "" : described.name,
+  });
 }
 
 /**

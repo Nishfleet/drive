@@ -837,6 +837,82 @@ test("a signed-out approve link goes to sign-in, never raw JSON (drive#459)", as
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
 });
 
+test("the signed-in approve page names the device and echoes the code (drive#558)", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const accounts = makeAccounts();
+  const code = await store.requestDeviceCode({ name: "Nish MacBook" });
+  const sessionToken = accounts.add({
+    id: "acct_page",
+    name: "Nish",
+    email: "nish@example.com",
+  });
+  const page = await dispatch(
+    new Request(
+      `https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`,
+      { headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+    ),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(page.status, 200);
+  const body = await page.text();
+  assert.match(body, /Device waiting for approval: Nish MacBook\./);
+  assert.match(body, new RegExp(code.userCode), "the code is echoed into the form");
+
+  // The name is store data rendered into HTML text, so an apostrophe arrives
+  // escaped and nothing else on the page changes.
+  const quoted = await store.requestDeviceCode({ name: "<script>alert(1)</script>" });
+  const hostile = await dispatch(
+    new Request(
+      `https://api.test/v1/device/approve?user_code=${encodeURIComponent(quoted.userCode)}`,
+      { headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+    ),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(hostile.status, 200);
+  const hostileBody = await hostile.text();
+  assert.match(hostileBody, /&lt;script&gt;/);
+  assert.doesNotMatch(hostileBody, /<script>alert/);
+
+  // A code the store never held renders the page without the line: the form
+  // still works, and the approval itself re-checks the code (the drive#136 d
+  // test walks that side).
+  const unknown = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` },
+    }),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(unknown.status, 200);
+  assert.doesNotMatch(await unknown.text(), /Device waiting for approval/);
+});
+
+test("a code is still pending and approvable at minute 12 (drive#558)", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_12m", name: "Twelve", email: "12@example.com" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
+
+  // The mail round trip fits inside the code's life now: at minute 12 the CLI
+  // is still waiting, and the page can still approve.
+  clock.advance(12 * 60);
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
+  const approved = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(approved.status, 200);
+  const minted = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(minted.status, "approved", "the minute-12 approval minted a sign-in");
+});
+
 // ---- the one-hour agent credential (drive issue #106) ----
 //
 // The issue's finish line, through the routes a real request takes: an expired

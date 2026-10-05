@@ -43,6 +43,7 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  *        lost account row
  * @property {(request?: {name?: string}) => Promise<DeviceCodeResult>} requestDeviceCode
  * @property {(userCode: string, account?: {id: string, name?: string, email?: string}) => Promise<ApproveResult>} approveDeviceCode
+ * @property {(userCode: string) => Promise<{name: string}|null>} describeUserCode
  * @property {(deviceCode: string) => Promise<PollResult>} pollDeviceCode
  * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
  * @property {(token: string) => Promise<RevokeResult>} revokeDeviceToken
@@ -81,9 +82,14 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  */
 
 // How long a device code is good for, and how often the CLI may poll
-// (RFC 8628's device_code and interval). Ten minutes is long enough to find a
-// phone, short enough that a code left on a terminal screen dies.
-export const DEVICE_CODE_TTL_SECONDS = 600;
+// (RFC 8628's device_code and interval). Fifteen minutes (drive#558): long
+// enough that a code still works after the sign-in it waits on is fetched and
+// read on a second device — the mail round trip no longer has to fit inside
+// the same room as the terminal — and still short enough that a code left on
+// a screen dies. The CLI reads the TTL off the server's answer
+// (cmd/drive/api.go polls until the code's own expiry), so a change here is
+// the whole change.
+export const DEVICE_CODE_TTL_SECONDS = 15 * 60;
 export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 
 // How long a minted device token is good for. A device token is the CLI's whole
@@ -272,6 +278,24 @@ export function createMemoryDeviceSigninStore(options = {}) {
         return { error: "unknown-code" };
       }
       return { accountId: accountRow.id, name: accountRow.name };
+    },
+
+    /**
+     * The device a code belongs to, for the approve page's intro (drive#558):
+     * a person approving from a second device reads which terminal asked
+     * rather than guessing. Read-only, and it answers for a spent or expired
+     * code too, so the page can still say which sign-in ran out. Null when
+     * the store never held the code.
+     * @param {string} userCode
+     * @returns {Promise<{name: string}|null>}
+     */
+    async describeUserCode(userCode) {
+      const deviceCode = byUserCode.get(userCode);
+      const code = deviceCode === undefined ? undefined : byDeviceCode.get(deviceCode);
+      if (code === undefined) {
+        return null;
+      }
+      return { name: code.name };
     },
 
     /**
@@ -562,6 +586,24 @@ export function createD1DeviceSigninStore(db, options = {}) {
       // the idempotent path below, so the row is reported as spent rather than
       // re-attached.
       return { error: "approved-code" };
+    },
+
+    /**
+     * The device a code belongs to, for the approve page's intro (drive#558):
+     * a person approving from a second device reads which terminal asked
+     * rather than guessing. Read-only, by the as-typed user code, the same
+     * lookup the approve write keys on. Null when the store never held the
+     * code.
+     * @param {string} userCode
+     * @returns {Promise<{name: string}|null>}
+     */
+    async describeUserCode(userCode) {
+      const row = await first(db, "SELECT name FROM device_codes WHERE user_code = ?1", userCode);
+      if (row === null || row === undefined || typeof row !== "object") {
+        return null;
+      }
+      const name = /** @type {Record<string, unknown>} */ (row).name;
+      return typeof name === "string" ? { name } : null;
     },
 
     /**
