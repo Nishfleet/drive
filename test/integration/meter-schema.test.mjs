@@ -21,7 +21,7 @@
 // to test its migrations.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   listMeteredAccounts,
@@ -33,15 +33,11 @@ import {
   runMeterCron,
   validateEvent,
 } from "../../src/meter.js";
-import { at, GB, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
+import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
-// The real migration files of the drive database (drive issue #170: customer
-// tables, the waitlist's sign-up table lives in its own database and is
-// created by migrations/waitlist/0001_waitlist.sql), in the numeric order the
-// deploy applies them in.
-const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+// Migration files and order come from test/d1-sqlite.mjs (`MIGRATION_FILES`),
+// the single reader of migrations/drive/ in `wrangler d1 migrations apply`
+// order (drive issue #619).
 
 const abcEvent = (overrides = {}) =>
   validateEvent({
@@ -73,7 +69,7 @@ test("the real migrations apply cleanly, in filename order", () => {
   // that already ran the others. Every migration in the drive database is
   // applied, not just the meter's, so the meter's tables are checked against
   // the schema it will share with the file index, branches and caps.
-  assert.ok(migrationFiles.includes("0005_meter.sql"), "0005_meter.sql is missing");
+  assert.ok(MIGRATION_FILES.includes("0005_meter.sql"), "0005_meter.sql is missing");
   const { sqlite } = makeMeteredDB();
   const tables = sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

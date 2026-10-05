@@ -11,6 +11,7 @@
 // which node --test provides.
 
 import { sessionAccount } from "./auth.js";
+import { INSTALL_LINES } from "./install-lines.js";
 import { failureMessage } from "./messages.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
@@ -24,6 +25,13 @@ export const INSTALL_COMMAND = "drive init";
 // settings, so init needs no pasted keys (drive issue #415).
 export const LOGIN_COMMAND = "drive login";
 
+// The command that says what the drive on this machine is doing: whether it
+// is mounted, what is waiting to upload and what the month has cost. It
+// answers from the machine itself, so it is the line the page points at while
+// the api Worker that stamps `devices.last_seen_at` is not deployed (drive
+// #342) and the page cannot see a sign-in land on its own (drive #556).
+export const STATUS_COMMAND = "drive status";
+
 // The two lines the Get started box shows, in the order they run: log in,
 // then set up. The install line for each system sits above the box
 // (INSTALL_LINES), so the box only carries the drive's own commands.
@@ -31,18 +39,16 @@ export const FIRST_RUN_COMMAND = `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`;
 
 // The one line that puts the command on a machine, one row per system, shown
 // above INSTALL_COMMAND so a new person sees what to paste before they are told
-// what to paste it into (drive issue #428). These are the same three lines the
-// Quickstart leads with, kept here so the page and the docs cannot disagree.
-// They name the package manager and nothing else: the tap, the module path and
-// the Windows installer name are the details the docs keep in their "Other
-// ways" section, and test/own-words.test.mjs fails a page that carries one.
-export const INSTALL_LINES = Object.freeze([
-  Object.freeze({ os: "macOS", line: "brew install drive" }),
-  Object.freeze({ os: "Linux, Debian or Ubuntu", line: "sudo apt install drive" }),
-  Object.freeze({ os: "Linux, Fedora or RHEL", line: "sudo dnf install drive" }),
-]);
+// what to paste it into (drive issue #428). Re-exported from install-lines.js,
+// which is the one table test/packaging.test.mjs holds to .goreleaser.yaml
+// (drive#509). A short `brew install drive` cannot resolve after a release.
+export { INSTALL_LINES };
 
-// What the page walks through, in order: log in, approve, watch it flip.
+// What the page walks through, in order: log in, approve, check it works. The
+// third step names STATUS_COMMAND rather than promising this page a flip,
+// because until the api Worker lands (drive #342) nothing writes
+// `devices.last_seen_at`, and a page that promises a flip it cannot make is a
+// page someone keeps waiting at.
 export const FIRST_RUN_STEPS = Object.freeze([
   {
     title: "Log in and set up",
@@ -53,8 +59,8 @@ export const FIRST_RUN_STEPS = Object.freeze([
     body: "The browser opens on this page. Approve the code the terminal shows, and come back here.",
   },
   {
-    title: "Watch it connect",
-    body: "This page flips to connected the moment your Mac signs in. Nothing to refresh.",
+    title: "Check it works",
+    body: `Run ${STATUS_COMMAND} on the machine. It says whether the drive is mounted and what is waiting to upload.`,
   },
 ]);
 
@@ -80,10 +86,15 @@ export const SYNCED_WINDOW_MS = 15 * 60 * 1000;
 
 // The sentences the page shows for the live connection line. Static so the
 // shipped page can carry them verbatim and the test can pin them.
+//
+// While the api Worker is not deployed (drive #342) the status route can read a
+// device's `last_seen_at` but no device has one stamped yet, so the honest line
+// for the two states that wait is STATUS_COMMAND, which answers from the
+// machine. Nothing here promises this page a flip it cannot make (drive #556).
 export const CONNECTION_COPY = Object.freeze({
   waiting: {
     what: "Waiting for this Mac to sign in.",
-    next: `Run ${LOGIN_COMMAND} in your terminal. This page updates on its own.`,
+    next: `Run ${STATUS_COMMAND} on the machine to see whether the drive is mounted.`,
   },
   connected: {
     what: "Connected. Your drive is mounted on this Mac.",
@@ -91,7 +102,7 @@ export const CONNECTION_COPY = Object.freeze({
   },
   unreachable: {
     what: "Cannot reach the drive service right now.",
-    next: "Leave this page open. It keeps checking and flips to connected on its own.",
+    next: `Leave this page open. It keeps checking, and ${STATUS_COMMAND} on the machine says whether the drive is mounted.`,
   },
 });
 
@@ -163,6 +174,36 @@ export function connectionStatus(device, now = Date.now()) {
     return { state: "connected", ...CONNECTION_COPY.connected };
   }
   return { state: "waiting", ...CONNECTION_COPY.waiting };
+}
+
+/**
+ * The state the first-run poll answers for a whole account: connected when one
+ * of the account's live devices signed in inside `CONNECTED_WINDOW_MS`, waiting
+ * otherwise. The window is `connectionStatus`'s own and the rows are the ones
+ * the route read, so the answer here, the page's own flip (src/get-started.js
+ * `isConnected`) and the CLI's read of the same module cannot drift into two
+ * answers for "did the sign-in land?".
+ *
+ * A row that is not an object, or whose clock cannot be read, is a TypeError
+ * the same `connectionStatus` raises: a poll that cannot read a device is a bug
+ * to see, not a "waiting" to show a person who has already signed in.
+ * @param {unknown} devices
+ * @param {number|Date} [now]
+ * @returns {"connected"|"waiting"}
+ */
+export function firstRunState(devices, now = Date.now()) {
+  if (devices === null || devices === undefined) {
+    return "waiting";
+  }
+  if (!Array.isArray(devices)) {
+    throw new TypeError(`firstRunState needs a list of device rows, got ${typeof devices}`);
+  }
+  for (const device of devices) {
+    if (connectionStatus(device, now).state === "connected") {
+      return "connected";
+    }
+  }
+  return "waiting";
 }
 
 /**
@@ -368,8 +409,10 @@ export function unauthorizedResponse() {
  * @param {Request} request
  * @param {{id: string, name: string}|null} [account] the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
+ * @param {unknown[]} [devices] the account's live device rows, or the empty list
+ *   when none has signed in
  */
-export function handleFirstRunStatusRequest(request, account, upload = null) {
+export function handleFirstRunStatusRequest(request, account, upload = null, devices = []) {
   // The gate comes before the method check, so an anonymous request is told
   // only that it is not signed in and never which methods this route has.
   if (!account) {
@@ -386,10 +429,17 @@ export function handleFirstRunStatusRequest(request, account, upload = null) {
   // #100). The value is the shape uploadProgress() accepts, and the renderer's
   // own guard turns a payload it cannot draw into its unreachable state, so no
   // second check is written here.
-  return new Response(JSON.stringify({ state: "waiting", devices: [], upload }), {
-    status: 200,
-    headers: STATUS_HEADERS,
-  });
+  // A device that cannot be read is loud here, not silent: `firstRunState`
+  // turns a clock it cannot read into a TypeError, so a payload row that is
+  // not a device row fails the request instead of answering "waiting" to an
+  // account whose machine has signed in.
+  return new Response(
+    JSON.stringify({ state: firstRunState(devices), devices: [...devices], upload }),
+    {
+      status: 200,
+      headers: STATUS_HEADERS,
+    },
+  );
 }
 
 /**

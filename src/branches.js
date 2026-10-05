@@ -46,6 +46,7 @@
 // Worker's key scoping (workers/api/src/keyprovider.js), so a branch name and
 // a branch key prefix can never accept a different shape of name.
 
+import { json } from "../workers/api/src/http.js";
 import { checkedBranchName } from "../workers/api/src/keyprovider.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
@@ -314,24 +315,6 @@ export const BRANCHES_ENDPOINT = "/api/branches";
  * definition of where branches live (the `.branches` folder), not two.
  */
 export const BRANCHES_ROOT = BRANCHES_PATH;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message

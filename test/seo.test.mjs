@@ -281,12 +281,8 @@ test("llms.txt describes the drive and the current price rule", () => {
   assert.ok(llms.includes(BILLING.headline), "llms.txt must state the headline from config");
   assert.ok(llms.includes(BILLING.rule), "llms.txt must state the rule from config");
   assert.ok(
-    llms.includes(BILLING.noMinimumLine),
+    llms.includes(BILLING.noPlansLine),
     "llms.txt must state the no-minimum line from config",
-  );
-  assert.ok(
-    llms.includes(BILLING.foundingLine),
-    "llms.txt must state the founding line from config",
   );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The issue's worked figures, so an answer engine cannot quote a number the
@@ -332,12 +328,11 @@ test("the maximum in the metadata is the issue's rule, from the one price source
   // BILLING is built from PRICE, not declared beside it.
   assert.equal(BILLING.maxUsdPerTb, PRICE.maxUsdPerTb);
   assert.equal(BILLING.headline, PRICE.headline);
-  assert.equal(BILLING.noMinimumLine, PRICE.noMinimumLine);
-  assert.equal(BILLING.foundingLine, PRICE.foundingLine);
+  assert.equal(BILLING.noPlansLine, PRICE.noPlansLine);
   assert.equal(BILLING.rule, PRICE.rule);
   assert.equal(
     BILLING.headline,
-    "Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
+    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
   );
   // The superseded rules may not come back through the tags: the $12 floor,
   // the $8 slope, the 1.5 TB plateau and the membership.

@@ -564,6 +564,7 @@ dialog.viewer::backdrop {
         <div class="actions"><span></span></div>
       </li>
     </ul>
+    <button type="button" id="more" hidden>More</button>
     <div class="empty" id="empty" hidden>
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
@@ -660,6 +661,7 @@ const list = document.getElementById("file-list");
 const empty = document.getElementById("empty");
 const emptyWhat = document.getElementById("empty-what");
 const emptyNext = document.getElementById("empty-next");
+const moreButton = document.getElementById("more");
 const signedOutWhat = document.getElementById("signed-out-what");
 const signedOut = document.getElementById("signed-out");
 const statusLine = document.getElementById("status");
@@ -676,6 +678,10 @@ const tabDeleted = document.getElementById("tab-deleted");
 
 let path = "/";
 let view = "folder";
+// The listing's continuation token (drive#570): what the last page handed
+// back, or null when the folder has shown every row. The More button holds
+// it; the page never does arithmetic on it, it only passes it back.
+let nextCursor = null;
 
 function say(message, kind) {
   statusLine.textContent = message;
@@ -935,6 +941,12 @@ function trashRowFor(row) {
   return li;
 }
 
+function appendRows(rows) {
+  for (const row of rows) {
+    list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
+  }
+}
+
 function renderRows(rows) {
   list.textContent = "";
   if (rows.length === 0) {
@@ -945,10 +957,45 @@ function renderRows(rows) {
     return;
   }
   empty.hidden = true;
-  for (const row of rows) {
-    list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
+  appendRows(rows);
+}
+
+// The continuation token in, the next slice of rows out. One shape for both
+// the first load and the More click, so the paging logic lives once.
+async function listPage(cursor) {
+  const url =
+    view === "deleted"
+      ? `${FILES_ENDPOINT}?view=deleted`
+      : `${FILES_ENDPOINT}?path=${encodeURIComponent(path)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+  return api(url);
+}
+
+// What the More button shows: the token decides it, and an in-flight load
+// turns it off so a second click cannot ask for the same page twice.
+function showMore(cursor) {
+  moreButton.hidden = view !== "folder" || cursor === null;
+  moreButton.disabled = false;
+}
+
+async function loadMore() {
+  if (nextCursor === null || view !== "folder") {
+    return;
+  }
+  moreButton.disabled = true;
+  try {
+    const payload = await listPage(nextCursor);
+    nextCursor = payload.nextCursor ?? null;
+    appendRows(payload.rows || []);
+    showMore(nextCursor);
+  } catch (error) {
+    reportFailure(error);
+    moreButton.disabled = false;
   }
 }
+
+moreButton.addEventListener("click", () => {
+  loadMore();
+});
 
 function showBody(node) {
   viewerBody.textContent = "";
@@ -1022,14 +1069,12 @@ async function refresh(keepStatus) {
   if (!keepStatus) {
     say("");
   }
-  const url =
-    view === "deleted"
-      ? `${FILES_ENDPOINT}?view=deleted`
-      : `${FILES_ENDPOINT}?path=${encodeURIComponent(path)}`;
   try {
-    const payload = await api(url);
+    const payload = await listPage(null);
     showSignedIn();
+    nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
     renderRows(payload.rows || []);
+    showMore(nextCursor);
     if (view === "folder") {
       crumbsForParts(path === "/" ? [] : path.slice(1).split("/"));
     } else {

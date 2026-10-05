@@ -43,6 +43,7 @@
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
+import { json, readJsonObject } from "../workers/api/src/http.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -51,6 +52,7 @@ import {
 } from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import {
+  etagMatches,
   joinPath,
   previewContentType,
   safeFileName,
@@ -58,6 +60,7 @@ import {
   TRASH_PATH,
   validatePath,
 } from "./files.js";
+import { balanceCents } from "./ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -430,6 +433,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -658,6 +662,17 @@ export function createD1LinkStore(db) {
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
+      async releaseUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = MAX(upload_count - 1, 0), " +
+            "upload_bytes = MAX(upload_bytes - ?1, 0) " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
     },
   };
 }
@@ -714,19 +729,6 @@ export function newRequestRecord({
 }
 
 // ---------------------------------------------------------------- handlers
-
-const LINK_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: LINK_HEADERS });
-}
 
 /**
  * @param {string} message
@@ -796,26 +798,6 @@ function crossSiteRefused() {
     { error: "Sharing and upload requests are only accepted from your drive page." },
     403,
   );
-}
-
-/**
- * The POST body every owner route reads: one JSON object, or the sentence to
- * show. The two arms are named so the `if (error)` check is the narrowing.
- *
- * @param {Request} request
- * @returns {Promise<{body: Record<string, unknown>, error?: undefined}|{error: string, body?: undefined}>}
- */
-async function readJsonObject(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return { error: "The request body is not valid JSON." };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
-  }
-  return { body };
 }
 
 /** The request's own origin: the links are absolute so they can be copied.
@@ -895,13 +877,13 @@ export async function handleShareRequest(request, files, links, account, options
     return json({ shares: rows });
   }
   if (request.method === "POST") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateShareFile(body.path);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -929,13 +911,13 @@ export async function handleShareRequest(request, files, links, account, options
     return json({ ok: true, share: shareRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateToken(body.token);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -993,46 +975,118 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // The one scoping place: the share row names the owner, so the row is what
   // the read is scoped to, not whatever the request carried.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  const range = request.headers.get("range");
+  const ifNoneMatch = request.headers.get("if-none-match");
+
+  // A HEAD answer needs the headers, not the bytes (drive#570): storage is
+  // asked with a HEAD, and the whole object is never fetched to be dropped.
+  if (request.method === "HEAD") {
+    let stat;
+    try {
+      stat = await scoped.stat(record.path);
+    } catch (cause) {
+      return serverFailure(`reading a shared file: ${String(cause)}`);
+    }
+    if (!stat) {
+      return plain(failureMessage("link-not-found"), 404);
+    }
+    // An open is counted, no bytes: the same rule the old HEAD path kept.
+    await links.shares.addDownload(checked.token, 0);
+    return new Response(null, {
+      status: 200,
+      headers: shareHeaders(record.path, stat.contentType, {
+        length: String(stat.size),
+        etag: stat.etag,
+      }),
+    });
+  }
+
   let object;
   try {
-    object = await scoped.read(record.path);
+    object = await scoped.read(record.path, { range, ifNoneMatch });
   } catch (cause) {
     return serverFailure(`reading a shared file: ${String(cause)}`);
   }
   if (!object) {
     return plain(failureMessage("link-not-found"), 404);
   }
-  // Count the download the way this route can honestly count it: the object
-  // the store reported, once, for a link that opened. A client that stops
-  // mid-stream still holds a working link; the dl Worker's byte rollup
-  // (#58) is what measures the bytes actually served. A HEAD is counted as an
-  // open but carries no bytes, so it cannot inflate the owner's allowance for
-  // a body nobody received.
-  await links.shares.addDownload(checked.token, request.method === "HEAD" ? 0 : object.size);
-  // The served type is the file's own kind, never the claim the uploader made
-  // of it, through the same previewContentType() /api/files/preview uses: text
-  // leaves as text/plain, an unknown type as octet-stream, and an .html named
-  // as text/html does not come back as a page. The header pair is the same one
-  // the preview path carries: nosniff honors the type above, and the sandbox
-  // policy gives a document an opaque origin with no script of its own — which
-  // is what keeps an uploaded .svg from acting as a page on our origin when
-  // the link is opened directly. A picture or a PDF still opens in the tab,
-  // which is what "a link that opens the file" means.
-  return new Response(request.method === "HEAD" ? null : object.body, {
-    status: 200,
-    headers: {
-      "content-type": previewContentType(record.path, object.contentType),
-      "content-disposition": "inline",
-      "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "sandbox",
-      // The token is in the URL, so a page opened from a link must not hand
-      // the address bar's contents to whatever it loads next: no-referrer is
-      // the one header that keeps a capability URL from leaking sideways
-      // through Referer.
-      "referrer-policy": "no-referrer",
-    },
+  const status = object.status ?? 200;
+  // The client's own validator, still good: no byte moves, no download is
+  // counted, and the etag rides back so the client keeps its cached copy.
+  if (status === 304 || (ifNoneMatch && etagMatches(ifNoneMatch, object.etag))) {
+    return new Response(null, {
+      status: 304,
+      headers: shareHeaders(record.path, object.contentType, {
+        etag: object.etag,
+        bare: true,
+      }),
+    });
+  }
+  // Count the download the way this route can honestly count it: the bytes
+  // THIS response is about to carry — the whole object on a 200, the one
+  // slice on a 206 (drive#570). A client that stops mid-stream still holds a
+  // working link; the dl Worker's byte rollup (#58) is what measures the
+  // bytes actually served.
+  const served = object.contentLength ?? object.size;
+  await links.shares.addDownload(checked.token, served);
+  return new Response(object.body, {
+    status,
+    headers: shareHeaders(record.path, object.contentType, {
+      length: typeof object.contentLength === "number" ? String(object.contentLength) : undefined,
+      etag: object.etag,
+      contentRange: object.contentRange,
+    }),
   });
+}
+
+/**
+ * The headers a shared-file answer carries: the served type is the file's own
+ * kind, never the claim the uploader made of it, through the same
+ * previewContentType() /api/files/preview uses: text leaves as text/plain, an
+ * unknown type as octet-stream, and an .html named as text/html does not come
+ * back as a page. The header pair is the same one the preview path carries:
+ * nosniff honors the type above, and the sandbox policy gives a document an
+ * opaque origin with no script of its own — which is what keeps an uploaded
+ * .svg from acting as a page on our origin when the link is opened directly.
+ * A picture or a PDF still opens in the tab, which is what "a link that opens
+ * the file" means.
+ * @param {string} path the shared file's drive path, for the type's kind
+ * @param {string} contentType the type the store reported
+ * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
+ *   bare?: boolean}} [extra] `length` sets Content-Length; `etag` rides on
+ *   every answer, the bare 304 included; `contentRange` rides on a 206;
+ *   `bare` (a 304) carries only validators and the no-referrer rule.
+ * @returns {Record<string, string>}
+ */
+function shareHeaders(path, contentType, extra = {}) {
+  /** @type {Record<string, string>} */
+  const headers = {
+    "content-type": previewContentType(path, contentType),
+    "content-disposition": "inline",
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    // The token is in the URL, so a page opened from a link must not hand
+    // the address bar's contents to whatever it loads next: no-referrer is
+    // the one header that keeps a capability URL from leaking sideways
+    // through Referer.
+    "referrer-policy": "no-referrer",
+    "accept-ranges": "bytes",
+  };
+  if (!extra.bare) {
+    if (extra.length) {
+      headers["content-length"] = extra.length;
+    }
+    if (extra.contentRange) {
+      headers["content-range"] = extra.contentRange;
+    }
+  }
+  // The etag rides on every answer, the 304 included: RFC 9110 says a 304
+  // carries the validators the 200 would have, so the client keeps using it.
+  if (extra.etag) {
+    headers.etag = extra.etag;
+  }
+  return headers;
 }
 
 /**
@@ -1070,13 +1124,13 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ requests: rows });
   }
   if (request.method === "POST") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateRequestFolder(body.folder);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -1105,13 +1159,13 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ ok: true, request: requestRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateToken(body.token);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -1195,7 +1249,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1241,6 +1295,16 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
   }
+  if (
+    options.db &&
+    options.prepaidPause &&
+    (await balanceCents(options.db, record.accountId)) <= 0
+  ) {
+    // The owner's prepaid balance is empty (drive#586). The stranger cannot
+    // top up someone else's drive, so they are told who can act, and the body
+    // is never read.
+    return json({ error: failureMessage("upload-paused-balance") }, 403);
+  }
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
@@ -1265,6 +1329,9 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  if ((await scoped.stat(path)) !== null) {
+    return json({ error: failureMessage("upload-name-taken") }, 409);
+  }
   const reserved = await links.requests.addUpload(checked.token, sized.bytes);
   if (!reserved) {
     return json({ error: failureMessage("upload-link-full") }, 413);
@@ -1275,6 +1342,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // and the S3 stand-in PUTs the same body fetch accepts.
     await scoped.write(path, sized.body, contentType);
   } catch (cause) {
+    await links.requests.releaseUpload(checked.token, sized.bytes);
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);

@@ -38,6 +38,56 @@ func TestImportPlanDryRunPassesRcloneItsOwnFlag(t *testing.T) {
 	}
 }
 
+// TestImportPlanStopsAtTheCacheCap is issue #543's import half: the copy
+// carries rclone's own --max-transfer with the cache's free headroom and
+// --cutoff-mode soft, so it stops after the file that reaches the cap instead
+// of filling the cache past it.
+func TestImportPlanStopsAtTheCacheCap(t *testing.T) {
+	plan, err := BuildImportPlan("linux", t.TempDir(), "/usr/bin/rclone", "photos:", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.MaxBytes = 1 << 30
+	args := plan.Args()
+	if !hasArgPair(args, "--max-transfer", "1073741824") {
+		t.Errorf("args = %v, want --max-transfer at the headroom", args)
+	}
+	if !hasArgPair(args, "--cutoff-mode", "soft") {
+		t.Errorf("args = %v, want --cutoff-mode soft so the copy stops rather than errors at the cap", args)
+	}
+	// No headroom passed means no throttle: a dry run, or a mount that did not
+	// answer.
+	plan.MaxBytes = 0
+	if strings.Contains(strings.Join(plan.Args(), " "), "--max-transfer") {
+		t.Errorf("args = %v, must not cap a copy with no headroom", plan.Args())
+	}
+}
+
+// TestImportStopRefusesAPastTheCapCache proves the guard's two answers: a
+// cache with room gets that room as its byte budget, and a cache at or over
+// its cap is a named stop before rclone is started.
+func TestImportStopRefusesAPastTheCapCache(t *testing.T) {
+	maxBytes, err := importStop(cacheHeadroom{CapBytes: 20 << 30, UsedBytes: 4 << 30}, true)
+	if err != nil {
+		t.Fatalf("room under the cap: %v", err)
+	}
+	if maxBytes != 16<<30 {
+		t.Errorf("maxBytes = %d, want the 16 GiB headroom", maxBytes)
+	}
+	_, err = importStop(cacheHeadroom{CapBytes: 20 << 30, UsedBytes: 20 << 30}, true)
+	if err == nil {
+		t.Fatal("a cache at its cap must stop the import")
+	}
+	if !strings.Contains(printedFailure(err), "cache is full") {
+		t.Errorf("stop = %q, want the cache-full words", printedFailure(err))
+	}
+	// An unanswered mount is not a refusal: the copy runs and the mount's own
+	// cap still applies.
+	if maxBytes, err := importStop(cacheHeadroom{}, false); err != nil || maxBytes != 0 {
+		t.Errorf("unanswered mount = (%d, %v), want (0, nil)", maxBytes, err)
+	}
+}
+
 func TestImportRefusesALocalPath(t *testing.T) {
 	for _, src := range []string{"/tmp/photos", "./photos", "photos", "C:\\Users\\x", "C:/Users/x"} {
 		if _, err := BuildImportPlan("linux", t.TempDir(), "/usr/bin/rclone", src, false); err == nil {
@@ -91,7 +141,12 @@ func TestRunImportDrivesRcloneCopy(t *testing.T) {
 	}
 	orig := importMounted
 	importMounted = func(string, string) (bool, error) { return true, nil }
-	t.Cleanup(func() { importMounted = orig })
+	origHeadroom := importCacheHeadroom
+	importCacheHeadroom = func(string) (cacheHeadroom, bool, error) { return cacheHeadroom{}, false, nil }
+	t.Cleanup(func() {
+		importMounted = orig
+		importCacheHeadroom = origHeadroom
+	})
 
 	if err := runImport([]string{"--home", home, "--rclone", bin, "photos:Movies"}); err != nil {
 		t.Fatal(err)

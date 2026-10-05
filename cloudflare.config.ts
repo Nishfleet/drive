@@ -141,12 +141,6 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
-      // drive issue #386: the founding-member offer switch. A Worker var, not
-      // a code change and not a secret: "1" keeps the offer open, "0" closes
-      // it. Closing it never changes accounts that already hold the flag
-      // (src/founding.js). The health check does not probe it: a string is
-      // not a reachable dependency, and a missing var is treated as open.
-      FOUNDING_OFFER_OPEN: bindings.text("1"),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.

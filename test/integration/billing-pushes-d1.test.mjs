@@ -13,24 +13,20 @@
 // never got could not pass.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { billingEventId, pushBillingHours } from "../../src/dodo.js";
 import { BYTES_PER_GB, MINUTE_MS, recordUsage } from "../../src/meter.js";
-import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
+import { MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
 const ACCOUNT = "acc-abc";
 const CUSTOMER = "cus_acc_abc";
 
-const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
-
 test("no two migrations create the same table, so the apply order is never ambiguous", () => {
   /** @type {Map<string, string>} */
   const created = new Map();
-  for (const name of migrationFiles) {
+  for (const name of MIGRATION_FILES) {
     const sql = readFileSync(new URL(`../../migrations/drive/${name}`, import.meta.url), "utf8");
     for (const match of sql.matchAll(/CREATE TABLE(?: IF NOT EXISTS)?\s+"?([A-Za-z_]\w*)"?/gi)) {
       const table = match[1];
@@ -43,7 +39,7 @@ test("no two migrations create the same table, so the apply order is never ambig
 
 test("the real migrations create billing_pushes and accounts", () => {
   assert.ok(
-    migrationFiles.includes("0013_billing_pushes.sql"),
+    MIGRATION_FILES.includes("0013_billing_pushes.sql"),
     "0013_billing_pushes.sql is missing",
   );
   const { sqlite } = makeMeteredDB();

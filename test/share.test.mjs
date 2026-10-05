@@ -677,6 +677,9 @@ test("a store failure is logged, and its message is never returned", async () =>
   try {
     const boom = {
       list: async () => [],
+      listKeys: async () => {
+        throw new Error("the share upload path does not walk the key space");
+      },
       read: async () => {
         throw new Error("d1: no such column: bucket_secret");
       },
@@ -684,10 +687,20 @@ test("a store failure is logged, and its message is never returned", async () =>
         throw new Error("s3 put failed for key u/acct-a/secret.txt");
       },
       remove: async () => {},
+      removeBatch: async () => {
+        throw new Error("the share upload path does not delete a batch");
+      },
       copy: async () => {
         throw new Error("the share upload path does not copy");
       },
       listVersions: async () => [],
+      listPage: async () => {
+        throw new Error("the share listing never runs in this test");
+      },
+      listAll: async () => {
+        throw new Error("the share listing never runs in this test");
+      },
+      stat: async () => null,
     };
     const { links } = drive();
     await links.requests.create(
@@ -1416,6 +1429,69 @@ test("an unnamed upload is refused before any bytes are stored", async () => {
   assert.deepEqual(await store.list("/"), []);
 });
 
+test("an upload-request drop does not overwrite an owner's file of the same name", async () => {
+  const { files, links, request, list, upload } = drive();
+  await upload("/", "notes.txt", "mine");
+  const minted = await request("/");
+  assert.equal(minted.status, 201);
+  const token = (await minted.json()).request.token;
+  const dropped = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${token}&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "stranger",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(dropped.status, 409);
+  assert.equal((await dropped.json()).error, failureMessage("upload-name-taken"));
+  const names = (await list()).map((row) => row.name);
+  assert.deepEqual(names, ["notes.txt"]);
+  const readBack = await scopeStore(files, account).read("/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the owner's file is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "mine");
+});
+
+test("a failed upload-request write releases the reserved bytes", async () => {
+  const files = createMemoryStore();
+  files.write = async () => {
+    throw new Error("storage refused the write");
+  };
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 100 }),
+    }),
+    files,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=fail.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "hello",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 500);
+  const row = await links.requests.get(TOKEN);
+  assert.equal(row?.uploadBytes, 0, "the reservation is released after a failed write");
+  assert.equal(row?.uploadCount, 0);
+});
+
 test("the owner sees what came in through a link and can close it", async () => {
   const { files, links, request, requestList, revokeRequest } = drive();
   const minted = await request("/", { token: TOKEN });
@@ -1530,4 +1606,60 @@ test("the app routes DELETE for share and request links, so a revoke reaches its
   const routes = createApp().routes.map((r) => `${r.method} ${r.path}`);
   assert.ok(routes.includes("DELETE /api/share"), "DELETE /api/share is not registered");
   assert.ok(routes.includes("DELETE /api/request"), "DELETE /api/request is not registered");
+});
+
+// ---------------------------------------------------- range, validators, HEAD
+
+// drive#570: a share link answers Range and If-None-Match out of storage, so
+// a seeking player reads its slice and a re-checking browser is told 304,
+// instead of every call pulling the whole object through the Worker to throw
+// most of it away.
+test("a share link answers a Range with 206 and counts only the bytes it sent", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "song.mp3", "0123456789", "audio/mpeg");
+  const made = await (await share("/song.mp3", { token: TOKEN })).json();
+
+  const opened = await handleShareFileRequest(
+    new Request(made.share.url, { headers: { range: "bytes=2-4" } }),
+    files,
+    links,
+    { now },
+  );
+  assert.equal(opened.status, 206);
+  assert.equal(await opened.text(), "234");
+  assert.equal(opened.headers.get("content-range"), "bytes 2-4/10");
+  assert.equal(opened.headers.get("accept-ranges"), "bytes");
+
+  // The honest count: this response carried 3 bytes, not the object's 10.
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 1);
+  assert.equal(record.downloadBytes, 3);
+});
+
+test("a share link answers a still-valid If-None-Match with 304 and no download", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "song.mp3", "0123456789", "audio/mpeg");
+  const made = await (await share("/song.mp3", { token: TOKEN })).json();
+
+  const first = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  assert.equal(first.status, 200);
+  const etag = first.headers.get("etag");
+  assert.ok(etag, "the share answers carries an etag to re-validate with");
+
+  const again = await handleShareFileRequest(
+    new Request(made.share.url, { headers: { "if-none-match": etag } }),
+    files,
+    links,
+    { now },
+  );
+  assert.equal(again.status, 304);
+  assert.equal(await again.text(), "");
+  assert.equal(again.headers.get("etag"), etag);
+
+  // Nothing was sent, so nothing is counted: the row still holds the one GET.
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 1);
+  assert.equal(record.downloadBytes, 10);
 });

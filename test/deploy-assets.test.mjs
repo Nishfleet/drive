@@ -26,8 +26,10 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
+import { AUTO_TOPUP_ENDPOINT } from "../src/prepaid.js";
 import { DOC_PAGES } from "../src/render-docs.js";
 import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../src/seo.js";
+import { TOPUP_ENDPOINT } from "../src/topup.js";
 import apiWorker, { dispatch } from "../workers/api/src/index.js";
 import { createMemoryStore } from "../workers/api/src/keystore.js";
 import { API_PREFIX } from "../workers/api/src/routes.js";
@@ -513,6 +515,9 @@ test("this Worker mounts one /api/* route ahead of the gate, and it is the revok
     "/api/files/*",
     "/api/account/close",
     "/api/account/close/cancel",
+    // The top-up's browser-CSRF mount (drive#586), also after the gate.
+    TOPUP_ENDPOINT,
+    AUTO_TOPUP_ENDPOINT,
   ]);
   const forward = routes.findIndex((r) => r.path === REVOKE_PATH);
   const gate = routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
