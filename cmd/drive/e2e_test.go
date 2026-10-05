@@ -908,7 +908,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Errorf("the mount's chunk-size limit is %d bytes, want the fill's %d", before.Opt.ChunkSizeLimit, wantLimit)
 	}
 
-	res, err := fillPass(ctx, c, false, 0, 0, fillReader(mountDir))
+	res, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{name}}, 0, 0)
 	if err != nil {
 		t.Fatalf("fill pass through the mount: %v", err)
 	}
@@ -973,10 +973,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 	c := rcClientForTestHome(t, home, loopbackRCAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
-		_, err := fillPass(ctx, c, false, 0, 0, func(string, bool) error {
-			_, err := fillReadFile(filepath.Join(mountDir, fillName))
-			return err
-		})
+		_, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{fillName}}, 0, 0)
 		filled <- err
 	}()
 	var withFill []time.Duration
