@@ -115,6 +115,7 @@ test("digestsEqual refuses a digest that differs only in its last character", ()
 test("digestsEqual refuses an empty secret on either side", () => {
   assert.equal(digestsEqual("", DIGEST), false, "a blank presentation is not the digest");
   assert.equal(digestsEqual(DIGEST, ""), false, "a blank configured secret fails closed");
+  assert.equal(digestsEqual("", ""), false, "two blanks are not a match either");
 });
 
 test("digestsEqual refuses anything that is not a digest at all", () => {

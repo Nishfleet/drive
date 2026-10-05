@@ -1,6 +1,6 @@
 // Small helpers shared by every api route module: the HTTP shapes a route
 // answers with, and the constant-time digest compare the three token checks
-// run (drive#636), so a second spelling of either means a second thing.
+// run, so a second spelling of either means a second thing (drive#636).
 
 /**
  * JSON response. Never cached: every api body is per-account.
