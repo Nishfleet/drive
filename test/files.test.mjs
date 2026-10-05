@@ -865,18 +865,18 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
   /** @type {string[]} */
   const asked = [];
   let body = "";
-  /** @param {string} url */
-  const fetchImpl = async (url, init = {}) => {
-    asked.push(`${String(url)}|${init.method ?? "GET"}`);
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init) => {
+    asked.push(`${String(url)}|${init?.method ?? "GET"}`);
     const address = new URL(String(url));
     if (address.searchParams.has("list-type")) {
       return new Response(listing, { status: 200 });
     }
-    if (init.method === "PUT") {
+    if (init?.method === "PUT") {
       body = "hello";
       return new Response("", { status: 200 });
     }
-    if (init.method === "DELETE") {
+    if (init?.method === "DELETE") {
       return new Response(null, { status: 204 });
     }
     return new Response(body, {
