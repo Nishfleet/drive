@@ -87,6 +87,9 @@ func runStatus(args []string) error {
 	if why := queueWhy(on, cacheIsFull(home, on), Paused(home), queue); why != "" {
 		fmt.Println(why)
 	}
+	if line := conflictGuardLine(home, time.Now()); line != "" {
+		fmt.Println(line)
+	}
 	if lines, reason := rcProgressLines(home, on); lines != "" {
 		fmt.Print(limitStatusLines(lines, 3))
 	} else if reason != "" {
@@ -417,6 +420,20 @@ const (
 // because that is the save that just bounced. Pause is issue #100's words on
 // the transfers line, so this function stays silent while paused unless the
 // cache is also full.
+// conflictGuardLine is the status line for a conflict guard that cannot
+// keep up with the saves coming in: more saves are waiting for their first
+// hash than one pass can take (conflictSightMax), so protection of the rest
+// waits for the passes that follow. An empty string is "no answer": the
+// guard is not running, or it is keeping up, and neither is a problem to
+// name.
+func conflictGuardLine(home string, now time.Time) string {
+	behind := conflictGuardBehind(ConflictGuardStatePath(home), now)
+	if behind <= conflictSightMax {
+		return ""
+	}
+	return fmt.Sprintf("conflict guard behind by %d saves", behind)
+}
+
 func queueWhy(on, outOfSpace, paused bool, q Pending) string {
 	if outOfSpace {
 		return diskCacheFullWhat + " " + diskCacheFullNext
