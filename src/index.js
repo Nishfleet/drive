@@ -288,9 +288,9 @@ function forwardToApi(c) {
  * @returns {import("./files.js").FileStore | null}
  */
 function storeFor(env) {
-  const injected = /** @type {{[key: symbol]: import("./files.js").FileStore | undefined}} */ (
-    env
-  )[TEST_FILES_STORE];
+  const injected = /** @type {{[key: symbol]: import("./files.js").FileStore | undefined}} */ (env)[
+    TEST_FILES_STORE
+  ];
   if (injected) {
     return injected;
   }

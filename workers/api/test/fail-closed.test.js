@@ -22,12 +22,16 @@ const STORAGE = Object.freeze({
 
 /**
  * @param {unknown} env
- * @param {{mock: {method: (target: Console, name: "error") => {mock: {calls: Array<{arguments: unknown[]}>}}}} t
+ * @param {any} t
+ * @returns {Promise<{response: Response, logged: string[]}>}
  */
 async function missingFetch(env, t) {
   const errorMock = t.mock.method(console, "error");
   const response = await apiFetch(new Request("https://api.drive.test/v1/health"), env);
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  /** @type {string[]} */
+  const logged = errorMock.mock.calls.map((/** @type {{arguments: unknown[]}} */ call) =>
+    call.arguments.map(String).join(" "),
+  );
   return { response, logged };
 }
 

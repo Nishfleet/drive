@@ -433,8 +433,22 @@ function countedBody(body) {
  * scope's own mapping — the index stores the drive path the page and the CLI
  * print, and the account id the row belongs to, exactly as `reconcileIndex`
  * does when it walks an account's scoped store.
+ * @overload
  * @param {FileStore} store
  * @param {D1Database} db
+ * @param {{id: string}} account
+ * @param {() => number} [now]
+ * @returns {FileStore}
+ *
+ * @overload
+ * @param {FileStore | null | undefined} store
+ * @param {D1Database | null | undefined} db
+ * @param {{id: string}} account
+ * @param {() => number} [now]
+ * @returns {FileStore | null | undefined}
+ *
+ * @param {FileStore | null | undefined} store
+ * @param {D1Database | null | undefined} db
  * @param {{id: string}} account
  * @param {() => number} [now]
  */

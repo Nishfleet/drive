@@ -59,8 +59,7 @@ test("nightly jobs without a storage endpoint fail the trigger", async (t) => {
   const errorMock = t.mock.method(console, "error");
   for (const cron of [METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE]) {
     await assert.rejects(
-      () =>
-        workerScheduled({ cron, scheduledTime: 0 }, {}, ctx),
+      () => workerScheduled({ cron, scheduledTime: 0 }, {}, ctx),
       /nightly jobs need a storage endpoint/,
       `${cron} must fail closed, not walk an empty memory store`,
     );
