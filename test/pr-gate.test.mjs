@@ -844,6 +844,7 @@ test("gate 8: the two Worker trees cannot import each other, only core", () => {
     assert.equal(status, 0, `${allowed.file} must pass, because ${allowed.why}:\n${out}`);
     rmSync(path, { force: true });
   } finally {
-    for (const { file } of [...cases, allowed]) rmSync(new URL(`../${file}`, import.meta.url), { force: true });
+    for (const { file } of [...cases, allowed])
+      rmSync(new URL(`../${file}`, import.meta.url), { force: true });
   }
 });
