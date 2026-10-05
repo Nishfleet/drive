@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
@@ -9,6 +8,7 @@ import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
+import { runPreChargeLimitCron } from "./abuse-guards.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -24,31 +24,50 @@ import {
   handleUsageRequest,
   QUOTE_ENDPOINT,
   USAGE_ENDPOINT,
-  usageSummary,
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
-import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { billingPushGap, pushBillingHours } from "./dodo.js";
-import { handleSendEmailRequest } from "./email-send.js";
+import { CAP_ENDPOINT, capStateForAccount, handleCapRequest, runCapEnforcement } from "./cap.js";
+import { handleSendEmailRequest, isSameOriginRequest } from "./email-send.js";
 import {
   createMemoryStore,
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
+  purgeExpiredTrash,
   scopeStore,
   storageBucketForKey,
+  storageVarsFromEnv,
+  TRASH_PURGE_SCHEDULE,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { balanceCents } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import {
-  HOUR_MS,
   handleStorageEventRequest,
+  listMeteredAccounts,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  pruneHiddenVersions,
   reconcileMeter,
+  recordNightlySizes,
   runMeterCron,
+  toMillis,
 } from "./meter.js";
+import {
+  handleMeterJobs,
+  METER_JOB_KINDS,
+  meterJobHandlers,
+  meterJobsQueue,
+  sendMeterJobs,
+} from "./meter-jobs.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
+import {
+  AUTO_TOPUP_ENDPOINT,
+  drawPendingHours,
+  handleAutoTopUpRequest,
+  prepaidPauseOn,
+  settleBalances,
+} from "./prepaid.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -64,6 +83,7 @@ import {
   handleRequestUploadRequest,
   handleShareFileRequest,
   handleShareRequest,
+  purgeStaleLinks,
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
@@ -79,6 +99,7 @@ import {
 import {
   BALANCE_ENDPOINT,
   BILLING_WEBHOOK_PATH,
+  balanceLine,
   handleBalanceRequest,
   handleBillingWebhook,
   handleTopUpRequest,
@@ -162,7 +183,7 @@ export const PUBLIC_ROUTES = Object.freeze([
  * @param {Env} env
  */
 function dodoEnv(env) {
-  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch}} */ (
+  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string}} */ (
     /** @type {unknown} */ (env)
   );
 }
@@ -192,18 +213,9 @@ let filesStore;
  * and the Files page already answers from the in-memory store when they are
  * unset. The names match the api Worker's iDrive pair so the site Worker can
  * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
- * pair a local `rclone serve s3` still uses.
- * @typedef {Env & {
- *   FILES_S3_ENDPOINT?: string,
- *   FILES_S3_BUCKET?: string,
- *   FILES_S3_REGION?: string,
- *   FILES_S3_ACCESS_KEY_ID?: string,
- *   FILES_S3_SECRET_ACCESS_KEY?: string,
- *   IDRIVE_S3_ENDPOINT?: string,
- *   IDRIVE_S3_REGION?: string,
- *   IDRIVE_S3_ACCESS_KEY_ID?: string,
- *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
- * }} StorageEnv
+ * pair a local `rclone serve s3` still uses. The typedef's one definition is
+ * src/files.js's, beside the one reader of the vars.
+ * @typedef {import("./files.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */
@@ -283,27 +295,23 @@ function forwardToApi(c) {
  */
 function storeFor(env) {
   if (!filesStore) {
-    const storage = devStorage(env);
-    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    // The four storage vars read through src/files.js's one reader, the same
+    // read provisionAccountBucket makes at the sign-in verify step, so the
+    // store and the provisioning cannot name two endpoints.
+    const { endpoint, accessKeyId, secretAccessKey, region } = storageVarsFromEnv(devStorage(env));
     if (endpoint) {
-      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
-      const secretAccessKey =
-        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
-      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
       const signed =
-        typeof accessKeyId === "string" &&
-        accessKeyId !== "" &&
-        typeof secretAccessKey === "string" &&
-        secretAccessKey !== "" &&
-        typeof region === "string" &&
-        region !== "";
+        accessKeyId !== undefined && secretAccessKey !== undefined && region !== undefined;
       filesStore = createS3Store({
         endpoint,
         bucketFor: storageBucketForKey,
         ...(signed
           ? {
               region,
-              credentials: { accessKeyId, secretAccessKey },
+              credentials: {
+                accessKeyId: /** @type {string} */ (accessKeyId),
+                secretAccessKey: /** @type {string} */ (secretAccessKey),
+              },
             }
           : {}),
       });
@@ -411,23 +419,27 @@ async function liveDevicesFor(env, account) {
 // it reads the token owner's usage_minutes rows and answers their cap, and no
 // upload route changes.
 /**
- * The `_accountId` is the swap point's seam: the meter (issue #6) will read
- * the named account's usage_minutes rows here, and until it lands every
- * account gets the empty month the usage endpoint answers with.
+ * The resolver the public upload-request links ask about the account that owns
+ * the link (`capStateForAccount`, src/cap.js, drive#496). It is bound to the
+ * environment because the cap is in D1, so the answer for one deployment's
+ * account has to come from that deployment's rows and not from a module-level
+ * constant.
  *
- * @param {string} _accountId
+ * Before the meter, this answered the empty month for every account, so
+ * "active", and a public upload link never stopped at its owner's cap. It now
+ * reads the account's own cap and the metered month the invoice reads, which
+ * is what makes the 403 below a real refusal rather than a rehearsal.
+ *
+ * The device store is built per call rather than cached, because the
+ * resolver is handed straight to the route table and a Worker isolates globals
+ * across requests; a per-request store is also the only store that can be
+ * built for the env a particular request carries.
+ *
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<"active"|"read_only">}
  */
-function capStateFor(_accountId) {
-  const empty = usageSummary({
-    gbMinutes: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
-    cardAdded: true,
-  });
-  return empty.cap.state;
+function capStateFor(env) {
+  return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
@@ -441,8 +453,9 @@ function capStateFor(_accountId) {
 // It is registered on "/api/*" alone and its own isPublic() check skips the
 // public routes declared above, so the two public POST routes keep the repo's
 // own same-origin rule (src/waitlist.js, src/email-send.js) and the token
-// lanes keep their tokens. The browser-facing write lane under /api/files
-// additionally takes Hono's built-in csrf() middleware below.
+// lanes keep their tokens. One CSRF middleware on /api/* then covers every
+// other write: the two public POSTs keep their handler copies, and every
+// other non-GET is refused here before the handler runs.
 //
 // @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
 async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
@@ -464,39 +477,57 @@ async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hon
   await next();
 }
 
-// Hono's own csrf() refuses a request with neither Origin nor Sec-Fetch-Site
-// before a custom origin/secFetchSite handler is consulted (its undefined
-// short-circuit returns false), which would refuse curl and the Go CLI — the
-// callers the repo's same-origin rule deliberately lets through, because a
-// caller that sends no browser header is not a browser and the account gate
-// is what holds it (src/email-send.js isSameOriginRequest, load-bearing in
-// src/files.js for the three state-changing routes). So the built-in
-// middleware runs only when a browser evidence header is present; a
-// non-browser request falls straight through to the handler, whose own
-// same-origin check answers with the product's sentence rather than a bare
-// "Forbidden". The browser case is still Hono's middleware deciding.
-const browserCsrf = csrf({
-  origin: (origin, c) => origin === new URL(c.req.url).origin,
-  secFetchSite: (site) => site === "same-origin",
-});
+// One CSRF rule for every non-GET /api/* route. The check is the repo's
+// same-origin function (src/email-send.js): a caller with no Origin and no
+// Sec-Fetch-Site (curl, the Go CLI) is not a browser, so it passes and the
+// account gate is what holds it; a browser that names another origin, or
+// Origin: null without Sec-Fetch-Site: same-origin, is refused with the
+// message table's cross-site words. Hono's built-in csrf() only inspects
+// form content-types, so a JSON POST would slip past it — the copies this
+// replaced were already covering that, and this middleware is that same
+// rule once, in front of every write.
+//
+// The two public POSTs keep their own handler copies (waitlist sign-up and
+// the token-gated send lane) and are skipped here so those sentences stay
+// the product's, not a second generic 403.
+const CSRF_EXEMPT_PATHS = new Set(["/api/waitlist", SEND_EMAIL_PATH]);
 /**
- * Hono's csrf(), run only when a browser evidence header is present.
+ * Same-origin CSRF on every write except the two public POSTs that keep
+ * their own handler copies.
  * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
  */
-const csrfWhenBrowser = (c, next) =>
-  c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
-    ? next()
-    : browserCsrf(c, next);
+const csrfWhenBrowser = async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
+    return next();
+  }
+  const path = c.req.path.replace(/\/+$/, "") || "/";
+  if (CSRF_EXEMPT_PATHS.has(path)) return next();
+  if (!isSameOriginRequest(c.req.raw)) {
+    return c.json({ error: failureMessage("cross-site") }, 403);
+  }
+  return next();
+};
 
 /** @param {DriveContext} c */
-const filesHandler = (c) => {
+const filesHandler = async (c) => {
   const account = c.get("account");
+  // The account's own state, read from the accounts row the cap saves
+  // (drive#496). The handler asks for it rather than reading D1 itself, so the
+  // write refusal below is one rule with one source and the tests can drive it
+  // with a store they control. No DRIVE_DB means no cap state to enforce, so
+  // the options carry no resolver and the account gate is what holds the route.
   return handleFilesRequest(
     c.req.raw,
     account ? withIndex(storeFor(c.env), c.env.DRIVE_DB, account) : null,
     account,
     Date.now(),
-    { db: c.env.DRIVE_DB },
+    c.env.DRIVE_DB
+      ? {
+          db: c.env.DRIVE_DB,
+          prepaidPause: prepaidPauseOn(c.env),
+          accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
+        }
+      : { prepaidPause: prepaidPauseOn(c.env) },
   );
 };
 
@@ -539,18 +570,14 @@ export function createApp() {
   // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
 
-  // Same-origin / CSRF protection on the browser-facing write lane, with
-  // Hono's built-in csrf() middleware. It is registered on the account-gated
-  // files lane so an anonymous request is its 401, not a 403: the gate is the
-  // outer rule. It covers exactly the requests a cross-site page can forge —
-  // a form-encoded or multipart POST to the account routes — and reads no
-  // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
-  // (curl, the Go CLI) is not a browser, so it passes this check and the
-  // account gate is what holds it.
-  app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
-  app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
-  app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
-  app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
+  // Same-origin / CSRF protection on every non-GET /api/* route except the
+  // two public POSTs that keep their handler copies. Registered after the
+  // account gate so an anonymous request is its 401, not a 403: the gate is
+  // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
+  // Go CLI) is not a browser, so it passes this check and the account gate
+  // is what holds it. /api/starter is a write route under this one rule
+  // (drive#539), so it carries the check without its own registration.
+  app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -677,6 +704,14 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
+    // The month's own metered numbers, read from the same store and the same
+    // `monthUsageThrough` the cap walk and the invoice read (drive#496). This
+    // is what turns /api/usage from an empty month into the account's real
+    // one, including the download bytes the earlier read dropped. It is null
+    // when there is no binding, so the handler falls back to the empty month
+    // rather than failing the page.
+    /** @type {Record<string, unknown>|null} */
+    let usage = null;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
@@ -687,6 +722,9 @@ export function createApp() {
       // line a card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
+      usage = /** @type {Record<string, unknown>} */ (
+        await store.monthUsage(account.id, { capUsd })
+      );
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -695,10 +733,18 @@ export function createApp() {
     // whose no device has signed in yet or whose mount is gone (drive issue
     // #308), so the usage page hides the line rather than showing a stale
     // one.
+    // The prepaid balance line rides beside the cap line (drive#586), so
+    // `drive status` prints the Worker's words, the top-up prompt included.
+    const balance = c.env.DRIVE_DB
+      ? balanceLine(await balanceCents(c.env.DRIVE_DB, account.id), {
+          pauseOn: prepaidPauseOn(c.env),
+        })
+      : null;
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile },
+      { ...account, capUsd, cardOnFile, usage },
       await liveQueueFor(c.env, account),
+      balance,
     );
   });
 
@@ -706,7 +752,12 @@ export function createApp() {
   // a top-up's checkout. The balance is credited only by the signed webhook
   // below, never by this route or the checkout's redirect.
   app.get(BALANCE_ENDPOINT, (c) =>
-    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
+      pauseOn: prepaidPauseOn(c.env),
+    }),
+  );
+  app.post(AUTO_TOPUP_ENDPOINT, (c) =>
+    handleAutoTopUpRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
   );
   app.post(TOPUP_ENDPOINT, (c) => {
     const dodo = dodoEnv(c.env);
@@ -739,6 +790,10 @@ export function createApp() {
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
+    // The full two-provider choice (S3, else iDrive), not the S3 one alone
+    // (drive#496): on an iDrive deployment a store wired to the S3 provider
+    // alone has no provider that can revoke at the storage side, so the swap
+    // that a cap write performs was a no-op on the drive itself.
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
@@ -777,7 +832,11 @@ export function createApp() {
     handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549). The per-account
+      // open-link cap lives in the handler; this is the edge limit.
+      limiter: c.env.SHARE_MINT_RATE_LIMITER,
+    }),
   );
   // DELETE revokes a link (`drive share --revoke`); the handler answers it,
   // but a route that is not registered is a 405 before the handler runs.
@@ -788,7 +847,10 @@ export function createApp() {
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549).
+      limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+    }),
   );
   app.delete(REQUEST_ENDPOINT, (c) =>
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
@@ -819,16 +881,19 @@ export function createApp() {
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
-    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env)),
+    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env), {
+      ipLimiter: c.env.SHARE_DOWNLOAD_RATE_LIMITER,
+    }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
-    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
+    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor(c.env), {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
       db: c.env.DRIVE_DB,
+      prepaidPause: prepaidPauseOn(c.env),
     }),
   );
 
@@ -838,6 +903,8 @@ export function createApp() {
     handleBillingWebhook(c.req.raw, {
       db: c.env.DRIVE_DB,
       secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
+      email: c.env.EMAIL,
+      mailFrom: dodoEnv(c.env).MAIL_FROM ?? "",
     }),
   );
 
@@ -893,7 +960,11 @@ export default {
   //     records the trigger as failed and retries, and the catch-up takes
   //     the next one over - a failed rollup must never read as a quiet zero.
   //     The schedule string lives in cloudflare.config.ts, pinned to
-  //     src/meter.js's METER_CRON by test/meter.test.mjs.
+  //     src/meter.js's METER_CRON by test/meter.test.mjs. The same trip
+  //     also enforces the 1 TB pre-charge storage limit on mounts
+  //     (src/abuse-guards.js runPreChargeLimitCron, drive#536): an
+  //     over-limit unpaid account's keys are taken read-only through the
+  //     cap's own swap, the same answer the web upload path gives.
   //   - The meter's nightly reconciler (build-spec.md piece 6, drive issue
   //     #59): `reconcileMeter` walks each metered account's versions in the
   //     storage provider, fixes the rows the event stream missed, and rewinds
@@ -931,78 +1002,122 @@ export default {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
       const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
-      const hours = [];
-      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
-        hours.push(hour);
+      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
+      // scheduledTime through toMillis, and the steps below take only a
+      // number, so they read the same normalised instant.
+      const now = toMillis(event.scheduledTime, "scheduledTime");
+      // With the meter's queue bound (drive#519), the per-account steps below
+      // (cap, draw, settle) run as one message per account instead of one
+      // loop in this invocation (src/meter-jobs.js).
+      const jobs = meterJobsQueue(env);
+      if (jobs) {
+        const sent = await sendMeterJobs(
+          jobs,
+          METER_JOB_KINDS.hourly,
+          await listMeteredAccounts(env.METER_DB),
+          { at: now, through: rolled.through },
+        );
+        console.log(`meter: queued ${sent} hourly account job(s)`);
+        return;
       }
-      // Test-mode Dodo ingest for the hours this run rolled (drive issue #51).
-      // A missing key skips rather than failing the rollup; a failed ingest
-      // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
-      // the unit tests can record the request without reaching the network.
-      // DODO_BASE_URL overrides the test host (drive issue #323, owner comment
-      // 2026-10-03T06:35Z); it defaults to test.dodopayments.com when unset.
-      const dodo =
-        /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
-          env
-        );
-      const pushed = await pushBillingHours(env.METER_DB, hours, {
+      // The cap walk, right after the rollup and before the push (drive#496).
+      // The order is the whole point: the rollup is what makes the current
+      // hour count, so a walk that ran before it would enforce the previous
+      // hour's spend and then wait a full hour to catch up. The push is after
+      // it so the invoice for those hours is built from the same rows the cap
+      // was decided on.
+      //
+      // A cap that threw would be retried by Cloudflare with the whole
+      // trigger, rollup included, which is the same contract the rollup above
+      // has: an enforced cap that did not happen must be a failed trigger and
+      // not a quiet zero. The walk's own state saves are guarded and its
+      // notice stamps are written after the send, so a retry neither
+      // re-sends a notice that went nor un-swaps a swap that happened.
+      /** @type {ReadonlyArray<{id: string, error: unknown}>} */
+      let capFailures = [];
+      if (env.DRIVE_DB) {
+        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const cap = await runCapEnforcement({
+          store: createD1DeviceStore(env.DRIVE_DB, {
+            keyProvider: keyProviderFor(env) ?? undefined,
+          }),
+          now: event.scheduledTime,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+        });
+        if (cap.mailed > 0 || cap.readOnly > 0) {
+          console.log(
+            `cap: ${cap.readOnly} of ${cap.accounts} metered account(s) at their cap, ${cap.mailed} notice(s) sent`,
+          );
+        }
+        capFailures = cap.failures;
+      }
+      // The prepaid draw (drive#586): each account's usage is drawn from its
+      // balance, at most once per account per hour (src/prepaid.js). It works
+      // from each account's own draw mark through the newest rolled hour
+      // (drive#519), not from the hours this run rolled, so a run that failed
+      // here - for an hour or for days, across a month end or not - is caught
+      // up by the next one. A failed D1 write fails the trigger, and the
+      // idempotency key makes the retry draw nothing twice.
+      const drawn = await drawPendingHours(env.METER_DB, await listMeteredAccounts(env.METER_DB), {
+        through: rolled.through,
+        now,
+      });
+      if (drawn.drawn > 0) {
+        console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
+      }
+      // The "$2 left" email and the auto top-up for the accounts just drawn.
+      // Each account's failure is logged inside and never fails the trigger:
+      // the draws above are written, and a retry must not wait on a mail
+      // outage.
+      const dodo = dodoEnv(env);
+      await settleBalances(env.METER_DB, drawn.accounts, {
+        email: env.EMAIL,
+        mailFrom: dodo.MAIL_FROM ?? "",
         apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        productId: dodo.DODO_TOPUP_PRODUCT_ID,
         baseUrl: dodo.DODO_BASE_URL,
-        now: event.scheduledTime,
+        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        now,
       });
-      // The report on the skip (drive issue #334). pushBillingHours returns
-      // {pushed: 0} for a missing key on purpose, and that silence is the bug
-      // this names: a deploy whose key was never set, or was set on the wrong
-      // Worker, rolls metered hours and bills nobody while /api/health stays
-      // green, because health deliberately does not look at secrets.
-      //
-      // It runs on the cron, beside the skip, and reaches a person reading
-      // Worker logs (/api/health cannot: a billing-config gap is not an outage,
-      // and health's contract is one failure at a time, not a second opinion).
-      // It runs after the push is awaited, and deliberately not under a try:
-      // a push that throws on purpose (Cloudflare retries the rollup) also
-      // ends this run, so the report is suppressed for that cycle and speaks
-      // on the next one. That is fine because a throwing push is itself the
-      // loud event; the report answers the silent path only.
-      //
-      // Guarded on purpose. The push above may throw - Cloudflare retries the
-      // rollup, because an unpushed hour should be retried. The report must
-      // not: a detector that fails the work it is reporting on is worse than
-      // no detector, because a transient D1 error, a schema change or a bad
-      // trigger time would then retry a rollup that already billed everyone
-      // correctly. Every failure path in billingPushGap is logged and dropped.
-      const gap = await billingPushGap(env.METER_DB, {
-        apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        now: event.scheduledTime,
-      }).catch((error) => {
-        console.error(
-          "billing: the gap report failed, so it says nothing about this run",
-          error instanceof Error ? error.message : String(error),
+      // The pre-charge limit's own trip (drive#536). The web upload path has
+      // held 1 TB free since drive#464, but a mount holds a storage key and
+      // writes past any page, so the same hourly run reads the over-limit
+      // unpaid accounts and takes their keys read-only, through the cap's
+      // own swap (src/abuse-guards.js). DRIVE_DB is a required binding on
+      // this trip - the sites Worker holds it - so a missing one fails the
+      // trigger the same way a failed read does: a run that capped nobody
+      // because the sweep never ran would be a quiet zero reporting the hour
+      // as guarded, and Cloudflare's retry is the honest answer to a
+      // misconfigured trip.
+      if (env.DRIVE_DB === undefined || env.DRIVE_DB === null) {
+        throw new Error(
+          "the pre-charge limit sweep needs the DRIVE_DB binding, so an over-limit " +
+            "unpaid account's keys can be taken read-only",
         );
-        return null;
+      }
+      const capped = await runPreChargeLimitCron({
+        db: env.DRIVE_DB,
+        devices: createD1DeviceStore(env.DRIVE_DB, {
+          keyProvider: keyProviderFor(env) ?? undefined,
+        }),
       });
-      if (gap && gap.hours > 0) {
-        // Value-free: hours, the oldest one, and which of the two causes the
-        // issue names. Never the key, never an account id.
-        console.error(
-          "billing: metered hours reached nobody",
-          gap.missingKey
-            ? "DODO_PAYMENTS_API_KEY is not set on this Worker, so the push skipped"
-            : "DODO_PAYMENTS_API_KEY is set but hours are still unpushed; check the key is the right one for this Worker",
-          `hours=${gap.hours}`,
-          `oldest=${new Date(gap.since ?? event.scheduledTime).toISOString()}`,
+      if (capped.capped > 0) {
+        console.log(
+          "pre-charge limit: capped",
+          `accounts=${capped.capped}`,
+          `over=${capped.overLimit}`,
+          `failures=${capped.failures}`,
         );
-      } else if (gap && pushed.pushed > 0) {
-        // The healthy counter-case, so the absence of the line above is
-        // meaningful: a person tailing logs can tell "nothing wrong" from
-        // "the report stopped running". `gap` is non-null here, so the gap
-        // was measured and came back zero; a report that failed prints its own
-        // line above and must not be followed by an all-clear. console.log,
-        // not console.error - error level is for actionable failures, and
-        // training an operator to ignore the error channel is how the next gap
-        // goes unseen.
-        console.log(`billing: push working, ${pushed.pushed} hour(s) ingested this run`);
+      }
+      // A cap step that failed for some accounts is raised last, after every
+      // other account was decided and the hours were drawn and settled, so Cloudflare
+      // records a failed trigger and the next run retries those accounts.
+      if (capFailures.length > 0) {
+        throw new AggregateError(
+          capFailures.map((failure) => failure.error),
+          `cap: enforcement failed for ${capFailures.length} account(s)`,
+        );
       }
       return;
     }
@@ -1019,7 +1134,52 @@ export default {
       // other. Its own per-account catches mean only a whole-cron failure
       // (D1 down) rejects here, and a failed trigger is the honest signal
       // for that: the next night retries everything it did not finish.
+      // With the meter's queue bound (drive#519), one message per account
+      // does the reconcile (src/meter-jobs.js); without it, the same
+      // per-account step runs here, each account's failure kept and raised.
+      const jobs = meterJobsQueue(env);
+      if (jobs) {
+        const sent = await sendMeterJobs(
+          jobs,
+          METER_JOB_KINDS.reconcile,
+          await listMeteredAccounts(env.METER_DB),
+          { at: toMillis(event.scheduledTime, "scheduledTime") },
+        );
+        console.log(`meter: queued ${sent} reconcile account job(s)`);
+      } else {
+        await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      }
+      // Retention (drive issue #564): the reconciler has finished its
+      // repairs, so the prune sees the row set the provider listings have
+      // already agreed with, and a version the provider still lists is never
+      // deleted from under it. A skipped prune is reported, not thrown: the
+      // hours the cutoff needs are still being booked by the hourly rollup,
+      // and the next nightly run tries again. The rows the prune would have
+      // deleted keep being summed into usage_minutes meanwhile, so skipping
+      // loses nothing but the space.
+      const pruned = await pruneHiddenVersions(env.METER_DB, event.scheduledTime);
+      if (pruned.skipped !== null) {
+        console.log(`meter retention: skipped, ${pruned.skipped}`);
+      } else {
+        console.log(
+          `meter retention: pruned=${pruned.pruned} hidden rows before ` +
+            `${new Date(pruned.cutoff).toISOString()}`,
+        );
+      }
       if (env.DRIVE_DB) {
+        // Link retention (drive issue #549): expired and revoked rows older
+        // than 90 days are pruned nightly. A still-open row is never touched,
+        // so this cannot close a link a stranger is holding. Awaited, like
+        // the size row below: a purge that failed is a failed run, not a
+        // silent gap.
+        const purged = await purgeStaleLinks(
+          env.DRIVE_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
+        console.log(
+          `link retention: pruned ${purged.shares} share rows, ` +
+            `${purged.requests} upload-request rows`,
+        );
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
         context.waitUntil(
           runAccountCloseCron({
@@ -1034,7 +1194,17 @@ export default {
           }),
         );
       }
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The nightly size row (drive issue #564): the growth numbers the
+      // spec's decision watches, written to nightly_sizes and printed here,
+      // where an operator reading Worker logs sees one line a day. Awaited
+      // like everything else on this trip: a size row that failed must be a
+      // failed run, not a silent gap in the table.
+      const sizes = await recordNightlySizes(env.METER_DB, event.scheduledTime);
+      console.log(
+        `nightly sizes: day=${sizes.day} ` +
+          `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
+          `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
+      );
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
@@ -1042,6 +1212,23 @@ export default {
     // 2026-10-04T08:37:56Z had `empty_pointer_open=0`, `open_rows=0`,
     // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
     // whose JSON the sweep could still move. Dropping the column is #339.
+
+    // The nightly trash purge (drive issue #521). Awaited for the same reason
+    // as the meter's trips: a purge that failed must be a failed trigger
+    // Cloudflare retries, not a run that logged success having removed
+    // nothing, because a parked file past 30 days is one the page has
+    // already told its person is gone. The store is scoped per account
+    // inside `purgeExpiredTrash`, so the listing never crosses accounts.
+    if (event.cron === TRASH_PURGE_SCHEDULE) {
+      if (!env.DRIVE_DB) {
+        throw new Error("the nightly trash purge needs the customer database");
+      }
+      const purged = await purgeExpiredTrash(env.DRIVE_DB, store, event.scheduledTime);
+      console.log(
+        `trash: removed ${purged.purged} expired file(s) across ${purged.accounts} account(s)`,
+      );
+      return;
+    }
 
     context.waitUntil(
       (async () => {
@@ -1053,6 +1240,44 @@ export default {
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);
+      }),
+    );
+  },
+
+  // The meter's queue consumer (drive#519): one message is one account's
+  // hourly step or nightly reconcile, sent by the crons above when the
+  // METER_JOBS queue is bound. A job that throws is retried by the platform,
+  // and after its retries it lands in the dead-letter queue (src/meter-jobs.js).
+  /**
+   * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+   * @param {Env} env
+   * @param {ExecutionContext} _context
+   * @param {import("./files.js").FileStore} [store] injectable like scheduled's
+   */
+  async queue(batch, env, _context, store = storeFor(env)) {
+    if (!env.METER_DB) {
+      throw new Error("meter jobs: METER_DB binding is not configured");
+    }
+    const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+    const dodo = dodoEnv(env);
+    await handleMeterJobs(
+      batch,
+      meterJobHandlers({
+        meterDb: env.METER_DB,
+        capStore: env.DRIVE_DB
+          ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
+          : undefined,
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        settle: {
+          email: env.EMAIL,
+          mailFrom: dodo.MAIL_FROM ?? "",
+          apiKey: dodo.DODO_PAYMENTS_API_KEY,
+          productId: dodo.DODO_TOPUP_PRODUCT_ID,
+          baseUrl: dodo.DODO_BASE_URL,
+          fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        },
+        store,
       }),
     );
   },

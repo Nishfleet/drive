@@ -678,8 +678,8 @@ var errConflictTestQueue = &conflictTestError{"queue"}
 
 func TestConflictGuardHoldsAHashErrorOnThatEntryOnly(t *testing.T) {
 	g, mountDir, f := guardFor(t, "mac", map[string]string{
-		"ok.txt":   "ok\n",
-		"bad.txt":  "bad\n",
+		"ok.txt":  "ok\n",
+		"bad.txt": "bad\n",
 	})
 	_ = mountDir
 	f.pending = []queueEntry{{Name: "ok.txt", Size: 3}, {Name: "bad.txt", Size: 4}}

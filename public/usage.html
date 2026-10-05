@@ -292,6 +292,167 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* ---- The prepaid balance (drive#586) --------------------------------- */
+
+/* The balance is the account's money, read from GET /api/balance. Every
+   amount is the API's own string; the page formats no money. */
+/* The balance's box is its full size from the first paint, so its read
+   lands into space the page already has (drive#586, same idea as the
+   month's .status-slot). The status and the body share one grid cell, and a
+   hidden one keeps its place without painting, so showing either one moves
+   nothing. Every part of the body that only fills in on a read holds its
+   height while empty, and the ledger scrolls inside a fixed box, so ten
+   lines take the same room as none. */
+.balance-slot {
+  display: grid;
+}
+
+.balance-slot > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.balance-slot > [hidden] {
+  display: block;
+  visibility: hidden;
+}
+
+.balance-slot > .status {
+  align-self: start;
+}
+
+.balance-amount {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: clamp(34px, 5vw, 48px);
+  line-height: 1.1;
+  min-height: 1.1em;
+}
+
+.balance-line {
+  margin: 6px 0 0;
+  min-height: 2lh;
+  padding-left: 12px;
+  border-left: 4px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+.balance-line[data-state="low"],
+.balance-line[data-state="paused"] {
+  border-left-color: var(--bad);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.topup {
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.topup-presets {
+  min-height: calc(1lh + 16px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topup button,
+.topup-form button {
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.topup button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.topup-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 10px;
+  margin: 14px 0 0;
+}
+
+.topup-form label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.topup input[type="number"] {
+  width: 8rem;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.topup .error {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.auto-topup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 14px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.auto-topup input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+.ledger-box {
+  height: 16rem;
+  margin: 18px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ledger {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.ledger li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 18px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ledger .amount {
+  font-family: var(--mono);
+}
+
+.ledger .when {
+  flex-basis: 100%;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
 .footer {
   max-width: 940px;
   margin: 48px auto 0;
@@ -371,6 +532,48 @@ h2 {
          priced month of zeros. Without JavaScript there is no read at all, and
          this says so instead of leaving a blank page. -->
     <div id="usage-body" hidden>
+      <!-- The prepaid balance (drive#586). The balance is added first and
+           usage is drawn from it. A top-up goes to the payment page and comes
+           back here; the balance moves only when the payment is confirmed.
+           It sits inside the usage body so it paints with the month, never
+           above it: a box that fills in above the month would push the whole
+           page down under the reader. Its own read lands into a box that is
+           already its full size (the .balance-slot rules), so nothing moves
+           when it does. -->
+      <section aria-labelledby="balance-heading">
+        <h2 id="balance-heading">Balance</h2>
+        <div class="balance-slot">
+          <p class="status" id="balance-status" role="status" aria-live="polite" hidden></p>
+          <div id="balance-body" hidden>
+            <p class="balance-amount" id="balance-amount"></p>
+            <p class="balance-line" id="balance-line" data-state="ok"></p>
+            <p class="hint" id="topup-pending" role="status" hidden>Thanks. Your balance goes up here as soon as the payment is confirmed.</p>
+            <div class="topup">
+              <div class="topup-presets" id="topup-presets"></div>
+              <form class="topup-form" id="topup-form">
+                <label for="topup-amount">Another amount, in dollars
+                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required>
+                </label>
+                <button type="submit">Add</button>
+              </form>
+              <p class="error" id="topup-error" role="alert" hidden></p>
+              <div class="auto-topup">
+                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note">
+                <label for="auto-topup">Auto top-up: add</label>
+                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars">
+                <span>when the balance drops under $2</span>
+              </div>
+              <p class="hint" id="auto-topup-note" role="status">Off until you turn it on. It uses your saved card and emails a receipt each time.</p>
+            </div>
+            <h3 class="hint" id="ledger-heading">Recent lines</h3>
+            <section class="ledger-box" aria-labelledby="ledger-heading">
+              <ul class="ledger" id="ledger-list"></ul>
+              <p class="hint" id="ledger-empty" hidden>No lines yet. Your first top-up shows here.</p>
+            </section>
+          </div>
+        </div>
+      </section>
+
       <section aria-labelledby="stored-heading">
         <h2 id="stored-heading">Stored</h2>
         <figure class="chart" id="chart-figure">
@@ -464,7 +667,14 @@ h2 {
   </main>
 
   <footer class="footer">
-    <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+    </nav>
+    <p>Pay from your balance, metered by the minute. <a href="/">See the price</a>.</p>
   </footer>
 
   <script>
@@ -1016,6 +1226,177 @@ navSignoutAll.addEventListener("click", () => {
        The static signed-in pages load this file as a module; get-started
        imports the same file into its one bundle so it stays inside the
        Lighthouse script-count budget. -->
+  <script data-part="balance">
+// The prepaid balance (drive#586). Every amount is the API's own string from
+// GET /api/balance (src/topup.js balanceSummary): this block formats no money
+// and works out no balance. The Worker checks every amount again, so the one
+// check here only saves a round trip for an amount under the smallest top-up.
+// test/account-balance.test.mjs runs this block against a stub page.
+(() => {
+  const BALANCE_ENDPOINT = "/api/balance";
+  const TOPUP_ENDPOINT = "/api/topup";
+  const AUTO_TOPUP_ENDPOINT = "/api/topup/auto";
+  const UNREACHABLE = "Could not reach the balance just now. Reload the page to try again.";
+  const LABELS = {
+    topup: "Top-up",
+    usage: "Storage and downloads",
+    refund: "Refund",
+    adjustment: "Adjustment",
+  };
+
+  const statusEl = document.getElementById("balance-status");
+  const bodyEl = document.getElementById("balance-body");
+  const amountEl = document.getElementById("balance-amount");
+  const lineEl = document.getElementById("balance-line");
+  const presetsEl = document.getElementById("topup-presets");
+  const formEl = document.getElementById("topup-form");
+  const customEl = document.getElementById("topup-amount");
+  const errorEl = document.getElementById("topup-error");
+  const pendingEl = document.getElementById("topup-pending");
+  const autoEl = document.getElementById("auto-topup");
+  const autoAmountEl = document.getElementById("auto-topup-amount");
+  const autoNoteEl = document.getElementById("auto-topup-note");
+  const ledgerEl = document.getElementById("ledger-list");
+  const ledgerEmptyEl = document.getElementById("ledger-empty");
+
+  let minTopUpUsd = 10;
+
+  function sayStatus(message) {
+    statusEl.textContent = message;
+    statusEl.hidden = false;
+    bodyEl.hidden = true;
+  }
+
+  function sayError(message) {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  }
+
+  async function postJson(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => null);
+    return { response, payload };
+  }
+
+  // Sends one top-up and follows the checkout the Worker answered, only when
+  // it is an https page. The balance is not touched here: it moves when the
+  // payment provider confirms the payment to the Worker.
+  async function topUp(amount) {
+    errorEl.hidden = true;
+    const dollars = Number(amount);
+    if (!Number.isFinite(dollars) || dollars < minTopUpUsd) {
+      sayError(`Add $${minTopUpUsd} or more.`);
+      return;
+    }
+    let answer;
+    try {
+      answer = await postJson(TOPUP_ENDPOINT, { amount_usd: String(amount) });
+    } catch (_error) {
+      sayError(UNREACHABLE);
+      return;
+    }
+    const { response, payload } = answer;
+    const url = payload && typeof payload.checkout_url === "string" ? payload.checkout_url : "";
+    if (!response.ok || !url.startsWith("https://")) {
+      sayError(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    window.location.assign(url);
+  }
+
+  async function saveAuto() {
+    const turningOn = autoEl.checked;
+    autoEl.disabled = true;
+    let answer;
+    try {
+      answer = await postJson(AUTO_TOPUP_ENDPOINT, {
+        amount_usd: turningOn ? String(autoAmountEl.value) : null,
+      });
+    } catch (_error) {
+      answer = null;
+    }
+    autoEl.disabled = false;
+    if (!answer || !answer.response.ok) {
+      autoEl.checked = !turningOn;
+      const payload = answer ? answer.payload : null;
+      autoNoteEl.textContent =
+        payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;
+      return;
+    }
+    autoNoteEl.textContent = turningOn
+      ? "On. It uses your saved card and emails a receipt each time."
+      : "Off. Top up by hand when you need to.";
+  }
+
+  function ledgerLine(line) {
+    const item = document.createElement("li");
+    const what = document.createElement("span");
+    what.textContent = line.reason ? `${LABELS[line.kind] || line.kind}: ${line.reason}` : LABELS[line.kind] || line.kind;
+    const amount = document.createElement("span");
+    amount.className = "amount";
+    amount.textContent = line.amount_cents > 0 ? `+${line.amount}` : line.amount;
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = typeof line.at === "string" ? line.at.slice(0, 10) : "";
+    item.append(what, amount, when);
+    return item;
+  }
+
+  function render(summary) {
+    minTopUpUsd = summary.min_top_up_usd;
+    amountEl.textContent = summary.balance;
+    lineEl.textContent = summary.balance_line;
+    lineEl.dataset.state = summary.paused ? "paused" : summary.low_balance ? "low" : "ok";
+    presetsEl.replaceChildren(
+      ...summary.top_up_presets_usd.map((dollars) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `Add $${dollars}`;
+        button.addEventListener("click", () => topUp(dollars));
+        return button;
+      }),
+    );
+    customEl.min = String(summary.min_top_up_usd);
+    autoEl.checked = summary.auto_topup_usd !== null;
+    autoAmountEl.min = String(summary.min_top_up_usd);
+    autoAmountEl.value = String(
+      summary.auto_topup_usd === null ? summary.min_top_up_usd : summary.auto_topup_usd,
+    );
+    ledgerEl.replaceChildren(...summary.recent.map(ledgerLine));
+    ledgerEmptyEl.hidden = summary.recent.length > 0;
+    statusEl.hidden = true;
+    bodyEl.hidden = false;
+  }
+
+  async function read() {
+    let response;
+    try {
+      response = await fetch(BALANCE_ENDPOINT, { headers: { accept: "application/json" } });
+    } catch (_error) {
+      sayStatus(UNREACHABLE);
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || typeof payload.balance !== "string") {
+      sayStatus(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    render(payload);
+  }
+
+  formEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    return topUp(customEl.value);
+  });
+  autoEl.addEventListener("change", () => saveAuto());
+  pendingEl.hidden = new URLSearchParams(window.location.search).get("topup") !== "done";
+  read();
+})();
+  </script>
   <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

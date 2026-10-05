@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-05
 
+- Prepaid balance: add $10 or more, and storage and downloads are drawn
+  from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
+  balance never expires. Nothing is charged to your card after use. The
+  account page shows the balance, top-up, auto top-up and recent lines.
 - An agent key the app makes for you is capped at the published $20 a month,
   not the $12 an old schema default had been setting on its row. The daily
   count also adds each request in the database itself, so a tool sending many
@@ -71,7 +75,9 @@ the live site.
   e2 account (bucket `drive-prod`, region `eu-west-3`), and every setting was read
   back from that bucket: versioning on, a one-day hidden-version rule, SSE-S3. A key
   cannot be scoped to one folder there — the endpoint refuses `AssumeRole` — so
-  iDrive e2 is not our storage, and the seat moves to Backblaze B2.
+  iDrive e2 is not our storage, and the seat moves to Backblaze B2. Reversed the
+  next day: files stay on iDrive e2 in Paris (eu-west-3), and each key is scoped
+  to a bucket instead (drive#371).
 - `drive branch` mints a branch key scoped to `u/<account>/.branches/<name>/`
   with no delete, stores it 0600, and prints the prefix plus the two env var
   names an agent tool would run on — never the secret, never on the command
