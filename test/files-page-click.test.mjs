@@ -338,6 +338,7 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
     BETTER_AUTH_URL: TEST_BASE_URL,
     SIGNIN_RATE_LIMITER: pass,
     SIGNIN_GLOBAL_RATE_LIMITER: pass,
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const workerFetch =
