@@ -1206,15 +1206,23 @@ const handler = {
     // nothing, because a parked file past 30 days is one the page has
     // already told its person is gone. The store is scoped per account
     // inside `purgeExpiredTrash`, so the listing never crosses accounts.
+    // The nightly trash purge (drive issue #521), wrapped in a Sentry Crons
+    // check-in like every scheduled branch (issue #520). Awaited for the same
+    // reason as the meter's trips: a purge that failed must be a failed
+    // trigger Cloudflare retries, not a run that logged success having removed
+    // nothing, because a parked file past 30 days is one the page has
+    // already told its person is gone. The store is scoped per account
+    // inside `purgeExpiredTrash`, so the listing never crosses accounts.
     if (event.cron === TRASH_PURGE_SCHEDULE) {
-      if (!env.DRIVE_DB) {
-        throw new Error("the nightly trash purge needs the customer database");
-      }
-      const purged = await purgeExpiredTrash(env.DRIVE_DB, store, event.scheduledTime);
-      console.log(
-        `trash: removed ${purged.purged} expired file(s) across ${purged.accounts} account(s)`,
-      );
-      return;
+      return withCronCheckIn(event, "nightly-trash-purge", async () => {
+        if (!env.DRIVE_DB) {
+          throw new Error("the nightly trash purge needs the customer database");
+        }
+        const purged = await purgeExpiredTrash(env.DRIVE_DB, store, event.scheduledTime);
+        console.log(
+          `trash: removed ${purged.purged} expired file(s) across ${purged.accounts} account(s)`,
+        );
+      });
     }
 
     context.waitUntil(
