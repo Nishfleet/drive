@@ -375,6 +375,10 @@ test("every workflow pins one rclone release, and the stand-in test fetches the 
   assert.match(ci, /RCLONE_LINUX_AMD64_SHA256:\s*"?[0-9a-f]{64}"?/, "and its digest");
   assert.match(ci, /sha256sum -c/, "and checks the download against that digest");
   assert.doesNotMatch(ci, /rclone-current/, "no job downloads whatever rclone is newest");
+  // rclone reads every RCLONE_<FLAG> environment variable as a command-line
+  // flag, so a workflow env named RCLONE_VERSION becomes `--version=v1.75.1`
+  // and rclone exits with "strconv.ParseBool" (CI run 37261594626).
+  assert.doesNotMatch(ci, /^\s+RCLONE_\w+:/m, "no ci.yml env name starts with RCLONE_");
   assert.equal(
     WORKFLOW.match(/RCLONE_RELEASE:\s*"?(v[\d.]+)"?/)?.[1],
     ciVersion,
