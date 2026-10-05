@@ -32,6 +32,7 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
+import { json } from "../workers/api/src/http.js";
 import {
   diffBranch,
   discardBranch,
@@ -52,24 +53,6 @@ export const REWIND_ENDPOINT = "/api/rewind";
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message
