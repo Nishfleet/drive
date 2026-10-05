@@ -67,6 +67,13 @@ function emptyStore(written = {}) {
       // shape, exactly as the real in-memory store does (core/files.js).
       written[path] = await new Response(body).text();
     },
+    async writeIfAbsent(path, body) {
+      // The starter seeds the drive with `write`, not this method —
+      // this fake keeps the FileStore contract honest while the
+      // starter's key is still free in this fake.
+      written[path] = await new Response(body).text();
+      return true;
+    },
     async remove() {},
     async removeBatch() {},
     async copy() {},
@@ -111,6 +118,9 @@ function failingStore(reason = "the storage backend refused the key") {
       throw new Error(reason);
     },
     async write() {},
+    async writeIfAbsent() {
+      return true;
+    },
     async remove() {},
     async removeBatch() {
       throw new Error(reason);

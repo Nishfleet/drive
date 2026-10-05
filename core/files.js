@@ -24,13 +24,12 @@ import {
   preChargeLimitStream,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { json, readJsonObject } from "./http.js";
 import { bucketForAccount } from "./keyprovider.js";
 import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
-import { contentMd5 } from "./s3.js";
+import { contentMd5, createS3Client, provisionBucket } from "./s3.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
@@ -52,8 +51,15 @@ export const CONTROL_OR_SLASH = new RegExp(
   `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
   "g",
 );
-/** The listing, download, upload and restore API. */
+/** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
+/**
+ * Where the page's media elements read their bytes. It is the preview URL with
+ * one difference: a picture is served inline here so the page can draw it, and
+ * the direct-open preview URL serves the one type that can act as a document —
+ * an .svg — as an attachment instead. See previewDisposition() (drive#657).
+ */
+export const FILES_EMBED_ENDPOINT = `${FILES_ENDPOINT}/embed`;
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
 export const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
@@ -183,9 +189,11 @@ export function isPreviewable(kind) {
 // rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
 // and media keeps its own type only when it matches its kind. Anything else is
 // octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
-// uploaded .svg is still an image in the page's <img>, but opening the preview
-// URL directly gets it a sandboxed document instead of our origin.
+// in readRequest() (nosniff, and a sandboxed preview) covers the rest, and
+// previewDisposition() below takes the one type that can still act as a
+// document — an .svg, whose links navigate — out of the direct-open preview
+// and a share link, while the page's <img> reads it inline from the embed URL
+// (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
@@ -217,6 +225,31 @@ export function previewContentType(name, storedContentType = "") {
     return "application/octet-stream";
   }
   return stored || "application/octet-stream";
+}
+
+/**
+ * How an inline preview leaves: inline for every type a browser draws as a
+ * picture, a player, a PDF or plain text, and an attachment for the one type
+ * that can still act as a document — an SVG, which a browser renders as a
+ * styled document whose links navigate. An SVG therefore leaves the
+ * direct-open preview URL and a share link as a download, so a link can never
+ * hand a stranger a rendered document on our address to phish a password
+ * from; the page's own <img> reads the same bytes inline from the embed URL
+ * (drive#657).
+ * @param {string} name
+ * @param {string} [storedContentType]
+ * @returns {string}
+ */
+export function previewDisposition(name, storedContentType = "") {
+  if (previewContentType(name, storedContentType) !== "image/svg+xml") {
+    return "inline";
+  }
+  // A header value cannot carry a control character or a backslash, and
+  // safeFileName() strips both (and a stray slash); the quotes go too, so the
+  // filename cannot end the quoted-string early. validatePath() already
+  // refuses those characters on the way in, and this keeps the function safe
+  // on its own (drive#657).
+  return `attachment; filename="${safeFileName(name).replace(/"/g, "")}"`;
 }
 
 // ---------------------------------------------------------------- the words
@@ -612,6 +645,22 @@ export function restorableUntil(deletedAt) {
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<boolean>} writeIfAbsent
+ *   The create-only write: it stores the bytes only when the key is not there
+ *   yet, and answers `true` when this call is the one that put them there and
+ *   `false` when something was already stored under that path. It is the
+ *   authority on which of two concurrent creates wins, because the decision
+ *   happens in one store call: a `stat` followed by a `write` is two storage
+ *   round-trips, and between them a second request can create the same key,
+ *   so both writes land and the loser silently overwrites the winner
+ *   (drive#644). A create site that must not overwrite calls this instead of
+ *   writing blind; pairing it with a pre-check `stat` is fine, and is how an
+ *   ordinary duplicate gets its 409 on backends whose PUT cannot be made
+ *   conditional — but the pre-check alone is never the answer to a race.
+ *   A store whose provider cannot make the write conditional does not pretend
+ *   to: see `createS3Store`'s `writeIfAbsent` for what the S3 path can
+ *   honestly offer, and its `write` for the overwrite that remains its
+ *   backstop.
  * @property {(path: string) => Promise<void>} remove
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
@@ -788,6 +837,12 @@ export function scopeStore(store, account) {
     },
     async write(path, body, contentType) {
       return store.write(toKey(path), body, contentType);
+    },
+    // Scoped like every other write: the destination is rewritten to this
+    // account's own key before the store sees it, so a create-only write can
+    // no more land outside the prefix than an ordinary one.
+    async writeIfAbsent(path, body, contentType) {
+      return store.writeIfAbsent(toKey(path), body, contentType);
     },
     async remove(path) {
       return store.remove(toKey(path));
@@ -1025,6 +1080,28 @@ export function createMemoryStore() {
         etag: await memoryEtag(bytes),
       });
     },
+    async writeIfAbsent(path, body, contentType) {
+      // The bytes are read first, then two exists-checks bracket the etag:
+      // the first short-circuits an ordinary duplicate before any fingerprint
+      // is worth computing, and the second is the atomic one — it runs with
+      // nothing awaited between it and the set below, so inside one JS event
+      // loop two concurrent creates on one key cannot both see the key as
+      // absent and both land (drive#644). The winner starts a version exactly
+      // like `write`; the loser answers false without touching the live
+      // object or its versions.
+      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      if (objects.has(path)) {
+        return false;
+      }
+      const etag = await memoryEtag(bytes);
+      if (objects.has(path)) {
+        return false;
+      }
+      const now = Date.now();
+      startVersion(path, bytes.byteLength, now);
+      objects.set(path, { body: bytes, contentType, modified: now, etag });
+      return true;
+    },
     async remove(path) {
       // A delete hides the live version rather than forgetting it, exactly as
       // the drive's storage lifecycle does (build-spec.md "Old versions"), so
@@ -1183,6 +1260,88 @@ export function storageBucketForKey(key) {
 }
 
 /**
+ * Storage config vars. They are set per deployment, never declared as bindings
+ * in cloudflare.config.ts: a declared secret is required at deploy, and the
+ * Files page already answers from the in-memory store when they are unset. The
+ * names match the api Worker's iDrive pair so the site Worker can read the
+ * buckets a minted key writes to, plus the older FILES_S3_* stand-in pair a
+ * local `rclone serve s3` still uses. The one definition lives here so the
+ * store and the sign-in verify step's provisioning read the same shape
+ * (src/index.js's devStorage casts to it).
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
+ */
+
+/**
+ * The storage settings a deployment carries, read in one place so the Files
+ * page's store (storeFor in src/index.js) and the sign-in verify step's bucket
+ * provisioning (provisionAccountBucket below) read the same four names in the
+ * same order. A second reader of these vars is a second thing to drift, the
+ * same reason keyprovider-env.js is the api Worker's one reader of its own.
+ * @param {StorageEnv} env
+ * @returns {{endpoint: string|undefined, accessKeyId: string|undefined,
+ *   secretAccessKey: string|undefined, region: string|undefined}}
+ */
+export function storageVarsFromEnv(env) {
+  /** @param {string|undefined} value */
+  const read = (value) => (value && value !== "" ? value : undefined);
+  return {
+    endpoint: read(env.IDRIVE_S3_ENDPOINT) || read(env.FILES_S3_ENDPOINT),
+    accessKeyId: read(env.IDRIVE_S3_ACCESS_KEY_ID) || read(env.FILES_S3_ACCESS_KEY_ID),
+    secretAccessKey: read(env.IDRIVE_S3_SECRET_ACCESS_KEY) || read(env.FILES_S3_SECRET_ACCESS_KEY),
+    region: read(env.IDRIVE_S3_REGION) || read(env.FILES_S3_REGION),
+  };
+}
+
+/**
+ * The account's own bucket, provisioned through the one `provisionBucket`
+ * call the api Worker's key mint also makes (workers/api/src/s3.js): versioning
+ * on and the hidden-version rule set, idempotent, so a returning sign-in's
+ * second call is a no-op and an account from before this call existed catches
+ * up at its next sign-in (drive#540). The store reads and writes this same
+ * bucket by name (storageBucketForKey), so a customer who never runs
+ * `drive login` has a bucket from the minute the account does.
+ *
+ * A deployment with no storage master credential provisions nothing and
+ * answers false — no credential means no provisioning call, never a call with
+ * half a credential (the rule keyprovider-env.js states for the mint). The key
+ * mint keeps its own provisioning as the safety net, and the Files page
+ * answers an empty folder for a bucket that is not there yet.
+ * @param {StorageEnv} env
+ * @param {string} accountId
+ * @param {{fetchImpl?: typeof fetch}} [options]
+ * @returns {Promise<boolean>} whether the provisioning call ran
+ */
+export async function provisionAccountBucket(env, accountId, options = {}) {
+  const vars = storageVarsFromEnv(env);
+  if (
+    vars.endpoint === undefined ||
+    vars.accessKeyId === undefined ||
+    vars.secretAccessKey === undefined ||
+    vars.region === undefined
+  ) {
+    return false;
+  }
+  const client = createS3Client({
+    endpoint: vars.endpoint,
+    region: vars.region,
+    credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  });
+  await provisionBucket(client, { bucket: bucketForAccount(accountId) });
+  return true;
+}
+
+/**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs
@@ -1327,6 +1486,16 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // A bucket that is not there yet is an empty drive, not a failure
+          // (drive#540): a brand-new account's `drv-<id>` is created at its
+          // sign-in verify (provisionAccountBucket), and an account from before
+          // that existed — or on a deployment whose site Worker carries no
+          // storage master credential — has no bucket until a key mint creates
+          // one. S3 answers a missing bucket 404 and a missing folder 200 with
+          // no keys, so a 404 here is always the bucket.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1362,6 +1531,11 @@ export function createS3Store(config) {
         `&max-keys=${limit}` +
         (options.cursor ? `&continuation-token=${encodeURIComponent(options.cursor)}` : "");
       const response = await request(`${baseFor(prefix)}${query}`);
+      if (response.status === 404) {
+        // The missing bucket is an empty page, not a 500 (drive#540); the
+        // long form is in `list` above.
+        return { entries: [], nextCursor: null };
+      }
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
@@ -1386,6 +1560,11 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // The missing bucket is an empty walk, not a 500 (drive#540); the
+          // long form is in `list` above.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1470,6 +1649,42 @@ export function createS3Store(config) {
       if (!response.ok) {
         throw new Error(`storage write failed with ${response.status}`);
       }
+    },
+    async writeIfAbsent(path, body, contentType) {
+      // The stock S3 create-only request: one PUT carrying If-None-Match: *,
+      // which a compliant endpoint refuses with 412 Precondition Failed when
+      // the key is already there. What THIS endpoint can honestly offer is
+      // narrower than the contract's words, and it is measured, not assumed:
+      //
+      //   - `rclone serve s3` (v1.75.1, the stand-in on the build host)
+      //     answered 200 to both the absent and the already-present PUT on
+      //     2026-10-05 — it ignores If-None-Match on a PUT — so a `true`
+      //     from that server is not a proof of create-only;
+      //   - iDrive e2, the primary vendor, was never asked: its keys are
+      //     Nish's alone, and the standing direction is to build without
+      //     them. Its answer to the header is unverified.
+      //
+      // The header still rides every call, so on any endpoint that enforces
+      // the conditional the race closes at the storage itself; where one does
+      // not, this degrades to the overwrite `write` always was, and the
+      // provider's hide-not-delete versioning stays the backstop that makes
+      // an overwrite recoverable. A caller on such an endpoint pairs a
+      // pre-check `stat` (the stranger-upload route does) so an ordinary
+      // duplicate is still refused there; only a true mid-race pair is left to
+      // this endpoint's own answer. A 412 is the only answer that proves the
+      // key was already there, so it is the only false.
+      const response = await request(urlFor(path), {
+        method: "PUT",
+        headers: { "content-type": contentType, "if-none-match": "*" },
+        body,
+      });
+      if (response.status === 412) {
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`storage write failed with ${response.status}`);
+      }
+      return true;
     },
     async remove(path) {
       const response = await request(urlFor(path), { method: "DELETE" });
@@ -2201,29 +2416,22 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
-  // Reading is safe to repeat, so only the three that change the drive carry
-  // the cross-site rule. The decision is by route, not by method, so a
-  // mislabelled method on a listing still cannot smuggle a write through.
-  const stateChanging =
-    route === `${FILES_ENDPOINT}/upload` ||
-    route === `${FILES_ENDPOINT}/delete` ||
-    route === `${FILES_ENDPOINT}/restore`;
-  if (stateChanging && !isSameOriginRequest(request)) {
-    // A specific line rather than the table's generic fallback: "try again in
-    // a moment" would be advice to retry a request that will always be
-    // refused, and the one next step is to do it from the drive page, the same
-    // way src/waitlist.js and core/email-send.js answer their cross-site calls.
-    return json(
-      { error: "Uploads, deletes and restores are only accepted from the drive page." },
-      403,
-    );
-  }
   const scoped = scopeStore(store, account);
   if (route === FILES_ENDPOINT) {
     return listRequest(request, url, scoped, now);
   }
-  if (route === `${FILES_ENDPOINT}/download` || route === `${FILES_ENDPOINT}/preview`) {
-    return readRequest(request, url, scoped, route.endsWith("download"));
+  if (
+    route === `${FILES_ENDPOINT}/download` ||
+    route === `${FILES_ENDPOINT}/preview` ||
+    route === FILES_EMBED_ENDPOINT
+  ) {
+    return readRequest(
+      request,
+      url,
+      scoped,
+      route.endsWith("download"),
+      route === FILES_EMBED_ENDPOINT,
+    );
   }
   if (route === `${FILES_ENDPOINT}/upload`) {
     return uploadRequest(request, url, scoped, account, options);
@@ -2275,6 +2483,7 @@ export function joinPath(folder, name) {
  *   GET  /api/files?view=deleted      Recently deleted
  *   GET  /api/files/download?path=…   the bytes, as an attachment
  *   GET  /api/files/preview?path=…    the bytes, inline, for the viewer
+ *   GET  /api/files/embed?path=…      the bytes, inline, for the page's media
  *   POST /api/files/upload?path=/&name=…   the request body is the file
  *   POST /api/files/delete  {path}    move a file to Recently deleted
  *   POST /api/files/restore {path}    put it back where it was
@@ -2358,9 +2567,12 @@ async function listRequest(request, url, store, now) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {boolean} download
+ * @param {boolean} [embed] the page's media URL: serve inline when a media
+ *   element asked for it, and otherwise the attachment previewDisposition()
+ *   sends a document-capable type out with
  * @returns {Promise<Response>}
  */
-async function readRequest(request, url, store, download) {
+async function readRequest(request, url, store, download, embed = false) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return plain("Method not allowed. GET a file.", 405);
   }
@@ -2372,6 +2584,16 @@ async function readRequest(request, url, store, download) {
   // below reads, and a union property is not narrowed across an await.
   const drivePath = checked.path;
   const name = drivePath.split("/").pop() || "";
+  // The embed URL is for the page's own <img>, <video> and <audio> only. A
+  // navigation to it — a top-level open, or an <iframe> — falls back to the
+  // direct-open preview's disposition, so the embed URL is never a way around
+  // the download an SVG leaves with (drive#657). Sec-Fetch-Dest is the
+  // browser's own statement of what asked for the bytes.
+  const destination = String(request.headers.get("sec-fetch-dest") || "")
+    .trim()
+    .toLowerCase();
+  const embedded =
+    embed && (destination === "image" || destination === "video" || destination === "audio");
   /**
    * The headers every 200/206/HEAD answer carries, from the type the store
    * named. One builder for all three, so the two safety headers below cannot
@@ -2383,16 +2605,22 @@ async function readRequest(request, url, store, download) {
     /** @type {Record<string, string>} */
     const headers = {
       // The bytes leave as a file: an attachment to download, and an inline
-      // preview the page renders in a media element. Neither is a document on
-      // our origin, and the two headers below keep it that way when the preview
-      // URL is opened directly: nosniff honors the type above, and the sandbox
-      // policy gives a document an opaque origin with no script of its own.
+      // preview the page renders in a media element. The embed URL is inline
+      // for a media element only; the direct-open preview URL, and a
+      // navigation to the embed URL, send the one document-capable type (an
+      // SVG) as an attachment instead, so a top-level open downloads it.
+      // Neither is a document on our origin, and the two headers below keep it
+      // that way when the preview URL is opened directly: nosniff honors the
+      // type above, and the sandbox policy gives a document an opaque origin
+      // with no script of its own.
       "content-type": download
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
       "content-disposition": download
         ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-        : "inline",
+        : embedded
+          ? "inline"
+          : previewDisposition(name || "", contentType),
       "x-content-type-options": "nosniff",
       "cache-control": "private, no-store",
       // What a player or a resuming downloader may ask for next: one slice.

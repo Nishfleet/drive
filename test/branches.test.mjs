@@ -338,9 +338,14 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
     `u/${ACCOUNT.id}/branch/work`,
     "the row points at an account-scoped KV key, never a bare name",
   );
-  // The value is read off the namespace itself, not through the module, so a
-  // store that remembered a write the namespace never took cannot pass here.
-  const stored = /** @type {string} */ (kv.values.get(/** @type {string} */ (row.snapshot_key)));
+  // The value is read off the namespace itself - a store's get over the same
+  // map - not through the module's readSnapshot, so a store that remembered a
+  // write the namespace never took cannot pass here. The namespace holds a
+  // manifest plus generation-scoped parts (drive #564); the store reassembles
+  // them into exactly what the walk wrote.
+  const stored = /** @type {string} */ (
+    await createKvSnapshotStore(kv).get(/** @type {string} */ (row.snapshot_key))
+  );
   const snapshot = JSON.parse(stored);
   assert.deepEqual(Object.keys(snapshot).sort(), ["a.txt", "sub/b.txt"]);
   assert.ok(snapshot["a.txt"].etag, "the snapshot must carry a content fingerprint");
