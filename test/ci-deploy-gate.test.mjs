@@ -50,10 +50,17 @@ test("deploy starts from a successful CI run on a main push, never from push", (
   assert.match(DEPLOY, /ref: \$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/);
 });
 
+test("the deploy ships only a commit that is main's head and passed CI", () => {
+  const guard = DEPLOY.indexOf("- name: Ship only a CI-green main head");
+  assert.ok(guard !== -1 && guard < DEPLOY.indexOf("- name: Apply D1 migrations"));
+  assert.match(DEPLOY, /test "\$SHA" = "\$head"/);
+  assert.match(DEPLOY, /--workflow CI --branch main --commit "\$SHA" --status success/);
+  assert.match(DEPLOY, /^ {2}actions: read/m);
+});
+
 test("the deploy checks the live version and health, and rolls back on failure", () => {
   assert.ok(DEPLOY.includes(`https://drive-pricing.nishant345.workers.dev${HEALTH_PATH}`));
   assert.match(DEPLOY, /id: live\n/);
-  assert.match(DEPLOY, /id: ship\n/);
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
   assert.match(DEPLOY, /CF-Access-Client-Id: %s/);
   assert.match(DEPLOY, /-H "@\$headers"/);
