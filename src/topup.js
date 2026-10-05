@@ -25,6 +25,7 @@
 // No live charge runs from here while DODO_PAYMENTS_API_KEY is unset: the
 // checkout route answers 503 with the message table's words.
 
+import { json } from "../workers/api/src/http.js";
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
 import { isSameOriginRequest } from "./email-send.js";
 import {
@@ -50,19 +51,6 @@ export const TOPUP_PURPOSE = "drive-topup";
 
 /** How far a webhook's timestamp may be from now, in seconds. */
 export const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
 
 /**
  * A whole number of cents in dollars, as the page prints it: "$12.34",

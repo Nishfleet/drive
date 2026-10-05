@@ -16,6 +16,7 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
+import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { contentMd5 } from "../workers/api/src/s3.js";
 import {
@@ -2154,20 +2155,6 @@ export function parseByteRange(header, total) {
 
 // ---------------------------------------------------------------- handlers
 
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @returns {Response}
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
-
 /**
  * @param {string} message
  * @param {number} status
@@ -2274,31 +2261,6 @@ export function safeFileName(name) {
 export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
-}
-
-/**
- * @param {Request} request
- * @returns {Promise<{body: {path?: string, name?: string}, error?: undefined}|{error: string, body?: undefined}>}
- *   the parsed object, or the sentence to show. Both arms are named so the
- *   `if (body === undefined)` each caller writes is the narrowing, and
- *   `error` is there for the one that wants the sentence.
- */
-async function readJsonObject(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    // A body that is not JSON at all is the same failure as a body that is
-    // JSON but not an object: both are "this request did not carry a JSON
-    // object", and both routes that read a body say it in the table's words, so
-    // a form, an array, a bare value and a mangled body all read the same on
-    // every account route (drive#158).
-    return { error: failureMessage("json-object-needed") };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: failureMessage("json-object-needed") };
-  }
-  return { body };
 }
 
 /**
@@ -2579,13 +2541,16 @@ async function deleteRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to delete.", 405);
   }
-  const { body, error } = await readJsonObject(request);
-  if (body === undefined) {
-    // The `if` is the narrowing: readJsonObject's error arm is the only one
-    // without a body, so error is a string here and there is nothing to fall
-    // back to, and no second copy of the sentence to keep in step.
-    return json({ error }, 400);
+  const read = await readJsonObject(request);
+  if ("error" in read) {
+    // The `if` is the narrowing: the error arm is the only one with a
+    // sentence. The reader (drive#618) writes the api's own words, so the
+    // account routes say the same thing in the table's words instead, and a
+    // form, an array, a bare value and a mangled body all read the same on
+    // every account route (drive#158).
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
+  const { body } = read;
   const checked = validatePath(body.path);
   if (checked.error) {
     return json({ error: checked.error }, 400);
@@ -2622,12 +2587,13 @@ async function restoreRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to restore.", 405);
   }
-  const { body, error } = await readJsonObject(request);
-  if (body === undefined) {
+  const read = await readJsonObject(request);
+  if ("error" in read) {
     // The same narrowing as the delete path above, and the same words: the
     // restore route reads a body exactly as the delete route does.
-    return json({ error }, 400);
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
+  const { body } = read;
   const checked = validatePath(body.path);
   if (checked.error) {
     return json({ error: checked.error }, 400);

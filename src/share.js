@@ -43,6 +43,7 @@
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
+import { json, readJsonObject } from "../workers/api/src/http.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -716,19 +717,6 @@ export function newRequestRecord({
 
 // ---------------------------------------------------------------- handlers
 
-const LINK_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: LINK_HEADERS });
-}
-
 /**
  * @param {string} message
  * @param {number} status
@@ -797,26 +785,6 @@ function crossSiteRefused() {
     { error: "Sharing and upload requests are only accepted from your drive page." },
     403,
   );
-}
-
-/**
- * The POST body every owner route reads: one JSON object, or the sentence to
- * show. The two arms are named so the `if (error)` check is the narrowing.
- *
- * @param {Request} request
- * @returns {Promise<{body: Record<string, unknown>, error?: undefined}|{error: string, body?: undefined}>}
- */
-async function readJsonObject(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return { error: "The request body is not valid JSON." };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
-  }
-  return { body };
 }
 
 /** The request's own origin: the links are absolute so they can be copied.
@@ -896,13 +864,13 @@ export async function handleShareRequest(request, files, links, account, options
     return json({ shares: rows });
   }
   if (request.method === "POST") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateShareFile(body.path);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -930,13 +898,13 @@ export async function handleShareRequest(request, files, links, account, options
     return json({ ok: true, share: shareRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateToken(body.token);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -1143,13 +1111,13 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ requests: rows });
   }
   if (request.method === "POST") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateRequestFolder(body.folder);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -1178,13 +1146,13 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ ok: true, request: requestRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateToken(body.token);
     if (checked.error) {
       return json({ error: checked.error }, 400);
