@@ -100,6 +100,23 @@ test("the retired founding fields are refused, so nothing quietly halves a bill 
       );
     }
   }
+  // usageSummary reads the same bill, so it refuses them too rather than
+  // quietly reporting full price to a caller that thinks it halved it.
+  for (const field of ["foundingMember", "payingAccountNumber", "foundingOfferOpen"]) {
+    assert.throws(
+      () =>
+        usageSummary({
+          gbMinutes: 0,
+          storedGb: 0,
+          storedDaily: [],
+          downloadBytes: 0,
+          averageStoredGb: 0,
+          capUsd: 20,
+          [field]: true,
+        }),
+      new RegExp(`usage\\.${field} is no longer part of the bill`),
+    );
+  }
   assert.equal(PRICE.rateCents, 2);
   assert.equal(PRICE.maxUsdPerTb, 10);
   assert.equal("founding" in PRICE, false);

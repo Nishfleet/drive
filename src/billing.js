@@ -286,6 +286,20 @@ const FOUNDING_MONTH_FIELDS = Object.freeze([
 ]);
 
 /**
+ * @param {object} input the month or usage object a caller passed
+ * @param {string} name "month" or "usage", for the message
+ */
+function refuseFoundingFields(input, name) {
+  for (const retired of FOUNDING_MONTH_FIELDS) {
+    if (/** @type {Record<string, unknown>} */ (input)[retired] !== undefined) {
+      throw new TypeError(
+        `${name}.${retired} is no longer part of the bill (drive#586): there is one price for every account`,
+      );
+    }
+  }
+}
+
+/**
  * The month's bill, in integer cents (drive#463): the one function the
  * invoice, the usage page and the cap all read.
  *
@@ -316,13 +330,7 @@ export function monthBillCents(month) {
       );
     }
   }
-  for (const retired of FOUNDING_MONTH_FIELDS) {
-    if (/** @type {Record<string, unknown>} */ (month)[retired] !== undefined) {
-      throw new TypeError(
-        `month.${retired} is no longer part of the bill (drive#586): there is one price for every account`,
-      );
-    }
-  }
+  refuseFoundingFields(month, "month");
   const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
   const downloadBytes =
     fields.downloadBytes === undefined ? 0 : checked(fields.downloadBytes, "month.downloadBytes");
@@ -559,6 +567,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       "usage.peakGb is no longer part of the bill (drive#463): the maximum follows the month's average",
     );
   }
+  refuseFoundingFields(usage, "usage");
   const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
   const storedGb = checked(fields.storedGb, "usage.storedGb");
   const downloadBytes = checked(fields.downloadBytes, "usage.downloadBytes");
