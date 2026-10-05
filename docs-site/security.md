@@ -7,8 +7,9 @@ description: Who can see the files in your Drive, what each key can do, and what
 
 ## The short version
 
-Your files live in object storage we run, and a folder on your machine shows
-them to you. Every device and every agent tool gets its own key, and a key can
+Your files live at iDrive e2, in its Paris region (eu-west-3), in a storage
+account we hold, and a folder on your machine shows them to you. The
+[privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) lists every company that handles your data. Every device and every agent tool gets its own key, and a key can
 only do what its kind of key is allowed to do. Keys are yours to revoke.
 
 ## What each key can do
@@ -41,8 +42,8 @@ Each agent tool is revoked on its own with `drive agents revoke <tool>`.
 Stated plainly, because a security page that lists only the good news is not
 useful:
 
-- **We cannot claim we cannot reach your files.** We run the storage they sit
-  in, so an operator with production access to that account can reach the
+- **We cannot claim we cannot reach your files.** We hold the storage account
+  they sit in, so an operator with production access to that account can reach the
   bytes, and there is no end-to-end encryption in version 1.
 - **We cannot read a file through your key.** A key can only do what its kind of
   key is allowed to do, and a key that has been revoked is dead from then on.

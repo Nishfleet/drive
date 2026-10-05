@@ -111,7 +111,7 @@ export function agentDeleteSentence() {
       "an agent key can destroy the copy its delete hides, so no page may call its delete undoable",
     );
   }
-  return `An agent key can delete a file, but the storage keeps the deleted copy for ${days(agent.undoDays)}, so you can put it back from Recently deleted on the web Files page within that time. After ${days(agent.undoDays)} it is gone for good.`;
+  return `An agent key can delete a file. That delete does not go through Recently deleted, but the storage keeps the deleted copy for ${days(agent.undoDays)}, and we can put it back if you ask within that time. After ${days(agent.undoDays)} it is gone for good.`;
 }
 
 /**
@@ -303,6 +303,7 @@ export function markerValues(extra = {}) {
     HEADLINE: PRICE.headline,
     NO_PLANS: PRICE.noPlansLine,
     PRICE_RULE: PRICE.rule,
+    TRASH_BILLING: PRICE.trashLine,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
     CACHE_LIMIT,

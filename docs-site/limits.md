@@ -22,8 +22,9 @@ would rather you read it here than find out in week three.
 - **macOS is read-only for us.** We can prove the drive on a Mac only on a
   GitHub macOS runner or by hand, so what we have measured end to end is
   Linux.
-- **No `restore` command yet.** A delete is still reversible through the
-  storage provider's own versioning, but `drive restore` is not in the CLI.
+- **No `restore` command yet.** A delete from the Files page is restorable for
+  30 days in Recently deleted; a delete made any other way is recoverable for
+  one day by asking us. `drive restore` is not in the CLI.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.

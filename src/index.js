@@ -8,6 +8,7 @@ import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
+import { runPreChargeLimitCron } from "./abuse-guards.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -32,9 +33,11 @@ import {
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
+  purgeExpiredTrash,
   scopeStore,
   storageBucketForKey,
   storageVarsFromEnv,
+  TRASH_PURGE_SCHEDULE,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
@@ -941,7 +944,11 @@ export default {
   //     records the trigger as failed and retries, and the catch-up takes
   //     the next one over - a failed rollup must never read as a quiet zero.
   //     The schedule string lives in cloudflare.config.ts, pinned to
-  //     src/meter.js's METER_CRON by test/meter.test.mjs.
+  //     src/meter.js's METER_CRON by test/meter.test.mjs. The same trip
+  //     also enforces the 1 TB pre-charge storage limit on mounts
+  //     (src/abuse-guards.js runPreChargeLimitCron, drive#536): an
+  //     over-limit unpaid account's keys are taken read-only through the
+  //     cap's own swap, the same answer the web upload path gives.
   //   - The meter's nightly reconciler (build-spec.md piece 6, drive issue
   //     #59): `reconcileMeter` walks each metered account's versions in the
   //     storage provider, fixes the rows the event stream missed, and rewinds
@@ -1044,6 +1051,36 @@ export default {
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
         now,
       });
+      // The pre-charge limit's own trip (drive#536). The web upload path has
+      // held 1 TB free since drive#464, but a mount holds a storage key and
+      // writes past any page, so the same hourly run reads the over-limit
+      // unpaid accounts and takes their keys read-only, through the cap's
+      // own swap (src/abuse-guards.js). DRIVE_DB is a required binding on
+      // this trip - the sites Worker holds it - so a missing one fails the
+      // trigger the same way a failed read does: a run that capped nobody
+      // because the sweep never ran would be a quiet zero reporting the hour
+      // as guarded, and Cloudflare's retry is the honest answer to a
+      // misconfigured trip.
+      if (env.DRIVE_DB === undefined || env.DRIVE_DB === null) {
+        throw new Error(
+          "the pre-charge limit sweep needs the DRIVE_DB binding, so an over-limit " +
+            "unpaid account's keys can be taken read-only",
+        );
+      }
+      const capped = await runPreChargeLimitCron({
+        db: env.DRIVE_DB,
+        devices: createD1DeviceStore(env.DRIVE_DB, {
+          keyProvider: keyProviderFor(env) ?? undefined,
+        }),
+      });
+      if (capped.capped > 0) {
+        console.log(
+          "pre-charge limit: capped",
+          `accounts=${capped.capped}`,
+          `over=${capped.overLimit}`,
+          `failures=${capped.failures}`,
+        );
+      }
       // A cap step that failed for some accounts is raised last, after every
       // other account was decided and the hours were drawn and settled, so Cloudflare
       // records a failed trigger and the next run retries those accounts.
@@ -1119,6 +1156,23 @@ export default {
     // 2026-10-04T08:37:56Z had `empty_pointer_open=0`, `open_rows=0`,
     // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
     // whose JSON the sweep could still move. Dropping the column is #339.
+
+    // The nightly trash purge (drive issue #521). Awaited for the same reason
+    // as the meter's trips: a purge that failed must be a failed trigger
+    // Cloudflare retries, not a run that logged success having removed
+    // nothing, because a parked file past 30 days is one the page has
+    // already told its person is gone. The store is scoped per account
+    // inside `purgeExpiredTrash`, so the listing never crosses accounts.
+    if (event.cron === TRASH_PURGE_SCHEDULE) {
+      if (!env.DRIVE_DB) {
+        throw new Error("the nightly trash purge needs the customer database");
+      }
+      const purged = await purgeExpiredTrash(env.DRIVE_DB, store, event.scheduledTime);
+      console.log(
+        `trash: removed ${purged.purged} expired file(s) across ${purged.accounts} account(s)`,
+      );
+      return;
+    }
 
     context.waitUntil(
       (async () => {
