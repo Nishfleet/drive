@@ -24,8 +24,8 @@
 -- down-migrations, so this file is one-way.
 --
 -- Retired, not dropped (drive#586): accounts.founding and
--- accounts.founding_reserved (0016, 0019) are no longer read or written,
--- because founding pricing is removed. The columns stay, because dropping a
+-- accounts.founding_reserved (0016, 0019) stop being read or written once
+-- the founding-pricing removal of #586 lands. The columns stay, because dropping a
 -- column that may hold data is a one-way loss and the code no longer needs
 -- them. accounts.first_charged_at (0019) now means "first top-up credited":
 -- the ledger's top-up credit stamps it, which lifts the new-account 1 TB limit.
