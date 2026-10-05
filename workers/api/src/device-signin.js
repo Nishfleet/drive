@@ -667,10 +667,19 @@ export function createD1DeviceSigninStore(db, options = {}) {
       // caller could forget: a dead row is the same answer as a row that was
       // never written, so there is one way for a token to fail and one place it
       // can happen.
+      //
+      // The close state is joined in for the same reason: a token minted
+      // before the account closed must stop signing the CLI in the moment the
+      // account closes (drive#497), and the accounts row is where close is
+      // written. It is a LEFT JOIN because a person can hold a device token
+      // with no accounts row yet — the site Worker's sign-in mints the Better
+      // Auth user first — and that state is not closed.
       const row = await first(
         db,
-        `SELECT account_id, account_name, account_email FROM device_tokens
-          WHERE token_hash = ?1 AND revoked_at IS NULL AND expires_at > ?2`,
+        `SELECT t.account_id, t.account_name, t.account_email, a.state AS account_state
+          FROM device_tokens t
+          LEFT JOIN accounts a ON a.id = t.account_id
+          WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND t.expires_at > ?2`,
         await sha256Hex(token),
         nowSeconds(now()),
       );
@@ -678,6 +687,9 @@ export function createD1DeviceSigninStore(db, options = {}) {
         return null;
       }
       const r = /** @type {Record<string, unknown>} */ (row);
+      if (r.account_state === "closed") {
+        return null;
+      }
       return {
         id: String(r.account_id ?? ""),
         name: String(r.account_name ?? ""),

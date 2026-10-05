@@ -169,6 +169,10 @@ function makeFakeD1(options = {}) {
         created_at: createdAt,
         expires_at: expiresAt,
         revoked_at: null,
+        // The LEFT JOIN `accountForDeviceToken` reads for the close state
+        // (drive#497): this fake has no accounts table, so the joined column is
+        // null, which is "not closed".
+        account_state: null,
       });
       return { success: true, meta: { changes: 1 } };
     }
@@ -212,7 +216,7 @@ function makeFakeD1(options = {}) {
             if (s.includes("FROM device_codes WHERE device_code_hash")) {
               return codes.get(/** @type {string} */ (params[0])) ?? null;
             }
-            if (s.includes("FROM device_tokens WHERE token_hash")) {
+            if (s.includes("FROM device_tokens") && s.includes("token_hash")) {
               const row = tokens.get(/** @type {string} */ (params[0]));
               if (row === undefined) {
                 return null;
@@ -567,7 +571,9 @@ test("the in-memory store refuses an already approved code too", async () => {
 // (test/harness.mjs, the same D1-shaped adapter the site's own tests use), so
 // the SQL the Worker prepares runs against the DDL the deploy applies.
 test("the store's read and write paths run against the real migration", async () => {
-  const db = createTestD1({ migrations: ["drive/0007_device_codes.sql"] });
+  const db = createTestD1({
+    migrations: ["drive/0007_device_codes.sql", "drive/0010_accounts_devices.sql"],
+  });
   const sqlite = db.sqlite;
 
   // A code one instance starts, another instance approves and consumes: nothing

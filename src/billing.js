@@ -11,8 +11,7 @@
 //
 //     avg_GB       = the month's GB-minutes / 43,800 (time-weighted average)
 //     storage      = min(rate x avg_GB, maxPerTb x max(1, avg_GB / 1000))
-//                    rate 2¢/GB-month, maxPerTb $10; founding members pay
-//                    half of both (1¢, $5), for good
+//                    rate 2¢/GB-month, maxPerTb $10, the same for everyone
 //     downloads    = 1¢/GB above 3x the month's average stored size
 //     monthly_bill = storage + downloads
 //
@@ -25,8 +24,7 @@
 //
 // monthBillCents() is the one function that returns this bill, in integer
 // cents, so the invoice, the usage page and the cap all read the same number.
-// The numbers come from src/pricing.js (PRICE), the one price source; the
-// founding half is derived there, never typed.
+// The numbers come from src/pricing.js (PRICE), the one price source.
 //
 // The cap line (`drive status`'s cap, and the usage response's `capLine`) is
 // in this file too, because it is the money's words: it reads the same
@@ -41,7 +39,7 @@
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { failureMessage } from "./messages.js";
 // The price's numbers come from src/pricing.js, the one price source: the
-// metered rate, the maximum per TB and the founding share are declared there
+// metered rate and the maximum per TB are declared there
 // once, so this file's arithmetic and the page's copy cannot disagree. What is
 // added here is operational: the default cap and the download allowance.
 import { PRICE, usualPlanMonthlyUsd } from "./pricing.js";
@@ -74,13 +72,8 @@ export function billingConfigFor(price) {
     // The maximum: maxUsdPerTb for each TB stored, never less than one TB's
     // worth. One config value (drive#463).
     maxUsdPerTb: price.maxUsdPerTb,
-    // Founding members pay this share of both numbers (drive#463).
-    foundingShare: price.founding.share,
     // Kept for the card-less write cap until every account has a card (#387).
     freeMonthlyUsd: price.freeMonthlyUsd,
-    // The first 1,000 paying accounts are founding while the offer is open.
-    // The number never leaves this file as a public string.
-    foundingLimit: 1000,
     // The default spending cap (drive#464), from src/cap-default.js. The
     // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
@@ -106,42 +99,6 @@ export const BILLING_CONFIG = billingConfigFor(PRICE);
  * invoice.
  * @typedef {Readonly<Record<keyof typeof BILLING_CONFIG, number>>} BillingConfig
  */
-
-/**
- * Marks the config a founding member is billed by, so a caller that hands it
- * back to monthBillCents() is refused rather than halved twice (drive#482).
- * Enumerable on purpose: a copy of a config (`{...foundingConfig()}`,
- * `Object.assign({}, config)`) carries every own enumerable property including
- * symbols, so the mark travels with the copy. A non-enumerable mark is dropped
- * by the first spread, and the caller that spread it is exactly the one the
- * check exists to stop.
- * @type {symbol}
- */
-const FOUNDING_PRICED = Symbol("founding-priced");
-
-/**
- * The config a founding member is billed by: half the rate and half the
- * maximum, derived from the share, never typed (drive#463).
- *
- * The result carries the FOUNDING_PRICED mark, so monthBillCents() can see
- * when a caller has already halved a config and is about to be halved again
- * (drive#482: 0.25 cents, $2.50).
- * @param {BillingConfig} [config]
- * @returns {BillingConfig}
- */
-export function foundingConfig(config = BILLING_CONFIG) {
-  const share = billingConfig(config).foundingShare;
-  const priced = Object.defineProperty(
-    {
-      ...config,
-      rateUsdPerGbMonth: config.rateUsdPerGbMonth * share,
-      maxUsdPerTb: config.maxUsdPerTb * share,
-    },
-    FOUNDING_PRICED,
-    { value: true, enumerable: true },
-  );
-  return /** @type {BillingConfig} */ (Object.freeze(priced));
-}
 
 /**
  * Refuses a value that is not a billing config. A caller still on the old
@@ -199,51 +156,6 @@ function checked(value, name, { min = 0 } = {}) {
     throw new TypeError(`${name} must be a number of ${min} or more, got ${String(value)}`);
   }
   return value;
-}
-
-/**
- * A whole count of 1 or more (paying-account rank).
- * @param {unknown} value
- * @param {string} name
- * @returns {number}
- */
-function wholeCount(value, name) {
-  const n = checked(value, name, { min: 1 });
-  if (!Number.isSafeInteger(n)) {
-    throw new TypeError(`${name} must be a whole number of 1 or more, got ${String(value)}`);
-  }
-  return n;
-}
-
-/**
- * Founding status for this bill. The locked flag on the account wins, so
- * closing the offer never changes an account that already holds founding
- * pricing. A caller without the flag passes the paying rank plus the offer
- * switch.
- * @param {{foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown}} fields
- * @param {BillingConfig} config
- * @returns {boolean}
- */
-function isFoundingMember(fields, config) {
-  if (fields.foundingMember !== undefined) {
-    if (typeof fields.foundingMember !== "boolean") {
-      throw new TypeError(
-        `month.foundingMember must be true or false, got ${String(fields.foundingMember)}`,
-      );
-    }
-    return fields.foundingMember;
-  }
-  if (fields.foundingOfferOpen !== undefined && typeof fields.foundingOfferOpen !== "boolean") {
-    throw new TypeError(
-      `month.foundingOfferOpen must be true or false, got ${String(fields.foundingOfferOpen)}`,
-    );
-  }
-  if (fields.payingAccountNumber === undefined) {
-    return false;
-  }
-  const rank = wholeCount(fields.payingAccountNumber, "month.payingAccountNumber");
-  const offerOpen = fields.foundingOfferOpen !== false;
-  return offerOpen && rank <= config.foundingLimit;
 }
 
 /**
@@ -316,15 +228,13 @@ export function monthlyStorageBillUsd(gbMinutes, config = BILLING_CONFIG) {
  * is the one call the copy gate and anything else quoting a size share.
  * @param {unknown} tb the stored size in TB, held the whole month
  * @param {BillingConfig} [config=BILLING_CONFIG]
- * @param {{foundingMember?: boolean}} [options]
  * @returns {{storageUsd: number, maximumUsd: number, billUsd: number}}
  */
-export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG, options = {}) {
+export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
   const size = checked(tb, "tb");
   const bill = monthBillCents({
     gbMinutes: size * GB_PER_TB * MINUTES_PER_MONTH,
     config: billingConfig(config),
-    foundingMember: options.foundingMember ?? false,
   });
   return Object.freeze({
     storageUsd: bill.storageCents / 100,
@@ -366,6 +276,28 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
 // longer sets the maximum (the average does), and the membership's first-month
 // discount is gone.
 const RETIRED_MONTH_FIELDS = Object.freeze(["peakGb", "peakBytes", "firstMonth", "monthNumber"]);
+// Founding pricing is gone (drive#586, Nish 2026-10-05): everyone pays the one
+// rate. A caller still passing a founding field is refused, never ignored, so
+// nothing can believe it is halving a bill that is no longer halved.
+const FOUNDING_MONTH_FIELDS = Object.freeze([
+  "foundingMember",
+  "payingAccountNumber",
+  "foundingOfferOpen",
+]);
+
+/**
+ * @param {object} input the month or usage object a caller passed
+ * @param {string} name "month" or "usage", for the message
+ */
+function refuseFoundingFields(input, name) {
+  for (const retired of FOUNDING_MONTH_FIELDS) {
+    if (/** @type {Record<string, unknown>} */ (input)[retired] !== undefined) {
+      throw new TypeError(
+        `${name}.${retired} is no longer part of the bill (drive#586): there is one price for every account`,
+      );
+    }
+  }
+}
 
 /**
  * The month's bill, in integer cents (drive#463): the one function the
@@ -378,10 +310,6 @@ const RETIRED_MONTH_FIELDS = Object.freeze(["peakGb", "peakBytes", "firstMonth",
  *                   size (build-spec.md "How the money is worked out")
  *   totalCents    = storage + downloads
  *
- * A founding member's rate and maximum are half (foundingConfig()). Founding
- * status is `month.foundingMember` (locked on the account, #386) or
- * `month.payingAccountNumber` plus `month.foundingOfferOpen`.
- *
  * Every field is a whole number of cents, so a caller cannot hand Dodo a
  * fractional cent (billing_pushes.amount_units). `lines` is the invoice:
  * storage and downloads.
@@ -392,7 +320,7 @@ export function monthBillCents(month) {
     throw new TypeError(`monthBillCents needs a month object, got ${String(month)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown}} */ (
+    /** @type {{gbMinutes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
       month
     );
   for (const retired of RETIRED_MONTH_FIELDS) {
@@ -402,6 +330,7 @@ export function monthBillCents(month) {
       );
     }
   }
+  refuseFoundingFields(month, "month");
   const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
   const downloadBytes =
     fields.downloadBytes === undefined ? 0 : checked(fields.downloadBytes, "month.downloadBytes");
@@ -410,14 +339,6 @@ export function monthBillCents(month) {
       ? 0
       : checked(fields.averageStoredGb, "month.averageStoredGb");
   const config = billingConfig(fields.config ?? BILLING_CONFIG);
-  // Founding is derived once, here, from the month's own fields. A caller that
-  // already halved a config and hands it back would be halved a second time
-  // (drive#482: $10 becomes $5), so an already-founding config is refused.
-  if (/** @type {Record<symbol, unknown>} */ (config)[FOUNDING_PRICED] === true) {
-    throw new TypeError(
-      "month.config is already founding-priced: monthBillCents derives the founding half once, from month.foundingMember",
-    );
-  }
   // The free 3x allowance is the average stored size, so a rollup with
   // download bytes but no stored average is a broken month: defaulting the
   // average to 0 would silently charge every downloaded byte. Both omitted is
@@ -427,23 +348,9 @@ export function monthBillCents(month) {
       "month.downloadBytes needs month.averageStoredGb: a month with downloads cannot have no stored average",
     );
   }
-  const founding = isFoundingMember(fields, config);
-  // The same double discount with the mark gone, which is what a hand-built
-  // config is: the rate is already below the shipped one, so the flag would
-  // halve a discount. BILLING_CONFIG is the one shipped price sheet, so
-  // `rateUsdPerGbMonth` below it means "already discounted", not "a plan":
-  // PRICE is where a different price sheet is written, and it moves this base
-  // with it. Refused rather than ignored, because a bill nobody checks is the
-  // one that is wrong.
-  if (founding && config.rateUsdPerGbMonth < BILLING_CONFIG.rateUsdPerGbMonth) {
-    throw new TypeError(
-      "month.config is already discounted and month.foundingMember halves it again: monthBillCents derives the founding half once, from the month's own fields",
-    );
-  }
-  const priced = founding ? foundingConfig(config) : config;
   const averageGb = gbMonths(gbMinutes);
-  const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, priced) * 100);
-  const maximumCents = Math.round(monthlyMaximumUsd(averageGb, priced) * 100);
+  const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, config) * 100);
+  const maximumCents = Math.round(monthlyMaximumUsd(averageGb, config) * 100);
   const storageCents = Math.min(meteredCents, maximumCents);
   const downloadCents = Math.round(
     downloadCostUsd(downloadBytes, averageStoredGb, config).usd * 100,
@@ -462,7 +369,6 @@ export function monthBillCents(month) {
     storageCents,
     downloadCents,
     totalCents: storageCents + downloadCents,
-    foundingMember: founding,
     lines,
   });
 }
@@ -526,27 +432,18 @@ export function savedLine(bill, gbMinutes) {
  * maximum) — not the raw meter, so the cap can never pass what the invoice
  * will be. At the cap the api Worker deletes each write-capable key and mints
  * read-only ones; the CLI restarts the mount. Nothing is deleted.
- *
- * Founding is the account's own flag, passed in and never re-derived here: the
- * account cap (usageSummary) and the agent key cap (agentCapStatus) pass the
- * same one, so both count the same bill (drive#482).
  * @param {unknown} gbMinutes metered so far this month
  * @param {unknown} capUsd the account's cap in dollars
  * @param {BillingConfig} [config=BILLING_CONFIG]
- * @param {boolean} [founding=false] the account's founding flag (#386)
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
-export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG, founding = false) {
+export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG) {
   const minutes = checked(gbMinutes, "gbMinutes");
   const cap = checked(capUsd, "capUsd");
-  if (typeof founding !== "boolean") {
-    throw new TypeError(`capStatus founding must be true or false, got ${String(founding)}`);
-  }
   const counted =
     monthBillCents({
       gbMinutes: minutes,
       config: billingConfig(config),
-      foundingMember: founding,
     }).storageCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it: a bill
   // that lands exactly on the cap is what the person agreed to pay. Passing the
@@ -652,9 +549,6 @@ function formatUsd(usd) {
  * static page renders strings instead of repeating the arithmetic. The
  * labels are the same strings `drive usage` prints.
  *
- * `usage.foundingMember` (drive#488) is the account's founding flag, read off
- * its accounts row by the caller. It is optional: absent reads as full price,
- * the safe direction, and `monthBillCents` derives the founding half from it.
  * @param {unknown} usage
  * @param {BillingConfig} [config]
  */
@@ -663,7 +557,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown}} */ (
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown}} */ (
       usage
     );
   // The peak no longer sets any number on the bill (drive#463: the maximum
@@ -673,6 +567,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       "usage.peakGb is no longer part of the bill (drive#463): the maximum follows the month's average",
     );
   }
+  refuseFoundingFields(usage, "usage");
   const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
   const storedGb = checked(fields.storedGb, "usage.storedGb");
   const downloadBytes = checked(fields.downloadBytes, "usage.downloadBytes");
@@ -702,9 +597,6 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     downloadBytes,
     averageStoredGb,
     config,
-    foundingMember: fields.foundingMember,
-    payingAccountNumber: fields.payingAccountNumber,
-    foundingOfferOpen: fields.foundingOfferOpen,
   });
   return Object.freeze({
     gbMonths: months,
@@ -723,7 +615,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       billableBytes: downloads.billableBytes,
       usd: downloads.usd,
     }),
-    cap: capStatus(gbMinutes, effectiveCap, config, bill.foundingMember),
+    cap: capStatus(gbMinutes, effectiveCap, config),
     // The finished strings the page sets and `drive usage` prints. One place
     // formats each number, so a change here moves both surfaces together.
     labels: Object.freeze({
@@ -822,7 +714,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, foundingMember?: boolean}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
 export function handleUsageRequest(request, account, upload = null) {
@@ -857,12 +749,6 @@ export function handleUsageRequest(request, account, upload = null) {
     // names no card, so the check fails closed.
     cardAdded: true,
     cardOnFile: account.cardOnFile === true,
-    // The account's founding flag, read from the accounts row by the route
-    // (drive#488) and forwarded here, so the usage page's bill derives the
-    // founding half once — from the flag, never from a second price sheet
-    // (drive#482). Absent reads as full price: a caller that names no flag
-    // gets the undiscounted number.
-    foundingMember: account.foundingMember === true,
   });
   // The cap line rides on the response rather than inside usageSummary(): the
   // summary is money (numbers only, which is what the usage page's chart and

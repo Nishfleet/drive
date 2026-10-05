@@ -135,9 +135,9 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The headline, the rule, no minimum, founding pricing and the cap, each
+  // The headline, the rule, no minimum and the cap, each
   // read from the one config the invoice reads.
-  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine, PRICE.foundingLine]) {
+  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);
   }
   assert.ok(
