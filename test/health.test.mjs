@@ -680,10 +680,8 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // email binding can only be exercised by really sending mail (only the
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
-  // absence fails closed at the intake (src/meter.js) instead of at the probe,
-  // and FOUNDING_OFFER_OPEN is a Worker var (inline text) that cannot be
-  // probed.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "FOUNDING_OFFER_OPEN"]);
+  // absence fails closed at the intake (src/meter.js) instead of at the probe.
+  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,

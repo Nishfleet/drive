@@ -179,7 +179,7 @@ export const FAQ = Object.freeze([
     answer: [
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
-      "{{NO_MINIMUM}} {{FOUNDING}} We need a card at sign-up because there is no free tier.",
+      "{{NO_MINIMUM}} We need a card at sign-up because there is no free tier.",
       "Files are billed for at least one hour. Bills under {{CHARGE_THRESHOLD}} roll into the next month; the card is charged when the balance reaches {{CHARGE_THRESHOLD}}.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
@@ -276,7 +276,6 @@ export function markerValues(extra = {}) {
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
     NO_MINIMUM: PRICE.noMinimumLine,
-    FOUNDING: PRICE.foundingLine,
     PRICE_RULE: PRICE.rule,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),

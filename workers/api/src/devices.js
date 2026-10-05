@@ -14,13 +14,6 @@
 
 import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import {
-  accountFounding,
-  accountFoundingFlag,
-  releaseFoundingReservation as clearFoundingReservation,
-  markAccountPaying,
-  reserveFoundingSlot,
-} from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
@@ -841,9 +834,8 @@ export function createD1DeviceStore(db, options = {}) {
 
     /**
      * Whether a card is really on file for this account (drive#417), read
-     * from `accounts.card_added_at` — the one stamp `markAccountPaying`
-     * (src/founding.js) writes when the account becomes paying, and the only
-     * record a card exists. Fail closed: no accounts row and a null stamp both
+     * from `accounts.card_added_at` — the stamp the card step writes
+     * (src/abuse-guards.js), and the only record a card exists. Fail closed: no accounts row and a null stamp both
      * read as no card, because an account that cannot show a card cannot show
      * a charge either (the usage page's "no charge yet" label, src/billing.js).
      * No Dodo call happens here: real capture waits on the Dodo key (#325).
@@ -930,12 +922,6 @@ export function createD1DeviceStore(db, options = {}) {
       // The peak is the size the drive holds now (the page's "stored now"); the
       // bill itself reads only the GB-minutes (drive#463).
       const peakGb = storedGb(peak.peakBytes);
-      // The flag the cap bills on is the account's own (drive#488): without
-      // it enforceCap() counts the month at full price and stops a founding
-      // account at twice its real spend. accountFoundingFlag is the tolerant
-      // read the agent key cap uses (drive#482): a row that is gone reads as
-      // full price, the safe direction for a cap.
-      const foundingMember = await accountFoundingFlag(db, accountId);
       return {
         gbMinutes,
         storedGb: peakGb,
@@ -944,46 +930,7 @@ export function createD1DeviceStore(db, options = {}) {
         averageStoredGb: peakGb,
         capUsd: options.capUsd,
         cardAdded: true,
-        foundingMember,
       };
-    },
-
-    /**
-     * Set the founding flag once, when this account becomes paying. The
-     * parsed Worker var is the second argument, so a closed offer cannot
-     * silently default open inside the store.
-     * @param {string} accountId
-     * @param {boolean} offerOpen
-     */
-    markPaying(accountId, offerOpen) {
-      return markAccountPaying(db, accountId, { offerOpen, now: now() });
-    },
-
-    /**
-     * Reserve a founding slot at the card step. The parsed Worker var is the
-     * second argument, the same shape as markPaying.
-     * @param {string} accountId
-     * @param {boolean} offerOpen
-     */
-    reserveFounding(accountId, offerOpen) {
-      return reserveFoundingSlot(db, accountId, { offerOpen, now: now() });
-    },
-
-    /**
-     * Drop a reserved slot when the account closes before paying.
-     * @param {string} accountId
-     */
-    releaseFoundingReservation(accountId) {
-      return clearFoundingReservation(db, accountId);
-    },
-
-    /**
-     * @param {string} accountId
-     * @returns {Promise<boolean>}
-     */
-    async isFounding(accountId) {
-      const result = await accountFounding(db, accountId);
-      return result.founding;
     },
 
     /**

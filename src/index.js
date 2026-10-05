@@ -38,7 +38,6 @@ import {
   scopeStore,
   storageBucketForKey,
 } from "./files.js";
-import { accountFoundingFlag } from "./founding.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
 import {
@@ -616,12 +615,6 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
-    // The founding flag is the same accounts row the cap and the card stamp
-    // come from (drive#488). It is read tolerantly (accountFoundingFlag): a
-    // signed-in account whose accounts row is gone reads as full price, the
-    // safe direction, rather than failing the usage page — the same way
-    // getCapUsd() and cardAdded() below already answer for a missing row.
-    let foundingMember = false;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
@@ -632,7 +625,6 @@ export function createApp() {
       // line a card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
-      foundingMember = await accountFoundingFlag(c.env.DRIVE_DB, account.id);
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -643,7 +635,7 @@ export function createApp() {
     // one.
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, foundingMember },
+      { ...account, capUsd, cardOnFile },
       await liveQueueFor(c.env, account),
     );
   });
