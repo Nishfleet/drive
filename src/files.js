@@ -821,13 +821,18 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   One delete call for up to 1,000 paths. More is refused: 1,000 is the
  *   provider's own per-call ceiling, and a caller that chunks by it stays
  *   inside the run's subrequest budget (drive#565).
- * @property {(from: string, to: string, size?: number) => Promise<void>} copy
+ * @property {(from: string, to: string, size?: number, options?: {ifMatch?: string|null|undefined}) => Promise<void>} copy
  *   A copy the storage itself makes, no bytes through this Worker: `drive
  *   branch` (build step 7) is a folder copy, and a copy that streamed every
  *   byte through us would make a 10 GB branch a 10 GB download and upload.
  *   `size` is the source's byte length when the caller already knows it (the
  *   listing it is copying from carries it), so a store can pick the copy S3
- *   needs for that many bytes without asking for the size again.
+ *   needs for that many bytes without asking for the size again. `ifMatch` is
+ *   the ETag the destination carried when the caller decided to copy onto it:
+ *   a destination holding other bytes is left alone and the store throws
+ *   `ChangedUnderUsError`, so a restore cannot put a parked file over a save
+ *   that landed at that path while it was running (drive issue #605). A caller
+ *   that hands over no ETag asks for the copy it always got.
  * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
@@ -1055,9 +1060,12 @@ export function scopeStore(store, account) {
       // bytes it is holding, so scoping never drops a guard.
       return store.remove(toKey(path), options);
     },
-    async copy(from, to, size) {
+    // Scoped on both ends like every other write, and the destination guard
+    // rides through untouched: the ETag the caller listed is the one the store
+    // compares with the bytes it holds, so scoping never drops it.
+    async copy(from, to, size, options) {
       const [source, dest] = toKeys(from, to);
-      return store.copy(source, dest, size);
+      return store.copy(source, dest, size, options);
     },
     async listVersions(path) {
       // The versions come back under this account's own keys, so each one's
@@ -1415,13 +1423,33 @@ export function createMemoryStore() {
       }
       return found.sort((a, b) => a.path.localeCompare(b.path) || a.createdAt - b.createdAt);
     },
-    async copy(from, to) {
+    /**
+     * @param {string} from
+     * @param {string} to
+     * @param {number} [_size] the caller's byte count, unused here: the bytes are
+     *   already in memory, so there is no size to pick a copy strategy with.
+     * @param {{ifMatch?: string|null|undefined}} [options]
+     */
+    async copy(from, to, _size, { ifMatch } = {}) {
       const value = objects.get(from);
       if (!value) {
         // A copy of a file that is not there is a real failure (S3 answers
         // 404), not a silent no-op: `drive branch` must never report success
         // for a folder it did not copy.
         throw new Error(`cannot copy ${from}: that file is not in the drive`);
+      }
+      // The guard this stand-in can be honest about, and the reason the same
+      // `etagMismatch` the conditional remove uses decides it: nothing has been
+      // awaited between the comparison below and the `objects.set` that follows
+      // it, so inside one JS event loop no save can land between the check and
+      // the write (drive issue #605).
+      const held = objects.get(to);
+      if (held !== undefined && etagMismatch(held.etag, ifMatch)) {
+        // Refused before anything is written, so the key the caller is about to
+        // put its copy at still holds the bytes it had when the caller listed
+        // it. A store whose provider answers no ETag keeps copying as it always
+        // did, the same answer `remove` gives when there is no ETag to hold to.
+        throw new ChangedUnderUsError(to);
       }
       // The bytes and their fingerprint move together; only the modified time
       // is the copy's own, exactly as S3's CopyObject behaves.
@@ -2010,11 +2038,28 @@ export function createS3Store(config) {
      * the refusal S3 answers instead of the copy. `size` is the byte length
      * the caller's listing already carried, so the copy S3 needs for those
      * bytes is chosen without a second request per file.
+     *
+     * `ifMatch` is the ETag the destination carried when the caller listed it.
+     * CopyObject cannot carry a precondition on the destination, so the guard
+     * available is the read: the key is listed again here, immediately before
+     * the copy, and a destination whose bytes are no longer that ETag is
+     * refused with `ChangedUnderUsError` and left holding the bytes it has
+     * (drive issue #605). A restore uses this so it cannot put a parked file
+     * over a save that landed at that path. The window left is the copy
+     * itself, the window the issue describes; a caller that hands over no ETag
+     * gets the copy it always got, so `drive branch` is unchanged.
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
+     * @param {{ifMatch?: string|null|undefined}} [options]
      */
-    async copy(from, to, size) {
+    async copy(from, to, size, { ifMatch } = {}) {
+      if (typeof ifMatch === "string" && ifMatch !== "") {
+        const held = await copyDestinationEtag(request, urlFor, to);
+        if (held !== null && etagMismatch(held, ifMatch)) {
+          throw new ChangedUnderUsError(to);
+        }
+      }
       const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
         await multipartCopy(request, urlFor, source, to, size);
@@ -2288,6 +2333,39 @@ async function sourceSize(fetchImpl, urlFor, from) {
     );
   }
   return length;
+}
+
+/**
+ * The ETag a copy's destination holds right now, from the one call a HEAD
+ * answers it with — the same call `stat` makes, so the guard on a copy reads
+ * the destination exactly as a preview does and no new request shape is
+ * invented for it. `null` is "there is no object at that key", which is not a
+ * change: a restore copies onto a path nothing is at, and the caller holds no
+ * ETag for it either. A HEAD that fails is a real failure and is thrown, not
+ * read as "no object": answering "nothing is there" to a storage that could
+ * not say would turn a permission error into a copy over the bytes it could
+ * not read (drive issue #605).
+ * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl
+ * @param {(path: string) => string} urlFor
+ * @param {string} to the storage key the copy would write
+ * @returns {Promise<string|null>}
+ */
+async function copyDestinationEtag(fetchImpl, urlFor, to) {
+  const response = await fetchImpl(urlFor(to), { method: "HEAD" });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(
+      `storage could not read ${to} before the copy (HEAD answered ${response.status})`,
+    );
+  }
+  const etag = response.headers.get("etag");
+  // S3 spells an ETag in quotes and `parseListObjects` strips them, so the
+  // caller's ETag and this one are compared in the one form both have.
+  return typeof etag === "string" && etag !== ""
+    ? etag.replace(/^W\//, "").replace(/^"|"$/g, "")
+    : null;
 }
 
 /**
@@ -3151,11 +3229,30 @@ async function restoreRequest(request, store, account, now) {
     const parkedAt = trashStorePath(
       found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
     );
+    // The destination is listed before anything moves, for the reason the
+    // delete lists its source: the copy below writes over whatever is at this
+    // path, so the bytes there now have to be the ones the restore was asked
+    // to replace. A file at that path when the restore started carries an ETag
+    // here, and a save that lands between this listing and the copy is caught
+    // by it. A path with nothing at it lists nothing and there is nothing to
+    // hold to, so the copy lands as it always did (drive issue #605).
+    const destination = await listingEntry(store, checked.path);
+    const destinationEtag =
+      destination && typeof destination.etag === "string" && destination.etag !== ""
+        ? destination.etag
+        : null;
     // The mirror of the delete: the copy is the storage's own, so the bytes
     // never come through the Worker, and the remove is conditional on the ETag
     // the trash listing carried. The listing above is what found the row, so
     // the parked file is there unless a second restore ran in the same tick.
-    await store.copy(parkedAt, checked.path, found.size);
+    // The copy is held to the destination's ETag as well: CopyObject cannot
+    // carry that precondition itself, so the store compares the destination's
+    // current ETag against this one immediately before it writes, and refuses
+    // with ChangedUnderUsError when they differ. Without that the copy would
+    // put the parked bytes over a save that landed while the restore ran, and
+    // the conditional remove below would clear the trash copy of the newer
+    // file as well, so nothing would be left to recover.
+    await store.copy(parkedAt, checked.path, found.size, { ifMatch: destinationEtag });
     const etag = typeof found.etag === "string" ? found.etag : null;
     // A copy that lands while this one runs changes the parked key, and the
     // remove of it is refused: the file is back, the parked copy that changed is
