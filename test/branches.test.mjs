@@ -1168,31 +1168,37 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
     },
   };
   // Only the claim insert is stubbed: the guard's own reads still run, and the
-  // refusal lands after the copy was not asked for. The loser's store is never
-  // asked to walk the folder or copy a file.
-  const losingDb = {
-    ...db,
-    /** @param {string} sql */
-    prepare(sql) {
-      const statement = db.prepare(sql);
-      if (!sql.includes("COUNT(*) FROM branches WHERE account_id = ?1")) {
-        return statement;
-      }
-      return {
-        sql,
-        /** @param {...unknown} values */
-        bind(...values) {
-          const boundStatement = statement.bind(...values);
+  // refusal lands after the copy was not asked for. Every other statement and
+  // every other method goes through the real adapter, which is why this is a
+  // proxy over it (the same shape as the failing devices store in
+  // test/signin.test.mjs) rather than a bare object that would have to restate
+  // D1's interface; the loser's store is never asked to walk the folder or
+  // copy a file.
+  const losingDb = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes("COUNT(*) FROM branches WHERE account_id = ?1")) {
+            return statement;
+          }
           return {
-            ...boundStatement,
-            async run() {
-              return { results: [], success: true, meta: { changes: 0, last_row_id: 0 } };
+            sql,
+            /** @param {...unknown} values */
+            bind(...values) {
+              return {
+                ...statement.bind(...values),
+                async run() {
+                  return { results: [], success: true, meta: { changes: 0, last_row_id: 0 } };
+                },
+              };
             },
           };
-        },
-      };
+        };
+      }
+      return Reflect.get(target, prop, receiver);
     },
-  };
+  });
   const loser = await createBranch(losingDb, snapshots, store, ACCOUNT, {
     folder: "/Photos",
     name: "work",
