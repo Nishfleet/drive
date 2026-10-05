@@ -21,13 +21,14 @@ import {
   signupCardFingerprint,
 } from "../src/abuse-guards.js";
 import { BILLING_CONFIG, GB_PER_TB } from "../src/billing.js";
-import { createMemoryStore, handleFilesRequest } from "../src/files.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
 import workerModule from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../src/meter.js";
 import { hasSignupCard } from "../src/signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
+import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 
@@ -467,6 +468,65 @@ test("an account over 1 TB on live versions, with an empty index, is refused on 
   assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
 });
 
+test("the same refusal holds on the schema the sign-in tests build", async () => {
+  // The case above drives handleFilesRequest over a database written for the
+  // meter's tables. This one drives the shipped Worker over the harness's own
+  // default schema - the one every sign-in, status, files and usage test
+  // builds - because that is the schema the real save runs against: the limit
+  // read `file_versions` (0005_meter), which that list did not carry, and
+  // every upload a test drove answered 500 until it did (CI on 148fbbf,
+  // drive#536). A test that proves the rule only on a schema that happens to
+  // have the table cannot see the list drift away from the read.
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "full@example.com");
+  await made.db
+    .prepare(
+      `INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, NULL)`,
+    )
+    .bind(account.id, "file-full", "/full.bin", PRE_CHARGE_STORAGE_LIMIT_BYTES + 8, NOW)
+    .run();
+  const indexed = await made.db
+    .prepare("SELECT COUNT(*) AS n FROM file_index WHERE account_id = ?1")
+    .bind(account.id)
+    .first();
+  assert.equal(Number(indexed?.n ?? -1), 0, "the scenario must have an empty index");
+
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: TEST_BASE_URL,
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const workerFetch =
+    /** @type {(request: Request, env?: unknown, ctx?: unknown) => Promise<Response>} */ (
+      /** @type {unknown} */ (workerModule.fetch)
+    );
+  const upload = (/** @type {string} */ name) =>
+    workerFetch(
+      new Request(
+        `${TEST_BASE_URL}${FILES_ENDPOINT}/upload?path=%2F&name=${encodeURIComponent(name)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "text/plain", cookie },
+          body: "the bytes a signed-in account saves",
+        },
+      ),
+      env,
+      ctx,
+    );
+
+  const held = await upload("more.bin");
+  assert.equal(held.status, 403, "a full drive is refused, not failed");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+
+  // Freed bytes land: the delete path hides the version, and the same save
+  // over the same schema is stored.
+  await made.db.prepare("DELETE FROM file_versions WHERE account_id = ?1").bind(account.id).run();
+  assert.equal((await upload("small.bin")).status, 201);
+});
+
 test("the hourly cron takes an over-limit unpaid account's key read-only", async () => {
   // drive#536: a mount writes without the web upload path in front of it, so
   // the sweep applies the same 1 TB rule the page gets, through the cap's own
@@ -600,8 +660,15 @@ test("the cron logs one account's failed swap and still caps the next", async (t
   assert.deepEqual(JSON.parse(String(capped.capabilities)), ["list", "read"]);
   const untouched = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(brokeKey.keyId);
   assert.deepEqual(JSON.parse(String(untouched.capabilities)), writeCaps);
-  const logged = errorMock.mock.calls.map((call) => String(call.arguments[0])).join("\n");
+  // The arguments joined as the console joins them (test/dodo.test.mjs's
+  // shape): the sweep logs a constant format string with the account's values
+  // bound to it, so the line a person reads is the format and its arguments
+  // together, and the account it could not cap has to be named in them.
+  const logged = errorMock.mock.calls
+    .map((call) => call.arguments.map(String).join(" "))
+    .join("\n");
   assert.match(logged, /broken/, "the failure names the account it could not cap");
+  assert.match(logged, /provider down/, "the failure names what went wrong");
 });
 
 test("the hourly trigger itself takes an over-limit unpaid account's key read-only", async () => {
