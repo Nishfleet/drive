@@ -389,6 +389,8 @@ test("the Dodo push bills a founding account half, on the real schema", async ()
   const events = recorder.calls[0].payload.events;
   const founder = events.find((event) => event.customer_id === founderCustomer);
   const full = events.find((event) => event.customer_id === CUSTOMER);
+  assert.ok(founder, "the founder's event reached Dodo");
+  assert.ok(full, "the full-price event reached Dodo");
   assert.equal(founder.metadata.amount_units, 1000, "2 TB founding is $10, not $20");
   assert.equal(founder.metadata.total_cents, 1000);
   assert.equal(full.metadata.amount_units, 2000, "2 TB at full price is $20");
