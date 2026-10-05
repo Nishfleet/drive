@@ -69,6 +69,15 @@ function emptyStore(written = {}) {
     async listVersions() {
       return [];
     },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
+      return [];
+    },
+    async stat() {
+      return null;
+    },
   };
 }
 
@@ -91,10 +100,19 @@ function failingStore(reason = "the storage backend refused the key") {
     async read() {
       throw new Error(reason);
     },
+    async stat() {
+      throw new Error(reason);
+    },
     async write() {},
     async remove() {},
     async copy() {},
     async listVersions() {
+      return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
       return [];
     },
   };
