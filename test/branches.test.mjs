@@ -20,6 +20,7 @@ import {
   getBranch,
   handleBranchesRequest,
   listBranches,
+  MAX_OPEN_BRANCHES,
   readSnapshot,
   readSnapshotObject,
   relativePath,
@@ -52,8 +53,11 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    "drive/0016_founding.sql",
+    "drive/0019_abuse_guards.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -256,6 +260,11 @@ function request(method, path, body) {
   }
   return new Request(`https://drive.test${path}`, init);
 }
+
+// The branch-create limiter, allowed: the route enforces it before the body is
+// read, and these tests are about what happens after it lets the call through.
+// The limiter's own refusals are asserted on their own below.
+const ALLOWED = { ipLimiter: { limit: () => Promise.resolve({ success: true }) } };
 
 // `approveBranch` and `discardBranch` each answer a union: the worked object or
 // a failure carrying a status. Every status assertion below is about the
@@ -638,6 +647,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     snapshots,
     raw,
     account,
+    ALLOWED,
   );
   assert.equal(created.status, 201);
   const createdBody = await created.json();
@@ -685,6 +695,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     snapshots,
     raw,
     account,
+    ALLOWED,
   );
   assert.equal(second.status, 201);
   const discarded = await handleBranchesRequest(
@@ -739,6 +750,7 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
     snapshots,
     raw,
     ACCOUNT,
+    ALLOWED,
   );
   assert.equal(notJson.status, 400);
 
@@ -832,6 +844,7 @@ test("the route answers a closed branch with an empty diff and its state", async
     snapshots,
     raw,
     ACCOUNT,
+    ALLOWED,
   );
   const approved = await handleBranchesRequest(
     request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
@@ -847,6 +860,7 @@ test("the route answers a closed branch with an empty diff and its state", async
     snapshots,
     raw,
     ACCOUNT,
+    ALLOWED,
   );
 
   const answer = await handleBranchesRequest(
@@ -891,6 +905,7 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
     snapshots,
     raw,
     account,
+    ALLOWED,
   );
 
   const extra = await handleBranchesRequest(
@@ -1091,4 +1106,136 @@ test("a create whose prefix clear fails closes its own claim row", async () => {
     name: "work",
   });
   assert.equal(again.state, "open");
+});
+
+// ------------------------------------------------- the open-branch cap (#553)
+
+test("the account's open branches stop at the cap, and the next one is refused", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // The cap is a whole number of open branches. Create exactly that many, each
+  // a real copy through the same path the route uses, so the count the cap
+  // reads is the count the drive holds.
+  for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
+    const made = await createBranch(db, snapshots, scoped, ACCOUNT, {
+      folder: "/Photos",
+      name: `work-${i}`,
+    });
+    assert.equal(made.state, "open", `branch ${i} should be open`);
+  }
+  // The next create is refused on the cap, not on the name, and writes nothing
+  // (no row, no copy): a refused branch must not count against the cap either.
+  const over = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work-over",
+  });
+  assert.equal(over.error, failureMessage("branch-limit"));
+  assert.equal(over.status, 409);
+  // The sentence names the same cap the code enforces, so a changed constant
+  // cannot leave the message quoting a stale number.
+  assert.ok(failureMessage("branch-limit").includes(String(MAX_OPEN_BRANCHES)));
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work-over"), null);
+  const listed = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.equal(listed.length, MAX_OPEN_BRANCHES);
+  // Closing one frees a slot: a discarded branch no longer counts.
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "work-1");
+  const after = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work-over",
+  });
+  assert.equal(after.state, "open");
+});
+
+// ------------------------------------------- the pre-charge guard (#553, #536)
+
+test("a pre-charge account at 900 GB cannot branch a 200 GB folder", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // The account is unpaid (first_charged_at is null), so the 1 TB pre-charge
+  // limit applies. The search index already holds 900 GB for it, and the
+  // folder about to be branched reports 200 GB from its listing, so the copy
+  // would take the account past the limit. The branch bytes live outside the
+  // index, so the guard reads them from the store too; there are none yet.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "/big.bin", "big.bin", "/", 900 * GB);
+  const folderBytes = 200 * GB;
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../src/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      // The folder's listing reports one 200 GB file; no such bytes exist here.
+      return entries.map((entry) =>
+        entry.name === "a.txt" && path === "/Photos" ? { ...entry, size: folderBytes } : entry,
+      );
+    },
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return scoped.copy(from, to, size);
+    },
+  };
+  const blocked = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(blocked.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(blocked.status, 403);
+  // Nothing was copied and no row was claimed: the guard runs before the name
+  // is claimed, so a refused branch leaves no trace.
+  assert.deepEqual(copies, []);
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
+  // The same folder is allowed once a first charge lifts the limit.
+  db.sqlite.prepare("UPDATE accounts SET first_charged_at = ? WHERE id = ?").run(1, ACCOUNT.id);
+  const allowed = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(allowed.state, "open");
+});
+
+// --------------------------------------------------- the create limiter (#553)
+
+test("the branch route limits a create and fails closed without a limiter", async () => {
+  const { raw, db, snapshots } = await driven();
+  const create = () =>
+    handleBranchesRequest(
+      request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+      db,
+      snapshots,
+      raw,
+      ACCOUNT,
+      { ipLimiter: { limit: () => Promise.resolve({ success: false }) } },
+    );
+  const denied = await create();
+  assert.equal(denied.status, 429);
+  assert.equal((await denied.json()).error, failureMessage("rate-limited"));
+  assert.equal(denied.headers.get("retry-after"), "60");
+  // A create whose limiter binding is missing is refused before any work: the
+  // fail-closed rule every limited route follows.
+  const unbound = await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    {},
+  );
+  assert.equal(unbound.status, 503);
+  assert.equal((await unbound.json()).error, failureMessage("unexpected"));
+  // A GET is never limited: listing branches is a read, and only the create
+  // copy costs the operator work.
+  const listed = await handleBranchesRequest(
+    new Request(`https://drive.test${BRANCHES_ENDPOINT}`, { method: "GET" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(listed.status, 200);
 });

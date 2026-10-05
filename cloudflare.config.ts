@@ -221,6 +221,18 @@ export default defineConfig({
         namespace: "1008",
         simple: { limit: 60, period: 60 },
       }),
+      // POST /api/branches (drive issue #553): a branch is a full server-side
+      // copy of a folder, so a loop of creates costs the operator real storage
+      // and real copy work. Per IP it sits at 10 a minute, the upload-request
+      // limit: far above a person or agent making a handful of branches, far
+      // below a script churning them. One minute, the family's period.
+      // Namespace 1009: 1001–1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair, 1008 is the share download. A namespace another
+      // binding already uses fails the deploy with 10021.
+      BRANCH_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1009",
+        simple: { limit: 10, period: 60 },
+      }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and

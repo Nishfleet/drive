@@ -48,8 +48,14 @@
 
 import { json } from "../workers/api/src/http.js";
 import { checkedBranchName } from "../workers/api/src/keyprovider.js";
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  preChargeUploadBlocked,
+} from "./abuse-guards.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { unauthorizedResponse } from "./status.js";
 
 /** @typedef {import("./files.js").FileStore} FileStore */
@@ -462,6 +468,18 @@ function plain(message, status, headers = {}) {
 const NAMED_FILES_LIMIT = 20;
 
 /**
+ * The most open branches one account may hold at once (drive#553). A branch
+ * is a full server-side copy of a folder, so N open branches hold N copies of
+ * the folder's bytes at the operator's cost; without a cap a card-less account
+ * at the 1 TB pre-charge limit could POST a branch per folder and multiply its
+ * stored bytes past every guard (extending #536 and #496). Ten is far above
+ * the handful of branches a person or an agent works in at once and bounds the
+ * copies a single account can hold. The sentence the refusal uses is
+ * `branch-limit` in src/messages.js, which names this same number.
+ */
+export const MAX_OPEN_BRANCHES = 10;
+
+/**
  * The body of a POST as an object, or the one sentence to send back. A branch
  * request is a JSON object and nothing else; a form or an array is a 400. The
  * sentence is the table's, so a branch refuses the same request in the same
@@ -638,6 +656,43 @@ async function listFiles(store, root) {
     }
   }
   return files;
+}
+
+/**
+ * The bytes every file under `root` holds, summed from the store's own
+ * listings. Branch copies are written without `withIndex`, so they never land
+ * in the search index a pre-charge check reads (drive#553); the storage
+ * listing is the only source of truth for what a branch holds. A missing
+ * `root` lists as nothing, so an account with no branches sums to 0.
+ * @param {FileStore} store a scoped store
+ * @param {string} root
+ * @returns {Promise<number>}
+ */
+async function storedBytesUnder(store, root) {
+  let total = 0;
+  for (const file of (await listFiles(store, root)).values()) {
+    total += file.size;
+  }
+  return total;
+}
+
+/**
+ * How many branches this account has open. The open-name partial unique index
+ * keeps one open row per name; this counts every open row for the cap.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @returns {Promise<number>}
+ */
+async function countOpenBranches(db, accountId) {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS open FROM branches WHERE account_id = ?1 AND state = 'open'")
+    .bind(accountId)
+    .first();
+  const open = Number(/** @type {{open?: unknown} | null | undefined} */ (row)?.open ?? 0);
+  if (!Number.isInteger(open) || open < 0) {
+    throw new TypeError(`branches open count must be a whole number, got ${String(open)}`);
+  }
+  return open;
 }
 
 /** The fingerprint of one file, or null when it is not there. One listing of
@@ -917,6 +972,34 @@ export async function createBranch(db, snapshots, store, account, request, now =
   if (existing && existing.state === "open") {
     return { error: failureMessage("branch-exists"), status: 409 };
   }
+  // The open-branch cap (drive#553): a branch is a full copy, so an unbounded
+  // number of them multiplies the bytes this account holds at the operator's
+  // cost. Checked after the open-name check so a duplicate open name still
+  // answers with its own specific sentence, and before the name is claimed so
+  // a refused create writes nothing.
+  const openBranches = await countOpenBranches(db, account.id);
+  if (openBranches >= MAX_OPEN_BRANCHES) {
+    return { error: failureMessage("branch-limit"), status: 409 };
+  }
+  // The pre-charge storage guard (drive#553): a branch copies the folder's
+  // bytes, so those bytes count against the account's 1 TB limit the same way
+  // an upload's do. The index the guard reads does not see branch copies (they
+  // are written without withIndex), so the branch bytes are summed from the
+  // store itself; a charged account is lifted (drive#464).
+  const firstChargedAt = await accountFirstChargedAt(db, account.id);
+  if (firstChargedAt === null) {
+    const stored = await accountStoredBytes(db, account.id);
+    const branchBytes = await storedBytesUnder(store, BRANCHES_ROOT);
+    const folderBytes = await storedBytesUnder(store, folderPath);
+    const blocked = preChargeUploadBlocked({
+      firstChargedAt,
+      storedBytes: stored + branchBytes,
+      incomingBytes: folderBytes,
+    });
+    if (blocked !== null) {
+      return { error: blocked, status: 403 };
+    }
+  }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
   // Claim the name before touching the store. The partial unique index on
@@ -934,12 +1017,19 @@ export async function createBranch(db, snapshots, store, account, request, now =
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
           "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id) " +
-          "VALUES (?1,?2,?3,?4,'',0,'open',?5,?6)",
+          "SELECT ?1,?2,?3,?4,'',0,'open',?5,?6 " +
+          "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state = 'open') < ?7",
       )
-      .bind(account.id, name, folderPath, branchPrefix, createdAt, changedBy)
+      .bind(account.id, name, folderPath, branchPrefix, createdAt, changedBy, MAX_OPEN_BRANCHES)
       .run();
     if (!claimed.success) {
       return { error: failureMessage("unexpected"), status: 500 };
+    }
+    // The WHERE clause makes the count and the claim one statement, so two
+    // concurrent creates at the cap cannot both insert: the loser changes no
+    // rows and is refused on the cap here, after the copy is not made.
+    if (Number(claimed.meta?.changes ?? 0) === 0) {
+      return { error: failureMessage("branch-limit"), status: 409 };
     }
     claimId = Number(claimed.meta.last_row_id);
     if (!Number.isInteger(claimId) || claimId < 1) {
@@ -1472,16 +1562,10 @@ function sourceMoved(named, total) {
  *   binding by name
  * @param {import("./files.js").FileStore|null} store the shared, unscoped store
  * @param {{id: string, name: string}|null} account the signed-in account
- * @param {() => number} now
+ * @param {{now?: () => number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}|undefined}} [options]
  */
-export async function handleBranchesRequest(
-  request,
-  db,
-  snapshots,
-  store,
-  account,
-  now = () => Date.now(),
-) {
+export async function handleBranchesRequest(request, db, snapshots, store, account, options = {}) {
+  const now = options.now ?? (() => Date.now());
   if (!account) {
     return unauthorizedResponse();
   }
@@ -1511,6 +1595,24 @@ export async function handleBranchesRequest(
       return json({ branches });
     }
     if (request.method === "POST") {
+      // The branch-create limiter (drive#553): a create copies a folder
+      // server-side, so a loop of creates costs the operator real work. The
+      // limiter keys on the caller's IP like the upload and share routes, and
+      // runs before the body is read; a missing binding refuses the route
+      // (fail closed), the rule every other limiter follows.
+      const limited = await enforceEdgeLimits(
+        [
+          {
+            binding: options.ipLimiter,
+            key: clientIpKey(request, "branch-create"),
+            name: "BRANCH_RATE_LIMITER",
+          },
+        ],
+        "branch-create",
+      );
+      if (limited) {
+        return limited;
+      }
       const read = await readJsonBody(request);
       if (read.error) {
         return json({ error: read.error }, 400);

@@ -185,6 +185,7 @@ const HEALTHY_ENV = () => ({
   REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
   REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+  BRANCH_RATE_LIMITER: fakeLimiter(),
   BRANCH_SNAPSHOTS: fakeKv(),
 });
 
@@ -222,6 +223,7 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
@@ -243,6 +245,7 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
@@ -262,6 +265,7 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   });
   assert.equal(response.status, 503);
@@ -280,6 +284,7 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
@@ -304,6 +309,7 @@ test("every bound D1 database is checked, not just the first", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const result = await checkHealth(env);
@@ -345,6 +351,7 @@ test("a binding that is not a database is never read as one", () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.deepEqual(
@@ -370,6 +377,7 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
@@ -394,6 +402,7 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
@@ -417,6 +426,7 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
@@ -458,6 +468,7 @@ test("the failing body is the name and nothing else", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   });
   const body = await response.json();
@@ -511,6 +522,7 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const started = Date.now();
@@ -551,6 +563,7 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
@@ -623,6 +636,7 @@ test("the health check never spends a real caller's rate limit quota", async () 
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
@@ -655,6 +669,7 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   await handleHealthRequest(GET(), env);
@@ -734,6 +749,7 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
@@ -764,6 +780,7 @@ test("a limiter that denies the probe is still healthy", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
@@ -789,6 +806,7 @@ test("a branch snapshot namespace that cannot be read is a 503 naming it", async
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: {
       get: () => Promise.reject(new Error("kv backend exploded: token=sk-secret")),
     },
@@ -817,6 +835,7 @@ test("a namespace that answers null for the probe key is healthy", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.equal((await handleHealthRequest(GET(), env)).status, 200);
@@ -841,6 +860,7 @@ test("the probe never reads a customer snapshot key", async () => {
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: {
       /** @param {string} key */
       get: (key) => {
