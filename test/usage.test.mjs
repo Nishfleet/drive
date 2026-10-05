@@ -913,22 +913,22 @@ test("typing a whole dollar raises the slider and an empty field hides Save cap"
   assert.ok(onAmount, "the number field must listen for input");
 
   amount.value = "50";
-  onAmount();
+  onAmount(new Event("input"));
   assert.equal(slider.max, "50");
   assert.equal(slider.value, "50");
   assert.equal(save.hidden, false, "a whole dollar shows Save cap");
 
   amount.value = "";
-  onAmount();
+  onAmount(new Event("input"));
   assert.equal(save.hidden, true, "an empty field hides Save cap");
   assert.equal(slider.max, "50", "clearing the field does not snap the slider's range");
 
   amount.value = "-1";
-  onAmount();
+  onAmount(new Event("input"));
   assert.equal(save.hidden, true, "a negative number is not a cap");
 
   amount.value = "1.5";
-  onAmount();
+  onAmount(new Event("input"));
   assert.equal(save.hidden, true, "a fractional number is not a whole-dollar cap");
 });
 
