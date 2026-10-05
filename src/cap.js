@@ -107,13 +107,17 @@ export const SPEND_CAP_REASON = "spend-cap";
  * row a give-back pass (drive#656) reads to prove which cap did this. Absent
  * and null are the same claim: no reason recorded.
  * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason?: string}} CapKey
+ *
+ * A swap entry in a capSwapPlan. `cappedReason` is `null` on the raise
+ * (telling the store to clear the marker) and a word on the freeze.
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason: string|null}} CapSwap
  */
 
 /**
  * One key the plan means to change, and the mount line that goes with the
  * whole plan. `swaps` is what applyCapSwap() works through; `mount` is the
  * restart the CLI performs when anything changed.
- * @typedef {Readonly<{state: "active"|"read_only", swaps: ReadonlyArray<CapKey>, mount: Readonly<{restart: boolean, reason: string|null}>}>} CapSwapPlan
+ * @typedef {Readonly<{state: "active"|"read_only", swaps: ReadonlyArray<CapSwap>, mount: Readonly<{restart: boolean, reason: string|null}>}>} CapSwapPlan
  */
 
 /**
