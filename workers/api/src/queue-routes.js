@@ -27,7 +27,7 @@
 // the mount loop, and these strings are the api Worker's own error shape (the
 // same inline sentences workers/api/src/index.js uses for 400/404/405 and
 // workers/api/src/event-routes.js uses for its bucket), so they are
-// deliberately NOT the one user-facing table in src/messages.js.
+// deliberately NOT the one user-facing table in core/messages.js.
 
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { failureMessage } from "../../../core/messages.js";

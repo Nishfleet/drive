@@ -130,7 +130,7 @@ export default defineWorker({
     // no instance with no BETTER_AUTH_SECRET or database, so every account
     // route 401s rather than bypassing the gate (src/auth.js), and with no
     // MAIL_FROM the sign-in link is a 503 that names the missing setting
-    // (src/email-send.js). Set them once, beside the site Worker's own, and
+    // (core/email-send.js). Set them once, beside the site Worker's own, and
     // they persist across deploys (cf 1.0.0-beta.7 and later inherit secret
     // bindings from the previous Worker version, drive issue #189):
     //   cf workers secrets update BETTER_AUTH_SECRET --type secret_text \
