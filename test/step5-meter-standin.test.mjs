@@ -53,6 +53,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { parseListVersions } from "../src/files.js";
 import worker from "../src/index.js";
 import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../src/meter.js";
+import { computeHiddenAt, versionMarkers } from "../src/s3-listing.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createMemoryStore } from "../workers/api/src/keystore.js";
@@ -411,9 +412,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     query: { versions: "", prefix: key.prefix },
   });
   assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
-  const listed = parseListVersions(listing.text).filter((version) =>
-    version.path.startsWith(key.prefix),
-  );
+  // One page alone cannot know a version's stop — the pair that ends a
+  // version can sit on two pages (drive issue #504) — so the stop is the
+  // shipped cross-page pass, the same one the store answers with.
+  const listed = computeHiddenAt(
+    parseListVersions(listing.text),
+    versionMarkers(listing.text),
+  ).filter((version) => version.path.startsWith(key.prefix));
   t.diagnostic(
     `the provider's own listing: ${JSON.stringify(listed.map((v) => ({ version: v.b2FileId.slice(0, 8), marker: v.hiddenAt === null && v.sizeBytes === 0, size: v.sizeBytes, at: new Date(v.createdAt).toISOString(), hidden: v.hiddenAt === null ? null : new Date(v.hiddenAt).toISOString() })))}`,
   );
@@ -488,9 +493,11 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
  * account writes with: ListObjectVersions is the stock API for a versioned
- * bucket, and the parser is the shipped one (src/files.js
+ * bucket, and the parse is the shipped one (src/files.js
  * `createS3Store.listVersions` answers with it), so a version's stop time here
- * is the stop time the product reads in production.
+ * is the stop time the product reads in production. This proof's listing is
+ * one page; the store folds the pages together and computes the stops once
+ * over the whole list (drive issue #504), and so does this call.
  * The reconciler only calls listVersions; the other methods are stubs that
  * throw if reached, which would indicate a bug in the reconciler.
  * @param {ReturnType<typeof createS3Client>} client
@@ -509,7 +516,7 @@ function signedListingStore(client, bucket) {
       if (response.status !== 200) {
         throw new Error(`the provider's own version listing failed with ${response.status}`);
       }
-      return parseListVersions(response.text);
+      return computeHiddenAt(parseListVersions(response.text), versionMarkers(response.text));
     },
     async list() {
       throw new Error("the reconciler never lists a folder");
