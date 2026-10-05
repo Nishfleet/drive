@@ -412,8 +412,9 @@ test("a founding flip after a full-price push sends 0, never a negative unit", a
     fetch: recorder.fetch,
     now: hour1 + HOUR_MS,
   });
-  const second = recorder.calls[1].payload.events[0].metadata.amount_units;
-  assert.equal(second, 0, "the founding bill is below what was already pushed");
+  // The founding bill is below what was already pushed, so the hour adds 0
+  // to the running balance and nothing reaches Dodo (drive#465).
+  assert.equal(recorder.calls.length, 1, "a $0 hour is not a second ingest");
   assert.equal(
     sqlite.prepare("SELECT amount_units FROM billing_pushes WHERE hour = ?1").get(hour1)
       .amount_units,
