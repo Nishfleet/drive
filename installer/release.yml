@@ -62,9 +62,7 @@ jobs:
         with:
           distribution: goreleaser
           version: "v2.18.2"
-          args: >-
-            release --clean
-            ${{ steps.import_gpg.outcome == 'success' && '' || '--skip=sign' }}
+          args: ${{ steps.import_gpg.outcome == 'success' && 'release --clean' || 'release --clean --skip=sign' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
