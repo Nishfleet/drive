@@ -48,6 +48,7 @@ import {
   reconcileMeter,
   runMeterCron,
 } from "./meter.js";
+import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -714,6 +715,21 @@ export function createApp() {
       apiKey: dodo.DODO_PAYMENTS_API_KEY,
       baseUrl: dodo.DODO_BASE_URL,
       productId: dodo.DODO_TOPUP_PRODUCT_ID,
+      fetch: dodo.DODO_FETCH,
+    });
+  });
+
+  // The card-update path the payment-failed copy points at (drive#575). A GET
+  // because it is a link a browser follows, and the answer is a 302 to the
+  // provider's customer portal rather than a JSON body. The account gate
+  // above already answered an anonymous caller 401, so a stranger never
+  // reaches a provider call.
+  app.get(PORTAL_ENDPOINT, (c) => {
+    const dodo = dodoEnv(c.env);
+    return handlePortalRequest(c.req.raw, c.get("account"), {
+      db: c.env.DRIVE_DB,
+      apiKey: dodo.DODO_PAYMENTS_API_KEY,
+      baseUrl: dodo.DODO_BASE_URL,
       fetch: dodo.DODO_FETCH,
     });
   });

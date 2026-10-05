@@ -203,6 +203,30 @@ export function resolveDodoUrl(baseUrl, path) {
 }
 
 /**
+ * True when a URL is an https page on Dodo's own domain, with no username or
+ * password in it: the shape every URL we hand a person must have before it
+ * becomes a redirect. A checkout (src/topup.js) and a customer-portal session
+ * link (src/portal.js) both answer a customer, so both go through this one
+ * check rather than each spelling the pin out again.
+ * @param {string} value
+ */
+export function isDodoUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname;
+  return (
+    parsed.protocol === "https:" &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    (host === "dodopayments.com" || host.endsWith(".dodopayments.com"))
+  );
+}
+
+/**
  * Dodo's idempotency key for one account-hour. The same hour always mints
  * the same id, so a retried push is ignored on Dodo's side as well as in
  * billing_pushes. Dodo's ingest docs: "Event Id acts as an idempotency key.

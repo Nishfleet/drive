@@ -29,6 +29,7 @@ import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } fro
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
@@ -143,6 +144,12 @@ const ACCOUNT_ROUTES = [
   `${BALANCE_ENDPOINT}/`,
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
+  // drive#575: the billing portal, where the account's card is updated. It
+  // names the account's own customer and billing page, so it is behind the
+  // account gate exactly like the balance read beside it, and the walk
+  // requires the same 401 for a stranger.
+  `${PORTAL_ENDPOINT}`,
+  `${PORTAL_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -251,6 +258,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(CAP_ENDPOINT) ||
         route.startsWith(BALANCE_ENDPOINT) ||
         route.startsWith(TOPUP_ENDPOINT) ||
+        route.startsWith(PORTAL_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||

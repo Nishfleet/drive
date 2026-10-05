@@ -10,8 +10,18 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { absoluteUrl } from "./seo.js";
 
 export { DEFAULT_CAP_USD };
+
+// The card-update link the payment-failed mail carries (drive#575): the
+// billing-portal route on this deployment's origin. The path is spelled here
+// rather than imported from src/portal.js because this module is plain data
+// and pure renderers — importing the route module drags the meter, the
+// account store and the auth stack into every email render's load order, and
+// the module-load cycle that follows breaks the Worker. The path cannot
+// drift: test/portal.test.mjs pins this exact URL against PORTAL_ENDPOINT.
+const PORTAL_URL = absoluteUrl("/api/billing/portal");
 
 // The sender name every drive email carries. The address itself is a
 // deployment setting (env.MAIL_FROM), because drive has no sending domain of
@@ -204,16 +214,19 @@ export function paymentFailedTemplate(data = {}) {
   const { amountUsd } = data;
   const amount = requireMoney(amountUsd, "amountUsd");
   const subject = "Your last payment did not go through";
+  const portalLine = `Update your card here: ${PORTAL_URL}`;
   const lines = [
     `We could not charge ${usd(amount)}.`,
     "",
-    "Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.",
+    `Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.`,
+    portalLine,
     "",
     "If the card is not fixed, the drive will go read-only at your spending cap. Nothing is deleted.",
   ];
   const html_lines = [
     `<p>We could not charge ${usd(amount)}.</p>`,
     "<p>Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.</p>",
+    `<p>Update your card here: <a href="${PORTAL_URL}">${PORTAL_URL}</a></p>`,
     "<p>If the card is not fixed, the drive will go read-only at your spending cap. Nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines });
