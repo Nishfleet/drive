@@ -98,6 +98,10 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/`,
   `${FILES_ENDPOINT}/download?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/preview?path=%2Fa.txt`,
+  // drive#657: the page's media URL. It names files in the account's own
+  // drive like the preview URL, so the walk requires it to answer 401
+  // anonymously too.
+  `${FILES_ENDPOINT}/embed?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/upload?path=%2F&name=a.txt`,
   `${FILES_ENDPOINT}/delete`,
   `${FILES_ENDPOINT}/restore`,

@@ -20,6 +20,7 @@ import {
   createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
+  FILES_EMBED_ENDPOINT,
   FILES_ENDPOINT,
   FILES_PATH,
   fileKind,
@@ -36,6 +37,7 @@ import {
   parseTrashName,
   previewContentType,
   previewCopy,
+  previewDisposition,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
@@ -519,6 +521,51 @@ test("preview: an uploaded page is never a page on our origin", async () => {
     () => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"),
     TypeError,
   );
+});
+
+test("preview: an SVG leaves the direct-open URL as a download and the embed URL as a picture", async () => {
+  // drive#657: a top-level open of the preview URL must not render an SVG as a
+  // document on our address, because its links navigate and a fake sign-in card
+  // can hand the visitor to an attacker. The page's own <img> reads the embed
+  // URL instead, which still serves the same bytes inline.
+  const { call, upload } = drive();
+  await upload(
+    "/",
+    "logo.svg",
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="https://evil.test">Sign in</a></svg>',
+    "image/svg+xml",
+  );
+  const preview = await call(new Request(api("/preview?path=%2Flogo.svg")));
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "image/svg+xml");
+  assert.equal(preview.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(preview.headers.get("content-security-policy"), "sandbox");
+
+  const embed = await call(new Request(api("/embed?path=%2Flogo.svg")));
+  assert.equal(embed.status, 200);
+  assert.equal(embed.headers.get("content-type"), "image/svg+xml");
+  assert.equal(embed.headers.get("content-disposition"), "inline");
+
+  // A raster picture and a PDF keep opening inline from the direct-open URL:
+  // they cannot render a document with navigable links.
+  await upload("/", "holiday.jpg", "the-bytes", "image/jpeg");
+  await upload("/", "report.pdf", "%PDF-1.4", "application/pdf");
+  for (const [name, type] of [
+    ["holiday.jpg", "image/jpeg"],
+    ["report.pdf", "application/pdf"],
+  ]) {
+    const opened = await call(new Request(api(`/preview?path=%2F${name}`)));
+    assert.equal(opened.headers.get("content-type"), type, name);
+    assert.equal(opened.headers.get("content-disposition"), "inline", name);
+  }
+  // The rule, as a function: only the type a browser renders as a document
+  // leaves as an attachment.
+  assert.equal(previewDisposition("logo.svg", "image/svg+xml"), 'attachment; filename="logo.svg"');
+  assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
+  assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
+  assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
+  assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
@@ -1626,6 +1673,7 @@ test("the page's script reads the same endpoints and the same window", () => {
   assert.ok(page.includes(`const FILES_ENDPOINT = "${FILES_ENDPOINT}";`));
   for (const [name, endpoint] of [
     ["PREVIEW_ENDPOINT", `${FILES_ENDPOINT}/preview`],
+    ["EMBED_ENDPOINT", FILES_EMBED_ENDPOINT],
     ["DOWNLOAD_ENDPOINT", `${FILES_ENDPOINT}/download`],
     ["UPLOAD_ENDPOINT", `${FILES_ENDPOINT}/upload`],
     ["DELETE_ENDPOINT", `${FILES_ENDPOINT}/delete`],
