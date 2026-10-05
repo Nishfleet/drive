@@ -18,10 +18,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_ENDPOINT } from "../src/files.js";
+import { FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../src/files.js";
 import worker from "../src/index.js";
 import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { trackProcess } from "./minio-standin.mjs";
 
 // The page under test is the shipped asset, byte for byte, because that is
 // what the asset layer serves: a copy in this file would prove this file.
@@ -30,9 +31,8 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url));
 // drives on the same self-hosted runner, so the test needs no new tool.
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 
-/** @param {number} ms */ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 test("a click on a file name previews, downloads, and never shows raw JSON", {
+  timeout: 180_000,
   skip: existsSync(CHROME) ? false : "Chrome is not installed",
 }, async (t) => {
   // A real account over the real Worker: the D1 test database with the shipped
@@ -132,28 +132,29 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   // rather than a claim.
   const downloads = mkdtempSync(join(tmpdir(), "drive-files-page-"));
 
-  // The drive repo pins every dependency in package.json, and puppeteer-core
-  // is not one of them: it rides in through @lhci/cli, which CI installs for
-  // its own Lighthouse run on this same runner. A checkout without it skips
-  // rather than fails, the way the rclone-backed tests do without rclone.
-  /** @type {import("puppeteer-core").PuppeteerNode | undefined} */
-  let puppeteer;
-  try {
-    ({ default: puppeteer } = await import("puppeteer-core"));
-  } catch {
-    t.skip("puppeteer-core is not installed (it rides in through @lhci/cli)");
-    return;
-  }
+  // The drive repo pins every dependency in package.json, so the browser
+  // driver is a declared devDependency. Without it this import fails and the proof
+  // fails with it: a skipped browser test is a main that goes red with no
+  // message that says why.
+  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
+  // The browser is a child process the test owns: tracking it makes a run
+  // stopped by a signal close Chrome instead of leaving it headless on the
+  // host (drive#659).
+  trackProcess(browser.process());
   t.after(async () => {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   });
   const chrome = await browser.newPage();
+  // A starved runner is slow, not broken: give every wait room, and let the
+  // test's own timeout end a run that truly hangs (drive#500).
+  chrome.setDefaultTimeout(120_000);
+  chrome.setDefaultNavigationTimeout(120_000);
   // The clicks below leave the page only if the fix is wrong, so the first
   // thing watched is the document itself.
   /** @type {string[]} */
@@ -192,11 +193,28 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
       return true;
     }, name);
     assert.equal(clicked, true, `the page must render a link named ${name}`);
-    await wait(300);
+  };
+  // Each step waits for the state it checks, never for a fixed time: on a
+  // loaded runner a preview fetch can take longer than any sleep (drive#500).
+  const viewerOpen = () =>
+    chrome.waitForFunction(
+      () => /** @type {HTMLDialogElement} */ (document.getElementById("viewer")).open,
+    );
+  const closeViewer = async () => {
+    await chrome.click("#viewer-close");
+    await chrome.waitForFunction(
+      () => !(/** @type {HTMLDialogElement} */ (document.getElementById("viewer")).open),
+    );
   };
 
   // 1. Text: the viewer opens and the preview's own bytes are in it.
   await clickName("notes.txt");
+  await viewerOpen();
+  await chrome.waitForFunction(
+    (text) => document.getElementById("viewer-body")?.textContent === text,
+    {},
+    "the notes a click must show",
+  );
   assert.equal(
     await chrome.$eval("#viewer", (dialog) => /** @type {HTMLDialogElement} */ (dialog).open),
     true,
@@ -212,10 +230,12 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     `${FILES_ENDPOINT}/download?path=%2Fnotes.txt`,
     "the viewer's Download is the file's own download route",
   );
-  await chrome.click("#viewer-close");
+  await closeViewer();
 
   // 2. A picture: the viewer opens with the picture in it, still no navigation.
   await clickName("holiday.jpg");
+  await viewerOpen();
+  await chrome.waitForSelector("#viewer-body img");
   assert.equal(
     await chrome.$eval("#viewer", (dialog) => /** @type {HTMLDialogElement} */ (dialog).open),
     true,
@@ -223,10 +243,10 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   );
   assert.equal(
     await chrome.$eval("#viewer-body img", (img) => img.getAttribute("src")),
-    `${FILES_ENDPOINT}/preview?path=%2Fholiday.jpg`,
-    "the image is served from the preview route",
+    `${FILES_EMBED_ENDPOINT}?path=%2Fholiday.jpg`,
+    "the image is served from the embed route, which always opens a picture inline",
   );
-  await chrome.click("#viewer-close");
+  await closeViewer();
 
   // 3. A kind with no viewer downloads: the browser is allowed to save, and
   // the file that lands is the one that was uploaded, byte for byte.
@@ -236,14 +256,37 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     downloadPath: downloads,
     eventsEnabled: true,
   });
+  // The download completing is the browser's own event, not a directory poll:
+  // Chrome streams the bytes into `archive.tar.gz.crdownload` and only renames
+  // the file to its real name when the transfer is done. Polling the folder
+  // therefore stops on the part file, and the assertion below fails on a
+  // download that is merely in flight (drive#500, CI runs 37254363049 on main
+  // and 37256433675 on PR 495). `downloadWillBegin` names the transfer by its
+  // guid, and `downloadProgress` reports `completed` for that same guid.
+  /** @type {Map<string, string>} */
+  const begun = new Map();
+  // No wall-clock cap here: a starved runner can take many seconds, and the
+  // test's own timeout bounds a download that never finishes.
+  const finished = new Promise((resolve, reject) => {
+    session.on("Browser.downloadWillBegin", (event) => {
+      begun.set(event.guid, event.suggestedFilename);
+    });
+    session.on("Browser.downloadProgress", (event) => {
+      if (event.state === "inProgress") return;
+      if (event.state === "canceled") {
+        reject(new Error(`the browser canceled the download of ${event.guid}`));
+        return;
+      }
+      resolve(event.guid);
+    });
+  });
   await clickName("archive.tar.gz");
-  const deadline = Date.now() + 5_000;
+  const guid = await finished;
+  // The name the browser saved under is the one it announced at the start of
+  // the transfer, and the file is on disk under that name by now.
+  assert.equal(begun.get(guid), "archive.tar.gz", "the download is the clicked file");
   /** @type {string[]} */
-  let saved = [];
-  while (Date.now() < deadline && saved.length === 0) {
-    saved = readdirSync(downloads);
-    await wait(100);
-  }
+  const saved = readdirSync(downloads);
   assert.deepEqual(saved, ["archive.tar.gz"], "the click saves the file, with its own name");
   assert.equal(
     readFileSync(join(downloads, "archive.tar.gz"), "utf8"),
@@ -278,6 +321,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
 });
 
 test("signed in, the files menu shows Sign out and signing out ends the session", {
+  timeout: 180_000,
   skip: existsSync(CHROME) ? false : "Chrome is not installed",
 }, async (t) => {
   // drive#423: the top menu said Sign in while signed in. This is the real
@@ -342,24 +386,26 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
   const address = server.address();
   assert.ok(address && typeof address === "object", "the server must bind a port");
   const origin = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (address).port}`;
-  /** @type {import("puppeteer-core").PuppeteerNode | undefined} */
-  let puppeteer;
-  try {
-    ({ default: puppeteer } = await import("puppeteer-core"));
-  } catch {
-    t.skip("puppeteer-core is not installed (it rides in through @lhci/cli)");
-    return;
-  }
+  // The browser driver is a declared devDependency, not a transitive one,
+  // so `npm ci` installs it. Without it this import fails and this proof fails
+  // with it: a skipped browser test is a main that goes red with no message
+  // that says why.
+  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
+  trackProcess(browser.process());
   t.after(async () => {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   });
   const chrome = await browser.newPage();
+  // A starved runner is slow, not broken: give every wait room, and let the
+  // test's own timeout end a run that truly hangs (drive#500).
+  chrome.setDefaultTimeout(120_000);
+  chrome.setDefaultNavigationTimeout(120_000);
   await chrome.goto(`${origin}/files`, { waitUntil: "networkidle0" });
   await chrome.waitForFunction(() => {
     const signout = document.getElementById("nav-signout");
@@ -399,7 +445,7 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
     return true;
   });
   assert.equal(clicked, true, "the page must render Sign out");
-  await chrome.waitForSelector("#signed-out:not([hidden])", { timeout: 5000 });
+  await chrome.waitForSelector("#signed-out:not([hidden])");
   const after = await workerFetch(
     new Request(`${TEST_BASE_URL}${FILES_ENDPOINT}`, { headers: { cookie } }),
     env,

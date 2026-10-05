@@ -12,18 +12,12 @@
 // measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
 // is the whole of the withdrawal there.
 
-import { BILLING_CONFIG, gbMonths, storedGb } from "../../../src/billing.js";
+import { BILLING_CONFIG, gbMonths, minutesInMonth, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import {
-  accountFounding,
-  accountFoundingFlag,
-  releaseFoundingReservation as clearFoundingReservation,
-  markAccountPaying,
-  reserveFoundingSlot,
-} from "../../../src/founding.js";
-import { monthStart, monthUsageRollup } from "../../../src/meter.js";
+import { monthStart, monthUsageThrough } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
@@ -108,23 +102,6 @@ function deviceFromRow(row) {
 }
 
 /**
- * Constant-time hex comparison, the same loop keystore.js uses, so a secret
- * hash cannot leak through timing just because the row moved to D1.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
-/**
  * Move one row's window forward: the later of the expiry this call computed and
  * the expiry the row already holds.
  *
@@ -172,6 +149,10 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
+  // One provider revoke, retried: enough for a blip, small enough that a
+  // request is not held long when the vendor is down for real.
+  const PROVIDER_REVOKE_ATTEMPTS = 3;
+  const PROVIDER_REVOKE_PAUSE_MS = 100;
 
   /**
    * @param {Device} device
@@ -245,16 +226,62 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Whether a card is really on file, as `cardAdded` and `monthUsage` both
+   * need it. One query, one set of rules: fail closed on a missing row and on
+   * a null stamp, and a stamp that is not a positive unix second is a type
+   * error rather than a silent false.
+   * @param {string} accountId
+   * @returns {Promise<boolean>}
+   */
+  async function readCardAdded(accountId) {
+    const row = await first(db, "SELECT card_added_at FROM accounts WHERE id = ?1", accountId);
+    if (!row || typeof row !== "object") {
+      return false;
+    }
+    const at = /** @type {{card_added_at: unknown}} */ (row).card_added_at;
+    if (at === null || at === undefined) {
+      return false;
+    }
+    if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) {
+      throw new TypeError(
+        `accounts.card_added_at must be a unix second or null, got ${String(at)}`,
+      );
+    }
+    return true;
+  }
+
+  /**
+   * The cap's own write of the account state, guarded: it moves a row between
+   * `active` and `read_only` and leaves a `closed` row closed (drive#496, the
+   * owner's second addition on #496 — the unguarded form un-closed a closed
+   * account, because both the cap write and the hourly cap walk land here).
+   *
+   * `closed` is the terminal state of src/account-close.js: its keys are
+   * already revoked and its files are on their way out, so nothing about the
+   * spending cap may say the account is active again. A row that does not
+   * exist yet is still written, because a cap set before the close row exists
+   * is the only record of the cap.
+   *
    * @param {string} accountId
    * @param {"active"|"read_only"|"closed"} state
    */
   async function setAccountState(accountId, state) {
-    await run(db, "UPDATE accounts SET state = ?1 WHERE id = ?2", state, accountId);
+    await run(
+      db,
+      `UPDATE accounts SET state = ?1
+        WHERE id = ?2 AND COALESCE(state, 'active') <> 'closed'`,
+      state,
+      accountId,
+    );
   }
 
   /**
+   * `purgeCursor` is the drive path the purge of this account stopped after
+   * (drive#565): NULL before the first batch and once the purge finished, so
+   * NULL `purged_at` with a non-NULL cursor reads "partially purged, resume
+   * after this path".
    * @param {unknown} row
-   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null}|null}
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null, purgeCursor: string|null}|null}
    */
   function closeStateFromRow(row) {
     if (!row || typeof row !== "object") {
@@ -278,6 +305,8 @@ export function createD1DeviceStore(db, options = {}) {
           ? null
           : Number(r.close_mail_sent_at),
       purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
+      purgeCursor:
+        typeof r.purge_cursor === "string" && r.purge_cursor !== "" ? r.purge_cursor : null,
     };
   }
 
@@ -288,27 +317,79 @@ export function createD1DeviceStore(db, options = {}) {
     return closeStateFromRow(
       await first(
         db,
-        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?1",
+        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts WHERE id = ?1",
         accountId,
       ),
     );
   }
 
   /**
-   * One statement that kills every live key on one account. Close (drive#235)
-   * and sign-out-every-device (drive#236) both call this; the public store
-   * method wraps it as `{revoked: n}` so callers never pass a raw id.
+   * The one revoke that reaches every credential an account holds: each live
+   * storage key at the provider and in D1, every live device token, every live
+   * share link and every live upload request. Close (drive#235) and
+   * sign-out-every-device (drive#236) both call this, so the two cannot drift:
+   * a credential that survives one survives the other, and a credential table
+   * is added here once rather than at two call sites (drive#497).
+   *
+   * The account id is the whole filter on every statement, and it is the id
+   * the account gate resolved, so a caller can never name another account's
+   * rows. Each statement is conditional on its own `revoked_at IS NULL`, so a
+   * second call keeps the first revoke's timestamp and counts only what it
+   * actually killed.
+   *
+   * Order, and why: the live keys are read before the write so each one's
+   * provider credential can be withdrawn by the access key id its row holds;
+   * D1 is then revoked first, so the api refuses every credential from the
+   * next request on whether or not the vendor call succeeds; the vendor is
+   * last, one credential at a time. A vendor refusal is thrown after the local
+   * rows are already dead (revokeCredentialAtProvider), so the failure is
+   * visible and a retry — with no live key left — is a clean revoke.
    * @param {string} accountId
+   * @returns {Promise<number>} how many storage key rows this call killed
    */
-  async function revokeLiveKeys(accountId) {
+  async function revokeAccountCredentials(accountId) {
     const at = nowSeconds(now());
-    const result = await run(
+    const live = await all(
+      db,
+      "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND revoked_at IS NULL",
+      accountId,
+    );
+    const keys = await run(
       db,
       "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
       at,
       accountId,
     );
-    return Number(/** @type {{meta?: {changes?: number}}} */ (result).meta?.changes ?? 0);
+    await run(
+      db,
+      "UPDATE device_tokens SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    // The site Worker's share and upload-request rows (src/share.js
+    // createD1LinkStore, migrations/drive/0006_share_links.sql). A revoked
+    // link is refused by the same `revoked_at` read the single revoke writes,
+    // so a link killed here is dead on the next request to whichever isolate
+    // answers it.
+    await run(
+      db,
+      "UPDATE shares SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    await run(
+      db,
+      "UPDATE upload_requests SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    for (const row of live) {
+      const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
+      if (typeof accessKeyId === "string" && accessKeyId !== "") {
+        await revokeCredentialAtProvider(accessKeyId);
+      }
+    }
+    return Number(/** @type {{meta?: {changes?: number}}} */ (keys).meta?.changes ?? 0);
   }
 
   /**
@@ -337,7 +418,7 @@ export function createD1DeviceStore(db, options = {}) {
       email,
       atSeconds,
     );
-    await revokeLiveKeys(account.id);
+    await revokeAccountCredentials(account.id);
     const written = await getCloseState(account.id);
     if (written === null) {
       throw new Error(`closeAccount wrote no accounts row for ${account.id}`);
@@ -360,7 +441,7 @@ export function createD1DeviceStore(db, options = {}) {
       db,
       `UPDATE accounts
          SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
-             close_mail_sent_at = NULL
+             close_mail_sent_at = NULL, purge_cursor = NULL
        WHERE id = ?1`,
       accountId,
     );
@@ -377,7 +458,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueReminder(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND reminder_sent_at IS NULL
@@ -396,7 +477,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDuePurge(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
@@ -416,7 +497,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueCloseMail() {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND close_mail_sent_at IS NULL
@@ -454,13 +535,32 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Records how far one account's purge got (drive#565): the last drive path
+   * whose objects the batch delete removed. The next nightly pass lists from
+   * after that path instead of starting over. Conditional on
+   * `purged_at IS NULL`, so a late write can never reopen a purged account.
+   * @param {string} accountId
+   * @param {string} cursor
+   */
+  async function markPurgeProgress(accountId, cursor) {
+    await run(
+      db,
+      "UPDATE accounts SET purge_cursor = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      cursor,
+      accountId,
+    );
+  }
+
+  /**
    * @param {string} accountId
    * @param {number} atSeconds
    */
   async function markPurged(accountId, atSeconds) {
+    // The cursor is cleared with the stamp: a purged account has no progress
+    // to resume, and a NULL cursor with `purged_at` set reads as finished.
     await run(
       db,
-      "UPDATE accounts SET purged_at = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      "UPDATE accounts SET purged_at = ?1, purge_cursor = NULL WHERE id = ?2 AND purged_at IS NULL",
       atSeconds,
       accountId,
     );
@@ -498,13 +598,29 @@ export function createD1DeviceStore(db, options = {}) {
    * provider that refuses is not swallowed: the api's own row is already
    * revoked (the caller is refused at once), and the refusal is thrown so the
    * failure is visible rather than read as a clean revoke.
+   *
+   * A refused call is retried a short, bounded number of times first
+   * (drive#518 review): a vendor blip must not strand a live credential
+   * behind rows that already say revoked, and a stranded one is exactly the
+   * hole drive#497 and this issue close. The last refusal is re-thrown, so a
+   * persistent outage still surfaces on the route that asked for the revoke.
    * @param {string} accessKeyId
    */
   async function revokeCredentialAtProvider(accessKeyId) {
     if (inner === undefined || typeof inner.revoke !== "function") {
       return;
     }
-    await inner.revoke(accessKeyId);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await inner.revoke(accessKeyId);
+        return;
+      } catch (error) {
+        if (attempt >= PROVIDER_REVOKE_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PROVIDER_REVOKE_PAUSE_MS));
+      }
+    }
   }
 
   /**
@@ -556,10 +672,33 @@ export function createD1DeviceStore(db, options = {}) {
     return { device: swapped ?? device, capped: true };
   }
 
+  // The account's live device rows, oldest first, as this module reads them: one
+  // statement for every answer about a device that is still signed in
+  // (`listCapKeys` for the cap plan, `listLive` for the first-run page's poll),
+  // so the two cannot disagree about which rows are live.
+  /**
+   * @param {string} accountId
+   * @returns {Promise<Device[]>}
+   */
+  async function liveDevices(accountId) {
+    const result = await db
+      .prepare(
+        "SELECT * FROM devices WHERE account_id = ?1 AND revoked_at IS NULL ORDER BY created_at",
+      )
+      .bind(accountId)
+      .all();
+    return /** @type {Device[]} */ (
+      (result.results ?? []).map(deviceFromRow).filter((device) => device !== null)
+    );
+  }
+
   const store = {
     put,
 
     /**
+     * Every device row the account holds, live and revoked, in the public
+     * shape the agent key list reads. `listLive` is the answer for a device
+     * that is still signed in.
      * @param {{id: string}} account
      * @returns {Promise<ReturnType<typeof publicDevice>[]>}
      */
@@ -581,30 +720,63 @@ export function createD1DeviceStore(db, options = {}) {
      * @param {string} accountId
      */
     async listCapKeys(accountId) {
-      const result = await db
-        .prepare(
-          "SELECT * FROM devices WHERE account_id = ?1 AND revoked_at IS NULL ORDER BY created_at",
-        )
-        .bind(accountId)
-        .all();
-      return (result.results ?? [])
-        .map(deviceFromRow)
-        .filter((device) => device !== null)
-        .map((device) =>
-          Object.freeze({
-            keyId: device.id,
-            kind: device.kind,
-            prefix: device.prefix,
-            // The bucket this row's own prefix puts it in. A cap swap mints
-            // its replacement against this bucket (src/cap.js
-            // `applyCapSwap`), so a team key stays in the team's bucket and
-            // an account key stays in the account's, whatever the cap does
-            // (drive#462).
-            bucket: bucketForKeyPrefix(accountId, device.prefix),
-            capabilities: Object.freeze([...device.capabilities]),
-            ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
-          }),
-        );
+      const devices = await liveDevices(accountId);
+      return devices.map((device) =>
+        Object.freeze({
+          keyId: device.id,
+          kind: device.kind,
+          prefix: device.prefix,
+          // The bucket this row's own prefix puts it in. A cap swap mints
+          // its replacement against this bucket (src/cap.js
+          // `applyCapSwap`), so a team key stays in the team's bucket and
+          // an account key stays in the account's, whatever the cap does
+          // (drive#462).
+          bucket: bucketForKeyPrefix(accountId, device.prefix),
+          capabilities: Object.freeze([...device.capabilities]),
+          ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
+        }),
+      );
+    },
+
+    /**
+     * The account's live device rows, oldest first, in the shape the first-run
+     * page's poll reads: `id`, `name`, `kind` and `lastSeenAt`. Whether a
+     * device reads as connected is not answered here — that window is
+     * src/status.js `connectionStatus`'s own, so the page, the route and the
+     * CLI share the one rule. The columns behind the answer are this store's:
+     * the api Worker's `authenticate` and `renewKey` stamp `last_seen_at` on
+     * the row a request authenticated, and drive issue #556 reads it back for
+     * the page.
+     *
+     * `lastSeenAt` is epoch **milliseconds**, because that is the clock
+     * src/status.js `connectionStatus` compares against `Date.now()`: the
+     * column is epoch seconds (written by `nowSeconds()`), and this is the one
+     * read whose answer is that payload, so the conversion happens here once
+     * instead of in every caller. A row that never signed in has null. Revoked
+     * rows are left out for the same reason as `listCapKeys`: a device whose
+     * key was revoked has signed out, so it must not read as connected.
+     *
+     * Only a machine's own key answers this read (kind `device`). The other
+     * kinds in this table are credentials for tools and storage, and every
+     * request one authenticates stamps `last_seen_at` on its row
+     * (devices.js `authenticate`, `renewKey`), so an agent key would flip the
+     * first-run page to "your drive is mounted on this Mac" while the machine
+     * has not signed in at all (drive issue #556). The question this read
+     * answers is the one `drive login` mints a key to answer.
+     *
+     * @param {{id: string}} account
+     * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
+     */
+    async listLive(account) {
+      const devices = await liveDevices(account.id);
+      return devices
+        .filter((device) => device.kind === "device")
+        .map((device) => ({
+          id: device.id,
+          name: device.name,
+          kind: device.kind,
+          lastSeenAt: device.lastSeenAt === null ? null : device.lastSeenAt * 1000,
+        }));
     },
 
     /**
@@ -639,7 +811,10 @@ export function createD1DeviceStore(db, options = {}) {
       if (device === null || device.secretHash === "") {
         return null;
       }
-      if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+      // The one compare in http.js. A device is stored only as the hash of its
+      // secret, so both sides here are hashes: the stored one, and the hash of
+      // the secret this request presented.
+      if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
         return null;
       }
       const seen = nowSeconds(now());
@@ -687,33 +862,35 @@ export function createD1DeviceStore(db, options = {}) {
       }
       if (device.revokedAt === null) {
         await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
+        await revokeCredentialAtProvider(device.accessKeyId);
       }
       return { revoked: true };
     },
 
     /**
-     * Revoke every live key one account holds: the key half of "sign out of
-     * every device" (drive#34, slice drive#236). One statement filtered on the
-     * account id the account gate resolved, so the store never reads a row it
-     * cannot name and there is no loop to leave half-done.
+     * Revoke every credential one account holds: the key half and the token,
+     * share-link and upload-request halves of "sign out of every device" and
+     * account close (drive#34, drive#236, drive#497). One account id, taken
+     * from the account gate, so the store never reads a row it cannot name and
+     * there is no loop that can leave half the account's credentials live.
      *
-     * Conditional on `revoked_at IS NULL`, so a key that is already dead keeps
-     * the first revoke's timestamp and `meta.changes` counts only the rows this
-     * call killed: an answer of `0` means every key on this account was already
-     * off, which is what makes the route's count something a person can read.
+     * Conditional on each row's own `revoked_at IS NULL`, so a key that is
+     * already dead keeps the first revoke's timestamp and the return counts
+     * only the storage key rows this call killed: an answer of `0` means every
+     * key on this account was already off, while the tokens, links and upload
+     * requests are revoked by the same call whether or not a key was left.
      *
-     * The revoked rows are refused by the same `authenticate` the single-key
-     * revoke's rows are refused by, so there is no second path where a key this
-     * call turned off still works (drive#20 already relied on that for a
-     * removed member's key, which is why this is one statement and not a new
-     * rule). Nothing is deleted: the row stays, cancelled, so an export and the
-     * devices list can still name it, and the key it held is dead from the next
-     * request.
+     * The revoked keys are refused by the same `authenticate` the single-key
+     * revoke's rows are refused by, and each one's vendor credential is
+     * withdrawn in the same call, so there is no second path where a key this
+     * call turned off still works at the storage server (drive#371). Nothing
+     * is deleted: the rows stay, cancelled, so an export and the devices list
+     * can still name them.
      * @param {{id: string}} account
      * @returns {Promise<{revoked: number}>}
      */
     async revokeAllKeys(account) {
-      return { revoked: await revokeLiveKeys(account.id) };
+      return { revoked: await revokeAccountCredentials(account.id) };
     },
 
     /**
@@ -746,13 +923,26 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<{revoked: number}>}
      */
     async revokeTeamKeys(accountId, teamId) {
+      const prefix = teamPrefix(teamId);
+      const live = await all(
+        db,
+        "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND prefix = ?2 AND revoked_at IS NULL",
+        accountId,
+        prefix,
+      );
       const changed = await run(
         db,
         "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND prefix = ?3 AND revoked_at IS NULL",
         nowSeconds(now()),
         accountId,
-        teamPrefix(teamId),
+        prefix,
       );
+      for (const row of live) {
+        const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
+        if (typeof accessKeyId === "string" && accessKeyId !== "") {
+          await revokeCredentialAtProvider(accessKeyId);
+        }
+      }
       return {
         revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
       };
@@ -841,9 +1031,8 @@ export function createD1DeviceStore(db, options = {}) {
 
     /**
      * Whether a card is really on file for this account (drive#417), read
-     * from `accounts.card_added_at` — the one stamp `markAccountPaying`
-     * (src/founding.js) writes when the account becomes paying, and the only
-     * record a card exists. Fail closed: no accounts row and a null stamp both
+     * from `accounts.card_added_at` — the stamp the card step writes
+     * (src/abuse-guards.js), and the only record a card exists. Fail closed: no accounts row and a null stamp both
      * read as no card, because an account that cannot show a card cannot show
      * a charge either (the usage page's "no charge yet" label, src/billing.js).
      * No Dodo call happens here: real capture waits on the Dodo key (#325).
@@ -851,20 +1040,7 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<boolean>}
      */
     async cardAdded(accountId) {
-      const row = await first(db, "SELECT card_added_at FROM accounts WHERE id = ?1", accountId);
-      if (!row || typeof row !== "object") {
-        return false;
-      }
-      const at = /** @type {{card_added_at: unknown}} */ (row).card_added_at;
-      if (at === null || at === undefined) {
-        return false;
-      }
-      if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) {
-        throw new TypeError(
-          `accounts.card_added_at must be a unix second or null, got ${String(at)}`,
-        );
-      }
-      return true;
+      return readCardAdded(accountId);
     },
 
     /**
@@ -889,107 +1065,191 @@ export function createD1DeviceStore(db, options = {}) {
     listDueCloseMail,
     markReminderSent,
     markCloseMailSent,
+    markPurgeProgress,
     markPurged,
 
     /**
      * The account's month so far, in the shape usageSummary() reads, for the
-     * cap swap `drive cap` runs. The peak is the meter's own
-     * `monthUsageRollup` (one MAX, one conversion through `storedGb`), and
-     * the GB-minutes are the SUM of the rolled `usage_minutes` rows — the
-     * half `monthUsageRollup` deliberately does not own. Both windows use
-     * this store's `now()`, so a frozen clock in a test is the month that
-     * was seeded, not the wall clock.
+     * cap swap `drive cap` runs and the hourly enforcement walk
+     * (drive#496). It is `monthUsageThrough` (src/meter.js) and nothing else:
+     * the one SUM/MAX/AVG the Dodo push reads (src/dodo.js), so the cap, the
+     * invoice and the enforcement walk cannot count three different months.
+     * That read carries the download bytes too, which the half of it that
+     * lived here did not, so a month of downloads alone can now reach the
+     * cap like a month of storage does.
      *
-     * A month with no rolled rows reads 0/0, which is the $0 an empty month
-     * bills and below every cap, so the swap does nothing on a drive that
-     * stored nothing. `capUsd` is the amount just set, so the state this read
-     * produces is the one the CLI just asked for.
+     * A month with no rolled rows reads all zeroes, which is the $0 an empty
+     * month bills and below every cap, so the swap does nothing on a drive
+     * that stored nothing. `capUsd` is the amount the caller is enforcing at
+     * — just set by `drive cap`, or the account's own cap for the cron walk.
      * @param {string} accountId
      * @param {{capUsd: number}} options
      */
     async monthUsage(accountId, options) {
       const at = now();
-      const peak = await monthUsageRollup(db, accountId, at, at);
-      const start = monthStart(at);
-      const end = Date.UTC(new Date(start).getUTCFullYear(), new Date(start).getUTCMonth() + 1, 1);
-      const row = await first(
-        db,
-        `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes
-           FROM usage_minutes
-          WHERE account_id = ?1 AND hour >= ?2 AND hour < ?3`,
-        accountId,
-        start,
-        end,
-      );
-      const gbMinutes = Number(
-        /** @type {{gb_minutes?: unknown} | null | undefined} */ (row)?.gb_minutes ?? 0,
-      );
-      if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
-        throw new TypeError(`usage_minutes.gb_minutes_live must be 0 or more, got ${gbMinutes}`);
-      }
+      const month = await monthUsageThrough(db, accountId, at);
       // The peak is the size the drive holds now (the page's "stored now"); the
-      // bill itself reads only the GB-minutes (drive#463). The average the
-      // free download allowance follows is the GB-minutes' own average
-      // (`gbMonths`, billing.js), not the peak and not an average of the
-      // hour's marks: reading the peak as the average overstated the
-      // allowance, and averaging the marks counted a file saved six times in
-      // one hour six times (drive#535).
-      const peakGb = storedGb(peak.peakBytes);
-      const averageGb = gbMonths(gbMinutes);
-      // The flag the cap bills on is the account's own (drive#488): without
-      // it enforceCap() counts the month at full price and stops a founding
-      // account at twice its real spend. accountFoundingFlag is the tolerant
-      // read the agent key cap uses (drive#482): a row that is gone reads as
-      // full price, the safe direction for a cap.
-      const foundingMember = await accountFoundingFlag(db, accountId);
+// The peak is the size the drive holds now (the page's "stored now"); the
+      // bill itself reads only the GB-minutes (drive#463). The average the free
+      // download allowance follows is the month's own average, worked out from
+      // the GB-minutes over that month's minutes (`gbMonths`, billing.js) and
+      // not read out of monthUsageThrough: averaging the hour's stored-bytes
+      // marks counted a file saved six times inside one hour six times
+      // (drive#535), and no two callers could be held to one figure.
+      const peakGb = storedGb(month.peakBytes);
+      const averageGb = gbMonths(month.gbMinutes, minutesInMonth(at));
       return {
-        gbMinutes,
+        gbMinutes: month.gbMinutes,
+        // The month this read's minutes fell in sets the divisor (drive#531).
+        monthMinutes: minutesInMonth(at),
         storedGb: peakGb,
         storedDaily: [],
-        downloadBytes: 0,
+downloadBytes: month.downloadBytes,
         averageStoredGb: averageGb,
         capUsd: options.capUsd,
         cardAdded: true,
-        foundingMember,
+        // The display stamp only, forwarded from the same accounts row
+        // `cardAdded` reads (drive#417): until a card is really on file the
+        // usage page says no charge has been made and shows no bill. The cap
+        // line and the write cap do not read it.
+        cardOnFile: await readCardAdded(accountId),
       };
     },
 
     /**
-     * Set the founding flag once, when this account becomes paying. The
-     * parsed Worker var is the second argument, so a closed offer cannot
-     * silently default open inside the store.
-     * @param {string} accountId
-     * @param {boolean} offerOpen
+     * Every account the cap walk has to decide this month (drive#496): the
+     * ones with a `usage_minutes` row in the month so far, plus any account
+     * still carrying a cap state or notice from before — a drive made
+     * read-only last month has no row yet this month, and without it here it
+     * would stay read-only into a month it has not spent anything in. An
+     * account with neither bills $0 and is below every cap, so the walk does
+     * not spend a query on it.
+     * @returns {Promise<ReadonlyArray<{id: string}>>}
      */
-    markPaying(accountId, offerOpen) {
-      return markAccountPaying(db, accountId, { offerOpen, now: now() });
+    async listMeteredAccounts() {
+      const result = await db
+        .prepare(
+          `SELECT account_id FROM usage_minutes WHERE hour >= ?1 AND account_id <> ''
+           UNION
+           SELECT id FROM accounts
+            WHERE state = 'read_only' OR cap_warned_at IS NOT NULL OR read_only_sent_at IS NOT NULL`,
+        )
+        .bind(monthStart(now()))
+        .all();
+      return (result?.results ?? []).map(
+        (row) =>
+          /** @type {{id: string}} */ ({
+            id: String(/** @type {{account_id?: unknown}} */ (row).account_id),
+          }),
+      );
     },
 
     /**
-     * Reserve a founding slot at the card step. The parsed Worker var is the
-     * second argument, the same shape as markPaying.
+     * The cap notices this account has already been sent, and the address to
+     * send the next one to (drive#496). Both stamps are nullable by
+     * construction (migrations/drive/0024_cap_notices.sql): null is "never
+     * sent", which is what a drive that has never crossed 80% and has never
+     * been read-only has. The read is the whole notice state, so the walk
+     * cannot send one of these twice by asking a different question.
+     *
+     * The address comes from the same accounts row every other cap read uses
+     * (getCapUsd, cardAdded), and a row with no address reads as an empty
+     * string so the caller reports it instead of sending to nobody.
      * @param {string} accountId
-     * @param {boolean} offerOpen
+     * @returns {Promise<{email: string, warnedAt: number|null, readOnlySentAt: number|null}>}
      */
-    reserveFounding(accountId, offerOpen) {
-      return reserveFoundingSlot(db, accountId, { offerOpen, now: now() });
+    async capNotices(accountId) {
+      const row =
+        /** @type {{email?: unknown, cap_warned_at?: unknown, read_only_sent_at?: unknown}|null|undefined} */ (
+          await first(
+            db,
+            "SELECT email, cap_warned_at, read_only_sent_at FROM accounts WHERE id = ?1",
+            accountId,
+          )
+        );
+      const at = (/** @type {unknown} */ value) =>
+        value === null || value === undefined ? null : Number(value);
+      return {
+        email: typeof row?.email === "string" ? row.email : "",
+        warnedAt: at(row?.cap_warned_at),
+        readOnlySentAt: at(row?.read_only_sent_at),
+      };
     },
 
     /**
-     * Drop a reserved slot when the account closes before paying.
+     * Stamp one cap notice as sent. Guarded on the stamp still being null, the
+     * same rule src/account-close.js's markCloseMailSent uses: a retry of the
+     * hourly walk that ran while another run was mid-send cannot move a stamp
+     * that is already there, so a notice goes out once per crossing even if
+     * two runs overlap.
      * @param {string} accountId
+     * @param {"cap-warning"|"read-only"} kind
+     * @param {number} atSeconds
      */
-    releaseFoundingReservation(accountId) {
-      return clearFoundingReservation(db, accountId);
+    async markCapNoticeSent(accountId, kind, atSeconds) {
+      const column =
+        kind === "cap-warning"
+          ? "cap_warned_at"
+          : kind === "read-only"
+            ? "read_only_sent_at"
+            : null;
+      if (column === null) {
+        throw new TypeError(
+          `markCapNoticeSent needs kind "cap-warning" or "read-only", got ${String(kind)}`,
+        );
+      }
+      // The column name is one of the two literals above and never anything a
+      // caller passed, so this is not a caller-shaped SQL string.
+      await run(
+        db,
+        `UPDATE accounts SET ${column} = ?1 WHERE id = ?2 AND ${column} IS NULL`,
+        atSeconds,
+        accountId,
+      );
     },
 
     /**
+     * Re-arm one cap notice: clear its stamp once the state it announced has
+     * ended, so the next crossing is mailed again (drive#496).
      * @param {string} accountId
-     * @returns {Promise<boolean>}
+     * @param {"cap-warning"|"read-only"} kind
      */
-    async isFounding(accountId) {
-      const result = await accountFounding(db, accountId);
-      return result.founding;
+    async clearCapNotice(accountId, kind) {
+      const column =
+        kind === "cap-warning"
+          ? "cap_warned_at"
+          : kind === "read-only"
+            ? "read_only_sent_at"
+            : null;
+      if (column === null) {
+        throw new TypeError(
+          `clearCapNotice needs kind "cap-warning" or "read-only", got ${String(kind)}`,
+        );
+      }
+      // One of the two literals above, never caller-shaped SQL.
+      await run(db, `UPDATE accounts SET ${column} = NULL WHERE id = ?1`, accountId);
+    },
+
+    /**
+     * The cap state the account row currently carries, or "active" when the
+     * row is gone. The web upload lane and the public upload links read this,
+     * so a read-only account is refused at the edge without re-counting the
+     * month (drive#496).
+     * @param {string} accountId
+     * @returns {Promise<"active"|"read_only"|"closed">}
+     */
+    async accountState(accountId) {
+      const row = await first(db, "SELECT state FROM accounts WHERE id = ?1", accountId);
+      const state = /** @type {{state?: unknown} | null | undefined} */ (row)?.state;
+      if (state === undefined || state === null) {
+        return "active";
+      }
+      if (state !== "active" && state !== "read_only" && state !== "closed") {
+        throw new TypeError(
+          `accounts.state must be "active", "read_only" or "closed", got ${String(state)}`,
+        );
+      }
+      return state;
     },
 
     /**

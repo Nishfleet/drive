@@ -10,13 +10,13 @@
 // hour mint a second event id, would charge twice; both are refused here.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
   billingPushGap,
+  DODO_API_HOSTS,
   DODO_EVENT_NAME,
   DODO_INGEST_PATH,
   DODO_TEST_INGEST_URL,
@@ -135,14 +135,14 @@ test("the ingest URL is Dodo test mode, never live", () => {
   assert.equal(DODO_TEST_INGEST_URL, "https://test.dodopayments.com/events/ingest");
   assert.equal(DODO_TEST_INGEST_URL.includes("live.dodopayments.com"), false);
   assert.equal(DODO_EVENT_NAME, "drive.usage");
-  // The source itself must never carry the live host — only env can set it
-  // (drive issue #323, owner comment 2026-10-03T06:35Z).
-  const src = readFileSync(new URL("../src/dodo.js", import.meta.url), "utf8");
-  assert.equal(
-    src.includes("live.dodopayments.com"),
-    false,
-    "the module must not name the live host",
-  );
+  // Live mode is a decision in the environment, never in the code: with no
+  // base URL the module answers the test host (drive issue #323, owner comment
+  // 2026-10-03T06:35Z). The proof used to be that this file never mentions the
+  // live host; drive issue #576 replaced the dodopayments.com suffix with an
+  // exact match, and an exact match has to name what it matches, so the proof
+  // is the default instead — the live host is on the list, nothing selects it.
+  assert.deepEqual([...DODO_API_HOSTS], ["test.dodopayments.com", "live.dodopayments.com"]);
+  assert.equal(resolveIngestUrl(undefined), DODO_TEST_INGEST_URL);
 });
 
 test("resolveIngestUrl defaults to test mode when no base is given", () => {
@@ -170,6 +170,44 @@ test("resolveIngestUrl refuses a key to a non-https or non-Dodo host", () => {
   assert.throws(() => resolveIngestUrl(123), /must be a string/);
 });
 
+test("the key goes to the two Dodo API hosts and no other name", () => {
+  // Every one of these is refused by name, not by shape (drive issue #576).
+  // The first three are the look-alikes a suffix match waved through; the rest
+  // are real dodopayments.com names that are not API hosts, and the two forms
+  // whose authority is not only a host name at all.
+  const refused = [
+    "https://evil-dodopayments.com",
+    "https://notdodopayments.com",
+    "https://dodopayments.com.evil.example",
+    "https://dodopayments.com",
+    "https://marketing.dodopayments.com",
+    "https://api.dev.dodopayments.com",
+    "https://user@test.dodopayments.com",
+    "https://test.dodopayments.com:8443",
+  ];
+  for (const baseUrl of refused) {
+    assert.throws(
+      () => resolveIngestUrl(baseUrl),
+      /must be test\.dodopayments\.com or live\.dodopayments\.com/,
+      `${baseUrl} must not carry the key`,
+    );
+  }
+});
+
+test("a host name is case-insensitive, so an upper-cased one still resolves", () => {
+  // The check lower-cases before it compares, so this is the test host and not
+  // a look-alike (drive issue #576). The URL keeps the case it was configured
+  // with, which is what the host is resolved from.
+  assert.equal(
+    resolveIngestUrl("https://TEST.DODOPAYMENTS.COM"),
+    `https://TEST.DODOPAYMENTS.COM${DODO_INGEST_PATH}`,
+  );
+  assert.equal(
+    resolveIngestUrl("https://LIVE.DODOPAYMENTS.COM"),
+    `https://LIVE.DODOPAYMENTS.COM${DODO_INGEST_PATH}`,
+  );
+});
+
 test("a baseUrl option pushes to the configured host, not the hard-coded one", async () => {
   const day = await storedHours(10, 1);
   const recorder = recordingFetch();
@@ -194,7 +232,10 @@ test("the event id is the account and hour, so a retry is the same id", () => {
 test("a day of stored GB pushes the bill, with storage and downloads as dollar lines", async () => {
   const day = await storedHours(400, 24);
   const recorder = recordingFetch();
-  const bill = monthBillCents({ gbMinutes: 400 * 60 * 24 });
+  const bill = monthBillCents({
+    gbMinutes: 400 * 60 * 24,
+    monthMinutes: minutesInMonth(day.from),
+  });
   const result = await pushBillingHours(day.db, day.hours, {
     apiKey: KEY,
     fetch: recorder.fetch,
@@ -276,7 +317,10 @@ test("an October hour does not count September's GB-minutes", async () => {
     now: october + HOUR_MS,
   });
   const metadata = recorder.calls[0].payload.events[0].metadata;
-  const octoberBill = monthBillCents({ gbMinutes: 10 * 60 });
+  const octoberBill = monthBillCents({
+    gbMinutes: 10 * 60,
+    monthMinutes: minutesInMonth(october),
+  });
   assert.equal(metadata.storage_cents, octoberBill.storageCents);
   assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
 });
@@ -289,9 +333,24 @@ test("a push that spans the month boundary bills each month on its own", async (
   // September's hour has a real bill; if the October event ever measures
   // itself against September's pushed total, it undercharges by that much.
   await recordUsage(db, ACCOUNT, september, 2000 * 60 * 24, 2000 * BYTES_PER_GB, october);
-  await recordUsage(db, ACCOUNT, october, 2000 * 43800, 2000 * BYTES_PER_GB, october + HOUR_MS);
-  const septemberBill = monthBillCents({ gbMinutes: 2000 * 60 * 24 });
-  const octoberBill = monthBillCents({ gbMinutes: 2000 * 43800 });
+  // 2 TB for all of October's own 44,640 minutes (drive#531).
+  const octoberMinutes = minutesInMonth(october);
+  await recordUsage(
+    db,
+    ACCOUNT,
+    october,
+    2000 * octoberMinutes,
+    2000 * BYTES_PER_GB,
+    october + HOUR_MS,
+  );
+  const septemberBill = monthBillCents({
+    gbMinutes: 2000 * 60 * 24,
+    monthMinutes: minutesInMonth(september),
+  });
+  const octoberBill = monthBillCents({
+    gbMinutes: 2000 * octoberMinutes,
+    monthMinutes: octoberMinutes,
+  });
   assert.ok(septemberBill.totalCents > 0, "September needs a bill to subtract by mistake");
   assert.ok(octoberBill.totalCents > septemberBill.totalCents, "October must exceed September");
   const recorder = recordingFetch();
@@ -321,7 +380,8 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
   await putCustomer(db, ACCOUNT, CUSTOMER);
   const hour0 = midnight();
   const hour1 = hour0 + HOUR_MS;
-  await recordUsage(db, ACCOUNT, hour0, 2000 * 43800, 2000 * BYTES_PER_GB, hour1);
+  // 2 TB for the whole of the hour's calendar month (drive#531): $20.00.
+  await recordUsage(db, ACCOUNT, hour0, 2000 * minutesInMonth(hour0), 2000 * BYTES_PER_GB, hour1);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour0], {
     apiKey: KEY,
@@ -344,14 +404,15 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
 });
 
 test("Dodo receives the bill held to the maximum, never the uncapped meter", async () => {
-  // 2 TB held a whole average month: $40 metered, held to the $20 maximum
-  // ($10 per TB, drive#463).
+  // 2 TB held a whole calendar month: $40 metered, held to the $20 maximum
+  // ($10 per TB, drive#463), over the month's own minutes (drive#531).
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   const hour = midnight();
-  const gbMinutes = 2000 * 43800;
+  const monthMinutes = minutesInMonth(hour);
+  const gbMinutes = 2000 * monthMinutes;
   await recordUsage(db, ACCOUNT, hour, gbMinutes, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  const bill = monthBillCents({ gbMinutes });
+  const bill = monthBillCents({ gbMinutes, monthMinutes });
   assert.equal(bill.storageCents, 2000);
   assert.equal(bill.totalCents, 2000);
   const recorder = recordingFetch();
@@ -364,71 +425,40 @@ test("Dodo receives the bill held to the maximum, never the uncapped meter", asy
   assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 2000);
 });
 
-test("the Dodo push bills a founding account half, on the real schema", async () => {
-  // The account's founding flag lives on the accounts row (drive#386) and is
-  // read per account here (drive#488): the invoice is the number the usage page
-  // and the cap read, so all three count the same half. Two drives hold the
-  // same 2 TB for the same whole month, one founding and one paying not
-  // founding: $10 against $20 (drive#463's maximum).
+test("the Dodo push bills every account at the one rate, on the real schema", async () => {
+  // Two drives hold the same 2 TB for the same whole month: both bill $20
+  // (drive#463's maximum), whatever the accounts row holds in the retired
+  // founding column.
   const { db, sqlite } = makeMeteredDB();
-  const founderAccount = "acc-founder";
-  const founderCustomer = "cus_acc_founder";
+  const otherAccount = "acc-other";
+  const otherCustomer = "cus_acc_other";
   await putCustomer(db, ACCOUNT, CUSTOMER);
   await db
     .prepare(
       `INSERT INTO accounts (id, email, created_at, dodo_customer_id, founding)
        VALUES (?1, ?2, ?3, ?4, 1)`,
     )
-    .bind(founderAccount, "founder@example.com", midnight(), founderCustomer)
+    .bind(otherAccount, "other@example.com", midnight(), otherCustomer)
     .run();
   const hour = midnight();
-  await recordUsage(db, ACCOUNT, hour, 2000 * 43800, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  await recordUsage(db, founderAccount, hour, 2000 * 43800, 2000 * BYTES_PER_GB, hour + HOUR_MS);
+  const wholeMonth = 2000 * minutesInMonth(hour);
+  await recordUsage(db, ACCOUNT, hour, wholeMonth, 2000 * BYTES_PER_GB, hour + HOUR_MS);
+  await recordUsage(db, otherAccount, hour, wholeMonth, 2000 * BYTES_PER_GB, hour + HOUR_MS);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
   const events = recorder.calls[0].payload.events;
-  const founder = events.find((event) => event.customer_id === founderCustomer);
-  const full = events.find((event) => event.customer_id === CUSTOMER);
-  assert.ok(founder, "the founder's event reached Dodo");
-  assert.ok(full, "the full-price event reached Dodo");
-  assert.equal(founder.metadata.amount_units, 1000, "2 TB founding is $10, not $20");
-  assert.equal(founder.metadata.total_cents, 1000);
-  assert.equal(full.metadata.amount_units, 2000, "2 TB at full price is $20");
+  const other = events.find((event) => event.customer_id === otherCustomer);
+  const first = events.find((event) => event.customer_id === CUSTOMER);
+  assert.ok(other, "the second account's event reached Dodo");
+  assert.ok(first, "the first account's event reached Dodo");
+  assert.equal(first.metadata.amount_units, 2000, "2 TB is $20");
+  assert.equal(other.metadata.amount_units, 2000, "the retired column halves nothing");
+  assert.equal(other.metadata.total_cents, 2000);
   assert.equal(
     sqlite
       .prepare("SELECT amount_units FROM billing_pushes WHERE account_id = ?1")
-      .get(founderAccount).amount_units,
-    1000,
-    "the pushed row holds the founding half",
-  );
-});
-
-test("a founding flip after a full-price push sends 0, never a negative unit", async () => {
-  // The flag is written once, at the first successful charge (drive#386), so a
-  // month pushed at full price can be re-billed at the founding half. The
-  // high-water mark keeps that lower bill from becoming a negative unit
-  // (drive#488, the push's already bookkeeping).
-  const { db, sqlite } = makeMeteredDB();
-  await putCustomer(db, ACCOUNT, CUSTOMER);
-  const hour0 = midnight();
-  const hour1 = hour0 + HOUR_MS;
-  await recordUsage(db, ACCOUNT, hour0, 2000 * 43800, 2000 * BYTES_PER_GB, hour1);
-  const recorder = recordingFetch();
-  await pushBillingHours(db, [hour0], { apiKey: KEY, fetch: recorder.fetch, now: hour1 });
-  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 2000);
-  sqlite.prepare("UPDATE accounts SET founding = 1 WHERE id = ?1").run(ACCOUNT);
-  await recordUsage(db, ACCOUNT, hour1, 0, 2000 * BYTES_PER_GB, hour1 + HOUR_MS);
-  await pushBillingHours(db, [hour1], {
-    apiKey: KEY,
-    fetch: recorder.fetch,
-    now: hour1 + HOUR_MS,
-  });
-  const second = recorder.calls[1].payload.events[0].metadata.amount_units;
-  assert.equal(second, 0, "the founding bill is below what was already pushed");
-  assert.equal(
-    sqlite.prepare("SELECT amount_units FROM billing_pushes WHERE hour = ?1").get(hour1)
-      .amount_units,
-    0,
+      .get(otherAccount).amount_units,
+    2000,
   );
 });
 
@@ -469,91 +499,119 @@ test("an ingest failure is thrown, so the cron retries, and no row is stored", a
   assert.equal(day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
 });
 
-test("the hourly cron pushes the hour it just rolled", async () => {
+test("a 5xx ingest is retried once (drive#570), and the retry's push is the one stored", async () => {
+  const day = await storedHours(10, 1);
+  const down = recordingFetch({ status: 503, body: { message: "down" } });
+  const up = recordingFetch();
+  let call = 0;
+  const flaky = /** @type {typeof fetch} */ (
+    (input, init) => (call++ === 0 ? down.fetch(input, init) : up.fetch(input, init))
+  );
+  await pushBillingHours(day.db, day.hours, {
+    apiKey: KEY,
+    fetch: flaky,
+    now: day.from + HOUR_MS,
+  });
+  assert.equal(down.calls.length, 1, "the 503 is the failed first attempt");
+  assert.equal(up.calls.length, 1, "one retry carried the same hour");
+  assert.deepEqual(up.calls[0].payload, down.calls[0].payload, "the same events, re-sent whole");
+  assert.equal(
+    day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
+    1,
+    "the retry is what the row records",
+  );
+});
+
+// --- the hourly cron after the prepaid switch (drive#586) ------------------
+//
+// #586 replaced the after-the-fact usage push with a prepaid draw: the meter's
+// hourly trip now draws each account's usage from its balance
+// (src/prepaid.js drawUsageHours) and sends Dodo nothing. pushBillingHours and
+// billingPushGap above stay pinned as functions, but the cron must not call
+// them, or a customer who prepaid would also be billed in arrears. These
+// tests drive the real scheduled() wiring and pin that switch.
+
+/** The usage draws the ledger holds, oldest first. @param {import("./d1-sqlite.mjs").TestSqlite} sqlite */
+function usageDraws(sqlite) {
+  return sqlite
+    .prepare(
+      "SELECT account_id, amount_cents, window_start FROM balance_ledger WHERE kind = 'usage' ORDER BY id",
+    )
+    .all();
+}
+
+/** One account with 1 TB stored from midnight, so the hour's draw is whole cents. */
+async function storedTerabyte() {
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   db.insertVersion({
     accountId: ACCOUNT,
     fileId: "file-1",
     path: `/u/${ACCOUNT}/notes.md`,
-    sizeBytes: BYTES_PER_GB,
+    sizeBytes: 1000 * BYTES_PER_GB,
     createdAt: midnight(),
   });
+  return { db, sqlite };
+}
+
+test("the hourly cron draws the hour it just rolled from the balance, and pushes nothing to Dodo", async (t) => {
+  const { db, sqlite } = await storedTerabyte();
   const recorder = recordingFetch();
+  t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
+    {
+      // The deploy binds the one database under both names
+      // (cloudflare.config.ts), and the same trip runs the pre-charge sweep
+      // off DRIVE_DB (drive#536), so the trip's env carries both.
+      METER_DB: db,
+      DRIVE_DB: db,
+      DODO_PAYMENTS_API_KEY: KEY,
+      DODO_FETCH: recorder.fetch,
+    },
   );
-  assert.equal(recorder.calls.length, 1);
-  assert.equal(recorder.calls[0].url, DODO_TEST_INGEST_URL);
-  assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, midnight()));
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
+  assert.equal(recorder.calls.length, 0, "no usage event reaches Dodo: the balance pays");
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
+  const draws = usageDraws(sqlite);
+  assert.equal(draws.length, 1, "one draw for the one account and hour");
+  assert.equal(draws[0].account_id, ACCOUNT);
+  assert.equal(draws[0].window_start, midnight());
+  assert.ok(Number(draws[0].amount_cents) < 0, "a draw takes from the balance");
 });
 
-test("the cron reports the skipped push in the log, and does not throw over it", async (t) => {
-  // A deployment whose key was never set: the meter's rollup still runs, the
-  // push still returns {pushed: 0}, and the detector beside it writes one
-  // operator-facing line. The scheduled() call must resolve, because a throw
-  // here would be Cloudflare retrying a rollup over a missing key — the exact
-  // outcome issue #334 says must not happen.
-  const { db } = makeMeteredDB();
-  await putCustomer(db, ACCOUNT, CUSTOMER);
-  db.insertVersion({
-    accountId: ACCOUNT,
-    fileId: "file-1",
-    path: `/u/${ACCOUNT}/notes.md`,
-    sizeBytes: BYTES_PER_GB,
-    createdAt: midnight(),
-  });
-  // t.mock.method, not a global console.error swap: the mock restores itself
-  // when the test ends, so a concurrency change cannot leak the patch into a
-  // neighbouring test the way a hand-rolled finally can if a test is cut.
+test("with no Dodo key the cron still draws, does not throw, and logs no retired push gap", async (t) => {
+  // A deployment whose key was never set (#334's case). The draw needs no key,
+  // so the hour is still paid from the balance; the old "metered hours reached
+  // nobody" line would now be a false alarm, so it must not appear.
+  const { db, sqlite } = await storedTerabyte();
   const errorMock = t.mock.method(console, "error");
+  t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db }, // no DODO_PAYMENTS_API_KEY: the missing-key case
+    { METER_DB: db, DRIVE_DB: db }, // no DODO_PAYMENTS_API_KEY
   );
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
-  const line = logged.find((args) => String(args[0]).includes("metered hours reached nobody"));
-  assert.ok(line, `the cron must log the skipped push, got ${JSON.stringify(logged)}`);
-  const text = line.map(String).join(" ");
-  assert.ok(text.includes("DODO_PAYMENTS_API_KEY"), "the line names the key that is missing");
-  assert.equal(text.includes(KEY), false, "and never any key value");
-  assert.ok(text.includes("hours="), "and counts the hours that reached nobody");
-  assert.ok(
-    !text.includes(ACCOUNT),
-    "and never an account id, so the log line carries no customer data",
+  assert.equal(usageDraws(sqlite).length, 1, "the hour is drawn without a provider key");
+  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.equal(
+    logged.some((line) => line.includes("metered hours reached nobody")),
+    false,
+    `the retired push-gap line must not be logged, got ${JSON.stringify(logged)}`,
   );
 });
 
-test("a broken gap report is caught, so it never fails the rollup it reports on", async (t) => {
-  // The push above may throw on purpose - Cloudflare retries the rollup so an
-  // unpushed hour gets another try. The detector must not: a report that fails
-  // the work it is reporting on is worse than no report, because a transient
-  // D1 read error would then retry a rollup that already billed everyone
-  // correctly.
-  //
-  // So the whole scheduled() path runs, through the real wiring, over a db
-  // that answers every statement except the detector's. The stub matches the
-  // detector query's own first line (`SELECT DISTINCT u.hour AS hour`), not an
-  // alias like `FROM billing_pushes b` that the push's own statements could
-  // grow into: the match must fail exactly the detector and nothing else.
-  // The push still succeeds, the cron still resolves, and the failure is
-  // logged instead of thrown.
-  const { db, sqlite } = makeMeteredDB();
-  await putCustomer(db, ACCOUNT, CUSTOMER);
-  db.insertVersion({
-    accountId: ACCOUNT,
-    fileId: "file-1",
-    path: `/u/${ACCOUNT}/notes.md`,
-    sizeBytes: BYTES_PER_GB,
-    createdAt: midnight(),
-  });
+test("the cron never runs the retired push-gap report, so a failing one cannot touch the draw", async (t) => {
+  // The db answers every statement except the old detector's own first line
+  // (`SELECT DISTINCT u.hour AS hour`). If the cron still ran the report, this
+  // would throw or log; it must do neither, and the draw must be stored.
+  const { db, sqlite } = await storedTerabyte();
+  /** @type {string[]} */
+  const detectorCalls = [];
   const failingDetectorDb = /** @type {D1Database} */ (
     /** @type {unknown} */ ({
       /** @param {string} sql */
       prepare(sql) {
         if (String(sql).includes("SELECT DISTINCT u.hour AS hour")) {
+          detectorCalls.push(String(sql));
           throw new Error("D1 is unavailable");
         }
         return db.prepare(sql);
@@ -569,31 +627,21 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
     })
   );
   const recorder = recordingFetch();
-  // Both console channels are mocked, so the healthy "push working" line and
-  // the failure line are captured without a global swap (see the first test's
-  // note). t.mock.method restores both when the test ends.
   const errorMock = t.mock.method(console, "error");
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
     {
       METER_DB: failingDetectorDb,
+      DRIVE_DB: failingDetectorDb,
       DODO_PAYMENTS_API_KEY: KEY,
       DODO_FETCH: recorder.fetch,
     },
   );
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
-  assert.equal(recorder.calls.length, 1, "the push itself still ran and reached Dodo");
-  assert.equal(
-    sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
-    1,
-    "and its row is stored: the report did not undo the work",
-  );
-  const line = logged.find((args) => String(args[0]).includes("the gap report failed"));
-  assert.ok(line, `a broken report must be logged, got ${JSON.stringify(logged)}`);
-  const text = line.map(String).join(" ");
-  assert.ok(text.includes("D1 is unavailable"), "naming why the report is silent");
-  assert.equal(text.includes(KEY), false, "and never the key value");
+  assert.deepEqual(detectorCalls, [], "the cron does not read the push-gap report");
+  assert.equal(errorMock.mock.calls.length, 0, "and logs no failure");
+  assert.equal(recorder.calls.length, 0, "and sends Dodo no usage event");
+  assert.equal(usageDraws(sqlite).length, 1, "the draw is stored");
 });
 
 test("a key that is set but wrong still names the gap, and says it is not the missing-key cause", async () => {

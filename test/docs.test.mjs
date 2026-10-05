@@ -10,12 +10,19 @@ import { test } from "node:test";
 import {
   BILLING_CONFIG,
   GB_PER_TB,
-  MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
+  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
 } from "../src/billing.js";
-import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+import {
+  agentDeleteSentence,
+  FAQ,
+  faqMarkdown,
+  markerValues,
+  RIVAL_1TB_LINE,
+  scoreboardVerdict,
+} from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
@@ -35,13 +42,16 @@ const siteDir = new URL("../public/docs/", import.meta.url);
 /** @param {string} name */
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
-// The price numbers, worked out the way the invoice works them out: a month
-// that stored `tb` terabytes all month is gb x 43,800 GB-minutes, whose
-// average is the same gb. Nothing in these tests types a dollar figure.
+// The price numbers, worked out the way the invoice works them out, for a
+// 31-day month (October), the month a fixed 43,800-minute divisor over-billed
+// (drive#531): a month that stored `tb` terabytes all of October is gb x
+// 44,640 GB-minutes, whose average is the same gb. Nothing in these tests
+// types a dollar figure.
+const OCTOBER_MINUTES = minutesInMonth("2026-10-15T00:00:00.000Z");
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH });
+  return monthBillCents({ gbMinutes: gb * OCTOBER_MINUTES, monthMinutes: OCTOBER_MINUTES });
 }
 
 /** @param {number} amount */
@@ -135,13 +145,12 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The headline, the rule, no minimum, founding pricing and the cap, each
-  // read from the one config the invoice reads.
+  // The headline, the rule, the prepaid lines, the cap, and the per-save hour:
+  // each read from the one config the invoice reads.
   for (const line of [
     PRICE.headline,
     PRICE.rule,
-    PRICE.noMinimumLine,
-    PRICE.foundingLine,
+    PRICE.noPlansLine,
     // The per-save hour, drive#535 finish line 2: the page that says billing
     // is "counted by the minute" has to say the smallest unit that minute
     // counting bills, or a file saved six times in an hour reads as an hour's
@@ -166,13 +175,14 @@ test("every worked example on the pricing page is the invoice's own arithmetic",
   for (const tb of [0.2, 0.8, 1.5, 3]) {
     const gb = tb * GB_PER_TB;
     const bill = billFor(tb);
-    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * OCTOBER_MINUTES, OCTOBER_MINUTES))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
     assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
   }
   // And the metered column is genuinely larger than the bill at the sizes the
   // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
-    meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) > billFor(2).totalCents / 100,
+    meteredMonthlyBillUsd(2 * GB_PER_TB * OCTOBER_MINUTES, OCTOBER_MINUTES) >
+      billFor(2).totalCents / 100,
     "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
 });
@@ -198,19 +208,20 @@ test("the agents page names the tools the CLI connects and their real powers", (
     assert.ok(page.includes(tool), `the agents page must name the ${tool} tool`);
   }
   // The key table is read from workers/api/src/keyprovider.js, so the page
-  // cannot claim a power the api Worker does not grant.
+  // cannot claim a power the api Worker does not grant, and the delete and
+  // reach sentences from what the storage enforces (test/key-truth.test.mjs).
   assert.equal(KEY_POWERS.device.canDelete, true);
   assert.equal(KEY_POWERS.agent.canDelete, false);
   assert.ok(
-    page.includes("An agent key cannot delete a file."),
-    "the agents page must say an agent key cannot delete",
+    page.includes(agentDeleteSentence()),
+    "the agents page must say what an agent key's delete really does",
   );
   assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {
   const page = shipped("security.md");
-  assert.ok(page.includes("An agent key cannot delete a file."));
+  assert.ok(page.includes(agentDeleteSentence()));
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the security page must state the default cap",
@@ -254,13 +265,13 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+command\s+from\s+this\s+repository's\s+source\s+with\s+the\s+Go\s+toolchain/i,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+same\s+package\s+locally\s+with/i,
     "the limits page must give the install that works today",
   );
   assert.match(
     page,
-    /drive --help/,
-    "the limits page must point at the command's own words for the exact route",
+    /goreleaser release --snapshot --clean/,
+    "the limits page must name the snapshot command that produces the packages",
   );
   assert.match(
     page,
@@ -572,9 +583,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "brew install drive",
-    "sudo apt install drive",
-    "sudo dnf install drive",
+    "brew install nish3451/tap/drive",
+    "sudo apt install ./drive_*.deb",
+    "sudo dnf install ./drive_*.rpm",
     "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",

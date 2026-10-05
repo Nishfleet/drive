@@ -33,6 +33,7 @@ import {
   STARTER_FOLDER,
   starterFiles,
 } from "../src/starter.js";
+import { killTracked, spawnTracked } from "./minio-standin.mjs";
 
 /**
  * An empty store: reads find nothing, so a create writes every file. The
@@ -46,6 +47,9 @@ import {
 function emptyStore(written = {}) {
   return {
     async list() {
+      return [];
+    },
+    async listKeys() {
       return [];
     },
     async read(path) {
@@ -64,10 +68,27 @@ function emptyStore(written = {}) {
       // shape, exactly as the real in-memory store does (src/files.js).
       written[path] = await new Response(body).text();
     },
+    async writeIfAbsent(path, body) {
+      // The starter seeds the drive with `write`, not this method —
+      // this fake keeps the FileStore contract honest while the
+      // starter's key is still free in this fake.
+      written[path] = await new Response(body).text();
+      return true;
+    },
     async remove() {},
+    async removeBatch() {},
     async copy() {},
     async listVersions() {
       return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
+      return [];
+    },
+    async stat() {
+      return null;
     },
   };
 }
@@ -88,13 +109,31 @@ function failingStore(reason = "the storage backend refused the key") {
     async list() {
       return [];
     },
+    async listKeys() {
+      return [];
+    },
     async read() {
       throw new Error(reason);
     },
+    async stat() {
+      throw new Error(reason);
+    },
     async write() {},
+    async writeIfAbsent() {
+      return true;
+    },
     async remove() {},
+    async removeBatch() {
+      throw new Error(reason);
+    },
     async copy() {},
     async listVersions() {
+      return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
       return [];
     },
   };
@@ -346,7 +385,7 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
   let server = null;
   const cleanup = async () => {
     if (server?.exitCode === null || server?.exitCode === undefined) {
-      server?.kill("SIGTERM");
+      killTracked(server);
     }
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   };
@@ -355,7 +394,7 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
   const bucket = "bucket";
   await mkdir(path.join(dir, bucket), { recursive: true });
   const port = await freePort();
-  server = spawn(RCLONE, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
+  server = spawnTracked(RCLONE, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
@@ -372,7 +411,7 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
       break;
     } catch {
       if (Date.now() > deadline) {
-        server.kill("SIGTERM");
+        killTracked(server);
         throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
       }
       await sleep(300);

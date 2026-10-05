@@ -13,7 +13,7 @@ dist/
 
 # The Windows installer (drive#154): the built drive.exe, the vendor's
 # rclone.exe, WinFsp's MSI and the MSI and bundle built from installer/*.wxs
-# are all build artifacts of installer/windows-msi.yml, never committed. The
+# are all build artifacts of .github/workflows/windows-msi.yml, never committed. The
 # sources beside them are.
 /installer/drive.exe
 /installer/rclone.exe
