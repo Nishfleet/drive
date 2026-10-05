@@ -483,7 +483,7 @@ const CSRF_EXEMPT_PATHS = new Set(["/api/waitlist", SEND_EMAIL_PATH]);
  * their own handler copies.
  * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
  */
-const csrfWhenBrowser = (c, next) => {
+const csrfWhenBrowser = async (c, next) => {
   if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
     return next();
   }
