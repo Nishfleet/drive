@@ -50,7 +50,10 @@
 //     argument for the same reason (drive issue #506): src/share.js answers
 //     503 without SHARE_DOWNLOAD_RATE_LIMITER rather than serve an unbounded
 //     public download, so a deploy that lost it is an outage this endpoint
-//     names.
+//     names. The share and upload-request mint routes are the same argument
+//     for the same reason (drive issue #549): src/share.js answers 503 without
+//     SHARE_MINT_RATE_LIMITER or REQUEST_MINT_RATE_LIMITER rather than let one
+//     account mint links without bound.
 //
 //   - The branch snapshot namespace. A branch's snapshot moved out of the D1
 //     row into KV (drive issue #252), so every diff and every approve reads this
@@ -70,6 +73,11 @@
 //   - The email binding. Only the token-gated internal send route uses it
 //     (src/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
+//   - HEALTH_RATE_LIMITER. It is this route's own gate (handleHealthRequest
+//     runs enforceEdgeLimits before any probe), not a dependency another
+//     route fails closed without. Probing it with a fresh random key would
+//     not prove the per-IP bucket and would add a billed op on every poll
+//     (drive#539).
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read
@@ -77,6 +85,8 @@
 // dependencies still answer inside HEALTH_TIMEOUT_MS, not three times it.
 // A dependency that does not answer in its share reports itself by name, so
 // the alert says which dependency rather than "unhealthy".
+
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
 /** The path the outside monitor (#36) polls. Public, and reads no account. */
 export const HEALTH_PATH = "/api/health";
@@ -135,6 +145,8 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "REQUEST_UPLOAD_RATE_LIMITER",
   "REQUEST_UPLOAD_LINK_RATE_LIMITER",
   "SHARE_DOWNLOAD_RATE_LIMITER",
+  "SHARE_MINT_RATE_LIMITER",
+  "REQUEST_MINT_RATE_LIMITER",
   "BRANCH_RATE_LIMITER",
   "BRANCH_SNAPSHOTS",
 ]);
@@ -418,7 +430,9 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     "REQUEST_UPLOAD_RATE_LIMITER",
     "REQUEST_UPLOAD_LINK_RATE_LIMITER",
     "SHARE_DOWNLOAD_RATE_LIMITER",
-    "BRANCH_RATE_LIMITER",
+  "SHARE_MINT_RATE_LIMITER",
+  "REQUEST_MINT_RATE_LIMITER",
+  "BRANCH_RATE_LIMITER",
   ]) {
     const bound = env[name];
     if (
@@ -507,6 +521,26 @@ export async function handleHealthRequest(request, env) {
       status: 405,
       headers: { allow: "GET", ...JSON_HEADERS },
     });
+  }
+  // The probe fans out to every D1, five rate-limit bindings, KV and ASSETS.
+  // The per-IP gate runs first so a stranger cannot spend those billed ops
+  // in a loop (drive#539). A missing binding fails closed, the same posture
+  // every other limited route uses.
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding:
+          /** @type {{limit(options: {key: string}): Promise<{success: boolean}>}|undefined} */ (
+            env.HEALTH_RATE_LIMITER
+          ),
+        key: clientIpKey(request, "health"),
+        name: "HEALTH_RATE_LIMITER",
+      },
+    ],
+    "health",
+  );
+  if (limited) {
+    return limited;
   }
   const result = await checkHealth(env);
   if (result.ok) {

@@ -56,6 +56,7 @@ import {
   trashRows,
   trashStorePath,
   UPLOAD_COPY,
+  UPLOAD_FILE_MAX_BYTES,
   validatePath,
   withoutTrash,
 } from "../src/files.js";
@@ -463,7 +464,10 @@ test("preview: a picture comes back inline, download comes back as an attachment
   assert.equal(await preview.text(), "the-bytes");
 
   const download = await call(new Request(api("/download?path=%2Fholiday.jpg")));
-  assert.equal(download.headers.get("content-disposition"), 'attachment; filename="holiday.jpg"');
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"holiday.jpg\"; filename*=UTF-8''holiday.jpg",
+  );
   assert.equal(await download.text(), "the-bytes");
 });
 
@@ -477,7 +481,24 @@ test("preview: a file name cannot break out of the header", async () => {
   const { call, upload } = drive();
   await upload("/", 'a"b.txt', "x", "text/plain");
   const response = await call(new Request(api("/download?path=%2Fa%22b.txt")));
-  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="ab.txt"');
+  assert.equal(
+    response.headers.get("content-disposition"),
+    "attachment; filename=\"ab.txt\"; filename*=UTF-8''a%22b.txt",
+  );
+});
+
+test("download: a Japanese file name is RFC 5987, not a 500", async () => {
+  const { call, upload } = drive();
+  await upload("/", "日本.txt", "hello", "text/plain");
+  const download = await call(
+    new Request(api(`/download?path=${encodeURIComponent("/日本.txt")}`)),
+  );
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), "hello");
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"__.txt\"; filename*=UTF-8''%E6%97%A5%E6%9C%AC.txt",
+  );
 });
 
 test("preview: an uploaded page is never a page on our origin", async () => {
@@ -505,7 +526,10 @@ test("preview: an uploaded page is never a page on our origin", async () => {
     } else {
       // The download is the customer's own file, with the type they sent.
       assert.equal(page.headers.get("content-type"), "text/html");
-      assert.equal(page.headers.get("content-disposition"), 'attachment; filename="page.html"');
+      assert.equal(
+        page.headers.get("content-disposition"),
+        "attachment; filename=\"page.html\"; filename*=UTF-8''page.html",
+      );
     }
   }
   // A download is the customer's file, byte for byte, with the type they sent.
@@ -579,7 +603,7 @@ test("preview: the XML document family and multipart/related leave as a download
     assert.equal(response.headers.get("content-type"), "application/octet-stream", name);
     assert.equal(
       response.headers.get("content-disposition"),
-      `attachment; filename="${name}"`,
+      `attachment; filename="${name}"; filename*=UTF-8''${name}`,
       name,
     );
     assert.equal(response.headers.get("content-security-policy"), "sandbox", name);
@@ -602,7 +626,10 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   const preview = await call(new Request(api("/preview?path=%2Flogo.svg")));
   assert.equal(preview.status, 200);
   assert.equal(preview.headers.get("content-type"), "image/svg+xml");
-  assert.equal(preview.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  assert.equal(
+    preview.headers.get("content-disposition"),
+    "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
+  );
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
   assert.equal(preview.headers.get("content-security-policy"), "sandbox");
 
@@ -631,7 +658,10 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   ]) {
     const opened = await call(request);
     assert.equal(opened.status, 200);
-    assert.equal(opened.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+    assert.equal(
+      opened.headers.get("content-disposition"),
+      "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
+    );
   }
 
   // A raster picture and a PDF keep opening inline from the direct-open URL:
@@ -648,7 +678,10 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   }
   // The rule, as a function: only the type a browser renders as a document
   // leaves as an attachment.
-  assert.equal(previewDisposition("logo.svg", "image/svg+xml"), 'attachment; filename="logo.svg"');
+  assert.equal(
+    previewDisposition("logo.svg", "image/svg+xml"),
+    "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
+  );
   assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
   assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
   assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
@@ -657,16 +690,25 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
   for (const claimed of ["image/svg+xml; charset=utf-8", "IMAGE/SVG+XML", " image/svg+xml "]) {
     assert.equal(
       previewDisposition("logo.svg", claimed),
-      'attachment; filename="logo.svg"',
+      "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg",
       claimed,
     );
   }
   // A filename that could end the quoted-string, or carry a header-breaking
   // control character, is stripped before it reaches the header.
-  assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
+  assert.equal(
+    previewDisposition('a"b.svg', "image/svg+xml"),
+    "attachment; filename=\"ab.svg\"; filename*=UTF-8''a%22b.svg",
+  );
   assert.equal(
     previewDisposition("a\r\nb.svg", "image/svg+xml"),
-    'attachment; filename="a--b.svg"',
+    "attachment; filename=\"a--b.svg\"; filename*=UTF-8''a--b.svg",
+  );
+  // Half a surrogate pair would throw URIError in the encoder and turn a
+  // download into a 500; UTF-8 needs the repaired U+FFFD instead (drive#539).
+  assert.equal(
+    previewDisposition("\uD800.svg", "image/svg+xml"),
+    "attachment; filename=\"_.svg\"; filename*=UTF-8''%EF%BF%BD.svg",
   );
 });
 
@@ -710,6 +752,22 @@ test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
   // The words are the message table's, not this route's own copy of them
   // (drive#158); test/messages.test.mjs walks this route for that rule.
   assert.equal((await response.json()).error, failureMessage("upload-needs-name"));
+});
+
+test("upload: a 200 MB declared size is refused before the body is read", async () => {
+  const { call, scoped } = drive();
+  const response = await call(
+    new Request(`${api("/upload")}?path=%2F&name=huge.bin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(UPLOAD_FILE_MAX_BYTES + 100_000_000),
+      },
+    }),
+  );
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error, failureMessage("body-too-large"));
+  assert.equal(await scoped.read("/huge.bin"), null);
 });
 
 test("delete: a file leaves the folder and lands in Recently deleted", async () => {
@@ -1637,7 +1695,7 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
   await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
 });
 
-test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
+test("a signed write sends the original stream and UNSIGNED-PAYLOAD", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
     start(controller) {
@@ -1645,12 +1703,11 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
       controller.close();
     },
   });
-  /** @type {Uint8Array | undefined} */
+  /** @type {Request | undefined} */
   let sent;
   /** @type {typeof fetch} */
   const fetchImpl = async (input, init) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    sent = new Uint8Array(await request.arrayBuffer());
+    sent = input instanceof Request ? input : new Request(input, init);
     return new Response(null, { status: 200 });
   };
   const store = createS3Store({
@@ -1660,12 +1717,28 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
     credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
     fetchImpl,
   });
-  await store.write("u/acct/a.txt", stream, "text/plain");
-  assert.deepEqual(sent, new TextEncoder().encode("chunk"));
+  await store.write("u/acct/a.txt", stream, "text/plain", { contentLength: 5 });
+  assert.ok(sent);
+  assert.equal(sent.headers.get("x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
+  assert.equal(sent.headers.get("content-length"), "5", "the declared size rides the PUT");
+  assert.ok(sent.body instanceof ReadableStream, "the write must not buffer the stream into bytes");
+  assert.equal(await sent.text(), "chunk");
 });
 
-test("a signed write names a body it cannot hash", async () => {
+test("a signed stream write with no declared size is refused, not buffered", async () => {
+  // A signed S3 PUT cannot send a stream of unknown length without a
+  // Content-Length (an UNSIGNED-PAYLOAD PUT with no aws-chunked framing is
+  // answered 411), and buffering it here would put an unbounded body into
+  // isolate memory. The store refuses it so the caller declares a size
+  // (drive#539); the owner upload reads a length-less body under its own
+  // ceiling and always passes one.
   const { createS3Store } = await import("../src/files.js");
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("chunk"));
+      controller.close();
+    },
+  });
   const store = createS3Store({
     endpoint: "http://127.0.0.1:9000",
     bucket: "drive",
@@ -1673,10 +1746,7 @@ test("a signed write names a body it cannot hash", async () => {
     credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
     fetchImpl: async () => new Response(null, { status: 200 }),
   });
-  await assert.rejects(
-    store.write("u/acct/a.txt", /** @type {any} */ ({ not: "a body" }), "text/plain"),
-    /cannot send a body of type/,
-  );
+  await assert.rejects(() => store.write("u/acct/a.txt", stream, "text/plain"), /contentLength/);
 });
 
 test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {

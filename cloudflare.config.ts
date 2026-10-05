@@ -210,6 +210,17 @@ export default defineConfig({
         namespace: "1005",
         simple: { limit: 10, period: 60 },
       }),
+      // drive#539: GET /api/health fans out to every D1, five other rate-limit
+      // bindings, KV and ASSETS. The route itself sits behind this limiter so
+      // an anonymous loop cannot spend those billed ops at will. 10 a minute
+      // per IP is the sign-in figure: far above a monitor that polls once a
+      // minute, far below a script. Namespace 1009, because 1006/1007 are the
+      // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
+      // the share-download limiter below.
+      HEALTH_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1009",
+        simple: { limit: 10, period: 60 },
+      }),
       // GET /s/<token> (drive issue #506): a logged-out share download has no
       // account gate, so the stock rate-limit binding is the bound. Per IP it
       // sits at 60 a minute: far above a person opening a handful of links,
@@ -221,16 +232,31 @@ export default defineConfig({
         namespace: "1008",
         simple: { limit: 60, period: 60 },
       }),
+      // The two mint routes (drive issue #549): POST /api/share and POST
+      // /api/request each get their own bound, on top of the per-account cap
+      // of 50 open links the handlers enforce. 30 a minute per IP is far
+      // above an owner clicking "Share" and far below a script minting tokens
+      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
+      // namespace fails the deploy with 10021.
+      SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1009",
+        simple: { limit: 30, period: 60 },
+      }),
+      REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1010",
+        simple: { limit: 30, period: 60 },
+      }),
       // POST /api/branches (drive issue #553): a branch is a full server-side
       // copy of a folder, so a loop of creates costs the operator real storage
       // and real copy work. Per IP it sits at 10 a minute, the upload-request
       // limit: far above a person or agent making a handful of branches, far
       // below a script churning them. One minute, the family's period.
-      // Namespace 1009: 1001–1005 are this Worker, 1006/1007 are the api
-      // Worker's device pair, 1008 is the share download. A namespace another
-      // binding already uses fails the deploy with 10021.
+      // Namespace 1011: 1001–1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair, 1008 is the share download, 1009/1010 are the
+      // mint pair above. A namespace another binding already uses fails the
+      // deploy with 10021.
       BRANCH_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1011",
         simple: { limit: 10, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
