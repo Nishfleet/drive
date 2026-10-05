@@ -8,8 +8,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+  TRASH_PURGE_SCHEDULE,
+} from "../src/files.js";
 import worker from "../src/index.js";
+import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../src/meter.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -953,6 +960,17 @@ test("the deployed cron schedule is the one the module names", () => {
   assert.ok(
     declared.includes(REINDEX_SCHEDULE),
     `cloudflare.config.ts runs the reindex on ${REINDEX_SCHEDULE}; it declares ${declared.join(", ") || "no schedule"}`,
+  );
+  // Every cron string the platform fires must have a branch in scheduled()
+  // that names it: since the unknown-cron guard, a declared string with no
+  // branch is a nightly failure, not a silent no-op. Set equality in both
+  // directions, so a trigger the handler dropped or a branch nothing fires
+  // are both caught.
+  const handled = [METER_CRON, METER_RECONCILE_SCHEDULE, TRASH_PURGE_SCHEDULE, REINDEX_SCHEDULE];
+  assert.deepEqual(
+    [...declared].sort(),
+    [...handled].sort(),
+    `cloudflare.config.ts declares ${declared.join(", ")}; scheduled() handles ${handled.join(", ")}`,
   );
 });
 
