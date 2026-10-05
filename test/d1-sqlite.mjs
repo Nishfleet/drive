@@ -15,16 +15,25 @@ import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { BYTES_PER_GB } from "../src/meter.js";
 
-// The drive database's migration files, in the numeric order the deploy
-// applies them in.
 const migrationsDir = new URL("../migrations/drive/", import.meta.url);
-const migrationFiles = readdirSync(migrationsDir)
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+// The drive database's migration files in the order `wrangler d1 migrations
+// apply` uses — a full filename sort. A numeric-prefix sort (Number.parseInt)
+// is non-deterministic for this schema: several prefixes are shared by more
+// than one file (0005, 0006, 0012, 0017 and 0020 on main), both members of a
+// pair parse to the same number, and the tie is left to the filesystem. The
+// full sort is the deploy's own, so the test schema is built in the same order
+// production is. Exported once so every reader of migrations/drive/ reads it
+// the same way, instead of each test re-sorting and diverging (drive issue
+// #619).
+export const MIGRATION_FILES = Object.freeze(
+  readdirSync(migrationsDir)
+    .filter((name) => name.endsWith(".sql"))
+    .sort(),
+);
 
 /** @param {DatabaseSync} sqlite */
 export function applyMigrations(sqlite) {
-  for (const name of migrationFiles) {
+  for (const name of MIGRATION_FILES) {
     sqlite.exec(readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"));
   }
 }
