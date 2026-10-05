@@ -216,9 +216,7 @@ export function resolveDodoUrl(baseUrl, path) {
   }
   const name = matched[1].toLowerCase();
   if (!DODO_API_HOSTS.includes(name)) {
-    throw new TypeError(
-      `DODO_BASE_URL must be ${DODO_API_HOSTS.join(" or ")}, got ${name}`,
-    );
+    throw new TypeError(`DODO_BASE_URL must be ${DODO_API_HOSTS.join(" or ")}, got ${name}`);
   }
   return `${host}${path}`;
 }
