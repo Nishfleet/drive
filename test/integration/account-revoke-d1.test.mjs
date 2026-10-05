@@ -332,9 +332,11 @@ test("one provider refusal does not stop the other keys, and a retry finishes th
     return true;
   });
 
-  // Every key was attempted, the refused one first, and the loop went on.
+  // Every key was attempted, the refused one first, and the loop went on. The
+  // refused key is tried more than once: the provider call retries a bounded
+  // number of times before it gives up.
   assert.deepEqual(
-    [...attempted].sort(),
+    [...new Set(attempted)].sort(),
     [first.accessKeyId, second.accessKeyId, third.accessKeyId].sort(),
   );
   assert.equal(server.accepts(second.accessKeyId, second.secret), false);
