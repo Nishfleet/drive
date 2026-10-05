@@ -394,7 +394,7 @@ export async function applyCapSwap(plan, provider) {
     // names the cap that took the key down; a raise names nothing, and the
     // store writes that as no reason recorded (drive#661). A hand-built plan
     // that leaves the field out is the same as a raise's null here.
-    const reason = /** @type {{cappedReason?: string}} */ (swap).cappedReason;
+    const reason = /** @type {{cappedReason?: string|null}} */ (swap).cappedReason;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
         // The provider's own swap is handed the keyId and the swap's own

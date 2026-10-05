@@ -159,7 +159,12 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
   const store = createD1DeviceStore(db, { now: () => 0 });
   const account = { id: "acct-reason", email: "reason@example.com" };
 
-  /** @param {string} id @param {string|null} cappedReason */
+  /**
+   * @param {string} id @param {string|null} cappedReason
+   * Production shape (capSwapPlan): freeze narrows capabilities
+   * to read-only and records the old capabilities in cappedFrom;
+   * raise restores full capabilities and clears cappedFrom.
+   */
   const writeRow = async (id, cappedReason) => {
     await store.put({
       id,
@@ -169,13 +174,13 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
       accessKeyId: `ak_${id}`,
       secretHash: "00",
       prefix: `u/${account.id}/`,
-      capabilities: cappedReason === null ? ["list", "read"] : ["list", "read", "write", "delete"],
+      // Freeze: read-only scope; raise: full scope.
+      capabilities: cappedReason === null ? ["list", "read", "write", "delete"] : ["list", "read"],
       createdAt: 1,
       lastSeenAt: null,
       revokedAt: null,
-      // The row being written carries what the freeze left on it, so a second
-      // write is what `swapToReadOnly` does: the same row, a new marker.
-      cappedFrom: cappedReason === null ? ["list", "read", "write", "delete"] : null,
+      // Freeze: the old capabilities the cap took; raise: nothing taken.
+      cappedFrom: cappedReason === null ? null : ["list", "read", "write", "delete"],
       cappedReason,
     });
   };
@@ -183,7 +188,7 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
   await writeRow("key_frozen", SPEND_CAP_REASON);
   const frozen = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_frozen");
   assert.equal(frozen.capped_reason, SPEND_CAP_REASON);
-  assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read", "write", "delete"]);
+  assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read"]);
 
   const [capKey] = await store.listCapKeys(account.id);
   assert.equal(capKey.cappedReason, SPEND_CAP_REASON);

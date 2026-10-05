@@ -1391,7 +1391,7 @@ export function createD1DeviceStore(db, options = {}) {
          * records the reason that named the cap, so a give-back pass (drive#656)
          * can tell this freeze from one another cap made.
          * @param {string} keyId
-         * @param {{cappedReason?: string}} [options] the freeze's reason,
+         * @param {{cappedReason?: string|null}} [options] the freeze's reason,
          *   carried from the swap plan so the word is decided once in
          *   src/cap.js. A swap that names none records no reason, which reads
          *   "no reason recorded" -- the safe answer, because a give-back pass
