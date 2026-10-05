@@ -79,12 +79,12 @@ jobs:
         # score. A run by hand (workflow_dispatch) records a fresh score for
         # a release that cannot wait for Monday.
         run: |
-          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion --jq '.[0]')
+          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion // "none")"')
           if [ -z "$latest" ]; then
             echo "::warning::no agent eval run has completed yet; the score gate is not armed"
           else
-            status=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status --jq '.[0].status')
-            conclusion=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json conclusion --jq '.[0].conclusion // "none"')
+            status=${latest% *}
+            conclusion=${latest#* }
             if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
               echo "::error::the newest agent eval run on main concluded $conclusion; the held-out score is under the pass bar, so the release stops here (drive#526)"
               exit 1
