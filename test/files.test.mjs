@@ -1222,6 +1222,64 @@ test("a save at the live path is kept, and a restore over it answers 409", async
   assert.equal(await new Response(parked.body).text(), "the parked text");
 });
 
+test("a restore that finds nothing at the live path is still held to it being empty", async () => {
+  // The case the reviewer named and the route previously did not prove: the
+  // destination listing finds nothing, so the guard is "still empty" rather
+  // than an ETag, and a save that creates the path after that listing is the
+  // same loss as one that replaces a file there. Driven through the route, not
+  // through the store, because a store-level test passes whether or not the
+  // route asks for the guard at all (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the parked text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  // Nothing is at the live path when the restore lists it, and this save lands
+  // in the window between that listing and the copy.
+  const moved = beforeCopyRecorder(store, async () => {
+    await scoped.write("/notes.md", "the save that created the path", "text/markdown");
+  });
+  /** @param {Request} request */
+  const call = (request) => handleFilesRequest(request, moved, account, now);
+
+  const response = await call(moveCall("/restore", "/notes.md"));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  assert.ok(
+    moved.calls.some((entry) => entry.startsWith("copy ") && !entry.includes(" if ")),
+    `the copy asked to land on an empty path, got ${JSON.stringify(moved.calls)}`,
+  );
+  const live = await scoped.read("/notes.md");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the save that created the path");
+  // The parked copy is still parked, so the refused restore lost nothing.
+  const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the parked text");
+});
+
+test("a copy asked for a guard it cannot be given is refused", async () => {
+  // A guard that means "none" must be asked for by leaving it out, not by
+  // handing over an empty ETag. If emptiness meant "skip", `{ifMatch: ""}`
+  // would be a way to ask for a guard and get an unguarded copy over whatever
+  // is at the destination, which is the loss drive issue #605 is about.
+  const { upload, scoped } = drive();
+  await upload("/", "notes.md", "the old text", "text/markdown");
+  await scoped.write("/notes.md", "the bytes that must survive", "text/markdown");
+
+  await assert.rejects(scoped.copy("/notes.md", "/other.md", 4, { ifMatch: "" }), TypeError);
+  // Both shapes of guard at once is a caller that does not know what it wants,
+  // and an answer that quietly picks one of them is worse than a refusal.
+  await assert.rejects(
+    scoped.copy("/notes.md", "/other.md", 4, { ifMatch: "etag", ifAbsent: true }),
+    TypeError,
+  );
+  // Omitting the guard is how a caller says "copy as you always have", which is
+  // what `drive branch` does.
+  await scoped.copy("/notes.md", "/other.md", 4);
+  const copied = await scoped.read("/other.md");
+  assert.ok(copied);
+  assert.equal(await new Response(copied.body).text(), "the bytes that must survive");
+});
+
 test("a restore with nothing at the live path still puts the file back", async () => {
   // The guard must not turn a restore into a refusal: a path the restore
   // creates carries no ETag to hold to, so the copy lands as it always did
@@ -1385,14 +1443,20 @@ test("a copy the S3 store would put over a changed destination is refused", asyn
   assert.equal(requests.filter((entry) => entry === "PUT u/acct-a/notes.md").length, 2);
 });
 
-test("a save that lands between the guard's HEAD and the copy still reaches storage", async () => {
+test("a save that lands between the guard's HEAD and the copy is overwritten, and says so", async () => {
   // The window drive issue #605 names, against the deployed adapter rather than
-  // the memory stand-in: the destination is HEADed, the save lands, and the
-  // CopyObject that follows is a blind put over those newer bytes. The guard
-  // reads immediately before the copy so this window is as narrow as the API
-  // allows, and `src/files.js` says plainly that no S3-shaped call closes it —
-  // this test exists to prove the adapter does not pretend otherwise, and to
-  // fail loudly if that note is ever deleted while the window stays.
+  // the memory stand-in, which cannot reach it because nothing is awaited
+  // between its comparison and its write: the destination is HEADed, the save
+  // lands in the round-trip the HEAD takes, and the CopyObject that follows is
+  // a blind put over those newer bytes.
+  //
+  // This test does not pin the overwrite as something to keep. It pins the
+  // limit of what the adapter can promise, so the guard cannot be widened in
+  // the code and quietly believed to be stronger here. Closing it needs a
+  // store whose copy and check are one operation; until then `src/files.js`
+  // says this in the copy's own contract and points at the spec for why. In
+  // the route the save inside the window is not merely overwritten: the
+  // conditional remove then clears the parked key too, so nothing is left.
   /** @type {Map<string, string>} */
   const objects = new Map([["u/acct-a/notes.md", '"listed-etag"']]);
   /** @type {string[]} */
@@ -1416,23 +1480,15 @@ test("a save that lands between the guard's HEAD and the copy still reaches stor
   const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
   const scoped = scopeStore(store, { id: "acct-a" });
 
-  // The guard is answered by the HEAD, so the copy lands and overwrites. This
-  // is what the store can promise, and the assertion below names it so a change
-  // to the guard cannot pass unnoticed as "it also closes this window".
   await scoped.copy("/parked.txt", "/notes.md", 4, { ifMatch: "listed-etag" });
-  assert.deepEqual(requests, ["HEAD u/acct-a/notes.md", "PUT u/acct-a/notes.md"]);
-  assert.equal(objects.get("u/acct-a/notes.md"), '"copied"');
-
-  // What the drive does promise: the guard runs, so a save that lands before
-  // the HEAD is caught. The window above is the storage's, and the way out of it
-  // is not a wider guard but a store whose copy is one atomic operation.
-  const storageJoinsItsCopyToItsGuard = false;
-  assert.equal(
-    storageJoinsItsCopyToItsGuard,
-    false,
-    "if this is true, CopyObject can carry a destination precondition: " +
-      "read src/files.js and drop the window note with the window.",
+  assert.deepEqual(
+    requests,
+    ["HEAD u/acct-a/notes.md", "PUT u/acct-a/notes.md"],
+    "the guard did run, and the copy followed it unguarded",
   );
+  // The bytes the guard read are the bytes the copy replaced. The guard did its
+  // job as far as the API allows: it is a read, and a read is not a lock.
+  assert.equal(objects.get("u/acct-a/notes.md"), '"copied"');
 });
 
 test("a restore onto a path a save creates is refused by the S3 store too", async () => {

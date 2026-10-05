@@ -841,7 +841,19 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *     holds anything is refused the same way, so a save that created the path
  *     while the copy ran is kept.
  *   A caller that asks for neither gets the copy it always got, so
- *   `drive branch` is unchanged.
+ *   `drive branch` is unchanged. A guard that cannot be answered — an empty
+ *   ETag, both shapes at once, or a destination the storage holds but reports
+ *   no ETag for — throws rather than falling through to an unguarded copy,
+ *   because "the comparison failed" and "no comparison was asked for" are
+ *   different answers and only one of them is a safe default.
+ *
+ *   What a guard cannot do is join the check to the copy. CopyObject carries no
+ *   precondition on its destination, a conditional Put cannot move bytes the
+ *   Worker does not hold, and version 1 of the drive has no version history to
+ *   recover from (docs/build-spec.md, "Old versions"), so the read narrows the
+ *   window to the round-trip between the HEAD and the copy without closing it.
+ *   A store whose provider can join them should, and drop this note with the
+ *   gap it describes.
  * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
@@ -1439,24 +1451,24 @@ export function createMemoryStore() {
      *   already in memory, so there is no size to pick a copy strategy with.
      * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
      */
-    async copy(from, to, _size, { ifMatch, ifAbsent } = {}) {
+    async copy(from, to, _size, options = {}) {
+      const guard = copyGuard(to, options);
       // The destination is read once, before the source: the guard is about
       // what is at `to`, and the source is never allowed to answer for it.
       const held = objects.get(to);
-      if (ifAbsent === true && held !== undefined) {
+      if (guard.ifAbsent && held !== undefined) {
         // Asked for an empty destination and something is there now, so the
         // copy is refused before a byte is written (drive issue #605).
         throw new ChangedUnderUsError(to);
       }
-      // A `ifMatch` guard is only passed when this store can actually answer
-      // it: `etagMismatch` reads a missing ETag on either side as "no
-      // comparison to make", which is the right answer for a delete that was
-      // never given an ETag and the wrong one here, where the caller did give
-      // one and expects it held. So an object this store kept no ETag for
-      // refuses the copy instead of quietly overwriting (drive issue #605).
-      if (typeof ifMatch === "string" && ifMatch !== "") {
+      // `etagMismatch` reads a missing ETag on either side as "no comparison to
+      // make", which is the right answer for a delete that was never given an
+      // ETag and the wrong one here, where the caller did give one and expects
+      // it held. So an object this store kept no ETag for refuses the copy
+      // instead of quietly overwriting (drive issue #605).
+      if (guard.ifMatch) {
         const heldEtag = typeof held?.etag === "string" ? held.etag : "";
-        if (heldEtag === "" || etagMismatch(heldEtag, ifMatch)) {
+        if (heldEtag === "" || etagMismatch(heldEtag, guard.ifMatch)) {
           throw new ChangedUnderUsError(to);
         }
       }
@@ -2059,48 +2071,40 @@ export function createS3Store(config) {
      * the caller's listing already carried, so the copy S3 needs for those
      * bytes is chosen without a second request per file.
      *
-     * `options` is the destination guard, and it has to be answered or the copy is
-     * refused. CopyObject cannot carry a precondition on the destination, so
+     * `options` is the destination guard, and it has to be answered or the copy
+     * is refused. CopyObject cannot carry a precondition on the destination, so
      * the guard is the read: the destination is HEADed immediately before the
-     * copy and its answer is compared with what the caller listed
-     * (`ifMatch`), or required to be absent (`ifAbsent`). A destination whose
-     * bytes are no longer the ones the caller listed, or which now holds
-     * anything at all when the caller listed nothing, is left exactly as it is
-     * and the store throws `ChangedUnderUsError` (drive issue #605). A restore
-     * uses this so it cannot put a parked file over a save that landed at that
-     * path while it was running.
-     *
-     * What it cannot do is make the copy and the check one storage operation:
-     * between this HEAD answering and the CopyObject landing there is a window,
-     * and a save that lands inside it is still overwritten. No S3-shaped API
-     * closes that window on a copy — a conditional Put cannot move bytes the
-     * Worker does not hold, and version 1 of the drive has no history to
-     * recover from (docs/build-spec.md, "Old versions"). So the restore
-     * narrows its check to immediately before the copy rather than claiming it
-     * has closed the race.
+     * copy and its answer is compared with what the caller listed (`ifMatch`),
+     * or required to be absent (`ifAbsent`). A destination that is no longer
+     * what the caller listed is left exactly as it is and the store throws
+     * `ChangedUnderUsError`, which is what keeps a restore from putting a
+     * parked file over a save that landed at that path while it ran (drive
+     * issue #605). The guard's own limit is in the `FileStore` contract above,
+     * not restated here.
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
      * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
      */
-    async copy(from, to, size, { ifMatch, ifAbsent } = {}) {
-      // Either shape of guard, and only when one was asked for: the read is one
-      // HEAD, the same call `stat` makes, so the guard reads the destination
-      // the way a preview does and invents no new request shape.
-      if (ifAbsent === true || (typeof ifMatch === "string" && ifMatch !== "")) {
+    async copy(from, to, size, options = {}) {
+      const guard = copyGuard(to, options);
+      // The read is one HEAD, the same call `stat` makes, so the guard reads the
+      // destination the way a preview does and invents no new request shape.
+      if (guard.ifAbsent) {
         const held = await copyDestinationEtag(request, urlFor, to);
-        if (ifAbsent === true) {
-          // Asked for an empty destination. Something is at the key, whether
-          // it names an ETag or not: there is no way to tell a save from a
-          // folder marker by their bytes here, so any object is refused.
-          if (held !== null) {
-            throw new ChangedUnderUsError(to);
-          }
-        } else if (held === null || held === "" || etagMismatch(held, ifMatch)) {
-          // `held === null` is the destination gone, which is not the bytes the
-          // caller listed, and `held === ""` is a destination this storage
-          // reports no ETag for, which is no comparison at all. Both refuse:
-          // a guard with no answer to give is not a guard that passed.
+        // Asked for an empty destination. Something is at the key, whether it
+        // names an ETag or not: there is no way to tell a save from a folder
+        // marker by their bytes here, so any object is refused.
+        if (held !== null) {
+          throw new ChangedUnderUsError(to);
+        }
+      } else if (guard.ifMatch) {
+        const held = await copyDestinationEtag(request, urlFor, to);
+        // `null` is the destination gone, which is not the bytes the caller
+        // listed, and `""` is a destination this storage reports no ETag for,
+        // which is no comparison at all. Both refuse: a guard with no answer to
+        // give is not a guard that passed (drive issue #605).
+        if (held === null || held === "" || etagMismatch(held, guard.ifMatch)) {
           throw new ChangedUnderUsError(to);
         }
       }
@@ -2377,6 +2381,47 @@ async function sourceSize(fetchImpl, urlFor, from) {
     );
   }
   return length;
+}
+
+/**
+ * What guard a copy was asked to hold to, decided once and the same way in
+ * every store, so a route cannot get a guard from one adapter and not the
+ * other.
+ *
+ * A guard is one of exactly three things, and anything else is a programming
+ * error thrown rather than ignored, because the worst reading of a malformed
+ * guard is the one that leaves the destination unguarded: `{ifMatch: ""}` is
+ * indistinguishable from `{ifMatch: undefined}` if emptiness means "skip", so
+ * emptiness is not allowed to mean that here.
+ * @param {string} to the storage key the copy would write, for the message
+ * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
+ * @returns {{ifMatch?: string|undefined, ifAbsent?: boolean|undefined}} the
+ *   guard to run: one of `ifMatch`, `ifAbsent`, or neither
+ */
+function copyGuard(to, { ifMatch, ifAbsent } = {}) {
+  if (ifAbsent !== undefined && typeof ifAbsent !== "boolean") {
+    throw new TypeError(`copy of ${to}: ifAbsent must be true or false`);
+  }
+  if (ifMatch !== undefined && ifMatch !== null && typeof ifMatch !== "string") {
+    throw new TypeError(`copy of ${to}: ifMatch must be an ETag string`);
+  }
+  if (ifAbsent === true && ifMatch !== undefined && ifMatch !== null) {
+    throw new TypeError(`copy of ${to}: asks for an empty destination and an exact one at once`);
+  }
+  if (ifAbsent === true) {
+    return { ifAbsent: true };
+  }
+  // `null` and `undefined` are one answer, and it is the unguarded copy
+  // `drive branch` asks for. An empty string is not that answer: a caller that
+  // hands over an ETag has asked to be held to it, and an empty ETag is held to
+  // nothing.
+  if (ifMatch === undefined || ifMatch === null) {
+    return {};
+  }
+  if (ifMatch === "") {
+    throw new TypeError(`copy of ${to}: ifMatch was given but holds no ETag`);
+  }
+  return { ifMatch };
 }
 
 /**
