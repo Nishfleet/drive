@@ -16,6 +16,7 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
+import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { contentMd5 } from "../workers/api/src/s3.js";
 import {
@@ -27,6 +28,7 @@ import {
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
+import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
@@ -2153,20 +2155,6 @@ export function parseByteRange(header, total) {
 
 // ---------------------------------------------------------------- handlers
 
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @returns {Response}
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
-
 /**
  * @param {string} message
  * @param {number} status
@@ -2198,9 +2186,10 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database}} [options] the customer database, so the 1 TB
- *   pre-charge storage limit (drive#464) can read stored bytes. Tests that
- *   do not pass a database skip that check.
+ * @param {{db?: D1Database, prepaidPause?: boolean}} [options] the customer
+ *   database, so the 1 TB pre-charge storage limit (drive#464) can read
+ *   stored bytes, and whether the pause at a $0 balance is on (drive#586).
+ *   Tests that do not pass a database skip both checks.
  */
 export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
@@ -2256,31 +2245,6 @@ export function safeFileName(name) {
 export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
-}
-
-/**
- * @param {Request} request
- * @returns {Promise<{body: {path?: string, name?: string}, error?: undefined}|{error: string, body?: undefined}>}
- *   the parsed object, or the sentence to show. Both arms are named so the
- *   `if (body === undefined)` each caller writes is the narrowing, and
- *   `error` is there for the one that wants the sentence.
- */
-async function readJsonObject(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    // A body that is not JSON at all is the same failure as a body that is
-    // JSON but not an object: both are "this request did not carry a JSON
-    // object", and both routes that read a body say it in the table's words, so
-    // a form, an array, a bare value and a mangled body all read the same on
-    // every account route (drive#158).
-    return { error: failureMessage("json-object-needed") };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: failureMessage("json-object-needed") };
-  }
-  return { body };
 }
 
 /**
@@ -2494,7 +2458,7 @@ async function readRequest(request, url, store, download) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -2511,6 +2475,12 @@ async function uploadRequest(request, url, store, account, options = {}) {
   }
   /** @type {number|null} bytes this upload may still add before the first charge */
   let allowance = null;
+  if (options.db && options.prepaidPause && (await balanceCents(options.db, account.id)) <= 0) {
+    // The prepaid balance is empty (drive#586): the upload pauses, and only
+    // the upload. Listing, downloads, deletes and restores never come here.
+    // 402, so a client can tell "add money" from every other refusal.
+    return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
+  }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
     const header = Number(request.headers.get("content-length") ?? "");
@@ -2561,13 +2531,16 @@ async function deleteRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to delete.", 405);
   }
-  const { body, error } = await readJsonObject(request);
-  if (body === undefined) {
-    // The `if` is the narrowing: readJsonObject's error arm is the only one
-    // without a body, so error is a string here and there is nothing to fall
-    // back to, and no second copy of the sentence to keep in step.
-    return json({ error }, 400);
+  const read = await readJsonObject(request);
+  if ("error" in read) {
+    // The `if` is the narrowing: the error arm is the only one with a
+    // sentence. The reader (drive#618) writes the api's own words, so the
+    // account routes say the same thing in the table's words instead, and a
+    // form, an array, a bare value and a mangled body all read the same on
+    // every account route (drive#158).
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
+  const { body } = read;
   const checked = validatePath(body.path);
   if (checked.error) {
     return json({ error: checked.error }, 400);
@@ -2604,12 +2577,13 @@ async function restoreRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to restore.", 405);
   }
-  const { body, error } = await readJsonObject(request);
-  if (body === undefined) {
+  const read = await readJsonObject(request);
+  if ("error" in read) {
     // The same narrowing as the delete path above, and the same words: the
     // restore route reads a body exactly as the delete route does.
-    return json({ error }, 400);
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
+  const { body } = read;
   const checked = validatePath(body.path);
   if (checked.error) {
     return json({ error: checked.error }, 400);

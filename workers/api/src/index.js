@@ -3,6 +3,7 @@ import { methodNotAllowed } from "hono/method-not-allowed";
 
 import { authFor } from "../../../src/auth.js";
 import { failureMessage } from "../../../src/messages.js";
+import { prepaidPauseOn, writesPaused } from "../../../src/prepaid.js";
 import { signedInAccount } from "../../../src/status.js";
 import { createD1DeviceSigninStore } from "./device-signin.js";
 import { createD1DeviceStore } from "./devices.js";
@@ -464,6 +465,11 @@ function storeFor(env) {
       deviceStore: env.DRIVE_DB
         ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
         : undefined,
+      // The prepaid pause (drive#586), only while PREPAID_PAUSE is "on".
+      writesPaused:
+        env.DRIVE_DB && prepaidPauseOn(env)
+          ? (accountId) => writesPaused(env.DRIVE_DB, accountId)
+          : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }

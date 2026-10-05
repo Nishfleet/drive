@@ -25,7 +25,9 @@
 // No live charge runs from here while DODO_PAYMENTS_API_KEY is unset: the
 // checkout route answers 503 with the message table's words.
 
+import { json } from "../workers/api/src/http.js";
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
+import { sendEmail } from "./email-send.js";
 import {
   balanceCents,
   creditTopUp,
@@ -34,8 +36,9 @@ import {
   MIN_TOP_UP_CENTS,
   recentLedger,
   recordRefund,
+  TOP_UP_PAGE,
 } from "./ledger.js";
-import { failureMessage } from "./messages.js";
+import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
 import { PREPAID } from "./pricing.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -49,19 +52,6 @@ export const TOPUP_PURPOSE = "drive-topup";
 
 /** How far a webhook's timestamp may be from now, in seconds. */
 export const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
 
 /**
  * A whole number of cents in dollars, as the page prints it: "$12.34",
@@ -211,7 +201,7 @@ function objectOrNull(value) {
  * stops retrying them. Answers 409 only for a refund whose payment has not
  * been credited yet, so Dodo retries it after the payment lands.
  * @param {Request} request
- * @param {{db?: D1Database, secret?: string, now?: number}} deps
+ * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string}} deps
  * @returns {Promise<Response>}
  */
 export async function handleBillingWebhook(request, deps) {
@@ -254,7 +244,7 @@ export async function handleBillingWebhook(request, deps) {
     return json({ error: "The webhook body is not a Dodo event." }, 400);
   }
   if (event.type === "payment.succeeded") {
-    return creditFromEvent(deps.db, data, now);
+    return creditFromEvent(deps.db, data, now, deps);
   }
   if (event.type === "refund.succeeded") {
     return refundFromEvent(deps.db, data, now);
@@ -266,8 +256,9 @@ export async function handleBillingWebhook(request, deps) {
  * @param {D1Database} db
  * @param {Record<string, unknown>} data
  * @param {number} now
+ * @param {{email?: unknown, mailFrom?: string}} mail
  */
-async function creditFromEvent(db, data, now) {
+async function creditFromEvent(db, data, now, mail) {
   const metadata = objectOrNull(data.metadata);
   if (metadata?.purpose !== TOPUP_PURPOSE) {
     return json({ ok: true, ignored: "not a top-up" });
@@ -324,7 +315,64 @@ async function creditFromEvent(db, data, now) {
     );
     return json({ ok: false, ignored: "no such account" });
   }
+  if (credited.credited) {
+    // A receipt only when money moved, and only once: a replayed event
+    // credits nothing and so mails nothing (drive#586, supersedes #572).
+    await sendTopUpReceipt(db, {
+      accountId,
+      amountCents,
+      balanceCents: credited.balanceCents,
+      auto: metadata.source === "auto",
+      mail,
+    });
+  }
   return json({ ok: true, credited: credited.credited });
+}
+
+/**
+ * Mails the top-up receipt. The credit is already written, so a failed send
+ * is logged loudly and does not fail the webhook: answering an error would
+ * make the provider retry an event that now credits nothing and so would
+ * never send the receipt either.
+ * @param {D1Database} db
+ * @param {{accountId: string, amountCents: number, balanceCents: number, auto: boolean, mail: {email?: unknown, mailFrom?: string}}} receipt
+ */
+async function sendTopUpReceipt(db, receipt) {
+  if (!receipt.mail.email || !receipt.mail.mailFrom) {
+    console.error(
+      "billing webhook: no receipt sent, because mail is not set up",
+      `account=${receipt.accountId}`,
+    );
+    return;
+  }
+  try {
+    const row = /** @type {{email?: unknown}|null} */ (
+      await db.prepare("SELECT email FROM accounts WHERE id = ?1").bind(receipt.accountId).first()
+    );
+    if (typeof row?.email !== "string" || row.email === "") {
+      console.error(
+        "billing webhook: no receipt sent, because the account has no email",
+        `account=${receipt.accountId}`,
+      );
+      return;
+    }
+    await sendEmail(receipt.mail.email, {
+      to: row.email,
+      from: receipt.mail.mailFrom,
+      kind: "top-up-receipt",
+      data: {
+        amountUsd: receipt.amountCents / 100,
+        balanceUsd: Math.max(0, receipt.balanceCents) / 100,
+        auto: receipt.auto,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "billing webhook: the top-up receipt failed to send",
+      `account=${receipt.accountId}`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 /**
@@ -424,7 +472,7 @@ export async function handleTopUpRequest(request, account, deps) {
       body: JSON.stringify({
         product_cart: [{ product_id: productId, quantity: 1, amount: cents }],
         ...(customer ? { customer } : {}),
-        return_url: `${origin}/usage?topup=done`,
+        return_url: `${origin}${TOP_UP_PAGE}?topup=done`,
         metadata: { purpose: TOPUP_PURPOSE, account_id: account.id },
       }),
     });
@@ -447,6 +495,26 @@ export async function handleTopUpRequest(request, account, deps) {
 }
 
 /**
+ * The one balance line the usage page, `drive status` and the account page
+ * print (drive#586). At $0 it carries the pause words and the top-up prompt.
+ * Under $2 it carries the prompt. The pause words appear only while the pause
+ * is switched on, so the line never claims a pause that is not happening.
+ * @param {number} cents
+ * @param {{pauseOn?: boolean}} [options]
+ */
+export function balanceLine(cents, options = {}) {
+  const pauseOn = options.pauseOn !== false;
+  const amount = formatCents(Math.max(0, cents));
+  if (cents <= 0 && pauseOn) {
+    return failureMessage("balance-empty");
+  }
+  if (cents <= LOW_BALANCE_CENTS) {
+    return `Balance ${amount}. ${TOP_UP_PROMPT}`;
+  }
+  return `Balance ${amount}.`;
+}
+
+/**
  * Whether a checkout URL is an https page on Dodo's own domain. The host pin
  * itself lives in src/dodo.js next to resolveDodoUrl(), which sends the bearer
  * key to the same host; this name is the checkout's, and it is kept because
@@ -461,15 +529,23 @@ export function isDodoCheckoutUrl(value) {
  * The balance as the account page and `drive status` read it.
  * @param {D1Database} db
  * @param {string} accountId
+ * @param {{pauseOn?: boolean}} [options] pauseOn is false while the $0 pause is switched off, so the page never says uploads are paused when they are not
  */
-export async function balanceSummary(db, accountId) {
+export async function balanceSummary(db, accountId, options = {}) {
+  const pauseOn = options.pauseOn !== false;
   const balance = await balanceCents(db, accountId);
   const recent = await recentLedger(db, accountId, 10);
+  const settings = /** @type {{auto_topup_cents?: unknown}|null} */ (
+    await db.prepare("SELECT auto_topup_cents FROM accounts WHERE id = ?1").bind(accountId).first()
+  );
+  const autoCents = Number(settings?.auto_topup_cents ?? 0);
   return {
+    auto_topup_usd: autoCents > 0 ? autoCents / 100 : null,
     balance_cents: balance,
     balance: formatCents(balance),
+    balance_line: balanceLine(balance, { pauseOn }),
     low_balance: balance > 0 && balance <= LOW_BALANCE_CENTS,
-    paused: balance <= 0,
+    paused: pauseOn && balance <= 0,
     min_top_up_usd: PREPAID.minTopUpUsd,
     top_up_presets_usd: [...PREPAID.topUpPresetsUsd],
     recent: recent.map((line) => ({
@@ -488,9 +564,10 @@ export async function balanceSummary(db, accountId) {
  * @param {Request} request
  * @param {{id: string}|null} account
  * @param {D1Database|undefined} db
+ * @param {{pauseOn?: boolean}} [options]
  * @returns {Promise<Response>}
  */
-export async function handleBalanceRequest(request, account, db) {
+export async function handleBalanceRequest(request, account, db, options = {}) {
   if (!account) return unauthorizedResponse();
   if (request.method !== "GET") {
     return json({ error: "Method not allowed." }, 405);
@@ -498,5 +575,5 @@ export async function handleBalanceRequest(request, account, db) {
   if (!db) {
     return json({ error: failureMessage("drive-not-configured") }, 503);
   }
-  return json(await balanceSummary(db, account.id));
+  return json(await balanceSummary(db, account.id, options));
 }
