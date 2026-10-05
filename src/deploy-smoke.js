@@ -19,8 +19,7 @@
 
 /** The health route the deploy smokes, overridable for a test stub. */
 const HEALTH_URL =
-  process.env.HEALTH_URL ??
-  "https://drive-pricing.nishant345.workers.dev/api/health";
+  process.env.HEALTH_URL ?? "https://drive-pricing.nishant345.workers.dev/api/health";
 
 /** Attempts and pause, the same shape the curl flags carried. */
 const ATTEMPTS = Number(process.env.DRIVE_SMOKE_ATTEMPTS ?? 5);
@@ -59,7 +58,10 @@ async function probe() {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
   } catch (error) {
-    return { ok: false, detail: `no answer from ${HEALTH_URL} after ${PROBE_TIMEOUT_MS} ms: ${error}` };
+    return {
+      ok: false,
+      detail: `no answer from ${HEALTH_URL} after ${PROBE_TIMEOUT_MS} ms: ${error}`,
+    };
   }
   const body = await response.text();
   if (response.status !== 200) {

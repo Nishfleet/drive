@@ -679,7 +679,9 @@ async function writeDemosDoc(record) {
   // itself.
   const reRecording = Boolean(process.env.DRIVE_DEMOS_DOC);
   const dir = reRecording ? "" : await mkdtemp(path.join(tmpdir(), "drive-demos-"));
-  const target = reRecording ? path.resolve(REPO_ROOT, /** @type {string} */ (process.env.DRIVE_DEMOS_DOC)) : path.join(dir, "demos.md");
+  const target = reRecording
+    ? path.resolve(REPO_ROOT, /** @type {string} */ (process.env.DRIVE_DEMOS_DOC))
+    : path.join(dir, "demos.md");
   writeFileSync(target, lines.join("\n"));
   // The writer checks the rows it just wrote: the page test reads this file with
   // the row pattern, so a row the pattern cannot see would be a recorded figure
@@ -852,7 +854,8 @@ async function proof(t, workDir) {
       commit: commit(),
       measurements,
     });
-    const kept = written === DEMOS_DOC ? " (docs/demos.md re-recorded)" : ", the committed record untouched";
+    const kept =
+      written === DEMOS_DOC ? " (docs/demos.md re-recorded)" : ", the committed record untouched";
     t.diagnostic(`wrote ${written} with ${measurements.length} measurements${kept}`);
   } else if (measurements.length > 0) {
     t.diagnostic(
@@ -1018,12 +1021,18 @@ test("the committed record's rows are the rows a fresh run would write", () => {
   // itself can run against the committed record. Both directions count.
   const committed = readFileSync(DEMOS_DOC, "utf8");
   const rows = committed.match(/^\| `(\S+)` \|.*?\|\s*[\d.]+ s \|$/gm) ?? [];
-  assert.ok(rows.length >= 5, `docs/demos.md carries ${rows.length} demo rows, want at least the five known ones`);
+  assert.ok(
+    rows.length >= 5,
+    `docs/demos.md carries ${rows.length} demo rows, want at least the five known ones`,
+  );
   assertSameDemoRows(DEMOS_DOC, rows);
   // A recorder that wrote a row the committed record does not have, or
   // dropped one, must fail the diff: the page's cards and the record are
   // one thing, and a run that proves otherwise has to be able to say so.
-  const drifted = [...rows.slice(0, 2), "| `new-demo` | a demo the record does not describe | 1.00 s |"];
+  const drifted = [
+    ...rows.slice(0, 2),
+    "| `new-demo` | a demo the record does not describe | 1.00 s |",
+  ];
   assert.throws(() => assertSameDemoRows(DEMOS_DOC, drifted), /this run recorded/);
 });
 

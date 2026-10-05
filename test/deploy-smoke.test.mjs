@@ -59,7 +59,11 @@ function stubHealth(onRequest) {
 test("a healthy Worker: the Access headers reach the route and the smoke exits 0", async (t) => {
   const server = await stubHealth((headers, body) => {
     assert.equal(headers["cf-access-client-id"], "the-client-id", "the service token's client id");
-    assert.equal(headers["cf-access-client-secret"], "the-client-secret", "the service token's secret");
+    assert.equal(
+      headers["cf-access-client-secret"],
+      "the-client-secret",
+      "the service token's secret",
+    );
     assert.equal(body, "");
   });
   t.after(() => server.close());
@@ -95,7 +99,11 @@ test("a failing Worker: a stubbed 500 exits non-zero even after the retries", as
   });
   assert.equal(result.code, 1, `the smoke passed a 500: ${result.stdout}`);
   assert.match(result.stderr, /health route answered 500/);
-  assert.match(result.stderr, /rolls? back|rolled back|roll back/i, "the failure says what the deploy does");
+  assert.match(
+    result.stderr,
+    /rolls? back|rolled back|roll back/i,
+    "the failure says what the deploy does",
+  );
 });
 
 test("a sick Worker: 200 with ok:false exits non-zero", async (t) => {
