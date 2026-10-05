@@ -168,7 +168,7 @@ test("Mac rows stay not yet measured and are never estimated", () => {
 test("the public Benchmarks page is a docs page and injects this table", () => {
   assert.ok(
     DOC_PAGES.some((p) => p.path === "/docs/benchmarks" && p.title === "Benchmarks"),
-    "src/seo.js DOC_PAGES must list the Benchmarks page",
+    "core/seo.js DOC_PAGES must list the Benchmarks page",
   );
   assert.match(publicPage, /\{\{BENCHMARKS\}\}/, "the public page must inject the table");
   assert.match(publicPage, /^# Benchmarks$/m);

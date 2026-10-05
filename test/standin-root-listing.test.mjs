@@ -212,7 +212,7 @@ test("the stand-in keys objects the way `rclone serve s3` does, and the root lis
   // the file inside the prefix. Nothing about the rows is canned here — the
   // stand-in answers from the keys the account owns, so a store that asked for
   // the wrong prefix gets an empty root back. The rows are sorted for the
-  // assertion, and the size is a number because src/files.js parses S3's
+  // assertion, and the size is a number because core/files.js parses S3's
   // `<Size>` with `Number(...)`.
   const root = await scopeStore(store, ACCOUNT).list("/");
   assert.deepEqual(root.map((entry) => [entry.name, entry.kind, entry.path]).sort(), [

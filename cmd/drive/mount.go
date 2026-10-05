@@ -951,7 +951,7 @@ func launchctlArgvLabel(label, action, target, itemPath string) []string {
 }
 
 // RestartMount stops the mount and starts it again so rclone picks up a
-// swapped storage key (src/cap.js `mount.restart`). The VFS cache is the
+// swapped storage key (core/cap.js `mount.restart`). The VFS cache is the
 // uploads still waiting: nothing in this function deletes it, so a file
 // queued before the cap was reached is still there when writes resume.
 func RestartMount(goos, home, rcloneBin string, c StorageConfig) error {

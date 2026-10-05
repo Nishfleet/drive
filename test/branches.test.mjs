@@ -2,7 +2,7 @@
 // branches table is exercised against a real SQLite engine via node:sqlite,
 // with the shipped migrations applied — D1 is SQLite, so the SQL the Worker
 // runs is the SQL these tests run. Storage is the in-memory FileStore
-// (src/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
+// (core/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
 // own copy call is pinned separately in test/files.test.mjs.
 
 import assert from "node:assert/strict";

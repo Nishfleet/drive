@@ -52,7 +52,7 @@ function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
   return { DEVICE_RATE_LIMITER: ip, DEVICE_GLOBAL_RATE_LIMITER: global };
 }
 
-// The session cookie Better Auth mints, named by src/auth.js
+// The session cookie Better Auth mints, named by core/auth.js
 // `AUTH_COOKIE_PREFIX` (the same name test/auth.test.mjs asserts against a real
 // instance): `__Secure-` because the site is HTTPS only, then the prefix, then
 // Better Auth's own session name. The approval routes are account routes
@@ -61,7 +61,7 @@ function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 
 // The account store the sign-in flow (drive#130) provides, in the shape the
-// api Worker resolves it: src/auth.js `authFor` builds a Better Auth instance
+// api Worker resolves it: core/auth.js `authFor` builds a Better Auth instance
 // over the customer database and the account gate asks that instance for the
 // session a request's cookie names, so this stand-in speaks Better Auth's own
 // `api.getSession`. `add` mints a session token; a token this object never

@@ -25,7 +25,7 @@ type StorageConfig struct {
 	AccessKey string
 	SecretKey string
 	// SessionToken is the STS token a scoped credential is minted with
-	// (workers/api/src/s3-keys.js). A deployment whose keys are permanent has
+	// (core/s3-keys.js). A deployment whose keys are permanent has
 	// none, and then this is empty and no session_token line is written. A
 	// scoped key carries one, and without it the storage server answers
 	// InvalidTokenId (measured against the pinned MinIO, issue #241), so the
@@ -566,7 +566,7 @@ func firstNonEmpty(vals ...string) string {
 // no_check_bucket is required for those same scoped keys. rclone's S3 backend
 // HeadBucket/CreateBucket-checks the bucket before a PutObject, including
 // when a remount drains the VFS cache. A drive key's session policy has
-// neither action (workers/api/src/s3-keys.js), so that check is 403 and the
+// neither action (core/s3-keys.js), so that check is 403 and the
 // queued file never goes up — which is the cap-raise path issue #241 proves.
 // A permanent key can HeadBucket, so the line is only written when a session
 // token is present.

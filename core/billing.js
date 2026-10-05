@@ -24,12 +24,12 @@
 //
 // monthBillCents() is the one function that returns this bill, in integer
 // cents, so the invoice, the usage page and the cap all read the same number.
-// The numbers come from src/pricing.js (PRICE), the one price source.
+// The numbers come from core/pricing.js (PRICE), the one price source.
 //
 // The cap line (`drive status`'s cap, and the usage response's `capLine`) is
 // in this file too, because it is the money's words: it reads the same
 // capStatus() number the CLI and the page do, and it takes its capped-drive
-// sentence from the one message table (src/messages.js) rather than carrying a
+// sentence from the one message table (core/messages.js) rather than carrying a
 // second copy of it.
 //
 // The finished labels `usageSummary()` carries are formatted here for the same
@@ -38,7 +38,7 @@
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { failureMessage } from "./messages.js";
-// The price's numbers come from src/pricing.js, the one price source: the
+// The price's numbers come from core/pricing.js, the one price source: the
 // metered rate and the maximum per TB are declared there
 // once, so this file's arithmetic and the page's copy cannot disagree. What is
 // added here is operational: the default cap and the download allowance.
@@ -74,7 +74,7 @@ export function billingConfigFor(price) {
     maxUsdPerTb: price.maxUsdPerTb,
     // Kept for the card-less write cap until every account has a card (#387).
     freeMonthlyUsd: price.freeMonthlyUsd,
-    // The default spending cap (drive#464), from src/cap-default.js. The
+    // The default spending cap (drive#464), from core/cap-default.js. The
     // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
@@ -688,7 +688,7 @@ const USAGE_HEADERS = Object.freeze({
  * the month's summary, for the signed-in account and nobody else: the account
  * is a required argument and a request that cannot prove one is a 401 with the
  * message table's words, never another account's money (drive issue #73,
- * north star: Safe). The one gate is signedInAccount() in src/status.js, the
+ * north star: Safe). The one gate is signedInAccount() in core/status.js, the
  * same one /api/first-run-status uses.
  *
  * Until the meter and the account store land (issues #6 and #2), a signed-in
@@ -702,7 +702,7 @@ const USAGE_HEADERS = Object.freeze({
  * `uploadLine` rides on the answer beside `capLine` (drive issue #308): the
  * live upload-progress line the usage page shows, the same words `drive status`
  * and the first-run page print. It is assembled here by `uploadProgress()` from
- * `UPLOAD_LABEL` in src/status.js, the one word table and the one byte
+ * `UPLOAD_LABEL` in core/status.js, the one word table and the one byte
  * formatter, so the page sets a finished string and carries no second copy of
  * either. It is null when there is no queue to report — the queue is rclone's,
  * on the Mac, and the Worker has no device store yet — and a payload that is
@@ -711,7 +711,7 @@ const USAGE_HEADERS = Object.freeze({
  * @param {Request} request
  * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
- * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
+ * @param {string|null} [balanceLine] the prepaid balance line (core/topup.js balanceLine, drive#586), or null when there is no balance store
  */
 export function handleUsageRequest(request, account, upload = null, balanceLine = null) {
   // The gate is first, before the method: an anonymous request learns nothing

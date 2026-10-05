@@ -88,7 +88,7 @@ test("install lines in the docs, help and page are generated from .goreleaser.ya
   assert.deepEqual(
     INSTALL_LINES.map((row) => ({ os: row.os, line: row.line })),
     derived,
-    "src/install-lines.js must match .goreleaser.yaml",
+    "core/install-lines.js must match .goreleaser.yaml",
   );
 
   const mainGo = read("cmd/drive/main.go");

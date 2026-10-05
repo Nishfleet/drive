@@ -1,5 +1,5 @@
 // The account gate (drive issue #73, north star: Safe). One gate —
-// signedInAccount() in src/status.js — stands in front of every /api/*
+// signedInAccount() in core/status.js — stands in front of every /api/*
 // route that touches an account, and every read and write is scoped to the
 // signed-in account's own prefix.
 //
@@ -295,7 +295,7 @@ test("a public route answers with no account", async () => {
 
 test("an anonymous request to every account route is 401 and no data", async () => {
   const unauthorized = failureMessage("unauthorized");
-  // The words are the one message table's (src/messages.js), not a second copy
+  // The words are the one message table's (core/messages.js), not a second copy
   // written here, so the page and the endpoint cannot say different things.
   assert.equal(
     unauthorized,
@@ -470,7 +470,7 @@ test("a link token answers without an account, and never data", async () => {
     assert.match(await response.text(), /That link does not open anything/);
   }
   // And the owner's roots are the account's: a signed-out caller cannot list,
-  // mint or revoke on either feature, with the shared 401 (src/status.js).
+  // mint or revoke on either feature, with the shared 401 (core/status.js).
   const unauthorized = failureMessage("unauthorized");
   for (const route of [SHARE_ENDPOINT, REQUEST_ENDPOINT]) {
     for (const method of ["GET", "POST", "DELETE"]) {

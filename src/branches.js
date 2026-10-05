@@ -5,7 +5,7 @@
 // This module is the branch lifecycle as plain logic over two things the drive
 // already has:
 //
-//   * the FileStore (src/files.js), for the copy and for the file listings the
+//   * the FileStore (core/files.js), for the copy and for the file listings the
 //     diff compares, and
 //   * the `branches` table (migration 0003), for the branch's state
 //     (`open` / `approved` / `discarded`), and
@@ -43,7 +43,7 @@
 // throws it away. Every route needs the signed-in account, exactly like every
 // other drive read that names files (src/index.js gates it with
 // signedInAccount()). The `checkedBranchName` rule is shared with the api
-// Worker's key scoping (workers/api/src/keyprovider.js), so a branch name and
+// Worker's key scoping (core/keyprovider.js), so a branch name and
 // a branch key prefix can never accept a different shape of name.
 
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
@@ -93,7 +93,7 @@ import { unauthorizedResponse } from "../core/status.js";
 /** The prefix every snapshot key carries, so one account's snapshot is never
  * another's. The account id sits in a full segment (`u/<id>/…`) so an id that
  * is a prefix of another (`1` and `10`) cannot reach across — the same rule
- * `accountPrefix` applies to storage keys (src/files.js).
+ * `accountPrefix` applies to storage keys (core/files.js).
  * @param {{id: string}} account
  * @param {string} name the branch name
  * @returns {string} the KV key
@@ -911,7 +911,7 @@ export async function approveBranch(db, snapshots, store, account, name) {
     // drive#329: the snapshot has one source. An empty pointer, a missing KV
     // value, or JSON that is not an object would make every copy file look
     // added. Refuse before anything is copied. `unexpected` is the closest
-    // word in src/messages.js: this is a programmer/data fault, not
+    // word in core/messages.js: this is a programmer/data fault, not
     // storage-down (the namespace is bound) and not branch-not-found.
     console.error?.(`approve refused unavailable snapshot for row ${branch.id}`);
     return { error: failureMessage("unexpected"), status: 500 };

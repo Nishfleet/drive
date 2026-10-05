@@ -1,7 +1,7 @@
 // The prepaid balance's moving parts (drive#586, part 2): the meter's usage
 // draws, the pause at $0, the "$2 left" email and the optional auto top-up.
 //
-// The ledger itself (src/ledger.js) only appends and sums. This file decides
+// The ledger itself (core/ledger.js) only appends and sums. This file decides
 // WHEN money is drawn and what the balance then triggers:
 //
 //   - drawUsageHours: run by the hourly meter job after the rollup. For each

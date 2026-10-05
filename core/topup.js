@@ -6,7 +6,7 @@
 //   POST /api/topup          (signed in) opens a Dodo checkout for an amount.
 //   GET  /api/balance        (signed in) the balance and the recent ledger.
 //   POST /api/billing/webhook (public, signed by Dodo) credits a top-up or
-//                            records a refund, through src/ledger.js.
+//                            records a refund, through core/ledger.js.
 //
 // Dodo signs webhooks the Standard Webhooks way: the `webhook-id`,
 // `webhook-timestamp` and `webhook-signature` headers, and an HMAC-SHA256 over
@@ -519,7 +519,7 @@ export function balanceLine(cents, options = {}) {
 
 /**
  * Whether a checkout URL is an https page on Dodo's own domain. The host pin
- * itself lives in src/dodo.js next to resolveDodoUrl(), which sends the bearer
+ * itself lives in core/dodo.js next to resolveDodoUrl(), which sends the bearer
  * key to the same host; this name is the checkout's, and it is kept because
  * the checkout's own tests read it.
  * @param {string} value

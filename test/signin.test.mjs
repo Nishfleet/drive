@@ -463,7 +463,7 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   );
   assert.equal(response.status, 429, "the walk must hit the edge limit, not the mailer");
   assert.equal(response.headers.get("retry-after"), "60");
-  // The shared refusal's shape (src/rate-limit.js): exactly the header set the
+  // The shared refusal's shape (core/rate-limit.js): exactly the header set the
   // waitlist's own limiter answers with, so the two endpoints cannot differ.
   assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -983,7 +983,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const env = made.env;
 
   // The first three sends from one IP land. Each one carries a different
-  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // x-forwarded-for: that header is not the key (core/auth.js consults only
   // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
   for (let i = 0; i < 3; i++) {
     const response = await workerFetch(

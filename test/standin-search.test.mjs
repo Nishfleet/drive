@@ -6,7 +6,7 @@
 // half that only real storage can answer: the files are in an S3 bucket, the
 // index is built by walking that bucket with the shipped S3 store, and the
 // search runs over what the walk found. Everything is the production path —
-// `createS3Store` (src/files.js) scoped by `scopeStore`, fed to
+// `createS3Store` (core/files.js) scoped by `scopeStore`, fed to
 // `reconcileIndex` (src/search.js) exactly as the Worker's scheduled handler
 // wires it, then `searchDrive` over the result.
 //

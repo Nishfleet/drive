@@ -420,7 +420,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   );
   assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
   // The dead-letter table was an earlier design that was replaced by the
-  // per-event rejection in the intake (src/meter.js recordEvents). The test
+  // per-event rejection in the intake (core/meter.js recordEvents). The test
   // keeps the assertion as a gate: the name must not appear in the schema.
   assert.ok(
     !Object.hasOwn(db.tables, "event_dead_letters"),
@@ -481,7 +481,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
  * account writes with: ListObjectVersions is the stock API for a versioned
- * bucket, and the parser is the shipped one (src/files.js
+ * bucket, and the parser is the shipped one (core/files.js
  * `createS3Store.listVersions` answers with it), so a version's stop time here
  * is the stop time the product reads in production.
  * The reconciler only calls listVersions; the other methods are stubs that

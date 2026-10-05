@@ -150,7 +150,7 @@ test("an agent request under the cap writes, and the day it spent is stamped", a
   // A new row is written with no cap of its own (drive#534): 0004 declared
   // `monthly_cap_usd REAL NOT NULL DEFAULT 12.0`, and migration 0021 rebuilds
   // the table so the column is nullable and has no default. NULL is the whole
-  // point — the reader's own default ($20, src/cap-default.js) then applies, so
+  // point — the reader's own default ($20, core/cap-default.js) then applies, so
   // a key that has never been configured is capped at the documented $20 rather
   // than the table's old $12.
   assert.equal(stamped.monthly_cap_usd, null);

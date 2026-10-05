@@ -33,13 +33,13 @@
 //      table. A key without a record stays whatever the customer made it, on
 //      every run, forever.
 //
-// *When* the cap is reached is not decided here: src/billing.js's
+// *When* the cap is reached is not decided here: core/billing.js's
 // usageSummary()/capStatus() own that, and this module only acts on the state
 // they return, so enforcement, the usage page and `drive status` cannot
 // disagree about the money.
 //
 // The storage side is an injected provider shaped like the KeyProvider
-// interface in workers/api/src/keyprovider.js (mint(scope), revoke(keyId) and
+// interface in core/keyprovider.js (mint(scope), revoke(keyId) and
 // swapToReadOnly(keyId)): the real one lands with issue #2, so the decision
 // here is testable now with no storage account, and a provider that already
 // implements swapToReadOnly() is used for the cap swap rather than this module
@@ -70,7 +70,7 @@ export const READ_ONLY_CAPABILITIES = Object.freeze(
 // kind may ever hold, so a corrupted record cannot hand an agent key `delete`.
 //
 // It is the same object the api Worker scopes keys with: the one kind to
-// capabilities table is declared in workers/api/src/keyprovider.js
+// capabilities table is declared in core/keyprovider.js
 // (CAPABILITIES_BY_KIND) and this name is that object, not a second copy
 // (drive#77), so a kind cannot end up with different powers in two places.
 export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
@@ -220,7 +220,7 @@ function targetCapabilities(key, state) {
   if (!scope) {
     throw new Error(
       `No write scope for key kind "${key.kind}" on key ${key.keyId}; ` +
-        `add it to WRITE_SCOPE_BY_KIND in src/cap.js`,
+        `add it to WRITE_SCOPE_BY_KIND in core/cap.js`,
     );
   }
   // checkedKey() has already validated the record's shape, so it is only held
@@ -325,7 +325,7 @@ function checkedProvider(provider) {
 /**
  * Executes a plan against the key provider and reports what was minted. At the
  * cap each key is revoked through the provider's own swapToReadOnly() when it
- * has one (the interface in workers/api/src/keyprovider.js exists for this
+ * has one (the interface in core/keyprovider.js exists for this
  * one call), and through revoke-then-mint otherwise; either way the write key
  * is gone before the read-only one exists. Once the cap is raised the write key
  * is minted first and the read-only one revoked after, so a failure cannot
@@ -365,7 +365,7 @@ export async function applyCapSwap(plan, provider) {
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
         // The provider's own swap is handed the keyId alone and re-derives the
-        // scope from the row it is replacing (workers/api/src/devices.js
+        // scope from the row it is replacing (core/devices.js
         // `swapToReadOnly` mints in `bucketForKeyPrefix(accountId, prefix)`),
         // so the bucket the row was scoped to reaches the replacement without
         // this module having to pass it.
@@ -425,7 +425,7 @@ const CAP_DOLLARS = /^(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/;
  * amount money has, so more than two decimals is a typo to reject rather than
  * a number to round behind their back. Zero is allowed on purpose: a cap below
  * the default is a stricter choice, and the drive honours a stricter choice
- * (src/billing.js, the card-less $1 cap) — `drive cap 0` is a deliberate way
+ * (core/billing.js, the card-less $1 cap) — `drive cap 0` is a deliberate way
  * to make a drive read-only with nothing deleted.
  * @param {unknown} input
  */
@@ -501,7 +501,7 @@ export const CAP_ENDPOINT = "/api/cap";
  * swap — it revokes the old credential and mints a new one — so a page on
  * another origin that could forge the POST would revoke a real drive's keys.
  * The rule is the one every other state-changing route carries
- * (src/files.js, src/waitlist.js, src/email-send.js), it lives in the handler
+ * (core/files.js, src/waitlist.js, core/email-send.js), it lives in the handler
  * rather than in a middleware layer, and it reads no header the CLI cannot
  * send: a request with no Origin at all is not a browser, so `drive cap` still
  * reaches it.
@@ -520,7 +520,7 @@ export async function handleCapRequest(request, account, capStore) {
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
+  // isSameOriginRequest (core/email-send.js line 111) lets a caller with
   // no Origin header through, so the CLI ('drive cap 20', no browser
   // evidence) still reaches this handler — the account gate is what
   // identifies it, not the header.
@@ -611,7 +611,7 @@ export async function handleCapRequest(request, account, capStore) {
  * is a local config file, so whoever restarts the mount has to be told which
  * key to write there. This is that answer — the access key id, the secret and
  * the STS session token a scoped credential is minted with (the same three
- * fields workers/api/src/s3-keys.js returns). Without the session token the
+ * fields core/s3-keys.js returns). Without the session token the
  * storage server answers InvalidTokenId and the mount reads nothing at all
  * (measured against the pinned MinIO), so a hand-back that dropped it would be
  * worse than no hand-back.

@@ -1,5 +1,5 @@
 // Tests for share links and upload requests (drive issue #19). Two halves, the
-// same split test/files.test.mjs uses for src/files.js:
+// same split test/files.test.mjs uses for core/files.js:
 //
 // 1. The logic in src/share.js against a real in-memory FileStore and the
 //    memory LinkStore: tokens, the 7-day window, revocation, the logged-out

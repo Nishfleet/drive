@@ -64,7 +64,7 @@ function emptyStore(written = {}) {
     async write(path, body) {
       // The body is whatever the caller handed over — a Blob from the module,
       // a stream from a request — so the store reads it rather than assuming a
-      // shape, exactly as the real in-memory store does (src/files.js).
+      // shape, exactly as the real in-memory store does (core/files.js).
       written[path] = await new Response(body).text();
     },
     async remove() {},
@@ -143,7 +143,7 @@ test("starterFiles validates every file sits inside the starter folder", () => {
 test("the starter writes four files and only missing ones on re-run, in the account's own prefix", async () => {
   const { scopeStore } = await import("../core/files.js");
   /**
-   * The real in-memory store (src/files.js createMemoryStore) under the real
+   * The real in-memory store (core/files.js createMemoryStore) under the real
    * scope, so the account prefix is scopeStore's work and not a prefix this
    * test writes by hand: the assertion below is on the real storage keys one
    * account's files land under, and a second account sees none of them.
@@ -212,7 +212,7 @@ test("readStarterRequest accepts only the create action", () => {
     error: failureMessage("starter-create-action"),
   });
   assert.deepEqual(readStarterRequest({}), { error: failureMessage("starter-create-action") });
-  // Both refusals are the one table's words (src/messages.js), never a second
+  // Both refusals are the one table's words (core/messages.js), never a second
   // copy written here.
   assert.deepEqual(readStarterRequest(null), { error: failureMessage("json-object-needed") });
   assert.deepEqual(readStarterRequest("create"), { error: failureMessage("json-object-needed") });
@@ -335,7 +335,7 @@ test("the handler refuses unknown methods", async () => {
 // ------------------------------------------------------------ the real drive
 // A green fake proves the handler answers; it does not prove the starter puts
 // files on a drive. This one does: a stock `rclone serve s3` over a real
-// directory, the real S3 store from src/files.js (createS3Store, the one the
+// directory, the real S3 store from core/files.js (createS3Store, the one the
 // Worker builds for a deployment), and the bytes read back off the disk at the
 // end. A host without rclone skips it and names the gap, the same way
 // test/home-demos.test.mjs does.

@@ -156,7 +156,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
 
   // Rate limit next: it bounds the work that actually costs something (a body
   // parse and a D1 write), so it runs before both. One shared helper
-  // (src/rate-limit.js) owns the client-IP key, the fail-closed answer and the
+  // (core/rate-limit.js) owns the client-IP key, the fail-closed answer and the
   // 429, so the waitlist, the sign-in route (drive issue #147) and the api
   // Worker's device routes cannot state two different limits or two different
   // refusals. Unchanged behaviour: a missing binding, a failed call and a

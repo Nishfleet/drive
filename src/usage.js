@@ -3,12 +3,12 @@
 // served from public/usage.html, so it cannot import this module;
 // test/usage.test.mjs reads the shipped page and fails CI when its copy, its
 // endpoint or its poll interval drift from here — the same gate
-// test/status.test.mjs runs for src/status.js and test/pricing-copy.test.mjs
+// test/status.test.mjs runs for core/status.js and test/pricing-copy.test.mjs
 // for the price.
 //
 // No money is worked out here, and no number is formatted here: every value
 // the page sets and the CLI prints arrives finished in the summary's `labels`
-// (src/billing.js). This module holds only the words, so a dollar can never be
+// (core/billing.js). This module holds only the words, so a dollar can never be
 // written down twice.
 import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
@@ -63,7 +63,7 @@ export const USAGE_LABELS = Object.freeze({
   }),
   // The upload-progress line's section (drive issue #308). The line itself is
   // not a word here: /api/usage carries it finished, assembled by
-  // uploadProgress() from UPLOAD_LABEL in src/status.js — the one table
+  // uploadProgress() from UPLOAD_LABEL in core/status.js — the one table
   // `drive status` and the first-run page also read — so the page renders
   // another module's sentence and holds no second copy of it. What this page
   // owns is the heading above the line and the reason the line moves at all.

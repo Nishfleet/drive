@@ -8,14 +8,14 @@
 // that drops a marker, or carries a number this file no longer produces, fails
 // CI instead of shipping a wrong price.
 //
-// The numbers come from src/billing.js, which is the one place the money is
+// The numbers come from core/billing.js, which is the one place the money is
 // worked out (drive issues #7, #53, #76) and the one the invoice, the usage
-// page and the cap all read; the sentences come from src/pricing.js, the one
+// page and the cap all read; the sentences come from core/pricing.js, the one
 // price source those numbers are built from (drive#463), so the docs cannot
 // ship a bill the invoice would not produce.
 //
 // Plain data and pure functions only, so `node --test` runs this directly (the
-// same reason src/status.js, src/seo.js and src/billing.js are plain).
+// same reason core/status.js, core/seo.js and core/billing.js are plain).
 import {
   BILLING_CONFIG,
   GB_PER_TB,
@@ -93,7 +93,7 @@ export const BILL_TABLE = Object.freeze(
 /**
  * The sentence that says what an agent key may not do. Checked against
  * KEY_POWERS rather than typed, so the page cannot claim a power the api
- * Worker's capability table (workers/api/src/keyprovider.js) does not grant,
+ * Worker's capability table (core/keyprovider.js) does not grant,
  * or deny one it does.
  */
 export function agentCannotDeleteSentence() {

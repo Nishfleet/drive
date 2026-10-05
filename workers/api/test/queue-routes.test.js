@@ -21,7 +21,7 @@ import { parseQueueReport, reportUploadQueueRoute } from "../src/queue-routes.js
 
 const QUEUE = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
 
-// The session cookie Better Auth mints, named by src/auth.js
+// The session cookie Better Auth mints, named by core/auth.js
 // `AUTH_COOKIE_PREFIX`: the approval is an account route, so walking the flow
 // past the page needs one.
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;

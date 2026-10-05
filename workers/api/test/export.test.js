@@ -45,7 +45,7 @@ function exportD1(sqlite) {
   return /** @type {D1Database} */ (
     /** @type {unknown} */ ({
       ...inner,
-      /** db.batch (workers/api/src/db.js) hands over prepared, bound
+      /** db.batch (core/db.js) hands over prepared, bound
        * statements; d1Over's `_exec` re-runs one against SQLite. D1's batch
        * answers `Promise<D1Result[]>`, so the array of promises is awaited
        * here rather than handed back unresolved. */

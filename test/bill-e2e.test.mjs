@@ -2,7 +2,7 @@
 //
 // Everything here runs through the REAL database: the rollup's own SQL against
 // the real migrations on a real node:sqlite database, the month's reads, and
-// monthBillCents() in src/billing.js - the one function that turns the month's
+// monthBillCents() in core/billing.js - the one function that turns the month's
 // numbers into money. No fake D1 and no hand-rolled month: a case is set up by
 // storing file versions the way the storage provider reports them and letting
 // the hourly trigger roll the hours, so the GB-minutes the bill reads are the
@@ -270,7 +270,7 @@ async function storedAllMonth(sizeBytes, monthLabel = "2026-09") {
 
 /**
  * The metered charge of `gbMinutes`, in cents, worked out the way
- * src/billing.js does it, for a test that has to state a number rather than
+ * core/billing.js does it, for a test that has to state a number rather than
  * read one. The spec's own divisor is the AVERAGE month, so a 30-day calendar
  * month of storage bills 43,800/43,200 of its metered rate - spelled out here
  * so the expected figures below are honest rather than convenient.

@@ -27,7 +27,7 @@ import (
 // mount: BuildMountPlan puts the paused rate on rclone's command line.
 
 // The words on the two commands' lines. `pausedLabel` and `resumedLabel` are
-// the same words the first-run page and `drive status` print (src/status.js
+// the same words the first-run page and `drive status` print (core/status.js
 // UPLOAD_LABEL.paused and .resumed), and TestStatusWordsMatchThePageWords is
 // the join between the two copies. The notes are this command's own next step,
 // in the customer's words: every line says what happened and the one thing to

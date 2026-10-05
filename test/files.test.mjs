@@ -1,13 +1,13 @@
 // Tests for the Web Files page (drive issue #31). Two halves, the same split
-// test/status.test.mjs uses for src/status.js:
+// test/status.test.mjs uses for core/status.js:
 //
-// 1. The logic in src/files.js: what a file is, how a listing is ordered, the
+// 1. The logic in core/files.js: what a file is, how a listing is ordered, the
 //    path validator, the trash key round-trip, the 30-day window, the words,
 //    and every /api/files* route against a real in-memory store — browse,
 //    preview, download, upload, delete and one-tap restore.
 // 2. The shipped page: public/files.html is a static asset and cannot import
 //    the module, so this reads the file and fails when its copy, its endpoints
-//    or its window drift from src/files.js.
+//    or its window drift from core/files.js.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -66,7 +66,7 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The one account gate is signedInAccount() in
-// src/status.js; test/account-gate.test.mjs walks the routes that answer 401
+// core/status.js; test/account-gate.test.mjs walks the routes that answer 401
 // without it.
 const account = Object.freeze({ id: "1", name: "Your drive" });
 
@@ -197,7 +197,7 @@ test("a path is absolute, and cannot climb out of the drive", () => {
 });
 
 test("the Worker owns the stored file name, and the page does not hold a second copy", () => {
-  // src/files.js is the one place a name is decided. The Web Files page is a
+  // core/files.js is the one place a name is decided. The Web Files page is a
   // static asset that cannot import it, and drive#92 removed the copy it used
   // to have: two copies of the same rule is how a slash comes to be a dash in
   // one path and a 400 in the other. This gate is where both sides are visible,
@@ -783,7 +783,7 @@ test("each route names the one method it serves", async () => {
 
 test("an account without a store has a name for the masthead", () => {
   // The account the handlers take is the signed-in one from the gate
-  // (signedInAccount in src/status.js). With no sign-in flow yet no request
+  // (signedInAccount in core/status.js). With no sign-in flow yet no request
   // can prove one, so the page's masthead falls back to its own wordmark and
   // this test only pins the shape the handlers accept.
   assert.equal(account.name, "Your drive");
@@ -1435,7 +1435,7 @@ test("the page wears the site's header, with room for the view strip", () => {
 });
 
 test("the page's copy is the module's copy", () => {
-  // The page cannot import src/files.js, so these are the strings it must
+  // The page cannot import core/files.js, so these are the strings it must
   // carry. Drifting copy fails here instead of shipping a page that disagrees
   // with the module and its tests.
   for (const state of Object.values(EMPTY_STATES)) {
@@ -1459,7 +1459,7 @@ test("the page's copy is the module's copy", () => {
 });
 
 test("the page shows the sign-in words the 401 sent, and carries no copy", () => {
-  // The page cannot import src/messages.js and must not carry a second copy of
+  // The page cannot import core/messages.js and must not carry a second copy of
   // the table's `unauthorized` entry (test/pr-gate.test.mjs pins that): the
   // API's 401 body IS that entry, so the page renders what the endpoint sent
   // (drive issue #73). This pins the plumbing, not the words.
@@ -1492,7 +1492,7 @@ test("the page's script reads the same endpoints and the same window", () => {
   ]) {
     assert.ok(page.includes(`const ${name} = "${endpoint}";`), `the page must call ${endpoint}`);
   }
-  // The 30-day window is src/files.js's number, and the page carries it only so
+  // The 30-day window is core/files.js's number, and the page carries it only so
   // this gate can read it back: nothing in the page's own script touches it, so
   // a linter reads the line as dead and renames it. The underscore is the
   // standard "deliberately unread in the module it is declared in" marker, and
@@ -1517,7 +1517,7 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // bare # would send a no-JS browser to the top of the page (drive#92).
   assert.ok(page.includes('<a id="viewer-download" href="/api/files/download" download>'));
   // The upload path carries one name, and it is the name the browser knows:
-  // src/files.js's safeFileName is the single place a stored name is decided,
+  // core/files.js's safeFileName is the single place a stored name is decided,
   // and the page deliberately does not have a second copy of that rule (the
   // gate above is where the page's character set is compared with the
   // module's).

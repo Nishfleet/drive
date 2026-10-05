@@ -63,7 +63,7 @@ export function normalizeEmail(value) {
  * unreadable to a person, and the walkthrough named it.
  *
  * `en-GB` with a numeric day and a short month is the same pair
- * src/files.js formatWhen uses for the same-year dates in the file list, so
+ * core/files.js formatWhen uses for the same-year dates in the file list, so
  * every customer-facing day drive shows reads one way.
  * @param {number} closedAtSeconds
  * @returns {string}

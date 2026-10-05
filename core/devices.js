@@ -3,7 +3,7 @@
 //
 // The in-memory key store (keystore.js) is the stand-in a deployment without
 // a database keeps; this module is the real rows. Cap enforcement
-// (src/cap.js `enforceCap` / `applyCapSwap`) talks to a KeyProvider
+// (core/cap.js `enforceCap` / `applyCapSwap`) talks to a KeyProvider
 // (`mint` / `revoke` / `swapToReadOnly`) that reads and persists those rows,
 // so a swap that ran on one Worker instance is the row the next instance
 // sees. The storage-side revoke / swap is still the vendor's key API (#173);
@@ -577,7 +577,7 @@ export function createD1DeviceStore(db, options = {}) {
    * the cap and still answers the reads on the same key.
    *
    * The swap is the account cap's swap (`agentCapPlan` over `capSwapPlan` in
-   * src/cap.js) on this store's own `keyProviderFor`, which revokes the old
+   * core/cap.js) on this store's own `keyProviderFor`, which revokes the old
    * credential at the provider before it mints the read-only one, so the write
    * power is gone at the vendor in the same request and not an hour later.
    *
@@ -652,7 +652,7 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
-     * The account's live keys in the shape src/cap.js `capSwapPlan` reads.
+     * The account's live keys in the shape core/cap.js `capSwapPlan` reads.
      * Revoked rows are left out: a revoked key is already gone and must not
      * be swapped again.
      * @param {string} accountId
@@ -665,7 +665,7 @@ export function createD1DeviceStore(db, options = {}) {
           kind: device.kind,
           prefix: device.prefix,
           // The bucket this row's own prefix puts it in. A cap swap mints
-          // its replacement against this bucket (src/cap.js
+          // its replacement against this bucket (core/cap.js
           // `applyCapSwap`), so a team key stays in the team's bucket and
           // an account key stays in the account's, whatever the cap does
           // (drive#462).
@@ -680,14 +680,14 @@ export function createD1DeviceStore(db, options = {}) {
      * The account's live device rows, oldest first, in the shape the first-run
      * page's poll reads: `id`, `name`, `kind` and `lastSeenAt`. Whether a
      * device reads as connected is not answered here — that window is
-     * src/status.js `connectionStatus`'s own, so the page, the route and the
+     * core/status.js `connectionStatus`'s own, so the page, the route and the
      * CLI share the one rule. The columns behind the answer are this store's:
      * the api Worker's `authenticate` and `renewKey` stamp `last_seen_at` on
      * the row a request authenticated, and drive issue #556 reads it back for
      * the page.
      *
      * `lastSeenAt` is epoch **milliseconds**, because that is the clock
-     * src/status.js `connectionStatus` compares against `Date.now()`: the
+     * core/status.js `connectionStatus` compares against `Date.now()`: the
      * column is epoch seconds (written by `nowSeconds()`), and this is the one
      * read whose answer is that payload, so the conversion happens here once
      * instead of in every caller. A row that never signed in has null. Revoked
@@ -956,9 +956,9 @@ export function createD1DeviceStore(db, options = {}) {
     /**
      * Whether a card is really on file for this account (drive#417), read
      * from `accounts.card_added_at` — the stamp the card step writes
-     * (src/abuse-guards.js), and the only record a card exists. Fail closed: no accounts row and a null stamp both
+     * (core/abuse-guards.js), and the only record a card exists. Fail closed: no accounts row and a null stamp both
      * read as no card, because an account that cannot show a card cannot show
-     * a charge either (the usage page's "no charge yet" label, src/billing.js).
+     * a charge either (the usage page's "no charge yet" label, core/billing.js).
      * No Dodo call happens here: real capture waits on the Dodo key (#325).
      * @param {string} accountId
      * @returns {Promise<boolean>}

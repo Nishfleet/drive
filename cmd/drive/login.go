@@ -11,7 +11,7 @@ import (
 )
 
 // defaultAPIBase is the one host that fronts both /api/* and /v1/* (drive#156).
-// It matches src/seo.js SITE_ORIGIN; TestDefaultAPIBaseMatchesTheShippedSite
+// It matches core/seo.js SITE_ORIGIN; TestDefaultAPIBaseMatchesTheShippedSite
 // fails if they drift. --api and DRIVE_API_URL still win.
 const defaultAPIBase = "https://drive-pricing.nishant345.workers.dev"
 

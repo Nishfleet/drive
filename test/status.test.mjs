@@ -1,6 +1,6 @@
 // Tests for first-run and sync status (drive issue #32). Two halves:
 //
-// 1. The logic in src/status.js: the one install command, the connection
+// 1. The logic in core/status.js: the one install command, the connection
 //    state a device is in, its sync state, upload progress, and the words the
 //    page says for each. Every branch, including the "waiting for you" and
 //    "unreachable" ones the page must not confuse.
@@ -683,7 +683,7 @@ test("the shell carries one wordless install row per system for the renderer to 
 test("the shell is structure only: the module's copy is not re-declared in it", () => {
   // The old gate policed a second copy of every sentence; this one fails if a
   // second copy is ever reintroduced. The shell carries structure and styles;
-  // every word the page shows comes from src/status.js through the renderer.
+  // every word the page shows comes from core/status.js through the renderer.
   assert.ok(
     !shell.includes(INSTALL_COMMAND),
     "the shell must not carry the install command; the renderer writes it from the module",

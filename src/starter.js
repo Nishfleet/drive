@@ -20,7 +20,7 @@
 // and test/usage.test.mjs for src/usage.js.
 //
 // No price is written down here. The one line the page shows about cost comes
-// from src/pricing.js (PRICE), the single price source, so a re-priced product
+// from core/pricing.js (PRICE), the single price source, so a re-priced product
 // moves this page and the pricing page together.
 
 import { validatePath } from "../core/files.js";
@@ -160,7 +160,7 @@ export const STARTER_COPY = Object.freeze({
   }),
   // A store failure, and nothing else, is what the failed pair is for. The
   // `next` is the table's own retry advice read from the entry, not from the
-  // joined sentence: a wording change in src/messages.js can then never turn
+  // joined sentence: a wording change in core/messages.js can then never turn
   // the next step into half a sentence.
   failed: Object.freeze({
     what: "The starter could not be written.",
@@ -184,7 +184,7 @@ export const STARTER_COPY = Object.freeze({
  * The starter's one body the endpoint accepts. Anything else is refused, so a
  * stray key in a request cannot be read as a different action and a GET's own
  * read is never a write. The refusal words are the one table's
- * (src/messages.js), the same way every account route refuses bad input.
+ * (core/messages.js), the same way every account route refuses bad input.
  * @param {unknown} body
  * @returns {{action: string}|{error: string}}
  */
@@ -205,7 +205,7 @@ export function readStarterRequest(body) {
  * it: the write is a fill-in, never an overwrite, so creating the starter
  * twice is safe and creating it after you have started is safe.
  *
- * `store` is the account's own scoped store (src/files.js `scopeStore`), so
+ * `store` is the account's own scoped store (core/files.js `scopeStore`), so
  * the paths below are drive paths and the account prefix is applied by the
  * scope, not by this function. Every write goes through `store.write`, which
  * is the one paved writer in this repo — there is no second way to put a file
@@ -248,7 +248,7 @@ export async function createStarter(store) {
  * failed pair's own words and nothing of the cause, so a store failure reaches
  * the page as the words a person can act on and never as Hono's onError with a
  * stack in it. A message never carries raw error text (the safety rules in
- * src/messages.js). The cause is logged for the operator, the way
+ * core/messages.js). The cause is logged for the operator, the way
  * src/branches.js logs its own store failures, so a real outage is visible in
  * the Worker's logs rather than only in the person's screen.
  * @param {unknown} cause

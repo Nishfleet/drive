@@ -2,7 +2,7 @@ import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // The three cron trips this Worker runs, spelled out below in `triggers` and
-// read from src/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
+// read from core/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
 // src/search.js (REINDEX_SCHEDULE) by the `scheduled` handler in src/index.js.
 //
 // They are spelled in both places on purpose, and this import list is why it
@@ -71,7 +71,7 @@ export default defineConfig({
     // hour later, so the two nightly walks do not share a trip.
     //
     // Each schedule is the string the module that owns it exports:
-    // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE, and
+    // core/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE, and
     // src/search.js's REINDEX_SCHEDULE. test/meter.test.mjs reads these three
     // out of this file and asserts they equal those exports, so a changed
     // schedule cannot drift from the trigger that runs it. They are not
@@ -103,7 +103,7 @@ export default defineConfig({
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
       }),
       // The meter binds the same drive database under a name of its own (drive
-      // issue #6): src/meter.js says which tables it owns and which binding
+      // issue #6): core/meter.js says which tables it owns and which binding
       // carries them, so the customer-data split is a binding line here rather
       // than a code change in the meter. Same database, so same id:
       // file_versions, usage_minutes, events_seen and meter_rollup_state

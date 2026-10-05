@@ -56,7 +56,7 @@ export const TEAM_BUCKET_PREFIX = "drv-t-";
 /**
  * The one kind to capabilities table (docs/build-spec.md, "Keys and safety").
  * It is declared here and nowhere else: scopeFor() below builds storage scopes
- * from it, and the pricing Worker's cap logic (src/cap.js) re-exports this same
+ * from it, and the pricing Worker's cap logic (core/cap.js) re-exports this same
  * frozen object as WRITE_SCOPE_BY_KIND instead of keeping a second copy, so a
  * kind cannot end up with different powers in two places. The import crosses
  * the two src trees on purpose (drive#77): each Worker bundles its own module

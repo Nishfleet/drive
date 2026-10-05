@@ -32,7 +32,7 @@ const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 /**
- * An agent key row in the shape src/cap.js reads, so an agent cap that bites
+ * An agent key row in the shape core/cap.js reads, so an agent cap that bites
  * produces the identical key swap an account cap produces.
  * @param {Record<string, unknown>} [overrides]
  */
@@ -60,7 +60,7 @@ const agent = (gb, overrides = {}) => ({
 
 test("a fresh agent key is capped by default, and the default is the account's", () => {
   // The default is the account's own $20 cap (drive#464, read from
-  // src/billing.js), so an agent inherits the number a customer already reads
+  // core/billing.js), so an agent inherits the number a customer already reads
   // on the usage page rather than a second number to learn.
   const defaults = agentCaps();
   assert.equal(defaults.monthlyCapUsd, BILLING_CONFIG.defaultCapUsd);

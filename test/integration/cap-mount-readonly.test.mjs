@@ -33,7 +33,7 @@
 // test/step1-storage.test.mjs reads its scoped-key refusals off. It is the
 // only endpoint in this repo that mints scoped read-only keys at all: B2
 // does, and iDrive e2 refuses STS AssumeRole outright (measured, drive#173,
-// recorded in workers/api/src/s3-keys.js). The cap swap's provider calls are
+// recorded in core/s3-keys.js). The cap swap's provider calls are
 // the same code either way — the endpoint is a configuration difference — so
 // this proves the swap against the one backend that can perform it.
 //

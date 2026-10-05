@@ -58,7 +58,7 @@ export {
 /**
  * The stand-in key and object store. One instance per Worker isolate
  * (src/index.js), the same choice the Web Files page made for its bytes
- * (src/files.js) until the real store lands.
+ * (core/files.js) until the real store lands.
  *
  * The device sign-in half is delegated to `options.signin`, so the deployment
  * chooses the D1 store (device-signin.js `createD1DeviceSigninStore`) and the
@@ -177,7 +177,7 @@ export function createMemoryStore(options = {}) {
   return {
     /** The stand-in's accounts, for the tests and the stand-in's one query.
      * The D1 sign-in store has no accounts of its own (the sign-in flow owns
-     * them, src/auth.js), so the map is the in-memory one's only. */
+     * them, core/auth.js), so the map is the in-memory one's only. */
     accounts: signin.accounts ?? new Map(),
 
     /**
@@ -663,7 +663,7 @@ export function createMemoryStore(options = {}) {
 
     /**
      * The team store: teams, members, and the invite-by-email lookup. The D1
-     * store when the deployment binds a database (workers/api/src/teams.js
+     * store when the deployment binds a database (core/teams.js
      * `createD1TeamStore`), and the in-memory stand-in when it does not, so a
      * route reads `store.teams` either way and neither path is special-cased.
      */

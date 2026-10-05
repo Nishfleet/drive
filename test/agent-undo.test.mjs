@@ -318,7 +318,7 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // Attribution is on the same row the rewind reads, so the screen can say
   // whose work this is with no second store.
   assert.equal(preview.changedBy, "k-claude");
-  // The window is the drive's own 30 days, read from src/files.js rather than
+  // The window is the drive's own 30 days, read from core/files.js rather than
   // declared here, so the two promises are one number.
   assert.equal(REWIND_WINDOW_DAYS, 30);
   assert.equal(preview.windowDays, 30);

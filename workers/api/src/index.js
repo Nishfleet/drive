@@ -32,7 +32,7 @@ export { storageLocationFromEnv };
  * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
  * because a deployment without them answers its closed door rather than
  * pretending to hold keys. `accounts` is the sign-in flow's Better Auth
- * instance (src/auth.js `authFor`), read through src/status.js
+ * instance (core/auth.js `authFor`), read through core/status.js
  * `signedInAccount` for the browser half of a device approval; a deployment
  * with no database, secret or address has no instance and stays signed out.
  * `queues` is the D1-backed upload-queue report store (queues.js), or null
@@ -51,7 +51,7 @@ export { storageLocationFromEnv };
  * nothing else. A CLI request proves one with an `Authorization: Bearer
  * <device token>` header, hashed and looked up in the key store; a browser
  * approving a device proves one with the sign-in session cookie, resolved
- * through the same src/status.js `signedInAccount` gate every site account
+ * through the same core/status.js `signedInAccount` gate every site account
  * route uses (drive#109), against `ctx.accounts`. No cookie value, query value
  * or body field is trusted, and the expiry and revocation checks live in the
  * store's one lookup (device-signin.js `accountForDeviceToken`), so a dead
@@ -197,7 +197,7 @@ export function createApp(table = routes) {
    * cookie the sign-in flow minted. A cookie is only read here, on a path that
    * needs an account, so a public route never pays for a session lookup
    * (drive#109); a deployment with no sign-in instance (`ctx.accounts` null)
-   * stays signed out, the closed door src/auth.js `authFor` documents.
+   * stays signed out, the closed door core/auth.js `authFor` documents.
    * @type {import("hono").MiddlewareHandler<{Bindings: Ctx, Variables: ApiVariables}>}
    */
   const gate = async (c, next) => {
@@ -321,7 +321,7 @@ export function createApp(table = routes) {
   app.notFound(() => errorResponse(404, "Not found."));
 
   // The real error goes to the Worker's log; the caller gets the fixed
-  // sentence from the one message table (src/messages.js) and can learn
+  // sentence from the one message table (core/messages.js) and can learn
   // nothing about ours from it. Only the method, the route's own registered
   // path and the error are logged: the request's path is not, because a
   // :param can be an account id or a one-time code. `routePath` is empty when
@@ -397,7 +397,7 @@ let keyStoreDb;
 
 /**
  * The account whose email is this address, read from the sign-in flow's own
- * `user` table on the customer database (src/auth.js built it;
+ * `user` table on the customer database (core/auth.js built it;
  * migrations/drive/0005_better_auth.sql owns it). This is the one resolver a
  * team invite binds through, so an invite to an address a signed-in account
  * already has becomes an active membership at once, and one to a new address
@@ -453,7 +453,7 @@ function storeFor(env) {
       // request, which may be a different instance. The store is a field on
       // the same memory store object, so the routes read `store.teams` either
       // way and the in-memory path (no DRIVE_DB) is the stand-in. The account
-      // resolver is the sign-in flow's own `user` table (src/auth.js owns it,
+      // resolver is the sign-in flow's own `user` table (core/auth.js owns it,
       // and it is on the same DRIVE_DB), so an email invite binds a real
       // account instead of leaving every invite unbound.
       teams: env.DRIVE_DB
@@ -487,7 +487,7 @@ export default {
       db: env.DRIVE_DB,
       store: storeFor(env),
       // The same sign-in gate the site Worker's account routes resolve
-      // (src/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
+      // (core/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
       // is one account in both Workers and the approval page needs no second
       // session system of its own. No database, secret or address is the closed
       // door `authFor` already documents: null, and every account route 401s.

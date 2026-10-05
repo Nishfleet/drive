@@ -651,7 +651,7 @@ test("gate 2b: Files page and share reads use the account's own bucket", async (
 
   // The per-account bucket on the Worker's own path, which the walk above skips
   // because it builds its own store. This is what the three removed source-text
-  // assertions claimed: that src/files.js still exports the bucket picker, and
+  // assertions claimed: that core/files.js still exports the bucket picker, and
   // that src/index.js still hands it to createS3Store instead of one fixed
   // bucket name. drive#621 proved the regex did the work and the walk did not —
   // swapping `bucketFor: storageBucketForKey` for `bucket: "storage"` failed on

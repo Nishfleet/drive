@@ -11,7 +11,7 @@
 // Approving requires a signed-in account (drive#136 finding 2): the approve
 // POST is an account route (routes.js), so the dispatcher resolves the
 // sign-in session cookie through the same gate every site account route uses
-// (src/status.js `signedInAccount` over the Better Auth instance src/auth.js
+// (core/status.js `signedInAccount` over the Better Auth instance core/auth.js
 // `authFor` builds, drive#109) and answers 401 to an anonymous request before
 // this handler runs. The account is the sign-in flow's (drive#130), copied onto
 // the code row by the store; approving no longer makes an account, it attaches
@@ -21,7 +21,7 @@
 // or read a row for a caller that holds no credential, so an unlimited
 // version of them is a way to fill the table or burn reads from anywhere. The
 // limit runs before the body is read, so a refused call costs no parse and, on
-// the code route, no row. The limiter is the one edge limiter (src/rate-limit.js
+// the code route, no row. The limiter is the one edge limiter (core/rate-limit.js
 // `enforceEdgeLimits`), the same guard the waitlist and the sign-in route run
 // behind, so the fail-closed posture and the 429 answer are written once.
 //
@@ -37,7 +37,7 @@ import { failureMessage } from "../../../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
 import { signedInAccount } from "../../../core/status.js";
 
-/** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
+/** The stand-in key store (core/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
 /** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
@@ -63,7 +63,7 @@ import { signedInAccount } from "../../../core/status.js";
 // (drive#168), and test/deploy-api-worker.test.mjs gates that both names are
 // declared there, each on its own namespace, with the per-IP ceiling above the
 // CLI's own poll rate — a device code is polled every
-// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/device-signin.js), i.e. 12
+// DEVICE_CODE_INTERVAL_SECONDS (5s, core/device-signin.js), i.e. 12
 // requests a minute from one well-behaved CLI, which the sign-in binding's
 // 10/min would lock out of the flow it is already in. With no binding on env
 // these two routes fail closed: an unrate-limited public route is the case the
@@ -86,7 +86,7 @@ export const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
 /**
  * The limiter refusal a device route answers with, or null when the request is
  * allowed through. The 429's and the 503's words are the message table's
- * (through src/rate-limit.js), so the api Worker and the site Worker cannot
+ * (through core/rate-limit.js), so the api Worker and the site Worker cannot
  * state two different rate-limit answers.
  * @param {Request} request
  * @param {{env?: Record<string, any>}} ctx

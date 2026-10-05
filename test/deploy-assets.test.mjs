@@ -137,7 +137,7 @@ test("the root llms.txt advertises only URLs the site ships", () => {
 
 test("every docs page in the sitemap ships as an HTML page and a .md copy", () => {
   // The two halves a reader can arrive by: a person follows the HTML, an agent
-  // follows the Markdown. src/seo.js is the one list both the sitemap and
+  // follows the Markdown. core/seo.js is the one list both the sitemap and
   // src/render-docs.js read, so a page cannot be built without being listed,
   // nor listed without being built.
   assert.ok(docsBuilt, "run `npm run docs:build`: public/docs/ was not built");
@@ -165,14 +165,14 @@ test("every docs page in the sitemap ships as an HTML page and a .md copy", () =
 });
 
 test("the docs build is not a second hand-kept copy of the page list", () => {
-  // src/render-docs.js derives the built files from src/seo.js, so the list
+  // src/render-docs.js derives the built files from core/seo.js, so the list
   // has one home. This asserts the derivation rather than the contents: a page
   // added to the sitemap by hand, with nothing behind it, fails the test above;
-  // a page listed in src/seo.js with no Markdown behind it fails here.
+  // a page listed in core/seo.js with no Markdown behind it fails here.
   assert.deepEqual(
     DOC_PAGES.map((page) => page.url),
     SEO_DOC_PAGES.map((page) => page.path),
-    "the docs build and the sitemap must read the same page list (src/seo.js)",
+    "the docs build and the sitemap must read the same page list (core/seo.js)",
   );
   const built = readdirSync(new URL("../docs-site/", import.meta.url)).filter((name) =>
     name.endsWith(".md"),
@@ -192,7 +192,7 @@ test("the site's own asset files ship, and the API is left to the Worker", () =>
   for (const path of [SITE.homePath, SITE.robotsPath, SITE.sitemapPath, SITE.llmsPath]) {
     assert.ok(
       shipsAsset(path),
-      `${absoluteUrl(path)} is a path src/seo.js declares and public/ does not carry (${assetFileFor(path)})`,
+      `${absoluteUrl(path)} is a path core/seo.js declares and public/ does not carry (${assetFileFor(path)})`,
     );
   }
   // The asset layer's own contract (cloudflare.config.ts): /api/*, /s/* and
@@ -431,7 +431,7 @@ test("a deployment with no api binding is a closed door, not an open one", async
   assert.deepEqual(
     await response.json(),
     { error: failureMessage("unexpected") },
-    "the closed door speaks the one failure table's words (src/messages.js)",
+    "the closed door speaks the one failure table's words (core/messages.js)",
   );
 });
 
@@ -581,7 +581,7 @@ test("POST /api/keys/revoke reaches the api Worker through the one host (drive#3
   assert.deepEqual(
     await closed.json(),
     { error: failureMessage("unexpected") },
-    "the closed door speaks the one failure table's words (src/messages.js)",
+    "the closed door speaks the one failure table's words (core/messages.js)",
   );
 
   // A throwing binding is the message table's one sentence, the same property

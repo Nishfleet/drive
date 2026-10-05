@@ -53,7 +53,7 @@ type agentKey struct {
 // it back: any drive command that finds a tool this close to the edge asks the
 // Worker to restart the hour while it still can.
 // agentKeyTTL is the hour the api Worker mints an agent key with
-// (workers/api/src/keyprovider.js AGENT_KEY_TTL_SECONDS). The CLI never
+// (core/keyprovider.js AGENT_KEY_TTL_SECONDS). The CLI never
 // mints a credential of its own, so this constant is what the CLI reads the
 // expiry against (the renew margin below) and what tests assert against;
 // the api Worker is still the one that hands out the hour.

@@ -20,7 +20,7 @@
 //                  folder. It expires on the same 7-day window and can be
 //                  revoked, and it refuses uploads while the owner's drive is
 //                  read-only at its spending cap — the cap is read from
-//                  src/billing.js's capStatus(), never re-decided here, so a
+//                  core/billing.js's capStatus(), never re-decided here, so a
 //                  capped drive cannot take a new file through a request page.
 //                  A stranger is also bounded by a per-file size, a per-link
 //                  total the owner sets (low default), and the two stock
@@ -39,7 +39,7 @@
 // It was a pair of in-memory Maps once, which made a link work on exactly the
 // Worker instance that minted it and lose it on every deploy (issue #207).
 // Nothing here invents a second path to storage: bytes go through the FileStore
-// interface (src/files.js) and the link records go through the same D1
+// interface (core/files.js) and the link records go through the same D1
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
@@ -386,7 +386,7 @@ export function requestRow(record, now, base) {
 // The upload page's copy. public/upload.html is a static asset and cannot
 // import this module, so test/share.test.mjs reads the shipped page and fails
 // when its words drift from here — the same gate test/files.test.mjs runs for
-// src/files.js and public/files.html.
+// core/files.js and public/files.html.
 export const UPLOAD_PAGE_COPY = Object.freeze({
   title: "Drop files here",
   lede: "Files you drop land in the folder below. The owner sees them on their drive.",
@@ -747,7 +747,7 @@ function methodNotAllowed(allowed, action) {
 // stranger holding one token, so an internal message (a binding name, a path,
 // a query error) is never a thing to hand back; the caller gets the message
 // table's generic words, which is the same answer any unexpected failure in
-// the Worker gets (src/messages.js `unexpected`).
+// the Worker gets (core/messages.js `unexpected`).
 /**
  * @param {string} where
  */
@@ -780,7 +780,7 @@ async function capStateFor(resolver, accountId) {
 // origin. A specific line rather than the table's generic fallback: "try
 // again in a moment" would be advice to retry a request that will always be
 // refused, and the one next step is to do it from the drive page — the same
-// shape src/files.js answers its cross-site upload, delete and restore with.
+// shape core/files.js answers its cross-site upload, delete and restore with.
 function crossSiteRefused() {
   return json(
     { error: "Sharing and upload requests are only accepted from your drive page." },
@@ -833,14 +833,14 @@ export function folderDisplayName(folder) {
  *
  * The account comes from the caller and is required, never defaulted: a
  * request that cannot prove an account is answered with the shared 401
- * (unauthorizedResponse, src/status.js) before any link, file or list is
+ * (unauthorizedResponse, core/status.js) before any link, file or list is
  * touched, exactly the way /api/files is (drive issue #73, north star: Safe).
  * Every read and write goes through scopeStore(files, account), the one place
  * the account prefix is applied, so a share can only ever name a path inside
  * the account that minted it.
  *
  * Reading is safe to repeat, so only the two that change the drive — minting
- * and revoking — carry the cross-site rule src/files.js already uses.
+ * and revoking — carry the cross-site rule core/files.js already uses.
  * @param {Request} request
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
@@ -938,7 +938,7 @@ export async function handleShareRequest(request, files, links, account, options
  * The type is the file's kind, never the claim the uploader made of it, and a
  * type that can carry script by its own name or by the file's extension is
  * served as an octet-stream attachment instead of rendering from our origin
- * (the same rule /api/files/download applies — src/files.js). A shared file
+ * (the same rule /api/files/download applies — core/files.js). A shared file
  * still opens in the tab for a picture or a PDF, which is what "a link that
  * opens the file" means; what it cannot do is run as a page on our domain.
  * @param {Request} request
@@ -1300,7 +1300,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (options.db) {
     // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
     // not on the length header a stranger's client sent. An empty body counts
-    // as 1 byte once the drive is at 1 TB, the same edge src/files.js holds.
+    // as 1 byte once the drive is at 1 TB, the same edge core/files.js holds.
     const stored = await accountStoredBytes(options.db, record.accountId);
     const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
     const blocked = preChargeUploadBlocked({

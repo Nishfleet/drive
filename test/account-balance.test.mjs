@@ -80,7 +80,7 @@ function stubElement(id) {
   return el;
 }
 
-/** One summary as GET /api/balance sends it (src/topup.js balanceSummary). */
+/** One summary as GET /api/balance sends it (core/topup.js balanceSummary). */
 function summary(overrides = {}) {
   return {
     auto_topup_usd: null,

@@ -2,12 +2,12 @@
 // issue #171).
 //
 // This is the half of the cap that needs a database. The decision itself is
-// src/agentcaps.js, which knows nothing about D1 and is tested as pure logic;
+// core/agentcaps.js, which knows nothing about D1 and is tested as pure logic;
 // this module supplies the two numbers it needs and nothing else:
 //
 //   - the key's own `agent_caps` row, whose request counter is stamped with the
 //     UTC day it belongs to, and
-//   - the account's metered month (`monthUsageThrough`, src/meter.js), which is
+//   - the account's metered month (`monthUsageThrough`, core/meter.js), which is
 //     the same `usage_minutes` the usage page and the account cap read.
 //
 // No second money rule and no second ledger. The two columns migration 0004
@@ -32,7 +32,7 @@ import { monthUsageThrough } from "./meter.js";
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
 // key is an integration and a `branch` key is the app's own undo credential:
 // the caps exist because nobody is watching an agent work, and none of those
-// three is an agent. The account cap (src/cap.js, the nightly sweep) is what
+// three is an agent. The account cap (core/cap.js, the nightly sweep) is what
 // bounds the person's own keys, so a daily request cap here would stop
 // somebody's own uploads, which is the failure these caps must not have.
 export const AGENT_KEY_KIND = "agent";
@@ -48,7 +48,7 @@ export function isAgentKey(device) {
 
 /**
  * The row one key's caps live in, or null when it has never been stamped. The
- * limits are read as stored; a missing limit is the default in src/agentcaps.js
+ * limits are read as stored; a missing limit is the default in core/agentcaps.js
  * rather than an absence, so a key that has never been here is capped.
  * @param {D1Database} db
  * @param {string} accountId
@@ -175,7 +175,7 @@ export async function agentCapGate(db, device, at) {
  * The key row the cap's own swap rule takes read-only, in the shape
  * `capSwapPlan` reads: `keyId`, `kind`, `prefix`, `bucket`, `capabilities`
  * and `cappedFrom`. One key, from one row, in the same shape the account cap
- * hands `capSwapPlan` (workers/api/src/devices.js `listCapKeys`) rather than a
+ * hands `capSwapPlan` (core/devices.js `listCapKeys`) rather than a
  * second reading of what a key row is.
  * @param {{id: string, accountId: string, kind?: string, prefix: string, capabilities: readonly string[], cappedFrom?: readonly string[]|null}} device
  */

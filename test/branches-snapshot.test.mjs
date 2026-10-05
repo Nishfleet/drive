@@ -5,7 +5,7 @@
 // `branches.snapshot` column, and D1's row limit is 1 MiB. A 100,000-file
 // branch averages ~117 bytes an entry and comes to ~11 MiB — twelve
 // row-limits — so the write was refused and the person was told
-// `snapshot-bound` (src/messages.js). The boundary is the file count, not the
+// `snapshot-bound` (core/messages.js). The boundary is the file count, not the
 // branch's byte size: a 10 GB branch of one file is one entry.
 //
 // Phase 2, this file's other half: the snapshot moved out of the row into the

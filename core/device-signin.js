@@ -3,7 +3,7 @@
 // the CLI picks up when a signed-in person approves it.
 //
 // Build step 4 (drive#55) first kept this in a per-isolate `Map`
-// (workers/api/src/keystore.js), which the midnight review of #122 found
+// (core/keystore.js), which the midnight review of #122 found
 // unsafe: a Worker has many instances, so a code started on one was lost on
 // another and every in-flight sign-in died with the isolate (drive issue
 // #136 finding 1). This module is the real store: a D1-backed implementation
@@ -11,16 +11,16 @@
 // moved to `approved` by the signed-in approval page, and consumed by
 // `/v1/device/token`, across instances and restarts. The in-memory
 // implementation is kept for the tests and a deployment with no database —
-// the same memory-stand-in/real-adapter split src/files.js uses.
+// the same memory-stand-in/real-adapter split core/files.js uses.
 //
 // The device code and the minted token are secrets, so both are stored only as
-// SHA-256 digests (`workers/api/src/db.js` sha256Hex), the same rule the key
+// SHA-256 digests (`core/db.js` sha256Hex), the same rule the key
 // store follows. The short user code is written as-typed because the approval
 // page looks the row up by it; it is not a credential alone, because approval
 // also requires a signed-in account (drive issue #136 finding 2).
 //
 // `account` is the signed-in account the approval page passes in
-// (`{id, name, email}`, resolved by the src/status.js `signedInAccount` gate);
+// (`{id, name, email}`, resolved by the core/status.js `signedInAccount` gate);
 // its fields are copied onto the code row, so a poll on another instance can
 // name the owner without this module holding an accounts table of its own.
 import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
@@ -90,7 +90,7 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // credential for the account gate, so a token that never dies is a credential a
 // leak keeps: the store would hold it until the person deleted their account,
 // and the only way to kill it would be to delete that account's keys. Thirty
-// days is the session TTL src/auth.js already chose, and for the same reason
+// days is the session TTL core/auth.js already chose, and for the same reason
 // ("the drive is reached on every visit, so signing in every week would be a
 // support ticket, not a security win"): a month bounds what a leak is worth
 // without asking a person to approve a code every few days. The number is

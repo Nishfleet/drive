@@ -7,7 +7,7 @@
 // "a capped account goes read-only with no file lost and starts writing again
 // once the cap is raised". The last two tests below walk exactly that: a
 // default account past 1.5 TB goes read-only through enforceCap() reading
-// src/billing.js's usageSummary(), nothing but the storage key is touched, and
+// core/billing.js's usageSummary(), nothing but the storage key is touched, and
 // a raised cap puts the write capability back.
 //
 // The plan and its execution are pure data and an injected provider, so the
@@ -573,7 +573,7 @@ test("the provider call order keeps the write key from outliving the cap", async
 });
 
 test("a provider's own swapToReadOnly is used for the cap swap, never for a restore", async () => {
-  // workers/api/src/keyprovider.js names swapToReadOnly for exactly this call;
+  // core/keyprovider.js names swapToReadOnly for exactly this call;
   // when a provider has it, enforcement must not re-do revoke-then-mint by hand.
   const provider = recordingProvider({ swapToReadOnly: true });
   await applyCapSwap(capSwapPlan([deviceKey], { state: "read_only" }), provider);
@@ -643,7 +643,7 @@ test("a key is write-capable when it can write or delete", () => {
   assert.equal(isWriteCapable(null), false);
 });
 
-test("enforcement reads the month's numbers from src/billing.js capStatus()", async () => {
+test("enforcement reads the month's numbers from core/billing.js capStatus()", async () => {
   /** @param {number} gb */
   const usage = (gb) => ({
     gbMinutes: fullMonthGbMinutes(gb),
@@ -787,7 +787,7 @@ test("the cap line is one line while writing and two at the cap", () => {
 });
 
 test("the usage response carries the cap line, and the Worker routes it", async () => {
-  // `drive status` is Go: it cannot import src/billing.js, so the line has to
+  // `drive status` is Go: it cannot import core/billing.js, so the line has to
   // travel in the response for the CLI to print the same words. The handler is
   // behind the account gate (issue #73), so the line is proven by calling it
   // as a signed-in request until the sign-in flow lands (build step 4, #5).

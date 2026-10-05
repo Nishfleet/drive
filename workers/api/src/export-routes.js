@@ -11,7 +11,7 @@
 //
 // Every read is pinned to the signed-in account, and only the signed-in
 // account: `ctx.account.id` is the one filter on every statement, the same
-// rule `src/files.js` applies to storage keys (drive#73). A route that took
+// rule `core/files.js` applies to storage keys (drive#73). A route that took
 // an account id from the request would let one account read another's rows,
 // so it takes none.
 //

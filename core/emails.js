@@ -7,7 +7,7 @@
 //
 // Plain data and pure renderers only -- no Worker or DOM imports -- so
 // node --test exercises every template without a runtime, the same shape as
-// src/pricing.js and src/status.js.
+// core/pricing.js and core/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { TOP_UP_PROMPT } from "./messages.js";

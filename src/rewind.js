@@ -19,7 +19,7 @@
 //   2. The 30-day window, and it is enforced on the server rather than by
 //      hiding a button: a branch older than the window answers that it cannot
 //      be rewound, so a caller who ignores the page cannot rewind it either.
-//      The window is the drive's own (src/files.js RECENTLY_DELETED_DAYS, the
+//      The window is the drive's own (core/files.js RECENTLY_DELETED_DAYS, the
 //      same 30 days the 30-day undo promises), read from there so the two
 //      cannot disagree about how long a rewind lasts.
 //   3. Who changed what, from the same row the rewind reads: the key on the
@@ -49,7 +49,7 @@ import {
 export const REWIND_ENDPOINT = "/api/rewind";
 
 /** How long a rewind stays available, in days. Read from the drive's own
- * 30-day undo window (src/files.js) rather than declared here, so the screen's
+ * 30-day undo window (core/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 

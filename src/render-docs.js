@@ -2,7 +2,7 @@
 // module is the only thing that turns them into the pages VitePress builds.
 //
 // Why not the stock VitePress path: every marker's value is read from
-// src/billing.js (the money), src/status.js (the one command) and src/keys.js
+// core/billing.js (the money), core/status.js (the one command) and src/keys.js
 // (what a key may do) at build time, and the Markdown copy the llms plugin
 // emits is the file before VitePress compiles it, so a Vue interpolation would
 // render for people and print a bare marker to agents. One pass over the pages
@@ -19,7 +19,7 @@ import { DOC_PAGES as SEO_DOC_PAGES } from "../core/seo.js";
 import { faqMarkdown, markerValues } from "./docs.js";
 
 // The pages that make up the docs, in the order the sitemap and the docs home
-// list them. The list itself lives in src/seo.js, with the sitemap and the root
+// list them. The list itself lives in core/seo.js, with the sitemap and the root
 // llms.txt, so a page cannot be built without being listed there (or listed
 // there without being built); this module only works out the file each entry
 // names. The file name is the page's last path segment: /docs/how-it-works is

@@ -6,11 +6,11 @@ import { CAPABILITIES_BY_KIND as KEYPROVIDER_TABLE } from "../core/keyprovider.j
 // drive#77: the api Worker is one table of kind to capabilities, and the
 // pricing Worker reads that same table rather than keeping its own copy.
 //
-// The check is object identity, not source text: if src/cap.js ever declared a
+// The check is object identity, not source text: if core/cap.js ever declared a
 // second table (or re-exported a frozen copy of it), these two names would no
 // longer be the same object, and the assertion fails.
 
-test("src/cap.js holds the api Worker's table itself, not a second copy", () => {
+test("core/cap.js holds the api Worker's table itself, not a second copy", () => {
   assert.equal(WRITE_SCOPE_BY_KIND, KEYPROVIDER_TABLE);
 });
 

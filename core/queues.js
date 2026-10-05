@@ -51,7 +51,7 @@ export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_INTERVAL_SECONDS;
 
 /**
  * One report as the store holds it: the queue shape `uploadProgress()` and
- * the first-run page's `uploadLine()` read (src/status.js), plus the row's
+ * the first-run page's `uploadLine()` read (core/status.js), plus the row's
  * own clock. `null` is "no queue to report", never a zero-byte queue.
  * @typedef {{uploadedBytes: number, totalBytes: number, files: number, paused: boolean}} UploadQueue
  */

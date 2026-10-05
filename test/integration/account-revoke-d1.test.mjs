@@ -1,9 +1,9 @@
 // Account close and "sign out every device" revoke every credential an
 // account holds, over the real D1 schema (drive#497).
 //
-// Before this change `revokeLiveKeys` (workers/api/src/devices.js) updated
+// Before this change `revokeLiveKeys` (core/devices.js) updated
 // only the `devices` table. The client holds the storage credential itself
-// (workers/api/src/keystore.js), so a D1-only revoke left a key working at the
+// (core/keystore.js), so a D1-only revoke left a key working at the
 // storage server until it expired, and close/sign-out left the account's
 // device tokens, share links and upload requests alone entirely.
 //
@@ -33,7 +33,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * The storage server as the api sees it, plus the one question this proof
  * asks of it: does this pair still open a file? A credential is live from its
  * mint until the api revokes it, which is the behaviour the vendor's
- * `remove_access_key` gives (workers/api/src/idrive-keys.js) and the S3 path
+ * `remove_access_key` gives (core/idrive-keys.js) and the S3 path
  * gets from a short session instead.
  * @returns {{provider: import("../../core/keyprovider.js").KeyProvider, accepts: (accessKeyId: string, secret: string) => boolean, live: () => number}}
  */

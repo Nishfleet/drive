@@ -407,7 +407,7 @@ test("a price comparison that names the rival fails the public scan", () => {
     "an against-Space figure in llms.txt must fail",
   );
   assert.deepEqual(
-    hitsIn("src/pricing.js", "Space", { allowRivalName: true }),
+    hitsIn("core/pricing.js", "Space", { allowRivalName: true }),
     [],
     "the rival name constant in pricing.js stays allowed",
   );

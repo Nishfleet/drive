@@ -216,7 +216,7 @@ test("authorizePath keeps a key inside its own prefix", () => {
 // (accountForDeviceToken) enforces both, so a dead token is a 401 before any
 // handler runs.
 
-// The token TTL is the session TTL src/auth.js chose, pinned so the two
+// The token TTL is the session TTL core/auth.js chose, pinned so the two
 // numbers cannot drift into different lifetimes.
 test("the device token TTL is the session TTL", () => {
   assert.equal(DEVICE_TOKEN_TTL_SECONDS, SESSION_TTL_SECONDS);

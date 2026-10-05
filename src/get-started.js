@@ -1,5 +1,5 @@
 // The first-run page's renderer (drive issue #70). The copy and the arithmetic
-// come from src/status.js and src/messages.js — the same source the CLI, the
+// come from core/status.js and core/messages.js — the same source the CLI, the
 // api Worker and the tests read — so this page holds no second copy of a
 // sentence, a window or a label for anything to drift from.
 //
@@ -101,7 +101,7 @@ export function connectionLine(state) {
       : undefined;
   if (!entry) {
     throw new TypeError(
-      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in src/status.js`,
+      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in core/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -145,7 +145,7 @@ export function emptyState(screen) {
       : undefined;
   if (!entry) {
     throw new TypeError(
-      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in src/status.js`,
+      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in core/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -353,7 +353,7 @@ function element(tag, className, text) {
 
 // The shell ships the three steps' list empty and the two empty states and the
 // live line with no text: the words arrive from the module here, so the HTML
-// carries structure and src/status.js carries copy and there is no third copy
+// carries structure and core/status.js carries copy and there is no third copy
 // to keep in step with either.
 function renderSteps() {
   const list = required("steps");

@@ -22,7 +22,7 @@ const queueReportPath = "/v1/queue"
 
 // queueReportInterval is how often the mount's reporter ticks. It is the same
 // number the server enforces as the minimum spacing between two accepted
-// reports (workers/api/src/queues.js QUEUE_REPORT_INTERVAL_SECONDS). Ten
+// reports (core/queues.js QUEUE_REPORT_INTERVAL_SECONDS). Ten
 // seconds is far above the queue's own change rate and far below a keyboard's.
 const queueReportInterval = 10 * time.Second
 

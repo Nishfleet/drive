@@ -502,7 +502,7 @@ test("a 5xx ingest is retried once (drive#570), and the retry's push is the one 
 //
 // #586 replaced the after-the-fact usage push with a prepaid draw: the meter's
 // hourly trip now draws each account's usage from its balance
-// (src/prepaid.js drawUsageHours) and sends Dodo nothing. pushBillingHours and
+// (core/prepaid.js drawUsageHours) and sends Dodo nothing. pushBillingHours and
 // billingPushGap above stay pinned as functions, but the cron must not call
 // them, or a customer who prepaid would also be billed in arrears. These
 // tests drive the real scheduled() wiring and pin that switch.

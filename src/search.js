@@ -25,7 +25,7 @@ import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 
-/** One account's file store, the shape src/files.js exports and every helper
+/** One account's file store, the shape core/files.js exports and every helper
  * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One row of the file index, as it is written to D1. */
@@ -429,7 +429,7 @@ function countedBody(body) {
  * never lists, so no request pays for a walk.
  *
  * Position matters, and it is the one thing to get right: the write comes from
- * `scopeStore` (src/files.js), so the key this wrapper is handed is
+ * `scopeStore` (core/files.js), so the key this wrapper is handed is
  * `u/<id>/…`, never a drive path. `drivePathFromKey` is the inverse of the
  * scope's own mapping — the index stores the drive path the page and the CLI
  * print, and the account id the row belongs to, exactly as `reconcileIndex`

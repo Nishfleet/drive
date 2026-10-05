@@ -279,19 +279,19 @@ func TestRunQueueReportLoopNamesAWorkerThatDoesNotAnswer(t *testing.T) {
 
 // TestQueueReportIntervalMatchesTheApiRoute pins the CLI's report interval to
 // the server's minimum spacing between two accepted reports
-// (workers/api/src/queues.js QUEUE_REPORT_INTERVAL_SECONDS). The api route
+// (core/queues.js QUEUE_REPORT_INTERVAL_SECONDS). The api route
 // refuses a report inside that interval, so a CLI that ticked faster than it
 // would be refused every time and the pages would fall silent. The Go cannot
 // import the page and the page cannot import the Go, so this test is the join
 // the same way TestStatusWordsMatchThePageWords is.
 func TestQueueReportIntervalMatchesTheApiRoute(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "workers", "api", "src", "queues.js"))
+	source, err := os.ReadFile(filepath.Join("..", "..", "core", "queues.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const interval = "QUEUE_REPORT_INTERVAL_SECONDS = 10"
 	if !strings.Contains(string(source), interval) {
-		t.Errorf("workers/api/src/queues.js no longer carries %q; the CLI's interval and the server's minimum spacing must be the same number", interval)
+		t.Errorf("core/queues.js no longer carries %q; the CLI's interval and the server's minimum spacing must be the same number", interval)
 	}
 	if queueReportInterval != 10*time.Second {
 		t.Errorf("queueReportInterval = %v, want 10s, the number the api route enforces", queueReportInterval)

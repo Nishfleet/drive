@@ -77,7 +77,7 @@ export const FAILURE_MESSAGES = Object.freeze({
   // The endpoint needs a JSON object and got a form, an array or a bare value
   // instead. Every account route refuses it the same way, so the same failure
   // says the same thing whichever route the caller reached (drive#158): the
-  // account routes in src/files.js, src/signin.js and src/branches.js all call
+  // account routes in core/files.js, src/signin.js and src/branches.js all call
   // this one key rather than each carrying their own copy of the sentence.
   "json-object-needed": Object.freeze({
     what: "That request did not carry a JSON object.",
@@ -166,7 +166,7 @@ export const FAILURE_MESSAGES = Object.freeze({
   }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
-  // src/email-send.js is the pattern this words.
+  // core/email-send.js is the pattern this words.
   "cross-site": Object.freeze({
     what: "That request did not come from the drive.",
     next: "Open the drive's page and try again there.",
@@ -369,7 +369,7 @@ export function failureMessage(key) {
     : undefined;
   if (!entry) {
     throw new Error(
-      `no failure message for "${key}"; add it to FAILURE_MESSAGES in src/messages.js`,
+      `no failure message for "${key}"; add it to FAILURE_MESSAGES in core/messages.js`,
     );
   }
   return `${entry.what} ${entry.next}`;

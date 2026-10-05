@@ -52,7 +52,7 @@ agents.
 
 The docs pages are authored in [`docs-site/`](docs-site/) and built by VitePress
 into the site's static assets: `npm run docs:build`. Every number on a page
-comes from `src/billing.js` at build time, so a test fails the build if a page
+comes from `core/billing.js` at build time, so a test fails the build if a page
 and the invoice disagree.
 
 ## The repository

@@ -6,7 +6,7 @@
 // shipped files are hand-written rather than generated: the site is one
 // prebuilt HTML document, not an app that renders a route per request.
 //
-// The price itself is not declared here: src/pricing.js is the one price
+// The price itself is not declared here: core/pricing.js is the one price
 // source, and BILLING below is built from PRICE so the tags, the JSON-LD and
 // llms.txt render the same numbers and sentences the page does (issue #23).
 // The rule (drive#463, Nish 2026-10-04): pay only for what you store.

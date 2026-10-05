@@ -14,7 +14,7 @@ import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { authorizePath } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
 
-/** The stand-in store: what src/keystore.js `createMemoryStore` returns and
+/** The stand-in store: what core/keystore.js `createMemoryStore` returns and
  * what D1's adapter will have to match (drive#2). */
 /** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 

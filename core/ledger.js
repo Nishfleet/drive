@@ -13,7 +13,7 @@
 // comes back with a different account, kind or amount is a data error and
 // throws, because silently keeping either side would hide money that moved.
 //
-// No provider call happens here. The webhook (src/topup.js) verifies the
+// No provider call happens here. The webhook (core/topup.js) verifies the
 // provider's signature before it calls creditTopUp, so this module trusts its
 // caller about who paid and owns only the arithmetic and the rows.
 

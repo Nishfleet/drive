@@ -62,7 +62,7 @@ func TestRunCapPrintsParseCapUsdReasonOnABadAmount(t *testing.T) {
 		gotAmount = body.Amount
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			// The Worker's own parseCapUsd() sentence (src/cap.js
+			// The Worker's own parseCapUsd() sentence (core/cap.js
 			// `capShapeError`). It is the sentence both surfaces read, so it
 			// names no command and no page (drive#421).
 			"error": `A spending cap is a dollar amount like 20 or 12.50, got "abc". Type a number like that again.`,
