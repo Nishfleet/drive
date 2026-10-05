@@ -18,13 +18,20 @@ import {
 import { failureMessage } from "../../src/messages.js";
 import { BYTES_PER_GB, MINUTE_MS, monthUsageThrough, recordUsage } from "../../src/meter.js";
 import {
+  AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
   drawUsageHours,
+  handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalance,
   writesPaused,
 } from "../../src/prepaid.js";
-import { handleBillingWebhook, signWebhook, TOPUP_PURPOSE } from "../../src/topup.js";
+import {
+  balanceSummary,
+  handleBillingWebhook,
+  signWebhook,
+  TOPUP_PURPOSE,
+} from "../../src/topup.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
@@ -504,4 +511,45 @@ test("auto top-up with no saved card charges nothing and says so", async () => {
   }
   assert.equal(dodo.calls.length, 1, "listed the cards, charged nothing");
   assert.ok(errors.some((line) => line.includes("no saved card")));
+});
+
+test("auto top-up is turned on only after a first top-up, and off again", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const me = { id: ACCOUNT };
+  /** @param {unknown} body @param {Record<string, string>} [headers] */
+  const post = (body, headers = {}) =>
+    new Request(`https://drive.example${AUTO_TOPUP_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://drive.example", ...headers },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await handleAutoTopUpRequest(post({ amount_usd: 10 }), null, db)).status, 401);
+  const early = await handleAutoTopUpRequest(post({ amount_usd: 10 }), me, db);
+  assert.equal(early.status, 409, "no saved card before the first top-up");
+  assert.equal((await early.json()).error, failureMessage("auto-topup-needs-card"));
+  assert.equal((await balanceSummary(db, ACCOUNT)).auto_topup_usd, null, "off by default");
+
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_first",
+    amountCents: 1000,
+    customerId: "cus_saved",
+    now: Date.now(),
+  });
+  for (const bad of [5, "abc", 1001]) {
+    const refused = await handleAutoTopUpRequest(post({ amount_usd: bad }), me, db);
+    assert.equal(refused.status, 400, String(bad));
+  }
+  const crossSite = post({ amount_usd: 25 }, { origin: "https://evil.example" });
+  assert.equal((await handleAutoTopUpRequest(crossSite, me, db)).status, 403);
+
+  const on = await handleAutoTopUpRequest(post({ amount_usd: 25 }), me, db);
+  assert.equal(on.status, 200);
+  assert.equal((await on.json()).auto_topup_usd, 25);
+  assert.equal((await balanceSummary(db, ACCOUNT)).auto_topup_usd, 25);
+
+  const off = await handleAutoTopUpRequest(post({ amount_usd: null }), me, db);
+  assert.deepEqual(await off.json(), { auto_topup_usd: null });
+  assert.equal((await balanceSummary(db, ACCOUNT)).auto_topup_usd, null);
 });

@@ -10,6 +10,7 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { TOP_UP_PROMPT } from "./messages.js";
 
 export { DEFAULT_CAP_USD };
 
@@ -410,7 +411,7 @@ export function lowBalanceTemplate(data = {}) {
   const subject = `Your Drive balance is ${usd(balance)}`;
   const next =
     auto === null
-      ? "Top up to keep adding files. At $0 uploads pause. Downloads keep working, and nothing is deleted."
+      ? `${TOP_UP_PROMPT} At $0 uploads pause. Downloads keep working, and nothing is deleted.`
       : `Auto top-up is on, so ${usd(auto)} will be added from your saved card.`;
   const lines = [`Your Drive balance is ${usd(balance)}.`, "", next];
   const html_lines = [`<p>Your Drive balance is ${usd(balance)}.</p>`, `<p>${next}</p>`];

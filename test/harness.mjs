@@ -51,6 +51,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
+  // The prepaid balance (drive#586): the ledger the usage read sums for its
+  // balance line, and the low-balance and auto top-up columns.
+  "drive/0020_balance_ledger.sql",
+  "drive/0021_prepaid_draws.sql",
 ]);
 
 /**

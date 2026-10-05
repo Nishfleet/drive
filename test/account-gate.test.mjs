@@ -29,6 +29,7 @@ import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } fro
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { AUTO_TOPUP_ENDPOINT } from "../src/prepaid.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
@@ -143,6 +144,7 @@ const ACCOUNT_ROUTES = [
   `${BALANCE_ENDPOINT}/`,
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
+  `${AUTO_TOPUP_ENDPOINT}`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's

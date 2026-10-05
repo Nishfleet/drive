@@ -194,6 +194,30 @@ func TestReadCostLinePrintsTheWorkersReadOnlyCapLine(t *testing.T) {
 	}
 }
 
+func TestReadCostLinePrintsTheWorkersBalanceLine(t *testing.T) {
+	const balanceLine = "Your balance is $0, so uploads are paused. Your files are safe and downloads keep working. Top up to keep adding files."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $20.00: $0.00 counted this month, $20.00 left."
+		u.BalanceLine = balanceLine
+		u.Cap.State = "active"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want the cap and balance lines", reason)
+		}
+	})
+	if !strings.Contains(out, balanceLine) {
+		t.Errorf("got %q, want the Worker's balance line printed as-is", out)
+	}
+	if !strings.Contains(out, "Top up to keep adding files.") {
+		t.Errorf("got %q, want the top-up prompt", out)
+	}
+}
+
 func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string

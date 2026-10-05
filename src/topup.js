@@ -37,7 +37,7 @@ import {
   recordRefund,
   TOP_UP_PAGE,
 } from "./ledger.js";
-import { failureMessage } from "./messages.js";
+import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
 import { PREPAID } from "./pricing.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -510,6 +510,26 @@ export async function handleTopUpRequest(request, account, deps) {
 }
 
 /**
+ * The one balance line the usage page, `drive status` and the account page
+ * print (drive#586). At $0 it carries the pause words and the top-up prompt.
+ * Under $2 it carries the prompt. The pause words appear only while the pause
+ * is switched on, so the line never claims a pause that is not happening.
+ * @param {number} cents
+ * @param {{pauseOn?: boolean}} [options]
+ */
+export function balanceLine(cents, options = {}) {
+  const pauseOn = options.pauseOn !== false;
+  const amount = formatCents(Math.max(0, cents));
+  if (cents <= 0 && pauseOn) {
+    return failureMessage("balance-empty");
+  }
+  if (cents <= LOW_BALANCE_CENTS) {
+    return `Balance ${amount}. ${TOP_UP_PROMPT}`;
+  }
+  return `Balance ${amount}.`;
+}
+
+/**
  * Whether a checkout URL is an https page on Dodo's own domain.
  * @param {string} value
  */
@@ -533,15 +553,23 @@ export function isDodoCheckoutUrl(value) {
  * The balance as the account page and `drive status` read it.
  * @param {D1Database} db
  * @param {string} accountId
+ * @param {{pauseOn?: boolean}} [options] pauseOn is false while the $0 pause is switched off, so the page never says uploads are paused when they are not
  */
-export async function balanceSummary(db, accountId) {
+export async function balanceSummary(db, accountId, options = {}) {
+  const pauseOn = options.pauseOn !== false;
   const balance = await balanceCents(db, accountId);
   const recent = await recentLedger(db, accountId, 10);
+  const settings = /** @type {{auto_topup_cents?: unknown}|null} */ (
+    await db.prepare("SELECT auto_topup_cents FROM accounts WHERE id = ?1").bind(accountId).first()
+  );
+  const autoCents = Number(settings?.auto_topup_cents ?? 0);
   return {
+    auto_topup_usd: autoCents > 0 ? autoCents / 100 : null,
     balance_cents: balance,
     balance: formatCents(balance),
+    balance_line: balanceLine(balance, { pauseOn }),
     low_balance: balance > 0 && balance <= LOW_BALANCE_CENTS,
-    paused: balance <= 0,
+    paused: pauseOn && balance <= 0,
     min_top_up_usd: PREPAID.minTopUpUsd,
     top_up_presets_usd: [...PREPAID.topUpPresetsUsd],
     recent: recent.map((line) => ({
@@ -560,9 +588,10 @@ export async function balanceSummary(db, accountId) {
  * @param {Request} request
  * @param {{id: string}|null} account
  * @param {D1Database|undefined} db
+ * @param {{pauseOn?: boolean}} [options]
  * @returns {Promise<Response>}
  */
-export async function handleBalanceRequest(request, account, db) {
+export async function handleBalanceRequest(request, account, db, options = {}) {
   if (!account) return unauthorizedResponse();
   if (request.method !== "GET") {
     return json({ error: "Method not allowed." }, 405);
@@ -570,5 +599,5 @@ export async function handleBalanceRequest(request, account, db) {
   if (!db) {
     return json({ error: failureMessage("drive-not-configured") }, 503);
   }
-  return json(await balanceSummary(db, account.id));
+  return json(await balanceSummary(db, account.id, options));
 }

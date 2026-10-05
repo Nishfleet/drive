@@ -18,7 +18,7 @@
 
 import { monthBillCents } from "./billing.js";
 import { resolveDodoUrl } from "./dodo.js";
-import { sendEmail } from "./email-send.js";
+import { isSameOriginRequest, sendEmail } from "./email-send.js";
 import {
   appendLedgerEntry,
   balanceCents,
@@ -28,8 +28,10 @@ import {
   MIN_TOP_UP_CENTS,
   usageKey,
 } from "./ledger.js";
+import { failureMessage } from "./messages.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
-import { TOPUP_PURPOSE } from "./topup.js";
+import { unauthorizedResponse } from "./status.js";
+import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
 
 /** The env value that turns the pause on. Anything else leaves it off. */
 export const PREPAID_PAUSE_ON = "on";
@@ -366,4 +368,78 @@ async function startAutoTopUp(db, accountId, cents, deps, now) {
     throw new Error(`auto top-up: the saved-card charge failed with status ${charged.status}`);
   }
   return true;
+}
+
+/** The account page's auto top-up switch (drive#586). */
+export const AUTO_TOPUP_ENDPOINT = "/api/topup/auto";
+
+/**
+ * @param {unknown} body
+ * @param {number} [status]
+ */
+function answer(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+/**
+ * POST /api/topup/auto: turns auto top-up on with an amount ($10 or more), or
+ * off with `{"amount_usd": null}`. It is off until the person turns it on.
+ * Turning it on needs the card saved by a first top-up, because an auto
+ * top-up charges that card and nothing else.
+ * @param {Request} request
+ * @param {{id: string}|null} account
+ * @param {D1Database|undefined} db
+ * @returns {Promise<Response>}
+ */
+export async function handleAutoTopUpRequest(request, account, db) {
+  if (!account) return unauthorizedResponse();
+  if (request.method !== "POST") {
+    return answer({ error: "Method not allowed." }, 405);
+  }
+  if (!isSameOriginRequest(request)) {
+    return answer({ error: failureMessage("cross-site") }, 403);
+  }
+  if (!db) {
+    return answer({ error: failureMessage("drive-not-configured") }, 503);
+  }
+  /** @type {unknown} */
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  if (typeof body !== "object" || body === null || !("amount_usd" in body)) {
+    return answer({ error: failureMessage("topup-amount") }, 400);
+  }
+  const requested = /** @type {{amount_usd: unknown}} */ (body).amount_usd;
+  if (requested === null || requested === false || requested === 0) {
+    await db
+      .prepare("UPDATE accounts SET auto_topup_cents = NULL WHERE id = ?1")
+      .bind(account.id)
+      .run();
+    return answer({ auto_topup_usd: null });
+  }
+  const cents = parseTopUpCents(requested);
+  if (cents === null) {
+    return answer({ error: failureMessage("topup-amount") }, 400);
+  }
+  const row = /** @type {{dodo_customer_id?: unknown}|null} */ (
+    await db.prepare("SELECT dodo_customer_id FROM accounts WHERE id = ?1").bind(account.id).first()
+  );
+  if (
+    !(await hasToppedUp(db, account.id)) ||
+    typeof row?.dodo_customer_id !== "string" ||
+    row.dodo_customer_id === ""
+  ) {
+    return answer({ error: failureMessage("auto-topup-needs-card") }, 409);
+  }
+  await db
+    .prepare("UPDATE accounts SET auto_topup_cents = ?1 WHERE id = ?2")
+    .bind(cents, account.id)
+    .run();
+  return answer({ auto_topup_usd: cents / 100, auto_topup: formatCents(cents) });
 }

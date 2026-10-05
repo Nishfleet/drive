@@ -39,6 +39,7 @@ import {
 } from "./files.js";
 import { accountFoundingFlag } from "./founding.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { balanceCents } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import {
   HOUR_MS,
@@ -48,7 +49,13 @@ import {
   reconcileMeter,
   runMeterCron,
 } from "./meter.js";
-import { drawUsageHours, prepaidPauseOn, settleBalances } from "./prepaid.js";
+import {
+  AUTO_TOPUP_ENDPOINT,
+  drawUsageHours,
+  handleAutoTopUpRequest,
+  prepaidPauseOn,
+  settleBalances,
+} from "./prepaid.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -79,6 +86,7 @@ import {
 import {
   BALANCE_ENDPOINT,
   BILLING_WEBHOOK_PATH,
+  balanceLine,
   handleBalanceRequest,
   handleBillingWebhook,
   handleTopUpRequest,
@@ -526,6 +534,7 @@ export function createApp() {
   app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
   app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
   app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
+  app.use(AUTO_TOPUP_ENDPOINT, csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -667,10 +676,18 @@ export function createApp() {
     // whose no device has signed in yet or whose mount is gone (drive issue
     // #308), so the usage page hides the line rather than showing a stale
     // one.
+    // The prepaid balance line rides beside the cap line (drive#586), so
+    // `drive status` prints the Worker's words, the top-up prompt included.
+    const balance = c.env.DRIVE_DB
+      ? balanceLine(await balanceCents(c.env.DRIVE_DB, account.id), {
+          pauseOn: prepaidPauseOn(c.env),
+        })
+      : null;
     return handleUsageRequest(
       c.req.raw,
       { ...account, capUsd, cardOnFile, foundingMember },
       await liveQueueFor(c.env, account),
+      balance,
     );
   });
 
@@ -678,7 +695,12 @@ export function createApp() {
   // a top-up's checkout. The balance is credited only by the signed webhook
   // below, never by this route or the checkout's redirect.
   app.get(BALANCE_ENDPOINT, (c) =>
-    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
+      pauseOn: prepaidPauseOn(c.env),
+    }),
+  );
+  app.post(AUTO_TOPUP_ENDPOINT, (c) =>
+    handleAutoTopUpRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
   );
   app.post(TOPUP_ENDPOINT, (c) => {
     const dodo = dodoEnv(c.env);
