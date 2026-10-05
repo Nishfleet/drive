@@ -165,3 +165,17 @@ export function usualPlanMonthlyUsd(tb, plan = PRICE.usualPlan) {
   const steps = Math.ceil(extraGb / (plan.extraStepTb * GB_PER_TB));
   return plan.monthlyUsd + steps * plan.extraStepUsd;
 }
+
+// The prepaid balance (drive#586, Nish 2026-10-05: "pay as you go with minimum
+// top ups at $10"). The customer adds money first and usage is drawn from the
+// balance at the rate above. These are the only numbers the top-up, the
+// low-balance email and the account page read, so they cannot disagree.
+//
+// maxTopUpUsd is a guard on one checkout, not a limit on the balance: a typo
+// of $10000 for $100 is refused before the customer reaches the card form.
+export const PREPAID = Object.freeze({
+  minTopUpUsd: 10,
+  topUpPresetsUsd: Object.freeze([10, 25, 50]),
+  lowBalanceUsd: 2,
+  maxTopUpUsd: 1000,
+});

@@ -376,6 +376,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     account,
   ).json();
   assert.deepEqual(Object.keys(body).sort(), [
+    "balanceLine",
     "billCents",
     "billUsd",
     "cap",
@@ -405,6 +406,15 @@ test("the upload line rides the usage answer beside capLine", async () => {
   ).json();
   assert.equal(reported.uploadLine, uploadProgress(queue).label);
   assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.equal(body.balanceLine, null, "no balance store means no balance line");
+  // The prepaid balance line (drive#586) rides beside the cap line as given.
+  const withBalance = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    "Balance $1.50. Top up to keep adding files.",
+  ).json();
+  assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
   assert.throws(
     () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
     TypeError,

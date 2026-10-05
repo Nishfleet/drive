@@ -47,7 +47,7 @@ func TestBackgroundFillFlagsOnTheMount(t *testing.T) {
 		}
 		// The remote control is how the fill reads the cache and refreshes
 		// the directory, and it must be bound to loopback: rclone's rc is
-		// unauthenticated here (--rc-no-auth), so a wildcard bind would be an
+		// password-protected (drive#498), so a wildcard bind would still be an
 		// open control port on the network.
 		if !hasArgPair(args, "--rc-addr", "127.0.0.1:5572") {
 			t.Errorf("%s: mount is not binding the remote control to loopback:\n%v", tc.goos, args)

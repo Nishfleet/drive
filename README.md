@@ -78,7 +78,8 @@ with the version it found and the version the repo needs, because the test
 adapter uses `node:sqlite`, which is experimental before Node 24.
 To run one test file, build the docs once (`npm run docs:build`), then `node --test test/x.test.mjs`.
 `go test ./...` runs the CLI's tests.
-To install the CLI from source: `go install github.com/Nishfleet/drive/cmd/drive@latest`.
+To install the CLI from a tagged release, use the package-manager line
+`drive --help` prints. To build from this checkout: `go build -o drive ./cmd/drive`.
 
 The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
 step) and [`docs/spec.md`](docs/spec.md) (why: prices, rivals).

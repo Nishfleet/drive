@@ -89,7 +89,10 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
+ * `writesPaused` is the prepaid pause (drive#586): when set, it answers
+ * whether an account's balance is $0 so its keys may not write. It is unset
+ * while the pause is switched off.
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -660,6 +663,17 @@ export function createMemoryStore(options = {}) {
      */
     canWrite(device) {
       return device.capabilities.includes("write");
+    },
+
+    /**
+     * Whether the key's account is paused at a $0 balance (drive#586). The
+     * key keeps its powers, so reads go on and a top-up lets the same key
+     * write again at once, with nothing to mint.
+     * @param {{accountId: string}} device
+     * @returns {Promise<boolean>}
+     */
+    async balancePaused(device) {
+      return options.writesPaused ? options.writesPaused(device.accountId) : false;
     },
 
     /**

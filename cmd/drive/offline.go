@@ -168,9 +168,7 @@ func OfflineRelative(raw string) (string, error) {
 	// means the same thing; it is normalised to slash before anything is
 	// joined, so the stored value is one spelling on every platform.
 	slashed := strings.ReplaceAll(trimmed, `\`, "/")
-	if strings.HasPrefix(slashed, "/") {
-		slashed = strings.TrimPrefix(slashed, "/")
-	}
+	slashed = strings.TrimPrefix(slashed, "/")
 	if slashed == "" {
 		return "", fmt.Errorf("%q names the drive root; keep the file or folder, not everything", raw)
 	}

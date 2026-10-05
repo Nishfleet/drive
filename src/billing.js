@@ -716,8 +716,9 @@ const USAGE_HEADERS = Object.freeze({
  * @param {Request} request
  * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
+ * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
  */
-export function handleUsageRequest(request, account, upload = null) {
+export function handleUsageRequest(request, account, upload = null, balanceLine = null) {
   // The gate is first, before the method: an anonymous request learns nothing
   // about whether it could write, only that it is not signed in.
   if (!account) {
@@ -762,7 +763,7 @@ export function handleUsageRequest(request, account, upload = null) {
   // throws on a value that is not a queue, so a broken report fails the read
   // rather than printing a plausible line about bytes nobody counted.
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
-  const body = { ...empty, capLine: capLine(empty.cap), uploadLine };
+  const body = { ...empty, capLine: capLine(empty.cap), uploadLine, balanceLine };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
 
