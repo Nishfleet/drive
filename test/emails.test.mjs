@@ -29,6 +29,7 @@ import {
   SAVED_COPY,
   savedLine,
   welcomeTemplate,
+  chargeReceiptTemplate,
 } from "../src/emails.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
@@ -101,6 +102,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "read-only",
     "payment-failed",
     "monthly-receipt",
+    "charge-receipt",
+    "card-failure-warning",
     "account-closed",
     "account-close-reminder",
   ]);
@@ -239,6 +242,8 @@ test("payment failed never blames the person", () => {
 function receiptData(overrides = {}) {
   return {
     billUsd: 12,
+    addedUsd: 12,
+    balanceUsd: 12,
     meteredUsd: 16,
     ceilingUsd: 12,
     capped: true,
@@ -262,6 +267,10 @@ function dataFor(kind) {
       return { amountUsd: 23.5 };
     case "monthly-receipt":
       return receiptData();
+    case "charge-receipt":
+      return { chargedUsd: 5 };
+    case "card-failure-warning":
+      return { daysLeft: 30, amountUsd: 5 };
     case "account-closed":
     case "account-close-reminder":
       return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
@@ -277,7 +286,9 @@ test("a capped month says our price cap saved you, metered minus bill", () => {
   assert.equal(saved, "Our price cap saved you $4.00");
   assert.match(text, /Our price cap saved you \$4\.00/);
   assert.match(html, /Our price cap saved you \$4\.00/);
-  assert.match(text, /bill for this month is \$12\.00/);
+  assert.match(text, /This month we added \$12\.00/);
+  assert.match(text, /running balance is \$12\.00/);
+  assert.match(text, /charged when this reaches \$5/);
 });
 
 test("an uncapped month says you paid less than a flat plan, ceiling minus bill", () => {
@@ -314,7 +325,10 @@ test("a receipt is built from months that can actually happen", () => {
   // impossible one.
   // 0.6 TB metered at 2c/GB = $12, ceiling $23 (uncapped): bill $12, saved $11.
   const uncapped = monthlyReceiptTemplate({
+    ...receiptData(),
     billUsd: 12,
+    addedUsd: 12,
+    balanceUsd: 12,
     meteredUsd: 12,
     ceilingUsd: 23,
     capped: false,
@@ -322,13 +336,16 @@ test("a receipt is built from months that can actually happen", () => {
   assert.equal(uncapped.saved, "You paid $11.00 less than a flat plan");
   // 2 TB peak: meter $40, ceiling $23 (capped): bill $23, saved $17.
   const capped = monthlyReceiptTemplate({
+    ...receiptData(),
     billUsd: 23,
+    addedUsd: 23,
+    balanceUsd: 23,
     meteredUsd: 40,
     ceilingUsd: 23,
     capped: true,
   });
   assert.equal(capped.saved, "Our price cap saved you $17.00");
-  assert.match(capped.text, /bill for this month is \$23\.00/);
+  assert.match(capped.text, /This month we added \$23\.00/);
 });
 
 test("savedLine refuses a month with nonsense in it", () => {
@@ -342,12 +359,11 @@ test("savedLine refuses a month with nonsense in it", () => {
   }
 });
 
-test("the receipt explains the bill is the capped meter", () => {
-  // The one line that stops "why is my bill less than my usage" tickets:
-  // the bill is min(metered, ceiling), and the ceiling is never charged.
-  const { text } = monthlyReceiptTemplate(receiptData());
-  assert.match(text, /min\(metered, ceiling\)/);
-  assert.match(text, /never charged/);
+test("the charge receipt says the balance reached $5 and the card was charged", () => {
+  const { subject, text } = chargeReceiptTemplate({ chargedUsd: 5.2 });
+  assert.equal(subject, "Your balance reached $5, and we charged your card.");
+  assert.match(text, /charged your card \$5\.20/);
+  assert.match(text, /running balance is now \$0\.00/);
 });
 
 test("the receipt never shows a per-minute price", () => {
@@ -743,7 +759,9 @@ test("a body the template cannot be built from is a 400, not a 502", async () =>
   // failure: the billing webhook would retry a missing amount forever.
   const env = makeEnv();
   for (const [kind, data] of [
-    ["monthly-receipt", { billUsd: 12 }], // no meter, ceiling or capped
+    ["monthly-receipt", { billUsd: 12 }], // no meter, ceiling, balance or capped
+    ["charge-receipt", {}], // no charged amount
+    ["card-failure-warning", { daysLeft: 30 }], // no amount
     ["cap-warning", {}], // no cap
     ["read-only", {}], // no cap
     ["payment-failed", {}], // no amount

@@ -39,7 +39,26 @@
 // cannot print the same money two different ways.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import {
+  applyUnpaid,
+  CHARGE_COPY,
+  CHARGE_MAX_MONTHS,
+  CHARGE_RECEIPT_COPY,
+  CHARGE_THRESHOLD_CENTS,
+  chargeDecision,
+  monthsHeld,
+} from "./charge-threshold.js";
 import { failureMessage } from "./messages.js";
+
+export {
+  applyUnpaid,
+  CHARGE_COPY,
+  CHARGE_MAX_MONTHS,
+  CHARGE_RECEIPT_COPY,
+  CHARGE_THRESHOLD_CENTS,
+  chargeDecision,
+  monthsHeld,
+};
 // The price's numbers come from src/pricing.js, the one price source: the
 // metered rate, the maximum per TB and the founding share are declared there
 // once, so this file's arithmetic and the page's copy cannot disagree. What is
@@ -86,10 +105,12 @@ export function billingConfigFor(price) {
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
     // A bill under this rolls into the next month, and the card is charged
-    // when the running balance reaches it. One number the FAQ's words and the
-    // future collection step both read, so the copy cannot name a threshold
-    // the ledger does not use.
-    chargeThresholdUsd: 5,
+    // when the running balance reaches it, after 12 months, or at close
+    // (drive#465). One number the FAQ's words and the collection step both
+    // read, so the copy cannot name a threshold the ledger does not use.
+    chargeThresholdUsd: CHARGE_THRESHOLD_CENTS / 100,
+    chargeThresholdCents: CHARGE_THRESHOLD_CENTS,
+    chargeMaxMonths: CHARGE_MAX_MONTHS,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
@@ -663,7 +684,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown}} */ (
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown, unpaidCents?: unknown}} */ (
       usage
     );
   // The peak no longer sets any number on the bill (drive#463: the maximum
@@ -706,6 +727,13 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     payingAccountNumber: fields.payingAccountNumber,
     foundingOfferOpen: fields.foundingOfferOpen,
   });
+  const unpaidCents =
+    fields.unpaidCents === undefined ? 0 : checked(fields.unpaidCents, "usage.unpaidCents");
+  if (!Number.isSafeInteger(unpaidCents)) {
+    throw new TypeError(
+      `usage.unpaidCents must be a whole number of cents, got ${String(fields.unpaidCents)}`,
+    );
+  }
   return Object.freeze({
     gbMonths: months,
     storedGb,
@@ -741,7 +769,10 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       // cap slider shows.
       cap: formatUsd(effectiveCap),
       accountCap: formatUsd(capUsd),
+      runningBalance: formatUsd(unpaidCents / 100),
+      chargeLine: CHARGE_COPY,
     }),
+    unpaidCents,
     // The page reads this to hide the bill lines for a card-less month, so the
     // two surfaces cannot show a charge one and not the other (drive#417).
     cardOnFile,
@@ -822,7 +853,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, foundingMember?: boolean}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, foundingMember?: boolean, unpaidCents?: number}|null} account the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
 export function handleUsageRequest(request, account, upload = null) {
@@ -863,6 +894,7 @@ export function handleUsageRequest(request, account, upload = null) {
     // (drive#482). Absent reads as full price: a caller that names no flag
     // gets the undiscounted number.
     foundingMember: account.foundingMember === true,
+    unpaidCents: account.unpaidCents ?? 0,
   });
   // The cap line rides on the response rather than inside usageSummary(): the
   // summary is money (numbers only, which is what the usage page's chart and

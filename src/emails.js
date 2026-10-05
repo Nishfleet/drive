@@ -10,6 +10,7 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { CHARGE_COPY, CHARGE_RECEIPT_COPY, CHARGE_THRESHOLD_CENTS } from "./charge-threshold.js";
 
 export { DEFAULT_CAP_USD };
 
@@ -220,40 +221,95 @@ export function paymentFailedTemplate(data = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 5) Monthly receipt -- this month's bill and, when there is one, the saved
-//    line. { billUsd, meteredUsd, ceilingUsd, capped }
+// 5) Monthly statement -- amount added and running balance, even with no
+//    charge (drive#465). { addedUsd, balanceUsd, billUsd, meteredUsd,
+//    ceilingUsd, capped }
 // ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
 export function monthlyReceiptTemplate(data = {}) {
-  const { billUsd, meteredUsd, ceilingUsd, capped } = data;
-  const bill = requireMoney(billUsd, "billUsd");
-  // savedLine()'s own check is the one that refuses a missing or non-boolean
-  // `capped`, so it is passed through as read rather than defaulted here: a
-  // receipt that guessed the baseline would state the wrong saving.
+  const added = requireMoney(data.addedUsd ?? data.billUsd, "addedUsd");
+  const bill = requireMoney(data.billUsd ?? data.addedUsd, "billUsd");
+  const balance = requireMoney(data.balanceUsd ?? added, "balanceUsd");
   const saved = savedLine({
-    meteredUsd: requireMoney(meteredUsd, "meteredUsd"),
+    meteredUsd: requireMoney(data.meteredUsd, "meteredUsd"),
     billUsd: bill,
-    ceilingUsd: requireMoney(ceilingUsd, "ceilingUsd"),
-    capped,
+    ceilingUsd: requireMoney(data.ceilingUsd, "ceilingUsd"),
+    capped: data.capped,
   });
-  const subject = `Your Drive receipt: ${usd(bill)} this month`;
+  const addedLabel = usd(added);
+  const balanceLabel = usd(balance);
+  const subject = `Your Drive statement: we added ${addedLabel} this month`;
   const lines = [
-    `Your Drive bill for this month is ${usd(bill)}.`,
+    `This month we added ${addedLabel} to your balance.`,
     "",
-    "This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.",
+    `Your running balance is ${balanceLabel}.`,
+    "",
+    CHARGE_COPY,
   ];
   const html_lines = [
-    `<p>Your Drive bill for this month is ${usd(bill)}.</p>`,
-    "<p>This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.</p>",
+    `<p>This month we added ${addedLabel} to your balance.</p>`,
+    `<p>Your running balance is ${balanceLabel}.</p>`,
+    `<p>${CHARGE_COPY}</p>`,
   ];
   if (saved) {
     lines.push("", saved);
     html_lines.push(`<p>${saved}</p>`);
   }
   return finish({ subject, lines, html_lines, saved });
+}
+
+// ---------------------------------------------------------------------------
+// 5b) Charge receipt -- the running balance reached $5 (drive#465). { chargedUsd }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+export function chargeReceiptTemplate(data = {}) {
+  const charged = requireMoney(data.chargedUsd, "chargedUsd");
+  const threshold = usd(CHARGE_THRESHOLD_CENTS / 100);
+  const chargedLabel = usd(charged);
+  const subject = CHARGE_RECEIPT_COPY;
+  const lines = [
+    `Your balance reached ${threshold}, and we charged your card ${chargedLabel}.`,
+    "",
+    "This is a receipt for that charge. Your running balance is now $0.00.",
+  ];
+  const html_lines = [
+    `<p>Your balance reached ${threshold}, and we charged your card ${chargedLabel}.</p>`,
+    "<p>This is a receipt for that charge. Your running balance is now $0.00.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
+// ---------------------------------------------------------------------------
+// 5c) Card-failure deletion warning -- 30, 45 or 55 days after the failed
+//     charge (drive#465). { daysLeft, amountUsd }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+export function cardFailureWarningTemplate(data = {}) {
+  const daysLeft = requireDays(data.daysLeft, "daysLeft");
+  const amount = requireMoney(data.amountUsd, "amountUsd");
+  const subject = `Update your card: files are scheduled for deletion in ${daysLeft} days`;
+  const lines = [
+    `We still could not charge ${usd(amount)}.`,
+    "",
+    `Your files stay for now. They are scheduled to be deleted in ${daysLeft} days if the card is not updated.`,
+    "",
+    "Update your card in the billing portal. Downloads still work.",
+  ];
+  const html_lines = [
+    `<p>We still could not charge ${usd(amount)}.</p>`,
+    `<p>Your files stay for now. They are scheduled to be deleted in ${daysLeft} days if the card is not updated.</p>`,
+    "<p>Update your card in the billing portal. Downloads still work.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
 }
 
 /**
@@ -368,6 +424,8 @@ export const EMAIL_KINDS = Object.freeze([
   "read-only",
   "payment-failed",
   "monthly-receipt",
+  "charge-receipt",
+  "card-failure-warning",
   "account-closed",
   "account-close-reminder",
 ]);
@@ -381,6 +439,8 @@ const TEMPLATES = Object.freeze({
   "read-only": readOnlyTemplate,
   "payment-failed": paymentFailedTemplate,
   "monthly-receipt": monthlyReceiptTemplate,
+  "charge-receipt": chargeReceiptTemplate,
+  "card-failure-warning": cardFailureWarningTemplate,
   "account-closed": accountClosedTemplate,
   "account-close-reminder": accountCloseReminderTemplate,
 });

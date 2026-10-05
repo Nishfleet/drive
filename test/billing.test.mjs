@@ -18,8 +18,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  applyUnpaid,
   BILLING_CONFIG,
   capStatus,
+  CHARGE_COPY,
+  CHARGE_MAX_MONTHS,
+  CHARGE_THRESHOLD_CENTS,
+  chargeDecision,
   downloadCostUsd,
   foundingConfig,
   gbMonths,
@@ -28,6 +33,7 @@ import {
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
+  monthsHeld,
   SAVED_COPY,
   savedLine,
   storedGb,
@@ -539,4 +545,77 @@ test("switching the offer off keeps existing founders at half and prices new acc
     assert.throws(() => monthBillCents({ gbMinutes: 0, foundingMember: bad }), TypeError);
     assert.throws(() => monthBillCents({ gbMinutes: 0, foundingOfferOpen: bad }), TypeError);
   }
+});
+
+test("bills under $5 roll; $5, the 12th month, and close charge (drive#465)", () => {
+  const jan = Date.UTC(2026, 0, 15);
+  const dec = Date.UTC(2026, 11, 15);
+  assert.equal(CHARGE_THRESHOLD_CENTS, 500);
+  assert.equal(CHARGE_MAX_MONTHS, 12);
+  assert.equal(CHARGE_COPY, "Your card will be charged when this reaches $5.");
+  assert.equal(BILLING_CONFIG.chargeThresholdCents, 500);
+  assert.equal(monthsHeld(Date.UTC(2026, 0, 1), jan), 1);
+  assert.equal(monthsHeld(Date.UTC(2026, 0, 1), dec), 12);
+
+  const under = applyUnpaid({
+    unpaidCents: 0,
+    unpaidSince: null,
+    incrementCents: 499,
+    now: jan,
+  });
+  assert.equal(under.reason, "roll");
+  assert.equal(under.chargeCents, 0);
+  assert.equal(under.unpaidCents, 499);
+
+  const at = applyUnpaid({
+    unpaidCents: 0,
+    unpaidSince: null,
+    incrementCents: 500,
+    now: jan,
+  });
+  assert.equal(at.reason, "threshold");
+  assert.equal(at.chargeCents, 500);
+  assert.equal(at.unpaidCents, 0);
+  assert.equal(at.unpaidSince, null);
+
+  const twelfth = applyUnpaid({
+    unpaidCents: 440,
+    unpaidSince: Date.UTC(2026, 0, 1),
+    incrementCents: 40,
+    now: dec,
+  });
+  assert.equal(twelfth.unpaidCents + twelfth.chargeCents, 480);
+  assert.equal(twelfth.reason, "max-months");
+  assert.equal(twelfth.chargeCents, 480);
+  assert.equal(twelfth.unpaidCents, 0);
+
+  const close = applyUnpaid({
+    unpaidCents: 40,
+    unpaidSince: jan,
+    incrementCents: 0,
+    now: jan,
+    closing: true,
+  });
+  assert.equal(close.reason, "close");
+  assert.equal(close.chargeCents, 40);
+  assert.equal(close.unpaidCents, 0);
+
+  assert.equal(chargeDecision({ balanceCents: 499, monthsHeld: 1 }).reason, "roll");
+  assert.equal(chargeDecision({ balanceCents: 500, monthsHeld: 1 }).reason, "threshold");
+});
+
+test("the usage summary carries the running balance and the $5 charge line", () => {
+  const empty = {
+    gbMinutes: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    unpaidCents: 499,
+  };
+  const summary = usageSummary(empty);
+  assert.equal(summary.unpaidCents, 499);
+  assert.equal(summary.labels.runningBalance, "$4.99");
+  assert.equal(summary.labels.chargeLine, CHARGE_COPY);
 });

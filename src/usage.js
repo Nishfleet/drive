@@ -36,6 +36,8 @@ export const USAGE_LABELS = Object.freeze({
   downloads: "Downloads",
   downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
   cost: "Cost so far",
+  runningBalance: "Running balance",
+  chargeLine: "Your card will be charged when this reaches $5.",
   cap: "Your cap",
   // The cap's own sentence. The accounts store is live (drive issue #2), so
   // the slider on the usage page is a control: `next` is what a person does
@@ -83,7 +85,14 @@ export const USAGE_LABELS = Object.freeze({
 // own label names, so the check below indexes the labels with a key they
 // actually hold rather than with an arbitrary string.
 /** @type {ReadonlyArray<keyof ReturnType<typeof import("./billing.js").usageSummary>["labels"]>} */
-const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
+const LINE_LABEL_KEYS = Object.freeze([
+  "storedNow",
+  "gbMonths",
+  "downloads",
+  "cost",
+  "runningBalance",
+  "chargeLine",
+]);
 
 /**
  * The four lines `drive usage` prints (build-spec.md "Commands"): stored GB
@@ -116,5 +125,7 @@ export function usageLines(summary) {
     `${USAGE_LABELS.gbMonths}: ${labels.gbMonths}`,
     `${USAGE_LABELS.downloads}: ${labels.downloads}`,
     `${USAGE_LABELS.cost}: ${labels.cost}`,
+    `${USAGE_LABELS.runningBalance}: ${labels.runningBalance}`,
+    labels.chargeLine,
   ]);
 }

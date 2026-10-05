@@ -840,6 +840,137 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * The running unpaid balance (drive#465), or $0 when the columns are
+     * still null on an old row.
+     * @param {string} accountId
+     * @returns {Promise<{unpaidCents: number, unpaidSince: number|null}>}
+     */
+    async getUnpaid(accountId) {
+      const row = await first(
+        db,
+        "SELECT unpaid_cents, unpaid_since FROM accounts WHERE id = ?1",
+        accountId,
+      );
+      if (!row || typeof row !== "object") {
+        return { unpaidCents: 0, unpaidSince: null };
+      }
+      const fields = /** @type {{unpaid_cents?: unknown, unpaid_since?: unknown}} */ (row);
+      const cents = fields.unpaid_cents;
+      const unpaidCents = cents === null || cents === undefined ? 0 : Number(cents);
+      if (!Number.isSafeInteger(unpaidCents) || unpaidCents < 0) {
+        throw new TypeError(
+          `accounts.unpaid_cents must be whole cents or null, got ${String(cents)}`,
+        );
+      }
+      const since = fields.unpaid_since;
+      if (since === null || since === undefined) {
+        return { unpaidCents, unpaidSince: null };
+      }
+      const unpaidSince = Number(since);
+      if (!Number.isFinite(unpaidSince)) {
+        throw new TypeError(`accounts.unpaid_since must be epoch ms or null, got ${String(since)}`);
+      }
+      return { unpaidCents, unpaidSince };
+    },
+
+    /**
+     * Persist the running unpaid balance after a charge decision (drive#465).
+     * @param {string} accountId
+     * @param {{unpaidCents: number, unpaidSince: number|null}} unpaid
+     */
+    async setUnpaid(accountId, unpaid) {
+      await run(
+        db,
+        "UPDATE accounts SET unpaid_cents = ?1, unpaid_since = ?2 WHERE id = ?3",
+        unpaid.unpaidCents,
+        unpaid.unpaidSince,
+        accountId,
+      );
+    },
+
+    /**
+     * Accounts sitting on the card-failure ladder (drive#465). A stamped
+     * purge time is already past the 60-day step, so those rows stay out of
+     * the walk: the walk never deletes files, and a second stamp would look
+     * like a second schedule.
+     * @returns {Promise<Array<{id: string, email: string, unpaidCents: number, paymentFailedAt: number, cardFailPurgeAt: number|null}>>}
+     */
+    async listPaymentFailed() {
+      const rows = await all(
+        db,
+        `SELECT id, email, unpaid_cents, payment_failed_at, card_fail_purge_at
+           FROM accounts
+          WHERE payment_failed_at IS NOT NULL
+            AND card_fail_purge_at IS NULL
+          LIMIT ?1`,
+        CLOSE_CRON_LIMIT,
+      );
+      /** @type {Array<{id: string, email: string, unpaidCents: number, paymentFailedAt: number, cardFailPurgeAt: number|null}>} */
+      const listed = [];
+      for (const row of rows) {
+        if (typeof row !== "object" || row === null) {
+          continue;
+        }
+        const fields =
+          /** @type {{id?: unknown, email?: unknown, unpaid_cents?: unknown, payment_failed_at?: unknown, card_fail_purge_at?: unknown}} */ (
+            row
+          );
+        if (typeof fields.id !== "string" || fields.id.length === 0) {
+          throw new TypeError("accounts.id must be a non-empty string");
+        }
+        const cents = fields.unpaid_cents;
+        const unpaidCents = cents === null || cents === undefined ? 0 : Number(cents);
+        if (!Number.isSafeInteger(unpaidCents) || unpaidCents < 0) {
+          throw new TypeError(
+            `accounts.unpaid_cents must be whole cents or null, got ${String(cents)}`,
+          );
+        }
+        const failedAt = Number(fields.payment_failed_at);
+        if (!Number.isSafeInteger(failedAt) || failedAt <= 0) {
+          throw new TypeError(
+            `accounts.payment_failed_at must be unix seconds, got ${String(fields.payment_failed_at)}`,
+          );
+        }
+        listed.push({
+          id: fields.id,
+          email: typeof fields.email === "string" ? fields.email : "",
+          unpaidCents,
+          paymentFailedAt: failedAt,
+          cardFailPurgeAt: null,
+        });
+      }
+      return listed;
+    },
+
+    /**
+     * Stamp that a charge failed, so the nightly walk can climb the ladder.
+     * @param {string} accountId
+     * @param {number} atSeconds
+     */
+    async setPaymentFailed(accountId, atSeconds) {
+      await run(
+        db,
+        "UPDATE accounts SET payment_failed_at = ?1 WHERE id = ?2 AND payment_failed_at IS NULL",
+        atSeconds,
+        accountId,
+      );
+    },
+
+    /**
+     * Schedule deletion at day 60 of a failed charge. Does not delete files.
+     * @param {string} accountId
+     * @param {number} atSeconds
+     */
+    async setCardFailPurgeAt(accountId, atSeconds) {
+      await run(
+        db,
+        "UPDATE accounts SET card_fail_purge_at = ?1 WHERE id = ?2 AND card_fail_purge_at IS NULL",
+        atSeconds,
+        accountId,
+      );
+    },
+
+    /**
      * Whether a card is really on file for this account (drive#417), read
      * from `accounts.card_added_at` — the one stamp `markAccountPaying`
      * (src/founding.js) writes when the account becomes paying, and the only

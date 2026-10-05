@@ -35,8 +35,9 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { monthBillCents } from "./billing.js";
-import { accountFoundingFlag } from "./founding.js";
+import { applyUnpaid, monthBillCents } from "./billing.js";
+import { sendEmail } from "./email-send.js";
+import { accountFoundingFlag, markAccountPaying } from "./founding.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
 // The test-mode host and ingest path are split so the host can be overridden
@@ -213,6 +214,9 @@ export function billingEventId(accountId, hour) {
  *   baseUrl?: string,
  *   fetch?: typeof fetch,
  *   now?: number|Date|string,
+ *   offerOpen?: boolean,
+ *   email?: unknown,
+ *   mailFrom?: string,
  * }} PushOptions
  */
 
@@ -264,8 +268,11 @@ export async function pushBillingHours(db, hours, options = {}) {
   // 720 times for one answer that cannot change mid-call (drive#488).
   /** @type {Map<string, boolean>} */
   const foundingFlags = new Map();
-  /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, event: Record<string, unknown>}>} */
+  /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, chargeCents: number, unpaidCents: number, unpaidSince: number|null, email: string, lastHourOfMonth: boolean, monthTotalCents: number, meteredCents: number, maximumCents: number, event: Record<string, unknown>}>} */
   const pending = [];
+  /** @type {Map<string, {unpaidCents: number, unpaidSince: number|null}>} */
+  const unpaidByAccount = new Map();
+  const offerOpen = options.offerOpen !== false;
 
   for (const hour of uniqueHours) {
     const month = monthStart(hour);
@@ -274,7 +281,8 @@ export async function pushBillingHours(db, hours, options = {}) {
       runningMonth = month;
     }
     const customers = await customersForHour(db, hour);
-    for (const { accountId, customerId } of customers) {
+    for (const row of customers) {
+      const { accountId, customerId } = row;
       if (already.has(`${accountId}|${hour}`)) {
         continue;
       }
@@ -303,18 +311,47 @@ export async function pushBillingHours(db, hours, options = {}) {
       // and never sees a negative delta.
       const amountUnits = Math.max(0, bill.totalCents - previously);
       running.set(accountId, previously + amountUnits);
+      if (!unpaidByAccount.has(accountId)) {
+        unpaidByAccount.set(accountId, {
+          unpaidCents: row.unpaidCents,
+          unpaidSince: row.unpaidSince,
+        });
+      }
+      const prior = unpaidByAccount.get(accountId) ?? {
+        unpaidCents: row.unpaidCents,
+        unpaidSince: row.unpaidSince,
+      };
+      const next = applyUnpaid({
+        unpaidCents: prior.unpaidCents,
+        unpaidSince: prior.unpaidSince,
+        incrementCents: amountUnits,
+        now: hour,
+      });
+      unpaidByAccount.set(accountId, {
+        unpaidCents: next.unpaidCents,
+        unpaidSince: next.unpaidSince,
+      });
+      const lastHourOfMonth = monthStart(hour + HOUR_MS) !== monthStart(hour);
       const eventId = billingEventId(accountId, hour);
       pending.push({
         accountId,
         hour,
         eventId,
         amountUnits,
+        chargeCents: next.chargeCents,
+        unpaidCents: next.unpaidCents,
+        unpaidSince: next.unpaidSince,
+        email: row.email,
+        lastHourOfMonth,
+        monthTotalCents: bill.totalCents,
+        meteredCents: bill.meteredCents,
+        maximumCents: bill.maximumCents,
         event: {
           event_id: eventId,
           customer_id: customerId,
           event_name: DODO_EVENT_NAME,
           metadata: {
-            amount_units: amountUnits,
+            amount_units: next.chargeCents > 0 ? next.chargeCents : amountUnits,
             storage_cents: bill.storageCents,
             download_cents: bill.downloadCents,
             total_cents: bill.totalCents,
@@ -332,16 +369,23 @@ export async function pushBillingHours(db, hours, options = {}) {
 
   for (let offset = 0; offset < pending.length; offset += INGEST_BATCH) {
     const batch = pending.slice(offset, offset + INGEST_BATCH);
-    await ingestEvents(
-      fetchImpl,
-      ingestUrl,
-      apiKey,
-      batch.map((item) => item.event),
-    );
-    // Record the batch we just ingested before the next POST, so a later
-    // batch's failure cannot leave those events without a local row.
-    await db.batch(
-      batch.map((item) =>
+    const charges = batch.filter((item) => item.chargeCents > 0);
+    if (charges.length > 0) {
+      await ingestEvents(
+        fetchImpl,
+        ingestUrl,
+        apiKey,
+        charges.map((item) => item.event),
+      );
+      for (const item of charges) {
+        await markAccountPaying(db, item.accountId, { offerOpen, now: pushedAt });
+      }
+    }
+    // Record the hours we just decided, and the unpaid balance each left,
+    // before the next POST. A later batch's failure cannot leave those hours
+    // without a local row. Hours under $5 are stored and not sent to Dodo.
+    await db.batch([
+      ...batch.map((item) =>
         db
           .prepare(
             `INSERT INTO billing_pushes (account_id, hour, dodo_event_id, amount_units, pushed_at)
@@ -349,7 +393,17 @@ export async function pushBillingHours(db, hours, options = {}) {
           )
           .bind(item.accountId, item.hour, item.eventId, item.amountUnits, pushedAt),
       ),
-    );
+      ...batch.map((item) =>
+        db
+          .prepare(
+            `UPDATE accounts
+                SET unpaid_cents = ?1, unpaid_since = ?2
+              WHERE id = ?3`,
+          )
+          .bind(item.unpaidCents, item.unpaidSince, item.accountId),
+      ),
+    ]);
+    await sendBillingMail(batch, options);
   }
   return { pushed: pending.length };
 }
@@ -460,12 +514,13 @@ function monthLengthMs(monthStartMs) {
 /**
  * @param {D1Database} db
  * @param {number} hour
- * @returns {Promise<Array<{accountId: string, customerId: string}>>}
+ * @returns {Promise<Array<{accountId: string, customerId: string, email: string, unpaidCents: number, unpaidSince: number|null}>>}
  */
 async function customersForHour(db, hour) {
   const result = await db
     .prepare(
-      `SELECT u.account_id AS account_id, a.dodo_customer_id AS dodo_customer_id
+      `SELECT u.account_id AS account_id, a.dodo_customer_id AS dodo_customer_id,
+              a.email AS email, a.unpaid_cents AS unpaid_cents, a.unpaid_since AS unpaid_since
        FROM usage_minutes u
        INNER JOIN accounts a ON a.id = u.account_id
        WHERE u.hour = ?1
@@ -479,7 +534,7 @@ async function customersForHour(db, hour) {
   // caller or a future query hands this a row the filter did not remove,
   // because silently coercing a missing customer to the string "null" would
   // send a real account to Dodo under an id that is not a Dodo customer.
-  /** @type {Array<{accountId: string, customerId: string}>} */
+  /** @type {Array<{accountId: string, customerId: string, email: string, unpaidCents: number, unpaidSince: number|null}>} */
   const rows = [];
   for (const row of result.results ?? []) {
     if (typeof row.account_id !== "string" || row.account_id === "") {
@@ -488,9 +543,86 @@ async function customersForHour(db, hour) {
     if (typeof row.dodo_customer_id !== "string" || row.dodo_customer_id === "") {
       throw new TypeError("accounts has a row with no dodo_customer_id");
     }
-    rows.push({ accountId: row.account_id, customerId: row.dodo_customer_id });
+    const unpaidRaw = row.unpaid_cents;
+    const unpaidCents =
+      unpaidRaw === null || unpaidRaw === undefined ? 0 : Number(unpaidRaw);
+    if (!Number.isSafeInteger(unpaidCents) || unpaidCents < 0) {
+      throw new TypeError(
+        `accounts.unpaid_cents must be whole cents or null, got ${String(unpaidRaw)}`,
+      );
+    }
+    const sinceRaw = row.unpaid_since;
+    /** @type {number|null} */
+    let unpaidSince = null;
+    if (sinceRaw !== null && sinceRaw !== undefined) {
+      unpaidSince = Number(sinceRaw);
+      if (!Number.isFinite(unpaidSince)) {
+        throw new TypeError(
+          `accounts.unpaid_since must be epoch ms or null, got ${String(sinceRaw)}`,
+        );
+      }
+    }
+    rows.push({
+      accountId: row.account_id,
+      customerId: row.dodo_customer_id,
+      email: typeof row.email === "string" ? row.email : "",
+      unpaidCents,
+      unpaidSince,
+    });
   }
   return rows;
+}
+
+/**
+ * Monthly statement at month-end, and a $5 charge receipt when the card
+ * is charged (drive#465). A missing mailer skips rather than failing the
+ * ingest that already landed.
+ * @param {Array<{email: string, chargeCents: number, unpaidCents: number, lastHourOfMonth: boolean, monthTotalCents: number, meteredCents: number, maximumCents: number}>} batch
+ * @param {PushOptions} options
+ */
+async function sendBillingMail(batch, options) {
+  const mailFrom = typeof options.mailFrom === "string" ? options.mailFrom : "";
+  if (options.email === undefined || options.email === null || mailFrom.length === 0) {
+    return;
+  }
+  for (const item of batch) {
+    if (item.email.trim().length === 0) {
+      continue;
+    }
+    if (item.chargeCents > 0) {
+      await sendEmail(options.email, {
+        to: item.email,
+        from: mailFrom,
+        kind: "charge-receipt",
+        data: { chargedUsd: item.chargeCents / 100 },
+      }).catch((error) => {
+        console.error(
+          "billing: charge receipt failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+    }
+    if (item.lastHourOfMonth) {
+      await sendEmail(options.email, {
+        to: item.email,
+        from: mailFrom,
+        kind: "monthly-receipt",
+        data: {
+          addedUsd: item.monthTotalCents / 100,
+          balanceUsd: item.unpaidCents / 100,
+          billUsd: item.monthTotalCents / 100,
+          meteredUsd: item.meteredCents / 100,
+          ceilingUsd: item.maximumCents / 100,
+          capped: item.meteredCents > item.maximumCents,
+        },
+      }).catch((error) => {
+        console.error(
+          "billing: monthly statement failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+    }
+  }
 }
 
 /**
