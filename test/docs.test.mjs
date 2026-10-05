@@ -586,20 +586,33 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
 });
 
 test("the docs config and the site's own config agree on the origin", () => {
-  // The VitePress config cannot import src/seo.js (it is outside the docs
-  // project, and VitePress's Vite will not load from there), so it repeats the
-  // origin. This is the gate that keeps the repeat honest: a base or an origin
-  // edited in one place fails here rather than shipping a docs site on a
-  // different host from the pricing page.
+  // The one site address lives in cmd/drive/site.json (drive#527). The docs
+  // config and src/seo.js both import it, so this gate checks the docs config
+  // reads that file and writes no address of its own, and that src/seo.js
+  // carries the same value.
   const config = readFileSync(
     new URL("../docs-site/.vitepress/config.mts", import.meta.url),
     "utf8",
   );
   assert.match(
     config,
-    new RegExp(`const SITE_ORIGIN = "${SITE.origin}";`),
-    "the docs config must use the canonical origin from src/seo.js",
+    /import site from "\.\.\/\.\.\/cmd\/drive\/site\.json" with \{ type: "json" \};/,
+    "the docs config must import the one site address from cmd/drive/site.json",
   );
+  assert.match(
+    config,
+    /const SITE_ORIGIN = site\.origin/,
+    "the docs config must take its origin from site.json",
+  );
+  assert.doesNotMatch(
+    config,
+    /https:\/\/[a-z0-9.-]+\.(dev|com|in|app)/,
+    "the docs config must not write a site address of its own",
+  );
+  const siteFile = JSON.parse(
+    readFileSync(new URL("../cmd/drive/site.json", import.meta.url), "utf8"),
+  );
+  assert.equal(SITE.origin, siteFile.origin, "src/seo.js must read the same site address");
   assert.match(
     config,
     /base: "\/docs\/"/,

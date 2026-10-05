@@ -20,7 +20,7 @@ import (
 // of this module through localProxy below, and the update test exercises the
 // whole install path instead of a stub of it. The module source in the zip is
 // the working tree's cmd/drive (minus _test.go files, which a build does not
-// need), so the installed binary is this package.
+// need, and keeping embedded files such as site.json), so the installed binary is this package.
 func makeProxyZip(t *testing.T) string {
 	t.Helper()
 	const (
@@ -71,7 +71,9 @@ func makeProxyZip(t *testing.T) string {
 	}
 	write(prefix+"/go.mod", gomod)
 	for _, n := range names {
-		if n.IsDir() || !strings.HasSuffix(n.Name(), ".go") || strings.HasSuffix(n.Name(), "_test.go") {
+		// Every non-test file ships, as in a real module zip: the package
+		// embeds site.json (drive#527), so a .go-only zip cannot build.
+		if n.IsDir() || strings.HasSuffix(n.Name(), "_test.go") {
 			continue
 		}
 		body, err := os.ReadFile(n.Name())
