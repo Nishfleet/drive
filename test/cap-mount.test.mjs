@@ -26,7 +26,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { MINUTES_PER_MONTH } from "../src/billing.js";
+import { minutesInMonth } from "../src/billing.js";
 import { dollarsToCapCents, handleCapRequest } from "../src/cap.js";
 import { monthStart } from "../src/meter.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
@@ -269,7 +269,7 @@ async function proof(t, rcloneBin, workDir) {
          (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
        VALUES (?, ?, ?, ?, 0, ?)`,
     )
-    .run(accountId, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+    .run(accountId, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
 
   /** @param {{accessKeyId: string, secret: string, sessionToken?: string|null}} key */
   const credFor = (key) => ({
