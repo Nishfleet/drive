@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-05
 
+- Prepaid balance: add $10 or more, and storage and downloads are drawn
+  from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
+  balance never expires. Nothing is charged to your card after use. The
+  account page shows the balance, top-up, auto top-up and recent lines.
 - Abuse guards: one active account per card, 1 TB storage until the first
   charge, and a spending cap default of $20.
 - New pricing: pay only for what you store. {{RATE}}, never more than
