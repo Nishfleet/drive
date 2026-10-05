@@ -208,8 +208,8 @@ test("no docs page scrolls sideways at 375px", {
       }));
       assert.equal(
         width.scroll,
-        width.viewport,
-        `${name} scrolls sideways at 375px: scrollWidth ${width.scroll}, viewport ${width.viewport} (clientWidth ${width.client})`,
+        width.client,
+        `${name} scrolls sideways at 375px: scrollWidth ${width.scroll}, clientWidth ${width.client} (viewport ${width.viewport})`,
       );
     }
   } finally {
