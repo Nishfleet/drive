@@ -494,10 +494,16 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
   // An allowlist, not a pass-through: the XML document family keeps its claimed
   // type out of the response entirely (issue #548).
-  assert.equal(previewContentType("page.xhtml", "application/xhtml+xml"), "application/octet-stream");
+  assert.equal(
+    previewContentType("page.xhtml", "application/xhtml+xml"),
+    "application/octet-stream",
+  );
   assert.equal(previewContentType("page.xsl", "application/xslt+xml"), "application/octet-stream");
   assert.equal(previewContentType("page.rdf", "application/rdf+xml"), "application/octet-stream");
-  assert.equal(previewContentType("formula.mml", "application/mathml+xml"), "application/octet-stream");
+  assert.equal(
+    previewContentType("formula.mml", "application/mathml+xml"),
+    "application/octet-stream",
+  );
   assert.equal(previewContentType("form.mht", "multipart/related"), "application/octet-stream");
   assert.equal(previewContentType("archive.zip", "application/zip"), "application/octet-stream");
   assert.throws(
@@ -522,7 +528,7 @@ test("preview: the XML document family and multipart/related leave as a download
   for (const [name, type] of uploads) {
     await upload("/", name, "<html>sign in here</html>", type);
   }
-  for (const [name, type] of uploads) {
+  for (const [name] of uploads) {
     const response = await call(new Request(api(`/preview?path=%2F${encodeURIComponent(name)}`)));
     assert.equal(response.status, 200, name);
     assert.equal(response.headers.get("content-type"), "application/octet-stream", name);

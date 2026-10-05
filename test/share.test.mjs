@@ -799,11 +799,7 @@ test("a share link serves the XML document family as a download, never a page", 
     });
     assert.equal(opened.status, 200, name);
     assert.equal(opened.headers.get("content-type"), "application/octet-stream", name);
-    assert.equal(
-      opened.headers.get("content-disposition"),
-      `attachment; filename="${name}"`,
-      name,
-    );
+    assert.equal(opened.headers.get("content-disposition"), `attachment; filename="${name}"`, name);
     assert.equal(opened.headers.get("x-content-type-options"), "nosniff", name);
     assert.equal(opened.headers.get("content-security-policy"), "sandbox", name);
   }
@@ -816,8 +812,11 @@ test("a share link serves the XML document family as a download, never a page", 
     await upload("/", name, "the real bytes", type);
     const made = await (await share(`/${name}`)).json();
     const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
-    assert.equal(opened.headers.get("content-type"),
-      name === "note.txt" ? "text/plain; charset=utf-8" : type, name);
+    assert.equal(
+      opened.headers.get("content-type"),
+      name === "note.txt" ? "text/plain; charset=utf-8" : type,
+      name,
+    );
     assert.equal(opened.headers.get("content-disposition"), "inline", name);
   }
 });
