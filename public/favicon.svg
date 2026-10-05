@@ -1,6 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 20 20"
+  role="img"
+  aria-label="Drive"
+>
   <!-- The wordmark mark from public/site.css `.wordmark i`: an ink rounded
        square with the orange dash near the bottom. drive#546. -->
-  <rect width="20" height="20" rx="5" fill="#1b1712"/>
-  <rect x="4" y="13" width="12" height="3" rx="2" fill="#ff4f12"/>
+  <title>Drive</title>
+  <rect width="20" height="20" rx="5" fill="#1b1712" />
+  <rect x="4" y="13" width="12" height="3" rx="2" fill="#ff4f12" />
 </svg>
