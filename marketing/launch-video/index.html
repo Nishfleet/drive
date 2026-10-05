@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Drive — launch video</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Big Shoulders Display";
+        font-weight: 900;
+        font-style: normal;
+        font-display: block;
+        src: url("assets/fonts/big-shoulders-display-latin-900-normal.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Instrument Sans";
+        font-weight: 400;
+        font-style: normal;
+        font-display: block;
+        src: url("assets/fonts/instrument-sans-latin-400-normal.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Instrument Sans";
+        font-weight: 600;
+        font-style: normal;
+        font-display: block;
+        src: url("assets/fonts/instrument-sans-latin-600-normal.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        font-weight: 400;
+        font-style: normal;
+        font-display: block;
+        src: url("assets/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        font-weight: 700;
+        font-style: normal;
+        font-display: block;
+        src: url("assets/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #1b1712;
+      }
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #1b1712;
+        font-family: "Instrument Sans", system-ui, sans-serif;
+        color: #faf6ee;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        background: #1b1712;
+      }
+      .shot {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform-origin: 50% 42%;
+      }
+      .scrim {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          180deg,
+          rgba(27, 23, 18, 0) 34%,
+          rgba(27, 23, 18, 0.62) 66%,
+          rgba(27, 23, 18, 0.94) 100%
+        );
+      }
+      .copy {
+        position: absolute;
+        left: 110px;
+        bottom: 104px;
+        width: 1360px;
+      }
+      .kicker {
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        font-size: 26px;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        color: #ff6a36;
+        margin-bottom: 22px;
+      }
+      h1 {
+        font-family: "Big Shoulders Display", sans-serif;
+        font-weight: 900;
+        font-size: 148px;
+        line-height: 0.88;
+        letter-spacing: -0.01em;
+        color: #faf6ee;
+      }
+      h2 {
+        font-family: "Big Shoulders Display", sans-serif;
+        font-weight: 900;
+        font-size: 96px;
+        line-height: 0.94;
+        letter-spacing: -0.01em;
+        color: #faf6ee;
+      }
+      .body {
+        margin-top: 26px;
+        font-size: 38px;
+        line-height: 1.28;
+        color: #f1e7d8;
+        max-width: 1160px;
+      }
+      .body strong {
+        font-weight: 600;
+        color: #ffb38c;
+      }
+      .mono {
+        font-family: "JetBrains Mono", monospace;
+      }
+      #intro .copy {
+        bottom: 190px;
+      }
+      #intro .body {
+        font-size: 40px;
+      }
+      .wordmark {
+        position: absolute;
+        top: 58px;
+        left: 84px;
+        z-index: 50;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        font-size: 30px;
+        letter-spacing: 0.42em;
+        text-transform: lowercase;
+        color: #faf6ee;
+        background: #1b1712;
+        padding: 12px 22px 12px 30px;
+        border-radius: 6px;
+      }
+      .cta {
+        display: inline-block;
+        margin-top: 34px;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        font-size: 32px;
+        letter-spacing: 0.02em;
+        color: #1b1712;
+        background: #ff4f12;
+        padding: 20px 34px;
+        border-radius: 6px;
+      }
+      .url {
+        margin-top: 26px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 26px;
+        letter-spacing: 0.04em;
+        color: #d9cebd;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-width="1920"
+      data-height="1080"
+      data-fps="30"
+      data-duration="75"
+    >
+      <section class="scene clip" id="intro" data-start="0" data-duration="6" data-track-index="0">
+        <div class="copy">
+          <p class="kicker anim-kick">For people and their agents</p>
+          <h1 class="anim-head">A drive that holds<br />more than your laptop.</h1>
+          <p class="body anim-body">
+            Plain files in object storage, opened by the apps you already use.
+          </p>
+        </div>
+      </section>
+
+      <section class="scene clip" id="s1" data-start="6" data-duration="11" data-track-index="1">
+        <img class="shot" data-layout-allow-overflow src="assets/home_hero.png" alt="Drive pricing page" />
+        <div class="scrim"></div>
+        <div class="copy">
+          <h2 class="anim-head">Real files in a real Finder folder.</h2>
+          <p class="body anim-body">Drag in, double-click, scrub the timeline.</p>
+        </div>
+      </section>
+
+      <section class="scene clip" id="s2" data-start="17" data-duration="12" data-track-index="2">
+        <img class="shot" data-layout-allow-overflow src="assets/home_finder.png" alt="Huge files, tiny disk" />
+        <div class="scrim"></div>
+        <div class="copy">
+          <h2 class="anim-head">Huge files. Tiny disk.</h2>
+          <p class="body anim-body">A 5 GB video starts without a 5 GB download.</p>
+        </div>
+      </section>
+
+      <section class="scene clip" id="s3" data-start="29" data-duration="12" data-track-index="3">
+        <img class="shot" data-layout-allow-overflow src="assets/home_agents.png" alt="One command, every agent" />
+        <div class="scrim"></div>
+        <div class="copy">
+          <h2 class="anim-head">One command. Every agent.</h2>
+          <p class="body anim-body">
+            Agent keys can list, read and write. <strong>They can never delete.</strong>
+          </p>
+        </div>
+      </section>
+
+      <section class="scene clip" id="s4" data-start="41" data-duration="12" data-track-index="4">
+        <img class="shot" data-layout-allow-overflow src="assets/home_calculator.png" alt="Price calculator" />
+        <div class="scrim"></div>
+        <div class="copy">
+          <h2 class="anim-head">One price: 2&cent; per GB.</h2>
+          <p class="body anim-body">Never more than $10 per TB. No plans. Balance never expires.</p>
+        </div>
+      </section>
+
+      <section class="scene clip" id="s5" data-start="53" data-duration="11" data-track-index="5">
+        <img class="shot" data-layout-allow-overflow src="assets/home_cap.png" alt="A cap that stops writes" />
+        <div class="scrim"></div>
+        <div class="copy">
+          <h2 class="anim-head">A cap that stops writes, not files.</h2>
+          <p class="body anim-body">At the cap, writes stop. Every file stays.</p>
+        </div>
+      </section>
+
+      <section class="scene clip" id="cta" data-start="64" data-duration="11" data-track-index="6">
+        <img class="shot" data-layout-allow-overflow src="assets/getstarted2.png" alt="Get started" />
+        <div class="scrim"></div>
+        <div class="copy">
+          <h2 class="anim-head">Get drive.</h2>
+          <p class="body anim-body">
+            The drive is not open yet. Sign-ups go to the waitlist.
+          </p>
+          <span class="cta">Join the waitlist</span>
+          <p class="url mono">drive-pricing.nishant345.workers.dev</p>
+        </div>
+      </section>
+
+      <div class="wordmark">drive</div>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const at = (sel, from, to, time) => {
+        const el = document.querySelector(sel);
+        if (el) tl.fromTo(el, from, to, time);
+      };
+
+      const scenes = [
+        { sel: "#intro", start: 0, dur: 6 },
+        { sel: "#s1", start: 6, dur: 11 },
+        { sel: "#s2", start: 17, dur: 12 },
+        { sel: "#s3", start: 29, dur: 12 },
+        { sel: "#s4", start: 41, dur: 12 },
+        { sel: "#s5", start: 53, dur: 11 },
+        { sel: "#cta", start: 64, dur: 11 },
+      ];
+
+      for (const scene of scenes) {
+        const shot = document.querySelector(scene.sel + " .shot");
+        if (shot) {
+          tl.fromTo(
+            shot,
+            { scale: 1.02 },
+            { scale: 1.09, duration: scene.dur, ease: "none" },
+            scene.start,
+          );
+        }
+        at(
+          scene.sel + " .anim-kick",
+          { opacity: 0, y: 22 },
+          { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" },
+          scene.start + 0.15,
+        );
+        at(
+          scene.sel + " .anim-head",
+          { opacity: 0, y: 44 },
+          { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" },
+          scene.start + 0.3,
+        );
+        at(
+          scene.sel + " .anim-body",
+          { opacity: 0, y: 30 },
+          { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" },
+          scene.start + 0.55,
+        );
+      }
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>
