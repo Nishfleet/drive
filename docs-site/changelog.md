@@ -10,6 +10,11 @@ the live site.
 
 ## 2026-10-05
 
+- The last-sync time on the Get started page is written in the time zone your
+  own computer is in, in the same day, month and year format as every other
+  date on the site.
+- The day a closing account's files are deleted now says which time zone that
+  day is in.
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
   from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
   balance never expires. Nothing is charged to your card after use. The
