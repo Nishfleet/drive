@@ -84,21 +84,30 @@ test("the real migrations apply cleanly, in filename order", () => {
   // moved to 0026. A rename that dropped the file, or renamed it out of the
   // folder, would take its tables and index out of the real schema and this
   // test would fail here rather than in production, where D1 still tracks the
-  // file by its old name.
+  // file by its old name. The copy-instead-of-rename case is the prefix gate's
+  // to catch, and the absence assert here names it.
   assert.ok(
     MIGRATION_FILES.includes("0026_meter_scale.sql"),
     "0026_meter_scale.sql is missing from the migration set",
   );
+  assert.ok(
+    !MIGRATION_FILES.includes("0025_meter_scale.sql"),
+    "0025_meter_scale.sql still exists: the prefix was renamed, not copied",
+  );
   for (const table of ["meter_account_rerolls", "prepaid_draw_marks"]) {
     assert.ok(tables.includes(table), `table ${table} (0026_meter_scale.sql) was not created`);
   }
-  assert.equal(
-    sqlite
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?1")
-      .get("file_versions_live")?.name,
-    "file_versions_live",
-    "0026_meter_scale.sql's live index is missing from the real schema",
-  );
+  // Both indexes the file creates: the live half of the hourly read and the
+  // hidden half it unions with (0023's file_versions_hidden_at). A rename that
+  // dropped either half would break the hour's plan, not just a table.
+  for (const index of ["file_versions_live", "file_versions_hidden_at"]) {
+    assert.ok(
+      sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?1")
+        .get(index),
+      `index ${index} (0026_meter_scale.sql) is missing from the real schema`,
+    );
+  }
   // The columns the meter's arithmetic assumes: epoch milliseconds in
   // INTEGER columns, sizes and bytes in INTEGER columns, and the fraction of
   // a GB-minute in a REAL one. A timestamp stored as TEXT would make the
