@@ -279,10 +279,10 @@ function describeFailed(cause) {
  * module or the Worker that does so on its own.
  *
  * The account gate and the browser CSRF check are the Worker's (src/index.js
- * registers this under `/api/*` with `accountGate` and `csrfWhenBrowser`), so
- * an anonymous caller is answered 401 before this function runs and a
- * cross-site POST is answered by the middleware, not by a hand-rolled rule
- * here. `store` is the account's own scoped store.
+ * registers this under `/api/*` with `accountGate`, and on this path with
+ * `csrfWhenBrowser`), so an anonymous caller is answered 401 before this
+ * function runs and a cross-site POST is answered by the middleware, not by
+ * a hand-rolled rule here. `store` is the account's own scoped store.
  *
  * @param {Request} request
  * @param {import("./files.js").FileStore|null} store

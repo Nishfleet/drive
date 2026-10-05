@@ -48,6 +48,7 @@ import {
   trashName,
   trashRows,
   UPLOAD_COPY,
+  UPLOAD_FILE_MAX_BYTES,
   validatePath,
   withoutTrash,
 } from "../src/files.js";
@@ -448,7 +449,10 @@ test("preview: a picture comes back inline, download comes back as an attachment
   assert.equal(await preview.text(), "the-bytes");
 
   const download = await call(new Request(api("/download?path=%2Fholiday.jpg")));
-  assert.equal(download.headers.get("content-disposition"), 'attachment; filename="holiday.jpg"');
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"holiday.jpg\"; filename*=UTF-8''holiday.jpg",
+  );
   assert.equal(await download.text(), "the-bytes");
 });
 
@@ -462,7 +466,24 @@ test("preview: a file name cannot break out of the header", async () => {
   const { call, upload } = drive();
   await upload("/", 'a"b.txt', "x", "text/plain");
   const response = await call(new Request(api("/download?path=%2Fa%22b.txt")));
-  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="ab.txt"');
+  assert.equal(
+    response.headers.get("content-disposition"),
+    "attachment; filename=\"ab.txt\"; filename*=UTF-8''a%22b.txt",
+  );
+});
+
+test("download: a Japanese file name is RFC 5987, not a 500", async () => {
+  const { call, upload } = drive();
+  await upload("/", "日本.txt", "hello", "text/plain");
+  const download = await call(
+    new Request(api(`/download?path=${encodeURIComponent("/日本.txt")}`)),
+  );
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), "hello");
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"__.txt\"; filename*=UTF-8''%E6%97%A5%E6%9C%AC.txt",
+  );
 });
 
 test("preview: an uploaded page is never a page on our origin", async () => {
@@ -490,7 +511,10 @@ test("preview: an uploaded page is never a page on our origin", async () => {
     } else {
       // The download is the customer's own file, with the type they sent.
       assert.equal(page.headers.get("content-type"), "text/html");
-      assert.equal(page.headers.get("content-disposition"), 'attachment; filename="page.html"');
+      assert.equal(
+        page.headers.get("content-disposition"),
+        "attachment; filename=\"page.html\"; filename*=UTF-8''page.html",
+      );
     }
   }
   // A download is the customer's file, byte for byte, with the type they sent.
@@ -561,6 +585,22 @@ test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
   // The words are the message table's, not this route's own copy of them
   // (drive#158); test/messages.test.mjs walks this route for that rule.
   assert.equal((await response.json()).error, failureMessage("upload-needs-name"));
+});
+
+test("upload: a 200 MB declared size is refused before the body is read", async () => {
+  const { call, scoped } = drive();
+  const response = await call(
+    new Request(`${api("/upload")}?path=%2F&name=huge.bin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(UPLOAD_FILE_MAX_BYTES + 100_000_000),
+      },
+    }),
+  );
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error, failureMessage("body-too-large"));
+  assert.equal(await scoped.read("/huge.bin"), null);
 });
 
 test("delete: a file leaves the folder and lands in Recently deleted", async () => {
@@ -986,7 +1026,7 @@ test("an unsigned write sends the stream as it is, without buffering it", async 
   assert.equal(sent, stream);
 });
 
-test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
+test("a signed write sends the original stream and UNSIGNED-PAYLOAD", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
     start(controller) {
@@ -994,12 +1034,11 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
       controller.close();
     },
   });
-  /** @type {Uint8Array | undefined} */
+  /** @type {Request | undefined} */
   let sent;
   /** @type {typeof fetch} */
   const fetchImpl = async (input, init) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    sent = new Uint8Array(await request.arrayBuffer());
+    sent = input instanceof Request ? input : new Request(input, init);
     return new Response(null, { status: 200 });
   };
   const store = createS3Store({
@@ -1010,22 +1049,10 @@ test("a signed write hands fetchImpl the hashed bytes, not the original stream",
     fetchImpl,
   });
   await store.write("u/acct/a.txt", stream, "text/plain");
-  assert.deepEqual(sent, new TextEncoder().encode("chunk"));
-});
-
-test("a signed write names a body it cannot hash", async () => {
-  const { createS3Store } = await import("../src/files.js");
-  const store = createS3Store({
-    endpoint: "http://127.0.0.1:9000",
-    bucket: "drive",
-    region: "eu-west-3",
-    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
-    fetchImpl: async () => new Response(null, { status: 200 }),
-  });
-  await assert.rejects(
-    store.write("u/acct/a.txt", /** @type {any} */ ({ not: "a body" }), "text/plain"),
-    /cannot send a body of type/,
-  );
+  assert.ok(sent);
+  assert.equal(sent.headers.get("x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
+  assert.ok(sent.body instanceof ReadableStream, "the write must not buffer the stream into bytes");
+  assert.equal(await sent.text(), "chunk");
 });
 
 test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {

@@ -54,6 +54,13 @@ export const CONTROL_OR_SLASH = new RegExp(
 );
 /** The listing, download, upload and restore API. */
 export const FILES_ENDPOINT = "/api/files";
+/**
+ * Per-file ceiling on an owner upload through `/api/files/upload` (drive#539).
+ * 100 MB stays under the isolate's 128 MB, so a declared size that would crash
+ * the Worker is refused from Content-Length before the body is read. The public
+ * upload-request path caps at 32 MB for the same isolate reason (src/share.js).
+ */
+export const UPLOAD_FILE_MAX_BYTES = 100_000_000;
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
 export const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
@@ -611,7 +618,9 @@ export function restorableUntil(deletedAt) {
  *   One object's headers without its bytes — what a HEAD answer needs, so a
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
- * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string, options?: {contentLength?: number}) => Promise<void>} write
+ *   `contentLength` is the size the caller already knows (an upload's
+ *   Content-Length): a stream PUT to S3 needs it or the endpoint answers 411.
  * @property {(path: string) => Promise<void>} remove
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
@@ -786,8 +795,8 @@ export function scopeStore(store, account) {
     async listAll(path) {
       return (await store.listAll(toKey(path))).map(toDriveEntry);
     },
-    async write(path, body, contentType) {
-      return store.write(toKey(path), body, contentType);
+    async write(path, body, contentType, options) {
+      return store.write(toKey(path), body, contentType, options);
     },
     async remove(path) {
       return store.remove(toKey(path));
@@ -1106,63 +1115,6 @@ export function createMemoryStore() {
 }
 
 /**
- * The bytes of a request body a signer can hash, read from the four shapes
- * `write` is called with (`ReadableStream` from an upload, a `Blob` from the
- * starter template, a `Uint8Array` or a string from the CLI and the tests).
- * SigV4 signs the payload hash, so a stream must be in hand before the request
- * goes out; a body that is already bytes is passed through untouched.
- *
- * A signed write therefore reads the whole body. There is no size check here:
- * the FileStore interface has no multipart PUT, and the callers already hold
- * or bound those bytes (the upload handler from the incoming request, the
- * proof from an empty object). Inventing a second cap would be a second
- * number for the same body. Only a signed store reads a body this way: the
- * unsigned stand-in sends the stream as it is, which is what `rclone serve s3`
- * expects and what keeps the no-credential path free of a buffer it does not
- * need.
- * @param {BodyInit} body
- * @returns {Promise<Uint8Array>}
- */
-async function signableBody(body) {
-  if (typeof body === "string") {
-    return new TextEncoder().encode(body);
-  }
-  if (body instanceof Uint8Array) {
-    return body;
-  }
-  if (typeof Blob !== "undefined" && body instanceof Blob) {
-    return new Uint8Array(await body.arrayBuffer());
-  }
-  if (typeof ReadableStream === "undefined" || !(body instanceof ReadableStream)) {
-    throw new TypeError(
-      `cannot send a body of type ${Object.prototype.toString.call(body)}: a signed write hashes the payload, and only a stream, bytes, a Blob or a string can be read as one`,
-    );
-  }
-  /** @type {ReadableStream<Uint8Array>} */
-  const stream = /** @type {any} */ (body);
-  const chunks = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-  }
-  let total = 0;
-  for (const chunk of chunks) {
-    total += chunk.byteLength;
-  }
-  const bytes = new Uint8Array(total);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
-}
-
-/**
  * The bucket a storage key lives in: the same `drv-<accountId>` the key
  * provider mints into (drive#371, drive#460). The object layout is still
  * `u/<id>/...`; only the bucket name moved, so Finder writes and the Files
@@ -1251,17 +1203,20 @@ export function createS3Store(config) {
   const urlFor = (path) => `${baseFor(path)}/${path.split("/").map(encodeURIComponent).join("/")}`;
   /**
    * The one request path every method below uses, so a store is either fully
-   * signed or fully unsigned. A body is read into bytes first, because SigV4
-   * signs the payload hash and a stream cannot be hashed after it is sent.
-   * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
-   * uses, so a test can still inject fetch and a credentialed store never
-   * bypasses it through `aws.fetch`. Every caller below passes a string URL.
-   * The send carries the store's one timeout and one retry (src/fetch-retry.js):
-   * a stalled socket answers named after 15 s, and a 5xx gets exactly one
-   * retried call. The signing is inside the retry's per-attempt send, because
-   * a second attempt must sign again — the first attempt's signed Request has
-   * a body stream already consumed and its own x-amz-date, and replaying it
-   * is a SignatureDoesNotMatch, not a retry.
+   * signed or fully unsigned. A write body is sent as it is: aws4fetch signs
+   * S3 with `X-Amz-Content-Sha256: UNSIGNED-PAYLOAD` (it sets that header
+   * itself), so a stream is never read into isolate memory to hash it
+   * (drive#539). Fetch-retry already skips the 5xx retry on a stream, because
+   * the first attempt spends it. Signing is `aws.sign` then `fetchImpl`, the
+   * same path `createS3Client` uses, so a test can still inject fetch and a
+   * credentialed store never bypasses it through `aws.fetch`. Every caller
+   * below passes a string URL. The send carries the store's one timeout and
+   * one retry (src/fetch-retry.js): a stalled socket answers named after 15 s,
+   * and a 5xx on a replayable body gets exactly one retried call. The signing
+   * is inside the retry's per-attempt send, because a second attempt must sign
+   * again - the first attempt's signed Request has a body stream already
+   * consumed and its own x-amz-date, and replaying it is a SignatureDoesNotMatch,
+   * not a retry.
    *
    * @type {(input: string | URL | Request, init?: RequestInit) => Promise<Response>}
    */
@@ -1274,18 +1229,8 @@ export function createS3Store(config) {
           })
       : async (input, init = {}) => {
           const opts = /** @type {any} */ ({ ...init });
-          if (opts.body === undefined) {
-            // GET, DELETE and CopyObject send no payload to hash.
-          } else if (opts.body === null) {
+          if (opts.body === null) {
             delete opts.body;
-          } else {
-            const bytes = await signableBody(opts.body);
-            // The body is sent exactly as it was signed: a Uint8Array is copied
-            // into a plain view, the same copy createS3Client makes, because
-            // sending anything other than the signed bytes is SignatureDoesNotMatch.
-            const body = new Uint8Array(bytes.byteLength);
-            body.set(bytes);
-            opts.body = body;
           }
           const url =
             typeof input === "string"
@@ -1461,10 +1406,15 @@ export function createS3Store(config) {
         ...(status !== 200 ? { contentLength } : {}),
       };
     },
-    async write(path, body, contentType) {
+    async write(path, body, contentType, options = {}) {
+      /** @type {Record<string, string>} */
+      const headers = { "content-type": contentType };
+      if (typeof options.contentLength === "number" && Number.isFinite(options.contentLength)) {
+        headers["content-length"] = String(options.contentLength);
+      }
       const response = await request(urlFor(path), {
         method: "PUT",
-        headers: { "content-type": contentType },
+        headers,
         body,
       });
       if (!response.ok) {
@@ -2266,6 +2216,25 @@ export function joinPath(folder, name) {
 }
 
 /**
+ * Content-Disposition for a download: an ASCII `filename=` fallback plus the
+ * RFC 5987 `filename*` the real name rides on, so a Japanese name is a
+ * ByteString header in Node and the name the browser shows (drive#539).
+ * Quotes and backslashes are stripped from the fallback the way the old
+ * header stripped them, so a name cannot break out of the quoted string.
+ * @param {string} name
+ * @returns {string}
+ */
+export function attachmentDisposition(name) {
+  const raw = String(name || "");
+  const ascii = raw.replace(/["\\]/g, "").replace(/[^\u0020-\u007E]/g, "_") || "download";
+  const encoded = encodeURIComponent(raw).replace(
+    /[!'()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
  * Handles every method on /api/files and always answers. The gate is in front
  * of it (see handleFilesRequest): the account is required, the store it reads
  * is scoped to that account, and a state change also has to be same-origin.
@@ -2390,9 +2359,7 @@ async function readRequest(request, url, store, download) {
       "content-type": download
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
-      "content-disposition": download
-        ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-        : "inline",
+      "content-disposition": download ? attachmentDisposition(name) : "inline",
       "x-content-type-options": "nosniff",
       "cache-control": "private, no-store",
       // What a player or a resuming downloader may ask for next: one slice.
@@ -2491,6 +2458,16 @@ async function uploadRequest(request, url, store, account, options = {}) {
   if (!name) {
     return json({ error: failureMessage("upload-needs-name") }, 400);
   }
+  const declared = request.headers.get("content-length");
+  /** @type {number|null} */
+  let incomingLength = null;
+  if (declared !== null) {
+    const length = Number(declared);
+    if (!Number.isFinite(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
+      return json({ error: failureMessage("body-too-large") }, 413);
+    }
+    incomingLength = length;
+  }
   /** @type {number|null} bytes this upload may still add before the first charge */
   let allowance = null;
   if (options.db && options.prepaidPause && (await balanceCents(options.db, account.id)) <= 0) {
@@ -2501,13 +2478,12 @@ async function uploadRequest(request, url, store, account, options = {}) {
   }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
-    const header = Number(request.headers.get("content-length") ?? "");
     // A missing length is 0 while under the limit. At or past 1 TB it is 1
     // byte so an upload with no length cannot sneak past the exact-limit
     // edge (stored + 0 is not greater than the limit).
     const incomingBytes =
-      Number.isInteger(header) && header > 0
-        ? header
+      incomingLength !== null && incomingLength > 0
+        ? incomingLength
         : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
           ? 1
           : 0;
@@ -2529,7 +2505,12 @@ async function uploadRequest(request, url, store, account, options = {}) {
   const body = /** @type {ReadableStream} */ (request.body);
   const counted = allowance === null ? body : body.pipeThrough(preChargeLimitStream(allowance));
   try {
-    await store.write(path, counted, contentType);
+    await store.write(
+      path,
+      counted,
+      contentType,
+      incomingLength === null ? undefined : { contentLength: incomingLength },
+    );
   } catch (error) {
     if (error instanceof PreChargeLimitError) {
       return json({ error: error.message }, 403);

@@ -205,6 +205,16 @@ export default defineConfig({
         namespace: "1005",
         simple: { limit: 10, period: 60 },
       }),
+      // drive#539: GET /api/health fans out to every D1, five other rate-limit
+      // bindings, KV and ASSETS. The route itself sits behind this limiter so
+      // an anonymous loop cannot spend those billed ops at will. 10 a minute
+      // per IP is the sign-in figure: far above a monitor that polls once a
+      // minute, far below a script. Namespace 1008, because 1006/1007 are the
+      // api Worker's device pair (workers/api/cloudflare.config.ts).
+      HEALTH_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1008",
+        simple: { limit: 10, period: 60 },
+      }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and

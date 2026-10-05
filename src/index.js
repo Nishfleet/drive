@@ -557,6 +557,7 @@ export function createApp() {
   // (curl, the Go CLI) is not a browser, so it passes this check and the
   // account gate is what holds it.
   app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
+  app.use(STARTER_ENDPOINT, csrfWhenBrowser);
   app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
   app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
   app.use(TOPUP_ENDPOINT, csrfWhenBrowser);

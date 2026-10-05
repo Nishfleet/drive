@@ -179,6 +179,7 @@ function anonymous(request) {
       DRIVE_DB: createTestD1(),
       REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      HEALTH_RATE_LIMITER: makeLimiter(),
     },
     ctx,
   );
