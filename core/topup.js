@@ -25,9 +25,9 @@
 // No live charge runs from here while DODO_PAYMENTS_API_KEY is unset: the
 // checkout route answers 503 with the message table's words.
 
-import { json } from "../workers/api/src/http.js";
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
 import { isSameOriginRequest, sendEmail } from "./email-send.js";
+import { json } from "./http.js";
 import {
   balanceCents,
   creditTopUp,

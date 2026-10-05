@@ -29,7 +29,6 @@ import { failureMessage } from "../../core/messages.js";
 import { BYTES_PER_GB } from "../../core/meter.js";
 import apiWorker from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
-import { createMemoryStore } from "../../core/keystore.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 
 // Midday UTC, clear of either midnight, so a day boundary in these tests is a

@@ -19,8 +19,8 @@
 // every branch without a Worker runtime, like src/waitlist.js and
 // src/status.js.
 
-import { json } from "../workers/api/src/http.js";
 import { EMAIL_KINDS, FROM_NAME, renderEmail } from "./emails.js";
+import { json } from "./http.js";
 
 /**
  * The Email Sending binding as this module uses it: `send()` and nothing

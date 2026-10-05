@@ -43,7 +43,6 @@
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
-import { json, readJsonObject } from "../workers/api/src/http.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -60,6 +59,7 @@ import {
   TRASH_PATH,
   validatePath,
 } from "../core/files.js";
+import { json, readJsonObject } from "../core/http.js";
 import { balanceCents } from "../core/ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";

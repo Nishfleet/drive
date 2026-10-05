@@ -14,14 +14,8 @@
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
 import { decodeNotificationKey } from "./event-routes.js";
-import {
-  BodyTooLargeError,
-  bearerToken,
-  json,
-  readLimitedBody,
-  tokensMatch,
-} from "./http.js";
 import { accountPrefix, scopeStore } from "./files.js";
+import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
