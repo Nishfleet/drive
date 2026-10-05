@@ -355,9 +355,15 @@ export function teamScopeFor(role, teamId) {
  * @returns {string}
  */
 export function checkedBranchName(name) {
-  if (typeof name !== "string" || !BRANCH_NAME_SAFE.test(name) || name.includes("..")) {
+  if (
+    typeof name !== "string" ||
+    name === "." ||
+    name === ".." ||
+    !BRANCH_NAME_SAFE.test(name) ||
+    name.includes("..")
+  ) {
     throw new TypeError(
-      `A branch name is 1 to 64 characters of letters, digits, dot, dash or underscore, without "..", got ${JSON.stringify(name)}.`,
+      `A branch name is 1 to 64 characters of letters, digits, dot, dash or underscore, without "." or "..", got ${JSON.stringify(name)}.`,
     );
   }
   return name;

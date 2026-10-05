@@ -18,10 +18,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_ENDPOINT } from "../src/files.js";
+import { FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../src/files.js";
 import worker from "../src/index.js";
 import { SIGNIN_COPY } from "../src/signin.js";
-import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import {
+  createTestAuth,
+  DRIVE_SCHEMA_MIGRATIONS,
+  signIn,
+  TEST_BASE_URL,
+  TEST_SECRET,
+} from "./harness.mjs";
 
 // The page under test is the shipped asset, byte for byte, because that is
 // what the asset layer serves: a copy in this file would prove this file.
@@ -38,8 +44,9 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   // migrations, one signed-in session, and the same memory store a deployment
   // without a bucket uses. Nothing here is a stub of the page's API, so the
   // listing, the preview and the download the browser gets are the routes it
-  // will get.
-  const made = createTestAuth();
+  // will get. The whole schema, because an upload reads the account's stored
+  // bytes off the live `file_versions` rows (drive#536).
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie } = await signIn(made, "click@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -239,8 +246,8 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   );
   assert.equal(
     await chrome.$eval("#viewer-body img", (img) => img.getAttribute("src")),
-    `${FILES_ENDPOINT}/preview?path=%2Fholiday.jpg`,
-    "the image is served from the preview route",
+    `${FILES_EMBED_ENDPOINT}?path=%2Fholiday.jpg`,
+    "the image is served from the embed route, which always opens a picture inline",
   );
   await closeViewer();
 
