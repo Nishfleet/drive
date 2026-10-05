@@ -625,11 +625,11 @@ export function drivePathFromKey(key, account) {
  * The route catches it and answers with the one sentence the page shows.
  */
 export class ChangedUnderUsError extends Error {
-  /** @param {string} path the drive path whose bytes changed */
+  /** @param {string} path the drive path, or the storage key in a store, whose bytes changed */
   constructor(path) {
     super(`${path} changed while it was being moved`);
     this.name = "ChangedUnderUsError";
-    /** @type {string} the drive path whose bytes changed */
+    /** @type {string} the path whose bytes changed, as the caller knows it */
     this.path = path;
   }
 }
