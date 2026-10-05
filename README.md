@@ -12,10 +12,12 @@ write the same folder.
   a delete made any other way is recoverable for one day, by asking us. The
   full list of what version 1 does not do is on the
   [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
-- **An agent's delete is undoable for 1 day.** An agent gets its own key. The
-  storage takes that key's delete but keeps the deleted copy for 1 day, and we
-  can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
-  storage limits a key to the whole Drive.
+- **An agent gets its own folder on its own key.** The storage gives an agent key
+  three permissions: list, read, write. It has no delete, so the storage refuses
+  an agent's delete itself. `drive init` mounts `~/Drive-agents/<tool>` for each
+  tool on that key, and the MCP server and the tool's allowed folders point
+  there, so the agent writes where storage bounds it. On Windows the tool still
+  works inside your own Drive, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.

@@ -372,8 +372,16 @@ func (p MountPlan) args(includeRCAuth bool) []string {
 		// status` reports the cache. It is one address for all of them.
 		// --rc-user/--rc-pass are rclone's own auth (drive#498); without
 		// them config/dump returns the storage secret to any local process.
-		"--rc", "--rc-addr", p.RCAddr,
+		//
+		// A plan with no remote-control address is a mount that runs no
+		// background loops: the agent path (agentmount.go, drive#514) has
+		// no fill, no conflict guard and no `drive status` to answer, so it
+		// gets no port at all. Writing an empty --rc-addr would open rclone's
+		// control on every interface.
 	)
+	if p.RCAddr != "" {
+		args = append(args, "--rc", "--rc-addr", p.RCAddr)
+	}
 	if includeRCAuth && p.RCUser != "" {
 		args = append(args, "--rc-user", p.RCUser, "--rc-pass", p.RCPass)
 	}

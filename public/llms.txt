@@ -46,9 +46,11 @@ Worked examples, each kept all month, with a usual 1 TB plan beside it:
   page carries the rows that do and do not have a figure.
 - A spending cap you set; at the cap the drive goes read-only and nothing is
   deleted.
-- Agents read and write freely but cannot permanently delete; a person can undo
-  an agent's delete. Branches copy a folder for an agent to work in, then you
-  approve or discard the copy.
+- An agent gets its own key with three permissions: list, read and write. There
+  is no delete on that key, so storage itself refuses an agent's delete. Each
+  tool gets its own mount at ~/Drive-agents/<tool> on that key, and the MCP
+  server and the tool's allowed folders use that path. Branches copy a folder
+  for an agent to work in, then you approve or discard the copy.
 
 ## Docs
 
