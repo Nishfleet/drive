@@ -1,6 +1,15 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
+// The plugin pin (package.json, devDependencies) waits for the 2.0.0 tagged
+// release. There is no such tag: workers-sdk publishes the 2.0 line only as
+// 2.0.0-beta.sha-<commit> snapshots, and its `latest` tag is still 1.62.5, so
+// the exact snapshot package.json names is the closest thing to a 2.0 release
+// that can be pinned. It stays an exact version rather than the floating
+// `beta` tag, so a move is a visible diff and not a silent one. Taking the
+// 1.62.5 tag instead needs `npm run build` and `npm test` green against it
+// first: the pinned snapshot is what this build was proven on, and the two
+// lines carry different workerd and miniflare builds.
 import { defineConfig, type Plugin } from "vite";
 import {
   assertSingleBeacon,

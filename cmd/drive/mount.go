@@ -570,10 +570,10 @@ func systemdUserSessionAbsent(err error) bool {
 	}
 	msg := err.Error()
 	for _, absent := range []string{
-		"executable file not found", // systemctl is not installed
-		"Failed to connect to bus", // no user bus, no D-Bus session
+		"executable file not found",    // systemctl is not installed
+		"Failed to connect to bus",     // no user bus, no D-Bus session
 		"not been booted with systemd", // no systemd user manager
-		"XDG_RUNTIME_DIR not set", // no user session to attach to
+		"XDG_RUNTIME_DIR not set",      // no user session to attach to
 	} {
 		if strings.Contains(msg, absent) {
 			return true
@@ -814,10 +814,6 @@ func bootoutLaunchdLabel(label, itemPath string) error {
 }
 
 func launchctlTarget() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
-
-func launchctlLoaded(target string) bool {
-	return launchctlLoadedLabel(target, LaunchdLabel)
-}
 
 func launchctlLoadedLabel(target, label string) bool {
 	return exec.Command("launchctl", launchctlArgvLabel(label, "print", target, "")...).Run() == nil
