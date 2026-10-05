@@ -182,7 +182,7 @@ test("a heavy step runs only when the files it tests changed (drive#660)", () =>
   const heavy = [
     "npm ci",
     "npm run build",
-    "npx lhci autorun",
+    "lhci autorun",
     "npm test",
     "Unit tests, with the race detector",
     "go build -o",

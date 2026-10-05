@@ -132,8 +132,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   const downloads = mkdtempSync(join(tmpdir(), "drive-files-page-"));
 
   // The drive repo pins every dependency in package.json, so the browser
-  // driver is a declared devDependency rather than something @lhci/cli drags
-  // in for its own Lighthouse run. Without it this import fails and the proof
+  // driver is a declared devDependency. Without it this import fails and the proof
   // fails with it: a skipped browser test is a main that goes red with no
   // message that says why.
   const { default: puppeteer } = await import("puppeteer-core");

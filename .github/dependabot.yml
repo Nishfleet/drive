@@ -59,3 +59,32 @@ updates:
         patterns:
           - "*"
         update-types: [minor, patch]
+
+  # The agent eval (evals/agents/) is its own npm project and its own Python
+  # requirements, pinned there and not in the root package.json (drive#257),
+  # so each needs its own entry or its pins never move (drive#581).
+  - package-ecosystem: npm
+    directory: /evals/agents
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      evals-npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /evals/agents
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      evals-pip-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
