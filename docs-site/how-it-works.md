@@ -26,7 +26,9 @@ do and do not carry a figure.
 
 What is on your disk is the parts you have already opened, held in a cache
 capped at {{CACHE_LIMIT}} with {{CACHE_FLOOR}} of your disk always kept free.
-Your disk never fills up; the cache is capped at a size you choose.
+The cap covers only what has already uploaded: a save that has not gone up yet
+stays on disk past the cap until it uploads, so uploads that are paused or
+behind can use more disk than the cap.
 `drive cache` shows the disk in use and the limit, `drive cache --max <size>`
 changes it, and `drive cache --clear` empties it without touching a file still
 waiting to upload. `drive status` shows the same cache use. Files you keep

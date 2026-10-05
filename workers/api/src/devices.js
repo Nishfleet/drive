@@ -246,8 +246,12 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * `purgeCursor` is the drive path the purge of this account stopped after
+   * (drive#565): NULL before the first batch and once the purge finished, so
+   * NULL `purged_at` with a non-NULL cursor reads "partially purged, resume
+   * after this path".
    * @param {unknown} row
-   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null}|null}
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null, purgeCursor: string|null}|null}
    */
   function closeStateFromRow(row) {
     if (!row || typeof row !== "object") {
@@ -271,6 +275,8 @@ export function createD1DeviceStore(db, options = {}) {
           ? null
           : Number(r.close_mail_sent_at),
       purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
+      purgeCursor:
+        typeof r.purge_cursor === "string" && r.purge_cursor !== "" ? r.purge_cursor : null,
     };
   }
 
@@ -281,7 +287,7 @@ export function createD1DeviceStore(db, options = {}) {
     return closeStateFromRow(
       await first(
         db,
-        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?1",
+        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts WHERE id = ?1",
         accountId,
       ),
     );
@@ -405,7 +411,7 @@ export function createD1DeviceStore(db, options = {}) {
       db,
       `UPDATE accounts
          SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
-             close_mail_sent_at = NULL
+             close_mail_sent_at = NULL, purge_cursor = NULL
        WHERE id = ?1`,
       accountId,
     );
@@ -422,7 +428,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueReminder(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND reminder_sent_at IS NULL
@@ -441,7 +447,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDuePurge(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
@@ -461,7 +467,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueCloseMail() {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND close_mail_sent_at IS NULL
@@ -499,13 +505,32 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Records how far one account's purge got (drive#565): the last drive path
+   * whose objects the batch delete removed. The next nightly pass lists from
+   * after that path instead of starting over. Conditional on
+   * `purged_at IS NULL`, so a late write can never reopen a purged account.
+   * @param {string} accountId
+   * @param {string} cursor
+   */
+  async function markPurgeProgress(accountId, cursor) {
+    await run(
+      db,
+      "UPDATE accounts SET purge_cursor = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      cursor,
+      accountId,
+    );
+  }
+
+  /**
    * @param {string} accountId
    * @param {number} atSeconds
    */
   async function markPurged(accountId, atSeconds) {
+    // The cursor is cleared with the stamp: a purged account has no progress
+    // to resume, and a NULL cursor with `purged_at` set reads as finished.
     await run(
       db,
-      "UPDATE accounts SET purged_at = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      "UPDATE accounts SET purged_at = ?1, purge_cursor = NULL WHERE id = ?2 AND purged_at IS NULL",
       atSeconds,
       accountId,
     );
@@ -601,10 +626,33 @@ export function createD1DeviceStore(db, options = {}) {
     return { device: swapped ?? device, capped: true };
   }
 
+  // The account's live device rows, oldest first, as this module reads them: one
+  // statement for every answer about a device that is still signed in
+  // (`listCapKeys` for the cap plan, `listLive` for the first-run page's poll),
+  // so the two cannot disagree about which rows are live.
+  /**
+   * @param {string} accountId
+   * @returns {Promise<Device[]>}
+   */
+  async function liveDevices(accountId) {
+    const result = await db
+      .prepare(
+        "SELECT * FROM devices WHERE account_id = ?1 AND revoked_at IS NULL ORDER BY created_at",
+      )
+      .bind(accountId)
+      .all();
+    return /** @type {Device[]} */ (
+      (result.results ?? []).map(deviceFromRow).filter((device) => device !== null)
+    );
+  }
+
   const store = {
     put,
 
     /**
+     * Every device row the account holds, live and revoked, in the public
+     * shape the agent key list reads. `listLive` is the answer for a device
+     * that is still signed in.
      * @param {{id: string}} account
      * @returns {Promise<ReturnType<typeof publicDevice>[]>}
      */
@@ -626,30 +674,63 @@ export function createD1DeviceStore(db, options = {}) {
      * @param {string} accountId
      */
     async listCapKeys(accountId) {
-      const result = await db
-        .prepare(
-          "SELECT * FROM devices WHERE account_id = ?1 AND revoked_at IS NULL ORDER BY created_at",
-        )
-        .bind(accountId)
-        .all();
-      return (result.results ?? [])
-        .map(deviceFromRow)
-        .filter((device) => device !== null)
-        .map((device) =>
-          Object.freeze({
-            keyId: device.id,
-            kind: device.kind,
-            prefix: device.prefix,
-            // The bucket this row's own prefix puts it in. A cap swap mints
-            // its replacement against this bucket (src/cap.js
-            // `applyCapSwap`), so a team key stays in the team's bucket and
-            // an account key stays in the account's, whatever the cap does
-            // (drive#462).
-            bucket: bucketForKeyPrefix(accountId, device.prefix),
-            capabilities: Object.freeze([...device.capabilities]),
-            ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
-          }),
-        );
+      const devices = await liveDevices(accountId);
+      return devices.map((device) =>
+        Object.freeze({
+          keyId: device.id,
+          kind: device.kind,
+          prefix: device.prefix,
+          // The bucket this row's own prefix puts it in. A cap swap mints
+          // its replacement against this bucket (src/cap.js
+          // `applyCapSwap`), so a team key stays in the team's bucket and
+          // an account key stays in the account's, whatever the cap does
+          // (drive#462).
+          bucket: bucketForKeyPrefix(accountId, device.prefix),
+          capabilities: Object.freeze([...device.capabilities]),
+          ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
+        }),
+      );
+    },
+
+    /**
+     * The account's live device rows, oldest first, in the shape the first-run
+     * page's poll reads: `id`, `name`, `kind` and `lastSeenAt`. Whether a
+     * device reads as connected is not answered here — that window is
+     * src/status.js `connectionStatus`'s own, so the page, the route and the
+     * CLI share the one rule. The columns behind the answer are this store's:
+     * the api Worker's `authenticate` and `renewKey` stamp `last_seen_at` on
+     * the row a request authenticated, and drive issue #556 reads it back for
+     * the page.
+     *
+     * `lastSeenAt` is epoch **milliseconds**, because that is the clock
+     * src/status.js `connectionStatus` compares against `Date.now()`: the
+     * column is epoch seconds (written by `nowSeconds()`), and this is the one
+     * read whose answer is that payload, so the conversion happens here once
+     * instead of in every caller. A row that never signed in has null. Revoked
+     * rows are left out for the same reason as `listCapKeys`: a device whose
+     * key was revoked has signed out, so it must not read as connected.
+     *
+     * Only a machine's own key answers this read (kind `device`). The other
+     * kinds in this table are credentials for tools and storage, and every
+     * request one authenticates stamps `last_seen_at` on its row
+     * (devices.js `authenticate`, `renewKey`), so an agent key would flip the
+     * first-run page to "your drive is mounted on this Mac" while the machine
+     * has not signed in at all (drive issue #556). The question this read
+     * answers is the one `drive login` mints a key to answer.
+     *
+     * @param {{id: string}} account
+     * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
+     */
+    async listLive(account) {
+      const devices = await liveDevices(account.id);
+      return devices
+        .filter((device) => device.kind === "device")
+        .map((device) => ({
+          id: device.id,
+          name: device.name,
+          kind: device.kind,
+          lastSeenAt: device.lastSeenAt === null ? null : device.lastSeenAt * 1000,
+        }));
     },
 
     /**
@@ -934,6 +1015,7 @@ export function createD1DeviceStore(db, options = {}) {
     listDueCloseMail,
     markReminderSent,
     markCloseMailSent,
+    markPurgeProgress,
     markPurged,
 
     /**

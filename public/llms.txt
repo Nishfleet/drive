@@ -33,7 +33,9 @@ Worked examples, each kept all month, with a usual 1 TB plan beside it:
 - A drive folder that works in any app. Files stream on demand, so a 5 GB video
   opens without downloading first.
 - The cache on your disk is capped at 20G, and 1G of free space is always kept.
-  Your disk never fills up; the cache is capped at a size you choose.
+  The cap covers only what has already uploaded: a save that has not gone up
+  yet stays on disk past the cap until it uploads, so uploads that are paused or
+  behind can use more disk than the cap.
   `drive cache` shows the disk in use and the limit, `drive cache --max <size>`
   changes it, and `drive cache --clear` empties it without touching a file still
   waiting to upload. `drive status` shows the same cache use. Files you keep

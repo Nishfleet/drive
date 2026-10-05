@@ -61,8 +61,8 @@
         Authenticode signature of a downloaded payload and refuses one that
         does not validate, so SuppressSignatureValidation is left off on
         purpose: WinFsp ships a signed MSI and Burn checks the signature.
-        (2) installer/windows-msi.yml checks the downloaded file against the
-        digest committed beside it (WINFSP_MSI_SHA256) before the bundle is
+        (2) .github/workflows/windows-msi.yml checks the downloaded file against
+        the digest committed in it (WINFSP_MSI_SHA256) before the bundle is
         built. WiX v4's MsiPackage has no Hash or HashAlgorithm attribute
         (the compiler rejects both), so the digest cannot live here; that is
         why it is in the job and in test/installer.test.mjs instead.

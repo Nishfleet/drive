@@ -106,7 +106,8 @@ function runs(bin) {
 
 // --- the stock rclone, from PATH or the pinned release ----------------------
 
-const RCLONE_RELEASE = "v1.71.2";
+// The release ci.yml pins (test/installer.test.mjs keeps the two equal).
+const RCLONE_RELEASE = "v1.75.1";
 const RCLONE_RELEASE_URL = `https://downloads.rclone.org/${RCLONE_RELEASE}`;
 // The pinned rclone release ships one zip per OS+arch pair. This picks the
 // right one for this host; null means the host's platform is not supported, in

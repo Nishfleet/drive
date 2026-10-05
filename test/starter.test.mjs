@@ -48,6 +48,9 @@ function emptyStore(written = {}) {
     async list() {
       return [];
     },
+    async listKeys() {
+      return [];
+    },
     async read(path) {
       const body = written[path];
       return body === undefined
@@ -65,9 +68,19 @@ function emptyStore(written = {}) {
       written[path] = await new Response(body).text();
     },
     async remove() {},
+    async removeBatch() {},
     async copy() {},
     async listVersions() {
       return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
+      return [];
+    },
+    async stat() {
+      return null;
     },
   };
 }
@@ -88,13 +101,28 @@ function failingStore(reason = "the storage backend refused the key") {
     async list() {
       return [];
     },
+    async listKeys() {
+      return [];
+    },
     async read() {
+      throw new Error(reason);
+    },
+    async stat() {
       throw new Error(reason);
     },
     async write() {},
     async remove() {},
+    async removeBatch() {
+      throw new Error(reason);
+    },
     async copy() {},
     async listVersions() {
+      return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
       return [];
     },
   };

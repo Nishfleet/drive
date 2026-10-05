@@ -51,6 +51,7 @@ import {
 } from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import {
+  etagMatches,
   joinPath,
   previewContentType,
   safeFileName,
@@ -994,46 +995,118 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // The one scoping place: the share row names the owner, so the row is what
   // the read is scoped to, not whatever the request carried.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  const range = request.headers.get("range");
+  const ifNoneMatch = request.headers.get("if-none-match");
+
+  // A HEAD answer needs the headers, not the bytes (drive#570): storage is
+  // asked with a HEAD, and the whole object is never fetched to be dropped.
+  if (request.method === "HEAD") {
+    let stat;
+    try {
+      stat = await scoped.stat(record.path);
+    } catch (cause) {
+      return serverFailure(`reading a shared file: ${String(cause)}`);
+    }
+    if (!stat) {
+      return plain(failureMessage("link-not-found"), 404);
+    }
+    // An open is counted, no bytes: the same rule the old HEAD path kept.
+    await links.shares.addDownload(checked.token, 0);
+    return new Response(null, {
+      status: 200,
+      headers: shareHeaders(record.path, stat.contentType, {
+        length: String(stat.size),
+        etag: stat.etag,
+      }),
+    });
+  }
+
   let object;
   try {
-    object = await scoped.read(record.path);
+    object = await scoped.read(record.path, { range, ifNoneMatch });
   } catch (cause) {
     return serverFailure(`reading a shared file: ${String(cause)}`);
   }
   if (!object) {
     return plain(failureMessage("link-not-found"), 404);
   }
-  // Count the download the way this route can honestly count it: the object
-  // the store reported, once, for a link that opened. A client that stops
-  // mid-stream still holds a working link; the dl Worker's byte rollup
-  // (#58) is what measures the bytes actually served. A HEAD is counted as an
-  // open but carries no bytes, so it cannot inflate the owner's allowance for
-  // a body nobody received.
-  await links.shares.addDownload(checked.token, request.method === "HEAD" ? 0 : object.size);
-  // The served type is the file's own kind, never the claim the uploader made
-  // of it, through the same previewContentType() /api/files/preview uses: text
-  // leaves as text/plain, an unknown type as octet-stream, and an .html named
-  // as text/html does not come back as a page. The header pair is the same one
-  // the preview path carries: nosniff honors the type above, and the sandbox
-  // policy gives a document an opaque origin with no script of its own — which
-  // is what keeps an uploaded .svg from acting as a page on our origin when
-  // the link is opened directly. A picture or a PDF still opens in the tab,
-  // which is what "a link that opens the file" means.
-  return new Response(request.method === "HEAD" ? null : object.body, {
-    status: 200,
-    headers: {
-      "content-type": previewContentType(record.path, object.contentType),
-      "content-disposition": "inline",
-      "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "sandbox",
-      // The token is in the URL, so a page opened from a link must not hand
-      // the address bar's contents to whatever it loads next: no-referrer is
-      // the one header that keeps a capability URL from leaking sideways
-      // through Referer.
-      "referrer-policy": "no-referrer",
-    },
+  const status = object.status ?? 200;
+  // The client's own validator, still good: no byte moves, no download is
+  // counted, and the etag rides back so the client keeps its cached copy.
+  if (status === 304 || (ifNoneMatch && etagMatches(ifNoneMatch, object.etag))) {
+    return new Response(null, {
+      status: 304,
+      headers: shareHeaders(record.path, object.contentType, {
+        etag: object.etag,
+        bare: true,
+      }),
+    });
+  }
+  // Count the download the way this route can honestly count it: the bytes
+  // THIS response is about to carry — the whole object on a 200, the one
+  // slice on a 206 (drive#570). A client that stops mid-stream still holds a
+  // working link; the dl Worker's byte rollup (#58) is what measures the
+  // bytes actually served.
+  const served = object.contentLength ?? object.size;
+  await links.shares.addDownload(checked.token, served);
+  return new Response(object.body, {
+    status,
+    headers: shareHeaders(record.path, object.contentType, {
+      length: typeof object.contentLength === "number" ? String(object.contentLength) : undefined,
+      etag: object.etag,
+      contentRange: object.contentRange,
+    }),
   });
+}
+
+/**
+ * The headers a shared-file answer carries: the served type is the file's own
+ * kind, never the claim the uploader made of it, through the same
+ * previewContentType() /api/files/preview uses: text leaves as text/plain, an
+ * unknown type as octet-stream, and an .html named as text/html does not come
+ * back as a page. The header pair is the same one the preview path carries:
+ * nosniff honors the type above, and the sandbox policy gives a document an
+ * opaque origin with no script of its own — which is what keeps an uploaded
+ * .svg from acting as a page on our origin when the link is opened directly.
+ * A picture or a PDF still opens in the tab, which is what "a link that opens
+ * the file" means.
+ * @param {string} path the shared file's drive path, for the type's kind
+ * @param {string} contentType the type the store reported
+ * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
+ *   bare?: boolean}} [extra] `length` sets Content-Length; `etag` rides on
+ *   every answer, the bare 304 included; `contentRange` rides on a 206;
+ *   `bare` (a 304) carries only validators and the no-referrer rule.
+ * @returns {Record<string, string>}
+ */
+function shareHeaders(path, contentType, extra = {}) {
+  /** @type {Record<string, string>} */
+  const headers = {
+    "content-type": previewContentType(path, contentType),
+    "content-disposition": "inline",
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    // The token is in the URL, so a page opened from a link must not hand
+    // the address bar's contents to whatever it loads next: no-referrer is
+    // the one header that keeps a capability URL from leaking sideways
+    // through Referer.
+    "referrer-policy": "no-referrer",
+    "accept-ranges": "bytes",
+  };
+  if (!extra.bare) {
+    if (extra.length) {
+      headers["content-length"] = extra.length;
+    }
+    if (extra.contentRange) {
+      headers["content-range"] = extra.contentRange;
+    }
+  }
+  // The etag rides on every answer, the 304 included: RFC 9110 says a 304
+  // carries the validators the 200 would have, so the client keeps using it.
+  if (extra.etag) {
+    headers.etag = extra.etag;
+  }
+  return headers;
 }
 
 /**
