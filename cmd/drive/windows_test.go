@@ -30,7 +30,7 @@ func TestWindowsPlanUsesMountAndADriveLetter(t *testing.T) {
 		"--vfs-cache-mode full",
 		"--vfs-write-back 5s",
 		"--vfs-cache-max-size 20G",
-		"--dir-cache-time 5s",
+		"--dir-cache-time " + vfsDirCacheTimeValue,
 	} {
 		if !strings.Contains(p.CommandLine(), want) {
 			t.Errorf("windows command line missing %q:\n%s", want, p.CommandLine())

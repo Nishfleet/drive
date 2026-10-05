@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -279,6 +280,10 @@ type countedBackend struct {
 	recursiveRefreshes int
 	// addPerRead is how many bytes the fake read puts in the cache.
 	addPerRead int64
+	// unreach is the error reachable returns. Nil means storage answers,
+	// which is the fill's usual case; a set error is a dropped link
+	// (issue #541).
+	unreach error
 }
 
 func (b *countedBackend) stats(context.Context) (vfsStats, error) {
@@ -295,6 +300,8 @@ func (b *countedBackend) refresh(_ context.Context, recursive bool) error {
 	}
 	return nil
 }
+
+func (b *countedBackend) reachable(context.Context) error { return b.unreach }
 
 func (b *countedBackend) remote() string { return "drive:bucket/u/1" }
 
@@ -316,8 +323,11 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		if res.Ran() {
 			t.Errorf("the fill ran with the cache at the %s cap", FormatBytes(capBytes))
 		}
-		if b.refreshes != 0 {
-			t.Errorf("the fill refreshed the directory %d times with the cache at the cap", b.refreshes)
+		if b.refreshes != 1 {
+			t.Errorf("the fill refreshed the directory %d times at the cap, want 1 (issue #541 freshness)", b.refreshes)
+		}
+		if b.recursiveRefreshes != 0 {
+			t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
 		}
 	})
 
@@ -332,6 +342,9 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		}
 		if b.used != 0 {
 			t.Errorf("the fill put %s in the cache on a busy machine", FormatBytes(b.used))
+		}
+		if b.refreshes != 1 {
+			t.Errorf("the busy machine still refreshes listings %d times, want 1 (issue #541 freshness)", b.refreshes)
 		}
 	})
 
@@ -590,9 +603,10 @@ func (c *fakeCache) touch(p string) {
 	c.order = append(c.order, p)
 }
 
-// A pass with nothing kept offline and nothing opened in the window must not
-// refresh the directory cache at all: the whole-tree refresh on a timer is the
-// bug (drive#568).
+// A pass with nothing kept offline and nothing opened in the window still
+// refreshes the root listing once, non-recursively, so the other machine's
+// save appears (issue #541). A whole-tree refresh on a timer is the bug
+// (drive#568) and must stay at zero.
 func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
 	b := &countedBackend{used: 1 << 30, cap: 20 << 30}
 	res, err := fillPass(context.Background(), b, fillTargets{}, 0.1, 0.1)
@@ -602,11 +616,32 @@ func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
 	if res.Ran() {
 		t.Error("the fill ran with nothing opened and nothing kept offline")
 	}
-	if b.refreshes != 0 {
-		t.Errorf("the fill refreshed the directory cache %d times with nothing to fill, want none", b.refreshes)
+	if b.refreshes != 1 {
+		t.Errorf("the fill refreshed the directory cache %d times with nothing to fill, want 1 (issue #541 freshness)", b.refreshes)
 	}
 	if b.recursiveRefreshes != 0 {
 		t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
+	}
+}
+
+// A dropped link must not vfs/refresh: rclone forces the directory cache
+// stale before it re-lists, so a failed refresh would make every later
+// open fail (issue #541). The keep-warm of a kept-offline file still runs.
+func TestFillSkipsRefreshWhenStorageIsDownAndStillKeepWarms(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, unreach: errors.New("storage is down")}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage down: %v", err)
+	}
+	if !res.Ran() {
+		t.Error("the keep-warm pass did not run while storage was down")
+	}
+	if b.refreshes != 0 {
+		t.Errorf("the fill refreshed the directory %d times with storage down, want none", b.refreshes)
 	}
 }
 

@@ -105,11 +105,14 @@ func VFSArgs(cacheMax string) []string {
 		// much free space, whatever the max-size above would allow. That is
 		// what makes a cap a cap rather than a promise.
 		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
-		// S3 sends no change notifications, so without a short directory cache
-		// a save made on the other machine waits out rclone's 5-minute default
-		// before it is visible here. The step-3 two-machine proof measured it
-		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
-		// flag, still absent after 60 s without.
+		// S3 sends no change notifications. A short directory cache (5s) made
+		// the other machine see a save quickly, but rclone re-lists when the
+		// cache is older than this and returns the error on failure (no
+		// stale-on-error, rclone#1963), so a kept-offline folder became
+		// "Input/output error" five seconds after the network dropped
+		// (issue #541). Freshness is vfs/refresh from the fill loop while
+		// storage answers. 24h is "five minutes or more" so a listing
+		// survives a dropped link for a day's travel, not five seconds.
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
 		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),

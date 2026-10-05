@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testStorage() StorageConfig {
@@ -19,6 +20,16 @@ func testStorage() StorageConfig {
 		Bucket:    "drive-standin",
 		Prefix:    "u/1234",
 		Region:    "us-east-1",
+	}
+}
+
+func TestVFSDirCacheTimeIsAtLeastFiveMinutes(t *testing.T) {
+	d, err := time.ParseDuration(vfsDirCacheTimeValue)
+	if err != nil {
+		t.Fatalf("vfsDirCacheTimeValue %q: %v", vfsDirCacheTimeValue, err)
+	}
+	if d < 5*time.Minute {
+		t.Errorf("vfsDirCacheTimeValue = %s (%v), want at least 5m (issue #541)", vfsDirCacheTimeValue, d)
 	}
 }
 
@@ -165,9 +176,9 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 
 // The mount must carry every VFS flag the product mounts with, on both
 // platforms, and use the platform's own rclone subcommand. --dir-cache-time is
-// the fourth: S3 sends no change notifications, so without it a save from the
-// other machine waits out rclone's 5-minute default (issue #62; the step-3
-// proof in PR #61 carries the same flag into docs/build-spec.md).
+// the fourth: S3 sends no change notifications, so listings stay fresh via
+// vfs/refresh from the fill loop (issue #541) rather than a 5s expiry that
+// broke kept-offline folders.
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
@@ -179,7 +190,7 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-cache-mode full",
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
-			"--dir-cache-time 5s",
+			"--dir-cache-time " + vfsDirCacheTimeValue,
 			"--vfs-read-chunk-size " + vfsReadChunkSizeValue,
 			"--vfs-read-chunk-streams 2",
 			"--buffer-size 32M",
@@ -193,8 +204,8 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 		// The flag and its value are one pair: a plan that emitted
 		// --dir-cache-time with no value would still match the substring
 		// above, and rclone would take the next argument as the duration.
-		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", "5s") {
-			t.Errorf("%s: --dir-cache-time and 5s are not adjacent args:\n%v", tc.goos, args)
+		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
+			t.Errorf("%s: --dir-cache-time and %s are not adjacent args:\n%v", tc.goos, vfsDirCacheTimeValue, args)
 		}
 		if args := p.Args(); !hasArgPair(args, "--vfs-read-ahead", "128k") {
 			t.Errorf("%s: --vfs-read-ahead and 128k are not adjacent args:\n%v", tc.goos, args)
@@ -233,8 +244,8 @@ func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
 	// adjacent elements, and rclone would read the next element as the
 	// duration if the value were dropped.
 	args := plistProgramArguments(t, plist)
-	if !hasArgPair(args, "--dir-cache-time", "5s") {
-		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time 5s:\n%v", args)
+	if !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
+		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time %s:\n%v", vfsDirCacheTimeValue, args)
 	}
 	if !hasArgPair(args, "--vfs-read-ahead", "128k") {
 		t.Errorf("launchd ProgramArguments missing adjacent --vfs-read-ahead 128k:\n%v", args)
@@ -271,7 +282,7 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 	for _, want := range []string{
 		"ExecStart=/usr/bin/rclone mount drive:drive-standin/u/1234",
 		"--vfs-cache-mode full",
-		"--dir-cache-time 5s",
+		"--dir-cache-time " + vfsDirCacheTimeValue,
 		"--vfs-read-ahead 128k",
 		"--buffer-size 32M",
 		"--transfers 4",
@@ -292,8 +303,8 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 	}
 	// The flag and value must be adjacent on the ExecStart line (not in a comment).
 	execStart := extractExecStart(unit)
-	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", "5s") {
-		t.Errorf("ExecStart line missing adjacent --dir-cache-time 5s:\n%s", execStart)
+	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", vfsDirCacheTimeValue) {
+		t.Errorf("ExecStart line missing adjacent --dir-cache-time %s:\n%s", vfsDirCacheTimeValue, execStart)
 	}
 	if p := SystemdUnitPath("/home/test"); p != "/home/test/.config/systemd/user/drive-mount.service" {
 		t.Errorf("SystemdUnitPath = %q", p)

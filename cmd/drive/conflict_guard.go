@@ -354,9 +354,9 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		// directory cache is what a listing of the mount reads, so
 		// both devices need it refreshed to see them; this one does
 		// it for its own listing. The other device sees the copy on
-		// its next listing, which is the same 5s --dir-cache-time
-		// step 3 measures for any save: no save is pushed to the
-		// other machine, and this is no different.
+		// the fill loop's next vfs/refresh while storage answers
+		// (issue #541): no save is pushed to the other machine, and
+		// this is no different.
 		if err := b.refresh(ctx, false); err != nil {
 			return res, fmt.Errorf("conflict: refresh after claiming: %w", err)
 		}

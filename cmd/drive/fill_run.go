@@ -138,19 +138,48 @@ func (c *rcClient) stats(ctx context.Context) (vfsStats, error) {
 }
 
 // refresh asks rclone to refresh the mount's directory cache, so a file just
-// written to the object store (or a folder just kept offline) is visible to
-// the read the fill does next. rclone's vfs/refresh is the stock call for
-// this; the loop does not list the object store a second way. The fill always
-// passes recursive=false: a whole-tree refresh on a timer is the bug in
-// drive#568, and a non-recursive root refresh is enough for the reads this
-// pass makes. The conflict guard (#30) shares this call with recursive=false.
+// written to the object store is visible to the other machine and to the
+// read the fill does next. rclone's vfs/refresh is the stock call for this.
+// The fill always passes recursive=false: a whole-tree refresh on a timer is
+// the bug in drive#568. The conflict guard (#30) shares this call with
+// recursive=false. Callers must not invoke this while storage is down:
+// rclone forces the cache stale before it re-lists (issue #541).
 func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 	params := map[string]string{"fs": c.fs}
 	if recursive {
 		params["recursive"] = "true"
 	}
 	var reply map[string]any
-	return c.call(ctx, "vfs/refresh", params, &reply)
+	if err := c.call(ctx, "vfs/refresh", params, &reply); err != nil {
+		return err
+	}
+	// rclone's vfs/refresh returns HTTP 200 with the listing error inside
+	// result, so a dead backend must not look like a successful refresh.
+	if raw, ok := reply["result"]; ok {
+		result, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("rclone rc vfs/refresh: result is %T, want an object", raw)
+		}
+		for path, v := range result {
+			s, ok := v.(string)
+			if !ok {
+				return fmt.Errorf("rclone rc vfs/refresh: result[%q] is %T, want a string", path, v)
+			}
+			if s != "OK" {
+				return fmt.Errorf("rclone rc vfs/refresh %s: %s", path, s)
+			}
+		}
+	}
+	return nil
+}
+
+// reachable asks the object store for the remote's root listing, not through
+// the VFS, so a dead backend is a named error and the directory cache is
+// left alone. operations/list with no recurse is one directory, the same
+// shape vfs/refresh uses when it is safe to call.
+func (c *rcClient) reachable(ctx context.Context) error {
+	var reply map[string]any
+	return c.call(ctx, "operations/list", map[string]string{"fs": c.fs, "remote": ""}, &reply)
 }
 
 // loopbackRCAddr is the address the mount's remote control binds. rclone's
@@ -182,6 +211,11 @@ func (r FillResult) Ran() bool { return r.Refreshed }
 type fillBackend interface {
 	stats(ctx context.Context) (vfsStats, error)
 	refresh(ctx context.Context, recursive bool) error
+	// reachable reports whether the object store answers. vfs/refresh
+	// forces the directory cache stale before it re-lists (rclone
+	// vfs/dir.go readDir), so a refresh while storage is down makes
+	// every later open fail (issue #541, rclone#1963).
+	reachable(ctx context.Context) error
 	// fs is the mounted remote, the value a stats call is addressed to.
 	remote() string
 }
@@ -218,18 +252,21 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	// loops the drive once the cache is full (drive#568).
 	offline := len(targets.offline) > 0
 	fillRecent := idle && !atCap && len(targets.recent) > 0
-	if !offline && !fillRecent {
-		res.Idle = ShouldFill(offline, load1, load5)
-		return res, nil
-	}
 	res.Idle = ShouldFill(offline, load1, load5)
+	storageUp := c.reachable(ctx) == nil
 	// A non-recursive root refresh, and never a recursive one: a whole-tree
 	// refresh every minute is what listed the drive and re-read it forever
-	// (drive#568). A file newly kept inside an existing subdirectory needs no
-	// recursive refresh: the mount's own --dir-cache-time (5s) expires that
-	// subdirectory's listing long before the next 10s offline pass.
-	if err := c.refresh(ctx, false); err != nil {
-		return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+	// (drive#568). Freshness for the other machine is this call, while
+	// storage answers (issue #541). A dead backend must not be refreshed:
+	// rclone forces the directory cache stale before it re-lists, so a
+	// failed refresh would turn a kept-offline folder into I/O errors.
+	if storageUp {
+		if err := c.refresh(ctx, false); err != nil {
+			return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+		}
+	}
+	if !offline && !fillRecent {
+		return res, nil
 	}
 	res.Refreshed = true
 
