@@ -82,6 +82,11 @@ type updateNoticeOptions struct {
 // and the notice has not printed in the last 24 hours. It never returns an
 // error: a failed or corrupt check is quiet, and the next day retries it.
 // Returns whether the notice printed.
+//
+// The read, the probe and the write hold a lock across them, because two
+// `drive status` processes on one machine can otherwise both read a
+// yesterday stamp, both print, and both write (the notice is throughput, not
+// correctness, so a lost lock is a quiet miss and never a failure).
 func noticeUpdateOnceADay(o updateNoticeOptions) bool {
 	nowFn := o.now
 	if nowFn == nil {
@@ -100,8 +105,15 @@ func noticeUpdateOnceADay(o updateNoticeOptions) bool {
 		path = updateCheckPath(o.home)
 	}
 
+	unlock, err := lockUpdateCheck(path + ".lock")
+	if err != nil {
+		// Tomorrow's run owns the lock unheld; this one stays quiet.
+		return false
+	}
+	defer unlock()
+
 	now := nowFn()
-	before := readUpdateCheck(path)
+	before := readUpdateCheck(path, now)
 	if now.Unix()-before.CheckedAt < int64(updateCheckInterval/time.Second) {
 		return false
 	}
@@ -138,14 +150,20 @@ func noticeUpdateOnceADay(o updateNoticeOptions) bool {
 }
 
 // readUpdateCheck reads the state file. Anything unreadable or corrupt is the
-// zero record: never checked.
-func readUpdateCheck(path string) updateCheckRecord {
+// zero record: never checked. So is a stamp in the future — a clock rolled
+// back, or a state file copied from another machine — because record time is
+// the only thing that says "checked", and a future stamp would silence every
+// check until the clock caught up with it.
+func readUpdateCheck(path string, now time.Time) updateCheckRecord {
 	var rec updateCheckRecord
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return updateCheckRecord{}
 	}
 	if err := json.Unmarshal(raw, &rec); err != nil {
+		return updateCheckRecord{}
+	}
+	if rec.CheckedAt > now.Unix() || rec.NotifiedAt > now.Unix() {
 		return updateCheckRecord{}
 	}
 	return rec
@@ -159,3 +177,29 @@ func writeUpdateCheck(path string, rec updateCheckRecord) error {
 	}
 	return WriteFileAtomic(path, raw, 0o644)
 }
+
+// lockUpdateCheck holds an exclusive lock across one notice run, so a second
+// `drive status` cannot also print a notice the first one already decided.
+// The lock is a zero-byte file beside the state, and it is never renamed: an
+// atomic state write replaces the state file's inode, and a lock on the old
+// inode would stop guarding anything.
+func lockUpdateCheck(lockPath string) (func(), error) {
+	// The lock lives beside the state file, in a directory that may not
+	// exist on a machine that has never run a status check.
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := flock(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		flockEnd(f)
+		f.Close()
+	}, nil
+}
+

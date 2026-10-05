@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -302,6 +303,97 @@ func TestUpdateExistsOn(t *testing.T) {
 	}
 	if newer {
 		t.Fatal("a binary no package manager owns must answer no")
+	}
+}
+
+// TestTwoStatusRunsPrintOneNotice is the drive#560 concurrency duty: the
+// state file is read, the package manager is asked, and the state file is
+// written, and on one machine two `drive status` commands can be in those
+// three steps at the same time. Both read a yesterday stamp, both ask, and
+// both print, so the run that loses the race must not print at all — the
+// winner's write is what quiets it. This runs two goroutines against the
+// production entry point, so the lock itself is what is being tested.
+func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
+	home := t.TempDir()
+	path := updateCheckPath(home)
+	now, _ := stepClock(t, time.Unix(1_700_000_000, 0))
+	inside := make(chan struct{}, 8)
+	gate := make(chan struct{})
+	newer := func() (bool, error) {
+		// Hold the package-manager ask open, so the run that lost the lock
+		// cannot finish before the winner has written state.
+		inside <- struct{}{}
+		<-gate
+		return true, nil
+	}
+	var wg sync.WaitGroup
+	var first, second bytes.Buffer
+	run := func(printed *bytes.Buffer) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = noticeUpdateOnceADay(updateNoticeOptions{
+				home:         home,
+				path:         path,
+				now:          now,
+				updateExists: newer,
+				out:          printed,
+			})
+		}()
+	}
+	run(&first)
+	<-inside // the first run holds the lock and is inside the probe
+	run(&second)
+	// Give the losing run its whole window: it never reaches the probe, so
+	// no second `inside` arrives and this sleep is what proves it did not.
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+	if count := strings.Count(first.String(), updateNoticeWords) + strings.Count(second.String(), updateNoticeWords); count != 1 {
+		t.Fatalf("two simultaneous status runs printed %d notices, want 1\nfirst: %q\nsecond: %q", count, first.String(), second.String())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec updateCheckRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.NotifiedAt != now().Unix() {
+		t.Errorf("the state records notifiedAt %d, want %d", rec.NotifiedAt, now().Unix())
+	}
+}
+
+// TestAStateFileFromTheFutureCountsAsNeverChecked is the other half of the
+// drive#560 notice's resilience: a state file this machine cannot possibly
+// have written (a clock rolled back, a file copied from another machine)
+// must not be read as "checked", because a stamp in the future is older than
+// nothing and would silence the notice until the clock caught up with it.
+func TestAStateFileFromTheFutureCountsAsNeverChecked(t *testing.T) {
+	home := t.TempDir()
+	path := updateCheckPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now, _ := stepClock(t, time.Unix(1_700_000_000, 0))
+	for _, raw := range []string{
+		`{"checkedAt": 9999999999, "notifiedAt": 0}`,
+		`{"checkedAt": 0, "notifiedAt": 9999999999}`,
+	} {
+		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if !noticeUpdateOnceADay(updateNoticeOptions{
+			home:         home,
+			path:         path,
+			now:          now,
+			updateExists: func() (bool, error) { return true, nil },
+			out:          &buf,
+		}) {
+			t.Errorf("state %s held the notice back; want it counted as never checked", raw)
+		}
 	}
 }
 

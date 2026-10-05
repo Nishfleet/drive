@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { failureMessage } from "../../../src/messages.js";
 import { createApp, dispatch } from "../src/index.js";
-import { MIN_CLI_VERSION, parseDriveVersion, versionBelowFloor } from "../src/versiongate.js";
+import {
+  floorFor,
+  MIN_CLI_VERSION,
+  parseDriveVersion,
+  versionBelowFloor,
+} from "../src/versiongate.js";
 
 /** @typedef {import("../src/index.js").Ctx} Ctx */
 const ctx = { env: {}, db: null, now: () => 0 };
@@ -23,6 +28,8 @@ test("a User-Agent that names no drive version is not refused", () => {
     null,
     undefined,
     "",
+    "drive/",
+    "drive",
     "Go-http-client/1.1",
     "curl/8.4.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
@@ -41,6 +48,30 @@ test("compareVersions decides the 426 the way the CLI's own compare does", () =>
   assert.equal(versionBelowFloor("0.0.9", "0.1.0"), true);
   assert.equal(versionBelowFloor("0.9.9", "0.9.10"), true);
   assert.equal(versionBelowFloor("0.1", "0.1.1"), true);
+});
+
+// A version this module cannot read is not below any floor, so the one working
+// tool on a machine (the one built from a working tree) is never the one
+// refused. Reading it as 0 would hand a checkout build a 426 it cannot fix.
+test("a version that is not a version is never below the floor", () => {
+  for (const version of ["devel", "nightly", "0.1.x", "unknown", "", "v", "1..2", "-1.2.3"]) {
+    assert.equal(
+      versionBelowFloor(version, "0.1.0"),
+      false,
+      `drive/${version} must not be refused`,
+    );
+  }
+});
+
+// A floor this module cannot read is no setting at all: reading it as 0 would
+// compare every real version above it and disable the gate silently.
+test("a floor that is not a version reads as the module default", () => {
+  for (const configured of ["", "   ", "latest", "0.1.x", "next", 7, null, undefined]) {
+    assert.equal(floorFor({ MIN_CLI_VERSION: configured }), MIN_CLI_VERSION);
+  }
+  assert.equal(floorFor({ MIN_CLI_VERSION: " 0.2.0 " }), "0.2.0");
+  assert.equal(floorFor({}), MIN_CLI_VERSION);
+  assert.equal(floorFor(null), MIN_CLI_VERSION);
 });
 
 // ---- the 426, through the Worker's own app ----
@@ -113,6 +144,20 @@ test("the floor is a deployment setting", async () => {
     raised,
   );
   assert.equal(current.status, 200);
+});
+
+// The end-to-end shape of the promise in the module comment: a build that
+// names a version this module cannot read is served, not refused.
+test("a drive build whose version cannot be read is served", async () => {
+  for (const version of ["devel", "nightly", "0.1.x"]) {
+    const res = await dispatch(
+      new Request("https://x.test/v1/health", {
+        headers: { "user-agent": `drive/${version} (linux/amd64)` },
+      }),
+      ctx,
+    );
+    assert.equal(res.status, 200, `drive/${version} must not be refused`);
+  }
 });
 
 // The registry the gate protects is still the registry the routes test walks:

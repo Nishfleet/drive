@@ -211,6 +211,17 @@ func updateDrive(o updateOptions) error {
 	}
 	to := installedVersion(o.exe, from)
 	fmt.Fprintf(out, "updated drive %s -> %s via %s\n", from, to, kind)
+	// rclone below the floor makes the mount's own flags fail (drive#105), and
+	// the update is the one moment a person is likely to act (drive#560). It is
+	// said before the restart, so a restart that failed cannot hide the remedy
+	// for the other old thing on this machine.
+	if rcloneBin, rErr := ResolveRclone(o.rclone); rErr == nil {
+		if err := CheckRclone(CurrentGOOS(), rcloneBin); err != nil {
+			fmt.Fprintln(out, err)
+		}
+	} else {
+		fmt.Fprintln(out, RcloneInstallHint(CurrentGOOS(), true))
+	}
 	home := o.home
 	if home == "" {
 		home = os.Getenv("HOME")
@@ -221,22 +232,20 @@ func updateDrive(o updateOptions) error {
 	// the package manager's own upgrade, and it restarts nothing when this
 	// machine has no mount up.
 	if o.restartMount {
-		if on, mErr := Mounted(CurrentGOOS(), home); mErr == nil && on {
+		on, mErr := Mounted(CurrentGOOS(), home)
+		switch {
+		case on && mErr == nil:
 			if err := restartMountAfterUpdate(o.rclone, home); err != nil {
 				return failDetail("update-restart", err)
 			}
 			fmt.Fprintln(out, "drive: mount restarted on the new drive")
+			// Mounted can time out on a wedged FUSE mount, and a probe that
+			// could not answer would otherwise print "updated" beside a mount
+			// still serving the old build, so the question is named instead of
+			// swallowed.
+		case mErr != nil:
+			fmt.Fprintf(errw, "drive update: could not tell whether %s is mounted: %v\n", DefaultMountDir(home), mErr)
 		}
-	}
-	// rclone below the floor makes the mount's flags fail (drive#105). The
-	// update is the one moment a person is likely to act, so this says so;
-	// an old rclone never fails an update that already succeeded.
-	if rcloneBin, rErr := ResolveRclone(o.rclone); rErr == nil {
-		if err := CheckRclone(CurrentGOOS(), rcloneBin); err != nil {
-			fmt.Fprintln(out, err)
-		}
-	} else {
-		fmt.Fprintln(out, RcloneInstallHint(CurrentGOOS(), true))
 	}
 	return nil
 }

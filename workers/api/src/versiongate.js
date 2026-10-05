@@ -26,7 +26,7 @@
  */
 export const MIN_CLI_VERSION = "0.1.0";
 
-const DRIVE_USER_AGENT = /^\s*drive\/(\S+)/;
+const DRIVE_USER_AGENT = /^\s*drive\/([^\s/]+)/;
 
 /**
  * The drive version a User-Agent names, or null when the header names none.
@@ -42,23 +42,32 @@ export function parseDriveVersion(userAgent) {
 }
 
 /**
- * A version's dotted numeric parts, after the v prefix and anything a
- * pre-release dash or build metadata plus introduces. A part that is not a
- * number reads as 0, the way the CLI's own compare does.
+ * A version's dotted numeric parts, or null when the token is not a version at
+ * all. The v prefix and anything a pre-release dash or build metadata plus
+ * introduces are cut first, so a `go install ...@main` pseudo-version
+ * (v0.1.1-0.20261005...-abcdef) is never read as older than the release it is
+ * built ahead of. Every remaining part must be a number: a version that cannot
+ * be read is refused by nobody, because the one working tool on a machine is
+ * often the one built from a working tree.
  * @param {string} version
- * @returns {number[]}
+ * @returns {number[]|null}
  */
 function versionParts(version) {
-  return version
-    .replace(/^v/, "")
-    .split(/[-+]/, 1)[0]
-    .split(".")
-    .map((part) => Number.parseInt(part, 10) || 0);
+  const numeric = version.replace(/^v/, "").split(/[-+]/, 1)[0];
+  const parts = numeric.split(".");
+  const values = [];
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) {
+      return null;
+    }
+    values.push(Number.parseInt(part, 10));
+  }
+  return values;
 }
 
 /**
- * Whether the version is below the floor. Equal versions are not: the floor
- * is the oldest build still served.
+ * Whether the version is below the floor. A version either side cannot be
+ * read is not compared at all, so an unreadable one is never a 426.
  * @param {string} version
  * @param {string} floor
  * @returns {boolean}
@@ -66,6 +75,9 @@ function versionParts(version) {
 export function versionBelowFloor(version, floor) {
   const left = versionParts(version);
   const right = versionParts(floor);
+  if (left === null || right === null) {
+    return false;
+  }
   const length = Math.max(left.length, right.length);
   for (let i = 0; i < length; i++) {
     const a = left[i] ?? 0;
@@ -79,14 +91,16 @@ export function versionBelowFloor(version, floor) {
 
 /**
  * The floor this request is judged against: the deployment's own
- * MIN_CLI_VERSION variable when it sets one, the module default otherwise.
+ * MIN_CLI_VERSION variable when it sets a version this module can read, the
+ * module default otherwise. A misconfigured floor must never widen the gate
+ * into refusing nothing, so an unreadable one is no setting at all.
  * @param {unknown} env
  * @returns {string}
  */
 export function floorFor(env) {
   const configured = /** @type {{MIN_CLI_VERSION?: unknown}|null|undefined} */ (env)
     ?.MIN_CLI_VERSION;
-  if (typeof configured === "string" && configured.trim() !== "") {
+  if (typeof configured === "string" && versionParts(configured.trim()) !== null) {
     return configured.trim();
   }
   return MIN_CLI_VERSION;
