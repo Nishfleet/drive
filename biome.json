@@ -58,7 +58,7 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/workers/**", "!core/**"],
+                    "group": ["**/workers/**"],
                     "importNamePattern": ".*",
                     "message": "a module in src/ or core/ must not import a Worker directory. Move what is shared into core/ and import it from there (drive#616)."
                   }
@@ -79,7 +79,7 @@
               "options": {
                 "patterns": [
                   {
-                    "group": ["**/src/**", "!workers/**", "!core/**"],
+                    "group": ["**/src/**"],
                     "importNamePattern": ".*",
                     "message": "a Worker must not import the site Worker's src/. Move what is shared into core/ and import it from there (drive#616)."
                   }
