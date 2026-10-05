@@ -1576,7 +1576,7 @@ test("a copy the S3 store would put over a changed destination is refused", asyn
   assert.equal(requests.filter((entry) => entry === "PUT u/acct-a/notes.md").length, 2);
 });
 
-test("a save that lands between the guard's HEAD and the copy is overwritten, and says so", async () => {
+test("the S3 copy's guard is a read and not a lock, and this test pins that it is only a read", async () => {
   // The window drive issue #605 names, against the deployed adapter rather than
   // the memory stand-in, which cannot reach it because nothing is awaited
   // between its comparison and its write: the destination is HEADed, the save
@@ -1702,6 +1702,14 @@ test("a multipart copy re-checks its guard after the parts, before the object ex
   assert.ok(
     !requests.some((entry) => entry.startsWith("POST ?uploadId=")),
     `the object was never completed over the save: ${JSON.stringify(requests.slice(-3))}`,
+  );
+  // The parts already uploaded are still stored and billed until the upload is
+  // aborted, so the guard refusing after the parts is still a failed copy and
+  // takes the same abort with it. Nothing is left behind for a provider to
+  // clean up later (drive issue #605).
+  assert.ok(
+    requests.some((entry) => entry.startsWith("DELETE ?uploadId=")),
+    `the failed copy aborted its upload: ${JSON.stringify(requests.slice(-3))}`,
   );
 });
 
