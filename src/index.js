@@ -111,6 +111,13 @@ import { handleWaitlistRequest } from "./waitlist.js";
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
 
+// The api Worker's family (workers/api/src/routes.js API_PREFIX), the one path
+// this Worker forwards and never renders a page for. Spelled here the way the
+// /v1/* route is, rather than imported, so the site Worker does not pull the
+// whole api route registry into its bundle; test/deploy-assets.test.mjs pins
+// the error path against a browser Accept on this family.
+const API_PATH_PREFIX = "/v1";
+
 /**
  * The per-request value Hono's context carries. `account` is resolved once by
  * the gate middleware below and read from the context by every handler, so a
@@ -934,8 +941,12 @@ export function createApp() {
     // drive#584: a browser that asked for a page gets the site's own 5xx page,
     // so a failure deep in the Worker still looks like the site. An API caller
     // keeps the one failure table's JSON, so a CLI never has to parse HTML.
+    // The JSON answer keys off the route family, not the Accept header alone:
+    // Java's HttpURLConnection sends a text/html default, and /v1/* is the CLI.
     const accept = c.req.header("accept") ?? "";
-    if (accept.includes("text/html") && !c.req.path.startsWith("/api/") && c.env.ASSETS) {
+    const isApiPath =
+      c.req.path.startsWith("/api/") || c.req.path.startsWith(`${API_PATH_PREFIX}/`);
+    if (accept.includes("text/html") && !isApiPath && c.env.ASSETS) {
       const errorUrl = new URL(c.req.url);
       errorUrl.pathname = "/500.html";
       errorUrl.search = "";

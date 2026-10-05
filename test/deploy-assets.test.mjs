@@ -486,21 +486,50 @@ test("a browser that asked for a page gets the site's 5xx page, not JSON", async
   // drive#584: app.onError serves public/500.html when the request carries a
   // text/html Accept, so a person following a link does not land on a bare
   // JSON body. The JSON caller's answer above must not change, so this is the
-  // page side of the same failure.
+  // page side of the same failure. The asset layer throws on the page request
+  // and answers the 500 page, which is the real shape: the failure is wherever
+  // the asset layer is.
   const page = read("public/500.html");
   const response = await siteRequest(
-    new Request("https://drive.test/v1/health", {
+    new Request("https://drive.test/privacy", {
       headers: { accept: "text/html,application/xhtml+xml" },
     }),
     {
-      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
-      ASSETS: { fetch: async () => new Response(page, { status: 200 }) },
+      ASSETS: {
+        fetch: (/** @type {Request} */ request) =>
+          new URL(request.url).pathname === "/500.html"
+            ? Promise.resolve(new Response(page, { status: 200 }))
+            : Promise.reject(new Error("the asset layer threw")),
+      },
     },
   );
   assert.equal(response.status, 500, "a failed page request is still a 500");
   const body = await response.text();
   assert.match(body, /That did not work/, "the browser gets the site's own words");
   assert.ok(!body.trimStart().startsWith("{"), "a browser is not handed JSON");
+});
+
+test("a /v1/* caller that sent a browser Accept header still gets JSON", async () => {
+  // drive#584: the page-vs-JSON choice must key off the route family, not the
+  // Accept header. Java's HttpURLConnection sends
+  // "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2" by default, so an
+  // answer chosen on Accept alone would hand the CLI a page. The /v1/* family
+  // is the api Worker's, so it keeps the message table's JSON.
+  const response = await siteRequest(
+    new Request("https://drive.test/v1/health", {
+      headers: { accept: "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2" },
+    }),
+    {
+      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
+      ASSETS: { fetch: async () => new Response("<html>page</html>", { status: 200 }) },
+    },
+  );
+  assert.equal(response.status, 500, "a throwing dependency is an error status, not an open one");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "an API caller keeps the JSON table whatever Accept it sent",
+  );
 });
 
 test("one host answers both families: the api Worker behind the binding", async () => {

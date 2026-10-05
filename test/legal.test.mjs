@@ -228,8 +228,18 @@ test("security.txt carries every RFC 9116 field, with an expiry under a year", (
 });
 
 test("the security page names every sub-processor the privacy policy names", () => {
+  // The privacy policy's table is the full record: every row's Company cell is
+  // a sub-processor the security page must also name. Reading the table here,
+  // rather than a second hard-coded list, is what makes the test prove its own
+  // title — a new row in privacy.html without a line on the security page
+  // fails here.
+  const privacy = readPublic("privacy.html");
+  const names = [...privacy.matchAll(/data-label="Company">([^<]+)</g)].map((match) =>
+    match[1].trim(),
+  );
+  assert.ok(names.length >= 3, "privacy.html must list its sub-processors as a table");
   const security = readRepo("docs-site/security.md");
-  for (const name of ["Cloudflare", "iDrive e2", "Dodo Payments"]) {
+  for (const name of names) {
     assert.ok(security.includes(name), `the security page must name ${name} (drive#584)`);
   }
   // The privacy policy stays the full record: the security page points at it.
