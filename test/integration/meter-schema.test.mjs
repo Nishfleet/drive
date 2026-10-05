@@ -720,6 +720,40 @@ test("0006 adds the peak's column and takes nothing away", () => {
   );
 });
 
+// drive#698 renamed 0025_meter_scale.sql to 0026_meter_scale.sql, because
+// drive#682's 0025_link_caps.sql already held that prefix. D1 records an
+// applied migration by its filename, so the rename re-applies this file on
+// every database that already ran it - production's included, and which
+// databases those are cannot be seen from a test. The new number is safe only
+// because this file changes nothing the second time: one index and two tables,
+// every one `IF NOT EXISTS`. That is the whole contract of the renumber, so it
+// is a test rather than a hope.
+test("the renumbered meter migration is a no-op the second time", () => {
+  const { sqlite } = makeMeteredDB();
+  const objects = () =>
+    sqlite
+      .prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+      .all()
+      .map((row) => `${row.type} ${row.name} ${row.sql}`)
+      .sort();
+  const before = objects();
+  assert.ok(
+    before.some((object) => object.startsWith("index file_versions_live ")),
+    "the whole set already built the index the file adds",
+  );
+
+  sqlite.exec(
+    readFileSync(new URL("../../migrations/drive/0026_meter_scale.sql", import.meta.url), "utf8"),
+  );
+
+  assert.deepEqual(objects(), before, "the second apply creates, alters and drops no object");
+  assert.deepEqual(
+    sqlite.prepare("SELECT * FROM meter_account_rerolls").all(),
+    [],
+    "and the re-roll table is still empty, not re-seeded",
+  );
+});
+
 // The adapter's batch() is a transaction, because D1's is: a batch is one
 // round trip that commits every statement or none. The meter's whole money
 // story rests on that - the dedup row and its version row land together, so

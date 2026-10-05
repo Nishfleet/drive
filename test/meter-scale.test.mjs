@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -305,7 +305,14 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // DRIVE_DB beside METER_DB (drive#698): the hourly trip takes the 1 TB
+  // pre-charge limit sweep on the same binding, and it refuses to run without
+  // one, so an env that only carried the meter's ledger used to fail the draw
+  // the outage is about. The sweep reads `accounts` and `file_versions` and
+  // swaps no key here (acc1 holds no device), so binding the same database is
+  // the deployment's shape, not a test convenience. The meter jobs queue stays
+  // unbound, so this test drives the un-fanned-out path the queue replaced.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -324,16 +331,23 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   down.on = false;
   await hourly("2026-10-01T01:05:00.000Z");
 
-  /** @param {number} hour */
+  // The bill is the month the hour falls in, and its divisor is that month's
+  // own minutes (drive#531; required since #678): a fixed 31 days over-bills
+  // February and under-bills July, so the outage test has to ask for the month
+  // it is in, the same call src/dodo.js makes.
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
+      monthMinutes: minutesInMonth(hour),
     }).totalCents;
   };
-  /** @param {number} from @param {number} to */
+  /**
+   * @param {number} from
+   * @param {number} to
+   */
   const drawn = (from, to) =>
     -sqlite
       .prepare(
