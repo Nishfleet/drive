@@ -448,9 +448,15 @@ export async function runPreChargeLimitCron(input) {
       capped += 1;
     } catch (error) {
       failures += 1;
+      // A constant format string with the account's own values bound as
+      // arguments, not concatenated in: console.error's first argument is a
+      // format string, and a value interpolated into it is a format specifier
+      // waiting to be injected (semgrep unsafe-formatstring, blocking).
       console.error(
-        `pre-charge limit: account ${row.accountId} holds ${row.storedBytes} live bytes, ` +
-          "past the 1 TB pre-charge limit, but its keys could not be taken read-only",
+        "pre-charge limit: account %s holds %s live bytes, past the 1 TB pre-charge " +
+          "limit, but its keys could not be taken read-only: %s",
+        row.accountId,
+        row.storedBytes,
         error instanceof Error ? error.message : String(error),
       );
     }
