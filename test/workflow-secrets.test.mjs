@@ -52,7 +52,7 @@ const jobsOf = (text) => {
   for (const line of lines.slice(start + 1)) {
     const key = /^ {2}([A-Za-z0-9_-]+):\s*(#.*)?$/.exec(line);
     if (key) jobs.push({ id: key[1], body: [] });
-    else if (/^\S/.test(line)) break;
+    else if (/^[^\s#]/.test(line)) break;
     else jobs.at(-1)?.body.push(line);
   }
   return jobs;
@@ -69,7 +69,11 @@ const environmentOf = (body) => {
 };
 
 /** @param {string} text */
-const secretsRead = (text) => [...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((m) => m[1]);
+const secretsRead = (text) =>
+  text
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, ""))
+    .flatMap((line) => [...line.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((m) => m[1]));
 
 test("the job splitter finds every job the workflows declare", () => {
   const found = workflows.flatMap(({ name, text }) =>
@@ -127,4 +131,15 @@ test("the fleet-ops dispatch call stays on @main, with the reason beside it", ()
   assert.ok(uses, "agent-dispatch.yml no longer calls fleet-ops");
   assert.equal(uses[1], "Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main");
   assert.match(uses[2], /0509#5231/, "the @main ref lost the comment that says why");
+});
+
+test("a comment neither counts as a secret read nor ends the jobs block", () => {
+  assert.deepEqual(secretsRead("  # not secrets.NOPE\n  x: ${{ secrets.YES }} # secrets.NOPE"), [
+    "YES",
+  ]);
+  const jobs = jobsOf("jobs:\n  a:\n    x: 1\n# note\n  b:\n    y: 2\n");
+  assert.deepEqual(
+    jobs.map((job) => job.id),
+    ["a", "b"],
+  );
 });
