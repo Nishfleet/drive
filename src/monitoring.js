@@ -115,6 +115,29 @@ export function reportBillingGap(gapHours, watermark, lastClosed, sentry = stock
 }
 
 /**
+ * Reports the account close cron's partial purge failures (review finding on
+ * PR #697). The cron catches one account's failed purge so the other
+ * accounts still close, and resolves with a count — a count that read as
+ * success to the nightly check-in and reached nothing else. A nonzero count
+ * is a Sentry error: the failed purges resume next night, so until they
+ * succeed those accounts hold their files.
+ *
+ * @param {number} purgeFailures how many accounts' file purges failed
+ * @param {number} purged how many accounts were purged in full
+ * @param {Sentry} [sentry] injectable for tests
+ */
+export function reportPurgeFailures(purgeFailures, purged, sentry = stockSentry) {
+  if (purgeFailures <= 0) {
+    return;
+  }
+  sentry.captureMessage(
+    `account close: ${purgeFailures} purge(s) failed and resume next night ` +
+      `(purged ${purged} account(s) in full)`,
+    "error",
+  );
+}
+
+/**
  * Reports an error that the runtime would otherwise swallow: a `waitUntil`
  * rejection never reaches the caller, and a `console.error` in the Worker
  * goes nowhere the on-call looks (issue #520). The rethrow at the call site

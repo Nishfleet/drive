@@ -2710,12 +2710,46 @@ test("meterFreshness: a watermark METER_STALE_AFTER_HOURS behind is stale", asyn
   assert.match(answer.detail, /3h behind/);
 });
 
-test("meterFreshness: versions with no watermark is stale", async () => {
+test("meterFreshness: a first upload before its first rollup is not stale", async () => {
+  // A new account's first version can land any time before the :05 trigger
+  // that would roll its hour. The watermark does not exist until that first
+  // trigger succeeds, so a missing mark in the meantime is the meter's normal
+  // state, not an outage — health must not 503 on it (review finding on PR
+  // #697: the old read called this stale and failed every deploy smoke of a
+  // brand-new deployment).
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  // The oldest version's hour closed at midnight; 01:05 is the first trigger
+  // that could have rolled it, and it is firing now.
   const answer = await meterFreshness(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /watermark/);
+});
+
+test("meterFreshness: a first upload in the hour still open is not stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  // Half past midnight: the version's hour has not even closed, so no run
+  // could be behind on anything yet.
+  const answer = await meterFreshness(db, midnight() + 30 * MINUTE_MS);
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /not closed yet/);
+});
+
+test("meterFreshness: versions with no watermark and hours waiting is stale", async () => {
+  // With no mark the clock starts at the oldest version's hour, and it is
+  // only an outage once METER_STALE_AFTER_HOURS closed hours have piled up
+  // behind it — every trigger since has come and gone without setting a
+  // mark. The wait is counted one hour stricter than a real watermark's lag,
+  // because a mark proves at least one run succeeded and no mark at all
+  // proves nothing has.
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  // Midnight's hour is the oldest waiting one; the 01:05, 02:05 and 03:05
+  // triggers have all come and gone by 04:05.
+  const answer = await meterFreshness(db, at("2026-09-30T04:05:00.000Z"));
   assert.equal(answer.stale, true);
-  assert.match(answer.detail, /watermark is missing/);
+  assert.match(answer.detail, /no rollup watermark/);
 });
 
 test("meterFreshness: a watermark ahead of the last closed hour is not stale", async () => {

@@ -63,7 +63,12 @@ import {
   meterJobsQueue,
   sendMeterJobs,
 } from "./meter-jobs.js";
-import { captureError, reportBillingGap, withCronCheckIn } from "./monitoring.js";
+import {
+  captureError,
+  reportBillingGap,
+  reportPurgeFailures,
+  withCronCheckIn,
+} from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import {
   AUTO_TOPUP_ENDPOINT,
@@ -1231,14 +1236,22 @@ const handler = {
               email: env.EMAIL,
               mailFrom: secrets.MAIL_FROM ?? "",
               now: event.scheduledTime,
-            }).catch((error) => {
+            }).then(
+              // A purge that fails is caught inside the close cron so one
+              // account's failure never blocks the others; the resolved
+              // count is the only way that failure leaves the function, and
+              // without this branch the nightly check-in read success over
+              // it (issue #520 review). The failed purges resume next night.
+              (result) => reportPurgeFailures(result.purgeFailures, result.purged),
               // A waitUntil rejection never reaches the caller, so without
               // this the close cron's failures were invisible outside the
               // platform logs (issue #520).
-              const failure = new Error(`the account close cron failed: ${error.message}`);
-              captureError(failure, "account close cron");
-              throw failure;
-            }),
+              (error) => {
+                const failure = new Error(`the account close cron failed: ${error.message}`);
+                captureError(failure, "account close cron");
+                throw failure;
+              },
+            ),
           );
         }
         // The nightly size row (drive issue #564): the growth numbers the

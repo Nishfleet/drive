@@ -13,6 +13,7 @@ import {
   captureError,
   monitorConfig,
   reportBillingGap,
+  reportPurgeFailures,
   withCronCheckIn,
 } from "../src/monitoring.js";
 
@@ -167,4 +168,35 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
   assert.match(src.slice(waitUntil), /withCronCheckIn\(event, "nightly-reindex"/);
   slugs.push("nightly-reindex");
   assert.equal(new Set(slugs).size, slugs.length, "each branch owns its monitor slug");
+});
+
+// The close cron catches one account's failed purge so the other accounts
+// still close, and resolves with a count — a count that read as success to
+// the nightly check-in and reached nothing else (review finding on PR #697:
+// the run's own monitor said ok while accounts kept their files). A nonzero
+// count has to reach Sentry as an error naming the leftover.
+test("reportPurgeFailures raises an error naming the failed purges, and none when all landed", () => {
+  const sentry = fakeSentry();
+  reportPurgeFailures(0, 3, sentry);
+  assert.deepEqual(sentry.calls, []);
+  reportPurgeFailures(2, 1, sentry);
+  assert.deepEqual(
+    sentry.calls.map((c) => c.method),
+    ["captureMessage"],
+  );
+  const [message, level] = sentry.calls[0].args;
+  assert.equal(level, "error");
+  assert.match(/** @type {string} */ (message), /2 purge\(s\) failed/);
+  assert.match(/** @type {string} */ (message), /purged 1 account\(s\)/);
+});
+
+test("the nightly close cron reports its resolved purge failures, not only rejections", () => {
+  // The waitUntil's .then pair: the rejection half was already pinned by the
+  // captureError rethrow, the success half is the part that was silent.
+  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const start = src.indexOf("runAccountCloseCron({");
+  assert.ok(start !== -1, "the nightly branch runs the close cron");
+  const block = src.slice(start, src.indexOf("recordNightlySizes", start));
+  assert.match(block, /reportPurgeFailures\(/);
+  assert.match(block, /captureError\(failure, "account close cron"\)/);
 });

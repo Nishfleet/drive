@@ -125,7 +125,13 @@ service token before any monitor can reach it:
    `CF_ACCESS_CLIENT_SECRET` on the `production` environment — the deploy
    smoke starts checking health on the next deploy.
 4. Create the uptime monitors (Sentry Uptime or Sentry Crons monitors on the
-   four slugs in the table above) with the same token in two headers,
-   `CF-Access-Client-Id` and `CF-Access-Client-Secret`. A monitor must
-   assert the body contains `"ok":true`: Access answers a dead or missing
-   token with a 302 redirect, which counts as down.
+   four slugs in the table above) with their own second service token — not
+   the deploy smoke's — in two headers, `CF-Access-Client-Id` and
+   `CF-Access-Client-Secret`. A monitor must assert the body contains
+   `"ok":true`: Access answers a dead or missing token with a 302 redirect,
+   which counts as down.
+
+Two tokens, one job each. Both are scoped to `/api/health` only, so neither
+can open the drive itself, and a leaked monitor token is revoked and
+replaced on its own, without touching the deploy smoke's credentials or
+deploying anything (review finding on PR #697).

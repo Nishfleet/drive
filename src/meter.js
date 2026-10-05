@@ -1813,8 +1813,10 @@ export const METER_STALE_AFTER_HOURS = 3;
  * hour while billing nothing had no signal at all). One read, two columns:
  *
  *   - no watermark and no versions: a fresh deployment, nothing to bill;
- *   - versions but no watermark: the mark was lost, so no one can say what
- *     was billed — stale;
+ *   - versions but no watermark: normal before the first rollup after the
+ *     oldest version's hour; once METER_STALE_AFTER_HOURS closed hours have
+ *     piled up behind that hour, every trigger since has failed to set a
+ *     mark, so no one can say what was billed — stale;
  *   - a watermark ahead of the last closed hour: not staleness —
  *     runMeterCron self-corrects it (from = min(from, lastClosed));
  *   - a watermark METER_STALE_AFTER_HOURS or more behind: stale, because
@@ -1831,9 +1833,29 @@ export async function meterFreshness(db, now = Date.now()) {
   const rolledThrough = stampMillis(row?.rolled_through);
   const earliest = stampMillis(row?.earliest);
   if (rolledThrough === null) {
-    return earliest === null
-      ? { stale: false, detail: "nothing to bill yet" }
-      : { stale: true, detail: "versions exist but the rollup watermark is missing" };
+    if (earliest === null) {
+      return { stale: false, detail: "nothing to bill yet" };
+    }
+    // A mark does not exist until the first rollup after the oldest
+    // version's hour closes, so the wait is judged from that hour, one hour
+    // stricter than a real watermark's lag: a mark proves at least one run
+    // succeeded, and no mark at all proves nothing has (review finding on
+    // PR #697 — a first upload must not page before its first scheduled
+    // rollup, or a new deployment 503s its own deploy smoke).
+    const firstPending = hourStart(earliest);
+    if (firstPending > lastClosed) {
+      return {
+        stale: false,
+        detail: "the oldest version's hour has not closed yet",
+      };
+    }
+    const lagHours = Math.round((lastClosed - firstPending) / HOUR_MS) + 1;
+    return lagHours >= METER_STALE_AFTER_HOURS
+      ? { stale: true, detail: `no rollup watermark and ${lagHours} closed hour(s) waiting` }
+      : {
+          stale: false,
+          detail: "the first rollup has not set its watermark yet, inside the bound",
+        };
   }
   if (rolledThrough > lastClosed) {
     return {
