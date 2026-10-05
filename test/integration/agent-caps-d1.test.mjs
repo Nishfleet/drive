@@ -357,7 +357,7 @@ test("an agent key counts the account's one bill, at the real schema", async () 
   const account = { id: "acct_one_price", name: "One price drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
-// The one price (drive#607, which folded the founding rate into a single
+  // The one price (drive#607, which folded the founding rate into a single
   // rate): 500 GB held for a whole month bills $10, under the $20 the code
   // default now applies (drive#534).
   sqlite
@@ -373,7 +373,7 @@ test("an agent key counts the account's one bill, at the real schema", async () 
     ),
     ["list", "read", "write"],
   );
-// Past the $20 the schema default no longer overrides, so the cap bites:
+  // Past the $20 the schema default no longer overrides, so the cap bites:
   // 2.5 TB is $25. (2 TB is exactly $20, and `capStatus` reads
   // `countedUsd > cap`, so a bill that lands on the cap still writes.)
   sqlite

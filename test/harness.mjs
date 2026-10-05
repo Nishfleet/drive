@@ -51,7 +51,7 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
-// The purge's resume cursor (drive#565): the drive path the nightly batch
+  // The purge's resume cursor (drive#565): the drive path the nightly batch
   // delete stopped after. Nullable expand; getCloseState and listDuePurge
   // read it, so any test that opens a close state needs the column.
   "drive/0020_account_purge_cursor.sql",
