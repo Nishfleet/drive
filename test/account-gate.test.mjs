@@ -979,6 +979,7 @@ test("one CSRF middleware refuses a cross-site write on every account POST", asy
     REWIND_ENDPOINT,
     CAP_ENDPOINT,
     TOPUP_ENDPOINT,
+    AUTO_TOPUP_ENDPOINT,
     PORTAL_ENDPOINT,
     CLOSE_ENDPOINT,
   ];
