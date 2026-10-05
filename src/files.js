@@ -27,6 +27,7 @@ import {
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
+import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
@@ -387,9 +388,12 @@ export function withoutTrash(entries, path) {
 }
 
 /**
- * The child name a file is parked under when deleted. The deleted-at time is
- * in the name so Recently deleted can say when, and the original path is
- * percent-encoded so the name stays one flat object with no subfolders.
+ * The child path a file is parked under when deleted, relative to the trash
+ * folder. The original path IS the key (drive#570): a deleted `/Photos/a.txt`
+ * lives at `.trash/Photos/a.txt/<ts>`, so every version of one path shares
+ * one prefix and restoring it is one narrow LIST instead of a walk of the
+ * whole trash. The deleted-at time is the last segment, so Recently deleted
+ * can say when, and two versions of one path order by key next to each other.
  * @param {string} path a validated drive path
  * @param {number} at epoch milliseconds
  */
@@ -400,33 +404,29 @@ export function trashName(path, at) {
   if (!Number.isFinite(at) || at <= 0) {
     throw new TypeError(`trashName needs a deleted-at time, got ${String(at)}`);
   }
-  return `${at}__${encodeURIComponent(path)}`;
+  return `${path.slice(1)}/${at}`;
 }
 
 /**
  * The reverse: the drive path and deleted-at time a trash name carries, or
- * null for anything that is not one of ours.
+ * null for anything that is not one of ours. The name is the key relative to
+ * the trash folder, `<original path>/<ts>`; the last segment is the time and
+ * everything before it is the path that was deleted.
  * @param {unknown} name
  */
 export function parseTrashName(name) {
   if (typeof name !== "string") {
     return null;
   }
-  const cut = name.indexOf("__");
+  const cut = name.lastIndexOf("/");
   if (cut <= 0) {
     return null;
   }
-  const at = Number(name.slice(0, cut));
-  if (!Number.isFinite(at) || at <= 0) {
+  const at = Number(name.slice(cut + 1));
+  if (!Number.isFinite(at) || at <= 0 || !/^[0-9]+$/.test(name.slice(cut + 1))) {
     return null;
   }
-  let path;
-  try {
-    path = decodeURIComponent(name.slice(cut + 2));
-  } catch {
-    return null;
-  }
-  const checked = validatePath(path);
+  const checked = validatePath(`/${name.slice(0, cut)}`);
   if (checked.error) {
     return null;
   }
@@ -524,7 +524,15 @@ export function restorableUntil(deletedAt) {
  *
  * @typedef {{name: string, path: string, kind: string, size?: number,
  *   modified?: number|null, contentType?: string, etag?: string|null}} FileEntry
- * @typedef {{body: ReadableStream, contentType: string, size: number, etag?: string|null}|null} FileRead
+ * The answer a store's `read` gives. `status` is the storage answer this body
+ * carries — 200 for the whole object, 206 for the one byte range the caller
+ * asked to forward (drive#570), 304 when the caller's `If-None-Match` still
+ * matches. `contentRange` rides only on a 206, and `contentLength` is the
+ * bytes THIS body holds (the slice on a 206), where `size` stays the whole
+ * object's length either way.
+ * @typedef {{body: ReadableStream|null, contentType: string, size: number,
+ *   etag?: string|null, status?: number, contentRange?: string,
+ *   contentLength?: number}|null} FileRead
  * @typedef {{b2FileId: string, path: string, sizeBytes: number,
  *   createdAt: number, hiddenAt: number|null, deletedAt: number|null}} StorageVersion
  * One version of one stored file, in the provider's own listing: the version
@@ -535,7 +543,27 @@ export function restorableUntil(deletedAt) {
  * which provider it is fixing.
  * @typedef {object} FileStore
  * @property {(path: string) => Promise<FileEntry[]>} list Lists one folder.
- * @property {(path: string) => Promise<FileRead>} read
+ * @property {(path: string, options?: {limit?: number, cursor?: string|null}) => Promise<{entries: FileEntry[], nextCursor: string|null}>} listPage
+ *   One page of one folder: at most `limit` entries (the Files page asks for
+ *   200, drive#570) and the token that fetches the page after this one, or
+ *   null when this is the last page. The cursor is the storage's own
+ *   continuation token passed through opaquely; a folder whose walk would
+ *   need several storage pages is exactly what this method exists to not do
+ *   in one request.
+ * @property {(path: string) => Promise<FileEntry[]>} listAll
+ *   Every file under one prefix, at every depth — the recursive listing the
+ *   Recently deleted view reads now that a deleted file is parked at
+ *   `.trash/<path>/<ts>` (drive#570). `list` is one folder deep, by design;
+ *   trash keys nest, so the trash view needs the walk this method does.
+ * @property {(path: string, options?: {range?: string|null, ifNoneMatch?: string|null}) => Promise<FileRead>} read
+ *   `range` is the client's `Range` header passed through to storage, so a
+ *   seek or a partial look never pulls the whole object through the Worker;
+ *   `ifNoneMatch` is the client's `If-None-Match`, answered by a 304 from
+ *   the store when the object still matches.
+ * @property {(path: string) => Promise<{contentType: string, size: number, etag?: string|null}|null>} stat
+ *   One object's headers without its bytes — what a HEAD answer needs, so a
+ *   HEAD on the preview or a share link costs a storage HEAD and not a full
+ *   GET whose body is dropped (drive#570).
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
@@ -691,17 +719,25 @@ export function scopeStore(store, account) {
       // person's own folder. Every walk that copies or indexes the drive goes
       // through here, so a branch copy never steps into `.branches` (the
       // folder it writes its own copies into) and the index never rows one up.
-      if (path !== "/") {
-        return entries;
-      }
-      return entries.filter(
-        (entry) => entry.kind !== "folder" || !SYSTEM_FOLDERS.includes(entry.name),
-      );
+      return withoutTrash(entries, path);
     },
     // async, so a refused path is a rejected promise on every method rather
     // than a synchronous throw from three of the four.
-    async read(path) {
-      return store.read(toKey(path));
+    async read(path, options) {
+      return store.read(toKey(path), options);
+    },
+    async stat(path) {
+      return store.stat(toKey(path));
+    },
+    async listPage(path, options) {
+      const page = await store.listPage(toKey(path), options);
+      return {
+        entries: withoutTrash(page.entries.map(toDriveEntry), path),
+        nextCursor: page.nextCursor,
+      };
+    },
+    async listAll(path) {
+      return (await store.listAll(toKey(path))).map(toDriveEntry);
     },
     async write(path, body, contentType) {
       return store.write(toKey(path), body, contentType);
@@ -788,48 +824,146 @@ export function createMemoryStore() {
       live.hiddenAt = at;
     }
   };
+  /** The one-level listing `list` and `listPage` share, so a paged listing is
+   * the same order a full one is, without a gap or a repeat between pages.
+   * @param {string} path
+   */
+  const oneLevel = (path) => {
+    // The scopeStore prefix already ends in a slash, and the drive root is
+    // one too, so the key a child lives under is the path plus its own
+    // separator rather than a second slash.
+    const prefix = path.endsWith("/") ? path : `${path}/`;
+    const folders = new Map();
+    const files = [];
+    for (const [key, value] of objects) {
+      if (!key.startsWith(prefix) || key === prefix) {
+        continue;
+      }
+      const rest = key.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      if (slash === -1) {
+        files.push({
+          name: rest,
+          path: key,
+          kind: fileKind(rest, value.contentType),
+          size: value.body.byteLength,
+          modified: value.modified,
+          contentType: value.contentType,
+          etag: value.etag,
+        });
+      } else {
+        const name = rest.slice(0, slash);
+        folders.set(name, { name, path: `${prefix}${name}`, kind: "folder" });
+      }
+    }
+    return [...folders.values(), ...files];
+  };
   return {
     async list(path) {
-      // The scopeStore prefix already ends in a slash, and the drive root is
-      // one too, so the key a child lives under is the path plus its own
-      // separator rather than a second slash.
+      return oneLevel(path);
+    },
+    async listPage(path, options = {}) {
+      // The whole one-level listing, paged in the order a full list returns
+      // it. The cursor is the offset, which never leaves this store: the page
+      // passes it back opaque, the same contract S3's continuation token has.
+      const entries = oneLevel(path);
+      const start =
+        options.cursor === null || options.cursor === undefined ? 0 : Number(options.cursor);
+      if (!Number.isInteger(start) || start < 0) {
+        throw new Error("storage list failed with 400: bad continuation token");
+      }
+      const limit = options.limit ?? 200;
+      const slice = entries.slice(start, start + limit);
+      const next = start + slice.length;
+      return { entries: slice, nextCursor: next < entries.length ? String(next) : null };
+    },
+    async listAll(path) {
+      // Every file under the prefix at every depth: the walk the Recently
+      // deleted view does now that a deleted file nests under
+      // `.trash/<path>/<ts>` (drive#570). Folders do not exist as objects in
+      // this store, so every key under the prefix is a file row.
       const prefix = path.endsWith("/") ? path : `${path}/`;
-      const folders = new Map();
-      const files = [];
+      const found = [];
       for (const [key, value] of objects) {
         if (!key.startsWith(prefix) || key === prefix) {
           continue;
         }
-        const rest = key.slice(prefix.length);
-        const slash = rest.indexOf("/");
-        if (slash === -1) {
-          files.push({
-            name: rest,
-            path: key,
-            kind: fileKind(rest, value.contentType),
-            size: value.body.byteLength,
-            modified: value.modified,
-            contentType: value.contentType,
-            etag: value.etag,
-          });
-        } else {
-          const name = rest.slice(0, slash);
-          folders.set(name, { name, path: `${prefix}${name}`, kind: "folder" });
-        }
+        const name = key.slice(prefix.length);
+        found.push({
+          name,
+          path: key,
+          kind: fileKind(name, value.contentType),
+          size: value.body.byteLength,
+          modified: value.modified,
+          contentType: value.contentType,
+          etag: value.etag,
+        });
       }
-      return [...folders.values(), ...files];
+      return found.sort((a, b) => a.path.localeCompare(b.path));
     },
-    async read(path) {
+    async read(path, options = {}) {
       const value = objects.get(path);
       if (!value) {
         return null;
       }
+      const total = value.body.byteLength;
+      // The conditional the preview answers with 304, decided here so the
+      // handler stays store-shape-agnostic (drive#570).
+      if (options.ifNoneMatch && etagMatches(options.ifNoneMatch, value.etag)) {
+        return {
+          status: 304,
+          body: null,
+          contentType: value.contentType,
+          size: total,
+          etag: value.etag,
+          contentLength: 0,
+        };
+      }
+      // The one byte range the client asked to forward, sliced here so the
+      // stand-in behaves as the S3 store does when storage answers 206.
+      if (options.range) {
+        const range = parseByteRange(options.range, total);
+        if (range === "unsatisfiable") {
+          return {
+            status: 416,
+            body: null,
+            contentType: value.contentType,
+            size: total,
+            etag: value.etag,
+            contentRange: `bytes */${total}`,
+            contentLength: 0,
+          };
+        }
+        if (range) {
+          const end = Math.min(range.end, total - 1);
+          return {
+            status: 206,
+            body: new Blob([value.body.slice(range.start, end + 1)]).stream(),
+            contentType: value.contentType,
+            size: total,
+            etag: value.etag,
+            contentRange: `bytes ${range.start}-${end}/${total}`,
+            contentLength: end - range.start + 1,
+          };
+        }
+        // A range this store cannot parse (multi-range, foreign unit) is not
+        // ours to refuse: the full object answers, the same way S3 treats a
+        // header it will not honor.
+      }
       return {
+        status: 200,
         body: new Blob([value.body]).stream(),
         contentType: value.contentType,
-        size: value.body.byteLength,
+        size: total,
         etag: value.etag,
       };
+    },
+    async stat(path) {
+      const value = objects.get(path);
+      if (!value) {
+        return null;
+      }
+      return { contentType: value.contentType, size: value.body.byteLength, etag: value.etag };
     },
     async write(path, body, contentType) {
       const bytes = new Uint8Array(await new Response(body).arrayBuffer());
@@ -1020,12 +1154,22 @@ export function storageBucketForKey(key) {
  * stand-in answers; with one every request is signed, because a real endpoint
  * answers an unsigned call with a redirect to its website, not with a listing.
  * @param {{endpoint: string, bucket?: string, bucketFor?: (key: string) => string,
- *   fetchImpl?: typeof fetch, region?: string,
+ *   fetchImpl?: typeof fetch, region?: string, timeoutMs?: number,
  *   credentials?: {accessKeyId: string, secretAccessKey: string, sessionToken?: string}}} config
+ *   `timeoutMs` is the per-call deadline every storage request runs under
+ *   (src/fetch-retry.js); the default is the module's FETCH_TIMEOUT_MS, and
+ *   a test passes a small one to prove the abort in milliseconds.
  * @returns {FileStore}
  */
 export function createS3Store(config) {
   const { endpoint, bucket, bucketFor, region, credentials, fetchImpl = fetch } = config;
+  // One ceiling for every storage call this store makes: a stalled socket
+  // answers named instead of holding a customer's page open forever
+  // (drive#570). Configurable because a test proves the abort in milliseconds.
+  const timeoutMs =
+    typeof config.timeoutMs === "number" && config.timeoutMs > 0
+      ? config.timeoutMs
+      : FETCH_TIMEOUT_MS;
   if (!endpoint || (!bucket && typeof bucketFor !== "function")) {
     throw new Error("createS3Store needs an endpoint and a bucket.");
   }
@@ -1065,12 +1209,22 @@ export function createS3Store(config) {
    * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
    * uses, so a test can still inject fetch and a credentialed store never
    * bypasses it through `aws.fetch`. Every caller below passes a string URL.
+   * The send carries the store's one timeout and one retry (src/fetch-retry.js):
+   * a stalled socket answers named after 15 s, and a 5xx gets exactly one
+   * retried call. The signing is inside the retry's per-attempt send, because
+   * a second attempt must sign again — the first attempt's signed Request has
+   * a body stream already consumed and its own x-amz-date, and replaying it
+   * is a SignatureDoesNotMatch, not a retry.
    *
    * @type {(input: string | URL | Request, init?: RequestInit) => Promise<Response>}
    */
   const request =
     aws === null
-      ? fetchImpl
+      ? (input, init = {}) =>
+          fetchWithTimeoutAndRetry(fetchImpl, input, init, {
+            timeoutMs,
+            label: "storage request",
+          })
       : async (input, init = {}) => {
           const opts = /** @type {any} */ ({ ...init });
           if (opts.body === undefined) {
@@ -1094,8 +1248,15 @@ export function createS3Store(config) {
                 : typeof Request !== "undefined" && input instanceof Request
                   ? input.url
                   : String(input);
-          const signed = await aws.sign(url, opts);
-          return fetchImpl(signed);
+          return fetchWithTimeoutAndRetry(
+            /** @type {typeof fetch} */ (
+              /** @param {string} u @param {RequestInit} [i] */
+              async (u, i) => fetchImpl(await aws.sign(u, i ?? {}))
+            ),
+            url,
+            opts,
+            { timeoutMs, label: "storage request" },
+          );
         };
 
   return {
@@ -1141,22 +1302,116 @@ export function createS3Store(config) {
         seen = token;
       }
     },
-    async read(path) {
-      const response = await request(urlFor(path));
+    async listPage(path, options = {}) {
+      // ONE ListObjectsV2 call per page: `max-keys` caps the answer at what
+      // the page asked for, and `continuation-token` is the store's cursor
+      // passed through opaque (drive#570). The full walk `list` does is the
+      // wrong tool for the Files page: a 2,500-file folder would cost three
+      // storage calls and every key in the folder to show the first 200 rows.
+      const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 200)), 1_000);
+      const prefix = path.endsWith("/") ? path : `${path}/`;
+      const query =
+        `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
+        `&max-keys=${limit}` +
+        (options.cursor ? `&continuation-token=${encodeURIComponent(options.cursor)}` : "");
+      const response = await request(`${baseFor(prefix)}${query}`);
+      if (!response.ok) {
+        throw new Error(`storage list failed with ${response.status}`);
+      }
+      const xml = await response.text();
+      return {
+        entries: parseListObjects(xml, prefix, prefix.slice(0, -1)),
+        nextCursor: nextContinuationToken(xml),
+      };
+    },
+    async listAll(path) {
+      // The recursive walk: no delimiter, so every key under the prefix comes
+      // back and the pages are looped here. This is the listing the Recently
+      // deleted view reads now that a deleted file nests under
+      // `.trash/<path>/<ts>` (drive#570) — `list`'s one-folder-deep answer
+      // cannot see a nested key.
+      const prefix = path.endsWith("/") ? path : `${path}/`;
+      const entries = [];
+      let token = null;
+      let seen = null;
+      for (;;) {
+        const query =
+          `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
+          (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
+        const response = await request(`${baseFor(prefix)}${query}`);
+        if (!response.ok) {
+          throw new Error(`storage list failed with ${response.status}`);
+        }
+        const xml = await response.text();
+        entries.push(...parseListObjects(xml, prefix, prefix.slice(0, -1), { deep: true }));
+        token = nextContinuationToken(xml);
+        if (token === null) {
+          return entries;
+        }
+        if (token === seen) {
+          throw new Error(
+            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+          );
+        }
+        seen = token;
+      }
+    },
+    async stat(path) {
+      // A HEAD, not a GET: the preview's HEAD answer needs the object's
+      // headers and none of its bytes (drive#570). rclone serve s3 and the
+      // providers behind it both answer HEAD the same way.
+      const response = await request(urlFor(path), { method: "HEAD" });
       if (response.status === 404) {
         return null;
       }
       if (!response.ok) {
-        throw new Error(`storage read failed with ${response.status}`);
+        throw new Error(`storage stat failed with ${response.status}`);
       }
       return {
-        // fetch's own body is nullable, and the FileStore interface is not:
-        // a store that has the bytes hands back a stream. A response with no
-        // body cannot be read again, so it is a store bug, not an empty file.
-        body: /** @type {ReadableStream} */ (response.body),
         contentType: response.headers.get("content-type") || "application/octet-stream",
         size: Number(response.headers.get("content-length") || 0),
         etag: response.headers.get("etag"),
+      };
+    },
+    async read(path, options = {}) {
+      // The client's Range and If-None-Match forwarded as the client sent
+      // them: a seek reads its slice from storage (206), a still-valid etag
+      // is refused by storage itself (304), and neither pulls the whole
+      // object through this Worker just to drop most of it (drive#570).
+      const headers = {};
+      if (options.range) {
+        headers.range = options.range;
+      }
+      if (options.ifNoneMatch) {
+        headers["if-none-match"] = options.ifNoneMatch;
+      }
+      const response = await request(
+        urlFor(path),
+        Object.keys(headers).length > 0 ? { headers } : {},
+      );
+      const status = response.status;
+      if (status === 404) {
+        return null;
+      }
+      if (![200, 206, 304, 416].includes(status)) {
+        throw new Error(`storage read failed with ${status}`);
+      }
+      const contentRange =
+        status === 206 ? (response.headers.get("content-range") ?? undefined) : undefined;
+      // On a 206 the Content-Length is the slice's length; the object's whole
+      // size rides in `bytes s-e/total`, and `size` stays the whole size so a
+      // caller can tell a slice from a short file without a second call.
+      const rangeTotal = contentRange ? Number(contentRange.split("/")[1]) : Number.NaN;
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      return {
+        status,
+        body:
+          status === 304 || status === 416 ? null : /** @type {ReadableStream} */ (response.body),
+        contentType: response.headers.get("content-type") || "application/octet-stream",
+        size: Number.isFinite(rangeTotal) ? rangeTotal : contentLength,
+        etag: response.headers.get("etag"),
+        ...(contentRange ? { contentRange } : {}),
+        ...(status !== 200 ? { contentLength } : {}),
       };
     },
     async write(path, body, contentType) {
@@ -1553,9 +1808,12 @@ async function sourceSize(fetchImpl, urlFor, from) {
  * @param {string} xml
  * @param {string} prefix the storage prefix the listing was for
  * @param {string} path the drive path the listing was for
+ * @param {{deep?: boolean}} [options] `deep` keeps keys that carry a slash:
+ *   the delimiter-less walk (`listAll`, drive#570) returns nested keys, and
+ *   the flat listing they would corrupt is the one call that must not see them.
  * @returns {Array<{name: string, path: string, kind: string, size?: number, modified?: number|null, contentType?: string, etag?: string|null}>}
  */
-export function parseListObjects(xml, prefix, path) {
+export function parseListObjects(xml, prefix, path, options = {}) {
   if (typeof xml !== "string") {
     throw new TypeError("parseListObjects needs the XML body");
   }
@@ -1571,7 +1829,7 @@ export function parseListObjects(xml, prefix, path) {
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     const block = match[1];
     const name = tagValue(block, "Key").slice(prefix.length);
-    if (!name || name.includes("/")) {
+    if (!name || (name.includes("/") && !options.deep)) {
       continue;
     }
     entries.push({
@@ -1786,6 +2044,69 @@ export function trashRows(entries, now = Date.now()) {
     );
 }
 
+/**
+ * Whether a client's `If-None-Match` header names the etag an object carries.
+ * Browsers echo the exact header we sent; S3's own etags arrive quoted, and a
+ * validator may carry the `W/` weak prefix, so the comparison strips the
+ * quoting and the prefix and lets `*` name any etag. Exported because the
+ * share link (src/share.js) answers the same conditional the preview does.
+ * @param {string|null} ifNoneMatch the request's header, or null
+ * @param {string|null|undefined} etag the etag the store reported
+ * @returns {boolean}
+ */
+export function etagMatches(ifNoneMatch, etag) {
+  if (!ifNoneMatch || !etag) {
+    return false;
+  }
+  const bare = etag.replace(/"/g, "");
+  return ifNoneMatch.split(",").some((candidate) => {
+    const value = candidate.trim().replace(/^W\//, "").replace(/"/g, "");
+    return value === "*" || (value !== "" && value === bare);
+  });
+}
+
+/**
+ * One byte range out of a client's `Range` header, against an object of
+ * `total` bytes. Returns `{start, end}` for a range to slice, `null` when the
+ * header is not a single byte range we can honor (multi-range, a foreign
+ * unit, malformed — the full object answers instead), or the string
+ * `"unsatisfiable"` when it is a byte range but no byte of it exists, the
+ * answer RFC 9110 spells 416. Both stores need the same call, so it lives
+ * once here: the memory store slices with it, and the S3 store forwards the
+ * header and reads the 416 back.
+ * @param {string} header
+ * @param {number} total
+ * @returns {{start: number, end: number}|null|"unsatisfiable"}
+ */
+export function parseByteRange(header, total) {
+  const match = /^bytes=([0-9]+)?-([0-9]*)$/.exec(header.trim());
+  if (!match) {
+    return null;
+  }
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === undefined) {
+    // A suffix range, `bytes=-N`: the last N bytes. `-0` names no byte at
+    // all, which is unsatisfiable, not ignorable.
+    if (rawEnd === "") {
+      return null;
+    }
+    const suffix = Number(rawEnd);
+    if (suffix === 0 || total === 0) {
+      return "unsatisfiable";
+    }
+    return { start: Math.max(0, total - suffix), end: total - 1 };
+  }
+  const start = Number(rawStart);
+  if (start >= total) {
+    return "unsatisfiable";
+  }
+  const end = rawEnd === "" ? total - 1 : Math.min(Number(rawEnd), total - 1);
+  if (end < start) {
+    return null;
+  }
+  return { start, end };
+}
+
 // ---------------------------------------------------------------- handlers
 
 const JSON_HEADERS = Object.freeze({
@@ -1960,13 +2281,28 @@ async function readJsonObject(request) {
  * @param {number} now
  * @returns {Promise<Response>}
  */
+/** Rows the Files page asks for in one load, before the More button takes
+ * over (drive#570). 200 rows render in one paint; a folder ten times that
+ * size used to cost a full recursive LIST walk and every key in it. */
+export const FILE_PAGE_SIZE = 200;
+
+/**
+ * @param {Request} request
+ * @param {URL} url
+ * @param {FileStore} store
+ * @param {number} now
+ * @returns {Promise<Response>}
+ */
 async function listRequest(request, url, store, now) {
   if (request.method !== "GET") {
     return plain("Method not allowed. GET a listing.", 405);
   }
   try {
     if (url.searchParams.get("view") === "deleted") {
-      const entries = await store.list(TRASH_PATH);
+      // The recursive listing, because a parked file nests under
+      // `.trash/<path>/<ts>` (drive#570): `list`'s one-folder-deep answer
+      // would show the folders and none of the files in them.
+      const entries = await store.listAll(TRASH_PATH);
       return json({
         view: "deleted",
         rows: trashRows(entries, now),
@@ -1978,7 +2314,12 @@ async function listRequest(request, url, store, now) {
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
-    const entries = withoutTrash(await store.list(checked.path), checked.path);
+    // One storage call per page: `cursor` is the token the last answer handed
+    // out, passed through opaque, and `nextCursor` is the next one or null
+    // when the folder is exhausted (drive#570).
+    const cursor = url.searchParams.get("cursor");
+    const page = await store.listPage(checked.path, { limit: FILE_PAGE_SIZE, cursor });
+    const entries = page.entries;
     const { folders, files } = splitEntries(entries);
     return json({
       view: "folder",
@@ -1986,6 +2327,10 @@ async function listRequest(request, url, store, now) {
       rows: fileRows(entries, now),
       folders: folders.length,
       files: files.length,
+      // The page's More control. `cursor` on the way in, `nextCursor` on the
+      // way out, both opaque: the page holds no offset arithmetic and the
+      // store's token shape is its own business.
+      nextCursor: page.nextCursor,
       empty: checked.path === "/" ? EMPTY_STATES.root : EMPTY_STATES.folder,
       line: PAGE_LINE,
     });
@@ -1995,6 +2340,11 @@ async function listRequest(request, url, store, now) {
 }
 
 /**
+ * The preview and download route. GET forwards the client's `Range` and
+ * `If-None-Match` to storage and passes the verdict through — 206 for the
+ * slice asked for, 304 when the etag still matches, 416 for a range no byte
+ * answers (drive#570). HEAD asks storage for a HEAD and answers from the
+ * headers alone, where the old path fetched the whole object and dropped it.
  * @param {Request} request
  * @param {URL} url
  * @param {FileStore} store
@@ -2012,42 +2362,104 @@ async function readRequest(request, url, store, download) {
   // Bound once, right after the check: the narrowed path is the only thing
   // below reads, and a union property is not narrowed across an await.
   const drivePath = checked.path;
+  const name = drivePath.split("/").pop() || "";
+  /**
+   * The headers every 200/206/HEAD answer carries, from the type the store
+   * named. One builder for all three, so the two safety headers below cannot
+   * drift between the preview and the HEAD.
+   * @param {string} contentType
+   * @returns {Record<string, string>}
+   */
+  const baseHeaders = (contentType) => {
+    /** @type {Record<string, string>} */
+    const headers = {
+      // The bytes leave as a file: an attachment to download, and an inline
+      // preview the page renders in a media element. Neither is a document on
+      // our origin, and the two headers below keep it that way when the preview
+      // URL is opened directly: nosniff honors the type above, and the sandbox
+      // policy gives a document an opaque origin with no script of its own.
+      "content-type": download
+        ? contentType || "application/octet-stream"
+        : previewContentType(name || "", contentType),
+      "content-disposition": download
+        ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
+        : "inline",
+      "x-content-type-options": "nosniff",
+      "cache-control": "private, no-store",
+      // What a player or a resuming downloader may ask for next: one slice.
+      "accept-ranges": "bytes",
+    };
+    if (!download) {
+      // The sandbox only belongs on the preview branch. An attachment is not a
+      // document and gets no sandbox header rather than an empty policy, which
+      // no browser reads as "no sandbox". The map is a Record so the preview
+      // branch can add the one header the download branch does not send.
+      headers["content-security-policy"] = "sandbox";
+    }
+    return headers;
+  };
+
+  // A HEAD answer needs the object's headers and none of its bytes, so
+  // storage is asked with a HEAD (drive#570). The bytes are never fetched,
+  // the length is the answer, and the etag rides along so a browser that
+  // checks before it plays can keep its validator.
+  if (request.method === "HEAD") {
+    try {
+      const stat = await store.stat(drivePath);
+      if (!stat) {
+        return plain(failureMessage("file-not-found"), 404);
+      }
+      const headers = baseHeaders(stat.contentType);
+      headers["content-length"] = String(stat.size);
+      if (stat.etag) {
+        headers.etag = stat.etag;
+      }
+      return new Response(null, { status: 200, headers });
+    } catch (error) {
+      return json({ error: `We could not read that file: ${String(error)}` }, 500);
+    }
+  }
+
+  const range = request.headers.get("range");
+  const ifNoneMatch = request.headers.get("if-none-match");
   let object;
   try {
-    object = await store.read(drivePath);
+    object = await store.read(drivePath, { range, ifNoneMatch });
   } catch (error) {
     return json({ error: `We could not read that file: ${String(error)}` }, 500);
   }
   if (!object) {
     return plain(failureMessage("file-not-found"), 404);
   }
-  const name = drivePath.split("/").pop() || "";
-  const headers = /** @type {Record<string, string>} */ ({
-    // The bytes leave as a file: an attachment to download, and an inline
-    // preview the page renders in a media element. Neither is a document on
-    // our origin, and the two headers below keep it that way when the preview
-    // URL is opened directly: nosniff honors the type above, and the sandbox
-    // policy gives a document an opaque origin with no script of its own.
-    "content-type": download
-      ? object.contentType || "application/octet-stream"
-      : previewContentType(name || "", object.contentType),
-    "content-disposition": download
-      ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-      : "inline",
-    "x-content-type-options": "nosniff",
-    "cache-control": "private, no-store",
-  });
-  if (!download) {
-    // The sandbox only belongs on the preview branch. An attachment is not a
-    // document and gets no sandbox header rather than an empty policy, which
-    // no browser reads as "no sandbox". The map is a Record so the preview
-    // branch can add the one header the download branch does not send.
-    headers["content-security-policy"] = "sandbox";
+  const status = object.status ?? 200;
+  // The conditional storage answered, passed through unchanged: the client
+  // keeps its etag and its cached copy, and no byte moves.
+  if (status === 304) {
+    return new Response(null, {
+      status: 304,
+      headers: object.etag ? { etag: object.etag, "cache-control": "private, no-store" } : {},
+    });
   }
-  return new Response(request.method === "HEAD" ? null : object.body, {
-    status: 200,
-    headers,
-  });
+  // A range no byte of the object answers. The bytes are not read, and the
+  // one line names the size a client can pick a range inside.
+  if (status === 416) {
+    return new Response(null, {
+      status: 416,
+      headers: {
+        "content-range": object.contentRange || `bytes */${object.size}`,
+        "accept-ranges": "bytes",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
+  const headers = baseHeaders(object.contentType);
+  if (object.etag) {
+    headers.etag = object.etag;
+  }
+  if (status === 206) {
+    headers["content-range"] = object.contentRange || "";
+  }
+  return new Response(object.body, { status, headers });
 }
 
 /**
@@ -2135,7 +2547,9 @@ async function deleteRequest(request, store, now) {
   }
   try {
     const object = await store.read(checked.path);
-    if (!object) {
+    if (!object?.body) {
+      // A body-less read (a 304/416 shape) without a conditional request is a
+      // store bug, not a file to park; the customer answer is the same 404.
       return json({ error: failureMessage("file-not-found") }, 404);
     }
     await store.write(
@@ -2171,7 +2585,17 @@ async function restoreRequest(request, store, now) {
     return json({ error: checked.error }, 400);
   }
   try {
-    const found = findTrashName(await store.list(TRASH_PATH), checked.path);
+    // One narrow LIST: the parked versions of this one path all share the
+    // prefix `.trash/<path>/` (drive#570), so the restore asks for exactly
+    // that folder instead of listing the whole trash and filtering. Each row
+    // there is one version, and the name IS the deleted-at time; a row that
+    // is not a bare number is a deeper path's own parked version (a folder
+    // created later over the old file's name), not this file's.
+    const parked = await store.list(`${TRASH_PATH}/${checked.path.slice(1)}`);
+    const found = parked
+      .map((entry) => ({ name: entry.name, deletedAt: Number(entry.name) }))
+      .filter((version) => Number.isFinite(version.deletedAt) && version.deletedAt > 0)
+      .sort((a, b) => b.deletedAt - a.deletedAt)[0];
     if (!found) {
       return json({ error: "That file is not in Recently deleted." }, 404);
     }
@@ -2181,12 +2605,15 @@ async function restoreRequest(request, store, now) {
         410,
       );
     }
-    const object = await store.read(trashStorePath(found.name));
-    if (!object) {
+    const parkedAt = trashStorePath(`${checked.path.slice(1)}/${found.name}`);
+    const object = await store.read(parkedAt);
+    if (!object?.body) {
+      // Same narrow as the delete path: a parked copy answers with bytes, so
+      // anything else is gone as far as this request is concerned.
       return json({ error: "That file is no longer in Recently deleted." }, 404);
     }
     await store.write(checked.path, object.body, object.contentType);
-    await store.remove(trashStorePath(found.name));
+    await store.remove(parkedAt);
     return json({ ok: true, path: checked.path });
   } catch (cause) {
     return json({ error: `We could not put that file back: ${String(cause)}` }, 500);

@@ -716,6 +716,22 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
       return [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
     },
     /** @param {string} path */
+    async listPage(path) {
+      seen.push(["listPage", path]);
+      const entries = [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
+      return { entries, nextCursor: null };
+    },
+    /** @param {string} path */
+    async listAll(path) {
+      seen.push(["listAll", path]);
+      return [];
+    },
+    /** @param {string} path */
+    async stat(path) {
+      seen.push(["stat", path]);
+      return null;
+    },
+    /** @param {string} path */
     async read(path) {
       seen.push(["read", path]);
       return null;

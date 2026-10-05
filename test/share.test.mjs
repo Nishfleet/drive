@@ -694,6 +694,15 @@ test("a store failure is logged, and its message is never returned", async () =>
         throw new Error("the share upload path does not copy");
       },
       listVersions: async () => [],
+      listPage: async () => {
+        throw new Error("the share listing never runs in this test");
+      },
+      listAll: async () => {
+        throw new Error("the share listing never runs in this test");
+      },
+      stat: async () => {
+        throw new Error("the share listing never runs in this test");
+      },
     };
     const { links } = drive();
     await links.requests.create(
@@ -1536,4 +1545,60 @@ test("the app routes DELETE for share and request links, so a revoke reaches its
   const routes = createApp().routes.map((r) => `${r.method} ${r.path}`);
   assert.ok(routes.includes("DELETE /api/share"), "DELETE /api/share is not registered");
   assert.ok(routes.includes("DELETE /api/request"), "DELETE /api/request is not registered");
+});
+
+// ---------------------------------------------------- range, validators, HEAD
+
+// drive#570: a share link answers Range and If-None-Match out of storage, so
+// a seeking player reads its slice and a re-checking browser is told 304,
+// instead of every call pulling the whole object through the Worker to throw
+// most of it away.
+test("a share link answers a Range with 206 and counts only the bytes it sent", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "song.mp3", "0123456789", "audio/mpeg");
+  const made = await (await share("/song.mp3", { token: TOKEN })).json();
+
+  const opened = await handleShareFileRequest(
+    new Request(made.share.url, { headers: { range: "bytes=2-4" } }),
+    files,
+    links,
+    { now },
+  );
+  assert.equal(opened.status, 206);
+  assert.equal(await opened.text(), "234");
+  assert.equal(opened.headers.get("content-range"), "bytes 2-4/10");
+  assert.equal(opened.headers.get("accept-ranges"), "bytes");
+
+  // The honest count: this response carried 3 bytes, not the object's 10.
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 1);
+  assert.equal(record.downloadBytes, 3);
+});
+
+test("a share link answers a still-valid If-None-Match with 304 and no download", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "song.mp3", "0123456789", "audio/mpeg");
+  const made = await (await share("/song.mp3", { token: TOKEN })).json();
+
+  const first = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  assert.equal(first.status, 200);
+  const etag = first.headers.get("etag");
+  assert.ok(etag, "the share answers carries an etag to re-validate with");
+
+  const again = await handleShareFileRequest(
+    new Request(made.share.url, { headers: { "if-none-match": etag } }),
+    files,
+    links,
+    { now },
+  );
+  assert.equal(again.status, 304);
+  assert.equal(await again.text(), "");
+  assert.equal(again.headers.get("etag"), etag);
+
+  // Nothing was sent, so nothing is counted: the row still holds the one GET.
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 1);
+  assert.equal(record.downloadBytes, 10);
 });

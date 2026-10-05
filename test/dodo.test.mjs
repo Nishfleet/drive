@@ -475,6 +475,29 @@ test("an ingest failure is thrown, so the cron retries, and no row is stored", a
   assert.equal(day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
 });
 
+test("a 5xx ingest is retried once (drive#570), and the retry's push is the one stored", async () => {
+  const day = await storedHours(10, 1);
+  const down = recordingFetch({ status: 503, body: { message: "down" } });
+  const up = recordingFetch();
+  let call = 0;
+  const flaky = /** @type {typeof fetch} */ (
+    (input, init) => (call++ === 0 ? down.fetch(input, init) : up.fetch(input, init))
+  );
+  await pushBillingHours(day.db, day.hours, {
+    apiKey: KEY,
+    fetch: flaky,
+    now: day.from + HOUR_MS,
+  });
+  assert.equal(down.calls.length, 1, "the 503 is the failed first attempt");
+  assert.equal(up.calls.length, 1, "one retry carried the same hour");
+  assert.deepEqual(up.calls[0].payload, down.calls[0].payload, "the same events, re-sent whole");
+  assert.equal(
+    day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
+    1,
+    "the retry is what the row records",
+  );
+});
+
 test("the hourly cron pushes the hour it just rolled", async () => {
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);

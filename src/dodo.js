@@ -37,6 +37,7 @@
 // would try to fix.
 
 import { monthBillCents } from "./billing.js";
+import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
 // The two hosts Dodo serves its API on, named once because the check that
@@ -542,14 +543,24 @@ async function customersForHour(db, hour) {
  * @param {Array<Record<string, unknown>>} events
  */
 async function ingestEvents(fetchImpl, ingestUrl, apiKey, events) {
-  const response = await fetchImpl(ingestUrl, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
+  // The push carries the meter's own deadline and one retry (drive#570): a
+  // stalled Dodo call answers named after 15 s instead of holding the hourly
+  // push open, and a 5xx is retried once before the hour is marked failed.
+  // The retry is safe because the ingest is idempotent by event id — a
+  // repeated hour is ignored, which is the idempotency test already pinned.
+  const response = await fetchWithTimeoutAndRetry(
+    fetchImpl,
+    ingestUrl,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ events }),
     },
-    body: JSON.stringify({ events }),
-  });
+    { label: "Dodo test-mode ingest" },
+  );
   if (!response.ok) {
     throw new Error(`Dodo test-mode ingest failed: ${response.status}`);
   }

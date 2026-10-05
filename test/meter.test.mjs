@@ -1940,6 +1940,15 @@ function providerStore(versionsByPrefix) {
     async copy() {
       throw new Error("the reconciler never copies a file");
     },
+    async listPage() {
+      throw new Error("the reconciler never lists a page");
+    },
+    async listAll() {
+      throw new Error("the reconciler never lists a bucket");
+    },
+    async stat() {
+      throw new Error("the reconciler never stats a file");
+    },
   };
 }
 
