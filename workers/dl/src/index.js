@@ -194,6 +194,21 @@ export function keyAccessCheck(db, secret, now) {
 }
 
 /**
+ * The length of the span a `Content-Range: bytes a-b/total` names, or
+ * undefined when there is none to read.
+ * @param {string|undefined} contentRange
+ * @returns {number|undefined}
+ */
+export function rangeLength(contentRange) {
+  const match = /^bytes (\d+)-(\d+)\//.exec(contentRange ?? "");
+  if (!match) {
+    return undefined;
+  }
+  const length = Number(match[2]) - Number(match[1]) + 1;
+  return length > 0 ? length : undefined;
+}
+
+/**
  * The dl Worker's fetch. Checks the grant, streams the named object (or the
  * one slice asked for), and counts the bytes this response carries.
  * @param {Request} request
@@ -281,22 +296,28 @@ export async function handleDownload(request, ctx) {
   if (status !== 200 && status !== 206) {
     return storageDown(new Error(`storage answered ${status}`));
   }
-  // The bytes this response carries: the slice on a 206, the whole object on
-  // a 200. A length storage did not report counts zero rather than a guess.
-  const served = status === 206 ? object.contentLength : object.size;
-  const bytes =
-    Number.isSafeInteger(served) && /** @type {number} */ (served) > 0
-      ? /** @type {number} */ (served)
-      : 0;
+  // The bytes this response carries: the slice on a 206 (its length, or the
+  // span its Content-Range names), the whole object on a 200. A length
+  // storage did not report bills nothing and sends no content-length, rather
+  // than a guess.
+  const served =
+    status === 206 ? (object.contentLength ?? rangeLength(object.contentRange)) : object.size;
+  const known = Number.isSafeInteger(served) && /** @type {number} */ (served) >= 0;
+  const bytes = known ? /** @type {number} */ (served) : 0;
   if (bytes > 0) {
     ctx.waitUntil(
       recordDownloadBytes(ctx.db, named.accountId, bytes, ctx.now()).catch((error) => {
-        throw new Error(`the download bytes were not recorded: ${error.message}`);
+        // A failed meter write is logged, not rethrown: the bytes are already
+        // on their way, and a rejection in the background slot helps no one.
+        console.error("dl: could not record download bytes", error);
       }),
     );
   }
   /** @type {Record<string, string>} */
-  const headers = { ...DOWNLOAD_HEADERS, "content-length": String(bytes) };
+  const headers = { ...DOWNLOAD_HEADERS };
+  if (known) {
+    headers["content-length"] = String(bytes);
+  }
   if (status === 206 && object.contentRange) {
     headers["content-range"] = object.contentRange;
   }

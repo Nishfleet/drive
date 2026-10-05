@@ -15,9 +15,15 @@ import { parseByteRange } from "../../../core/files.js";
 import { recordUsage } from "../../../core/meter.js";
 import { makeMeteredDB, midnight } from "../../../test/d1-sqlite.mjs";
 import { createD1DeviceStore } from "../../../core/devices.js";
-import { createMemoryStore } from "../../../core/keystore.js";
 import { readGrant, signGrant } from "../../../core/grant.js";
-import { downloadKey, handleDownload, keyAccessCheck, parseDownloadPath } from "../src/index.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import {
+  downloadKey,
+  handleDownload,
+  keyAccessCheck,
+  parseDownloadPath,
+  rangeLength,
+} from "../src/index.js";
 
 const HOST = "https://dl.drive.test";
 const SECRET = "test-grant-secret";
@@ -333,6 +339,68 @@ test("a ranged read returns exactly those bytes as a 206 and bills only them", a
   assert.deepEqual(served, bytes.slice(100, 200), "the slice is the right bytes");
   await h.drain();
   assert.equal(h.downloaded("acct_alice"), 100, "only the 100 served bytes are billed");
+});
+
+test("a 206 with no length from storage bills the span its Content-Range names", async () => {
+  const bytes = countingBytes(500);
+  const h = await harnessFor({ "u/acct_alice/a.bin": { bytes } });
+  const read = h.ctx.store.read;
+  const ctx = {
+    ...h.ctx,
+    store: {
+      ...h.ctx.store,
+      read: async (/** @type {string} */ key, /** @type {any} */ options) => {
+        const object = await read(key, options);
+        return object && { ...object, contentLength: undefined };
+      },
+    },
+  };
+  const res = await handleDownload(
+    new Request(h.url("/u/acct_alice/a.bin"), { headers: { range: "bytes=10-59" } }),
+    ctx,
+  );
+  assert.equal(res.status, 206);
+  assert.equal(res.headers.get("content-length"), "50");
+  assert.equal((await res.arrayBuffer()).byteLength, 50);
+  await h.drain();
+  assert.equal(h.downloaded("acct_alice"), 50);
+  assert.equal(rangeLength("bytes 0-0/9"), 1);
+  assert.equal(rangeLength("bytes */9"), undefined);
+  assert.equal(rangeLength(undefined), undefined);
+});
+
+test("a failed meter write is logged and the bytes still go out", async () => {
+  const bytes = countingBytes(64);
+  const h = await harnessFor({ "u/acct_alice/a.bin": { bytes } });
+  /** @type {Promise<unknown>[]} */
+  const background = [];
+  const realDb = h.ctx.db;
+  const ctx = {
+    ...h.ctx,
+    // The access check keeps the real database; only the meter write fails.
+    db: /** @type {any} */ ({
+      prepare(/** @type {string} */ sql) {
+        if (sql.includes("usage_minutes")) {
+          throw new Error("d1 down");
+        }
+        return realDb.prepare(sql);
+      },
+    }),
+    waitUntil: (/** @type {Promise<unknown>} */ p) => background.push(p),
+  };
+  const original = console.error;
+  /** @type {unknown[][]} */
+  const logged = [];
+  console.error = (...args) => logged.push(args);
+  try {
+    const res = await handleDownload(new Request(h.url("/u/acct_alice/a.bin")), ctx);
+    assert.equal(res.status, 200);
+    assert.equal((await res.arrayBuffer()).byteLength, 64);
+    await Promise.all(background);
+  } finally {
+    console.error = original;
+  }
+  assert.ok(logged.some((args) => String(args[0]).includes("could not record download bytes")));
 });
 
 test("a mount's chunked reads bill the file once, not once per chunk", async () => {
