@@ -2087,30 +2087,13 @@ export function createS3Store(config) {
      * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
      */
     async copy(from, to, size, options = {}) {
-      const guard = copyGuard(to, options);
-      // The read is one HEAD, the same call `stat` makes, so the guard reads the
-      // destination the way a preview does and invents no new request shape.
-      if (guard.ifAbsent) {
-        const held = await copyDestinationEtag(request, urlFor, to);
-        // Asked for an empty destination. Something is at the key, whether it
-        // names an ETag or not: there is no way to tell a save from a folder
-        // marker by their bytes here, so any object is refused.
-        if (held !== null) {
-          throw new ChangedUnderUsError(to);
-        }
-      } else if (guard.ifMatch) {
-        const held = await copyDestinationEtag(request, urlFor, to);
-        // `null` is the destination gone, which is not the bytes the caller
-        // listed, and `""` is a destination this storage reports no ETag for,
-        // which is no comparison at all. Both refuse: a guard with no answer to
-        // give is not a guard that passed (drive issue #605).
-        if (held === null || held === "" || etagMismatch(held, guard.ifMatch)) {
-          throw new ChangedUnderUsError(to);
-        }
-      }
+      // The guard, before the copy: one HEAD, then the copy the guard allowed.
+      await assertCopyDestinationUnchanged(request, urlFor, to, options);
       const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
-        await multipartCopy(request, urlFor, source, to, size);
+        // The same guard rides with it, and the multipart copy reads it again
+        // before the completion, because that copy is many requests wide.
+        await multipartCopy(request, urlFor, source, to, size, options);
         return;
       }
       // S3's CopyObject can answer 200 with an <Error> body for a refused copy
@@ -2258,9 +2241,17 @@ const COPY_MAX_PARTS = 10000;
  * @param {string} source the `x-amz-copy-source` header value, `/<bucket>/<key>`
  * @param {string} to the destination storage key
  * @param {number} size the source's byte length, from the listing or a HEAD
+ * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
+ *   The same destination guard `copy` takes, re-checked here immediately before
+ *   the completion because a multipart copy is many requests wide: the guard the
+ *   caller ran before the first part would otherwise be many round-trips stale by
+ *   the time the object exists. It narrows the window to the one request the
+ *   completion itself takes, which is as narrow as this API allows — the
+ *   completion carries no destination precondition of its own, the same limit
+ *   the single-call copy has (drive issue #605).
  * @returns {Promise<void>}
  */
-async function multipartCopy(fetchImpl, urlFor, source, to, size) {
+async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) {
   const partSize = Math.max(COPY_PART_SIZE, Math.ceil(size / COPY_MAX_PARTS));
   const target = urlFor(to);
   const created = await fetchImpl(`${target}?uploads`, { method: "POST" });
@@ -2304,6 +2295,11 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size) {
       }
       parts.push(`<Part><PartNumber>${number}</PartNumber><ETag>${etag}</ETag></Part>`);
     }
+    // The guard again, now. The parts above took one request each and a large
+    // file takes many, so what was true of the destination before the first part
+    // may not be true of it now; re-reading here is what keeps the check next to
+    // the write rather than at the start of a long copy (drive issue #605).
+    await assertCopyDestinationUnchanged(fetchImpl, urlFor, to, options);
     const completed = await fetchImpl(`${target}?${upload}`, {
       method: "POST",
       headers: { "content-type": "application/xml" },
@@ -2422,6 +2418,45 @@ function copyGuard(to, { ifMatch, ifAbsent } = {}) {
     throw new TypeError(`copy of ${to}: ifMatch was given but holds no ETag`);
   }
   return { ifMatch };
+}
+
+/**
+ * Check that a copy's destination is still what the caller decided it was safe
+ * to write over, and throw `ChangedUnderUsError` when it is not. One HEAD, the
+ * same call `stat` makes, so the guard reads the destination the way a preview
+ * does and invents no new request shape for it.
+ *
+ * `options` is what the caller listed, and only a caller that listed something
+ * pays for this call: `drive branch` asks for no guard and its copy is one
+ * request, the way it always was.
+ * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl
+ * @param {(path: string) => string} urlFor
+ * @param {string} to the storage key the copy would write
+ * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
+ * @returns {Promise<void>}
+ */
+async function assertCopyDestinationUnchanged(fetchImpl, urlFor, to, options = {}) {
+  const guard = copyGuard(to, options);
+  if (!guard.ifAbsent && !guard.ifMatch) {
+    return;
+  }
+  const held = await copyDestinationEtag(fetchImpl, urlFor, to);
+  if (guard.ifAbsent) {
+    // Asked for an empty destination. Something is at the key, whether it names
+    // an ETag or not: there is no way to tell a save from a folder marker by
+    // their bytes here, so any object is refused.
+    if (held !== null) {
+      throw new ChangedUnderUsError(to);
+    }
+    return;
+  }
+  // `null` is the destination gone, which is not the bytes the caller listed,
+  // and `""` is a destination this storage reports no ETag for, which is no
+  // comparison at all. Both refuse: a guard with no answer to give is not a
+  // guard that passed (drive issue #605).
+  if (held === null || held === "" || etagMismatch(held, guard.ifMatch)) {
+    throw new ChangedUnderUsError(to);
+  }
 }
 
 /**

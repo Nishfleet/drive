@@ -1624,6 +1624,87 @@ test("a save that lands between the guard's HEAD and the copy is overwritten, an
   assert.equal(objects.get("u/acct-a/notes.md"), '"copied"');
 });
 
+test("a multipart copy re-checks its guard after the parts, before the object exists", async () => {
+  // A multipart copy is many requests wide — one per byte range, then the
+  // completion — so a guard read before the first part can be many round-trips
+  // stale by the time the object exists. It is read again there, next to the
+  // write it guards (drive issue #605).
+  const gib = 1024 ** 3;
+  const sixGb = 6 * gib;
+  /** @type {string} the ETag the destination holds, changed by the save below */
+  let destinationEtag = "listed-etag";
+  /** @type {string[]} */
+  const requests = [];
+  /** @type {undefined | (() => void)} lands after the guard's first read */
+  let afterFirstHead;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = String(request.url);
+    requests.push(
+      `${request.method} ${new URL(url).search} ${url.replace("http://127.0.0.1:9000/drive/u/acct-a", "")}`,
+    );
+    if (request.method === "HEAD") {
+      // The destination held the ETag the caller listed on the first read and
+      // the save's ETag on the second, which is what a save landing mid-copy
+      // looks like to the store.
+      return new Response(null, { status: 200, headers: { etag: `"${destinationEtag}"` } });
+    }
+    if (url.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><Bucket>drive</Bucket><Key>k</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (url.includes("partNumber=")) {
+      // The save lands in the copy, between the guard's first read and the
+      // completion: this is the request the copy makes while it works.
+      if (afterFirstHead) {
+        const lands = afterFirstHead;
+        afterFirstHead = undefined;
+        lands();
+      }
+      return new Response(
+        `<CopyPartResult><ETag>&#34;etag-${new URL(url).searchParams.get("partNumber")}&#34;</ETag><LastModified>2026-10-02T00:00:00.000Z</LastModified></CopyPartResult>`,
+      );
+    }
+    if (request.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    return new Response(
+      "<CompleteMultipartUploadResult><Key>k</Key><ETag>whole</ETag></CompleteMultipartUploadResult>",
+    );
+  };
+  const scoped = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+
+  // A save lands while the parts are being copied, not before them: the first
+  // guard read passes, because at that moment the destination is still what the
+  // caller listed. The second read sees the save, so the object is never
+  // completed over it. Both values are the unquoted form a listing hands out,
+  // which is the form the guard compares in.
+  afterFirstHead = () => {
+    destinationEtag = "saved-mid-copy";
+  };
+  await assert.rejects(
+    scoped.copy("/Photos/archive.iso", "/.branches/work/archive.iso", sixGb, {
+      ifMatch: "listed-etag",
+    }),
+    (error) => error instanceof ChangedUnderUsError,
+  );
+  const heads = requests.filter((entry) => entry.startsWith("HEAD"));
+  assert.equal(
+    heads.length,
+    2,
+    `the guard is read before the parts and again after them: ${JSON.stringify(requests.slice(0, 3))}`,
+  );
+  assert.ok(
+    !requests.some((entry) => entry.startsWith("POST ?uploadId=")),
+    `the object was never completed over the save: ${JSON.stringify(requests.slice(-3))}`,
+  );
+});
+
 test("a restore onto a path a save creates is refused by the S3 store too", async () => {
   // The other half of the guard, and the case the route reaches when its
   // listing found nothing at the destination: nothing there is held to as
