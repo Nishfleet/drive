@@ -340,7 +340,7 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 		// falls back, because it is not a command and cannot answer.
 		if !IsLoopbackAddr(m.rcAddr) {
 			return "", StorageConfig{}, fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
-				"is unauthenticated, so it binds %s only", m.rcAddr, RCAddr())
+				"binds loopback only, so it stays on this machine", m.rcAddr)
 		}
 		_ = os.Setenv(rcAddrEnvName, m.rcAddr)
 	}

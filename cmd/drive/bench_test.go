@@ -207,7 +207,7 @@ func benchStart(tb testing.TB) *benchStandin {
 		h.close()
 		tb.Fatal(err)
 	}
-	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 
 	h.mount = exec.Command(driveBin(tb), "mount",
 		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,

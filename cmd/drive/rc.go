@@ -94,12 +94,18 @@ const rcTimeout = 30 * time.Second
 // A caller that only prints a line must not fail on a machine with no rclone
 // installed, so a resolve failure is reported by the caller's error, not by
 // the constructor.
-func mountRCClient() (*rcClient, error) {
+func mountRCClient(home string) (*rcClient, error) {
 	binary, err := ResolveRclone("")
 	if err != nil {
 		return nil, fmt.Errorf("rclone: %w", err)
 	}
-	return newRCClient(binary, RCAddr(), ""), nil
+	c := newRCClient(binary, RCAddr(), "")
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		return nil, fmt.Errorf("rclone rc auth: %w", err)
+	}
+	c.user, c.pass = auth.User, auth.Pass
+	return c, nil
 }
 
 // rcCtx bounds one remote-control call. See rcTimeout.

@@ -294,7 +294,7 @@ func (h *hillStandin) seedFolderCopies(t *testing.T, name string, nfiles, copies
 func (h *hillStandin) rclone(t *testing.T, args ...string) {
 	t.Helper()
 	cmd := exec.Command("rclone", args...)
-	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rclone %s: %v\n%s", strings.Join(args, " "), err, b)
 	}
