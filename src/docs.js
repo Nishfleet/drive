@@ -111,7 +111,7 @@ export function agentDeleteSentence() {
       "an agent key can destroy the copy its delete hides, so no page may call its delete undoable",
     );
   }
-  return `An agent key can delete a file, but the storage keeps the deleted copy for ${days(agent.undoDays)}, so you can put it back from Recently deleted within that time. After ${days(agent.undoDays)} it is gone for good.`;
+  return `An agent key can delete a file, but the storage keeps the deleted copy for ${days(agent.undoDays)}, so you can put it back from Recently deleted on the web Files page within that time. After ${days(agent.undoDays)} it is gone for good.`;
 }
 
 /**
@@ -123,7 +123,7 @@ export function branchReachSentence() {
   if (!STORAGE_POWERS.branch.reachesWholeDrive) {
     return "A branch key cannot reach your other files or other branches.";
   }
-  return "The storage limits a key to your whole Drive, not to one folder, so a branch key can also read and change your other files and other branches. Work in the branch is a convention the agent follows, not a wall.";
+  return "The storage limits a key to your whole Drive, not to one folder, so a branch key can also read, change and delete your other files and other branches. Work in the branch is a convention the agent follows, not a wall.";
 }
 
 /**

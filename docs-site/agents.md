@@ -37,8 +37,8 @@ drive discard <branch>    # throw the branch away; the folder is untouched
 ```
 
 The agent works with its own branch key, made for the branch's one path under
-`.branches/<name>/` in your account folder. {{BRANCH_REACH}} Only you can
-approve the copy back.
+`.branches/<name>/` in your account folder, and only you can approve the copy
+back. [Branch keys](#branch-keys) says how far that key reaches.
 
 Stop a tool with `drive agents revoke <tool>`, using the tool's own name
 (`claude`, `codex`, `cursor`, `gemini` or `kiro`); the other tools stay
