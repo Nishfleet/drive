@@ -411,12 +411,20 @@ export function trashName(path, at) {
  * The reverse: the drive path and deleted-at time a trash name carries, or
  * null for anything that is not one of ours. The name is the key relative to
  * the trash folder, `<original path>/<ts>`; the last segment is the time and
- * everything before it is the path that was deleted.
+ * everything before it is the path that was deleted. A name still in the old
+ * flat layout (`<ts>__<encoded path>`, the shape before drive#570) parses
+ * too: nothing writes it now, but a file parked under it stays visible in
+ * Recently deleted and restorable, and the purge that walks the whole
+ * trash (drive#521) reclaims it on its own schedule.
  * @param {unknown} name
  */
 export function parseTrashName(name) {
   if (typeof name !== "string") {
     return null;
+  }
+  const flat = parseFlatTrashName(name);
+  if (flat) {
+    return flat;
   }
   const cut = name.lastIndexOf("/");
   if (cut <= 0) {
@@ -429,6 +437,43 @@ export function parseTrashName(name) {
   const checked = validatePath(`/${name.slice(0, cut)}`);
   if (checked.error) {
     return null;
+  }
+  return { path: checked.path, deletedAt: at };
+}
+
+/**
+ * The flat trash layout that shipped before drive#570: `<ts>__<encoded
+ * path>`, one key directly under `.trash`. Nothing writes it now, so this
+ * exists only to read the keys that are already parked. The separator is
+ * the first `__` because an encoded path cannot contain one: `encodeURI`
+ * escapes `_`? no — `_` is unreserved, but `__` cannot appear because the
+ * writer put exactly one between the time and the encoded path, and the
+ * encoded path keeps any `_` it had after that first separator, so the
+ * first `__` is the one that splits them. `undefined` (not null) marks
+ * "not the flat layout", so a caller that also tries the nested layout can
+ * fall through; `null` marks "flat-shaped but unparseable", which stays
+ * unreachable because no writer ever produced an invalid one.
+ * @param {string} name
+ * @returns {{path: string, deletedAt: number}|null|undefined}
+ */
+function parseFlatTrashName(name) {
+  const cut = name.indexOf("__");
+  if (cut <= 0) {
+    return undefined;
+  }
+  const at = Number(name.slice(0, cut));
+  if (!Number.isFinite(at) || at <= 0 || !/^[0-9]+$/.test(name.slice(0, cut))) {
+    return undefined;
+  }
+  let path;
+  try {
+    path = decodeURIComponent(name.slice(cut + 2));
+  } catch {
+    return undefined;
+  }
+  const checked = validatePath(path);
+  if (checked.error) {
+    return undefined;
   }
   return { path: checked.path, deletedAt: at };
 }
@@ -2547,9 +2592,12 @@ async function deleteRequest(request, store, now) {
   }
   try {
     const object = await store.read(checked.path);
-    if (!object?.body) {
-      // A body-less read (a 304/416 shape) without a conditional request is a
-      // store bug, not a file to park; the customer answer is the same 404.
+    if (!object || object.body === null) {
+      // A read that came back with no body is a 304/416 shape, which only a
+      // conditional request can produce and this one never sends, so a null
+      // body here is a store that found nothing. `body` is null (not absent)
+      // on those two statuses, so the check is the narrowed form of the one
+      // this function has always made.
       return json({ error: failureMessage("file-not-found") }, 404);
     }
     await store.write(
@@ -2592,10 +2640,20 @@ async function restoreRequest(request, store, now) {
     // is not a bare number is a deeper path's own parked version (a folder
     // created later over the old file's name), not this file's.
     const parked = await store.list(`${TRASH_PATH}/${checked.path.slice(1)}`);
-    const found = parked
+    /** @type {{name: string, deletedAt: number}|null} */
+    let found = parked
       .map((entry) => ({ name: entry.name, deletedAt: Number(entry.name) }))
       .filter((version) => Number.isFinite(version.deletedAt) && version.deletedAt > 0)
       .sort((a, b) => b.deletedAt - a.deletedAt)[0];
+    if (!found) {
+      // A file parked before drive#570's nested layout sits directly under
+      // `.trash` as `<ts>__<encoded path>`, so the narrow prefix above cannot
+      // see it. One deep LIST, and only when the cheap one came back empty,
+      // finds it by the same parse the Recently deleted view uses. Nothing
+      // writes that layout now, so this only runs for a file deleted before
+      // the upgrade, and the 30-day window bounds how long any of them live.
+      found = findTrashName(await store.listAll(TRASH_PATH), checked.path);
+    }
     if (!found) {
       return json({ error: "That file is not in Recently deleted." }, 404);
     }
@@ -2605,9 +2663,15 @@ async function restoreRequest(request, store, now) {
         410,
       );
     }
-    const parkedAt = trashStorePath(`${checked.path.slice(1)}/${found.name}`);
+    // A nested key is `.trash/<path>/<ts>` and its own name is the bare
+    // timestamp the narrow LIST returned; a flat one is already its whole
+    // name under `.trash`, and rebuilding a prefix from it would look for a
+    // key that never existed.
+    const parkedAt = trashStorePath(
+      found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
+    );
     const object = await store.read(parkedAt);
-    if (!object?.body) {
+    if (!object || object.body === null) {
       // Same narrow as the delete path: a parked copy answers with bytes, so
       // anything else is gone as far as this request is concerned.
       return json({ error: "That file is no longer in Recently deleted." }, 404);

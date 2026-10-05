@@ -54,8 +54,11 @@ function isTimeout(error) {
 /**
  * Whether a request's body can be sent a second time. Only a stream body
  * cannot: the first fetch consumes it, and a replay throws instead of
- * retrying, so a call with one gets the timeout but not the retry. Bytes and
- * strings replay as they are.
+ * retrying, so a call with one gets the timeout but not the retry. Every
+ * other body kind replays — a string, URLSearchParams, ArrayBuffer,
+ * typed array, Blob and FormData all extract a fresh stream per fetch
+ * (verified under Node 24: both re-send their bytes on a second call),
+ * so they keep the retry this function promises.
  * @param {RequestInit} init
  */
 function replayable(init) {
