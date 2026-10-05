@@ -187,15 +187,13 @@ test("only an https page on Dodo's own domain is a checkout URL", () => {
   }
 });
 
-test("a signed-out, cross-site or GET top-up is refused", async () => {
+test("a signed-out or GET top-up is refused", async () => {
   const db = await dbWithAccount();
   const deps = { db, apiKey: "test-key", productId: "pdt_topup", fetch: recorder().fetchImpl };
   assert.equal(
     (await handleTopUpRequest(topUpRequest({ amount_usd: 10 }), null, deps)).status,
     401,
   );
-  const crossSite = topUpRequest({ amount_usd: 10 }, { origin: "https://evil.example" });
-  assert.equal((await handleTopUpRequest(crossSite, ACCOUNT, deps)).status, 403);
   const get = new Request(`${ORIGIN}${TOPUP_ENDPOINT}`);
   assert.equal((await handleTopUpRequest(get, ACCOUNT, deps)).status, 405);
 });

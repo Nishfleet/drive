@@ -2,8 +2,11 @@
 // so node --test can exercise every branch without a running runtime.
 
 import isEmail from "validator/lib/isEmail.js";
+import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+
+export { isSameOriginRequest };
 
 export const SOURCES = ["pricing-page", "business"];
 
@@ -181,22 +184,6 @@ async function readSignupRequest(request) {
     email: form.get("email"),
     source: form.get("source"),
   });
-}
-
-/**
- * Rejects a cross-site request outright. A cross-site form post can put an
- * address in this waitlist that nobody typed, and browsers always send Origin
- * on a cross-site POST; a same-origin fetch or our own no-JavaScript form
- * post sends the page's own origin, so this is a real check rather than a
- * token nobody could forge.
- * @param {Request} request
- */
-export function isSameOriginRequest(request) {
-  const origin = request.headers.get("origin");
-  if (origin === null) {
-    return true;
-  }
-  return origin === new URL(request.url).origin;
 }
 
 /**

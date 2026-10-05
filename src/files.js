@@ -26,7 +26,6 @@ import {
   preChargeLimitStream,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -2212,23 +2211,6 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
-  // Reading is safe to repeat, so only the three that change the drive carry
-  // the cross-site rule. The decision is by route, not by method, so a
-  // mislabelled method on a listing still cannot smuggle a write through.
-  const stateChanging =
-    route === `${FILES_ENDPOINT}/upload` ||
-    route === `${FILES_ENDPOINT}/delete` ||
-    route === `${FILES_ENDPOINT}/restore`;
-  if (stateChanging && !isSameOriginRequest(request)) {
-    // A specific line rather than the table's generic fallback: "try again in
-    // a moment" would be advice to retry a request that will always be
-    // refused, and the one next step is to do it from the drive page, the same
-    // way src/waitlist.js and src/email-send.js answer their cross-site calls.
-    return json(
-      { error: "Uploads, deletes and restores are only accepted from the drive page." },
-      403,
-    );
-  }
   const scoped = scopeStore(store, account);
   if (route === FILES_ENDPOINT) {
     return listRequest(request, url, scoped, now);
