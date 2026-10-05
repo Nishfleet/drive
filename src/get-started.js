@@ -256,23 +256,61 @@ export function ageMs(value, now = Date.now()) {
 }
 
 /**
- * The Last-sync cell's words: the date a device last synced, or the module's
- * own "no syncs yet" label, so a device that has never synced says so rather
- * than showing a blank cell. Unparseable dates take the same label: a row is a
- * report, and the page's own poll failure is the `unreachable` state, not a
- * device's.
+ * The Last-sync cell's instant, as an ISO-8601 stamp, or `null` for a device
+ * that has never synced or whose stamp will not parse: a row is a report, and
+ * the page's own poll failure is the `unreachable` state, not a device's. The
+ * "no syncs yet" words live where the row is built, beside the state column
+ * that says the same thing.
+ *
+ * The instant travels and the page writes it (drive#689). This used to call
+ * `toLocaleString()` here, which names no locale and no time zone, so the one
+ * date on the page was the one date drive did not write the way it writes
+ * every other: its day order, its seconds and its zone all came out in
+ * whatever the runtime's defaults happened to be. Splitting the two makes the
+ * instant one fact and the zone one decision, taken where the reader is.
  * @param {{lastSyncAt?: string|number|Date|null}} device
- * @returns {string}
+ * @returns {string|null}
  */
 export function lastSyncText(device) {
   if (!device.lastSyncAt) {
-    return NO_SYNC_LABEL;
+    return null;
   }
   const time = new Date(device.lastSyncAt);
   if (Number.isNaN(time.getTime())) {
-    return NO_SYNC_LABEL;
+    return null;
   }
-  return time.toLocaleString();
+  return time.toISOString();
+}
+
+/**
+ * An instant as the reader's own clock reads it: the day, the month, the year
+ * and the clock, written in the zone the page is open in (drive#689). The
+ * cell sits beside the code a person has to paste, so the words a synced Mac
+ * reads are the words on its own clock, not a second one.
+ *
+ * `en-GB` with a numeric day and a short month is the pair the rest of the
+ * site writes its days in (src/files.js formatWhen, src/account-close.js
+ * purgeOnDate), so a device's last sync reads the same way as every other day
+ * drive shows. The time zone is injected rather than read from the runtime so
+ * a test can pin one; `undefined` is the zone the browser is in, which is
+ * what the page passes.
+ * @param {string} instant an ISO-8601 stamp
+ * @param {{timeZone?: string}} [options]
+ * @returns {string}
+ */
+export function syncInstantText(instant, options = {}) {
+  const time = new Date(instant);
+  if (Number.isNaN(time.getTime())) {
+    throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
+  }
+  return time.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: options.timeZone,
+  });
 }
 
 /**
@@ -434,11 +472,15 @@ function showConnection(state) {
  */
 function deviceRow(device) {
   const sync = deviceSyncState(device);
+  // The instant, written in this browser's zone. A device that has never
+  // synced takes NO_SYNC_LABEL — the module's own words, resolved once above,
+  // so this column and the state column cannot say two different things.
+  const instant = lastSyncText(device);
   const tr = document.createElement("tr");
   const cells = [
     element("td", null, device.name || "This Mac"),
     element("td", null, device.kind || "device"),
-    element("td", null, lastSyncText(device)),
+    element("td", null, instant === null ? NO_SYNC_LABEL : syncInstantText(instant)),
   ];
   const stateCell = element("td", "state", stateCellText(sync));
   stateCell.dataset.state = sync.state;

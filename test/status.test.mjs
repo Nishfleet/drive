@@ -33,6 +33,7 @@ import {
   statusEndpoint,
   stepLines,
   syncErrorNotification,
+  syncInstantText,
   uploadFragments,
   uploadLine,
 } from "../src/get-started.js";
@@ -82,6 +83,9 @@ const workerFetch =
 const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const now = Date.parse("2026-09-30T12:00:00.000Z");
+// drive#689: one instant the Last-sync tests pin, chosen because 23:30 UTC is
+// already the next day in Tokyo and still the same evening in New York.
+const SYNCED_AT = Date.parse("2026-11-03T23:30:00.000Z");
 /** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
 
@@ -798,21 +802,52 @@ test("a 401 is the waiting line, not an unreachable service", () => {
   assert.throws(() => connectionStateForStatus(null), TypeError);
 });
 
-test("the Last-sync cell says so, never blank, for a device with no sync", () => {
-  // The row's date column, distinct from its state column: a device that has
-  // never synced takes the module's own "no syncs yet" label, the same words
-  // syncStatus reports for the `never` state. A blank cell would read as a
-  // missing value rather than a device that has not synced.
-  assert.equal(lastSyncText({}), "No syncs yet");
-  assert.equal(lastSyncText({ lastSyncAt: null }), "No syncs yet");
-  assert.equal(lastSyncText({ lastSyncAt: "not-a-date" }), "No syncs yet");
-  // The words are the module's: the same label syncStatus produces, asserted
-  // against the module rather than a copy in the renderer.
-  assert.equal(lastSyncText({}), syncStatus({}, now).label);
-  // A real date renders as a local time, not the module's fallback.
-  const shown = lastSyncText({ lastSyncAt: new Date(now) });
-  assert.notEqual(shown, "No syncs yet");
-  assert.ok(shown.length > 0);
+test("the Last-sync cell sends an instant, and the row writes it in the reader's zone", () => {
+  // drive#689. The instant and the words were one value: lastSyncText called
+  // toLocaleString() with no locale and no time zone named, so the one date on
+  // the page was the one date drive did not write the way it writes every
+  // other — its day order, its seconds and its zone all came out in whatever
+  // the runtime's defaults happened to be. The cell now sends the instant and
+  // the row writes it, so the zone is a decision taken where the reader is.
+  assert.equal(lastSyncText({}), null);
+  assert.equal(lastSyncText({ lastSyncAt: null }), null);
+  // Unparseable dates take the same null: a row is a report, and the page's
+  // own poll failure is the `unreachable` state, not a device's.
+  assert.equal(lastSyncText({ lastSyncAt: "not-a-date" }), null);
+  // One instant travels, whatever form the row carried it in.
+  const instant = lastSyncText({ lastSyncAt: new Date(SYNCED_AT) });
+  assert.equal(instant, "2026-11-03T23:30:00.000Z");
+  assert.equal(lastSyncText({ lastSyncAt: SYNCED_AT }), instant);
+  // A minute earlier is a different instant, not a rounding of the same one.
+  assert.equal(lastSyncText({ lastSyncAt: SYNCED_AT - 600000 }), "2026-11-03T23:20:00.000Z");
+
+  // A device synced at 23:30 UTC, read in a US zone: the day on screen is the
+  // day that zone was in, not the day the Worker was in.
+  assert.equal(syncInstantText(instant, { timeZone: "America/New_York" }), "3 Nov 2026, 18:30");
+  assert.equal(syncInstantText(instant, { timeZone: "Pacific/Honolulu" }), "3 Nov 2026, 13:30");
+  // The same instant read east of Greenwich is a different day, which is the
+  // whole point of the split: the words follow the reader.
+  assert.equal(syncInstantText(instant, { timeZone: "Asia/Tokyo" }), "4 Nov 2026, 08:30");
+  // The page passes no zone, so the browser's own is the one used. The shape
+  // is pinned rather than the value, because node's own zone is the host's.
+  assert.match(syncInstantText(instant), /^\d{1,2} \w{3} \d{4}, \d{2}:\d{2}$/);
+  // The second the old toLocaleString() showed is gone: a last-sync minute
+  // is as precise as the sentence needs, and the seconds were noise.
+  assert.doesNotMatch(syncInstantText(instant, { timeZone: "UTC" }), /:\d{2}:\d{2}/);
+  assert.throws(() => syncInstantText("not-a-date"), /ISO-8601 instant/);
+  assert.throws(() => syncInstantText(""), /ISO-8601 instant/);
+
+  // The cell is never blank. The "no syncs yet" words now live where the row
+  // is built, beside the state column that says the same thing, and they are
+  // still the module's own words resolved once — so a rename of the label
+  // cannot leave the two columns saying two different things.
+  assert.equal(stateCellText(syncStatus({}, now)), "No syncs yet");
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /instant === null \? NO_SYNC_LABEL : syncInstantText\(instant\)/,
+    "the row writes the label when there is no instant and the words when there is",
+  );
 });
 
 test("a signed-in Mac inside the window is connected, and the page stops asking", () => {
