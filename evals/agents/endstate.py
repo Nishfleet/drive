@@ -20,6 +20,14 @@ callbacks are single-turn — its own docs point complete agent loops at "the
 Agents SDK provider or a custom provider" — so an end-state grader here would
 need a hand-written provider, which the issue rules out.
 
+The agent's shell runs in a stock container, not on the host: the task
+declares Inspect's own Docker sandbox (`sandbox=("docker", "compose.yaml")`,
+the `compose.yaml` beside this file), so each sample gets its own container
+and a broken Docker fails the run instead of falling back to a host shell
+(drive#526). The grader stays on the host and reads the stand-in there, on
+purpose: the container is the agent's machine, and the grader must not take
+the agent's word for the account's state.
+
 Run it with the suite's one command, `npm run eval:agents`.
 """
 
@@ -365,9 +373,12 @@ Do the task. Stop when it is done.
 """
 
 
-def dataset_from(yaml_path: Path, standin: Standin) -> MemoryDataset:
-    """One sample per task, each on its own fresh stand-in account."""
-    entries = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
+def dataset_from(entries: list[dict[str, Any]], standin: Standin) -> MemoryDataset:
+    """One sample per task, each on its own fresh stand-in account.
+
+    `entries` are the end-state task entries this run grades, already
+    resolved by `endstate_entries`.
+    """
     # Every sample's seeded files are written before the stand-in serves them,
     # and the endpoint the prompt carries is the one the server logs. The
     # account list is built in the same loop, so it cannot drift from the
@@ -419,18 +430,64 @@ def dataset_from(yaml_path: Path, standin: Standin) -> MemoryDataset:
     return MemoryDataset(samples=samples)
 
 
+def endstate_entries() -> list[dict[str, Any]]:
+    """The end-state task entries this run grades.
+
+    Without `DRIVE_EVAL_SPLIT` this is the committed file. With it, the
+    split's end-state entries (an entry carrying a `grader`) are graded and
+    its reading entries (an entry carrying `vars` and `assert`) are skipped —
+    they are the reading suite's, and `--tests` already hands them there. An
+    entry that is neither shape raises: a typo must not read as a skip. A
+    split with no end-state entries at all leaves this suite on its
+    committed tasks and says so, because Inspect raises on an empty dataset
+    and a held-out run must complete end to end.
+    """
+    committed = ROOT / "tasks" / "endstate.yaml"
+    split = os.environ.get("DRIVE_EVAL_SPLIT")
+    if split is None:
+        return _endstate_entries(committed, str(committed))
+    found = _endstate_entries(Path(split), split)
+    if not found:
+        print(
+            f"endstate: {split} is a reading split (no `grader` entries); "
+            "the end-state suite stays on its committed tasks"
+        )
+        return _endstate_entries(committed, str(committed))
+    return found
+
+
+def _endstate_entries(path: Path, label: str) -> list[dict[str, Any]]:
+    entries = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError(f"{label} is not a non-empty task list")
+    found: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"{label}: entry is not a mapping: {entry!r}")
+        if "grader" in entry:
+            found.append(entry)
+        elif "vars" not in entry or "assert" not in entry:
+            raise RuntimeError(
+                f"{label}: entry is neither an end-state task nor a "
+                f"reading task: {entry!r}"
+            )
+    return found
+
+
 @task
 def drive_endstate() -> Task:
     """The end-state suite: real accounts, a shell, and end-state graders.
 
-    `DRIVE_EVAL_SPLIT` selects the task file, the same setting the reading
-    suite's held-out run uses, so a held-out split reaches both suites without
-    the tasks living in the checkout (drive#223).
+    `DRIVE_EVAL_SPLIT` is the same setting the reading suite's held-out run
+    uses. This suite grades the split's end-state entries (the ones carrying
+    a `grader`), so a held-out split with end-state entries in it reaches
+    both suites; a reading-only split — the held-out file on this machine —
+    leaves the committed tasks, and the run says so. The setting never makes
+    this suite read tasks out of a checkout (drive#223).
     """
     standin = Standin()
-    split = os.environ.get("DRIVE_EVAL_SPLIT", str(ROOT / "tasks" / "endstate.yaml"))
     return Task(
-        dataset=dataset_from(split, standin),
+        dataset=dataset_from(endstate_entries(), standin),
         solver=[
             system_message(
                 "You are an agent being evaluated. Use the shell to do the "
@@ -444,6 +501,9 @@ def drive_endstate() -> Task:
             ),
         ],
         scorer=end_state(),
-        sandbox=os.environ.get("DRIVE_EVAL_SANDBOX", "local"),
+        # The agent's shell runs in a stock container (the compose.yaml beside
+        # this file), never on the host, and a broken Docker fails the run
+        # instead of falling back to a host shell (drive#526).
+        sandbox=("docker", "compose.yaml"),
         metadata={"slice": "end-state graders on a fresh stand-in account (drive#298)"},
     )

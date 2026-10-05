@@ -61,7 +61,8 @@ const filesPage = readFileSync(new URL("../public/files.html", import.meta.url),
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
-const MINUTES_PER_MONTH = 43800;
+// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
+const MONTH_MINUTES = 30 * 1440;
 
 /** A whole month of a fixed size, with the month's daily history behind it. */
 /**
@@ -74,7 +75,8 @@ function month(storedGb, overrides = {}) {
     days.push({ day: `2026-09-${String(index).padStart(2, "0")}`, gb: storedGb });
   }
   return usageSummary({
-    gbMinutes: storedGb * MINUTES_PER_MONTH,
+    monthMinutes: MONTH_MINUTES,
+    gbMinutes: storedGb * MONTH_MINUTES,
     storedGb,
     storedDaily: days,
     downloadBytes: 0,
@@ -109,7 +111,8 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // card-less account's writes stop at the free $1 while the account's own cap
   // is still the sign-up default.
   const withoutCard = usageSummary({
-    gbMinutes: 400 * MINUTES_PER_MONTH,
+    monthMinutes: MONTH_MINUTES,
+    gbMinutes: 400 * MONTH_MINUTES,
     storedGb: 400,
     storedDaily: [],
     downloadBytes: 0,
@@ -159,6 +162,7 @@ test("the stored series is the last 30 days, oldest first", () => {
   }
   entries.reverse();
   const summary = usageSummary({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 40,
     storedDaily: entries,
@@ -177,6 +181,7 @@ test("a day the calendar does not have fails, not just a day that is not a date"
   // The pattern alone would accept 2026-09-40; the parse-and-round-trip is what
   // makes "a real date" true, and the rollup cannot have produced the other.
   const base = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     downloadBytes: 0,
@@ -191,12 +196,16 @@ test("a day the calendar does not have fails, not just a day that is not a date"
     );
   }
   // A real leap day is a real day.
-  const leap = usageSummary({ ...base, storedDaily: [{ day: "2024-02-29", gb: 1 }] });
+  const leap = usageSummary({
+    ...base,
+    storedDaily: [{ day: "2024-02-29", gb: 1 }],
+  });
   assert.equal(leap.storedDaily[0].day, "2024-02-29");
 });
 
 test("a day that is not a day, or a size that is not a size, fails at the entry point", () => {
   const base = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     storedDaily: [],
@@ -206,11 +215,19 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
   };
   assert.throws(() => usageSummary({ ...base, storedDaily: "yesterday" }), /usage\.storedDaily/);
   assert.throws(
-    () => usageSummary({ ...base, storedDaily: [{ day: "9 Jan", gb: 1 }] }),
+    () =>
+      usageSummary({
+        ...base,
+        storedDaily: [{ day: "9 Jan", gb: 1 }],
+      }),
     /usage\.storedDaily\[0\]\.day/,
   );
   assert.throws(
-    () => usageSummary({ ...base, storedDaily: [{ day: "2026-01-01", gb: -1 }] }),
+    () =>
+      usageSummary({
+        ...base,
+        storedDaily: [{ day: "2026-01-01", gb: -1 }],
+      }),
     /usage\.storedDaily\[0\]\.gb/,
   );
   assert.throws(() => usageSummary({ ...base, storedDaily: [null] }), TypeError);
@@ -292,11 +309,13 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   }
 });
 
-test("GB-months are the meter over the spec's 43,800-minute month", () => {
-  assert.equal(gbMonths(MINUTES_PER_MONTH), 1);
-  assert.equal(gbMonths(21900), 0.5);
-  assert.throws(() => gbMonths(-1), TypeError);
-  assert.throws(() => gbMonths("many"), TypeError);
+test("GB-months are the meter over the calendar month's own minutes (drive#531)", () => {
+  assert.equal(gbMonths(MONTH_MINUTES, MONTH_MINUTES), 1);
+  assert.equal(gbMonths(21600, MONTH_MINUTES), 0.5);
+  assert.equal(gbMonths(44640, 44640), 1, "a whole 31-day month is one GB-month");
+  assert.throws(() => gbMonths(43800, 43800), TypeError, "no month is 43,800 minutes long");
+  assert.throws(() => gbMonths(-1, MONTH_MINUTES), TypeError);
+  assert.throws(() => gbMonths("many", MONTH_MINUTES), TypeError);
 });
 
 test("the usage endpoint answers the empty month with the page's shape", async () => {
@@ -458,7 +477,14 @@ test("no money and no size is worked out on the page", () => {
   // check reads the page's script, so a style rule's -0.02em letter-spacing is
   // not mistaken for the metered rate.
   const script = page.slice(page.indexOf("<script>"));
-  for (const banned of ["0.02", "43800", "MINUTES_PER_MONTH", "rateUsdPerGbMonth", "formatUsd"]) {
+  for (const banned of [
+    "0.02",
+    "43800",
+    "MINUTES_PER_MONTH",
+    "minutesInMonth",
+    "rateUsdPerGbMonth",
+    "formatUsd",
+  ]) {
     assert.equal(
       script.includes(banned),
       false,
@@ -509,6 +535,7 @@ test("the page states the free allowance from the config, not a literal", () => 
 /** A month with nothing stored in it: the read a brand-new account gets. */
 function emptyMonth() {
   return usageSummary({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     storedDaily: [],
@@ -817,6 +844,7 @@ test("no bill is shown as if charged while no card is on file", async () => {
   assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
   const cardless = runPage({
     ...usageSummary({
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: 0,
       storedGb: 0,
       storedDaily: [],
@@ -834,6 +862,7 @@ test("no bill is shown as if charged while no card is on file", async () => {
 
   const charged = runPage({
     ...usageSummary({
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: 0,
       storedGb: 0,
       storedDaily: [],

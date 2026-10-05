@@ -449,8 +449,9 @@ export function withIndex(store, db, account, now = () => Date.now()) {
     ...store,
     /** @param {string} key
      * @param {BodyInit|null|undefined} body
-     * @param {string} contentType */
-    async write(key, body, contentType) {
+     * @param {string} contentType
+     * @param {{contentLength?: number}} [options] */
+    async write(key, body, contentType, options) {
       // The row the search reads is written after the store has read the body,
       // and the body is counted on the way through (a stream carries no length
       // a store would answer back), so a file is searchable with the size and
@@ -460,7 +461,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       // that set carries no length, and it is refused by name rather than
       // indexed as a size of 0.
       const counted = countedBody(body);
-      await write(key, counted.body, contentType);
+      await write(key, counted.body, contentType, options);
       const path = drivePathFromKey(key, account);
       if (locate(path).trashed) {
         return;
