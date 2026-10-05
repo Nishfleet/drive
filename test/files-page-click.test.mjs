@@ -30,9 +30,8 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url));
 // drives on the same self-hosted runner, so the test needs no new tool.
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 
-/** @param {number} ms */ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 test("a click on a file name previews, downloads, and never shows raw JSON", {
+  timeout: 180_000,
   skip: existsSync(CHROME) ? false : "Chrome is not installed",
 }, async (t) => {
   // A real account over the real Worker: the D1 test database with the shipped
@@ -148,6 +147,10 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     await new Promise((resolve) => server.close(resolve));
   });
   const chrome = await browser.newPage();
+  // A starved runner is slow, not broken: give every wait room, and let the
+  // test's own timeout end a run that truly hangs (drive#500).
+  chrome.setDefaultTimeout(120_000);
+  chrome.setDefaultNavigationTimeout(120_000);
   // The clicks below leave the page only if the fix is wrong, so the first
   // thing watched is the document itself.
   /** @type {string[]} */
@@ -186,11 +189,28 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
       return true;
     }, name);
     assert.equal(clicked, true, `the page must render a link named ${name}`);
-    await wait(300);
+  };
+  // Each step waits for the state it checks, never for a fixed time: on a
+  // loaded runner a preview fetch can take longer than any sleep (drive#500).
+  const viewerOpen = () =>
+    chrome.waitForFunction(
+      () => /** @type {HTMLDialogElement} */ (document.getElementById("viewer")).open,
+    );
+  const closeViewer = async () => {
+    await chrome.click("#viewer-close");
+    await chrome.waitForFunction(
+      () => !(/** @type {HTMLDialogElement} */ (document.getElementById("viewer")).open),
+    );
   };
 
   // 1. Text: the viewer opens and the preview's own bytes are in it.
   await clickName("notes.txt");
+  await viewerOpen();
+  await chrome.waitForFunction(
+    (text) => document.getElementById("viewer-body")?.textContent === text,
+    {},
+    "the notes a click must show",
+  );
   assert.equal(
     await chrome.$eval("#viewer", (dialog) => /** @type {HTMLDialogElement} */ (dialog).open),
     true,
@@ -206,10 +226,12 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     `${FILES_ENDPOINT}/download?path=%2Fnotes.txt`,
     "the viewer's Download is the file's own download route",
   );
-  await chrome.click("#viewer-close");
+  await closeViewer();
 
   // 2. A picture: the viewer opens with the picture in it, still no navigation.
   await clickName("holiday.jpg");
+  await viewerOpen();
+  await chrome.waitForSelector("#viewer-body img");
   assert.equal(
     await chrome.$eval("#viewer", (dialog) => /** @type {HTMLDialogElement} */ (dialog).open),
     true,
@@ -220,7 +242,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     `${FILES_ENDPOINT}/preview?path=%2Fholiday.jpg`,
     "the image is served from the preview route",
   );
-  await chrome.click("#viewer-close");
+  await closeViewer();
 
   // 3. A kind with no viewer downloads: the browser is allowed to save, and
   // the file that lands is the one that was uploaded, byte for byte.
@@ -239,17 +261,14 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   // guid, and `downloadProgress` reports `completed` for that same guid.
   /** @type {Map<string, string>} */
   const begun = new Map();
+  // No wall-clock cap here: a starved runner can take many seconds, and the
+  // test's own timeout bounds a download that never finishes.
   const finished = new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("the browser never reported the download complete")),
-      10_000,
-    );
     session.on("Browser.downloadWillBegin", (event) => {
       begun.set(event.guid, event.suggestedFilename);
     });
     session.on("Browser.downloadProgress", (event) => {
       if (event.state === "inProgress") return;
-      clearTimeout(timer);
       if (event.state === "canceled") {
         reject(new Error(`the browser canceled the download of ${event.guid}`));
         return;
@@ -298,6 +317,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
 });
 
 test("signed in, the files menu shows Sign out and signing out ends the session", {
+  timeout: 180_000,
   skip: existsSync(CHROME) ? false : "Chrome is not installed",
 }, async (t) => {
   // drive#423: the top menu said Sign in while signed in. This is the real
@@ -377,6 +397,10 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
     await new Promise((resolve) => server.close(resolve));
   });
   const chrome = await browser.newPage();
+  // A starved runner is slow, not broken: give every wait room, and let the
+  // test's own timeout end a run that truly hangs (drive#500).
+  chrome.setDefaultTimeout(120_000);
+  chrome.setDefaultNavigationTimeout(120_000);
   await chrome.goto(`${origin}/files`, { waitUntil: "networkidle0" });
   await chrome.waitForFunction(() => {
     const signout = document.getElementById("nav-signout");
@@ -416,7 +440,7 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
     return true;
   });
   assert.equal(clicked, true, "the page must render Sign out");
-  await chrome.waitForSelector("#signed-out:not([hidden])", { timeout: 5000 });
+  await chrome.waitForSelector("#signed-out:not([hidden])");
   const after = await workerFetch(
     new Request(`${TEST_BASE_URL}${FILES_ENDPOINT}`, { headers: { cookie } }),
     env,
