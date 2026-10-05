@@ -264,6 +264,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   const signedIn = /** @type {{account: {id: string}, deviceToken: string}} */ (
     /** @type {unknown} */ (poll)
   );
+  // The account row exists the moment sign-up lands (drive issue #564): the
+  // metered account list is read off `accounts`, so a proof that signs an
+  // account in must make the row the production sign-up makes.
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(signedIn.account.id, "meter-proof@drive.test", Date.now())
+    .run();
   const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(signedIn.account.id);
   const provisioned = await provisionBucket(root, {
     bucket: BUCKET,

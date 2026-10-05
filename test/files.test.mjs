@@ -20,6 +20,7 @@ import {
   createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
+  FILES_EMBED_ENDPOINT,
   FILES_ENDPOINT,
   FILES_PATH,
   fileKind,
@@ -36,6 +37,7 @@ import {
   parseTrashName,
   previewContentType,
   previewCopy,
+  previewDisposition,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
@@ -518,6 +520,89 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.throws(
     () => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"),
     TypeError,
+  );
+});
+
+test("preview: an SVG leaves the direct-open URL as a download and the embed URL as a picture", async () => {
+  // drive#657: a top-level open of the preview URL must not render an SVG as a
+  // document on our address, because its links navigate and a fake sign-in card
+  // can hand the visitor to an attacker. The page's own <img> reads the embed
+  // URL instead, which still serves the same bytes inline.
+  const { call, upload } = drive();
+  await upload(
+    "/",
+    "logo.svg",
+    '<svg xmlns="http://www.w3.org/2000/svg"><a href="https://evil.test">Sign in</a></svg>',
+    "image/svg+xml",
+  );
+  const preview = await call(new Request(api("/preview?path=%2Flogo.svg")));
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "image/svg+xml");
+  assert.equal(preview.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(preview.headers.get("content-security-policy"), "sandbox");
+
+  // The page's own <img> asks for the embed URL, and says so with
+  // Sec-Fetch-Dest: the bytes come back inline, under the same two safety
+  // headers the preview carries.
+  for (const destination of ["image", "video", "audio"]) {
+    const embed = await call(
+      new Request(api("/embed?path=%2Flogo.svg"), {
+        headers: { "sec-fetch-dest": destination },
+      }),
+    );
+    assert.equal(embed.status, 200, destination);
+    assert.equal(embed.headers.get("content-type"), "image/svg+xml", destination);
+    assert.equal(embed.headers.get("content-disposition"), "inline", destination);
+    assert.equal(embed.headers.get("x-content-type-options"), "nosniff", destination);
+    assert.equal(embed.headers.get("content-security-policy"), "sandbox", destination);
+  }
+
+  // A navigation to the embed URL is not an embed: it falls back to the
+  // direct-open preview, so the embed URL is never a way around the download.
+  for (const request of [
+    new Request(api("/embed?path=%2Flogo.svg")),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "document" } }),
+    new Request(api("/embed?path=%2Flogo.svg"), { headers: { "sec-fetch-dest": "iframe" } }),
+  ]) {
+    const opened = await call(request);
+    assert.equal(opened.status, 200);
+    assert.equal(opened.headers.get("content-disposition"), 'attachment; filename="logo.svg"');
+  }
+
+  // A raster picture and a PDF keep opening inline from the direct-open URL:
+  // they cannot render a document with navigable links.
+  await upload("/", "holiday.jpg", "the-bytes", "image/jpeg");
+  await upload("/", "report.pdf", "%PDF-1.4", "application/pdf");
+  for (const [name, type] of [
+    ["holiday.jpg", "image/jpeg"],
+    ["report.pdf", "application/pdf"],
+  ]) {
+    const opened = await call(new Request(api(`/preview?path=%2F${name}`)));
+    assert.equal(opened.headers.get("content-type"), type, name);
+    assert.equal(opened.headers.get("content-disposition"), "inline", name);
+  }
+  // The rule, as a function: only the type a browser renders as a document
+  // leaves as an attachment.
+  assert.equal(previewDisposition("logo.svg", "image/svg+xml"), 'attachment; filename="logo.svg"');
+  assert.equal(previewDisposition("holiday.jpg", "image/jpeg"), "inline");
+  assert.equal(previewDisposition("report.pdf", "application/pdf"), "inline");
+  assert.equal(previewDisposition("note.txt", "text/plain"), "inline");
+  // previewContentType() normalizes the stored type, so a parameter, a case
+  // change or padding cannot slip an SVG past the attachment branch.
+  for (const claimed of ["image/svg+xml; charset=utf-8", "IMAGE/SVG+XML", " image/svg+xml "]) {
+    assert.equal(
+      previewDisposition("logo.svg", claimed),
+      'attachment; filename="logo.svg"',
+      claimed,
+    );
+  }
+  // A filename that could end the quoted-string, or carry a header-breaking
+  // control character, is stripped before it reaches the header.
+  assert.equal(previewDisposition('a"b.svg', "image/svg+xml"), 'attachment; filename="ab.svg"');
+  assert.equal(
+    previewDisposition("a\r\nb.svg", "image/svg+xml"),
+    'attachment; filename="a--b.svg"',
   );
 });
 
@@ -1626,6 +1711,7 @@ test("the page's script reads the same endpoints and the same window", () => {
   assert.ok(page.includes(`const FILES_ENDPOINT = "${FILES_ENDPOINT}";`));
   for (const [name, endpoint] of [
     ["PREVIEW_ENDPOINT", `${FILES_ENDPOINT}/preview`],
+    ["EMBED_ENDPOINT", FILES_EMBED_ENDPOINT],
     ["DOWNLOAD_ENDPOINT", `${FILES_ENDPOINT}/download`],
     ["UPLOAD_ENDPOINT", `${FILES_ENDPOINT}/upload`],
     ["DELETE_ENDPOINT", `${FILES_ENDPOINT}/delete`],
