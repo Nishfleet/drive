@@ -25,6 +25,11 @@ import { trackProcess } from "./minio-standin.mjs";
 
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core"), "utf8");
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
+// A developer box without Chrome can still run the rest of the suite, so the
+// gate skips only outside CI. In CI a silent skip reads as a pass and would
+// hide a runner that lost its browser, so there the gate runs and fails
+// loudly instead (drive#546).
+const chromeSkip = !existsSync(CHROME) && !process.env.CI ? "Chrome is not installed" : false;
 const publicDir = fileURLToPath(new URL("../public/", import.meta.url));
 
 /** @type {Record<string, string>} */
@@ -76,6 +81,10 @@ async function servePublic() {
  * @returns {Promise<import("puppeteer-core").Browser>}
  */
 async function launch(t) {
+  assert.ok(
+    existsSync(CHROME),
+    `no browser at ${CHROME}; set DRIVE_CHROME to the Chrome binary's path`,
+  );
   const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: CHROME,
@@ -117,7 +126,7 @@ async function runAxe(chrome, source) {
 
 test("a page with a known violation fails this gate", {
   timeout: 180_000,
-  skip: existsSync(CHROME) ? false : "Chrome is not installed",
+  skip: chromeSkip,
 }, async (t) => {
   const browser = await launch(t);
   const broken =
@@ -152,7 +161,7 @@ test("a page with a known violation fails this gate", {
 
 test("the built home, upload and benchmarks pages carry no axe violation", {
   timeout: 180_000,
-  skip: existsSync(CHROME) ? false : "Chrome is not installed",
+  skip: chromeSkip,
 }, async (t) => {
   const site = await servePublic();
   t.after(site.close);
@@ -186,7 +195,7 @@ test("the built home, upload and benchmarks pages carry no axe violation", {
 
 test("no docs page scrolls sideways at 375px", {
   timeout: 180_000,
-  skip: existsSync(CHROME) ? false : "Chrome is not installed",
+  skip: chromeSkip,
 }, async (t) => {
   const site = await servePublic();
   t.after(site.close);

@@ -10,13 +10,13 @@ the live site.
 
 ## 2026-10-05
 
-- The site's pages pass the accessibility engine's checks on desktop and on a
-  phone. The home page's tagline is dark enough to read on the orange, a wide
-  docs table now scrolls sideways inside itself instead of dragging the page
-  with it, the upload page's file picker is no longer an unlabelled stop in
-  the keyboard order, the closing banner is plain text a screen reader reads
-  out, and every page links the favicon instead of asking for the old
-  missing one.
+- The home page, the upload page and the docs pages pass the accessibility
+  engine's checks, on a desktop and on a phone. The home page's tagline is
+  dark enough to read on the orange, a wide docs table now scrolls sideways
+  inside itself instead of dragging the page with it, the upload page's file
+  picker is no longer an unlabelled stop in the keyboard order, the closing
+  banner is plain text a screen reader reads out, and every page links the
+  favicon instead of asking for the old missing one.
 
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
   from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The

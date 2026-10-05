@@ -169,8 +169,17 @@ test("every shipped page links the served favicon", () => {
   );
   for (const page of PAGES) {
     const name = fileFor(page);
+    const html = readPage(name);
+    // Exactly one icon link. `link()` reads the first match, so a page that
+    // kept the old inline data: URI favicon beside the new one would pass the
+    // equality below while the browser still prefers the stale icon.
     assert.equal(
-      link(readPage(name), "icon"),
+      html.match(/<link\s+rel="icon"/gi)?.length ?? 0,
+      1,
+      `${name} must carry exactly one <link rel="icon">`,
+    );
+    assert.equal(
+      link(html, "icon"),
       SITE.faviconPath,
       `${name} must carry <link rel="icon" href="${SITE.faviconPath}">`,
     );
