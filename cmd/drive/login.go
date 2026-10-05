@@ -57,6 +57,19 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// A device key is the one credential the CLI stores and never renews:
+	// there is no `drive key renew` for a device kind (issue #106 renews an
+	// agent key only), and the login task re-runs the mount with the key it
+	// was given rather than minting a new one. A provider that names a session
+	// of its own (the STS path, issue #462) is now recorded on the key's row
+	// (drive#544), so a device mint can answer with an hour on it, and storing
+	// one would leave storage settings on disk that stop signing requests an
+	// hour later, with `drive status` still reporting a mount that is not
+	// uploading. Refuse before anything is written: the files on disk stay the
+	// ones that worked.
+	if key.ExpiresAt != nil {
+		return failf("device-key-expiring", expiryLabel(key.ExpiresAt))
+	}
 	cfg := StorageConfig{
 		Endpoint:     key.Endpoint,
 		AccessKey:    key.AccessKeyID,

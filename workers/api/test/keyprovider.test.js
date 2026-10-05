@@ -181,9 +181,16 @@ test("the kind's hour is the ceiling: a shorter provider session wins, a longer 
   // session of six hours is refused at the hour rather than honoured.
   assert.equal(mintTtlSeconds("agent", 43200), AGENT_KEY_TTL_SECONDS);
   assert.equal(mintTtlSeconds("branch", 86400), 3600);
-  // A kind that never expires keeps that, whatever the provider says.
-  assert.equal(mintTtlSeconds("device", 43200), null);
+  // A kind with no hour of its own takes the provider's session, which is the
+  // only lifetime such a credential has: the STS provider mints sessions that
+  // die (s3-keys.js), and a device row read "never expires" over one would be
+  // a claim the api cannot keep (drive#544).
+  assert.equal(mintTtlSeconds("device", 43200), 43200);
+  // Nothing named a session, so the kind's own answer stands.
   assert.equal(mintTtlSeconds("device", null), null);
+  // No provider session named, or a nonsense one, falls back to the kind's own
+  // answer, which for a device key is the null it always had.
+  assert.equal(mintTtlSeconds("device", 0), null);
   // No provider session named, or a nonsense one, falls back to the hour.
   assert.equal(mintTtlSeconds("agent", null), 3600);
   assert.equal(mintTtlSeconds("agent", undefined), 3600);

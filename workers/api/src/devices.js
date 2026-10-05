@@ -84,7 +84,8 @@ function deviceFromRow(row) {
     prefix: String(r.prefix ?? ""),
     capabilities: parseJsonList(r.capabilities),
     createdAt: Number(r.created_at ?? 0),
-    // Null is a key that never expires (a person's own device key); a column
+    // Null is a key that never expires, which a person's own device key is only
+    // when the provider named no session of its own (drive#544); a column
     // written before drive#106 is null too, so an existing row keeps the life
     // it had rather than being handed an expiry it was never minted with.
     expiresAt: r.expires_at === null || r.expires_at === undefined ? null : Number(r.expires_at),

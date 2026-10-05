@@ -483,3 +483,85 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	return <-done
 }
+
+// TestStatusNamesABrokenCredentialsFileInsteadOfStopping is drive#544: a
+// machine that lost power mid-write leaves a half-written credentials.json,
+// and the command used to end there, before it printed anything. The answers
+// the command was opened for come first, and the broken file becomes one line
+// that names it and the command that writes it back.
+func TestStatusNamesABrokenCredentialsFileInsteadOfStopping(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CredentialsPath(home), []byte(`{"account_id": "acct_`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := runStatus([]string{"--home", home}); err != nil {
+			t.Fatalf("runStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "drive: not mounted") {
+		t.Errorf("the first answer is missing:\n%s", out)
+	}
+	if !strings.Contains(out, "uploads:") {
+		t.Errorf("the second answer is missing:\n%s", out)
+	}
+	var line string
+	for _, candidate := range nonEmptyLines(out) {
+		if strings.Contains(candidate, "this month: unknown") {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("the broken file is not reported as one unknown line:\n%s", out)
+	}
+	if !strings.Contains(line, CredentialsPath(home)) {
+		t.Errorf("line %q must name the file that could not be read", line)
+	}
+	if !strings.Contains(line, "drive login") {
+		t.Errorf("line %q must name the command that rewrites the file", line)
+	}
+	// The table's words, not the JSON parser's: a person reading the answer is
+	// given something to do, and no rclone or Go error text.
+	if strings.Contains(out, "unexpected end of JSON") || strings.Contains(out, "invalid character") {
+		t.Errorf("status printed the parser's error text:\n%s", out)
+	}
+}
+
+func TestStatusNamesABrokenOfflineListWithoutStopping(t *testing.T) {
+	// The other half of the file the drive wrote itself (drive#544): a
+	// truncated offline.json used to end the command, and the list is what
+	// tells the fill loop what to keep.
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(OfflineIndexPath(home), []byte(`{"paths": ["a`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := runStatus([]string{"--home", home}); err != nil {
+			t.Fatalf("runStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "uploads:") {
+		t.Errorf("the answer the command was opened for is missing:\n%s", out)
+	}
+	var line string
+	for _, candidate := range nonEmptyLines(out) {
+		if strings.Contains(candidate, "offline: unknown") {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("the broken list is not reported as one unknown line:\n%s", out)
+	}
+	if !strings.Contains(line, OfflineIndexPath(home)) || !strings.Contains(line, "drive offline") {
+		t.Errorf("line %q must name the file and the command that rebuilds it", line)
+	}
+	if strings.Contains(out, "unexpected end of JSON") {
+		t.Errorf("status printed the parser's error text:\n%s", out)
+	}
+}

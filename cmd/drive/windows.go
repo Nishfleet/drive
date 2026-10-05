@@ -278,6 +278,12 @@ type taskSettingsXML struct {
 type taskExecXML struct {
 	Command   string `xml:"Command"`
 	Arguments string `xml:"Arguments"`
+	// The folder the task starts rclone in. Task Scheduler has no default
+	// worth relying on (a task with none runs the action from
+	// %WINDIR%\System32), and a mount that starts there with a relative path
+	// in its command line is the drive#544 failure: nothing mounts and
+	// `drive status` answers from an empty cache.
+	WorkingDirectory string `xml:"WorkingDirectory"`
 }
 
 type taskActionsXML struct {
@@ -363,6 +369,14 @@ func windowsTaskXML(p MountPlan, userName string) (string, error) {
 			Exec: taskExecXML{
 				Command:   p.RcloneBin,
 				Arguments: strings.Join(quoted, " "),
+				// The drive's own config folder: it exists
+				// before the task is registered (the rclone
+				// config and this task's XML are written
+				// there), it is absolute because the plan's
+				// paths hang off the OS's own home
+				// (drive#544), and it is where the mount's
+				// log file already lives.
+				WorkingDirectory: filepath.Dir(p.ConfigPath),
 			},
 		},
 	}

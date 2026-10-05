@@ -135,8 +135,11 @@ export function keyTtlSeconds(kind) {
  * for a fresh credential. The api's enforcement is the bound, so the bound
  * cannot be widened from a config file.
  *
- * `null` still means the kind never expires, and still only a person's own
- * device earns it.
+ * A kind with no ceiling of its own takes the provider's answer, because
+ * `null` on a device row is the claim the api cannot keep: the STS provider
+ * mints sessions that die (s3-keys.js DurationSeconds), so the row would read
+ * "never expires" over a credential that stops signing requests. The shorter
+ * of the two is recorded, every time (drive#544).
  * @param {KeyKind} kind
  * @param {number|null|undefined} providerExpiresIn the provider session's own
  *   seconds, when it names one
@@ -144,14 +147,12 @@ export function keyTtlSeconds(kind) {
  */
 export function mintTtlSeconds(kind, providerExpiresIn) {
   const ceiling = keyTtlSeconds(kind);
+  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn) || providerExpiresIn <= 0) {
+    return ceiling;
+  }
+  // No ceiling of its own: the provider's session is the only lifetime there is.
   if (ceiling === null) {
-    return null;
-  }
-  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
-    return ceiling;
-  }
-  if (providerExpiresIn <= 0) {
-    return ceiling;
+    return providerExpiresIn;
   }
   return Math.min(providerExpiresIn, ceiling);
 }

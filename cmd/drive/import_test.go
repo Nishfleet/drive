@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +166,40 @@ func TestRunImportDrivesRcloneCopy(t *testing.T) {
 func TestUsageListsImport(t *testing.T) {
 	if !strings.Contains(usage, "drive import") {
 		t.Fatal("usage must list drive import")
+	}
+}
+
+// TestImportIntoWindowsTargetsTheVolumeRoot is drive#544: the destination used
+// to be the bare drive letter, and `D:` is a drive-relative path, so the copy
+// landed in whatever folder was last used on that drive instead of at the top.
+func TestImportIntoWindowsTargetsTheVolumeRoot(t *testing.T) {
+	orig := windowsImportDest
+	t.Cleanup(func() { windowsImportDest = orig })
+	const letter = "D:"
+	windowsImportDest = func() (string, error) {
+		return windowsVolumeRoot(letter), nil
+	}
+
+	home := t.TempDir()
+	plan, err := BuildImportPlan("windows", home, "/usr/bin/rclone", "photos:Movies", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := windowsVolumeRoot(letter); plan.Dest != want {
+		t.Errorf("dest = %q, want the volume root %q", plan.Dest, want)
+	}
+	if got := strings.Join(plan.Args(), " "); got != "copy photos:Movies "+windowsVolumeRoot(letter) {
+		t.Errorf("args = %q, want rclone copy into the volume root", got)
+	}
+}
+
+func TestImportIntoWindowsSurfacesTheLetterLookupFailure(t *testing.T) {
+	// The mount's letter lookup runs schtasks, which is absent off Windows: a
+	// named failure from it reaches the person instead of an empty destination.
+	orig := windowsImportDest
+	t.Cleanup(func() { windowsImportDest = orig })
+	windowsImportDest = func() (string, error) { return "", errors.New("schtasks: not found") }
+	if _, err := BuildImportPlan("windows", t.TempDir(), "/usr/bin/rclone", "photos:", false); err == nil {
+		t.Fatal("expected the letter lookup failure to reach the caller")
 	}
 }
