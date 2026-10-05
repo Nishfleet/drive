@@ -524,6 +524,88 @@ test("the cap is resolved from the account that minted the token", async () => {
   assert.equal(capped.status, 403);
 });
 
+test("the info response names the link's owner, so a stranger knows whose drive it is", async () => {
+  // drive#684: the upload page shows the owner's display name. The route
+  // resolves it from the link's own account through the same owner store the
+  // rest of the site reads, and puts it on both the open and the closed
+  // response — a closed page still says who the link belonged to.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  /** @type {string[]} */
+  const asked = [];
+  /** @param {string} accountId */
+  const owner = async (accountId) => {
+    asked.push(accountId);
+    return { id: accountId, name: "Nish Patel", email: "nish@example.com" };
+  };
+  const open = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(open.status, 200);
+  const openBody = await open.json();
+  assert.equal(openBody.open, true);
+  assert.equal(openBody.owner, "Nish Patel");
+  assert.deepEqual(asked, [account.id], "the owner is read from the token's own account");
+
+  const closed = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "read_only",
+    { now, owner },
+  );
+  const closedBody = await closed.json();
+  assert.equal(closedBody.open, false);
+  assert.equal(closedBody.owner, "Nish Patel");
+});
+
+test("an upload through a link queues an arrival for the nightly digest", async () => {
+  // drive#684: after the write wins, the route records the arrival so the
+  // digest can list it. The row keeps the file's name and size and no send
+  // stamp, and the store is the real D1 store so the queue is the column the
+  // digest reads.
+  const { files, links, request } = drive();
+  await request("/", { token: TOKEN });
+  const dropped = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=contract.pdf`, {
+      method: "POST",
+      body: "pdf",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(dropped.status, 201);
+  const row = await links.requests.get(TOKEN);
+  assert.ok(row);
+  assert.equal(row.digestAt, null, "no digest has gone out");
+  const arrivals = JSON.parse(row.pendingUploads);
+  assert.deepEqual(arrivals, [{ bytes: 3, name: "contract.pdf" }]);
+  const pending = await links.requests.listPendingDigests();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].token, TOKEN);
+  // A store that cannot record arrivals must not fail the stranger's upload:
+  // the file is stored, so the 201 stands.
+  const noQueue = {
+    ...links,
+    requests: { ...links.requests, recordArrival: undefined },
+  };
+  const stored = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=second.pdf`, {
+      method: "POST",
+      body: "pdf",
+    }),
+    files,
+    noQueue,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(stored.status, 201, "a queue failure never fails the upload");
+});
+
 test("a link with no usable expiry is expired, not a permanent link", async () => {
   // Failing open would hand out a capability that outlives its own window,
   // which is the one failure a 7-day link exists to prevent.

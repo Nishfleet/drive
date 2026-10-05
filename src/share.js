@@ -50,6 +50,7 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
+import { sendEmail } from "./email-send.js";
 import {
   etagMatches,
   joinPath,
@@ -427,6 +428,10 @@ export const UPLOAD_PAGE_COPY = Object.freeze({
   title: "Drop files here",
   lede: "Files you drop land in the folder below. The owner sees them on their drive.",
   folderLabel: "Lands in",
+  // The owner's display name (drive issue #684): the label the page puts in
+  // front of it, so a stranger knows whose drive they are dropping into. The
+  // name itself comes from the info response.
+  ownerLabel: "Shared by",
   choose: "Choose files",
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
@@ -455,7 +460,8 @@ export const UPLOAD_PAGE_LINE =
  *   downloadCount: number, downloadBytes: number, maxDownloadBytes: number|null}} ShareRecord
  * @typedef {{token: string, accountId: string, folder: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
- *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number}} RequestRecord
+ *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number,
+ *   digestAt: number|null, pendingUploads: string}} RequestRecord
  * @typedef {object} LinkStore
  * @property {object} shares
  * @property {(record: ShareRecord) => Promise<ShareRecord>} shares.create
@@ -472,6 +478,9 @@ export const UPLOAD_PAGE_LINE =
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
+ * @property {(token: string, name: string, bytes: number) => Promise<RequestRecord|null>} requests.recordArrival
+ * @property {(token: string, at: number) => Promise<RequestRecord|null>} requests.markDigestSent
+ * @property {() => Promise<RequestRecord[]>} requests.listPendingDigests
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -480,7 +489,7 @@ export const UPLOAD_PAGE_LINE =
 const SHARE_COLUMNS =
   "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes";
 const REQUEST_COLUMNS =
-  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files";
+  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files, digest_at, pending_uploads";
 
 /**
  * A share row as the ShareRecord the handlers read. A column that is NULL is
@@ -527,6 +536,8 @@ function toRequestRecord(row) {
     uploadBytes: Number(row.upload_bytes ?? 0),
     maxBytes: Number(row.max_bytes ?? REQUEST_TOTAL_MAX_BYTES),
     maxFiles: Number(row.max_files ?? REQUEST_MAX_FILES),
+    digestAt: row.digest_at === null || row.digest_at === undefined ? null : Number(row.digest_at),
+    pendingUploads: typeof row.pending_uploads === "string" ? row.pending_uploads : "[]",
   };
 }
 
@@ -663,7 +674,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
           )
           .bind(
             record.token,
@@ -676,6 +687,8 @@ export function createD1LinkStore(db) {
             record.uploadBytes,
             record.maxBytes,
             record.maxFiles,
+            record.digestAt ?? null,
+            record.pendingUploads ?? "[]",
           )
           .run();
         return { ...record };
@@ -740,6 +753,46 @@ export function createD1LinkStore(db) {
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
+      async recordArrival(token, name, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        // The arrival is appended in the same shape the digest reads back
+        // (drive issue #684). ?1 is the byte count and ?2 the stored name, in
+        // that textual order, so each placeholder number appears once and in
+        // ascending order for the node:sqlite test adapter. json_insert's
+        // `$[#]` appends, and D1's SQLite carries JSON1, so this is one
+        // statement with no read-modify-write race on the row.
+        const row = await one(
+          "UPDATE upload_requests SET pending_uploads = " +
+            "json_insert(pending_uploads, '$[#]', json_object('bytes', ?1, 'name', ?2)) " +
+            "WHERE token = ?3 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, safeFileName(name), token],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
+      async markDigestSent(token, at) {
+        // The stamp and the clear are one statement, so a digest that resolved
+        // cannot be re-sent while the arrivals linger, and a digest that
+        // failed never reaches here: the caller marks after sendEmail returns.
+        const row = await one(
+          "UPDATE upload_requests SET digest_at = ?1, pending_uploads = '[]' " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [at, token],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
+      async listPendingDigests() {
+        // Only rows carrying arrivals, so the nightly job walks the links that
+        // have something to say and nothing else.
+        const rows = await many(
+          `SELECT ${REQUEST_COLUMNS} FROM upload_requests ` +
+            "WHERE pending_uploads IS NOT NULL AND pending_uploads <> '[]' " +
+            "ORDER BY created_at ASC",
+          [],
+        );
+        return rows.map(toRequestRecord);
+      },
     },
   };
 }
@@ -780,6 +833,108 @@ export async function purgeStaleLinks(db, now) {
     shares: Number(shares?.meta?.changes ?? 0),
     requests: Number(requests?.meta?.changes ?? 0),
   };
+}
+
+/**
+ * One arrival, as the request row stores it and the digest reads it back.
+ * `name` is put through safeFileName, the same cleaner the upload used, so a
+ * name in a digest cannot be one the upload route itself would refuse.
+ * @param {unknown} raw
+ * @returns {Array<{name: string, bytes: number}>}
+ */
+function parseArrivals(raw) {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return [];
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // A row that is not the JSON this store wrote is treated as no arrivals
+    // rather than throwing: the digest is a notification, and one malformed
+    // row must not stop every other link's mail.
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed
+    .filter((entry) => entry !== null && typeof entry === "object")
+    .map((entry) => {
+      const e = /** @type {{name?: unknown, bytes?: unknown}} */ (entry);
+      const size = Number(e.bytes);
+      return {
+        name: safeFileName(typeof e.name === "string" ? e.name : ""),
+        bytes: Number.isFinite(size) && size > 0 ? Math.floor(size) : 0,
+      };
+    });
+}
+
+/**
+ * The nightly per-link arrival digest (drive issue #684): one email to a
+ * link's owner listing every file that arrived through it since the last
+ * digest. `listPendingDigests` returns only rows carrying arrivals, so each
+ * run mails each link at most once; `markDigestSent` clears the list and
+ * stamps `digest_at` only after the send resolved, so a failed send leaves
+ * the arrivals queued for the next run instead of dropping them.
+ *
+ * A link whose owner has no address is logged and skipped, like the close
+ * cron's no-email rows: it is not an error that should stop the other links'
+ * mail. `email` and `mailFrom` are the deployment's own settings; a missing
+ * MAIL_FROM is refused before any link is read, because a digest from a
+ * placeholder sender is worse than no digest.
+ * @param {D1Database} db
+ * @param {{email: unknown, mailFrom: string, owner: (accountId: string) => Promise<{id: string, name?: string, email?: string}|null>, now: number}} input
+ * @returns {Promise<{sent: number, skipped: number}>}
+ */
+export async function sendArrivalDigests(db, input) {
+  if (typeof input?.mailFrom !== "string" || input.mailFrom.trim().length === 0) {
+    throw new Error("an arrival digest needs the deployment's MAIL_FROM");
+  }
+  if (typeof input.owner !== "function") {
+    throw new TypeError(`an arrival digest needs an owner resolver, got ${String(input.owner)}`);
+  }
+  const links = createD1LinkStore(db);
+  const pending = await links.requests.listPendingDigests();
+  let sent = 0;
+  let skipped = 0;
+  for (const record of pending) {
+    const arrivals = parseArrivals(record.pendingUploads);
+    if (arrivals.length === 0) {
+      continue;
+    }
+    try {
+      const owner = await input.owner(record.accountId);
+      if (owner === null || typeof owner.email !== "string" || owner.email.trim().length === 0) {
+        console.error(`upload digest: link ${record.token} has arrivals but no owner address`);
+        skipped += 1;
+        continue;
+      }
+      await sendEmail(input.email, {
+        to: owner.email,
+        from: input.mailFrom,
+        kind: "upload-arrivals",
+        data: {
+          ownerName:
+            typeof owner.name === "string" && owner.name.length > 0 ? owner.name : owner.email,
+          folder: folderDisplayName(record.folder),
+          arrivals: arrivals.map((arrival) => ({
+            name: arrival.name,
+            sizeLabel: formatBytes(arrival.bytes),
+          })),
+        },
+      });
+      await links.requests.markDigestSent(record.token, input.now);
+      sent += 1;
+    } catch (cause) {
+      // One link's read or send must not hold every later link's mail. The
+      // arrivals stay queued (markDigestSent only runs after the send), so a
+      // transient failure is retried on the next nightly run.
+      console.error(`upload digest: link ${record.token} could not be mailed: ${String(cause)}`);
+      skipped += 1;
+    }
+  }
+  return { sent, skipped };
 }
 
 // ---------------------------------------------------------------- minting
@@ -840,6 +995,8 @@ export function newRequestRecord({
     uploadBytes: 0,
     maxBytes,
     maxFiles,
+    digestAt: null,
+    pendingUploads: "[]",
   };
 }
 
@@ -901,6 +1058,31 @@ async function capStateFor(resolver, accountId) {
     throw new TypeError(`a cap resolver must answer "active" or "read_only", got ${String(state)}`);
   }
   return state;
+}
+
+/**
+ * The display name of the account that minted a link, for the page a stranger
+ * opens (drive issue #684). The resolver is the deployment's own account read
+ * (the Better Auth `user` row); a caller that does not supply one gets an
+ * empty name rather than an error, because the upload page still works
+ * unnamed and only an owner read that threw would be a bug.
+ * @param {unknown} resolver
+ * @param {string} accountId
+ * @returns {Promise<string>}
+ */
+async function ownerNameFor(resolver, accountId) {
+  if (typeof resolver !== "function") {
+    return "";
+  }
+  const owner = await resolver(accountId);
+  if (owner === null || owner === undefined) {
+    return "";
+  }
+  const o = /** @type {{name?: unknown, email?: unknown}} */ (owner);
+  if (typeof o.name === "string" && o.name.trim().length > 0) {
+    return o.name;
+  }
+  return typeof o.email === "string" ? o.email : "";
 }
 
 /** The request's own origin: the links are absolute so they can be copied.
@@ -1366,7 +1548,7 @@ export async function handleRequestRequest(request, files, links, account, optio
  * @param {Request} request
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number}} [options]
+ * @param {{now?: number, owner?: (accountId: string) => Promise<{id: string, name?: string, email?: string}|null>}} [options]
  */
 export async function handleRequestInfoRequest(request, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1384,17 +1566,20 @@ export async function handleRequestInfoRequest(request, links, capState, options
   if (record === null || !linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
   }
+  const owner = await ownerNameFor(options.owner, record.accountId);
   const state = await capStateFor(capState, record.accountId);
   if (state === "read_only") {
     return json({
       open: false,
       folder: folderDisplayName(record.folder),
+      owner,
       reason: failureMessage("upload-paused-at-cap"),
     });
   }
   return json({
     open: true,
     folder: folderDisplayName(record.folder),
+    owner,
     expiresLabel: expiresLabel(record.expiresAt),
   });
 }
@@ -1560,6 +1745,17 @@ export async function handleRequestUploadRequest(request, files, links, capState
       );
     }
     return json({ error: failureMessage("upload-name-taken") }, 409);
+  }
+  try {
+    await links.requests.recordArrival(checked.token, safeFileName(name), sized.bytes);
+  } catch (cause) {
+    // The file is stored, so a digest that cannot be queued must not fail the
+    // stranger's upload. It is logged, not swallowed: a later drop appends to
+    // the same row, so a transient failure can lose at most this arrival's
+    // digest line, and the operator sees which drop it was.
+    console.error(
+      `drive share: recording an upload arrival for a ${sized.bytes}-byte drop into ${record.folder}: ${String(cause)}`,
+    );
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

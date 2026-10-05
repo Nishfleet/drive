@@ -87,6 +87,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The per-link caps and retention (drive#549): upload_requests.max_files
   // and shares.max_download_bytes. Expand only.
   "drive/0025_link_caps.sql",
+  // The per-link arrival digest (drive#684): upload_requests.digest_at and
+  // pending_uploads. Expand only; the upload path and the info route read the
+  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
+  "drive/0026_request_digest.sql",
 ]);
 
 /**

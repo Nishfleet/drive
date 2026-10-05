@@ -106,6 +106,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "top-up-receipt",
     "low-balance",
     "device-approve-notice",
+    "upload-arrivals",
   ]);
 });
 
@@ -274,6 +275,12 @@ function dataFor(kind) {
       return { balanceUsd: 1.8, autoTopUpUsd: null };
     case "device-approve-notice":
       return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+    case "upload-arrivals":
+      return {
+        ownerName: "Nish",
+        folder: "Your drive",
+        arrivals: [{ name: "contract.pdf", sizeLabel: "1.2 MB" }],
+      };
     default:
       throw new Error(`no test data for ${kind}`);
   }

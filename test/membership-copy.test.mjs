@@ -46,6 +46,13 @@ function dataFor(kind) {
   if (kind === "device-approve-notice") {
     return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
   }
+  if (kind === "upload-arrivals") {
+    return {
+      ownerName: "Nish",
+      folder: "Your drive",
+      arrivals: [{ name: "contract.pdf", sizeLabel: "1.2 MB" }],
+    };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 

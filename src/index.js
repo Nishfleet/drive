@@ -87,6 +87,7 @@ import {
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
+  sendArrivalDigests,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
@@ -440,6 +441,20 @@ async function liveDevicesFor(env, account) {
  */
 function capStateFor(env) {
   return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
+}
+
+/**
+ * The resolver the public upload page asks for a link owner's display name
+ * (drive issue #684): the Better Auth `user` row for the account that minted
+ * the link, so a stranger opening the link sees whose drive it is. It is the
+ * same per-call device store `capStateFor` uses, and the same resolver feeds
+ * the nightly arrival digest (`sendArrivalDigests`), so the name on the page
+ * and the name in the mail come from one read.
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<{id: string, name: string, email: string}|null>}
+ */
+function ownerFor(env) {
+  return (accountId) => createD1DeviceStore(env.DRIVE_DB).accountById(accountId);
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
@@ -886,7 +901,9 @@ export function createApp() {
     }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env), {
+      owner: ownerFor(c.env),
+    }),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
     handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor(c.env), {
@@ -1181,6 +1198,28 @@ export default {
             `${purged.requests} upload-request rows`,
         );
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        // The arrival digest (drive issue #684): one mail a day to a link's
+        // owner, listing what arrived through that link since the last one.
+        // It shares the close cron's settings and its fire-and-forget shape:
+        // the reconcile trip should not wait on a mail send, and an idle
+        // deployment with no MAIL_FROM queues nothing rather than failing
+        // every night.
+        if (secrets.MAIL_FROM) {
+          context.waitUntil(
+            sendArrivalDigests(env.DRIVE_DB, {
+              email: env.EMAIL,
+              mailFrom: secrets.MAIL_FROM,
+              owner: ownerFor(env),
+              now: toMillis(event.scheduledTime, "scheduledTime"),
+            })
+              .then((result) => {
+                console.log(`upload digests: sent=${result.sent} skipped=${result.skipped}`);
+              })
+              .catch((error) => {
+                throw new Error(`the upload arrival digest failed: ${error.message}`);
+              }),
+          );
+        }
         context.waitUntil(
           runAccountCloseCron({
             db: env.DRIVE_DB,
