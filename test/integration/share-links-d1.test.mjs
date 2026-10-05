@@ -58,6 +58,7 @@ const api = (path) => `https://drive.test${path}`;
 function allowLimits(nowValue) {
   return {
     now: nowValue,
+    limiter: allowMint(),
     ipLimiter: {
       async limit() {
         return { success: true };
@@ -67,6 +68,15 @@ function allowLimits(nowValue) {
       async limit() {
         return { success: true };
       },
+    },
+  };
+}
+
+/** A mint-route rate-limit binding that always lets the caller through. */
+function allowMint() {
+  return {
+    async limit() {
+      return { success: true };
     },
   };
 }
@@ -134,7 +144,7 @@ function drive() {
         files,
         links,
         account,
-        { now, token: TOKEN },
+        { now, limiter: allowMint(), token: TOKEN },
       ),
     /**
      * Revoke a share through the real owner route, as the given account.
@@ -163,6 +173,11 @@ function drive() {
     open: (links, at) =>
       handleShareFileRequest(new Request(api(`${SHARE_LINK_PREFIX}/${TOKEN}`)), files, links, {
         now: at,
+        ipLimiter: {
+          async limit() {
+            return { success: true };
+          },
+        },
       }),
   };
 }
@@ -293,7 +308,7 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
     d.files,
     d.fresh(),
     account,
-    { now, token: REQUEST_TOKEN },
+    { now, limiter: allowMint(), token: REQUEST_TOKEN },
   );
   assert.equal(minted.status, 201);
   const stored = rowIn(d.db.sqlite, "upload_requests", REQUEST_TOKEN);
@@ -357,7 +372,7 @@ test("a revoked upload request is refused by a fresh store", async () => {
     d.files,
     d.fresh(),
     account,
-    { now, token: REQUEST_TOKEN },
+    { now, limiter: allowMint(), token: REQUEST_TOKEN },
   );
   const revoked = await handleRequestRequest(
     new Request(api(REQUEST_ENDPOINT), {
@@ -414,7 +429,7 @@ test("a size-capped upload is refused by a fresh store and writes no row bytes",
     d.files,
     d.fresh(),
     account,
-    { now, token: REQUEST_TOKEN },
+    { now, limiter: allowMint(), token: REQUEST_TOKEN },
   );
   const uploaded = await handleRequestUploadRequest(
     new Request(api(`${REQUEST_ENDPOINT}/upload?k=${REQUEST_TOKEN}&name=huge.bin`), {

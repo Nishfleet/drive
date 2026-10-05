@@ -14,7 +14,8 @@
 //     bill = min(2¢ x avg GB, $10 x max(1, avg TB))
 //
 // So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
-// bills $30. No minimum and no plans.
+// bills $30. No plans, and the prepaid balance never expires (drive#586).
+import { LEGAL_PAGES } from "./legal.js";
 import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
@@ -34,7 +35,7 @@ export const BILLING = Object.freeze({
   // Every sentence comes from the one price source, so one edit moves the
   // tags, the JSON-LD and llms.txt together.
   headline: PRICE.headline,
-  noMinimumLine: PRICE.noMinimumLine,
+  noPlansLine: PRICE.noPlansLine,
   // The rule in words, for the offer description and llms.txt, because a
   // crawler reads prose, not a formula.
   rule: PRICE.rule,
@@ -57,7 +58,9 @@ export const SITE = Object.freeze({
  * One shipped HTML page. `root` names the pages that ship as built Vite
  * entries from the repo root rather than as verbatim assets copied out of
  * public/ (drive issue #70). Every entry without it is a public/ asset.
- * @typedef {{ path: string, indexable: boolean, root?: boolean }} Page
+ * `file` names the public/ file a clean URL is served from (the asset layer
+ * serves /terms from terms.html); without it the file is the path itself.
+ * @typedef {{ path: string, indexable: boolean, root?: boolean, file?: string }} Page
  */
 
 // Every public HTML page, and whether a crawler should index it. The order is
@@ -75,6 +78,11 @@ export const PAGES = Object.freeze([
   // surface, and the crowd it is for finds it by search, so it is indexable and
   // in the sitemap. Its price line is PRICE's, like every other page's.
   Object.freeze({ path: "/starter.html", indexable: true }),
+  // The legal and trust pages (drive#523), at the clean URLs the footers link.
+  // src/legal.js is their one list; each is indexable and in the sitemap.
+  ...LEGAL_PAGES.map((page) =>
+    Object.freeze({ path: page.path, file: page.file, indexable: true }),
+  ),
   // The first-run page is a built Vite entry at the repo root, not a public/
   // asset: issue #70 moved it there so cf build compiles the module behind it
   // instead of shipping the page verbatim, and the `root` flag is what tells

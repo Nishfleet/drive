@@ -22,7 +22,7 @@
 // No price is written down here. The one line the page shows about cost comes
 // from src/pricing.js (PRICE), the single price source, so a re-priced product
 // moves this page and the pricing page together.
-import { agentCannotDeleteSentence } from "./docs.js";
+import { json } from "../workers/api/src/http.js";
 import { validatePath } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -101,8 +101,8 @@ date: {{date:YYYY-MM-DD}}
 These notes are in the user's Drive folder. Treat them as their files.
 
 - Read and write freely in this folder, and anywhere else on the drive.
-- ${agentCannotDeleteSentence()} If you decide a file is finished, leave it in
-  place. A person decides what leaves the drive.
+- Do not delete files. If you decide a file is finished, leave it in place.
+  A person decides what leaves the drive.
 - Before a large edit, take a branch: \`drive branch\` copies the folder, and
   \`drive approve\` or \`drive discard\` decides what happens to the copy.
 - One note per idea, in Markdown, with the note's own filename as its title.
@@ -241,23 +241,6 @@ export async function createStarter(store) {
   return { created, kept };
 }
 
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @returns {Response}
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS },
-  });
-}
-
 /**
  * The one answer for a store failure inside this handler, whatever threw: the
  * failed pair's own words and nothing of the cause, so a store failure reaches
@@ -295,10 +278,11 @@ function describeFailed(cause) {
  * module or the Worker that does so on its own.
  *
  * The account gate and the browser CSRF check are the Worker's (src/index.js
- * registers this under `/api/*` with `accountGate` and `csrfWhenBrowser`), so
- * an anonymous caller is answered 401 before this function runs and a
- * cross-site POST is answered by the middleware, not by a hand-rolled rule
- * here. `store` is the account's own scoped store.
+ * registers this under `/api/*` with `accountGate`, and the CSRF check on
+ * every non-GET `/api/*` route with `csrfWhenBrowser`), so an anonymous
+ * caller is answered 401 before this function runs and a cross-site POST is
+ * answered by the middleware, not by a hand-rolled rule here. `store` is the
+ * account's own scoped store.
  *
  * @param {Request} request
  * @param {import("./files.js").FileStore|null} store

@@ -9,9 +9,10 @@
 //
 // The Dodo host is configurable via DODO_BASE_URL (env, read in src/index.js),
 // defaulting to the test server. Switching to live is Nish's call, and the
-// bearer key only leaves for a https dodopayments.com host — see
-// resolveIngestUrl() (drive issue #323, owner comment 2026-10-03T06:35Z). No
-// card is taken here.
+// bearer key only leaves for one of the two hosts Dodo serves its API on, in
+// https and no other form — see resolveDodoUrl() (drive issue #323, owner
+// comment 2026-10-03T06:35Z; drive issue #576 replaced the dodopayments.com
+// suffix with an exact match on those two names). No card is taken here.
 //
 // Catch-up hours omit `timestamp`. Dodo's ingest docs (test.dodopayments.com
 // /events/ingest, "Time Validation"): a timestamp older than 1 hour is
@@ -35,13 +36,25 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { monthBillCents } from "./billing.js";
+import { minutesInMonth, monthBillCents } from "./billing.js";
+import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+
+// The two hosts Dodo serves its API on, named once because the check that
+// guards the bearer key is an exact match against them and nothing else
+// (drive issue #576). A suffix match is what this replaced: it accepted the
+// marketing root and every subdomain, including ones Dodo does not serve the
+// API on, so the one value the key's host comes from was a shape rather than
+// a name. Naming the live host here does not select it — the default below is
+// still the test server and only DODO_BASE_URL can move the push.
+export const DODO_TEST_HOST = "test.dodopayments.com";
+export const DODO_LIVE_HOST = "live.dodopayments.com";
+export const DODO_API_HOSTS = Object.freeze([DODO_TEST_HOST, DODO_LIVE_HOST]);
 
 // The test-mode host and ingest path are split so the host can be overridden
 // by DODO_BASE_URL while the path stays fixed. The default stays the test
 // server; switching to live is a single env var that Nish sets.
-export const DODO_TEST_BASE_URL = "https://test.dodopayments.com";
+export const DODO_TEST_BASE_URL = `https://${DODO_TEST_HOST}`;
 export const DODO_INGEST_PATH = "/events/ingest";
 export const DODO_TEST_INGEST_URL = `${DODO_TEST_BASE_URL}${DODO_INGEST_PATH}`;
 export const DODO_EVENT_NAME = "drive.usage";
@@ -160,9 +173,9 @@ export async function billingPushGap(db, options = {}) {
 /**
  * Resolve the ingest URL from an optional base URL override. When
  * `baseUrl` is absent or empty, the test-mode host is used. A provided
- * base URL must be https and end in dodopayments.com — the bearer API
- * key travels to whatever host this names, so an https scheme and Dodo's
- * own host pin prevent a misconfigured env var from leaking the key over
+ * base URL must be https and exactly one of DODO_API_HOSTS — the bearer API
+ * key travels to whatever host this names, so an https scheme and an exact
+ * host name prevent a misconfigured env var from leaking the key over
  * plaintext HTTP or to an unrelated server. A trailing slash is stripped
  * so the path always joins cleanly to /events/ingest.
  * @param {string|undefined} baseUrl
@@ -175,7 +188,14 @@ export function resolveIngestUrl(baseUrl) {
 /**
  * Any Dodo API path on the configured host (the checkout for a top-up,
  * drive#586, as well as the ingest above), under the same https and
- * dodopayments.com pin, because the same bearer key travels with it.
+ * exact-host pin, because the same bearer key travels with it.
+ *
+ * The comparison is on the whole authority, lower-cased: a host name is
+ * case-insensitive, so "TEST.DODOPAYMENTS.COM" is the test host and not a
+ * look-alike, while userinfo ("user@test.dodopayments.com") or a port
+ * ("test.dodopayments.com:8443") are not a name on the list and are refused
+ * rather than trimmed, because either would let a value through that nobody
+ * pinned.
  * @param {string|undefined} baseUrl
  * @param {string} path starting with "/"
  * @returns {string}
@@ -195,11 +215,36 @@ export function resolveDodoUrl(baseUrl, path) {
   if (!matched) {
     throw new TypeError(`DODO_BASE_URL must use https, got ${host}`);
   }
-  const name = matched[1];
-  if (name !== "dodopayments.com" && !name.endsWith(".dodopayments.com")) {
-    throw new TypeError(`DODO_BASE_URL must be a dodopayments.com host, got ${name}`);
+  const name = matched[1].toLowerCase();
+  if (!DODO_API_HOSTS.includes(name)) {
+    throw new TypeError(`DODO_BASE_URL must be ${DODO_API_HOSTS.join(" or ")}, got ${name}`);
   }
   return `${host}${path}`;
+}
+
+/**
+ * True when a URL is an https page on Dodo's own domain, with no username or
+ * password in it: the shape every URL we hand a person must have before it
+ * becomes a redirect. A checkout (src/topup.js) and a customer-portal session
+ * link (src/portal.js) both answer a customer, so both go through this one
+ * check rather than each spelling the pin out again.
+ * @param {string} value
+ */
+export function isDodoUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname;
+  return (
+    parsed.protocol === "https:" &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.port === "" &&
+    (host === "dodopayments.com" || host.endsWith(".dodopayments.com"))
+  );
 }
 
 /**
@@ -291,6 +336,7 @@ export async function pushBillingHours(db, hours, options = {}) {
       const usage = await monthUsageThrough(db, accountId, hour);
       const bill = monthBillCents({
         gbMinutes: usage.gbMinutes,
+        monthMinutes: minutesInMonth(hour),
         downloadBytes: usage.downloadBytes,
         averageStoredGb: usage.averageStoredGb,
       });
@@ -498,14 +544,24 @@ async function customersForHour(db, hour) {
  * @param {Array<Record<string, unknown>>} events
  */
 async function ingestEvents(fetchImpl, ingestUrl, apiKey, events) {
-  const response = await fetchImpl(ingestUrl, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
+  // The push carries the meter's own deadline and one retry (drive#570): a
+  // stalled Dodo call answers named after 15 s instead of holding the hourly
+  // push open, and a 5xx is retried once before the hour is marked failed.
+  // The retry is safe because the ingest is idempotent by event id — a
+  // repeated hour is ignored, which is the idempotency test already pinned.
+  const response = await fetchWithTimeoutAndRetry(
+    fetchImpl,
+    ingestUrl,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ events }),
     },
-    body: JSON.stringify({ events }),
-  });
+    { label: "Dodo test-mode ingest" },
+  );
   if (!response.ok) {
     throw new Error(`Dodo test-mode ingest failed: ${response.status}`);
   }

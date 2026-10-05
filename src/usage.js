@@ -70,6 +70,12 @@ export const USAGE_LABELS = Object.freeze({
     what: "Could not reach the usage service just now.",
     next: "Leave this page open. It checks again in a minute.",
   }),
+  // The card-update link (drive#575): an anchor in the page body under the
+  // cap, pointed at the billing-portal route. It is a link, not a control the
+  // page fetches: the browser follows it and the Worker 302s to the
+  // provider's customer portal. The header stays at its five links; this one
+  // is page copy, so it is labelled here like the rest of the page's words.
+  cardPortal: "Update your card in the billing portal",
 });
 
 // The summary labels the four `drive usage` lines print, in print order. They

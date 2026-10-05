@@ -21,25 +21,24 @@
 // to test its migrations.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   listMeteredAccounts,
   MINUTE_MS,
+  pruneHiddenVersions,
   recordEvent,
+  recordNightlySizes,
   rollupHour,
   runMeterCron,
+  VERSION_RETENTION_DAYS,
   validateEvent,
 } from "../../src/meter.js";
-import { at, GB, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
+import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
-// The real migration files of the drive database (drive issue #170: customer
-// tables, the waitlist's sign-up table lives in its own database and is
-// created by migrations/waitlist/0001_waitlist.sql), in the numeric order the
-// deploy applies them in.
-const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+// Migration files and order come from test/d1-sqlite.mjs (`MIGRATION_FILES`),
+// the single reader of migrations/drive/ in `wrangler d1 migrations apply`
+// order (drive issue #619).
 
 const abcEvent = (overrides = {}) =>
   validateEvent({
@@ -71,7 +70,7 @@ test("the real migrations apply cleanly, in filename order", () => {
   // that already ran the others. Every migration in the drive database is
   // applied, not just the meter's, so the meter's tables are checked against
   // the schema it will share with the file index, branches and caps.
-  assert.ok(migrationFiles.includes("0005_meter.sql"), "0005_meter.sql is missing");
+  assert.ok(MIGRATION_FILES.includes("0005_meter.sql"), "0005_meter.sql is missing");
   const { sqlite } = makeMeteredDB();
   const tables = sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -203,6 +202,16 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
   });
   await recordEvent(db, hide, at("2026-09-30T00:45:00.000Z"));
   await recordEvent(db, otherEvent(), midnight());
+  // The account list is the accounts table (drive issue #564), so the test
+  // signs both accounts up the way production does before any event fires.
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-abc", "acc-abc@drive.test")
+    .run();
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-other", "acc-other@drive.test")
+    .run();
   assert.deepEqual(await listMeteredAccounts(db), ["acc-abc", "acc-other"]);
   const rolled = await rollupHour(db, midnight(), at("2026-09-30T01:00:00.000Z"));
   // acc-abc: 1 GB live from 00:30 to 01:00, 30 GB-minutes. acc-other: 10 GB
@@ -518,6 +527,118 @@ test("READ+WRITE: a missed trigger is caught up from the stored mark, through th
   assert.deepEqual(
     rows.map((r) => r.gb_minutes_live),
     [60, 60, 60],
+  );
+});
+
+test("WRITE+READ: retention deletes only hidden-and-old rows, and the booked hours survive, on the real schema", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const day = 24 * 60 * MINUTE_MS;
+  // The events the unit test cannot fake: every statement here runs against
+  // the shipped migration files, so the file_version_rows the prune deletes
+  // and the usage_minutes rows it leaves are rows a plain SELECT can find.
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-abc", "acc-abc@drive.test")
+    .run();
+  await recordEvent(
+    db,
+    abcEvent({ eventId: "evt-old", b2FileId: "v-old", createdAt: midnight() - day }),
+    midnight() - day,
+  );
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-old-hidden",
+      keyName: "/u/acc-abc/",
+      path: "/u/acc-abc/notes.md",
+      b2FileId: "v-old",
+      action: "file hidden",
+      hiddenAt: midnight() - day + 60 * MINUTE_MS,
+      eventTimestamp: midnight() - day + 60 * MINUTE_MS,
+    }),
+    midnight() - day + 60 * MINUTE_MS,
+  );
+  await recordEvent(db, abcEvent({ eventId: "evt-live", b2FileId: "v-live" }), midnight());
+  // Book the hours the way the trigger does, so the watermark is ahead of
+  // the cutoff (now + 40 days, cutoff = midnight + 5 days).
+  for (let t = midnight(); t <= midnight() + 7 * day; t += 12 * 60 * MINUTE_MS) {
+    await runMeterCron(db, t);
+  }
+  const bookedBefore = sqlite
+    .prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes")
+    .get().s;
+  // The shipped schema must carry the index the prune's predicate reads, so
+  // the nightly delete is a range read over hidden rows, not a full-table
+  // scan on the meter's fastest-growing table (drive issue #564, in-run
+  // review). Same table, same predicate, on the real migrations.
+  assert.equal(
+    sqlite
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'file_versions_hidden_at'",
+      )
+      .get()?.name,
+    "file_versions_hidden_at",
+    "the prune's index shipped with the migrations",
+  );
+  const plan = sqlite
+    .prepare(
+      "EXPLAIN QUERY PLAN DELETE FROM file_versions " +
+        "WHERE hidden_at IS NOT NULL AND hidden_at < ?",
+    )
+    .all(midnight() + 40 * day - VERSION_RETENTION_DAYS * day)
+    .map((row) => row.detail)
+    .join(" | ");
+  assert.match(
+    plan,
+    /file_versions_hidden_at/,
+    `the prune's delete plans through the hidden_at index: ${plan}`,
+  );
+  const pruned = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(pruned.skipped, null);
+  assert.equal(pruned.pruned, 1);
+  assert.deepEqual(
+    sqlite
+      .prepare("SELECT b2_file_id FROM file_versions")
+      .all()
+      .map((r) => r.b2_file_id),
+    ["v-live"],
+  );
+  assert.equal(
+    sqlite.prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes").get().s,
+    bookedBefore,
+    "the deleted version's booked minutes are still on the books",
+  );
+});
+
+test("WRITE+READ: the nightly size row lands through the real migrations and reads back out", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  // An empty drive reads as zeros, not NULL - the writer must never have to
+  // invent a number.
+  const empty = await recordNightlySizes(db, midnight() + 60 * MINUTE_MS);
+  assert.equal(empty.fileVersionRows, 0);
+  assert.equal(empty.fileVersionBytes, 0);
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-abc", "acc-abc@drive.test")
+    .run();
+  await recordEvent(db, abcEvent(), midnight());
+  await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
+  await recordNightlySizes(db, midnight() + 90 * MINUTE_MS);
+  const row = sqlite
+    .prepare(
+      "SELECT day, file_version_rows, file_version_bytes, usage_minute_rows, file_index_rows " +
+        "FROM nightly_sizes",
+    )
+    .get();
+  assert.deepEqual(
+    { ...row },
+    {
+      day: "2026-09-30",
+      file_version_rows: 1,
+      file_version_bytes: GB,
+      usage_minute_rows: 1,
+      file_index_rows: 0,
+    },
   );
 });
 

@@ -32,8 +32,8 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
-
 import { DAY_MS } from "./auth.js";
+import { json } from "../workers/api/src/http.js";
 import {
   diffBranch,
   discardBranch,
@@ -52,24 +52,6 @@ export const REWIND_ENDPOINT = "/api/rewind";
  * 30-day undo window (src/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message

@@ -28,7 +28,14 @@ const workflows = readdirSync(dir)
   .map((name) => ({ name, text: readFileSync(new URL(name, dir), "utf8") }));
 
 // Deploy credentials: read only in a job whose environment is `production`.
-const DEPLOY_SECRETS = new Set(["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]);
+const DEPLOY_SECRETS = new Set([
+  "CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_ACCOUNT_ID",
+  // The post-deploy health check gets past Cloudflare Access with this
+  // service token (drive#499, drive#520).
+  "CF_ACCESS_CLIENT_ID",
+  "CF_ACCESS_CLIENT_SECRET",
+]);
 // Every other secret a workflow may read, and why it is not environment-bound.
 const OTHER_SECRETS = new Set([
   // The worker App arms auto-merge on every PR, so it runs on PR branches.
@@ -36,6 +43,17 @@ const OTHER_SECRETS = new Set([
   "NISHFLEET_WORKER_PRIVATE_KEY",
   // GitHub's own per-run token, not a stored secret.
   "GITHUB_TOKEN",
+  // Release pipeline (drive#509). The release workflow only runs on v* tags,
+  // and signing/notarize/tap publish stay off when these are empty. They are
+  // not deploy credentials, so they are not bound to environment: production.
+  "GPG_PRIVATE_KEY",
+  "GPG_PASSPHRASE",
+  "HOMEBREW_TAP_TOKEN",
+  "MACOS_SIGN_P12",
+  "MACOS_SIGN_PASSWORD",
+  "MACOS_NOTARY_KEY",
+  "MACOS_NOTARY_KEY_ID",
+  "MACOS_NOTARY_ISSUER_ID",
 ]);
 
 /**

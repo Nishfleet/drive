@@ -23,6 +23,40 @@
 import { createS3Client, provisionBucket } from "./s3.js";
 
 /**
+ * What a key minted here can reach: iDrive e2 limits a key to whole buckets,
+ * never to a prefix inside one (measured 2026-10-03, drive#173 and #371). So a
+ * branch key, whose scope names a `.branches/<name>/` prefix, still reaches
+ * every file in the account's bucket. The docs read this (src/keys.js), so a
+ * page cannot claim a narrower reach than the provider enforces (drive#502).
+ */
+export const IDRIVE_KEY_REACH = "bucket";
+
+/**
+ * The delete switches a key is minted with, from its capabilities. The mint
+ * sends exactly this object, and the docs read it, so the two cannot drift.
+ *
+ * A key without the delete capability is an agent's key. Its delete still
+ * succeeds: `disable_delete_object` is false for every key, because no real
+ * account run has yet proven that iDrive honours `true` (drive#502, #380). On
+ * a versioned bucket that delete adds a delete marker, and
+ * `disable_delete_version` stops the key lifting or destroying the hidden
+ * version behind it. The bucket's lifecycle rule removes hidden versions after
+ * HIDDEN_VERSION_DAYS (s3.js), so an agent's delete can be undone for that
+ * long and no longer. A person's device key keeps delete and gets neither
+ * switch. Every key gets `disable_delete_bucket`, because no customer key has
+ * any business removing a bucket.
+ * @param {ReadonlyArray<string>} capabilities
+ * @returns {{disable_delete_object: boolean, disable_delete_version: boolean, disable_delete_bucket: boolean}}
+ */
+export function deleteSwitchesFor(capabilities) {
+  return {
+    disable_delete_object: false,
+    disable_delete_version: !capabilities.includes("delete"),
+    disable_delete_bucket: true,
+  };
+}
+
+/**
  * @typedef {object} IdriveKeyProviderConfig
  * @property {string} apiEndpoint the reseller API base, e.g.
  *   https://api.idrivee2.com/api/reseller/v1
@@ -206,13 +240,7 @@ export function createIdriveKeyProvider(config) {
         // buckets, so provisioning is the sign-up act the bucket model needs.
         await provisionBucket(client, { bucket, sse: "AES256" });
       }
-      // A key without the delete capability is an agent's key: its delete adds
-      // a delete marker, and `disable_delete_version` is what stops it lifting
-      // or destroying the hidden version behind that marker, so `drive restore`
-      // always has something to restore. A person's device key keeps delete and
-      // gets neither switch. Every key gets `disable_delete_bucket`, on every
-      // mint, because no customer key has any business removing a bucket.
-      const disableDeleteVersion = !scope.capabilities.includes("delete");
+      const switches = deleteSwitchesFor(scope.capabilities);
       const answer = await callResellerApi(
         apiEndpoint,
         apiToken,
@@ -220,9 +248,7 @@ export function createIdriveKeyProvider(config) {
         {
           buckets: [bucket],
           permissions: READ_WRITE_PERMISSION,
-          disable_delete_object: false,
-          disable_delete_version: disableDeleteVersion,
-          disable_delete_bucket: true,
+          ...switches,
           ...(options.expiresAt === null || options.expiresAt === undefined
             ? {}
             : { expiry_on: options.expiresAt }),
@@ -264,7 +290,7 @@ export function createIdriveKeyProvider(config) {
         sessionToken: null,
         expiresIn: null,
         bucket,
-        disableDeleteVersion,
+        disableDeleteVersion: switches.disable_delete_version,
         ...(expiryOn === null ? {} : { vendorExpiryOn: expiryOn }),
       };
     },

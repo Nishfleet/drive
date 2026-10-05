@@ -7,6 +7,7 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
+import { json } from "../workers/api/src/http.js";
 import { DAY_MS } from "./auth.js";
 import { sendEmail } from "./email-send.js";
 import { scopeStore } from "./files.js";
@@ -47,19 +48,6 @@ export const CLOSE_COPY = Object.freeze({
   pendingWhat: "This account closes on {purgeOn}. Your files stay visible until then.",
   pendingCancel: "Cancel closing",
 });
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} status
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
 
 /**
  * @param {unknown} value

@@ -106,6 +106,7 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 		"  case \"$1\" in\n" +
 		"    rc) shift ;;\n" +
 		"    --rc-addr) addr=\"$2\"; shift 2 ;;\n" +
+		"    --user|--pass|--rc-user|--rc-pass) shift 2 ;;\n" +
 		"    *) break ;;\n" +
 		"  esac\n" +
 		"done\n" +
@@ -407,10 +408,13 @@ func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	home := filepath.Join("home", "me")
 	plan := BuildMountPlan("linux", home, "rclone", StorageConfig{Endpoint: "http://127.0.0.1:1", Bucket: "b", Prefix: "u/me"})
 	joined := strings.Join(plan.Args(), " ")
-	for _, want := range []string{"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth"} {
+	for _, want := range []string{"--rc", "--rc-addr", loopbackRCAddr} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("mount args %q do not carry %q", joined, want)
 		}
+	}
+	if strings.Contains(joined, "--rc-no-auth") {
+		t.Errorf("mount args %q still disable remote-control auth", joined)
 	}
 	// A drive that was never paused mounts at full speed: the plan must not
 	// carry a limit that was never asked for.
