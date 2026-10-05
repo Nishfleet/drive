@@ -980,8 +980,13 @@ test("the close revokes the account's access before it tries to send anything", 
   const clock = clockAt();
   const world = setup(clock);
   const account = { id: "acct_order", email: "order@example.com", name: "Order" };
+  /** @type {string[]} */
   const calls = [];
   const email = {
+    /**
+     * @param {{to: string}} message
+     * @returns {Promise<{messageId: string}>}
+     */
     async send(message) {
       calls.push("mail");
       // By the time the mailer runs, the account is already closed.
@@ -1176,6 +1181,10 @@ test("one account's receipt failure does not cost the next account its receipt",
 
   // B's address throws before the binding sees it; A and C are fine.
   const picky = {
+    /**
+     * @param {{to: string}} message
+     * @returns {Promise<{messageId: string}>}
+     */
     async send(message) {
       if (/** @type {{to: string}} */ (message).to === "b@example.com") {
         throw new Error("mailbox refused");
@@ -1222,9 +1231,13 @@ test("a failing store write for one account leaves the next account's mail done"
   world.email.sent.length = 0;
   const broken = {
     ...world.devices,
+    /**
+     * @param {string} id
+     * @returns {Promise<void>}
+     */
     markCloseMailSent: async (id) => {
       if (id === "acct_stamp_a") throw new Error("D1 write refused");
-      return world.devices.markCloseMailSent(id, clock.now() / 1000);
+      await world.devices.markCloseMailSent(id, clock.now() / 1000);
     },
   };
   const result = await runAccountCloseCron({
@@ -1244,7 +1257,10 @@ test("a failing store write for one account leaves the next account's mail done"
   assert.equal(world.email.sent.length, 2, "both sends happened; only A's stamp failed");
 });
 
-/** @param {{prepare: (sql: string) => {get: (id: string) => {close_mail_sent_at: unknown} | undefined}}} sqlite */
+/**
+ * @param {{prepare: (sql: string) => {get: (id: string) => {close_mail_sent_at: unknown} | undefined}}} sqlite
+ * @param {string} id
+ */
 function sqlite_stamp(sqlite, id) {
   const row = sqlite.prepare("SELECT close_mail_sent_at FROM accounts WHERE id = ?").get(id);
   return row === undefined ? undefined : row.close_mail_sent_at;
