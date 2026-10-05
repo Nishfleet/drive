@@ -31,6 +31,7 @@ import {
   recordNightlySizes,
   rollupHour,
   runMeterCron,
+  VERSION_RETENTION_DAYS,
   validateEvent,
 } from "../../src/meter.js";
 import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
@@ -566,6 +567,32 @@ test("WRITE+READ: retention deletes only hidden-and-old rows, and the booked hou
   const bookedBefore = sqlite
     .prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes")
     .get().s;
+  // The shipped schema must carry the index the prune's predicate reads, so
+  // the nightly delete is a range read over hidden rows, not a full-table
+  // scan on the meter's fastest-growing table (drive issue #564, in-run
+  // review). Same table, same predicate, on the real migrations.
+  assert.equal(
+    sqlite
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'file_versions_hidden_at'",
+      )
+      .get()?.name,
+    "file_versions_hidden_at",
+    "the prune's index shipped with the migrations",
+  );
+  const plan = sqlite
+    .prepare(
+      "EXPLAIN QUERY PLAN DELETE FROM file_versions " +
+        "WHERE hidden_at IS NOT NULL AND hidden_at < ?",
+    )
+    .all(midnight() + 40 * day - VERSION_RETENTION_DAYS * day)
+    .map((row) => row.detail)
+    .join(" | ");
+  assert.match(
+    plan,
+    /file_versions_hidden_at/,
+    `the prune's delete plans through the hidden_at index: ${plan}`,
+  );
   const pruned = await pruneHiddenVersions(db, midnight() + 40 * day);
   assert.equal(pruned.skipped, null);
   assert.equal(pruned.pruned, 1);

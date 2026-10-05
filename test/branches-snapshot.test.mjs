@@ -554,7 +554,7 @@ async function driveWithOneFile() {
 
 // --- The namespace's 25 MiB value cap, and the chunked store (drive #564) --
 
-test("a snapshot bigger than the cap splits into generation-scoped parts, and reads back byte for byte", async () => {
+test("a snapshot bigger than the cap splits into write-token-scoped parts, and reads back byte for byte", async () => {
   // The cap is 25 MiB a value; ~117 bytes an entry put 100,000 files at 11 MiB
   // and a branch five times that size past the cap with nothing in the design
   // to catch it. The chunker splits, so growth lands in more parts instead of
@@ -570,15 +570,20 @@ test("a snapshot bigger than the cap splits into generation-scoped parts, and re
   // The key itself is the manifest: small, parseable, and naming the parts.
   const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
   assert.equal(manifest.fmt, "drive-branch-snapshot-chunked-1");
-  assert.equal(manifest.gen, 0);
+  assert.equal(typeof manifest.gen, "string", "the manifest names a write token");
+  assert.match(
+    manifest.gen,
+    /^[0-9a-z]+\.[0-9a-f]{12}$/,
+    "the token is the write's own start clock and an unshared random suffix",
+  );
   assert.ok(manifest.parts > 1, `20 entries at 64 bytes a part split (${manifest.parts} parts)`);
   assert.equal(manifest.bytes, bytes);
   // Every part lives beside the snapshot key under the same account prefix,
   // so one account's parts can never be another account's.
   for (let index = 0; index < manifest.parts; index += 1) {
     assert.ok(
-      kv.values.has(`${key}.p0.${index}`),
-      `part ${index} is at the key the manifest's generation names`,
+      kv.values.has(`${key}.p${manifest.gen}.${index}`),
+      `part ${index} is at the key the manifest's write token names`,
     );
   }
 
@@ -606,30 +611,129 @@ test("a name with characters outside the basic plane survives the split", async 
   assert.deepEqual(read, entries, "every four-byte character crossed the split whole");
 });
 
-test("the second write starts a new generation and deletes the old parts only after the manifest lands", async () => {
+test("the second write claims its own token, and deletes the first write's parts only after the manifest lands", async () => {
   // The manifest is the commit point: while a write is in flight the old
-  // manifest still names the old generation, so a concurrent reader reads the
-  // old snapshot whole. The old parts are deleted only once the new manifest
-  // has replaced it - and part keys carry the generation, so a retry never
-  // overwrites a part a reader might be reading.
+  // manifest still names the old write's token, so a concurrent reader reads
+  // the old snapshot whole. The old parts are deleted only once the new
+  // manifest has replaced it - and part keys carry the write's own token, so
+  // a retry never overwrites a part a reader might be reading.
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
   const key = snapshotKey(ACCOUNT, "gen");
   await snapshots.put(key, snapshotJson(5));
-  const firstGenerationParts = [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`));
+  const firstManifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  const firstToken = firstManifest.gen;
+  const firstWriteParts = [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`));
   await snapshots.put(key, snapshotJson(9));
   const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
-  assert.equal(manifest.gen, 1, "the manifest counts generations");
-  for (const stale of firstGenerationParts) {
+  assert.notEqual(manifest.gen, firstToken, "each write claims a token of its own");
+  for (const stale of firstWriteParts) {
     assert.ok(!kv.values.has(stale), `${stale} is deleted once the new manifest has landed`);
   }
   assert.equal(
     [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`)).length,
     manifest.parts,
-    "exactly the live generation's parts remain",
+    "exactly the live write's parts remain",
   );
   const read = await readSnapshot(snapshots, key);
   assert.equal(Object.keys(read).length, 9);
+});
+
+test("two writes in flight at once never share a part key, and a reader reads one write whole", async () => {
+  // The in-run review's Critical: a generation derived from the manifest a
+  // write read is the same number for every write that read it, so two
+  // writes to one key interleaving could land parts on the same keys and the
+  // later cleanup could delete the other's parts mid-commit - a reader would
+  // then reassemble one write's manifest from the other write's parts. Each
+  // write claims an unshared token, so there is no shared key to collide on
+  // and no cleanup that can reach the other write's parts.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const key = snapshotKey(ACCOUNT, "race");
+  await snapshots.put(key, snapshotJson(2));
+  const before = JSON.parse(/** @type {string} */ (kv.values.get(key))).gen;
+  await Promise.all([snapshots.put(key, snapshotJson(3)), snapshots.put(key, snapshotJson(4))]);
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  assert.notEqual(manifest.gen, before, "the live manifest names a new write's token");
+  for (let index = 0; index < manifest.parts; index += 1) {
+    assert.ok(
+      kv.values.has(`${key}.p${manifest.gen}.${index}`),
+      `part ${index} of the live write is in the namespace whole`,
+    );
+  }
+  // Both writes read the same previous manifest, so both cleaned up the same
+  // token's parts, and neither touched the other's.
+  assert.ok(
+    ![...kv.values.keys()].some((name) => name.startsWith(`${key}.p${before}.`)),
+    "the manifest both writes read has no parts left",
+  );
+  // The direct evidence for the fix: both writes' part sets are in the
+  // namespace under different tokens, so neither writer's parts collided with
+  // or were deleted by the other's - with one shared generation number these
+  // keys would have been the same keys.
+  const partNames = [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`));
+  assert.ok(
+    partNames.some((name) => !name.startsWith(`${key}.p${manifest.gen}.`)),
+    "the losing write's parts are still there, on a token of their own",
+  );
+  assert.ok(
+    partNames.length > manifest.parts,
+    "two writes, two part sets: the live one and the orphaned one",
+  );
+  const read = await readSnapshot(snapshots, key);
+  assert.ok(
+    [3, 4].includes(Object.keys(read).length),
+    "the reader sees exactly one of the two writes, never a mix of their parts",
+  );
+});
+
+test("a write that died before its manifest has its parts swept by the next write, past the lease", async () => {
+  // A write that crashes between its parts and its manifest leaves parts no
+  // manifest names, and manifest-ordered cleanup never comes back for them -
+  // the parts would linger forever. The sweep at the next write's start
+  // takes any token the live manifest does not name once it outlasts the
+  // lease, and only then: a write whose parts are landing right now is
+  // inside the lease, so a racing sweep cannot delete it from under itself.
+  const kv = createTestKv();
+  let clock = Date.parse("2026-10-05T00:00:00.000Z");
+  const snapshots = createKvSnapshotStore(kv, {
+    chunkBytes: 64,
+    orphanLeaseMs: 60 * 1000,
+    now: () => clock,
+  });
+  const key = snapshotKey(ACCOUNT, "orphans");
+  /** @param {number} ms @returns {string} */
+  const orphanTokenAt = (ms) => `${new Date(ms).getTime().toString(36)}.aaaabbbbcccc`;
+  const crashedAt = clock - 10 * 60 * 1000;
+  const inFlightAt = clock - 1000;
+  await kv.put(`${key}.p${orphanTokenAt(crashedAt)}.0`, "garbage");
+  await kv.put(`${key}.p${orphanTokenAt(crashedAt)}.1`, "garbage");
+  await kv.put(`${key}.p${orphanTokenAt(inFlightAt)}.0`, "in flight");
+  await snapshots.put(key, snapshotJson(3));
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(crashedAt)}.0`),
+    false,
+    "the crashed write's parts are gone",
+  );
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(crashedAt)}.1`),
+    false,
+    "every part of the crashed write is gone",
+  );
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(inFlightAt)}.0`),
+    true,
+    "a part younger than the lease stays - it belongs to a write still in flight",
+  );
+  clock += 2 * 60 * 1000;
+  await snapshots.put(key, snapshotJson(4));
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(inFlightAt)}.0`),
+    false,
+    "once the lease runs out on a write that never committed, its parts go too",
+  );
+  const read = await readSnapshot(snapshots, key);
+  assert.equal(Object.keys(read).length, 4, "the sweep never touched the live write's parts");
 });
 
 test("a snapshot written before chunking reads unchanged, and a missing part is an error, not an empty drive", async () => {

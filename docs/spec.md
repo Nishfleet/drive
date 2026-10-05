@@ -252,7 +252,9 @@ Who builds it: queue workers, one issue per step, in a new product repo created 
 
 ### The meter database at scale (decided 2026-10-05, drive #564)
 
-The one shared D1 database stays. `file_versions` is the fast grower — every upload, overwrite and delete is a row — so the nightly meter trip now deletes rows hidden more than 35 days (the 30-day restore window plus the provider's own 30-day version keep, plus 5 days of margin) once every hourly rollup has booked their minutes into `usage_minutes`, and writes one size row a day (`nightly_sizes`, also printed to the Worker log) so growth is watched, not discovered.
+The one shared D1 database stays. `file_versions` is the fast grower — every upload, overwrite and delete is a row — so the nightly meter trip now deletes rows hidden more than 35 days (the 30-day restore window plus the provider's own 30-day version keep, plus 5 days of margin) once every hourly rollup has booked their minutes into `usage_minutes`, and writes one size row a day (`nightly_sizes`, also printed to the Worker log) so growth is watched, not discovered. The delete reads the partial index on `hidden_at` that ships with the retention migration, so it walks the rows it deletes, not the table.
+
+**The size row's exact counts are the point, and their cost is accepted.** `COUNT(*)` on `file_versions` scans the table, so the day's row costs one full scan per growing table, off the request path, once a night. A sampled or estimated counter would dodge that scan only by keeping the exact number unknown — the number the trigger below acts on — so the scan stays, and the trigger's own act bounds it: at the split, every scan the watch depends on shrinks to the account's share.
 
 Two alternatives were rejected:
 

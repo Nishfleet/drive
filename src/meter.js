@@ -1770,6 +1770,12 @@ const VERSION_RETENTION_MS = VERSION_RETENTION_DAYS * 24 * HOUR_MS;
 
 const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
   WHERE hidden_at IS NOT NULL AND hidden_at < ?1`;
+// The partial index that predicate reads (migrations/drive/
+// 0023_file_versions_hidden_at.sql), so the nightly delete is a range read
+// over hidden rows and not a full-table scan on the meter's fastest grower
+// (drive issue #564, in-run review). It is partial because the predicate's
+// other half is `hidden_at IS NOT NULL`, so the index holds only the rows a
+// prune can reach, and inserting a live row pays nothing for it.
 
 /**
  * Delete the `file_versions` rows the ledger no longer needs, and only those:
@@ -1837,8 +1843,12 @@ const NIGHTLY_SIZES_WRITE_SQL = `INSERT INTO nightly_sizes
  * sees the growth line once a day and the `nightly_sizes` table keeps every
  * day's row to compare against. The counts are whole-table aggregates - the
  * very kind of scan the retention prune above exists to keep cheap - paid
- * once a night, against tables the prune keeps bounded. A retried run
- * upserts the same day's row rather than doubling it.
+ * once a night, against tables the prune keeps bounded. They are exact on
+ * purpose, because the trigger in docs/spec.md that decides on the split
+ * acts on the number itself, so the scan is the accepted price of a
+ * decision-grade figure and the split it triggers takes the scans back to one
+ * account's share. A retried run upserts the same day's row rather than
+ * doubling it.
  * @param {D1Database|undefined} db
  * @param {number|Date|string} now the run instant
  * @returns {Promise<{day: string, recordedAt: number, fileVersionRows: number,
