@@ -43,7 +43,7 @@ func TestStandinInterruptUpload(t *testing.T) {
 	name := "interrupt.bin"
 
 	env.startMount()
-	rc := newRCClient("rclone", env.rcAddr, "")
+	rc := rcClientForTestHome(t, env.home, env.rcAddr, "")
 	var limitErr error
 	for i := 0; i < 20; i++ {
 		limitErr = rc.SetBwLimit(context.Background(), "10M:off")

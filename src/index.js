@@ -49,6 +49,7 @@ import {
   runMeterCron,
   toMillis,
 } from "./meter.js";
+import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   drawUsageHours,
@@ -385,6 +386,29 @@ async function liveQueueFor(env, account) {
   return createD1QueueStore(env.DRIVE_DB).latest(account.id);
 }
 
+// The account's live devices (drive issue #556), read from the same `devices`
+// rows the api Worker's key store writes: the first-run page used to be told
+// "waiting" for every account, because this route carried no device rows at
+// all, so nothing it answered could ever say connected. Built per request from
+// the binding like liveQueueFor, for the same reason: a machine that just
+// signed in is the row the next poll reads, on whichever instance the poll
+// lands on. Whether a device reads as connected is not decided here — the
+// window is src/status.js `connectionStatus`'s own — so this one function fills
+// the payload and the rule stays in the module the page and the CLI already
+// read. No database means no device has signed in yet: the empty list, the
+// same answer as an account whose machine has not.
+/**
+ * @param {Env} env
+ * @param {{id: string}} account
+ * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
+ */
+async function liveDevicesFor(env, account) {
+  if (!env.DRIVE_DB) {
+    return [];
+  }
+  return createD1DeviceStore(env.DRIVE_DB).listLive(account);
+}
+
 // The owner's spending-cap state for the public upload routes, read from the
 // same src/billing.js summary the usage page shows, and resolved per account so
 // the cap answered is always the one belonging to the account that minted the
@@ -559,14 +583,24 @@ export function createApp() {
   // methodNotAllowed middleware answers a wrong method with 405 and an Allow
   // header; the gate above already answered an anonymous caller 401.
 
-  // The first-run page's live flip (issue #32, #45). The third argument is
-  // the queue a device on this account reported, read from the row the api
-  // Worker's report route wrote (drive issue #318): #308 made it an argument
-  // to the handler, and the read is the one line that fills it.
+  // The first-run page's live flip (issue #32, #45, #556). The third
+  // argument is the queue a device on this account reported, read from the row
+  // the api Worker's report route wrote (drive issue #318): #308 made it an
+  // argument to the handler, and the read is the one line that fills it. The
+  // fourth is the account's live device rows, which are what let the page say
+  // connected at all: until #556 this route carried none, so the hard-coded
+  // "waiting" it answered was the only answer it had.
   app.get(STATUS_ENDPOINT, async (c) => {
     const account = c.get("account");
-    const upload = account ? await liveQueueFor(c.env, account) : null;
-    return handleFirstRunStatusRequest(c.req.raw, account, upload);
+    // Both reads answer the same poll, so they go together: the page asks
+    // every POLL_INTERVAL_MS and a second round-trip before the first answer
+    // is a longer wait on a page someone is watching. Neither read depends on
+    // the other.
+    const [upload, devices] = await Promise.all([
+      account ? liveQueueFor(c.env, account) : null,
+      account ? liveDevicesFor(c.env, account) : [],
+    ]);
+    return handleFirstRunStatusRequest(c.req.raw, account, upload, devices);
   });
 
   // Search reads only the D1 file index (issue #18), behind the account gate.
@@ -704,6 +738,21 @@ export function createApp() {
       apiKey: dodo.DODO_PAYMENTS_API_KEY,
       baseUrl: dodo.DODO_BASE_URL,
       productId: dodo.DODO_TOPUP_PRODUCT_ID,
+      fetch: dodo.DODO_FETCH,
+    });
+  });
+
+  // The card-update path the payment-failed copy points at (drive#575). A GET
+  // because it is a link a browser follows, and the answer is a 302 to the
+  // provider's customer portal rather than a JSON body. The account gate
+  // above already answered an anonymous caller 401, so a stranger never
+  // reaches a provider call.
+  app.get(PORTAL_ENDPOINT, (c) => {
+    const dodo = dodoEnv(c.env);
+    return handlePortalRequest(c.req.raw, c.get("account"), {
+      db: c.env.DRIVE_DB,
+      apiKey: dodo.DODO_PAYMENTS_API_KEY,
+      baseUrl: dodo.DODO_BASE_URL,
       fetch: dodo.DODO_FETCH,
     });
   });
@@ -949,18 +998,29 @@ export default {
     // `reconcileMeter` scopes it per account, so the provider listing never
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The account close cron is its own waitUntil (drive#565), registered
+      // before the reconcile runs: a reconcileMeter throw used to leave every
+      // close receipt, reminder and purge undone for that night, and the
+      // purge is resumable now, so the two trips have nothing to say to each
+      // other. Its own per-account catches mean only a whole-cron failure
+      // (D1 down) rejects here, and a failed trigger is the honest signal
+      // for that: the next night retries everything it did not finish.
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        await runAccountCloseCron({
-          db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
-          store: storeFor(env),
-          email: env.EMAIL,
-          mailFrom: secrets.MAIL_FROM ?? "",
-          now: event.scheduledTime,
-        });
+        context.waitUntil(
+          runAccountCloseCron({
+            db: env.DRIVE_DB,
+            devices: createD1DeviceStore(env.DRIVE_DB),
+            store,
+            email: env.EMAIL,
+            mailFrom: secrets.MAIL_FROM ?? "",
+            now: event.scheduledTime,
+          }).catch((error) => {
+            throw new Error(`the account close cron failed: ${error.message}`);
+          }),
+        );
       }
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

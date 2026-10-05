@@ -507,6 +507,9 @@ function signedListingStore(client, bucket) {
     async list() {
       throw new Error("the reconciler never lists a folder");
     },
+    async listKeys() {
+      throw new Error("the reconciler never walks the key space");
+    },
     async read() {
       throw new Error("the reconciler never reads a file");
     },
@@ -516,8 +519,20 @@ function signedListingStore(client, bucket) {
     async remove() {
       throw new Error("the reconciler never removes a file");
     },
+    async removeBatch() {
+      throw new Error("the reconciler never deletes a batch");
+    },
     async copy() {
       throw new Error("the reconciler never copies a file");
+    },
+    async listPage() {
+      throw new Error("the reconciler never lists a page");
+    },
+    async listAll() {
+      throw new Error("the reconciler never lists a bucket");
+    },
+    async stat() {
+      throw new Error("the reconciler never stats a file");
     },
   };
 }

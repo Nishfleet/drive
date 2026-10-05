@@ -334,6 +334,25 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This drive is not taking uploads right now.",
     next: "Tell the person who shared this page and try again later.",
   }),
+  // The billing portal (drive#575) for an account with no Dodo customer yet:
+  // there is no card to update and no invoice to read, so the next step is the
+  // first top-up, which is what creates the customer.
+  "portal-no-card": Object.freeze({
+    what: "This account has no card or payment on file yet.",
+    next: "Top up once, then the billing portal will have your card.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // customer-portal session can be created (the Dodo key waits on Nish, #325).
+  "portal-not-open": Object.freeze({
+    what: "The billing portal is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the customer-portal session
+  // request, so no portal opened and no card was changed.
+  "portal-failed": Object.freeze({
+    what: "The billing portal did not open, and no card was changed.",
+    next: "Try again in a minute.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the
