@@ -32,8 +32,8 @@ with write access here, and how each download that CI executes is pinned
 Every release asset a workflow downloads is checked against a SHA-256 digest
 written in this repository before it runs. `test/workflow-downloads.test.mjs`
 fails on a workflow step that downloads with `curl`, `wget` or
-`Invoke-WebRequest` and does not compare each download with a pinned
-`*_SHA256` value in that same step.
+`Invoke-WebRequest` and does not compare it with a pinned `*_SHA256` value in
+that same step, and on a step that holds more than one download.
 
 | Download | Where | Pin |
 | --- | --- | --- |

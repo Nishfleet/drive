@@ -47,12 +47,20 @@ function steps(text) {
   return text.split(/\n(?=\s*- (?:name|run|uses|id|if|shell|env):)/);
 }
 
-// A step passes only when it carries at least one pinned check per download,
-// so a second, unchecked download beside a checked one still fails.
+// A step may carry one download, and it passes only with a pinned check.
+// Counting checks against downloads is not enough: two checks of one file
+// would cover a second, unchecked download. So a step with two downloads
+// fails, and a second download goes in its own step with its own check.
+/** @param {string} step */
+function unpinned(step) {
+  const downloads = (step.match(DOWNLOAD) ?? []).length;
+  return downloads > 1 || (downloads === 1 && !new RegExp(CHECK.source).test(step));
+}
+
 /** @param {string} text */
 function unpinnedDownloads(text) {
   return steps(text)
-    .filter((step) => (step.match(DOWNLOAD) ?? []).length > (step.match(CHECK) ?? []).length)
+    .filter(unpinned)
     .map((step) =>
       step
         .split("\n")
@@ -91,8 +99,14 @@ test("the gate catches an unpinned download and passes a pinned one", () => {
     '          curl -fsSO "https://downloads.rclone.org/$V/$zip"',
     '          echo "$PINNED_SHA256  $zip" | sha256sum -c -',
     "          curl -fsSLO https://example.com/other.zip",
+    "      - name: two checks, one of them for an unchecked second file",
+    "        run: |",
+    '          curl -fsSO "https://downloads.rclone.org/$V/$zip"',
+    '          echo "$PINNED_SHA256  $zip" | sha256sum -c -',
+    '          echo "$PINNED_SHA256  $zip" | sha256sum -c -',
+    "          curl -fsSLO https://example.com/other.zip",
   ].join("\n");
-  assert.equal(unpinnedDownloads(unpinned).length, 8);
+  assert.equal(unpinnedDownloads(unpinned).length, 9);
 
   const pinned = [
     "      - name: get rclone",

@@ -33,6 +33,8 @@
 //   DRIVE_STANDIN_RCLONE    explicit path to the rclone binary
 //   DRIVE_STANDIN_FETCH_RCLONE=1  download the pinned rclone when it is absent
 //                                 (without it, a host with no rclone skips)
+//   DRIVE_STANDIN_RCLONE_URL / DRIVE_STANDIN_RCLONE_SHA256  another zip and
+//                                 its digest; one without the other fails
 //   DRIVE_STANDIN_PROPAGATION_SECONDS  seconds a save may take to cross
 //
 // Both machines in this proof are the same platform, which is what a Mac
@@ -156,9 +158,9 @@ async function sha256OfFile(p) {
 }
 
 // The fetched binary is executed, so it is checked against the digest pinned
-// in RCLONE_ZIPS before it runs. Someone who points DRIVE_STANDIN_RCLONE_URL
-// at their own copy owns that copy's integrity, so only the default download
-// is checked here.
+// in RCLONE_ZIPS before it runs. A copy fetched from DRIVE_STANDIN_RCLONE_URL
+// is checked too, against DRIVE_STANDIN_RCLONE_SHA256, which must be set with
+// it: nothing downloaded here runs unchecked.
 /**
  * @param {import("node:test").TestContext} t
  * @param {string} zip
@@ -194,6 +196,11 @@ async function findStockRclone(t) {
   }
 
   const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? pinned.url;
+  const want = process.env.DRIVE_STANDIN_RCLONE_URL
+    ? process.env.DRIVE_STANDIN_RCLONE_SHA256
+    : pinned.sha256;
+  if (!want)
+    throw new Error("DRIVE_STANDIN_RCLONE_URL needs DRIVE_STANDIN_RCLONE_SHA256, the zip's digest");
   const dir = await mkdtemp(path.join(tmpdir(), "drive-standin-rclone-"));
   t.after(() => rm(dir, { recursive: true, force: true }).catch(() => {}));
   const bin = path.join(dir, "rclone");
@@ -202,7 +209,7 @@ async function findStockRclone(t) {
     stdio: "inherit",
   });
   if (curl.status !== 0) throw new Error(`could not download ${url} (curl exited ${curl.status})`);
-  if (url === pinned.url) await verifyReleaseChecksum(t, zip, pinned.sha256);
+  await verifyReleaseChecksum(t, zip, want);
   const unzip = spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" });
   if (unzip.status !== 0) throw new Error(`could not unpack ${zip} (unzip exited ${unzip.status})`);
   const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
