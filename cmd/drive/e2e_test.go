@@ -86,6 +86,7 @@ func TestStandinMountProof(t *testing.T) {
 	// Seed the device's own prefix the way the api Worker will (step 1).
 	seedEnv := append(os.Environ(),
 		"RCLONE_CONFIG="+filepath.Join(home, ".config", "drive", "rclone.conf"),
+		rcloneSecretEnv+"="+secretKey,
 	)
 	// Let Mount write the config first so the seed uses the same file.
 	cfg := testStorage()
@@ -293,7 +294,7 @@ func TestStandinPauseProof(t *testing.T) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}
 
-	rc := func() *rcClient { return newRCClient("rclone", rcAddr, "") }
+	rc := func() *rcClient { return rcClientForTestHome(t, home, rcAddr, "") }
 	readBytes := func(t *testing.T) int64 {
 		t.Helper()
 		stats, err := rc().ReadStats(context.Background())
@@ -412,7 +413,7 @@ func TestStandinPauseProof(t *testing.T) {
 		t.Errorf("queue = %+v, want empty once the upload finished", queue.Queue)
 	}
 	listing := exec.Command("rclone", "lsl", "drive:"+cfg.Bucket+"/"+cfg.Prefix+"/pause-proof.bin")
-	listing.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home))
+	listing.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home), rcloneSecretEnv+"="+cfg.SecretKey)
 	out, err := listing.Output()
 	if err != nil {
 		t.Fatalf("independent rclone lsl: %v", err)
@@ -542,6 +543,20 @@ func mountIsLive(dir string) bool {
 		return false
 	}
 	return on
+}
+
+func rcClientForTestHome(t *testing.T, home, addr, fs string) *rcClient {
+	t.Helper()
+	c := newRCClient("rclone", addr, fs)
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.User == "" || auth.Pass == "" {
+		t.Fatal("rclone.env has no rc user/pass after mount")
+	}
+	c.user, c.pass = auth.User, auth.Pass
+	return c
 }
 
 // startStandinMount starts `drive mount --foreground` for home against cfg and
@@ -708,7 +723,10 @@ func standinEnv(t *testing.T, home string, cfg StorageConfig) []string {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home))
+	return append(os.Environ(),
+		"RCLONE_CONFIG="+RcloneConfigPath(home),
+		rcloneSecretEnv+"="+cfg.SecretKey,
+	)
 }
 
 // openSizes are the three files issue #194 names, and the bytes that count as
@@ -864,7 +882,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, loopbackRCAddr, RemoteFor(cfg))
 	before, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)
@@ -890,7 +908,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Errorf("the mount's chunk-size limit is %d bytes, want the fill's %d", before.Opt.ChunkSizeLimit, wantLimit)
 	}
 
-	res, err := fillPass(ctx, c, false, 0, 0, fillReader(mountDir))
+	res, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{name}}, 0, 0)
 	if err != nil {
 		t.Fatalf("fill pass through the mount: %v", err)
 	}
@@ -952,13 +970,10 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, loopbackRCAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
-		_, err := fillPass(ctx, c, false, 0, 0, func(string, bool) error {
-			_, err := fillReadFile(filepath.Join(mountDir, fillName))
-			return err
-		})
+		_, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{fillName}}, 0, 0)
 		filled <- err
 	}()
 	var withFill []time.Duration
@@ -1074,7 +1089,7 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", RCAddr(), RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, RCAddr(), RemoteFor(cfg))
 	stats, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)

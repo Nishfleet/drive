@@ -20,9 +20,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BILLING_CONFIG, billingConfigFor, monthlyBillForStoredTb } from "../src/billing.js";
+import { billingConfigFor, monthlyBillForStoredTb } from "../src/billing.js";
 import { markerValues } from "../src/docs.js";
-import { buildPrice, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
+import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
 import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -63,7 +63,7 @@ const PUBLIC_FILES = [
 /** @type {Array<[string, string]>} */
 const publicTexts = PUBLIC_FILES.map((file) => [
   file,
-  // A docs marker ({{NO_MINIMUM}}) renders from PRICE, which the tests above
+  // A docs marker ({{NO_PLANS}}) renders from PRICE, which the tests above
   // check, so the marker's own name is not copy.
   readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
     .replaceAll("&nbsp;", " ")
@@ -71,10 +71,13 @@ const publicTexts = PUBLIC_FILES.map((file) => [
 ]);
 
 test("the headline is the issue's sentence, from config", () => {
+  // drive#586: prepaid. The lead names the smallest top-up from PREPAID, so
+  // the headline and the checkout cannot disagree on it.
   assert.equal(
     PRICE.headline,
-    "Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
+    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
   );
+  assert.equal(PRICE.leadLine, `Add $${PREPAID.minTopUpUsd} or more.`);
   assert.equal(PRICE.headline, `${PRICE.leadLine} ${PRICE.rateLine} ${PRICE.maxLine}`);
   // The page sets the sentence as three lines in the h1, in this order.
   const h1 = words.slice(words.indexOf("<h1"), words.indexOf("</h1>"));
@@ -92,17 +95,19 @@ test("the headline is the issue's sentence, from config", () => {
   assert.ok(h1.indexOf(PRICE.rateLine) < h1.indexOf(PRICE.maxLine));
 });
 
-test("no minimum, no plans, and founding pricing sit under the headline", () => {
+test("no plans and a balance that never expires sit under the headline", () => {
   const headline = words.indexOf("</h1>");
-  const noMinimum = words.indexOf(PRICE.noMinimumLine);
-  const founding = words.indexOf(PRICE.foundingLine);
-  assert.equal(PRICE.noMinimumLine, "No minimum. No plans.");
-  assert.ok(noMinimum > headline, "No minimum. No plans. must follow the headline");
-  assert.ok(founding > noMinimum, "founding member pricing must follow it");
-  assert.equal(
-    PRICE.foundingLine,
-    "Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.",
-  );
+  const noPlans = words.indexOf(PRICE.noPlansLine);
+  assert.equal(PRICE.noPlansLine, "No plans. Your balance never expires.");
+  assert.ok(noPlans > headline, "the no-plans line must follow the headline");
+});
+
+test("the card line says the first top-up opens storage, with no old minimum", () => {
+  // drive#586: a card is needed, and the first $10 top-up opens storage. The
+  // old "There is no minimum" claim is false once a top-up is $10 or more.
+  assert.ok(PRICE.needCard.includes(`Your first $${PREPAID.minTopUpUsd} top-up opens storage.`));
+  assert.doesNotMatch(PRICE.needCard, /no minimum/i);
+  assert.match(PRICE.needCard, /no free tier/);
 });
 
 test("the trash billing rule is stated on the landing page and the pricing doc (drive#521)", () => {
@@ -131,22 +136,17 @@ test("the trash billing rule is stated on the landing page and the pricing doc (
 });
 
 test("the formula edges, as the bill computes them", () => {
-  // [TB, regular $, founding $], kept all month.
-  for (const [tb, regular, founding] of [
-    [0, 0, 0],
-    [0.001, 0.02, 0.01],
-    [0.499, 9.98, 4.99],
-    [0.5, 10, 5],
-    [1, 10, 5],
-    [1.5, 15, 7.5],
-    [4, 40, 20],
+  // [TB, $], kept all month.
+  for (const [tb, dollars] of [
+    [0, 0],
+    [0.001, 0.02],
+    [0.499, 9.98],
+    [0.5, 10],
+    [1, 10],
+    [1.5, 15],
+    [4, 40],
   ]) {
-    assert.equal(billForAllMonth(tb).billUsd, regular, `${tb} TB bills $${regular}`);
-    assert.equal(
-      billForAllMonth(tb, BILLING_CONFIG, { foundingMember: true }).billUsd,
-      founding,
-      `${tb} TB founding bills $${founding}`,
-    );
+    assert.equal(billForAllMonth(tb).billUsd, dollars, `${tb} TB bills $${dollars}`);
   }
   assert.equal(billForAllMonth(0.2).billUsd, 4, "200 GB is $4");
   assert.equal(billForAllMonth(3).billUsd, 30, "3 TB is $30");
@@ -159,15 +159,13 @@ test("the copy and the bill both follow the maximum at 8, 10 and 12", () => {
   for (const max of [8, 10, 12]) {
     const price = buildPrice({ maxUsdPerTb: max });
     const config = billingConfigFor(price);
-    const half = max / 2;
     const reaches = (max * 100) / price.rateCents;
     assert.equal(price.maxUsdPerTb, max);
-    assert.equal(price.founding.maxUsdPerTb, half, "founding is half, derived");
+    assert.equal("founding" in price, false, "there is one price, no second tier");
     assert.equal(price.reachesMaxGb, reaches);
     assert.equal(price.maxLine, `Never more than $${max} per TB.`);
     assert.ok(price.headline.endsWith(`Never more than $${max} per TB.`));
     assert.ok(price.titleLine.endsWith(`never more than $${max} per TB`));
-    assert.ok(price.foundingLine.endsWith(`never more than $${half} per TB.`));
     assert.ok(price.rule.includes(`until the bill reaches $${max}, at ${reaches} GB`));
     assert.ok(price.rule.includes(`never pay more than $${max} for each TB`));
     assert.equal(price.examples[2].label, `${reaches} GB to 1 TB`);
@@ -183,19 +181,16 @@ test("the copy and the bill both follow the maximum at 8, 10 and 12", () => {
       }
     }
     // The bill reads the same config value.
-    const bill = (/** @type {number} */ tb, founding = false) =>
-      monthlyBillForStoredTb(tb, config, { foundingMember: founding }).billUsd;
+    const bill = (/** @type {number} */ tb) => monthlyBillForStoredTb(tb, config).billUsd;
     assert.equal(bill(1), max, `1 TB is $${max}`);
     assert.equal(bill(4), 4 * max, `4 TB is $${4 * max}`);
     assert.equal(bill(1.5), 1.5 * max);
     assert.equal(bill(reaches / 1000), max, "the rate reaches the maximum where the copy says");
     assert.equal(bill(0.2), 4, "the rate does not move with the maximum");
-    assert.equal(bill(4, true), 2 * max, "founding pays half the maximum");
   }
-  // A maximum that is not whole dollars, or a founding half that is not, is
-  // refused rather than rounded into copy the bill does not charge.
+  // A maximum that is not whole dollars is refused rather than rounded into
+  // copy the bill does not charge.
   assert.throws(() => buildPrice({ maxUsdPerTb: 9.5 }), /whole number of dollars/);
-  assert.throws(() => buildPrice({ maxUsdPerTb: 11 }), /founding maximum/);
 });
 
 test("the example rows are the bill's figures, with the usual plan and the saving", () => {
@@ -269,6 +264,8 @@ test("the retired price words are gone from every public surface", () => {
       /\$5 a month/,
       /ceiling/i,
       /\$20 (per|a) TB/,
+      // Founding pricing was removed (drive#586): every account pays one price.
+      /founding/i,
     ]) {
       assert.doesNotMatch(text, stale, `${file} must not carry ${stale}`);
     }
@@ -306,8 +303,7 @@ test("the worked-example helpers fail closed on a size that cannot be billed", (
 test("copy, meta tags and llms.txt all render from the one price source", () => {
   assert.equal(BILLING.headline, PRICE.headline, "seo.js must reuse the config's sentence");
   assert.equal(BILLING.rule, PRICE.rule);
-  assert.equal(BILLING.noMinimumLine, PRICE.noMinimumLine);
-  assert.equal(BILLING.foundingLine, PRICE.foundingLine);
+  assert.equal(BILLING.noPlansLine, PRICE.noPlansLine);
   assert.equal(SITE.description.endsWith(PRICE.headline), true);
   assert.ok(page.includes(`<title>Drive — ${PRICE.titleLine}</title>`));
   const descriptionMetas = new Set([
@@ -328,7 +324,7 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
   }
   // llms.txt, twice: the summary line and the Pricing section.
   assert.equal(llms.split(PRICE.headline).length - 1, 2, "llms.txt must carry the headline twice");
-  for (const line of [PRICE.rule, PRICE.noMinimumLine, PRICE.foundingLine, PRICE.needCard]) {
+  for (const line of [PRICE.rule, PRICE.noPlansLine, PRICE.needCard]) {
     assert.ok(llms.includes(line), `llms.txt must carry "${line}"`);
   }
   const jsonLd = page.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);

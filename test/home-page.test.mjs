@@ -9,7 +9,7 @@
 //    usualPlanMonthlyUsd(), and the "you keep" / "you saved" figures are the
 //    difference (drive#463).
 // 3. The slider asks /api/quote and does no bill arithmetic of its own.
-// 4. The page's founding, cap and sign-up lines use only PRICE's numbers and
+// 4. The page's cap and sign-up lines use only PRICE's numbers and
 //    DEFAULT_CAP_USD, and no trial or membership survives (drive#463, #464).
 // 5. The page keeps its accessibility and font contract: one h1, a main
 //    landmark, a reduced-motion reset, only the hero face preloaded, and no
@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { monthlyBillForStoredTb, quoteForStoredTb } from "../src/billing.js";
 import { DEFAULT_CAP_USD } from "../src/cap-default.js";
-import { PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
+import { PREPAID, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../public/site.css", import.meta.url), "utf8");
@@ -88,11 +88,14 @@ test("one h1, a main landmark, a skip link and a reduced-motion reset", () => {
 
 test("the main action is Get drive, to /signin, with a true pay-as-you-go line", () => {
   assert.match(html, /<a class="btn" href="\/signin">Get drive/);
+  // drive#586: prepaid. The line names the smallest top-up and what 200 GB
+  // draws from it.
   const cta = html.match(
-    /<p class="cta-note">Add a card, store 200&nbsp;GB, pay \$(\d+) a month\.<\/p>/,
+    /<p class="cta-note">Add \$(\d+), store 200&nbsp;GB, and it draws \$(\d+) a month\.<\/p>/,
   );
-  assert.ok(cta, "the hero carries the card-and-200-GB line");
-  assert.equal(Number(cta[1]), monthlyBillForStoredTb(0.2).billUsd);
+  assert.ok(cta, "the hero carries the top-up-and-200-GB line");
+  assert.equal(Number(cta[1]), PREPAID.minTopUpUsd);
+  assert.equal(Number(cta[2]), monthlyBillForStoredTb(0.2).billUsd);
   // No trial, no membership, no first-month discount (drive#463).
   for (const stale of [/days free/i, /trial/i, /membership/i, /first month/i, /\$12/, /ceiling/i]) {
     assert.doesNotMatch(html, stale);
@@ -100,13 +103,9 @@ test("the main action is Get drive, to /signin, with a true pay-as-you-go line",
   assert.ok(html.includes(PRICE.needCard), "the footer says why a card is needed");
 });
 
-test("the founding block and the cap use the price source's numbers", () => {
-  const f = PRICE.founding;
-  assert.ok(html.includes(PRICE.foundingLine));
-  assert.ok(html.includes(`<b>${f.rateCents}¢ a GB</b>`));
-  assert.ok(html.includes(`<b>$${f.maxUsdPerTb} per TB</b>`));
-  assert.ok(html.includes(`<p class="five">${f.rateCents}¢<small>`));
-  assert.doesNotMatch(html, /1,000 (paying|members|founding)/i, "never show a count");
+test("the home page carries no founding block, and the cap uses the price source's numbers", () => {
+  assert.doesNotMatch(html, /founding/i, "founding pricing is removed from the page");
+  assert.doesNotMatch(html, /1,000 (paying|members)/i, "never show a count");
   assert.ok(html.includes(`Your spending cap starts at $${DEFAULT_CAP_USD}.`));
   assert.ok(html.includes(`of $${DEFAULT_CAP_USD} cap`));
   assert.ok(html.includes(`The default cap is $${DEFAULT_CAP_USD}.`));

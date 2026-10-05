@@ -22,6 +22,7 @@
 // No price is written down here. The one line the page shows about cost comes
 // from src/pricing.js (PRICE), the single price source, so a re-priced product
 // moves this page and the pricing page together.
+import { json } from "../workers/api/src/http.js";
 import { agentCannotDeleteSentence } from "./docs.js";
 import { validatePath } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
@@ -239,23 +240,6 @@ export async function createStarter(store) {
     created.push(file.path);
   }
   return { created, kept };
-}
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @returns {Response}
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS },
-  });
 }
 
 /**

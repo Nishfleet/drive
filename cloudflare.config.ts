@@ -146,12 +146,6 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
-      // drive issue #386: the founding-member offer switch. A Worker var, not
-      // a code change and not a secret: "1" keeps the offer open, "0" closes
-      // it. Closing it never changes accounts that already hold the flag
-      // (src/founding.js). The health check does not probe it: a string is
-      // not a reachable dependency, and a missing var is treated as open.
-      FOUNDING_OFFER_OPEN: bindings.text("1"),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.
@@ -215,6 +209,17 @@ export default defineConfig({
       REQUEST_UPLOAD_LINK_RATE_LIMITER: bindings.rateLimit({
         namespace: "1005",
         simple: { limit: 10, period: 60 },
+      }),
+      // GET /s/<token> (drive issue #506): a logged-out share download has no
+      // account gate, so the stock rate-limit binding is the bound. Per IP it
+      // sits at 60 a minute: far above a person opening a handful of links,
+      // far below a script walking tokens. One minute, the waitlist's period.
+      // Namespace 1008: 1001–1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair. A namespace another binding already uses fails
+      // the deploy with 10021.
+      SHARE_DOWNLOAD_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1008",
+        simple: { limit: 60, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the
