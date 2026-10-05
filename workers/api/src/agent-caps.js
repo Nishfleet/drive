@@ -32,7 +32,6 @@ import {
   dayKey,
   monthKey,
 } from "../../../src/agentcaps.js";
-import { accountFoundingFlag } from "../../../src/founding.js";
 import { monthUsageThrough } from "../../../src/meter.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
 
@@ -152,11 +151,6 @@ export async function stampAgentRequest(db, accountId, keyId, at) {
  * and a cached month would mean a key stays uncapped for as long as the cache
  * lived, which is the failure these caps exist to stop.
  *
- * The account's founding flag is read from the accounts row, not from the caps
- * row (drive#482): the caps row is not written until this request is stamped,
- * so a brand-new key would otherwise always read as full price on the very
- * request that creates it. `accountFoundingFlag` answers not founding when the
- * row is gone, which is the safe direction for a cap.
  * @param {D1Database} db
  * @param {{accountId: string, id: string, kind?: string}} device
  * @param {number|Date} at the caller's clock, normalized once by `asMillis`
@@ -168,7 +162,6 @@ export async function agentCapGate(db, device, at) {
   }
   const time = asMillis(at);
   const caps = await readAgentCaps(db, device.accountId, device.id);
-  const founding = await accountFoundingFlag(db, device.accountId);
   const today = await stampAgentRequest(db, device.accountId, device.id, time);
   const usage = await monthUsageThrough(db, device.accountId, time);
   return agentCapStatus({
@@ -176,9 +169,6 @@ export async function agentCapGate(db, device, at) {
     // all the cap counts.
     usage: { gbMinutes: usage.gbMinutes },
     caps: caps ?? undefined,
-    // The account's founding flag (#386), so the key counts the bill a
-    // founding account is billed.
-    founding,
     requestsToday: today.requests,
     // The day the count belongs to, so the decision can tell this day's count
     // from one stamped on the row and left there overnight.

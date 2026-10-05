@@ -1,17 +1,9 @@
 # Windows: build the MSI, install it silently, and prove the drive letter
 # (drive issue #154, the finish line of "we do EVERYTHING how pro devs do it").
 #
-# THIS FILE IS NOT IN .github/workflows/ ON PURPOSE. The agent worker's App
-# token has Contents/PRs/Issues write and no Workflows write, so a push that
-# touches .github/workflows/ is rejected by GitHub with:
-#
-#   ! [remote rejected] ... refusing to allow a GitHub App to create or
-#     update workflow `.github/workflows/...` without `workflows` permission
-#
-# That is the same wall drive#245 (Lighthouse) and drive#291 (the #153
-# windows-latest job) recorded. Someone with Workflows write moves this file to
-# .github/workflows/windows-msi.yml unchanged, or grants the App that
-# permission. The YAML below is written to be dropped in as-is.
+# This file is the one copy (drive#508). It used to sit in installer/ while
+# the agent worker's App token could not push to .github/workflows/; it now
+# lives here, and test/installer.test.mjs reads it from this path.
 #
 # What it proves, in order:
 #   1. the MSI and the Burn bundle build with the stock WiX v4 toolchain;
@@ -20,7 +12,7 @@
 #      and the login task from drive#153 exists;
 #   4. the installed product mounts at a drive letter, a write through the
 #      letter reads back, and unmount takes the letter down;
-#   5. `winget validate` passes on the manifest beside this file;
+#   5. `winget validate` passes on the manifest in installer/winget/;
 #   6. a silent uninstall leaves no binary, no PATH entry and no task.
 #
 # And every msiexec call writes its own verbose log (/l*v) beside the sources,
@@ -51,6 +43,12 @@ on:
 permissions:
   contents: read
 
+# The same rclone release ci.yml pins (test/installer.test.mjs keeps the two
+# equal), checked against the digest rclone publishes in its SHA256SUMS.
+env:
+  RCLONE_RELEASE: "v1.75.1"
+  RCLONE_WINDOWS_AMD64_SHA256: "200eb602c126d82aa38b51e0f6b9ae837473ff99b51278d3f6f837574c494d6e"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -78,8 +76,11 @@ jobs:
       - name: Install rclone (the stock tool the mount drives)
         shell: pwsh
         run: |
-          curl.exe -sSO https://downloads.rclone.org/rclone-current-windows-amd64.zip
-          Expand-Archive -Path rclone-current-windows-amd64.zip -DestinationPath rclone
+          $zip = "rclone-$env:RCLONE_RELEASE-windows-amd64.zip"
+          curl.exe -fsSO "https://downloads.rclone.org/$env:RCLONE_RELEASE/$zip"
+          $got = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:RCLONE_WINDOWS_AMD64_SHA256) { throw "rclone's zip digest is $got, not the pinned one" }
+          Expand-Archive -Path $zip -DestinationPath rclone
           $exe = Get-ChildItem -Path rclone -Recurse -Filter rclone.exe | Select-Object -First 1
           Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $exe.FullName)
           & $exe.FullName version
@@ -110,7 +111,6 @@ jobs:
     timeout-minutes: 40
     env:
       GO_VERSION: "1.24"
-      RCLONE_RELEASE: "v1.75.0"
       # WinFsp's own release, pinned to a tag. The MSI is downloaded from
       # WinFsp's own GitHub release at build time and never vendored.
       # WINFSP_MSI_SHA256 is the digest of that exact asset, checked after the
@@ -136,7 +136,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -172,9 +172,12 @@ jobs:
       - name: Download rclone (the vendor's own Windows build)
         shell: pwsh
         run: |
-          curl.exe -sSO "https://downloads.rclone.org/${{ env.RCLONE_RELEASE }}/rclone-${{ env.RCLONE_RELEASE }}-windows-amd64.zip"
-          Expand-Archive -Path "rclone-${{ env.RCLONE_RELEASE }}-windows-amd64.zip" -DestinationPath rclone -Force
-          $exe = Join-Path "rclone\rclone-${{ env.RCLONE_RELEASE }}-windows-amd64" "rclone.exe"
+          $zip = "rclone-$env:RCLONE_RELEASE-windows-amd64.zip"
+          curl.exe -fsSO "https://downloads.rclone.org/$env:RCLONE_RELEASE/$zip"
+          $got = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:RCLONE_WINDOWS_AMD64_SHA256) { throw "rclone's zip digest is $got, not the pinned one" }
+          Expand-Archive -Path $zip -DestinationPath rclone -Force
+          $exe = Join-Path "rclone\rclone-$env:RCLONE_RELEASE-windows-amd64" "rclone.exe"
           if (-not (Test-Path $exe)) { throw "rclone.exe was not in the vendor's zip" }
           Copy-Item $exe installer\rclone.exe
           & $exe version

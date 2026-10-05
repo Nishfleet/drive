@@ -10,6 +10,7 @@
 //    or its window drift from src/files.js.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
@@ -664,6 +665,9 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     list: async () => {
       throw new Error("storage list failed with 503");
     },
+    listKeys: async () => {
+      throw new Error("storage list failed with 503");
+    },
     read: async () => {
       throw new Error("storage read failed with 503");
     },
@@ -671,6 +675,9 @@ test("a storage failure is a 500 that names it, never a silent success", async (
       throw new Error("storage write failed with 503");
     },
     remove: async () => {},
+    removeBatch: async () => {
+      throw new Error("storage batch delete failed with 503");
+    },
     copy: async () => {},
     listVersions: async () => {
       throw new Error("storage version list failed with 503");
@@ -1733,4 +1740,151 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
     "DELETE http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-3",
     "the upload is aborted after a failed part",
   );
+});
+
+test("listKeys lists flat, resumes after a start-after key, and follows the continuation token", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  /** @type {string[]} */
+  const urls = [];
+  /**
+   * @param {string[]} keys
+   * @param {string | null} token
+   */
+  const page = (keys, token) =>
+    `<?xml version="1.0" encoding="UTF-8"?>\n<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">\n` +
+    keys.map((key) => `  <Contents><Key>${key}</Key><Size>10</Size></Contents>`).join("\n") +
+    (token ? `  <NextContinuationToken>${token}</NextContinuationToken>\n` : "") +
+    `</ListBucketResult>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url) => {
+    urls.push(String(url));
+    if (urls.length === 1) {
+      return new Response(page(["u/acct/.trash/old.txt", "u/acct/a&amp;b.txt"], "token-1"), {
+        status: 200,
+      });
+    }
+    return new Response(page(["u/acct/z.txt"], null), { status: 200 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  const keys = await store.listKeys("u/acct/", { startAfter: "u/acct/a.txt", limit: 1000 });
+  // Flat and in order: the hidden trash folder is in the walk (the purge has
+  // to reach it), and `&` comes back as the character the key really has.
+  assert.deepEqual(keys, ["u/acct/.trash/old.txt", "u/acct/a&b.txt", "u/acct/z.txt"]);
+  assert.equal(urls.length, 2);
+  assert.match(
+    urls[0],
+    /list-type=2&prefix=u%2Facct%2F&start-after=u%2Facct%2Fa\.txt&max-keys=1000$/,
+  );
+  // `start-after` is a first-page parameter: the token pages carry on where
+  // the provider's own ordering left off.
+  assert.doesNotMatch(urls[1], /start-after/);
+  assert.match(urls[1], /continuation-token=token-1/);
+});
+
+test("a repeated continuation token is refused instead of holding the listing open", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Contents><Key>u/acct/a.txt</Key><Size>10</Size></Contents>
+  <NextContinuationToken>same-token</NextContinuationToken>
+</ListBucketResult>`;
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response(xml, { status: 200 }),
+  });
+  await assert.rejects(store.listKeys("u/acct/"), /repeated continuation-token/);
+});
+
+test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escaped keys", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  /** @type {{url: string, method: string, headers: Record<string, string>, body: string}[]} */
+  const sent = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    sent.push({
+      url: request.url,
+      method: request.method,
+      headers: Object.fromEntries(request.headers),
+      body: await request.text(),
+    });
+    return new Response(`<?xml version="1.0" encoding="UTF-8"?>\n<DeleteResult></DeleteResult>`, {
+      status: 200,
+    });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  await store.removeBatch(["u/acct/a.txt", "u/acct/a&b.txt"]);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].method, "POST");
+  assert.ok(sent[0].url.endsWith("/drive/?delete"));
+  assert.deepEqual(
+    sent[0].body,
+    "<Delete><Object><Key>u/acct/a.txt</Key></Object>" +
+      "<Object><Key>u/acct/a&amp;b.txt</Key></Object></Delete>",
+  );
+  // S3 refuses the whole call without the checksum, so the header must be
+  // the base64 MD5 of the exact body bytes.
+  assert.match(sent[0].headers["content-md5"], /^[A-Za-z0-9+/]{22}==$/);
+  assert.equal(
+    sent[0].headers["content-md5"],
+    createHash("md5").update(sent[0].body, "utf8").digest("base64"),
+  );
+});
+
+test("removeBatch refuses a 200 answer that carries per-key errors", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Error><Key>u/acct/stuck.txt</Key><Code>InternalError</Code><Message>We encountered an internal error</Message></Error>
+  <Deleted><Key>u/acct/gone.txt</Key></Deleted>
+</DeleteResult>`;
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response(xml, { status: 200 }),
+  });
+  await assert.rejects(
+    store.removeBatch(["u/acct/gone.txt", "u/acct/stuck.txt"]),
+    /refused "u\/acct\/stuck\.txt" with InternalError/,
+  );
+});
+
+test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket batch", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  let calls = 0;
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response("<DeleteResult></DeleteResult>", { status: 200 });
+    },
+  });
+  const tooMany = Array.from({ length: 1_001 }, (_, i) => `u/acct/f-${i}.txt`);
+  await assert.rejects(store.removeBatch(tooMany), /at most 1000 keys, got 1001/);
+  // A store can carry more than one bucket (`bucketFor` reads the key's
+  // account prefix); a batch that named two buckets would silently miss the
+  // second's keys, so the mix is refused before any call goes out.
+  const split = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: (key) => (key.startsWith("u/founding/") ? "drv-b" : "drive"),
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response("<DeleteResult></DeleteResult>", { status: 200 });
+    },
+  });
+  await assert.rejects(
+    split.removeBatch(["u/acct_mix/a.txt", "u/founding/a.txt"]),
+    /keys from one bucket/,
+  );
+  assert.equal(calls, 0, "a refused batch makes no provider call");
 });

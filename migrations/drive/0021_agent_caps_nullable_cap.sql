@@ -34,8 +34,10 @@
 -- 0015 made for its branches rebuild (PR #340). D1 has no down-migrations, so
 -- this file is one-way.
 --
--- Numbered 0020 because 0019_abuse_guards.sql is the last file on the drive
--- database. The deploy sorts on the numeric prefix alone.
+-- Numbered 0021 because 0020_account_purge_cursor.sql and
+-- 0020_balance_ledger.sql are the last files on the drive database. The deploy
+-- sorts on the numeric prefix alone, so this file takes the next prefix rather
+-- than a third 0020 whose order against the other two would be a tie.
 
 CREATE TABLE agent_caps_nullable_cap (
   account_id TEXT NOT NULL DEFAULT '',

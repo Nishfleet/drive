@@ -1197,7 +1197,6 @@ test("the page carries every string from src/signin.js verbatim", () => {
     page.includes(PRICE.noMinimumLine),
     "the page must carry the price module's no-minimum line",
   );
-  assert.ok(page.includes(PRICE.foundingLine), "the page must carry the founding line");
 });
 
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
@@ -1346,7 +1345,6 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     .trim();
   assert.equal(labelText, SIGNIN_COPY.cardConsent, "the box is labelled in short");
   assert.ok(page.includes(SIGNIN_COPY.noMinimumLine), "the page must quote the no-minimum line");
-  assert.ok(page.includes(SIGNIN_COPY.foundingLine), "the page must quote the founding line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
   // "Never do" row). This page is a step-9 surface, so the rule is pinned on
   // it too, not only on the pricing page.

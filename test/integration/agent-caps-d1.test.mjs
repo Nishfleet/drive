@@ -148,7 +148,7 @@ test("an agent request under the cap writes, and the day it spent is stamped", a
   assert.equal(stamped.day_key, "2026-09-30");
   assert.equal(stamped.day_requests, 1);
   // A new row is written with no cap of its own (drive#534): 0004 declared
-  // `monthly_cap_usd REAL NOT NULL DEFAULT 12.0`, and migration 0020 rebuilds
+  // `monthly_cap_usd REAL NOT NULL DEFAULT 12.0`, and migration 0021 rebuilds
   // the table so the column is nullable and has no default. NULL is the whole
   // point — the reader's own default ($20, src/cap-default.js) then applies, so
   // a key that has never been configured is capped at the documented $20 rather
@@ -173,7 +173,7 @@ test("a row stamped by the store is capped at the code default, not the old $12"
   // The bug (drive#534): 0004 declared `monthly_cap_usd REAL NOT NULL DEFAULT
   // 12.0`, and `stampAgentRequest` inserts without naming the column, so every
   // key the store created was capped at $12.0 while the documented default is
-  // $20. Migration 0020 makes the column nullable with no default and the
+  // $20. Migration 0021 makes the column nullable with no default and the
   // backfill clears the 12.0, so this row carries NULL and the reader's $20
   // applies. 1.5 TB for a whole month bills a regular account $15: over $12,
   // under $20, so the write distinguishes the two defaults on the real schema.
@@ -182,7 +182,10 @@ test("a row stamped by the store is capped at the code default, not the old $12"
   const store = storeOver(db, clock);
   const account = { id: "acct_default", name: "Default drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
-  meterAMonthOf(sqlite, account.id, 1.5);
+  // 1500 GB for a whole month bills $15 at the one rate (`meterAMonthOf`
+  // takes gigabytes), which is over $12 and under $20: a $12 cap refuses this
+  // write and a $20 cap lets it through, so the number itself is the assertion.
+  meterAMonthOf(sqlite, account.id, 1500);
   assert.equal(
     (await writeAt(store, key, "/u/acct_default/under.md")).status,
     201,
@@ -347,24 +350,21 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   );
 });
 
-test("a founding account's agent key counts the account's half, at the real schema", async () => {
+test("an agent key counts the account's one bill, at the real schema", async () => {
   const { sqlite, db } = makeMeteredDB();
   const clock = fixedClock();
   const store = storeOver(db, clock);
-  const account = { id: "acct_founder", name: "Founder drive" };
+  const account = { id: "acct_one_price", name: "One price drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
-  // The flag the cap reads is the account's own (#386), on the accounts
-  // row: the same 2 TB that bills a regular account $20 (at the cap) bills a
-  // founding one $10, under the $20 default, so the write goes through
-  // (drive#482).
+// The one price (drive#607, which folded the founding rate into a single
+  // rate): 500 GB held for a whole month bills $10, under the $20 the code
+  // default now applies (drive#534).
   sqlite
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
     .run(account.id, "");
-  // 2 TB held for a whole month bills a founding account $10: half the $20 a
-  // regular account pays, and well under the $20 default cap.
-  meterAMonthOf(sqlite, account.id, 2000);
-  assert.equal((await writeAt(store, key, "/u/acct_founder/under.md")).status, 201);
+  meterAMonthOf(sqlite, account.id, 500);
+  assert.equal((await writeAt(store, key, "/u/acct_one_price/under.md")).status, 201);
   assert.deepEqual(
     JSON.parse(
       String(
@@ -373,14 +373,13 @@ test("a founding account's agent key counts the account's half, at the real sche
     ),
     ["list", "read", "write"],
   );
-  // 5 TB is $25 on a founding account, past the $20 default cap, so the cap
-  // still bites: the flag halves what the account pays, not what it is bounded
-  // by. (3 TB would be $15 now, under the $20 the schema default no longer
-  // overrides.)
+// Past the $20 the schema default no longer overrides, so the cap bites:
+  // 2.5 TB is $25. (2 TB is exactly $20, and `capStatus` reads
+  // `countedUsd > cap`, so a bill that lands on the cap still writes.)
   sqlite
     .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
-    .run(account.id, 5000 * MINUTES_PER_MONTH);
-  assert.equal((await writeAt(store, key, "/u/acct_founder/over.md")).status, 403);
+    .run(account.id, 2500 * MINUTES_PER_MONTH);
+  assert.equal((await writeAt(store, key, "/u/acct_one_price/over.md")).status, 403);
 });
 
 test("the next UTC day is a fresh count, with nothing running between", async () => {
@@ -510,18 +509,18 @@ test("the whole Worker fetch is capped, not only a route called by hand", async 
   );
 });
 
-test("migration 0020 clears the old 0004 default and leaves a set cap alone", () => {
+test("migration 0021 clears the old 0004 default and leaves a set cap alone", () => {
   // The bug (drive#534): 0004 declared `monthly_cap_usd REAL NOT NULL DEFAULT
   // 12.0`, and the store's INSERT never names the column, so the 12 landed on
-  // every row the store created. 0020 rebuilds the table nullable with no
+  // every row the store created. 0021 rebuilds the table nullable with no
   // default and clears exactly the rows still carrying the 0004 default. The
   // backfill is exact: no statement in this repo ever writes this column, so a
   // 12.0 here is 0004's default and nothing else, and a hand-set value is kept.
   const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
     .filter((name) => name.endsWith(".sql"))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
-  const capIndex = migrationFiles.indexOf("0020_agent_caps_nullable_cap.sql");
-  assert.ok(capIndex >= 0, "0020_agent_caps_nullable_cap.sql is missing");
+  const capIndex = migrationFiles.indexOf("0021_agent_caps_nullable_cap.sql");
+  assert.ok(capIndex >= 0, "0021_agent_caps_nullable_cap.sql is missing");
   const read = (/** @type {string} */ name) =>
     readFileSync(new URL(`../../migrations/drive/${name}`, import.meta.url), "utf8");
 
@@ -554,7 +553,7 @@ test("migration 0020 clears the old 0004 default and leaves a set cap alone", ()
     "the old default lands on a row the store writes",
   );
 
-  sqlite.exec(read("0020_agent_caps_nullable_cap.sql"));
+  sqlite.exec(read("0021_agent_caps_nullable_cap.sql"));
 
   // The column is nullable with no default now, so the reader's own $20
   // applies. The rows survived the rebuild: the defaulted row is NULL, and the

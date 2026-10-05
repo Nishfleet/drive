@@ -125,6 +125,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "You are not signed in to your drive.",
     next: "Sign in, then this page updates on its own.",
   }),
+  // A mint, or any signed-in call that needs a live account, arrived for an
+  // account whose close has landed. Close revokes every key and token
+  // (drive#497), so a new one must not be handed out, and the one next step is
+  // to cancel the close while the account is still inside its 30-day window.
+  "account-closed": Object.freeze({
+    what: "This account is closed, so it cannot make a new key.",
+    next: "Cancel the close while the account is still in its 30-day window to use it again.",
+  }),
   // A share link or upload page that does not open: unknown, revoked or past
   // its 7-day window (issue #19). One entry for all three on purpose — the
   // public routes must not tell a stranger which of those it was, and the one
@@ -285,6 +293,42 @@ export const FAILURE_MESSAGES = Object.freeze({
   "pre-charge-storage-limit": Object.freeze({
     what: "New accounts can store 1 TB until the first payment goes through.",
     next: "Ask support if you need more storage before then.",
+  }),
+  // A top-up amount outside $10 to $1,000, or not a dollar amount at all
+  // (drive#586). Nothing reached the payment page.
+  "topup-amount": Object.freeze({
+    what: "Top-ups start at $10 and go up to $1,000.",
+    next: "Pick an amount from $10 to $1,000 and try again.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // checkout can open (drive#586, the Dodo key waits on Nish, #325).
+  "topup-not-open": Object.freeze({
+    what: "Adding money is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the checkout request.
+  "topup-failed": Object.freeze({
+    what: "The payment page did not open, and nothing was charged.",
+    next: "Try again in a minute.",
+  }),
+  // The billing portal (drive#575) for an account with no Dodo customer yet:
+  // there is no card to update and no invoice to read, so the next step is the
+  // first top-up, which is what creates the customer.
+  "portal-no-card": Object.freeze({
+    what: "This account has no card or payment on file yet.",
+    next: "Top up once, then the billing portal will have your card.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // customer-portal session can be created (the Dodo key waits on Nish, #325).
+  "portal-not-open": Object.freeze({
+    what: "The billing portal is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the customer-portal session
+  // request, so no portal opened and no card was changed.
+  "portal-failed": Object.freeze({
+    what: "The billing portal did not open, and no card was changed.",
+    next: "Try again in a minute.",
   }),
 });
 

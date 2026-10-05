@@ -13,8 +13,7 @@
 // with avg the time-weighted stored size over the month. 2 cents per GB until
 // the bill reaches the maximum (at 500 GB), a flat maximum from there to 1 TB,
 // and above 1 TB the maximum grows with the storage, prorated to the GB. No
-// minimum, no plans, no membership. Founding members pay half of both numbers
-// for good.
+// minimum, no plans, no membership. Everyone pays the same.
 //
 // MAX_USD_PER_TB is the one number Nish may move (to 8 or 12). Every sentence
 // below is built from it, and test/pricing-copy.test.mjs proves the copy and
@@ -27,9 +26,6 @@
 
 const RATE_USD_PER_GB_MONTH = 0.02;
 const MAX_USD_PER_TB = 10;
-// Founding members pay this share of both numbers, for good. Their rate and
-// maximum are derived from it below, never typed.
-const FOUNDING_SHARE = 0.5;
 // Kept for the card-less write cap leftover until every account has a card
 // (#387). Not a public credit: copy never names this dollar.
 const FREE_MONTHLY_USD = 1;
@@ -94,9 +90,6 @@ export function buildPrice({
 } = {}) {
   const rateCents = wholeCents(rateUsdPerGbMonth, "the rate");
   const max = wholeDollars(maxUsdPerTb, "the maximum per TB");
-  const foundingRateUsd = rateUsdPerGbMonth * FOUNDING_SHARE;
-  const foundingRateCents = wholeCents(foundingRateUsd, "the founding rate");
-  const foundingMax = wholeDollars(max * FOUNDING_SHARE, "the founding maximum per TB");
   // Where the rate reaches the maximum: 500 GB at 2 cents and $10.
   const reachesMaxGb = Math.round((max * 100) / rateCents);
   const rateText = `${rateCents}¢`;
@@ -112,12 +105,6 @@ export function buildPrice({
     maxUsdPerTb: max,
     // The stored size at which the rate reaches the maximum.
     reachesMaxGb,
-    founding: Object.freeze({
-      share: FOUNDING_SHARE,
-      rateUsdPerGbMonth: foundingRateUsd,
-      rateCents: foundingRateCents,
-      maxUsdPerTb: foundingMax,
-    }),
     freeMonthlyUsd: FREE_MONTHLY_USD,
     // The page's headline: the one sentence the page, the meta tags, the
     // JSON-LD and llms.txt all carry verbatim. The page and the share card set
@@ -132,8 +119,6 @@ export function buildPrice({
     // The browser-tab and share-card title: the brand and the one-line price.
     titleLine: `${rateText} per GB, never more than $${max} per TB`,
     noMinimumLine: "No minimum. No plans.",
-    // Founding copy never names the 1,000 or a count (drive#386).
-    foundingLine: `Founding member pricing: half price for good, ${centsWords(foundingRateCents)} per GB and never more than $${foundingMax} per TB.`,
     // drive#417: until a card is really on file the usage page says no charge has
     // been made and shows no bill as if charged. `monthBillCents()` still works
     // the bill out (money, untouched); this is the word the page and the CLI
@@ -180,3 +165,17 @@ export function usualPlanMonthlyUsd(tb, plan = PRICE.usualPlan) {
   const steps = Math.ceil(extraGb / (plan.extraStepTb * GB_PER_TB));
   return plan.monthlyUsd + steps * plan.extraStepUsd;
 }
+
+// The prepaid balance (drive#586, Nish 2026-10-05: "pay as you go with minimum
+// top ups at $10"). The customer adds money first and usage is drawn from the
+// balance at the rate above. These are the only numbers the top-up, the
+// low-balance email and the account page read, so they cannot disagree.
+//
+// maxTopUpUsd is a guard on one checkout, not a limit on the balance: a typo
+// of $10000 for $100 is refused before the customer reaches the card form.
+export const PREPAID = Object.freeze({
+  minTopUpUsd: 10,
+  topUpPresetsUsd: Object.freeze([10, 25, 50]),
+  lowBalanceUsd: 2,
+  maxTopUpUsd: 1000,
+});

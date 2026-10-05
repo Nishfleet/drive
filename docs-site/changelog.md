@@ -15,12 +15,12 @@ the live site.
   count also adds each request in the database itself, so a tool sending many
   requests at once counts every one instead of about one.
 - Abuse guards: one active account per card, 1 TB storage until the first
-  charge, spending cap default $20, and a founding slot reserved at the card
-  step.
+  charge, and a spending cap default of $20.
 - New pricing: pay only for what you store. {{RATE}}, never more than
   {{MAX_PER_TB}} per TB, and no minimum. The old flat plan, its half-price
-  intro and the old ceiling are gone. Founding members pay half
-  of both numbers for good.
+  intro and the old ceiling are gone.
+- The half-price offer for early members is removed. Every account pays the same
+  rate.
 
 - After `drive login`, every command reads the api address it saved, so
   `drive init`, `drive cap` and `drive share` work without `DRIVE_API_URL`.
@@ -51,8 +51,8 @@ the live site.
   and an error names what to do next in plain words instead of a command.
 - The home page's worked examples read as sentences about the bill instead of
   arrow tables of numbers.
-- The pricing copy states the bill directly: storage use sets it, founding
-  members keep half price, and sign-up asks for a card because there is no
+- The pricing copy states the bill directly: storage use sets it, and
+  sign-up asks for a card because there is no
   free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails
   on day 0 and day 25, and lets the person cancel until then by typing their

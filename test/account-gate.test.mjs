@@ -29,11 +29,13 @@ import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } fro
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
@@ -136,6 +138,18 @@ const ACCOUNT_ROUTES = [
   `${CLOSE_ENDPOINT}/`,
   `${CLOSE_CANCEL_ENDPOINT}`,
   `${CLOSE_CANCEL_ENDPOINT}/`,
+  // drive#586: the prepaid balance and a top-up's checkout. Money on the
+  // account, so the same gate as the usage read.
+  `${BALANCE_ENDPOINT}`,
+  `${BALANCE_ENDPOINT}/`,
+  `${TOPUP_ENDPOINT}`,
+  `${TOPUP_ENDPOINT}/`,
+  // drive#575: the billing portal, where the account's card is updated. It
+  // names the account's own customer and billing page, so it is behind the
+  // account gate exactly like the balance read beside it, and the walk
+  // requires the same 401 for a stranger.
+  `${PORTAL_ENDPOINT}`,
+  `${PORTAL_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -242,6 +256,9 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
         route.startsWith(CAP_ENDPOINT) ||
+        route.startsWith(BALANCE_ENDPOINT) ||
+        route.startsWith(TOPUP_ENDPOINT) ||
+        route.startsWith(PORTAL_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
@@ -711,6 +728,12 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     async remove(path) {
       seen.push(["remove", path]);
     },
+    /** @param {{startAfter?: string, limit?: number}} [_options] @returns {Promise<string[]>} */
+    async listKeys(_path, _options) {
+      return [];
+    },
+    /** @param {string[]} _paths @returns {Promise<void>} */
+    async removeBatch(_paths) {},
     /** @param {string} from @param {string} to @returns {Promise<void>} */
     async copy(from, to) {
       seen.push(["copy", from, to]);
