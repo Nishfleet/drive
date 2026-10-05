@@ -108,6 +108,23 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npm run build
+      - name: Refuse to ship without a sender (drive#522)
+        # Every customer email goes through MAIL_FROM (src/email-send.js). With
+        # it unset, close receipts, reminders and the welcome failed at the
+        # customer's click while every deploy stayed green (drive#522). This
+        # fails the deploy instead, before any migration or ship. It reads the
+        # secret NAMES the Worker has, never a value. Red until drive#667 sets
+        # MAIL_FROM, which is the point.
+        run: |
+          npx cf workers secrets list --worker drive-pricing --quiet |
+            node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.exit(s.some((x)=>x.name==="MAIL_FROM")?0:1)' || {
+            echo "::error::MAIL_FROM is not set on drive-pricing, so every customer email would fail. Set it per drive#667."
+            exit 1
+          }
+          echo "MAIL_FROM is set on drive-pricing"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Remember the live Worker version
         # The rollback target. The first deployment in the list is the one
         # serving traffic. D1 sits outside the Worker version, so a rollback
