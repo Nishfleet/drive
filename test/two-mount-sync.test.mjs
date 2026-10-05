@@ -480,7 +480,9 @@ async function waitForFile(mountDir, name, seconds, rcAddr) {
   const started = Date.now();
   for (;;) {
     try {
-      // Listings stay fresh through vfs/refresh (issue #541), not a 5s expiry.
+      // This proof drives vfs/refresh itself so a 24h directory cache still
+      // sees the other machine's save. The seconds it reports are therefore
+      // a floor (write-back plus one refresh), not the fill loop's interval.
       await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "vfs/refresh"]);
       await stat(path.join(mountDir, name));
       return { seconds: (Date.now() - started) / 1000 };

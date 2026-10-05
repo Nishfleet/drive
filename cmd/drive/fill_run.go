@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -153,22 +154,55 @@ func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 	if err := c.call(ctx, "vfs/refresh", params, &reply); err != nil {
 		return err
 	}
-	// rclone's vfs/refresh returns HTTP 200 with the listing error inside
-	// result, so a dead backend must not look like a successful refresh.
-	if raw, ok := reply["result"]; ok {
-		result, ok := raw.(map[string]any)
+	return vfsRefreshReplyError(reply, false)
+}
+
+// refreshDirs refreshes named directories (rclone rc vfs/refresh dir=...).
+// A path that is a file or is missing is skipped: the caller may pass a
+// kept-offline file's parent and a folder in the same list.
+func (c *rcClient) refreshDirs(ctx context.Context, dirs []string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	params := map[string]string{"fs": c.fs}
+	for i, d := range dirs {
+		key := "dir"
+		if i > 0 {
+			key = "dir" + strconv.Itoa(i+1)
+		}
+		params[key] = d
+	}
+	var reply map[string]any
+	if err := c.call(ctx, "vfs/refresh", params, &reply); err != nil {
+		return err
+	}
+	return vfsRefreshReplyError(reply, true)
+}
+
+// vfsRefreshReplyError reads rclone's vfs/refresh JSON. A listing error is
+// inside result with HTTP 200. skipFailed is for named dirs: a file path is
+// not a directory and must not fail the fill.
+func vfsRefreshReplyError(reply map[string]any, skipFailed bool) error {
+	raw, ok := reply["result"]
+	if !ok {
+		return nil
+	}
+	result, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("rclone rc vfs/refresh: result is %T, want an object", raw)
+	}
+	for p, v := range result {
+		s, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("rclone rc vfs/refresh: result is %T, want an object", raw)
+			return fmt.Errorf("rclone rc vfs/refresh: result[%q] is %T, want a string", p, v)
 		}
-		for path, v := range result {
-			s, ok := v.(string)
-			if !ok {
-				return fmt.Errorf("rclone rc vfs/refresh: result[%q] is %T, want a string", path, v)
-			}
-			if s != "OK" {
-				return fmt.Errorf("rclone rc vfs/refresh %s: %s", path, s)
-			}
+		if s == "OK" {
+			continue
 		}
+		if skipFailed {
+			continue
+		}
+		return fmt.Errorf("rclone rc vfs/refresh %s: %s", p, s)
 	}
 	return nil
 }
@@ -216,6 +250,7 @@ func (r FillResult) Ran() bool { return r.Refreshed }
 type fillBackend interface {
 	stats(ctx context.Context) (vfsStats, error)
 	refresh(ctx context.Context, recursive bool) error
+	refreshDirs(ctx context.Context, dirs []string) error
 	// reachable reports whether the object store answers. vfs/refresh
 	// forces the directory cache stale before it re-lists (rclone
 	// vfs/dir.go readDir), so a refresh while storage is down makes
@@ -268,6 +303,11 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	if storageUp {
 		if err := c.refresh(ctx, false); err != nil {
 			return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+		}
+		if dirs := listingDirs(targets); len(dirs) > 0 {
+			if err := c.refreshDirs(ctx, dirs); err != nil {
+				return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+			}
 		}
 	}
 	if !offline && !fillRecent {
@@ -324,6 +364,47 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 			FormatBytes(res.BytesBefore+recentBytes), FormatBytes(res.CapBytes))
 	}
 	return res, nil
+}
+
+// listingDirs is the folders vfs/refresh should freshen besides the root:
+// a kept-offline folder itself, and the parent of a kept or recently-opened
+// file. The root is refreshed separately. Nested saves in those folders
+// would otherwise stay invisible until --dir-cache-time (24h) expired
+// (issue #541).
+func listingDirs(targets fillTargets) []string {
+	seen := map[string]struct{}{}
+	var dirs []string
+	add := func(rel string) {
+		rel = strings.Trim(rel, "/")
+		if rel == "" || rel == "." {
+			return
+		}
+		if _, ok := seen[rel]; ok {
+			return
+		}
+		seen[rel] = struct{}{}
+		dirs = append(dirs, rel)
+	}
+	consider := func(rel string) {
+		full := filepath.Join(targets.root, filepath.FromSlash(rel))
+		info, err := os.Stat(full)
+		if err == nil && info.IsDir() {
+			add(rel)
+			return
+		}
+		parent := path.Dir(strings.Trim(rel, "/"))
+		if parent != "." && parent != "/" {
+			add(parent)
+		}
+	}
+	for _, rel := range targets.offline {
+		consider(rel)
+	}
+	for _, rel := range targets.recent {
+		consider(rel)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // liveCacheBytes is the current size of rclone's own VFS cache directory, the

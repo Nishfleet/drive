@@ -280,6 +280,8 @@ type countedBackend struct {
 	recursiveRefreshes int
 	// addPerRead is how many bytes the fake read puts in the cache.
 	addPerRead int64
+	// namedDirs counts directories passed to refreshDirs (issue #541 nested listings).
+	namedDirs int
 	// unreach is the error reachable returns. Nil means storage answers,
 	// which is the fill's usual case; a set error is a dropped link
 	// (issue #541).
@@ -302,6 +304,15 @@ func (b *countedBackend) refresh(_ context.Context, recursive bool) error {
 }
 
 func (b *countedBackend) reachable(context.Context) error { return b.unreach }
+
+func (b *countedBackend) refreshDirs(_ context.Context, dirs []string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	b.refreshes++
+	b.namedDirs += len(dirs)
+	return nil
+}
 
 func (b *countedBackend) remote() string { return "drive:bucket/u/1" }
 
@@ -607,7 +618,7 @@ func (c *fakeCache) touch(p string) {
 // refreshes the root listing once, non-recursively, so the other machine's
 // save appears (issue #541). A whole-tree refresh on a timer is the bug
 // (drive#568) and must stay at zero.
-func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
+func TestFillRefreshesRootWhenNothingOpened(t *testing.T) {
 	b := &countedBackend{used: 1 << 30, cap: 20 << 30}
 	res, err := fillPass(context.Background(), b, fillTargets{}, 0.1, 0.1)
 	if err != nil {
@@ -642,6 +653,41 @@ func TestFillSkipsRefreshWhenStorageIsDownAndStillKeepWarms(t *testing.T) {
 	}
 	if b.refreshes != 0 {
 		t.Errorf("the fill refreshed the directory %d times with storage down, want none", b.refreshes)
+	}
+}
+
+func TestFillRefreshesAKeptOfflineFolder(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "photos")
+	if err := os.Mkdir(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keep, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"photos"}}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass for a kept folder: %v", err)
+	}
+	if !res.Ran() {
+		t.Fatal("the keep-warm pass did not run")
+	}
+	if b.namedDirs != 1 {
+		t.Errorf("named directory refreshes = %d, want 1 (the kept folder)", b.namedDirs)
+	}
+}
+
+func TestVfsRefreshReplyError(t *testing.T) {
+	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"": "OK"}}, false); err != nil {
+		t.Errorf("OK: %v", err)
+	}
+	err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"": "connection refused"}}, false)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("root listing failure: %v", err)
+	}
+	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "directory not found"}}, true); err != nil {
+		t.Errorf("skipFailed must ignore a named-dir error: %v", err)
 	}
 }
 
