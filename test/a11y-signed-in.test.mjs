@@ -26,7 +26,13 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 import { FILES_ENDPOINT } from "../src/files.js";
 import worker from "../src/index.js";
-import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import {
+  createTestAuth,
+  DRIVE_SCHEMA_MIGRATIONS,
+  signIn,
+  TEST_BASE_URL,
+  TEST_SECRET,
+} from "./harness.mjs";
 
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core"), "utf8");
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
@@ -152,7 +158,10 @@ test("the signed-in pages carry no serious axe violation", {
   timeout: 180_000,
   skip: existsSync(CHROME) ? false : "Chrome is not installed",
 }, async (t) => {
-  const made = createTestAuth();
+  // The full schema: /api/usage reads the account's metered month (drive#496)
+  // from 0005_meter's usage_minutes, so the usage page never reveals its body
+  // on the harness's short migration list.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie } = await signIn(made, "axe@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
