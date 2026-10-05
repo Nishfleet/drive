@@ -1050,7 +1050,10 @@ export async function handleShareFileRequest(request, files, links, options = {}
  * tab, which is what "a link that opens the file" means, while the one type
  * that can still act as a document — an .svg, whose links navigate — leaves as
  * an attachment, so a link can never hand a stranger a rendered document on
- * our address to phish a password from (drive#657).
+ * our address to phish a password from (drive#657). Every type the preview
+ * allowlist refuses — the XML document family (XHTML, XSLT, RDF, MathML and
+ * multipart/related uploads, issue #548) — is octet-stream, and leaves as an
+ * attachment for the same reason.
  * @param {string} path the shared file's drive path, for the type's kind
  * @param {string} contentType the type the store reported
  * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
