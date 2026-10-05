@@ -74,7 +74,7 @@ type updateNoticeOptions struct {
 	home         string
 	now          func() time.Time     // nil: time.Now
 	updateExists func() (bool, error) // nil: the package manager route
-	probeTimeout time.Duration       // zero: updateProbeTimeout
+	probeTimeout time.Duration        // zero: updateProbeTimeout
 	out          io.Writer            // nil: os.Stdout
 	path         string               // nil: updateCheckPath(home)
 }
@@ -239,4 +239,3 @@ func lockUpdateCheck(lockPath string) (func(), error) {
 		f.Close()
 	}, nil
 }
-
