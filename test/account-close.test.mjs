@@ -674,3 +674,212 @@ test("a close POST that is not JSON is refused before the body is parsed", async
   assert.equal(res.status, 400);
   assert.equal(world.email.sent.length, 0);
 });
+
+/**
+ * A store that counts batch deletes (and can refuse them), so the tests
+ * below prove the batch shape, not just the end state.
+ * @param {ReturnType<typeof createFileStore>} store
+ */
+function countingStore(store) {
+  /** @type {number[]} */
+  const batches = [];
+  /** @type {(string | undefined)[]} */
+  const startAfters = [];
+  let refuseAfterBatches = Number.POSITIVE_INFINITY;
+  return {
+    batches,
+    startAfters,
+    /** @param {number} count */
+    refuseAfter(count) {
+      refuseAfterBatches = count;
+    },
+    ...store,
+    /**
+     * @param {string} path
+     * @param {{startAfter?: string, limit?: number}} [options]
+     */
+    async listKeys(path, options) {
+      startAfters.push(options?.startAfter);
+      return store.listKeys(path, options);
+    },
+    /** @param {string[]} paths */
+    async removeBatch(paths) {
+      if (batches.length >= refuseAfterBatches) {
+        throw new Error("storage batch delete refused: the provider is having a bad night");
+      }
+      batches.push(paths.length);
+      return store.removeBatch(paths);
+    },
+  };
+}
+
+test("a 3,000-file account purges in three batch delete calls", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_big", email: "big@example.com", name: "Big" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "big@example.com",
+    now: clock.now(),
+  });
+  const scoped = scopeStore(world.files, account);
+  for (let i = 0; i < 3_000; i += 1) {
+    await scoped.write(`/f-${String(i).padStart(4, "0")}.txt`, `file ${i}`, "text/plain");
+  }
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const counting = countingStore(world.files);
+  const result = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: counting,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  // Three full batches: the 100,000-delete month is a 100-batch night, not
+  // a run that hits its subrequest ceiling one account in (drive#565).
+  assert.deepEqual(counting.batches, [1_000, 1_000, 1_000]);
+  assert.equal(result.purged, 1);
+  assert.equal(result.purgeFailures, 0);
+  assert.equal(await scoped.read("/f-0000.txt"), null);
+  assert.equal(await scoped.read("/f-2999.txt"), null);
+  const state = await world.devices.getCloseState(account.id);
+  assert.ok(state && state.purgedAt !== null);
+  assert.equal(state.purgeCursor, null);
+});
+
+test("one account's purge failure leaves the next account's purge and mail intact", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const broken = { id: "acct_a", email: "a@example.com", name: "A" };
+  const neighbour = { id: "acct_b", email: "b@example.com", name: "B" };
+  for (const account of [broken, neighbour]) {
+    await closeAccount({
+      devices: world.devices,
+      email: world.email,
+      mailFrom: MAIL_FROM,
+      account,
+      typedEmail: account.email,
+      now: clock.now(),
+    });
+  }
+  const scopedA = scopeStore(world.files, broken);
+  const scopedB = scopeStore(world.files, neighbour);
+  await scopedA.write("/a.txt", "survives the night", "text/plain");
+  await scopedB.write("/b.txt", "goes tonight", "text/plain");
+  world.email.sent.length = 0;
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  // Only A's batch deletes are refused, the way one stuck object prefix (or
+  // one provider outage on one bucket) would be.
+  const counting = {
+    ...world.files,
+    /** @param {string[]} paths */
+    async removeBatch(paths) {
+      if (paths.some((path) => path.startsWith("u/acct_a/"))) {
+        throw new Error("storage batch delete refused: the provider is having a bad night");
+      }
+      return world.files.removeBatch(paths);
+    },
+  };
+  /** @type {string[]} */
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => {
+    logged.push(args.map((a) => String(a)).join(" | "));
+  };
+  let result;
+  try {
+    result = await runAccountCloseCron({
+      db: world.db,
+      devices: world.devices,
+      store: counting,
+      email: world.email,
+      mailFrom: MAIL_FROM,
+      now: clock.now(),
+    });
+  } finally {
+    console.error = original;
+  }
+  // A is logged and left for the next night, and neither B's purge nor the
+  // night's reminders depend on A's purge going well.
+  assert.equal(result.purgeFailures, 1);
+  assert.equal(result.purged, 1);
+  assert.equal(result.reminded, 2);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /acct_a/);
+  assert.ok(await scopedA.read("/a.txt"));
+  assert.equal(await scopedB.read("/b.txt"), null);
+  const stateA = await world.devices.getCloseState(broken.id);
+  assert.ok(stateA && stateA.purgedAt === null);
+  const stateB = await world.devices.getCloseState(neighbour.id);
+  assert.ok(stateB && stateB.purgedAt !== null);
+  // Both reminders went out: the mail pass ran to the end with A's purge
+  // failed, which is the whole point.
+  assert.equal(world.email.sent.length, 2);
+  for (const mail of world.email.sent) {
+    assert.match(/** @type {{text: string}} */ (mail).text, /5 days/);
+  }
+});
+
+test("a purge that stops midway resumes from the saved cursor", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_resume", email: "resume@example.com", name: "Resume" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "resume@example.com",
+    now: clock.now(),
+  });
+  const scoped = scopeStore(world.files, account);
+  for (let i = 0; i < 1_500; i += 1) {
+    await scoped.write(`/f-${String(i).padStart(4, "0")}.txt`, `file ${i}`, "text/plain");
+  }
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const first = countingStore(world.files);
+  first.refuseAfter(1);
+  const stopped = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: first,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  // Night one: batch one landed and its boundary is in the row before the
+  // second batch refused, so nothing after the boundary is re-listed.
+  assert.equal(stopped.purged, 0);
+  assert.equal(stopped.purgeFailures, 1);
+  assert.deepEqual(first.batches, [1_000]);
+  const state = await world.devices.getCloseState(account.id);
+  assert.ok(state);
+  assert.equal(state.purgedAt, null);
+  assert.equal(state.purgeCursor, "/f-0999.txt");
+  assert.equal(await scoped.read("/f-0000.txt"), null);
+  assert.ok(await scoped.read("/f-1499.txt"));
+
+  // Night two: the listing starts after the saved cursor and the remaining
+  // 500 files are the only work left.
+  const second = countingStore(world.files);
+  const finished = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: second,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  assert.equal(second.startAfters[0], "u/acct_resume/f-0999.txt");
+  assert.deepEqual(second.batches, [500]);
+  assert.equal(finished.purged, 1);
+  assert.equal(finished.purgeFailures, 0);
+  assert.equal(await scoped.read("/f-1499.txt"), null);
+  const done = await world.devices.getCloseState(account.id);
+  assert.ok(done && done.purgedAt !== null);
+  assert.equal(done.purgeCursor, null);
+});

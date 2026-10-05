@@ -31,7 +31,7 @@ export async function createTeamRoute(request, ctx) {
   if (name === "") {
     return errorResponse(400, "Give the team a name.");
   }
-  const team = ctx.store.teams.createTeam(ctx.account, name);
+  const team = await ctx.store.teams.createTeam(ctx.account, name);
   return json({ team: publicTeam(team) }, 201);
 }
 
@@ -53,9 +53,8 @@ export function listTeamsRoute(request, ctx) {
 
 /**
  * POST /v1/teams/:teamId/members — invite a member by email with a role.
- * The membership is active at once when the email is one a signed-in account
- * already has (the store's own account lookup), which is the invite-then-use
- * path the acceptance needs: two real accounts, one team drive.
+ * The membership stays pending until that person accepts, so the answer
+ * cannot tell a caller whether the email already has an account (drive#518).
  * @param {Request} request
  * @param {{store: any, account: {id: string}, params: Record<string, string>}} ctx
  */
@@ -80,11 +79,26 @@ export async function inviteMemberRoute(request, ctx) {
       error instanceof Error ? error.message : "That role is not one this drive has.",
     );
   }
+  const previous = (await ctx.store.teams.listMembers(ctx.account, ctx.params.teamId)).find(
+    (/** @type {import("./teams.js").TeamMember} */ row) =>
+      row.email.toLowerCase() === email.toLowerCase(),
+  );
   const member = await ctx.store.teams.inviteMember(ctx.account, ctx.params.teamId, email, role);
   if ("error" in member) {
     return errorResponse(404, "No such team on this account.");
   }
-  return json({ member: publicMember(member) }, 201);
+  // Lowering (or otherwise changing) a role has to kill the old key at the
+  // storage provider: a D1-only update leaves the minted credential working
+  // with the previous capabilities (drive#518, same root as #497).
+  if (
+    previous !== undefined &&
+    previous.state === "active" &&
+    previous.role !== member.role &&
+    previous.accountId !== ""
+  ) {
+    await ctx.store.revokeTeamKeys(previous.accountId, ctx.params.teamId);
+  }
+  return json({ member: publicMember(member, { includeEmail: true }) }, 201);
 }
 /**
  * GET /v1/teams/:teamId/members — the team's members, the owner's own view
@@ -101,7 +115,12 @@ export async function listMembersRoute(request, ctx) {
     return errorResponse(404, "No such team on this account.");
   }
   const members = await ctx.store.teams.listMembers(ctx.account, team.id);
-  return json({ members: members.map(publicMember) });
+  const includeEmail = team.ownerAccountId === ctx.account.id;
+  return json({
+    members: members.map((/** @type {import("./teams.js").TeamMember} */ member) =>
+      publicMember(member, { includeEmail }),
+    ),
+  });
 }
 
 /**
@@ -151,16 +170,20 @@ export function publicTeam(team) {
 }
 
 /**
- * A member row as it is stored, with nothing secret in it. The account id is
- * included: a key is minted for it, and the owner needs to see whose it is.
+ * A member row as it is stored. Email and account id go only to the owner:
+ * any member listing every other member's identity is the leak drive#518
+ * closes. The invite response uses the owner view, and a pending invite
+ * carries an empty account id whether or not that email already has an
+ * account, so the answer cannot be used to probe who is signed up.
  * @param {{id: string, teamId: string, accountId: string, email: string, role: string, state: string, invitedAt: number, joinedAt: number|null, revokedAt: number|null}} member
+ * @param {{includeEmail?: boolean}} [options]
  */
-export function publicMember(member) {
+export function publicMember(member, options = {}) {
+  const includeEmail = options.includeEmail === true;
   return {
     id: member.id,
     teamId: member.teamId,
-    accountId: member.accountId,
-    email: member.email,
+    ...(includeEmail ? { accountId: member.accountId, email: member.email } : {}),
     role: member.role,
     state: member.state,
     invitedAt: member.invitedAt,
@@ -192,6 +215,10 @@ export async function mintTeamKeyRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
+  // Bind a pending invite before the active-membership read: D1's
+  // teamForAccount only sees `active` rows, so an invitee who has not
+  // accepted yet would 404 here and never reach acceptInvite (drive#518).
+  const membership = await ctx.store.teams.acceptInvite(ctx.params.teamId, ctx.account.id);
   const team = await ctx.store.teams.teamForAccount(ctx.account, ctx.params.teamId);
   if (team === null) {
     return errorResponse(404, "No such team on this account.");
@@ -201,7 +228,6 @@ export async function mintTeamKeyRoute(request, ctx) {
   // thing; a member's role is what differs, and a member with no stored
   // membership has no role to mint from.
   const isOwner = team.ownerAccountId === ctx.account.id;
-  const membership = isOwner ? null : await ctx.store.teams.acceptInvite(team.id, ctx.account.id);
   if (!isOwner && membership === null) {
     return errorResponse(404, "No such team on this account.");
   }

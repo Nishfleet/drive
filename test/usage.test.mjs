@@ -34,7 +34,7 @@ import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
-import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -61,7 +61,8 @@ const filesPage = readFileSync(new URL("../public/files.html", import.meta.url),
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
-const MINUTES_PER_MONTH = 43800;
+// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
+const MONTH_MINUTES = 30 * 1440;
 
 /** A whole month of a fixed size, with the month's daily history behind it. */
 /**
@@ -74,7 +75,8 @@ function month(storedGb, overrides = {}) {
     days.push({ day: `2026-09-${String(index).padStart(2, "0")}`, gb: storedGb });
   }
   return usageSummary({
-    gbMinutes: storedGb * MINUTES_PER_MONTH,
+    monthMinutes: MONTH_MINUTES,
+    gbMinutes: storedGb * MONTH_MINUTES,
     storedGb,
     storedDaily: days,
     downloadBytes: 0,
@@ -109,7 +111,8 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // card-less account's writes stop at the free $1 while the account's own cap
   // is still the sign-up default.
   const withoutCard = usageSummary({
-    gbMinutes: 400 * MINUTES_PER_MONTH,
+    monthMinutes: MONTH_MINUTES,
+    gbMinutes: 400 * MONTH_MINUTES,
     storedGb: 400,
     storedDaily: [],
     downloadBytes: 0,
@@ -159,6 +162,7 @@ test("the stored series is the last 30 days, oldest first", () => {
   }
   entries.reverse();
   const summary = usageSummary({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 40,
     storedDaily: entries,
@@ -177,6 +181,7 @@ test("a day the calendar does not have fails, not just a day that is not a date"
   // The pattern alone would accept 2026-09-40; the parse-and-round-trip is what
   // makes "a real date" true, and the rollup cannot have produced the other.
   const base = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     downloadBytes: 0,
@@ -191,12 +196,16 @@ test("a day the calendar does not have fails, not just a day that is not a date"
     );
   }
   // A real leap day is a real day.
-  const leap = usageSummary({ ...base, storedDaily: [{ day: "2024-02-29", gb: 1 }] });
+  const leap = usageSummary({
+    ...base,
+    storedDaily: [{ day: "2024-02-29", gb: 1 }],
+  });
   assert.equal(leap.storedDaily[0].day, "2024-02-29");
 });
 
 test("a day that is not a day, or a size that is not a size, fails at the entry point", () => {
   const base = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     storedDaily: [],
@@ -206,11 +215,19 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
   };
   assert.throws(() => usageSummary({ ...base, storedDaily: "yesterday" }), /usage\.storedDaily/);
   assert.throws(
-    () => usageSummary({ ...base, storedDaily: [{ day: "9 Jan", gb: 1 }] }),
+    () =>
+      usageSummary({
+        ...base,
+        storedDaily: [{ day: "9 Jan", gb: 1 }],
+      }),
     /usage\.storedDaily\[0\]\.day/,
   );
   assert.throws(
-    () => usageSummary({ ...base, storedDaily: [{ day: "2026-01-01", gb: -1 }] }),
+    () =>
+      usageSummary({
+        ...base,
+        storedDaily: [{ day: "2026-01-01", gb: -1 }],
+      }),
     /usage\.storedDaily\[0\]\.gb/,
   );
   assert.throws(() => usageSummary({ ...base, storedDaily: [null] }), TypeError);
@@ -292,11 +309,13 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   }
 });
 
-test("GB-months are the meter over the spec's 43,800-minute month", () => {
-  assert.equal(gbMonths(MINUTES_PER_MONTH), 1);
-  assert.equal(gbMonths(21900), 0.5);
-  assert.throws(() => gbMonths(-1), TypeError);
-  assert.throws(() => gbMonths("many"), TypeError);
+test("GB-months are the meter over the calendar month's own minutes (drive#531)", () => {
+  assert.equal(gbMonths(MONTH_MINUTES, MONTH_MINUTES), 1);
+  assert.equal(gbMonths(21600, MONTH_MINUTES), 0.5);
+  assert.equal(gbMonths(44640, 44640), 1, "a whole 31-day month is one GB-month");
+  assert.throws(() => gbMonths(43800, 43800), TypeError, "no month is 43,800 minutes long");
+  assert.throws(() => gbMonths(-1, MONTH_MINUTES), TypeError);
+  assert.throws(() => gbMonths("many", MONTH_MINUTES), TypeError);
 });
 
 test("the usage endpoint answers the empty month with the page's shape", async () => {
@@ -376,6 +395,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     account,
   ).json();
   assert.deepEqual(Object.keys(body).sort(), [
+    "balanceLine",
     "billCents",
     "billUsd",
     "cap",
@@ -405,6 +425,15 @@ test("the upload line rides the usage answer beside capLine", async () => {
   ).json();
   assert.equal(reported.uploadLine, uploadProgress(queue).label);
   assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.equal(body.balanceLine, null, "no balance store means no balance line");
+  // The prepaid balance line (drive#586) rides beside the cap line as given.
+  const withBalance = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    "Balance $1.50. Top up to keep adding files.",
+  ).json();
+  assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
   assert.throws(
     () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
     TypeError,
@@ -448,7 +477,14 @@ test("no money and no size is worked out on the page", () => {
   // check reads the page's script, so a style rule's -0.02em letter-spacing is
   // not mistaken for the metered rate.
   const script = page.slice(page.indexOf("<script>"));
-  for (const banned of ["0.02", "43800", "MINUTES_PER_MONTH", "rateUsdPerGbMonth", "formatUsd"]) {
+  for (const banned of [
+    "0.02",
+    "43800",
+    "MINUTES_PER_MONTH",
+    "minutesInMonth",
+    "rateUsdPerGbMonth",
+    "formatUsd",
+  ]) {
     assert.equal(
       script.includes(banned),
       false,
@@ -499,6 +535,7 @@ test("the page states the free allowance from the config, not a literal", () => 
 /** A month with nothing stored in it: the read a brand-new account gets. */
 function emptyMonth() {
   return usageSummary({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     storedDaily: [],
@@ -806,6 +843,7 @@ test("no bill is shown as if charged while no card is on file", async () => {
   assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
   const cardless = runPage({
     ...usageSummary({
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: 0,
       storedGb: 0,
       storedDaily: [],
@@ -823,6 +861,7 @@ test("no bill is shown as if charged while no card is on file", async () => {
 
   const charged = runPage({
     ...usageSummary({
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: 0,
       storedGb: 0,
       storedDaily: [],
@@ -1080,7 +1119,9 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // poll reads the same row and renders it into `uploadLine`. The line is the
   // one word table's (src/status.js UPLOAD_LABEL), so the page, the first-run
   // page and `drive status` all say the same sentence about the same queue.
-  const made = createTestAuth();
+  // The full schema: /api/usage reads the account's metered month (drive#496),
+  // and that month lives in 0005_meter's usage_minutes.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie, account: signedInAccount } = await signIn(made, "usage@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -1149,7 +1190,7 @@ test("the usage read ignores the retired founding column on the account's row", 
   // Every account reads the one price. The accounts row still carries the
   // retired founding column (drive#586), and the read neither uses it nor
   // reports it: the bill is the same with the column null, 0 or 1.
-  const made = createTestAuth();
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const { cookie, account: signedInAccount } = await signIn(made, "one-price@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },

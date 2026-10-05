@@ -10,6 +10,14 @@ the live site.
 
 ## 2026-10-05
 
+- Prepaid balance: add $10 or more, and storage and downloads are drawn
+  from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
+  balance never expires. Nothing is charged to your card after use. The
+  account page shows the balance, top-up, auto top-up and recent lines.
+- An agent key the app makes for you is capped at the published $20 a month,
+  not the $12 an old schema default had been setting on its row. The daily
+  count also adds each request in the database itself, so a tool sending many
+  requests at once counts every one instead of about one.
 - Abuse guards: one active account per card, 1 TB storage until the first
   charge, and a spending cap default of $20.
 - New pricing: pay only for what you store. {{RATE}}, never more than
@@ -67,7 +75,9 @@ the live site.
   e2 account (bucket `drive-prod`, region `eu-west-3`), and every setting was read
   back from that bucket: versioning on, a one-day hidden-version rule, SSE-S3. A key
   cannot be scoped to one folder there — the endpoint refuses `AssumeRole` — so
-  iDrive e2 is not our storage, and the seat moves to Backblaze B2.
+  iDrive e2 is not our storage, and the seat moves to Backblaze B2. Reversed the
+  next day: files stay on iDrive e2 in Paris (eu-west-3), and each key is scoped
+  to a bucket instead (drive#371).
 - `drive branch` mints a branch key scoped to `u/<account>/.branches/<name>/`
   with no delete, stores it 0600, and prints the prefix plus the two env var
   names an agent tool would run on — never the secret, never on the command
@@ -99,10 +109,10 @@ the live site.
   resumes from rclone's VFS cache, a full cache disk fails with the table's
   disk-full words and loses nothing already saved, and a killed mount still
   shows the waiting files until they go up.
-- `drive update` and `drive version`: an update replaces the installed CLI
-  with the latest released version by the same `go install` command a person
-  installs with, and `drive version` prints the version the binary was built
-  and installed at, so an update is visible.
+- `drive update` and `drive version`: an update hands off to the package
+  manager that installed the CLI (brew, apt, dnf or winget), and `drive
+  version` prints the version the binary was built and installed at, so an
+  update is visible.
 - Windows gets the same `drive mount` the Mac and Linux have had: `rclone
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),
