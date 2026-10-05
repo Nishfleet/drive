@@ -312,6 +312,10 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   // database stands behind both, so the ledger outage is the sweep's outage too.
   const metered = ledgerOutage(db, down);
   const env = { METER_DB: metered, DRIVE_DB: metered };
+  // The sweep's own outcome is not asserted below: the account holds 5 TB with
+  // no device keys, so the sweep finds it over the limit, plans no swap and
+  // moves on. What the binding buys is a trip that reaches the end of the
+  // hourly run, so the assertions are the draw's and nothing else's.
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -330,13 +334,14 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   down.on = false;
   await hourly("2026-10-01T01:05:00.000Z");
 
-  /** @param {number} hour */
-  const bill = async (hour) => {
-    const usage = await monthUsageThrough(db, "acc1", hour);
+  /** @param {number} through the closed hour being billed, in millis */
+  const bill = async (through) => {
+    const usage = await monthUsageThrough(db, "acc1", through);
     // The month's own minutes (drive#531), the divisor every bill for that
-    // month reads: September and October differ, and a bill built on one
-    // month's length for the other's hours is wrong by a day.
-    const monthMinutes = minutesInMonth(hour);
+    // month reads: September holds 43,200 of them and October 44,640, so hours
+    // billed in both months cannot share one length. A caller that leaves the
+    // field out is refused by name (src/billing.js), never given a default.
+    const monthMinutes = minutesInMonth(through);
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
       monthMinutes,
