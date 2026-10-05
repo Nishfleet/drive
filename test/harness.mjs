@@ -51,6 +51,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
+  // Per-address send counters (drive#550): 5 links an hour, 20 a day
+  // per inbox; the guard spends a slot only when both windows have room.
+  "drive/0020_signin_address_sends.sql",
 ]);
 
 /**
@@ -94,6 +97,9 @@ export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0017_agent_caps_drop_month_key.sql",
   "drive/0017_drop_branches_snapshot.sql",
   "drive/0018_agent_caps_drop_month_spend.sql",
+  // Per-address send counters (drive#550): the full schema read by
+  // tests that build a store over the real deploy shape.
+  "drive/0020_signin_address_sends.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
@@ -283,7 +289,9 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
+ * (drive#550): `userAgent` is the requesting request's own header, null when
+ * there was none, so a test can read what the mail would name.
+ * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
