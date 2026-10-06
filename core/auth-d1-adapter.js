@@ -4,18 +4,28 @@
 // that path statically imports every dialect Kysely ships — Postgres, MySQL,
 // MSSQL, Bun SQLite, Node SQLite — plus the migration planner. `cf build`
 // emits those unused chunks next to the isolate script, and the site-bundle
-// ratchet counts them. On main that was ~800 KB of JS the Worker never runs.
+// ratchet counts them. On main that graph was 797,930 bytes; this adapter
+// keeps the factory chunk (~264 KB) and drops the rest, so the measured
+// site-bundle fell from 3,038,606 to 2,502,977 bytes.
 //
 // The stock shrink is `better-auth/minimal` plus an adapter from
 // `createAdapterFactory` (`better-auth/adapters`): the factory is the
 // extension point, and D1 already speaks SQL through core/db.js. The Worker
 // then ships one dialect — this file — instead of Kysely's set.
+// Returned rows stay keyed by column name; `createAdapterFactory`'s
+// `transformOutput` maps them back to field names (same as the Kysely
+// adapter). The SQLite flags below copy `@better-auth/kysely-adapter`'s
+// sqlite branch (`supportsBooleans` / `supportsDates` false), so live D1
+// rows keep the 0/1 and ISO-string shape the shipped migrations already
+// store.
 
 import { createAdapterFactory } from "better-auth/adapters";
 import { all, first, run } from "./db.js";
 
 /**
  * Quote a SQL identifier. Values stay bound; only names go through here.
+ * Names come from Better Auth's schema (`getFieldName` / table names), never
+ * from a caller-supplied string.
  * @param {string} name
  */
 function ident(name) {
@@ -52,14 +62,20 @@ function predicateSql(column, clause, params) {
   }
   if (operator === "contains" || operator === "starts_with" || operator === "ends_with") {
     const text = value == null ? "" : String(value);
+    const escaped = text.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
     const pattern =
-      operator === "contains" ? `%${text}%` : operator === "starts_with" ? `${text}%` : `%${text}`;
+      operator === "contains"
+        ? `%${escaped}%`
+        : operator === "starts_with"
+          ? `${escaped}%`
+          : `%${escaped}`;
     params.push(insensitive ? pattern.toLowerCase() : pattern);
-    return `${lhs} LIKE ?`;
+    return `${lhs} LIKE ? ESCAPE '\\'`;
   }
   if (value === null) {
     if (operator === "eq") return `${column} IS NULL`;
     if (operator === "ne") return `${column} IS NOT NULL`;
+    throw new Error(`auth D1 adapter: null is not valid for operator ${operator}`);
   }
   const sqlOp =
     operator === "eq"
@@ -173,17 +189,21 @@ async function attachJoins(db, rows, join) {
   }
   for (const row of rows) {
     for (const [joinModel, joinAttr] of Object.entries(join)) {
+      if (joinAttr.relation === "many-to-many") {
+        throw new Error(`auth D1 adapter: many-to-many join on ${joinModel} is not implemented`);
+      }
       const from = row[joinAttr.on.from];
+      const limit = joinAttr.relation === "one-to-one" ? 1 : (joinAttr.limit ?? 100);
       const related = await many(
         db,
-        `SELECT * FROM ${ident(joinModel)} WHERE ${ident(joinAttr.on.to)} = ?`,
-        [from],
+        `SELECT * FROM ${ident(joinModel)} WHERE ${ident(joinAttr.on.to)} = ? LIMIT ?`,
+        [from, limit],
       );
       if (joinAttr.relation === "one-to-one") {
         row[joinModel] = related[0] ?? null;
         continue;
       }
-      row[joinModel] = related.slice(0, joinAttr.limit ?? 100);
+      row[joinModel] = related;
     }
   }
   return rows;
@@ -250,6 +270,8 @@ export function d1Adapter(db) {
         if (limit !== undefined) {
           sql += " LIMIT ?";
           params.push(limit);
+        } else if (offset !== undefined) {
+          sql += " LIMIT -1";
         }
         if (offset !== undefined) {
           sql += " OFFSET ?";
@@ -289,6 +311,9 @@ export function d1Adapter(db) {
         return asRow(row ?? null);
       },
       async updateMany({ model, modelKey = model, where, update: values }) {
+        if (where.length === 0) {
+          return 0;
+        }
         const columns = Object.keys(values);
         if (columns.length === 0) {
           return 0;
@@ -308,6 +333,9 @@ export function d1Adapter(db) {
         await write(db, `DELETE FROM ${ident(model)}${filter.sql}`, filter.params);
       },
       async deleteMany({ model, modelKey = model, where }) {
+        if (where.length === 0) {
+          return 0;
+        }
         const filter = whereSql(where, getFieldName, modelKey);
         return write(db, `DELETE FROM ${ident(model)}${filter.sql}`, filter.params);
       },
@@ -317,7 +345,7 @@ export function d1Adapter(db) {
         return asRow(
           await one(
             db,
-            `DELETE FROM ${ident(model)} WHERE ${idField} IN (SELECT ${idField} FROM ${ident(model)}${filter.sql} LIMIT 1) RETURNING *`,
+            `DELETE FROM ${ident(model)} WHERE ${idField} IN (SELECT ${idField} FROM ${ident(model)}${filter.sql} ORDER BY ${idField} LIMIT 1) RETURNING *`,
             filter.params,
           ),
         );

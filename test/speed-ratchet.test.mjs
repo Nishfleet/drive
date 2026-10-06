@@ -268,7 +268,13 @@ test("the site Worker bundle does not ship unused SQL dialect chunks", (t) => {
     .map((entry) =>
       typeof entry === "object" && entry !== null && "src" in entry ? entry.src : "",
     )
-    .filter((src) => typeof src === "string" && /kysely-adapter|bun-sqlite|node-sqlite/.test(src));
+    .filter(
+      (src) =>
+        typeof src === "string" &&
+        /kysely-adapter|bun-sqlite|node-sqlite|postgres-dialect|mysql-dialect|mssql-dialect/.test(
+          src,
+        ),
+    );
   assert.deepEqual(
     unused,
     [],
