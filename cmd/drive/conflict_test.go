@@ -137,6 +137,10 @@ type fakeConflictBackend struct {
 	listErr       error
 	// versions is the size and mtime operations/stat reports per object.
 	versions map[string]objectVersion
+	// staleHash is what remoteHash returns when set, so a stale rclone
+	// cache of this device's own last upload can be modelled. remoteHashFresh
+	// still reads objects.
+	staleHash map[string]string
 }
 
 type objectVersion struct {
@@ -150,6 +154,7 @@ func newFakeBackend() *fakeConflictBackend {
 		pollCounts: map[string]int{},
 		hashErr:    map[string]error{},
 		versions:   map[string]objectVersion{},
+		staleHash:  map[string]string{},
 	}
 }
 
@@ -197,6 +202,21 @@ func (f *fakeConflictBackend) remoteHash(_ context.Context, name string) (string
 	}
 	f.hashCalls++
 	f.pollCounts[name]++
+	if stale, ok := f.staleHash[name]; ok {
+		return stale, nil
+	}
+	return f.objects[name], nil
+}
+
+// remoteHashFresh is the object as storage holds it now, not a stale
+// rclone cache of this device's own last upload.
+func (f *fakeConflictBackend) remoteHashFresh(_ context.Context, name string) (string, error) {
+	if f.failWith != nil {
+		return "", f.failWith
+	}
+	if err := f.hashErr[name]; err != nil {
+		return "", err
+	}
 	return f.objects[name], nil
 }
 
@@ -643,13 +663,13 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 
 	// A wave of 300 lands as this device's own wins: each needs its
 	// conflictWinPolls polls, a hundred per pass, so the wave takes about
-	// sixty passes.
+	// 120 passes at conflictWinPolls=40.
 	const wave = 300
 	for i := 0; i < wave; i++ {
 		f.objects[name(i)] = md5Hex(body)
 	}
 	f.pending = f.pending[wave:]
-	for range 80 {
+	for range 150 {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("pass %d in the win wave: %v", passes, err)
 		}
@@ -937,6 +957,65 @@ func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
 	}
 	if len(g.seen) != 0 {
 		t.Errorf("the guard still watches %v", g.seen)
+	}
+}
+
+// TestConflictGuardKeepsASaveThatLandsAfterARetry is the offline-arm
+// failure: rclone's VFS retries a failed upload after 10s
+// ("will retry in 10s"), which is longer than one write-back window.
+// The other device's save has already landed, so this device must
+// still be watching when the retry overwrites it.
+func TestConflictGuardKeepsASaveThatLandsAfterARetry(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"offline.txt": "A-queued-while-storage-was-down\n"})
+	f.pending = []queueEntry{{Name: "offline.txt", Size: 32}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["offline.txt"] = md5Hex("A-queued-while-storage-was-down\n")
+	// 25 passes is 12.5s of watching at conflictInterval, past rclone's
+	// 10s retry and past the old 20-poll window.
+	for i := 0; i < 25; i++ {
+		if _, err := g.pass(context.Background(), f); err != nil {
+			t.Fatalf("pass %d of the retry window: %v", i, err)
+		}
+	}
+	f.objects["offline.txt"] = md5Hex("B-the-retry-that-landed-second\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the retry landed: %v", err)
+	}
+	want := "offline (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v Claimed=%+v Skipped=%+v, want the conflict copy after the 10s retry",
+			f.copied, res.Claimed, res.Skipped)
+	}
+}
+
+// TestConflictGuardClaimsWhenTheCachedHashIsStale is the two-device
+// race: this device's rclone still reports its own last upload, but
+// storage already holds the other device's overwrite. A cheap hashsum
+// would declare a win; a download hash sees the overwrite and claims.
+func TestConflictGuardClaimsWhenTheCachedHashIsStale(t *testing.T) {
+	const body = "A-this-device-saved\n"
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": body})
+	f.pending = []queueEntry{{Name: "report.txt", Size: int64(len(body))}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("sight: %v", err)
+	}
+	f.pending = nil
+	own := md5Hex(body)
+	other := md5Hex("B-the-other-device-overwrote\n")
+	f.objects["report.txt"] = other
+	f.staleHash["report.txt"] = own
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("decide with a stale cached hash: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v Claimed=%+v Skipped=%+v, want the conflict copy from the fresh hash",
+			f.copied, res.Claimed, res.Skipped)
 	}
 }
 
@@ -1573,6 +1652,92 @@ func TestConflictGuardDoesNotFailThePassWhenTheCacheFileIsMissing(t *testing.T) 
 	}
 	if len(res.Claimed) != 0 || len(res.Skipped) != 0 {
 		t.Errorf("Claimed=%v Skipped=%v, want nothing decided until the cache file exists", res.Claimed, res.Skipped)
+	}
+}
+
+// TestConflictGuardClaimsAfterTheVFSCacheFileIsGone is the baa4cfb follow-on:
+// rclone may delete the VFS cache file once the upload has left the queue,
+// or replace it with a download of the other device's save. The bytes this
+// device saved were already hashed at first sight, and they have to still
+// be there to write the conflict copy. A skip here is a lost save.
+func TestConflictGuardClaimsAfterTheVFSCacheFileIsGone(t *testing.T) {
+	const body = "A-this-device-saved\n"
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": body})
+	g.cacheDir = t.TempDir()
+	g.fs = "drive:bucket/u/conflict"
+	cached := filepath.Join(g.cacheDir, "vfs", "drive", "bucket", "u", "conflict", "report.txt")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = []queueEntry{{Name: "report.txt", Size: int64(len(body))}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("sight: %v", err)
+	}
+	if g.seen["report.txt"] == nil {
+		t.Fatal("the save was not sighted while the cache file existed")
+	}
+	if err := os.Remove(cached); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("decide after the cache file was gone: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v Claimed=%+v Skipped=%+v, want the conflict copy from the pinned bytes",
+			f.copied, res.Claimed, res.Skipped)
+	}
+	if got := f.objects[want]; got != md5Hex(body) {
+		t.Errorf("the conflict copy holds %q, want this device's pinned bytes", got)
+	}
+}
+
+// TestConflictGuardClaimsAfterTheVFSCacheFileIsReplaced is the same
+// lost-save case as TestConflictGuardClaimsAfterTheVFSCacheFileIsGone,
+// except rclone wrote a new cache file (a download of the other
+// device's save) at the same path instead of deleting it. The hold is
+// the original inode, so the conflict copy is still this device's bytes.
+func TestConflictGuardClaimsAfterTheVFSCacheFileIsReplaced(t *testing.T) {
+	const body = "A-this-device-saved\n"
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": body})
+	g.cacheDir = t.TempDir()
+	g.fs = "drive:bucket/u/conflict"
+	cached := filepath.Join(g.cacheDir, "vfs", "drive", "bucket", "u", "conflict", "report.txt")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = []queueEntry{{Name: "report.txt", Size: int64(len(body))}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("sight: %v", err)
+	}
+	if err := os.Remove(cached); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte("B-the-other-device-saved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("decide after the cache file was replaced: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v Claimed=%+v Skipped=%+v, want the conflict copy from the pinned inode",
+			f.copied, res.Claimed, res.Skipped)
+	}
+	if got := f.objects[want]; got != md5Hex(body) {
+		t.Errorf("the conflict copy holds %q, want this device's pinned bytes, not the downloaded remote", got)
 	}
 }
 

@@ -99,6 +99,13 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountA, name), []byte(bodyA), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// One second later is still inside the 5s write-back window, and it
+	// is how two people save: not the same millisecond. Two PUTs in the
+	// same instant make rclone serve s3 answer "corrupted on transfer:
+	// sizes differ" and retry in 10s, which is the flake on main
+	// (baa4cfb) and the offline arm. The retry itself is
+	// TestConflictGuardKeepsASaveThatLandsAfterARetry.
+	time.Sleep(time.Second)
 	if err := os.WriteFile(filepath.Join(mountB, name), []byte(bodyB), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +118,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// write-back timers are independent, so write order is not land order.
 	// The rule is checked by what is kept rather than by who won.
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
-	kept, plain, conflict := waitForBothSavesInStorage(t, root, cfg, name, candidates,
+	kept, plain, conflict := waitForBothSavesInStorage(t, root, cfg, []string{mountA, mountB}, name, candidates,
 		[]string{bodyA, bodyB}, 90*time.Second, "neither save survived")
 
 	// Both devices are notified: the device that lost the save and the other
@@ -157,6 +164,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountA, offlineName), []byte(offlineA), 0o644); err != nil {
 		t.Fatalf("save on device A while offline: %v", err)
 	}
+	time.Sleep(time.Second)
 	if err := os.WriteFile(filepath.Join(mountB, offlineName), []byte(offlineB), 0o644); err != nil {
 		t.Fatalf("save on device B while offline: %v", err)
 	}
@@ -168,7 +176,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// copy, named for the device that lost it. Either device can lose, so the
 	// rule is checked by what is kept rather than by who won.
 	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
-	kept, plain, conflict = waitForBothSavesInStorage(t, root, cfg, offlineName, candidates,
+	kept, plain, conflict = waitForBothSavesInStorage(t, root, cfg, []string{mountA, mountB}, offlineName, candidates,
 		[]string{offlineA, offlineB}, 90*time.Second,
 		"the offline save never uploaded under the conflict rule")
 	waitUntilListed(t, []string{mountA, mountB}, []string{offlineName, kept}, 90*time.Second)
@@ -259,7 +267,7 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	// Either device can be the one whose upload lands first, so the rule is
 	// checked by what is kept rather than by who won.
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
-	kept, plain, _ := waitForBothSavesInStorage(t, root, cfg, name, candidates,
+	kept, plain, _ := waitForBothSavesInStorage(t, root, cfg, []string{mountA, mountB}, name, candidates,
 		[]string{bodyA, bodyB}, 90*time.Second, "one save was lost")
 	// Both devices see both files that survived: the plain file and the one
 	// conflict copy — named for whichever device lost. There is never one per
@@ -289,50 +297,106 @@ func standinObject(root string, cfg StorageConfig, name string) string {
 
 // waitForBothSavesInStorage waits until the stand-in holds a conflict copy of
 // name and returns that copy's name and both objects' bytes. The conflict rule
-// is a rule about objects, so the proof reads the object store.
-func waitForBothSavesInStorage(t *testing.T, root string, cfg StorageConfig, name string, candidates, bodies []string, d time.Duration, missing string) (kept string, plain, conflict []byte) {
+// is a rule about objects, so the proof reads the object store, not a mount
+// whose VFS cache can still serve the losing device's own write (baa4cfb).
+// mounts are polled too: a conflict name on a mount means the guard claimed,
+// and Walk then finds the object if it sits under a different on-disk key.
+func waitForBothSavesInStorage(t *testing.T, root string, cfg StorageConfig, mounts []string, name string, candidates, bodies []string, d time.Duration, missing string) (kept string, plain, conflict []byte) {
 	t.Helper()
 	deadline := time.Now().Add(d)
+	var keptPath string
+	var lastPlain, lastConflict []byte
 	for time.Now().Before(deadline) {
-		for _, n := range candidates {
-			if _, err := os.Stat(standinObject(root, cfg, n)); err == nil {
-				kept = n
-				break
+		kept, keptPath = findStandinConflict(root, cfg, candidates)
+		if kept == "" {
+			for _, n := range candidates {
+				for _, m := range mounts {
+					if _, err := os.Stat(filepath.Join(m, n)); err == nil {
+						kept = n
+					}
+				}
 			}
 		}
 		if kept != "" {
-			break
+			var err error
+			plain, err = os.ReadFile(standinObject(root, cfg, name))
+			if err == nil {
+				if keptPath == "" {
+					keptPath = standinObject(root, cfg, kept)
+				}
+				conflict, err = os.ReadFile(keptPath)
+			}
+			if err == nil {
+				lastPlain, lastConflict = plain, conflict
+				same := string(plain) == string(conflict)
+				missingBody := false
+				for _, want := range bodies {
+					if string(plain) != want && string(conflict) != want {
+						missingBody = true
+					}
+				}
+				if !same && !missingBody {
+					return kept, plain, conflict
+				}
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	dir := filepath.Join(root, "data", cfg.Bucket, cfg.Prefix)
-	if kept == "" {
-		var names []string
-		if entries, err := os.ReadDir(dir); err == nil {
-			for _, e := range entries {
-				names = append(names, e.Name())
-			}
-		}
-		t.Fatalf("%s: none of %v appeared in storage %s (listing=%v)", missing, candidates, dir, names)
+	dumpStandinAndMounts(t, root, cfg, mounts)
+	if len(lastPlain) > 0 || len(lastConflict) > 0 {
+		t.Fatalf("%s: storage still had one save: plain=%q conflict=%q kept=%q",
+			missing, lastPlain, lastConflict, kept)
 	}
-	var err error
-	plain, err = os.ReadFile(standinObject(root, cfg, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	conflict, err = os.ReadFile(standinObject(root, cfg, kept))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range bodies {
-		if string(plain) != want && string(conflict) != want {
-			t.Errorf("the save %q survived nowhere: plain=%q conflict=%q", want, plain, conflict)
+	t.Fatalf("%s: none of %v appeared in storage %s", missing, candidates, filepath.Join(root, "data", cfg.Bucket, cfg.Prefix))
+	return "", nil, nil
+}
+
+// findStandinConflict is the conflict copy in the stand-in's object store:
+// the expected key first, then any file under the bucket whose name is one
+// of the candidates, so a layout difference is not a lost save.
+func findStandinConflict(root string, cfg StorageConfig, candidates []string) (kept, path string) {
+	for _, n := range candidates {
+		p := standinObject(root, cfg, n)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return n, p
 		}
 	}
-	if string(plain) == string(conflict) {
-		t.Errorf("both saves are the same bytes (%q): the other device's save was overwritten", plain)
+	want := make(map[string]string, len(candidates))
+	for _, n := range candidates {
+		want[filepath.Base(n)] = n
 	}
-	return kept, plain, conflict
+	bucket := filepath.Join(root, "data", cfg.Bucket)
+	_ = filepath.WalkDir(bucket, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if n, ok := want[d.Name()]; ok {
+			kept, path = n, p
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return kept, path
+}
+
+func dumpStandinAndMounts(t *testing.T, root string, cfg StorageConfig, mounts []string) {
+	t.Helper()
+	var files []string
+	_ = filepath.WalkDir(filepath.Join(root, "data"), func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		files = append(files, rel)
+		return nil
+	})
+	t.Logf("stand-in objects: %v", files)
+	for _, m := range mounts {
+		logPath := filepath.Join(filepath.Dir(m), ".config", "drive", "mount.log")
+		if b, err := os.ReadFile(logPath); err == nil {
+			t.Logf("mount log %s:\n%s", logPath, tailLines(string(b), 16))
+		}
+	}
 }
 
 // waitUntilListed waits until every dir lists every name, so both devices have
@@ -378,7 +442,7 @@ func TestWaitForBothSavesInStorageReadsTheObjectStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, keptName), []byte(bodyB), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	kept, plain, conflict := waitForBothSavesInStorage(t, root, cfg, name,
+	kept, plain, conflict := waitForBothSavesInStorage(t, root, cfg, nil, name,
 		[]string{ConflictName(name, "mac"), keptName},
 		[]string{bodyA, bodyB}, time.Second, "neither save survived")
 	if kept != keptName {

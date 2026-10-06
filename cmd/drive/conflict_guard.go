@@ -101,10 +101,14 @@ const conflictClaimPolls = 20
 // save was not overwritten. Another device's upload can land on top of
 // this one for the whole of one sync window after it: a save made two
 // seconds later still has its five-second write-back to land on top of an
-// upload that landed a moment ago. The plain path is polled every
-// conflictInterval, so conflictWinPolls polls cover that window with
-// margin for rclone's own scheduling.
-const conflictWinPolls = 20
+// upload that landed a moment ago. rclone's VFS also retries a failed
+// upload after 10s ("will retry in 10s"), which is how the offline arm
+// of TestTwoDevicesKeepBothSaves lost a save: the first upload hit
+// "corrupted on transfer" (the other device had just landed) and the
+// retry overwrote after this device had stopped watching. The plain
+// path is polled every conflictInterval, so 40 polls are 20s: one
+// write-back, one rclone retry, and margin.
+const conflictWinPolls = 40
 
 // conflictHashFailPolls is how many remote-hash failures one path may
 // take after it leaves the queue before the skip is named. Holding
@@ -198,6 +202,11 @@ type conflictBackend interface {
 	// an error: a save that lands where nothing was is exactly the
 	// case the rule has to name.
 	remoteHash(ctx context.Context, name string) (string, error)
+	// remoteHashFresh is the object's md5 read by downloading it, so a
+	// stale rclone cache of this device's own last upload cannot hide
+	// another device's overwrite. Used to confirm a win before the
+	// guard stops watching.
+	remoteHashFresh(ctx context.Context, name string) (string, error)
 	// remoteVersion is the size and modification time of the object at
 	// the plain path, and ok is false when there is no object there. A
 	// save too large to hash whole has no local md5 to set against the
@@ -440,6 +449,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	}
 	g.order, g.cursor = retireFinished(g.order, finished, next)
 	for _, name := range finished {
+		g.unpin(name)
 		delete(g.seen, name)
 	}
 	if len(res.Claimed) > 0 {
@@ -559,6 +569,7 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 		return nil, ConflictSkip{}, err
 	}
 	save.previous, save.baselineUnknown = previous, unknown
+	g.pin(name)
 	return save, ConflictSkip{}, nil
 }
 
@@ -586,6 +597,13 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 	landed, err := b.remoteHash(ctx, name)
 	if err != nil {
 		return g.hashFailed(name, save, "the remote hash for this file could not be read")
+	}
+	if !save.byFingerprint && landed == save.hash {
+		fresh, ferr := b.remoteHashFresh(ctx, name)
+		if ferr != nil {
+			return g.hashFailed(name, save, "the remote hash for this file could not be read")
+		}
+		landed = fresh
 	}
 	switch {
 	case save.byFingerprint && landed != "" && landed != save.previous:
@@ -727,6 +745,7 @@ func (g *conflictGuard) rehash(name string, save *pendingSave) (string, error) {
 		return "", fmt.Errorf("conflict: read %s from the mount: %w", name, err)
 	}
 	save.stat, save.hash = info, hash
+	g.pin(name)
 	return "", nil
 }
 
@@ -889,13 +908,34 @@ func dirLabel(dir string) string {
 }
 
 // sourceFile is the bytes this device saved at name: rclone's VFS cache
-// file when the guard knows where that cache is, otherwise the mount
-// path. The cache file is this device's own write, so a claim can copy
-// it after the mount path has already been overwritten by another
-// device's save. No second copy is made.
+// file when that file is still the one pinned at first sight, then the
+// hardlink, otherwise the mount path. rclone may delete the cache file
+// once the upload has left the queue, or replace it with a download of
+// the other device's save; the hardlink keeps this device's inode, and
+// a cache file whose inode has changed is that download, not a rewrite.
+// No second copy of the bytes is written.
 func (g *conflictGuard) sourceFile(name string) string {
-	if p := g.cacheFile(name); p != "" {
-		return p
+	cache := g.cacheFile(name)
+	hold := g.holdPath(name)
+	var holdInfo os.FileInfo
+	if hold != "" {
+		if fi, err := os.Stat(hold); err == nil && !fi.IsDir() {
+			holdInfo = fi
+		} else {
+			hold = ""
+		}
+	}
+	if cache != "" && holdInfo != nil {
+		if fi, err := os.Stat(cache); err == nil && os.SameFile(fi, holdInfo) {
+			return cache
+		}
+		return hold
+	}
+	if cache != "" {
+		return cache
+	}
+	if hold != "" {
+		return hold
 	}
 	if g.cacheDir != "" {
 		// A mount path open can make rclone replace this device's dirty
@@ -903,6 +943,47 @@ func (g *conflictGuard) sourceFile(name string) string {
 		return ""
 	}
 	return filepath.Join(g.mountDir, filepath.FromSlash(name))
+}
+
+// holdPath is the hardlink of name's VFS cache file, taken at first
+// sight so a claim still has this device's bytes after rclone evicts
+// the cache. Empty when this guard has no cache dir.
+func (g *conflictGuard) holdPath(name string) string {
+	if g.cacheDir == "" {
+		return ""
+	}
+	return filepath.Join(g.cacheDir, "conflict-hold", filepath.FromSlash(name))
+}
+
+// pin hardlinks the VFS cache file for name into holdPath. A hardlink
+// is the same inode, so rclone unlinking the cache file does not drop
+// the bytes, and no second copy is written. A cache file whose inode
+// is no longer the hold's is a download of the remote: the hold is
+// kept. Link failures are ignored: the next sourceFile still falls
+// through to the cache file or the mount.
+func (g *conflictGuard) pin(name string) {
+	src := g.cacheFile(name)
+	dst := g.holdPath(name)
+	if src == "" || dst == "" {
+		return
+	}
+	if fi, err := os.Stat(dst); err == nil && !fi.IsDir() {
+		if cfi, err := os.Stat(src); err == nil && !os.SameFile(fi, cfi) {
+			return
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return
+	}
+	_ = os.Remove(dst)
+	_ = os.Link(src, dst)
+}
+
+// unpin drops the hardlink for a save that is no longer watched.
+func (g *conflictGuard) unpin(name string) {
+	if p := g.holdPath(name); p != "" {
+		_ = os.Remove(p)
+	}
 }
 
 // cacheFile is rclone's VFS cache file for a mount-relative path, or "".
@@ -1107,6 +1188,18 @@ func (c *rcClient) parentContents(ctx context.Context, dir string) (map[string]b
 // nothing was is exactly the case the rule has to name, so "no object" is
 // an answer and only a failed read is an error.
 func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) {
+	return c.hashObject(ctx, name, false)
+}
+
+func (c *rcClient) remoteHashFresh(ctx context.Context, name string) (string, error) {
+	return c.hashObject(ctx, name, true)
+}
+
+// hashObject is the md5 of the object at the plain path, and "" when
+// there is no object there. download=true hashes by GET so rclone's
+// cache of this device's own last upload cannot hide another device's
+// overwrite (the two-device proof's "corrupted on transfer" retry).
+func (c *rcClient) hashObject(ctx context.Context, name string, download bool) (string, error) {
 	exists, err := c.remoteHas(ctx, name)
 	if err != nil {
 		return "", err
@@ -1114,12 +1207,16 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 	if !exists {
 		return "", nil
 	}
+	params := map[string]string{
+		"fs": c.fs, "remote": name, "hashType": "md5",
+	}
+	if download {
+		params["download"] = "true"
+	}
 	var reply struct {
 		Hashsum []string `json:"hashsum"`
 	}
-	hashErr := c.call(ctx, "operations/hashsum", map[string]string{
-		"fs": c.fs, "remote": name, "hashType": "md5",
-	}, &reply)
+	hashErr := c.call(ctx, "operations/hashsum", params, &reply)
 	if hashErr == nil {
 		hash, err := matchHashSum(reply.Hashsum, name)
 		if err == nil && hash != "" {
