@@ -181,3 +181,35 @@ func TestUnmountAgentWithoutSystemdStillLetsRevokeGo(t *testing.T) {
 		t.Errorf("the login item must be gone after the stop: %v", err)
 	}
 }
+
+// TestOneToolsAgentPathDoesNotReachTheNextTool pins the loop in initAgents: a
+// tool that has an agent path gets it, and a later tool with none keeps the
+// drive folder instead of inheriting the earlier tool's path.
+func TestOneToolsAgentPathDoesNotReachTheNextTool(t *testing.T) {
+	orig := startToolAgentPath
+	startToolAgentPath = func(env Env, tool Tool) (string, error) {
+		if tool.Name == "claude" {
+			return AgentMountDir(env.Home, "claude"), nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { startToolAgentPath = orig })
+	env, runner := testEnv(t)
+	if err := initAgents(env); err != nil {
+		t.Fatal(err)
+	}
+	agentRoot := AgentRootDir(env.Home)
+	sawClaude := false
+	for _, call := range runner.calls {
+		isClaude := strings.HasPrefix(call, "claude ")
+		if isClaude {
+			sawClaude = true
+		}
+		if strings.Contains(call, agentRoot) && !isClaude {
+			t.Errorf("a tool with no agent path was pointed at one: %q", call)
+		}
+	}
+	if !sawClaude {
+		t.Fatalf("claude never connected: %q", runner.calls)
+	}
+}

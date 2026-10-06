@@ -218,10 +218,13 @@ func initAgents(env Env, apiBase ...string) error {
 			failed++
 			continue
 		}
+		// A copy per tool, so one tool's path never carries over to the next
+		// tool in the loop, one that has no key and keeps the drive folder.
+		toolEnv := env
 		if dir != "" {
-			env.AgentDir = dir
+			toolEnv.AgentDir = dir
 		}
-		if err := t.Connect(env); err != nil {
+		if err := t.Connect(toolEnv); err != nil {
 			printToolFailure(t.Name, err)
 			failed++
 			continue
