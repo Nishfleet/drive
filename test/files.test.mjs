@@ -1,18 +1,19 @@
 // Tests for the Web Files page (drive issue #31). Two halves, the same split
-// test/status.test.mjs uses for src/status.js:
+// test/status.test.mjs uses for core/status.js:
 //
-// 1. The logic in src/files.js: what a file is, how a listing is ordered, the
+// 1. The logic in core/files.js: what a file is, how a listing is ordered, the
 //    path validator, the trash key round-trip, the 30-day window, the words,
 //    and every /api/files* route against a real in-memory store — browse,
 //    preview, download, upload, delete and one-tap restore.
 // 2. The shipped page: public/files.html is a static asset and cannot import
 //    the module, so this reads the file and fails when its copy, its endpoints
-//    or its window drift from src/files.js.
+//    or its window drift from core/files.js.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import vm from "node:vm";
 import {
   accountStorageKey,
   ChangedUnderUsError,
@@ -28,7 +29,6 @@ import {
   fileKind,
   fileRows,
   findTrashName,
-  formatWhen,
   handleFilesRequest,
   isPreviewable,
   isRestorable,
@@ -44,7 +44,6 @@ import {
   purgeExpiredTrash,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
-  restorableUntil,
   safeFileName,
   scopeStore,
   sortEntries,
@@ -59,16 +58,16 @@ import {
   UPLOAD_FILE_MAX_BYTES,
   validatePath,
   withoutTrash,
-} from "../src/files.js";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+} from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
   computeHiddenAt,
   decodeEntities,
   nextVersionMarkers,
   versionMarkers,
-} from "../src/s3-listing.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+} from "../core/s3-listing.js";
+import worker from "../src/index.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
@@ -82,12 +81,12 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The one account gate is signedInAccount() in
-// src/status.js; test/account-gate.test.mjs walks the routes that answer 401
+// core/status.js; test/account-gate.test.mjs walks the routes that answer 401
 // without it.
 const account = Object.freeze({ id: "1", name: "Your drive" });
 
-// One drive per test, and the same store the Worker builds, so every route runs
-// against real bytes rather than a stub.
+// One drive per test, against the in-memory store tests import. Production
+// never builds that store (src/index.js storeFor, drive#505).
 function drive() {
   const store = createMemoryStore();
   // The handler scopes this store to the signed-in account, so the test reads
@@ -173,22 +172,26 @@ test("a listing splits into the two groups the page renders", () => {
 });
 
 test("a file row carries the size and the time a person reads", () => {
-  const rows = fileRows(
-    [
-      { name: "notes.md", path: "/notes.md", kind: "text", size: 2400, modified: now - 3600_000 },
-      { name: "Photos", path: "/Photos", kind: "folder" },
-    ],
-    now,
-  );
+  const rows = fileRows([
+    { name: "notes.md", path: "/notes.md", kind: "text", size: 2400, modified: now - 3600_000 },
+    { name: "Photos", path: "/Photos", kind: "folder" },
+  ]);
   assert.deepEqual(rows[0], {
     name: "Photos",
     path: "/Photos",
     kind: "folder",
     sizeLabel: "",
-    whenLabel: "",
+    // A folder has no write time, so it sends no instant: the page writes
+    // "Folder" and nothing else, rather than a moment that is not its own
+    // (drive#559).
+    modifiedIso: "",
   });
   assert.equal(rows[1].sizeLabel, "2.4 KB");
-  assert.match(rows[1].whenLabel, /^\d{2}:\d{2}$/);
+  // The instant, not words. "11:00" written here is a UTC clock, which is the
+  // wrong clock for every customer who is not at Greenwich — the hour a file
+  // was written is exactly what a browser has to say in its own zone
+  // (drive#559; the page's whenLabel writes it below).
+  assert.equal(rows[1].modifiedIso, iso(3600_000));
 });
 
 // ---------------------------------------------------------------- paths
@@ -213,7 +216,7 @@ test("a path is absolute, and cannot climb out of the drive", () => {
 });
 
 test("the Worker owns the stored file name, and the page does not hold a second copy", () => {
-  // src/files.js is the one place a name is decided. The Web Files page is a
+  // core/files.js is the one place a name is decided. The Web Files page is a
   // static asset that cannot import it, and drive#92 removed the copy it used
   // to have: two copies of the same rule is how a slash comes to be a dash in
   // one path and a 400 in the other. This gate is where both sides are visible,
@@ -332,7 +335,7 @@ test("a deleted file is restorable for 30 days and not one day later", () => {
 test("a file past the 30 days has no Restore button and says why", () => {
   const day = 24 * 60 * 60 * 1000;
   const [fresh, stale] = trashRows(
-    /** @type {import("../src/files.js").FileEntry[]} */ ([
+    /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/fresh.md", now - day), path: "/fresh.md", kind: "file" },
       { name: trashName("/stale.md", now - 31 * day), path: "/stale.md", kind: "file" },
     ]),
@@ -368,7 +371,7 @@ test("the trash folder is hidden in the drive root, not deeper in it", () => {
 
 test("Recently deleted says when a file was deleted and until when", () => {
   const rows = trashRows(
-    /** @type {import("../src/files.js").FileEntry[]} */ ([
+    /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/a.txt", now - 60_000), path: "/a.txt", kind: "file", size: 1200 },
       { name: "not-ours", path: "/not-ours", kind: "file", size: 0 },
     ]),
@@ -378,19 +381,216 @@ test("Recently deleted says when a file was deleted and until when", () => {
   assert.ok(rows[0]);
   assert.equal(rows[0].name, "a.txt");
   assert.equal(rows[0].sizeLabel, "1.2 KB");
-  assert.equal(rows[0].deletedLabel, `Deleted ${formatWhen(now - 60_000, now)}`);
-  assert.equal(rows[0].untilLabel, restorableUntil(now - 60_000));
+  assert.equal(rows[0].deletedIso, iso(60_000));
+  assert.equal(rows[0].untilIso, iso(60_000 - RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000));
   assert.equal(rows[0].restorable, true);
 });
 
 // ---------------------------------------------------------------- times
 
-test("a time reads as a clock today, a day this year, a year beyond that", () => {
-  assert.equal(formatWhen(now - 5 * 60_000, now), formatWhen(now - 5 * 60_000, now));
-  assert.match(formatWhen(iso(40 * 24 * 60 * 60 * 1000), now), /\d{1,2} \w{3}$/);
-  const old = formatWhen("2024-03-04T10:00:00.000Z", now);
-  assert.match(old, /2024/);
-  assert.throws(() => formatWhen("not a date", now), TypeError);
+test("a row sends the instant, not a sentence, and an entry with no date sends none", () => {
+  // drive#559: "Deleted 11:59" is a UTC clock for every customer east of
+  // Greenwich and the wrong clock for every customer west of it, so the Worker
+  // sends the instant and the page writes the words (public/files.html
+  // whenLabel/dayLabel). What moves here is not a label but the shape.
+  assert.equal(
+    fileRows([{ name: "a.txt", path: "/a.txt", kind: "text", size: 1, modified: 0 }])[0]
+      .modifiedIso,
+    "",
+  );
+  // S3's LastModified is optional in a listing, so a server that reports none
+  // is answering the spec: the row ships no instant, and the page writes
+  // nothing rather than a moment that is not the file's.
+  assert.equal(
+    fileRows([{ name: "a.txt", path: "/a.txt", kind: "text", size: 1 }])[0].modifiedIso,
+    "",
+  );
+  // A value that is not a date at all is a bug, not a spec-legal answer: it is
+  // named rather than turned into "Invalid Date".
+  assert.throws(
+    () =>
+      fileRows(
+        /** @type {import("../core/files.js").FileEntry[]} */ (
+          /** @type {unknown} */ ([
+            { name: "a.txt", kind: "text", size: 1, modified: "2026-10-08" },
+          ])
+        ),
+      ),
+    TypeError,
+  );
+});
+
+// ---------------------------------------------------------------- times
+
+/**
+ * @typedef {object} StubElement
+ * @property {string} tag
+ * @property {string} className
+ * @property {string} href
+ * @property {string} text
+ * @property {string} textContent
+ * @property {Record<string, string>} dataset
+ * @property {Record<string, string>} attributes
+ * @property {boolean} disabled
+ * @property {Record<string, (event: any) => any>} listeners
+ * @property {{add(): void, toggle(): void, contains: () => boolean}} classList
+ * @property {StubElement[]} appended
+ * @property {(child: StubElement) => StubElement} append
+ * @property {(key: string, value: string) => void} setAttribute
+ * @property {(name: string, handler: (event: any) => any) => void} addEventListener
+ */
+
+/**
+ * A stub element, the same one test/account-balance.test.mjs uses: it records
+ * what the page writes into it and what gets appended, so a row the page
+ * rendered can be read back.
+ * @param {string} tag
+ * @returns {StubElement}
+ */
+function stubTag(tag) {
+  /** @type {StubElement[]} */
+  const appended = [];
+  /** @type {Record<string, string>} */
+  const attributes = {};
+  /** @type {Record<string, string>} */
+  const dataset = {};
+  /** @type {Record<string, (event: any) => any>} */
+  const listeners = {};
+  // The one string both words hold, so the two accessors are not each other's
+  // return type: the page writes `text` and reads `textContent` back, and the
+  // test reads `textContent` off the row it rendered.
+  /** @type {string} */
+  let written = "";
+  const el = {
+    tag,
+    className: "",
+    href: "",
+    attributes,
+    dataset,
+    listeners,
+    disabled: false,
+    classList: { add() {}, toggle() {}, contains: () => false },
+    appended,
+    append: /** @param {StubElement} child */ (child) => {
+      el.appended.push(child);
+      return child;
+    },
+    get text() {
+      return written;
+    },
+    set text(value) {
+      written = value;
+    },
+    get textContent() {
+      return written;
+    },
+    set textContent(value) {
+      written = value;
+      // Setting the text is how the page empties a node before it fills it
+      // again, so a cleared list is an empty list of rows.
+      if (value === "") el.appended.length = 0;
+    },
+    setAttribute: /** @param {string} key, @param {string} value */ (key, value) => {
+      el.attributes[key] = value;
+    },
+    addEventListener: /** @param {string} name, @param {any} handler */ (name, handler) => {
+      el.listeners[name] = handler;
+    },
+  };
+  return el;
+}
+
+/** The page's own script, loaded with enough browser stubbed to run. */
+/** @returns {{sandbox: Record<string, any>, listed: StubElement}} */
+function loadFilesPage() {
+  const listed = stubTag("ul");
+  /** @type {Map<string, StubElement>} */
+  const elements = new Map();
+  /**
+   * @param {string} id
+   * @returns {StubElement}
+   */
+  const stub = (id) => {
+    const el = stubTag(id);
+    elements.set(id, el);
+    return el;
+  };
+  /** @type {Record<string, any>} */
+  const sandbox = {
+    console,
+    document: {
+      getElementById: (/** @type {string} */ id) => elements.get(id) ?? stub(id),
+      createElement: (/** @type {string} */ tag) => stubTag(tag),
+    },
+    location: { search: "" },
+    navigator: { onLine: true },
+    sessionStorage: { getItem: () => null, setItem() {} },
+    // The session nav and the session list read their own routes at load; both
+    // answer with the words the page's own copy of the gate's table names, so
+    // the read lands rather than leaving the page in its signed-out state.
+    fetch: async (/** @type {string} */ url) => {
+      const where = String(url);
+      if (where.includes("view=deleted")) {
+        return { ok: true, status: 200, json: async () => ({ rows: [], nextCursor: null }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ rows: [], nextCursor: null, empty: {}, line: "", signedIn: true }),
+      };
+    },
+  };
+  elements.set("file-list", listed);
+  const from = page.indexOf("<script>") + "<script>".length;
+  vm.runInNewContext(page.slice(from, page.indexOf("</script>", from)), sandbox);
+  return { sandbox, listed };
+}
+
+test("a row rendered in the browser's own zone shows the local day", () => {
+  // drive#559, acceptance 1 and 3. The Worker's row carries the instant and the
+  // page writes the words, so one file saved just after midnight UTC is the
+  // previous day in New York and that day in London: the hour and the day a
+  // person reads are the ones their own clock shows.
+  const { sandbox, listed } = loadFilesPage();
+  // 01:30 UTC on the 9th of this year: New York is still on the 8th and London
+  // is on the 9th, whatever the daylight saving season, and both are this
+  // year, which is the day-and-month shape the page writes.
+  const instant = Date.UTC(new Date().getFullYear(), 9, 9, 1, 30);
+  const row = fileRows([
+    { name: "note.txt", path: "/note.txt", kind: "text", size: 5, modified: instant },
+  ])[0];
+  /** @param {string} zone */
+  const dayIn = (zone) => new Intl.DateTimeFormat(undefined, { timeZone: zone, day: "numeric" });
+  /** @param {string} zone */
+  const shortIn = (zone) =>
+    new Intl.DateTimeFormat(undefined, { timeZone: zone, day: "numeric", month: "short" });
+  /** @returns {StubElement} */
+  const sub = () => {
+    const found = listed.appended
+      .flatMap((li) => li.appended)
+      .flatMap((node) => node.appended)
+      .find((node) => node.className === "sub");
+    assert.ok(found, "the page rendered a row whose meta line can be read back");
+    return found;
+  };
+
+  process.env.TZ = "America/New_York";
+  try {
+    sandbox.renderRows([row]);
+    assert.equal(sub().textContent, `Text · 5 B · ${shortIn("America/New_York").format(instant)}`);
+    assert.equal(dayIn("America/New_York").format(instant), "8", "New York is still on the 8th");
+    process.env.TZ = "Europe/London";
+    sandbox.renderRows([row]);
+    assert.equal(sub().textContent, `Text · 5 B · ${shortIn("Europe/London").format(instant)}`);
+    assert.equal(dayIn("Europe/London").format(instant), "9", "London is on the 9th: a day over");
+    // A row with no instant sent writes no date at all, rather than a moment
+    // that is not the folder's.
+    const folder = fileRows([{ name: "Photos", path: "/Photos", kind: "folder" }])[0];
+    sandbox.renderRows([folder]);
+    assert.equal(sub().textContent, "Folder");
+  } finally {
+    process.env.TZ = "UTC";
+  }
 });
 
 // ---------------------------------------------------------------- the routes
@@ -911,7 +1111,7 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
  * change these tests cover: a delete and a restore now ask the storage to copy
  * the file, so no body is ever pulled through the Worker (drive issue #567). A
  * move that reads is the bug, so the wrapper makes it loud.
- * @param {import("../src/files.js").FileStore} inner
+ * @param {import("../core/files.js").FileStore} inner
  * @param {{paths: string[], size: number}|null} big the storage keys a
  *   listing reports a size for, the way a real listing reports a real size
  * @param {() => Promise<void>} [onCopy] what happens after each copy, which is
@@ -1062,7 +1262,7 @@ function etagFor(body) {
  * The ETag one file in a listing carries, read from the store the way the two
  * move routes read it, so a test can name the exact value the conditional
  * remove will be held to.
- * @param {import("../src/files.js").FileStore} scoped
+ * @param {import("../core/files.js").FileStore} scoped
  * @param {string} folder the folder the listing is of
  * @param {string} name the file to read the ETag of
  * @returns {Promise<string>}
@@ -1963,7 +2163,7 @@ test("each route names the one method it serves", async () => {
 
 test("an account without a store has a name for the masthead", () => {
   // The account the handlers take is the signed-in one from the gate
-  // (signedInAccount in src/status.js). With no sign-in flow yet no request
+  // (signedInAccount in core/status.js). With no sign-in flow yet no request
   // can prove one, so the page's masthead falls back to its own wordmark and
   // this test only pins the shape the handlers accept.
   assert.equal(account.name, "Your drive");
@@ -2092,7 +2292,7 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
   // the escaped text, and the read and delete that followed it asked S3 for a
   // key that does not exist. Every step below goes through one fake bucket
   // that answers exactly the XML a real one answers.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   const name = "a&b <c> 'd'.txt";
   const key = `u/acct/${name}`;
   const escapedKey = "u/acct/a&amp;b &lt;c&gt; &apos;d&#39;.txt";
@@ -2151,7 +2351,7 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
 });
 
 test("the in-memory store keeps the version history the reconciler reads", async () => {
-  const { createMemoryStore } = await import("../src/files.js");
+  const { createMemoryStore } = await import("../core/files.js");
   const store = createMemoryStore();
   await store.write("u/1/a.txt", "one", "text/plain");
   await store.write("u/1/a.txt", "two", "text/plain");
@@ -2174,7 +2374,7 @@ test("the in-memory store keeps the version history the reconciler reads", async
 });
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   assert.throws(
     () =>
       createS3Store({
@@ -2188,7 +2388,7 @@ test("the S3 stand-in needs an endpoint and a bucket", async () => {
 });
 
 test("the S3 store needs both a region and a credential, or neither", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   assert.throws(
     () =>
       createS3Store({
@@ -2210,7 +2410,7 @@ test("the S3 store needs both a region and a credential, or neither", async () =
 });
 
 test("a credentialed S3 store signs every request and still uses fetchImpl", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   /** @type {string[]} */
   const authorizations = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -2242,7 +2442,7 @@ test("a credentialed S3 store signs every request and still uses fetchImpl", asy
 });
 
 test("an unsigned write sends the stream as it is, without buffering it", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -2271,7 +2471,7 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
   // Files page reads it as an empty folder: S3 answers a missing bucket 404
   // (NoSuchBucket) and a missing folder 200 with no keys, so a 404 on a list
   // is always the bucket.
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const notFound = `<?xml version="1.0" encoding="UTF-8"?>
 <Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`;
   /** @type {typeof fetch} */
@@ -2301,7 +2501,7 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
 });
 
 test("a signed write sends the original stream and UNSIGNED-PAYLOAD", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -2337,7 +2537,7 @@ test("a signed stream write with no declared size is refused, not buffered", asy
   // isolate memory. The store refuses it so the caller declares a size
   // (drive#539); the owner upload reads a length-less body under its own
   // ceiling and always passes one.
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -2358,7 +2558,7 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   // The bucket is one namespace for every account, so this is the layer where
   // a missing prefix would actually cross accounts (drive issue #73). The fake
   // fetch records the URLs, and the assertion is on the storage keys in them.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   /** @type {Array<{url: string, method: string}>} */
   const urls = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -2714,7 +2914,7 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // 100,000-file drive indexed 20,000 of them (drive issue #18). The fake
   // storage here answers two pages, so the test fails on a store that stops at
   // the first one.
-  const { createS3Store, nextContinuationToken } = await import("../src/files.js");
+  const { createS3Store, nextContinuationToken } = await import("../core/files.js");
   /** @param {string[]} names @param {string|null} next */
   const page = (names, next) => {
     const contents = names
@@ -2904,7 +3104,7 @@ test("the page wears the site's header, with room for the view strip", () => {
 });
 
 test("the page's copy is the module's copy", () => {
-  // The page cannot import src/files.js, so these are the strings it must
+  // The page cannot import core/files.js, so these are the strings it must
   // carry. Drifting copy fails here instead of shipping a page that disagrees
   // with the module and its tests.
   for (const state of Object.values(EMPTY_STATES)) {
@@ -2928,7 +3128,7 @@ test("the page's copy is the module's copy", () => {
 });
 
 test("the page shows the sign-in words the 401 sent, and carries no copy", () => {
-  // The page cannot import src/messages.js and must not carry a second copy of
+  // The page cannot import core/messages.js and must not carry a second copy of
   // the table's `unauthorized` entry (test/pr-gate.test.mjs pins that): the
   // API's 401 body IS that entry, so the page renders what the endpoint sent
   // (drive issue #73). This pins the plumbing, not the words.
@@ -2962,7 +3162,7 @@ test("the page's script reads the same endpoints and the same window", () => {
   ]) {
     assert.ok(page.includes(`const ${name} = "${endpoint}";`), `the page must call ${endpoint}`);
   }
-  // The 30-day window is src/files.js's number, and the page carries it only so
+  // The 30-day window is core/files.js's number, and the page carries it only so
   // this gate can read it back: nothing in the page's own script touches it, so
   // a linter reads the line as dead and renames it. The underscore is the
   // standard "deliberately unread in the module it is declared in" marker, and
@@ -2987,7 +3187,7 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // bare # would send a no-JS browser to the top of the page (drive#92).
   assert.ok(page.includes('<a id="viewer-download" href="/api/files/download" download>'));
   // The upload path carries one name, and it is the name the browser knows:
-  // src/files.js's safeFileName is the single place a stored name is decided,
+  // core/files.js's safeFileName is the single place a stored name is decided,
   // and the page deliberately does not have a second copy of that rule (the
   // gate above is where the page's character set is compared with the
   // module's).
@@ -3050,7 +3250,7 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   // `drive branch` calls FileStore.copy (build step 7): on the real store that
   // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
   // The header form is the one proven against `rclone serve s3` on 2026-10-01.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   /** @type {Array<{method: string, url: string, headers: Record<string, string>}>} */
   const calls = [];
   /** @type {typeof fetch} */
@@ -3180,7 +3380,7 @@ test("a copy the storage refuses as too big becomes a multipart copy, even with 
   // source over its 5 GiB single-copy ceiling is the signal, and the byte
   // length comes from the source's own HEAD. Without that answer the copy is a
   // named failure, not a copy that silently moved nothing.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   const sixGb = 6 * 1024 ** 3;
   /** @type {string[]} */
   const seen = [];
@@ -3233,7 +3433,7 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
   // Every S3-shaped provider bills the parts of an unfinished multipart upload,
   // and `drive branch` copies whole folders: a copy that gave up halfway must
   // not leave that bill behind, and must say which part failed.
-  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const { createS3Store, scopeStore } = await import("../core/files.js");
   /** @type {string[]} */
   const seen = [];
   /** @type {typeof fetch} */
@@ -3279,7 +3479,7 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
 /**
  * Park a file in one account's Recently deleted, the way the delete handler
  * does: a scoped write under .trash with a trash-name key.
- * @param {import("../src/files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {string} account
  * @param {string} path
  * @param {number} deletedAt
@@ -3690,7 +3890,7 @@ test("a 5xx from storage is retried once, and the retry re-signs the request", a
 });
 
 test("listKeys lists flat, resumes after a start-after key, and follows the continuation token", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   /** @type {string[]} */
   const urls = [];
   /**
@@ -3733,7 +3933,7 @@ test("listKeys lists flat, resumes after a start-after key, and follows the cont
 });
 
 test("a repeated continuation token is refused instead of holding the listing open", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Contents><Key>u/acct/a.txt</Key><Size>10</Size></Contents>
@@ -3748,7 +3948,7 @@ test("a repeated continuation token is refused instead of holding the listing op
 });
 
 test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escaped keys", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   /** @type {{url: string, method: string, headers: Record<string, string>, body: string}[]} */
   const sent = [];
   /** @type {typeof fetch} */
@@ -3788,7 +3988,7 @@ test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escap
 });
 
 test("removeBatch refuses a 200 answer that carries per-key errors", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Error><Key>u/acct/stuck.txt</Key><Code>InternalError</Code><Message>We encountered an internal error</Message></Error>
@@ -3801,12 +4001,44 @@ test("removeBatch refuses a 200 answer that carries per-key errors", async () =>
   });
   await assert.rejects(
     store.removeBatch(["u/acct/gone.txt", "u/acct/stuck.txt"]),
-    /refused "u\/acct\/stuck\.txt" with InternalError/,
+    (/** @type {Error} */ error) => {
+      assert.match(error.message, /refused 1 of 2 keys \(first at index 1\) with InternalError/);
+      // The purge logs this text, so the key (the person's file name) is not in it.
+      assert.doesNotMatch(error.message, /stuck/);
+      return true;
+    },
+  );
+});
+
+test("a scoped purge cursor cannot reach outside the account's own prefix", async () => {
+  const { createMemoryStore } = await import("../core/files.js");
+  const store = createMemoryStore();
+  await scopeStore(store, { id: "acct_a" }).write("/a.txt", "mine", "text/plain");
+  await scopeStore(store, { id: "acct_b" }).write("/b.txt", "theirs", "text/plain");
+  const scoped = scopeStore(store, { id: "acct_a" });
+  // A cursor that climbs out is refused before any listing runs.
+  await assert.rejects(
+    scoped.listKeys("/", { startAfter: "/../acct_b/a.txt" }),
+    /a scoped store needs a drive path/,
+  );
+  await assert.rejects(
+    scoped.listKeys("/", { startAfter: "u/acct_b/" }),
+    /a scoped store needs a drive path/,
+  );
+  // A cursor shaped like another account's key is still a path inside this
+  // one: the prefix is prepended, so the listing never names acct_b's file.
+  const keys = await scoped.listKeys("/", { startAfter: "/" });
+  assert.deepEqual(keys, ["/a.txt"]);
+  const spoofed = await scoped.listKeys("/", { startAfter: "/u/acct_b/b.txt" });
+  assert.deepEqual(
+    spoofed,
+    [],
+    "the listing starts after u/acct_a/u/acct_b/b.txt, never in acct_b",
   );
 });
 
 test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket batch", async () => {
-  const { createS3Store } = await import("../src/files.js");
+  const { createS3Store } = await import("../core/files.js");
   let calls = 0;
   const store = createS3Store({
     endpoint: "http://127.0.0.1:9000",

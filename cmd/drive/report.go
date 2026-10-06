@@ -22,9 +22,14 @@ const queueReportPath = "/v1/queue"
 
 // queueReportInterval is how often the mount's reporter ticks. It is the same
 // number the server enforces as the minimum spacing between two accepted
-// reports (workers/api/src/queues.js QUEUE_REPORT_INTERVAL_SECONDS). Ten
+// reports (core/queues.js QUEUE_REPORT_INTERVAL_SECONDS). Ten
 // seconds is far above the queue's own change rate and far below a keyboard's.
 const queueReportInterval = 10 * time.Second
+
+// queueReportHeartbeat is the longest a mount may stay silent when the queue
+// has not changed. Together with "send on change", this is 288 writes a day
+// at idle (one every five minutes) instead of one every 10 seconds.
+const queueReportHeartbeat = 5 * time.Minute
 
 // queueReportTimeout bounds one HTTP call so a slow Worker does not hold the
 // reporter loop.
@@ -68,6 +73,9 @@ func RunQueueReportLoop(ctx context.Context, c *rcClient, home string) <-chan er
 		}
 		ticker := time.NewTicker(queueReportInterval)
 		defer ticker.Stop()
+		var last QueueReport
+		var lastSent time.Time
+		haveLast := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -75,7 +83,7 @@ func RunQueueReportLoop(ctx context.Context, c *rcClient, home string) <-chan er
 			case <-ticker.C:
 			}
 			passCtx, cancel := context.WithTimeout(ctx, queueReportTimeout)
-			err := reportQueueOnce(passCtx, c, client, home)
+			err := reportQueueOnce(passCtx, c, client, home, &last, &lastSent, &haveLast)
 			cancel()
 			if err != nil {
 				select {
@@ -89,7 +97,7 @@ func RunQueueReportLoop(ctx context.Context, c *rcClient, home string) <-chan er
 }
 
 // reportQueueOnce reads the mount's queue and stats and posts the report.
-func reportQueueOnce(ctx context.Context, c *rcClient, client *APIClient, home string) error {
+func reportQueueOnce(ctx context.Context, c *rcClient, client *APIClient, home string, last *QueueReport, lastSent *time.Time, haveLast *bool) error {
 	queue, err := c.ReadQueue(ctx)
 	if err != nil {
 		return fmt.Errorf("read queue: %w", err)
@@ -99,9 +107,35 @@ func reportQueueOnce(ctx context.Context, c *rcClient, client *APIClient, home s
 		return fmt.Errorf("read stats: %w", err)
 	}
 	paused := uploadsPaused(ctx, c, home)
+	if paused {
+		if err := c.HoldQueuedUploads(ctx); err != nil {
+			return fmt.Errorf("hold paused uploads: %w", err)
+		}
+	}
 	report := queueReportFrom(queue, stats, paused)
+	if !queueReportDue(last, *lastSent, time.Now(), report, *haveLast) {
+		return nil
+	}
 	var answer map[string]any
-	return client.post(queueReportPath, report, &answer)
+	if err := client.post(queueReportPath, report, &answer); err != nil {
+		return err
+	}
+	*last = report
+	*lastSent = time.Now()
+	*haveLast = true
+	return nil
+}
+
+// queueReportDue is whether this pass should POST: the first report, a
+// changed queue, or the 5-minute heartbeat.
+func queueReportDue(last *QueueReport, lastSent, now time.Time, next QueueReport, haveLast bool) bool {
+	if !haveLast {
+		return true
+	}
+	if *last != next {
+		return true
+	}
+	return now.Sub(lastSent) >= queueReportHeartbeat
 }
 
 // uploadsPaused answers whether uploads are stopped right now: the same

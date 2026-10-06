@@ -1,15 +1,15 @@
 // What a key can and cannot do (drive issue #98).
 //
 // The powers are decisions from docs/build-spec.md ("Keys and safety"), and
-// they are read from one place: workers/api/src/keyprovider.js holds the one
-// kind-to-capabilities table, and src/cap.js already re-exports it so the
+// they are read from one place: core/keyprovider.js holds the one
+// kind-to-capabilities table, and core/cap.js already re-exports it so the
 // pricing Worker and the api Worker cannot disagree. This module adds nothing
 // of its own; it turns that table into the plain booleans the docs pages need,
 // so the Security and Agents pages and the enforcement code read the same
 // source instead of two copies that can drift.
-import { deleteSwitchesFor, IDRIVE_KEY_REACH } from "../workers/api/src/idrive-keys.js";
-import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
-import { HIDDEN_VERSION_DAYS } from "../workers/api/src/s3.js";
+import { deleteSwitchesFor, IDRIVE_KEY_REACH } from "../core/idrive-keys.js";
+import { CAPABILITIES_BY_KIND } from "../core/keyprovider.js";
+import { HIDDEN_VERSION_DAYS } from "../core/s3.js";
 
 // The agent tools `drive init` connects. The CLI's own list is in Go
 // (cmd/drive/tools.go); the docs cannot import Go, so the list is declared
