@@ -38,6 +38,7 @@ import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
 import {
+  downloadRecorder,
   HOUR_MS,
   handleStorageEventRequest,
   hourStart,
@@ -550,6 +551,7 @@ const filesHandler = async (c) => {
           db: c.env.DRIVE_DB,
           prepaidPause: prepaidPauseOn(c.env),
           accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
+          recordDownload: downloadRecorder(c.env.DRIVE_DB),
         }
       : { prepaidPause: prepaidPauseOn(c.env) },
   );
@@ -915,6 +917,7 @@ export function createApp() {
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
     handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env), {
       ipLimiter: c.env.SHARE_DOWNLOAD_RATE_LIMITER,
+      recordDownload: downloadRecorder(c.env.DRIVE_DB),
     }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>

@@ -71,6 +71,7 @@ func Login(home, apiBase string, out io.Writer) error {
 		Bucket:       key.Bucket,
 		Prefix:       key.Prefix,
 		Region:       firstNonEmpty(key.Region, "us-east-1"),
+		DownloadURL:  key.DownloadURL,
 	}
 	if cfg.Endpoint == "" || cfg.Bucket == "" || cfg.AccessKey == "" || cfg.SecretKey == "" {
 		missing := []string{}
@@ -98,6 +99,7 @@ func Login(home, apiBase string, out io.Writer) error {
 		Bucket:       cfg.Bucket,
 		Prefix:       cfg.Prefix,
 		Region:       cfg.Region,
+		DownloadURL:  cfg.DownloadURL,
 		AccessKeyID:  cfg.AccessKey,
 		KeyID:        key.KeyID,
 	}

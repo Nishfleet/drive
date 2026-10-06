@@ -1082,7 +1082,9 @@ export async function handleShareRequest(request, files, links, account, options
  * @param {Request} request
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
+ *   `recordDownload` adds the served bytes to the link owner's download total
+ *   (drive#517), so a share download is billed to the account that shared it.
  */
 export async function handleShareFileRequest(request, files, links, options = {}) {
   const now = options.now ?? Date.now();
@@ -1177,6 +1179,11 @@ export async function handleShareFileRequest(request, files, links, options = {}
     // The reservation and the cap are the same statement (issue #549), so a
     // full link refuses here instead of serving more bytes it cannot count.
     return plain(failureMessage("download-link-cap"), 429);
+  }
+  // The bytes leave our storage on the owner's behalf, so they go on the
+  // owner's month (drive#517), the same total the dl Worker adds to.
+  if (options.recordDownload) {
+    await options.recordDownload(record.accountId, served);
   }
   return new Response(object.body, {
     status,

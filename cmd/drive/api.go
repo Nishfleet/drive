@@ -64,6 +64,10 @@ type MintedKey struct {
 	Endpoint     string   `json:"endpoint,omitempty"`
 	Bucket       string   `json:"bucket,omitempty"`
 	Region       string   `json:"region,omitempty"`
+	// DownloadURL is the dl Worker base URL with this key's download grant
+	// (drive#517), or empty when the deployment has no dl host. The mount
+	// reads through it so reads are checked and counted.
+	DownloadURL string `json:"downloadUrl,omitempty"`
 }
 
 // Account is the account a device token belongs to.

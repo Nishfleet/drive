@@ -63,6 +63,11 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
 		t.Fatalf("credentials missing storage location: %+v", creds)
 	}
+	// drive#517: the mint's download URL is saved, so the mount reads through
+	// the dl Worker instead of straight from storage.
+	if !strings.HasPrefix(creds.DownloadURL, "https://dl.example.test/k/grant_") {
+		t.Fatalf("credentials download URL = %q, want the mint's", creds.DownloadURL)
+	}
 
 	cfg, err := ParseRcloneConfig(RcloneConfigPath(home))
 	if err != nil {
@@ -93,6 +98,16 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	}
 	if loaded.Endpoint != creds.Endpoint || loaded.Bucket != creds.Bucket {
 		t.Fatalf("loaded location %+v, want credentials %+v", loaded, creds)
+	}
+	if loaded.DownloadURL != creds.DownloadURL {
+		t.Fatalf("mount config download URL = %q, want the saved %q", loaded.DownloadURL, creds.DownloadURL)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), rcloneDownloadURLEnv+"=") {
+		t.Fatalf("login did not put the download URL in rclone.env:\n%s", env)
 	}
 }
 
