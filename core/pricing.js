@@ -63,6 +63,8 @@ export const PREPAID = Object.freeze({
 // the arithmetic. Backblaze B2 (the standby) sets minimumStayDays to 0 and
 // the pause never fires. The 2x floor is this one number, never a literal
 // in the check.
+/** @typedef {{minimumStayDays: number, idriveCostCentsPerTbMonth: number, backupCostCentsPerTbMonth: number, fairUseFloorMultiple: number}} StorageConfig */
+/** @type {Readonly<StorageConfig>} */
 export const STORAGE = Object.freeze({
   minimumStayDays: 30,
   idriveCostCentsPerTbMonth: 500,

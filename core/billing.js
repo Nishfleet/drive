@@ -475,7 +475,7 @@ function storageConfig(storage) {
       `storage.fairUseFloorMultiple must be a whole number of 1 or more, got ${String(fields.fairUseFloorMultiple)}`,
     );
   }
-  return /** @type {typeof STORAGE} */ (storage);
+  return /** @type {import("./pricing.js").StorageConfig} */ (storage);
 }
 
 /**
@@ -1030,7 +1030,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null}|null} account the signed-in account, or null when signed out. `usage` is the
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null, fairUse?: unknown}|null} account the signed-in account, or null when signed out. `usage` is the
  *   month's own metered numbers, read by the route from the account store's
  *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report

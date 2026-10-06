@@ -612,7 +612,7 @@ function fairUseUploadOptions(env) {
   const secrets = dodoEnv(env);
   return {
     fairUseRefuse: refuse,
-    onFairUseError: (error) => captureError(error, "fair-use snapshot"),
+    onFairUseError: (/** @type {unknown} */ error) => captureError(error, "fair-use snapshot"),
     /**
      * @param {string} accountId
      * @param {number} uploadBytes
