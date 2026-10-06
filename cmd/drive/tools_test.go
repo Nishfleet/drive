@@ -57,6 +57,32 @@ func TestClaudeConnectRunsItsOwnAddWithUserScope(t *testing.T) {
 	}
 }
 
+func TestClaudeConnectPointsAtTheAgentPath(t *testing.T) {
+	env, runner := testEnv(t)
+	env.AgentDir = filepath.Join(env.Home, "Drive-agents", "claude")
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("claude mcp add -s user %s -- npx -y %s %s", serverName, mcpPackage, env.AgentDir)
+	if len(runner.calls) != 1 || runner.calls[0] != want {
+		t.Fatalf("Connect ran %q, want %q", runner.calls, want)
+	}
+	if st, err := os.Stat(env.AgentDir); err != nil || !st.IsDir() {
+		t.Fatalf("the agent path was not created: %v", err)
+	}
+	settings := readFile(t, filepath.Join(env.Home, claudeSettingsPath))
+	if strings.Contains(settings, `"`+env.DriveDir+`"`) {
+		t.Fatalf("claude settings still grant the person's drive:\n%s", settings)
+	}
+	if !strings.Contains(settings, `"`+env.AgentDir+`"`) {
+		t.Fatalf("claude settings do not grant the agent path:\n%s", settings)
+	}
+}
+
 func TestCodexConnectNeedsItsDoubleDash(t *testing.T) {
 	env, runner := testEnv(t)
 	tool, err := toolByName("codex")

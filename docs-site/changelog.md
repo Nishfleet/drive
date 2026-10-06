@@ -13,6 +13,8 @@ the live site.
 - Opening an account now asks for a tick that you are 18 or older, and the
   sign-in route refuses to open one without it. The terms already carry the
   rule.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".

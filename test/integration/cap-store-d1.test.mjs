@@ -14,6 +14,12 @@
 // Every assertion about storage reads the row back with plain node:sqlite
 // statements, off the same engine, so a store that answered from a Map would
 // leave these tables empty and fail here.
+//
+// drive#661 adds the reason marker, and this file is where its two claims are
+// proven on the real migrations: the round-trip of `capped_reason` through
+// put()/deviceFromRow() with a null surviving as null (so a give-back pass
+// reads drive#656's decision, not a memory of it), and the freeze writing the
+// word while the raise clears it, on the rows `enforceCap` actually leaves.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -23,6 +29,7 @@ import {
   enforceCap,
   handleCapRequest,
   READ_ONLY_CAPABILITIES,
+  SPEND_CAP_REASON,
 } from "../../core/cap.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { MINUTE_MS, monthStart } from "../../core/meter.js";
@@ -166,6 +173,10 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   const cappedRow = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
   assert.deepEqual(JSON.parse(String(cappedRow.capabilities)), [...READ_ONLY_CAPABILITIES]);
   assert.deepEqual(JSON.parse(String(cappedRow.capped_from)), ["list", "read", "write", "delete"]);
+  // The reason beside the powers, in its own column (drive#661): the marker a
+  // give-back pass (drive#656) reads to prove the spending cap took this key
+  // down, rather than finding it read-only and widening it.
+  assert.equal(cappedRow.capped_reason, SPEND_CAP_REASON);
   assert.equal(
     rowIn(sqlite, "SELECT state FROM accounts WHERE id = ?", account.id).state,
     "read_only",
@@ -186,9 +197,150 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   );
   assert.equal(live.length, 1, "one write-capable key after the cap is raised");
   assert.deepEqual([...live[0].capabilities], ["list", "read", "write", "delete"]);
+  // The raise gives the marker back too: the row it minted carries no reason,
+  // in SQL as well as in the answer above, so a second freeze is free to write
+  // the word again rather than finding one it did not leave (drive#661).
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", live[0].keyId).capped_reason,
+    null,
+  );
   assert.equal(
     rowIn(sqlite, "SELECT state FROM accounts WHERE id = ?", account.id).state,
     "active",
+  );
+});
+
+test("the reason marker round-trips through put() and deviceFromRow(), and null survives as null", async () => {
+  // drive#661 phase 1: the column is nullable and D1 has no down-migrations, so
+  // the claim that matters is that a row written with no reason reads back with
+  // no reason, and a row with one keeps the word. Both directions go through
+  // the real migrations.
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => 0 });
+  const account = { id: "acct-reason", email: "reason@example.com" };
+
+  /**
+   * @param {string} id @param {string|null} cappedReason
+   * Production shape (capSwapPlan): freeze narrows capabilities
+   * to read-only and records the old capabilities in cappedFrom;
+   * raise restores full capabilities and clears cappedFrom.
+   */
+  const writeRow = async (id, cappedReason) => {
+    await store.put({
+      id,
+      accountId: account.id,
+      name: "laptop",
+      kind: "device",
+      accessKeyId: `ak_${id}`,
+      secretHash: "00",
+      prefix: `u/${account.id}/`,
+      // Freeze: read-only scope; raise: full scope.
+      capabilities: cappedReason === null ? ["list", "read", "write", "delete"] : ["list", "read"],
+      createdAt: 1,
+      lastSeenAt: null,
+      revokedAt: null,
+      // Freeze: the old capabilities the cap took; raise: nothing taken.
+      cappedFrom: cappedReason === null ? null : ["list", "read", "write", "delete"],
+      cappedReason,
+    });
+  };
+
+  await writeRow("key_frozen", SPEND_CAP_REASON);
+  const frozen = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_frozen");
+  assert.equal(frozen.capped_reason, SPEND_CAP_REASON);
+  assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read"]);
+
+  const [capKey] = await store.listCapKeys(account.id);
+  assert.equal(capKey.cappedReason, SPEND_CAP_REASON);
+
+  // The same row raised: the marker is cleared, and the answer says the field
+  // is gone rather than carrying an empty string.
+  await writeRow("key_frozen", null);
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_frozen").capped_reason,
+    null,
+  );
+  const [raised] = await store.listCapKeys(account.id);
+  assert.equal(raised.cappedReason, undefined, "a raise leaves no reason, and no empty string");
+  assert.equal(Object.hasOwn(raised, "cappedReason"), false);
+
+  // A person's own key: `mint(scope)` is called with one argument in
+  // production, so the row it writes names no `cappedReason` field at all —
+  // which is a different code path from the null above, and it has to land on
+  // the same NULL column rather than on a blank a caller must test for twice.
+  const own = await store.keyProviderFor(account.id).mint({
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+  });
+  const ownRow = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", own.keyId);
+  assert.equal(ownRow.capped_reason, null, "a person's own key records no reason");
+  const [ownKey] = (await store.listCapKeys(account.id)).filter((key) => key.keyId === own.keyId);
+  assert.equal(Object.hasOwn(ownKey, "cappedReason"), false, "and no empty string either");
+
+  // The same for a freeze that names no reason: `swapToReadOnly(keyId)` with
+  // one argument is a legal call, and it must not put a blank in the column
+  // where a give-back pass (drive#656) would later read "no reason recorded"
+  // as an empty word. The method is optional on the type because a raw storage
+  // provider has none, so it is narrowed the way core/cap.js narrows it.
+  const provider = store.keyProviderFor(account.id);
+  if (typeof provider.swapToReadOnly !== "function") {
+    throw new Error("unreachable: the api's own store always has swapToReadOnly");
+  }
+  const silent = await provider.swapToReadOnly(own.keyId);
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", silent.keyId).capped_reason,
+    null,
+    "a freeze that names no reason records none, not a blank",
+  );
+});
+
+test("a device row written before the column existed still reads with no reason", async () => {
+  // The fleet's auto-revert: if drive#661 is rolled back, the Worker that comes
+  // with it is rolled back too, and it reads rows this migration wrote. It
+  // still has to see them as valid keys. So the reverse direction is proven
+  // here as well: a row inserted by the OLD insert statement, which never named
+  // `capped_reason` at all, reads back as a live key with no reason recorded
+  // (drive#661 -- the column is nullable with no DEFAULT, so this is what a
+  // pre-existing row reads as today).
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => 0 });
+  const account = { id: "acct-old", email: "old@example.com" };
+  sqlite
+    .prepare(
+      `INSERT INTO devices
+         (id, account_id, name, kind, b2_key_id, secret_hash, capabilities,
+          prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
+    )
+    .run(
+      "key_old",
+      account.id,
+      "laptop",
+      "device",
+      "ak_old",
+      "00",
+      JSON.stringify(["list", "read", "write", "delete"]),
+      `u/${account.id}/`,
+      JSON.stringify(["list", "read", "write", "delete"]),
+      1,
+      null,
+      null,
+      null,
+      null,
+    );
+
+  const [key] = await store.listCapKeys(account.id);
+  assert.equal(key.keyId, "key_old");
+  assert.deepEqual([...key.capabilities], ["list", "read", "write", "delete"]);
+  // Compared without a spread because `cappedFrom` and `cappedReason` are both
+  // optional on a row the cap reads: the old insert left cappedFrom set and
+  // named no cappedReason, and if the schema read stopped carrying either the
+  // assert fails on `undefined`.
+  assert.deepEqual(key.cappedFrom, ["list", "read", "write", "delete"]);
+  assert.equal(Object.hasOwn(key, "cappedReason"), false, "no reason, not an empty string");
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_old").capped_reason,
+    null,
   );
 });
 

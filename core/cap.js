@@ -49,6 +49,7 @@ import { capLine, minutesInMonth, usageSummary } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 import { failureMessage } from "./messages.js";
+import { notifySecurityEvent } from "./security-event.js";
 import { unauthorizedResponse } from "./status.js";
 
 // The capability that makes a key able to change storage. `delete` is a write
@@ -75,6 +76,15 @@ export const READ_ONLY_CAPABILITIES = Object.freeze(
 // (drive#77), so a kind cannot end up with different powers in two places.
 export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
 
+// The one reason this phase writes on a devices row's `capped_reason`
+// (migrations/drive/0032_capped_reason.sql): this module's freeze took the key
+// down because the account's spending cap was reached (drive#661). It is
+// exported so the store, the tests and the give-back pass that reads it back
+// (drive#656) name the same word instead of three literals that can drift. The
+// sweep's `pre-charge-limit` is drive#655's to set, and the prepaid $0-balance
+// pause marks nothing at all because it freezes no key.
+export const SPEND_CAP_REASON = "spend-cap";
+
 /**
  * A key row as the cap reads it, after checkedKey() has validated its shape.
  * The same row arrives from D1 and from the tests' fakes, so the fields the
@@ -87,14 +97,25 @@ export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
  * (keyprovider.js `bucketForKeyPrefix`). A swap without one mints a scope the
  * storage provider refuses rather than a scope in some other account's bucket
  * (s3-keys.js, drive#462).
- * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
+ *
+ * `cappedReason` is the one word naming which cap took the key down (drive#661),
+ * and it is optional for the same reason `cappedFrom` is: not every caller that
+ * builds a row has a reason to name. A swap carries it -- 'spend-cap' on a
+ * freeze and null on a raise -- because the row the swap leaves live is the
+ * row a give-back pass (drive#656) reads to prove which cap did this. Absent
+ * and null are the same claim: no reason recorded.
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason?: string}} CapKey
+ *
+ * A swap entry in a capSwapPlan. `cappedReason` is `null` on the raise
+ * (telling the store to clear the marker) and a word on the freeze.
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason: string|null}} CapSwap
  */
 
 /**
  * One key the plan means to change, and the mount line that goes with the
  * whole plan. `swaps` is what applyCapSwap() works through; `mount` is the
  * restart the CLI performs when anything changed.
- * @typedef {Readonly<{state: "active"|"read_only", swaps: ReadonlyArray<CapKey>, mount: Readonly<{restart: boolean, reason: string|null}>}>} CapSwapPlan
+ * @typedef {Readonly<{state: "active"|"read_only", swaps: ReadonlyArray<CapSwap>, mount: Readonly<{restart: boolean, reason: string|null}>}>} CapSwapPlan
  */
 
 /**
@@ -282,6 +303,11 @@ export function capSwapPlan(keys, cap) {
           ...(row.bucket === undefined ? {} : { bucket: row.bucket }),
           capabilities,
           cappedFrom: state === "read_only" ? Object.freeze([...row.capabilities]) : null,
+          // Which cap took this key down, on the swap that froze it (drive#661):
+          // the read-only state is this module's freeze, so it names the
+          // spending cap. The raise carries null, which the store writes as
+          // "no reason recorded" and a give-back pass may widen.
+          cappedReason: state === "read_only" ? SPEND_CAP_REASON : null,
         }),
       );
     }
@@ -362,14 +388,19 @@ export async function applyCapSwap(plan, provider) {
         : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
+    // This module's freeze always names the spending cap. A hand-built plan
+    // cannot write a different word: the sweep's `pre-charge-limit` belongs
+    // with drive#655, and a raise names nothing (drive#661).
+    const reason = plan.state === "read_only" ? SPEND_CAP_REASON : null;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
-        // The provider's own swap is handed the keyId alone and re-derives the
-        // scope from the row it is replacing (core/devices.js
-        // `swapToReadOnly` mints in `bucketForKeyPrefix(accountId, prefix)`),
-        // so the bucket the row was scoped to reaches the replacement without
-        // this module having to pass it.
-        minted = await keys.swapToReadOnly(swap.keyId);
+        // The provider's own swap is handed the keyId and this freeze's
+        // reason, and it re-derives the scope from the row it is replacing
+        // (core/devices.js `swapToReadOnly` mints in
+        // `bucketForKeyPrefix(accountId, prefix)`), so the bucket the row was
+        // scoped to reaches the replacement without this module having to pass
+        // it.
+        minted = await keys.swapToReadOnly(swap.keyId, { cappedReason: reason });
       } else {
         // Revoke first, mint second. This is the cap path, and the cap is the
         // safety limit: if the mint then fails, the account is on the safe side
@@ -379,10 +410,10 @@ export async function applyCapSwap(plan, provider) {
         // deliberate and pinned by "a provider failure is raised, never
         // swallowed" in test/cap.test.mjs.
         await keys.revoke(swap.keyId);
-        minted = await keys.mint(scope);
+        minted = await keys.mint(scope, { cappedReason: reason });
       }
     } else {
-      minted = await keys.mint(scope);
+      minted = await keys.mint(scope, { cappedReason: reason });
       await keys.revoke(swap.keyId);
     }
     applied.push(Object.freeze({ ...swap, minted }));
@@ -784,6 +815,26 @@ export async function capStateForAccount(store, accountId) {
 }
 
 /**
+ * The cap an account had before a write, or null when nothing says. The
+ * store's own read wins because the authenticated account has no cap on it.
+ *
+ * @param {{getCapUsd?: (accountId: string) => Promise<number>}} capStore
+ * @param {{id: string, capUsd?: number}} account
+ * @returns {Promise<number|null>}
+ */
+async function readPreviousCap(capStore, account) {
+  if (typeof capStore.getCapUsd === "function") {
+    const stored = await capStore.getCapUsd(account.id);
+    if (typeof stored === "number" && Number.isFinite(stored)) {
+      return stored;
+    }
+  }
+  return typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
+    ? account.capUsd
+    : null;
+}
+
+/**
  * Handles POST /api/cap: parse the amount, persist `accounts.cap_cents`, and
  * run enforceCap against the account's device rows. The CLI prints the
  * parseCapUsd() TypeError message when the amount is bad, so that sentence
@@ -801,9 +852,10 @@ export async function capStateForAccount(store, accountId) {
  *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
- * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
+ * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, getCapUsd?: (accountId: string) => Promise<number>, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
+ * @param {{email?: unknown, mailFrom?: string, deviceName?: string}|null} [mail]
  */
-export async function handleCapRequest(request, account, capStore) {
+export async function handleCapRequest(request, account, capStore, mail = null) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -841,6 +893,10 @@ export async function handleCapRequest(request, account, capStore) {
     // cap did not move, and waiting will not fix a deployment that has no store.
     return jsonCapError(failureMessage("cap-store-missing"), 503);
   }
+  // The cap as it stood before this write: the store's own row when it can
+  // answer, else the account object the caller passed. The authenticated
+  // account carries no cap, so the store is the one that knows.
+  const previousCap = await readPreviousCap(capStore, account);
   await capStore.setCapCents(account, dollarsToCapCents(usd));
   // The swap is decided from the month the account actually counted, so
   // setting the cap below what it has already spent enforces at once (the
@@ -865,6 +921,20 @@ export async function handleCapRequest(request, account, capStore) {
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
+  const mailer = mail !== null && typeof mail === "object" ? mail : {};
+  // A POST that writes the same amount is not a change. The write still
+  // runs (enforcement is idempotent); the inbox does not get a false alarm.
+  if (previousCap !== usd) {
+    await notifySecurityEvent({
+      email: mailer.email,
+      mailFrom: mailer.mailFrom,
+      to: typeof account.email === "string" ? account.email : "",
+      event: "cap-changed",
+      deviceName: mailer.deviceName,
+      happenedAt: new Date().toISOString(),
+      detail: `The new cap is $${usd.toFixed(2)}.`,
+    });
+  }
   return new Response(
     JSON.stringify({
       ...summary,
