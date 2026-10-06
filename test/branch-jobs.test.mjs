@@ -243,6 +243,66 @@ test("a 20,000-file branch completes with under 100 subrequests per batch", {
   assert.equal(done?.jobDone, 20_000);
 });
 
+test("a folder that grows after the claim copies the claimed listing only", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  await scoped.write("/Photos/sub/b.txt", new Blob(["b"]).stream(), "text/plain");
+  const db = createTestD1();
+  const snapshots = createKvSnapshotStore(createTestKv());
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  assert.equal(queue.sent.length, 1);
+  // The claim froze the listing, so the row already names what it reserved:
+  // the two files, and the byte length of the value that holds them.
+  const claimed = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(claimed);
+  assert.deepEqual(Object.keys(claimed.snapshot).sort(), ["a.txt", "sub/b.txt"]);
+  assert.ok(claimed.snapshotBytes > 0, "the frozen listing is stored, not left at zero");
+
+  // The source folder grows after the claim and before the queued copy runs.
+  await scoped.write("/Photos/c.txt", new Blob(["c"]).stream(), "text/plain");
+  await scoped.write("/Photos/sub/d.txt", new Blob(["d"]).stream(), "text/plain");
+
+  let copied = { done: false };
+  for (let steps = 0; steps < 8 && !copied.done; steps += 1) {
+    copied = await processBranchJob(db, snapshots, scoped, ACCOUNT, claimed.id);
+  }
+  assert.ok(!("error" in copied) && copied.done, JSON.stringify(copied));
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "open");
+  // The branch listing matches the reservation exactly: what was written is
+  // the claimed list, and nothing the claim never measured is there for free.
+  assert.deepEqual(Object.keys(done?.snapshot ?? {}).sort(), ["a.txt", "sub/b.txt"]);
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), "a");
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
+  assert.equal(await readText(scoped, "/.branches/work/c.txt"), null);
+  assert.equal(await readText(scoped, "/.branches/work/sub/d.txt"), null);
+  assert.equal(done?.jobDone, 2);
+  assert.equal(done?.jobTotal, 2);
+
+  // The growth is not lost: a branch of the same folder again takes it.
+  const second = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "again" },
+    () => Date.now(),
+  );
+  assert.ok(!("error" in second) && second.state === "open", JSON.stringify(second));
+  assert.equal(await readText(scoped, "/.branches/again/c.txt"), "c");
+});
+
 test("approve of 1,000 changes issues one LIST per parent folder", async () => {
   const raw = createMemoryStore();
   const scoped = scopeStore(raw, ACCOUNT);

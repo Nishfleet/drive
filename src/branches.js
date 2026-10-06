@@ -815,13 +815,18 @@ async function fileFingerprint(store, path, listings) {
  * @param {FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
- * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, snapshot?: Record<string, Fingerprint>}} [options]
+ * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, snapshot?: Record<string, Fingerprint>, only?: Record<string, Fingerprint>}} [options]
+ *   `only` is the listing frozen when the branch was claimed (drive#802). With
+ *   it the copy writes exactly those paths, no matter what the source holds
+ *   now; without it the copy walks the source as it is, which is how a folder
+ *   that grew between the claim and the queued copy was written for free.
  * @returns {Promise<{snapshot: Record<string, Fingerprint>, cursor: {current: string, skip: number, pending: string[]}, done: boolean, copied: number}>}
  */
 async function copyFolder(store, source, dest, options = {}) {
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
   /** @type {Record<string, Fingerprint>} */
   const snapshot = { ...(options.snapshot ?? {}) };
+  const only = options.only;
   let current = options.cursor?.current ?? source;
   let skip = options.cursor?.skip ?? 0;
   let pending = [...(options.cursor?.pending ?? [])];
@@ -839,6 +844,23 @@ async function copyFolder(store, source, dest, options = {}) {
       }
       const rel = relativePath(source, entry.path);
       if (rel === null) {
+        continue;
+      }
+      // The claim's listing decides what is in the branch, and the live walk
+      // only finds where it now lives. A path the claim never measured
+      // arrived after it and is not written. A path the source deleted after
+      // it is measured, is never found here, and stays in the snapshot as a
+      // file the original lost — the diff reports it, the copy does not
+      // resurrect it. The fingerprint recorded is the frozen one, because the
+      // snapshot answers "what the source held when the branch was taken",
+      // while the size handed to the copy is the live one so a file that grew
+      // is still copied whole rather than cut at the frozen length.
+      const frozen = only === undefined ? undefined : only[rel];
+      if (frozen !== undefined && typeof frozen.size === "number") {
+        files.push({ rel, path: entry.path, size: entry.size ?? 0, fp: frozen });
+        continue;
+      }
+      if (only !== undefined) {
         continue;
       }
       files.push({ rel, path: entry.path, size: entry.size ?? 0, fp: fingerprint(entry) });
@@ -1226,6 +1248,14 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       console.error?.(`create walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
     }
   }
+  // What the claim froze (drive#802): the source listing as of claim time,
+  // stored under the row's own snapshot pointer. The copy writes exactly it. A
+  // row claimed before that shipped wrote no snapshot until the job finished,
+  // so its byte length is still zero and it copies the whole source as before.
+  const only =
+    Object.keys(branch.snapshot).length > 0 || branch.snapshotBytes > 0
+      ? branch.snapshot
+      : undefined;
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
@@ -1234,8 +1264,12 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       pending,
     },
     snapshot: branch.snapshot,
+    only,
   });
-  const files = Object.keys(copied.snapshot).length;
+  // Progress is the files this job has copied, not the size of the snapshot it
+  // copies: the snapshot is seeded with the whole frozen listing, so counting
+  // its keys would report the branch finished on its first batch.
+  const files = doneSoFar + copied.copied;
   if (files > BRANCH_FILE_LIMIT) {
     await removePrefixFiles(store, branch.branchPrefix);
     const error = failureMessage("branch-too-large");
@@ -1819,6 +1853,7 @@ export async function createBranch(
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
+  const snapKey = snapshotKey(account, name);
   // Claim the name before touching the store. The partial unique index on
   // (account_id, name) where state = 'open' then makes this the one create
   // that may copy into the prefix: two creates of a name in the same moment
@@ -1830,7 +1865,6 @@ export async function createBranch(
   // takes its own `DEFAULT '{}'`.
   let claimId;
   try {
-    const snapKey = snapshotKey(account, name);
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
@@ -1888,6 +1922,39 @@ export async function createBranch(
     }
     return await attempt();
   };
+  // Freeze what the copy will write, before the claim is handed out (drive#802).
+  // The copy itself is queued and runs later (drive#563), and between these two
+  // moments the source folder can grow: a copy that walks the source as it is
+  // then writes files the claim never measured, so a branch lands bytes nothing
+  // reserved. The listing taken here is the branch's snapshot — the source's
+  // paths, sizes and fingerprints as of this instant — stored under the pointer
+  // the row already carries, so the row names what it reserved without a second
+  // column. The create job copies exactly this list, so a folder that grows
+  // after the claim is simply not in the branch until the next one.
+  try {
+    const saved = await saveSnapshot(
+      db,
+      claimId,
+      fingerprintMapToObject(await listFiles(store, folderPath)),
+      snapshots,
+      snapKey,
+    );
+    if (!saved.success) {
+      if (!(await abandonClaim())) {
+        console.error?.(`branch freeze for ${account.id}/${name} left row ${claimId} claimed`);
+      }
+      return { error: failureMessage("unexpected"), status: 500 };
+    }
+  } catch (error) {
+    console.error?.(`branch listing failed for ${account.id}/${name}: ${errorText(error)}`);
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch freeze for ${account.id}/${name} left row ${claimId} claimed; ` +
+          "the name stays claimed until drive discard clears it",
+      );
+    }
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
   if (
     await enqueueJob(queue, {
       kind: "branch.create",

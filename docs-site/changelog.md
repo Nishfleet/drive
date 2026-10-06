@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-06
 
+- A branch holds the folder as it was when you made the branch, not as it was
+  when the copy ran. A file added in between is not in the branch. The next
+  branch takes it.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".
