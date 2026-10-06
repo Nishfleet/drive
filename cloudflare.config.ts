@@ -97,6 +97,16 @@ export default defineConfig({
       // trash purge (drive#521) took 05:00 in the same window, so the close
       // cron runs after it, at 06:00 UTC.
       triggers.scheduled({ schedule: "0 6 * * *" }),
+      // One message per account from the meter crons (drive#519). Both
+      // queues were created on the account on 2026-10-06; see the note at
+      // the top of src/meter-jobs.js. Remove this and METER_JOBS to go back
+      // to the in-process loop.
+      triggers.queue({
+        name: "drive-meter-jobs",
+        deadLetterQueue: "drive-meter-jobs-dlq",
+        maxRetries: 5,
+        maxBatchSize: 10,
+      }),
     ],
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron
@@ -111,6 +121,7 @@ export default defineConfig({
     },
     env: {
       ASSETS: bindings.assets(),
+      METER_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
       // Two databases, one purpose each (drive issue #170). The waitlist's
       // table lives alone in the waitlist database: the sign-up list is
       // public data and can be exported, reset or handed on without
