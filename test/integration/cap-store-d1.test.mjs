@@ -248,6 +248,12 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
   await writeRow("key_frozen", SPEND_CAP_REASON);
   const frozen = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_frozen");
   assert.equal(frozen.capped_reason, SPEND_CAP_REASON);
+  // The raw column holds this literal word, pinned apart from the constant so a
+  // change to the constant cannot move the stored value unnoticed (drive#661).
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_frozen").capped_reason,
+    "spend-cap",
+  );
   assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read"]);
 
   const [capKey] = await store.listCapKeys(account.id);
@@ -291,6 +297,44 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
     rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", silent.keyId).capped_reason,
     null,
     "a freeze that names no reason records none, not a blank",
+  );
+});
+
+test("a swap that names no reason drops the reason the row already carried", async () => {
+  // swapToReadOnly copies the row it replaces. A row that already carries a
+  // reason must not keep it through a swap that names none (drive#661).
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => 0 });
+  const account = { id: "acct-stale", email: "stale@example.com" };
+  await store.put({
+    id: "key_stale",
+    accountId: account.id,
+    name: "laptop",
+    kind: "device",
+    accessKeyId: "ak_stale",
+    secretHash: "00",
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+    createdAt: 1,
+    lastSeenAt: null,
+    revokedAt: null,
+    cappedReason: "spend-cap",
+  });
+  const provider = store.keyProviderFor(account.id);
+  if (typeof provider.swapToReadOnly !== "function") {
+    throw new Error("unreachable: the api's own store always has swapToReadOnly");
+  }
+  await provider.swapToReadOnly("key_stale");
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_stale").capped_reason,
+    null,
+    "the old reason does not survive a swap that names none",
+  );
+
+  await provider.swapToReadOnly("key_stale", { cappedReason: SPEND_CAP_REASON });
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_stale").capped_reason,
+    "spend-cap",
   );
 });
 

@@ -1557,8 +1557,12 @@ export function createD1DeviceStore(db, options = {}) {
           // the window — `cappedFrom` records the powers it took, and the
           // capabilities become READ_ONLY_CAPABILITIES, never more.
           const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
+          // The row's old reason is dropped before the spread: this freeze
+          // names its own, and a stale word from an earlier freeze must not
+          // outlive a swap that names none (drive#661).
+          const { cappedReason: _staleReason, ...rowWithoutReason } = device;
           const updated = {
-            ...device,
+            ...rowWithoutReason,
             accessKeyId: credential.accessKeyId,
             secretHash: await sha256Hex(credential.secret),
             cappedFrom: [...device.capabilities],
