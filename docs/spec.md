@@ -1,6 +1,6 @@
-# SpaceFS clone: spec (vault edition)
+# Competing drive: spec (vault edition)
 
-Written 2026-09-29. Replaces the published doc "SpaceFS-style Drive: Pressure Test and Spec" (https://claude.ai/code/artifact/9c1807f2-c63e-4a5e-8b4b-501e4bc71781) as the working spec. Built from `../index.md` and `../machine/plan.md`; those two files were not edited. Where this spec and the published doc disagree, see `disagreements.md` next to this file.
+Written 2026-09-29. Replaces the published doc "Competitor-style Drive: Pressure Test and Spec" (https://claude.ai/code/artifact/9c1807f2-c63e-4a5e-8b4b-501e4bc71781) as the working spec. Built from `../index.md` and `../machine/plan.md`; those two files were not edited. Where this spec and the published doc disagree, see `disagreements.md` next to this file.
 
 ## Status
 
@@ -17,10 +17,10 @@ These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bi
 | Question | Finding |
 |---|---|
 | Margin | B2 costs $6.95/TB/month. At 1¢/GB we keep about $3/TB before payment fees and support. $2k/month revenue needs about 200 TB stored. |
-| What SpaceFS sells | Speed, not price. Premiere, Resolve and Blender open huge files straight off the drive, where Drive, iCloud and Dropbox download the whole file first. A price-led clone misses what its buyers pay for. Space (Space Computer, Inc.) raised $2.4M pre-seed in Aug 2026 led by a16z Speedrun. No public paying-customer numbers. |
-| Cost floor | Replicated storage is $4 to $7/TB wholesale (Storj and IDrive e2 about $4, Hetzner Object €5.99, B2 $6.95). Only Hetzner Storage Box reaches about €2/TB, and it is one datacenter with SFTP/WebDAV and 10 connections. Realistic undercut is about $6/TB against SpaceFS's $12 per extra TB. |
-| Pay-per-GB wedge | A 200 GB user pays $2 with us versus SpaceFS's $15 floor; our margin is about $0.60/month. But 200 GB fits on a laptop, and iCloud/Google sell 200 GB for $2.99. At multi-TB sizes 1¢/GB saves only 20 to 35% (3 TB: $30 vs $39). |
-| Charging more | 1.5¢/GB gives about $8/TB margin on B2 (54%) and matches SpaceFS at 1 TB ($15). Fixes margin, not demand. |
+| What the main competitor sells | Speed, not price. Premiere, Resolve and Blender open huge files straight off the drive, where Drive, iCloud and Dropbox download the whole file first. A price-led clone misses what its buyers pay for. the competitor (the competitor Computer, Inc.) raised $2.4M pre-seed in Aug 2026 led by a16z Speedrun. No public paying-customer numbers. |
+| Cost floor | Replicated storage is $4 to $7/TB wholesale (Storj and IDrive e2 about $4, Hetzner Object €5.99, B2 $6.95). Only Hetzner Storage Box reaches about €2/TB, and it is one datacenter with SFTP/WebDAV and 10 connections. Realistic undercut is about $6/TB against the main competitor's $12 per extra TB. |
+| Pay-per-GB wedge | A 200 GB user pays $2 with us versus the main competitor's $15 floor; our margin is about $0.60/month. But 200 GB fits on a laptop, and iCloud/Google sell 200 GB for $2.99. At multi-TB sizes 1¢/GB saves only 20 to 35% (3 TB: $30 vs $39). |
+| Charging more | 1.5¢/GB gives about $8/TB margin on B2 (54%) and matches the competitor at 1 TB ($15). Fixes margin, not demand. |
 | Charge by active use | Kept files cost the full B2 rate all month, and there is no server to switch off. B2 bills per byte-hour with no minimum retention, so cost only tracks use when files are deleted after use (a 1 TB workspace alive 20 h/month costs about $0.19). That fits agent scratch space, but scratch space is better on the sandbox's own free, 4 to 185x faster disk. |
 | People | Google One, iCloud+ and Dropbox sell 2 TB for about $10/month and already stream on demand. 1¢/GB costs twice their rate and only matters above 2 TB. LucidLink owns video teams. |
 | Agents | AWS S3 Files (GA 2026-04-07), Archil ($11M Series A, $0.20/GiB active cache), JuiceFS (free), Turso AgentFS, Vercel Sandbox Drives ($0.05/GB-month beta, 2026-09-23), Docker Cloud Sandboxes (free volumes, 2026-09-24), Mastra, Mesa. No moat for a B2 reseller. |
@@ -33,7 +33,7 @@ These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bi
 | 2026-09-29 04:28 (jev-1.13.0) | First opinion | proceed 0.16, agents-only 0.26, people-first 0.18 |
 | 2026-09-29 04:48 (jev-1.13.0) | Full context plus 4 Exa searches, 9,933 input tokens | people-first 1.0, agents-only 0, both 0 |
 
-The first says don't build. The second says if you build, sell to people first. A thin-context call at 04:46 gave 0.74 for people-first and is not counted. Evidence behind the second: Space saw surprise demand from solo creators and YouTubers, shipped an Individual tier in Aug 2026 and targets 10k paying users; agent storage is being bundled free or cheap into sandbox platforms.
+The first says don't build. The second says if you build, sell to people first. A thin-context call at 04:46 gave 0.74 for people-first and is not counted. Evidence behind the second: the competitor saw surprise demand from solo creators and YouTubers, shipped an Individual tier in Aug 2026 and targets 10k paying users; agent storage is being bundled free or cheap into sandbox platforms.
 
 ## What to build if greenlit
 
@@ -93,26 +93,26 @@ A fallback copy is what makes the price matter. At 1.5¢ with a backup copy, 29%
 
 **Fallback plan:** the Mac app writes each file to B2 and the Storage Box. If B2 has an outage, files already on the Mac keep working and uncached files wait. If B2 loses data or closes the account, restore from the Storage Box. Accounts at Hetzner Object Storage and iDrive e2 stay open but empty, so new writes can be pointed there within a day. An empty standby costs $0.
 
-**Against Space** (checked on spacefs.com 2026-09-29: Individual $15/month billed yearly ($180), "save 25%", so about $20 month to month (inferred). Extra storage $6 per 500 GB. Teams $30/member yearly)
+**Against the competitor** (checked on the competitor's site 2026-09-29: Individual $15/month billed yearly ($180), "save 25%", so about $20 month to month (inferred). Extra storage $6 per 500 GB. Teams $30/member yearly)
 
 Where we stop being cheaper, for data kept all month:
 
-| Our price | vs Space yearly ($15) | vs Space monthly (about $20) |
+| Our price | vs the competitor yearly ($15) | vs the competitor monthly (about $20) |
 |---|---|---|
 | 1.5¢ | Below 1 TB | Below 2.67 TB |
 | 1.75¢ | Below 857 GB | Below 1.45 TB |
 | 2¢ | Below 750 GB | Below 1 TB |
 
-**Part-full drives (Nish's point, 2026-09-29).** Space charges the full plan whether you fill it or not. We charge only for the GB actually stored each hour, so the bill tracks the month's average fill. Daily ups and downs average out.
+**Part-full drives (Nish's point, 2026-09-29).** the competitor charges the full plan whether you fill it or not. We charge only for the GB actually stored each hour, so the bill tracks the month's average fill. Daily ups and downs average out.
 
-| Average fill of 1 TB | Us at 2¢ | Us at 1.5¢ | Space yearly | Space monthly |
+| Average fill of 1 TB | Us at 2¢ | Us at 1.5¢ | Competitor yearly | Competitor monthly |
 |---|---|---|---|---|
 | 20% (200 GB) | $4.00 | $3.00 | $15 | about $20 |
 | 40% (400 GB) | $8.00 | $6.00 | $15 | about $20 |
 | 60% (600 GB) | $12.00 | $9.00 | $15 | about $20 |
 | 100% (1 TB) | $20.00 | $15.00 | $15 | about $20 |
 
-So at 2¢, a Space customer who averages 60% full or less pays less with us, by 20% to 73%. Two caveats:
+So at 2¢, a the competitor customer who averages 60% full or less pays less with us, by 20% to 73%. Two caveats:
 - **We bill what's stored, not what's opened.** Someone with 1 TB of files who opens 50 GB a day still pays for 1 TB. The saving only goes to people who hold less data than their plan, not to light readers.
 - **No real fill data.** A web search on 2026-09-29 found no public study of how full paid cloud-drive plans are. The 20/40/60% rows are scenarios, not measurements.
 
@@ -124,7 +124,7 @@ So at 2¢, a Space customer who averages 60% full or less pays less with us, by 
 
 **Second research pass (2026-09-29, evening)**
 - boat.dev (by ASCII, checked at https://docs.boat.dev/pricing.md , /snapshots.md , /billing.md): per-second agent sandbox VMs, not a drive. `default` is 4 vCPU / 8 GB / 50 GB disk at $0.036/hour; largest disk is 251 GB. $20/month plan minimum, all of it returned as machine time; 25 free trial hours. Stopped sandboxes cost nothing, and their snapshots are kept free for the sandbox's life. So a few hundred GB of agent files can sit there free, but you must start a VM (or `boat snapshot pull`) to read them, and snapshots stay private to the creator. It competes with us only for small agent scratch space. It is a better fit as a place our drive gets mounted than as a rival. No change to price or verdict.
-- Space: raised a $2.4M pre-seed on 2026-08-18 (a16z Speedrun), about 100 users or teams in private beta (https://thenextweb.com/news/space-ai-native-filesystem-a16z-speedrun-2-4m). Price unchanged at $15/month for 1 TB; Teams $30 per member. Windows still "coming soon". Changelog to 2026-09-22 is upload, Linux and billing polish, including "spending controls" (https://spacefs.com/changelog/). Space is now funded, so a copycat race on features is harder; price and per-hour billing stay our only clear edges.
+- The competitor: raised a $2.4M pre-seed on 2026-08-18 (a16z Speedrun), about 100 users or teams in private beta (press coverage). Price unchanged at $15/month for 1 TB; Teams $30 per member. Windows still "coming soon". Changelog to 2026-09-22 is upload, Linux and billing polish, including "spending controls" (the competitor's site/changelog/). the competitor is now funded, so a copycat race on features is harder; price and per-hour billing stay our only clear edges.
 - TiDB Cloud Filesystem (PingCAP, https://www.pingcap.com/tidb-cloud-filesystem-pricing-details/): agent workspace storage, $0.30/GB-month fast or $0.025/GB-month pooled, prorated hourly, downloads $0.09/GB, $5 monthly credit. Its cheapest tier is 25% dearer than our 2¢.
 - TiDB note: Nish's screenshots (2026-09-29) of TiDB Cloud Starter ($0.20/GiB over 25 GiB free), Essential (about $20/day) and Dedicated (from $1,376/month) are its database plans, not the Filesystem product above. The database storage price is 10 times ours.
 - Archil (https://archil.com/pricing): now also lists an Archive tier at $0.025/GB-month, still above 2¢. Raised an $11M Series A on 2026-04-20.
@@ -134,11 +134,11 @@ So at 2¢, a Space customer who averages 60% full or less pays less with us, by 
 
 **Third research pass (2026-10-01: Cloudflare's two storage launches)**
 
-Both posts read 2026-10-01, with the docs and pricing pages behind them. Same four columns and the same Beat / Match / Gap vocabulary as "Against Space, feature by feature" in `docs/build-spec.md`; the Verdict cell carries one verdict per recorded fact, in the order the facts are given, and says "no price verdict is possible" rather than inventing one where Cloudflare publishes no price. Neither of these is a Finder-style consumer drive, so the second pass's "no new Finder-style consumer drive rival found in the last 60 days" still stands. Neither changes the price: the only stored-byte price either of them publishes is Artifacts' $0.50/GB-month, 25x ours.
+Both posts read 2026-10-01, with the docs and pricing pages behind them. Same four columns and the same Beat / Match / Gap vocabulary as "Against the competitor, feature by feature" in `docs/build-spec.md`; the Verdict cell carries one verdict per recorded fact, in the order the facts are given, and says "no price verdict is possible" rather than inventing one where Cloudflare publishes no price. Neither of these is a Finder-style consumer drive, so the second pass's "no new Finder-style consumer drive rival found in the last 60 days" still stands. Neither changes the price: the only stored-byte price either of them publishes is Artifacts' $0.50/GB-month, 25x ours.
 
 | Rival offers | Us | Verdict | Where |
 |---|---|---|---|
-| **Cloudflare Artifacts** (open beta, Workers Paid plan only). **Stores:** Git repositories for code and agent context, not a person's file library — **1 GB max per repository, 32 MB max per file**, 1 TB per account (raisable on request), unlimited repos and namespaces (https://developers.cloudflare.com/artifacts/platform/limits/). **Versions:** every repo has its own full Git history and refs, a fork starts from an existing repo's history and then diverges independently, access is repo-scoped (each repo has its own tokens, each limited to read or write), and repos stay stored until you delete them — so every version is kept forever, not for 30 days (https://developers.cloudflare.com/artifacts/concepts/how-artifacts-works/). **Price:** **$0.50 per GB-month** after the first 1 GB, plus $0.15 per 1,000 operations over 10,000 a month; a GB-mo is the average peak per day over a 30-day period, and replicas add nothing (https://developers.cloudflare.com/artifacts/platform/pricing/). **Finder: no documented desktop client.** The docs name exactly three interfaces — Workers binding, REST API, standard Git client — and nine Artifacts doc pages read 2026-10-01 carry no Finder, desktop, mount, FUSE or rclone mention. That is what the research found; it is not a claim that no client can exist. | Any file a person has, in a mounted folder on macOS and Linux that streams on demand; 1 TB per account, no per-file cap; versions kept 1 day, then one a day for 30 days, and branches are server-side copies; 2¢ per GB-month by the minute, bill never above max($12, $8 × peak TB); stock rclone, and $1 free with no card. | **Beat** on price (2¢ against $0.50/GB-month, 25x, and operations are metered on top); **Beat** on opening a person's own files (no documented desktop client, and a 32 MB file cap rules out the 5 GB video the spec opens with); **Match** on how much one account may hold, their 1 TB per account raisable on request against our 1 TB with unlimited repos on their side, so capacity is an edge in neither direction; **Match** on an agent working in a repo through scoped tokens, their repo-scoped read/write tokens against our scoped keys plus a fork to work in. **Gap** on retained versions: they keep every commit until the repo is deleted, we keep 30 days (same Gap the Space table already carries). **Gap** on fork lineage: their fork starts from existing history, ours copies the bytes — though their 1 GB repo cap puts the huge-folder case out of their range entirely. | https://blog.cloudflare.com/next-git-platform-on-cloudflare/ (open beta, Workers Paid, billing, events), https://developers.cloudflare.com/artifacts/platform/pricing/, /artifacts/platform/limits/, /artifacts/concepts/how-artifacts-works/ — all read 2026-10-01. Step 8 and issue 133 track the retention; issue 133 is the open claim the pricing page and llms.txt make about it. |
+| **Cloudflare Artifacts** (open beta, Workers Paid plan only). **Stores:** Git repositories for code and agent context, not a person's file library — **1 GB max per repository, 32 MB max per file**, 1 TB per account (raisable on request), unlimited repos and namespaces (https://developers.cloudflare.com/artifacts/platform/limits/). **Versions:** every repo has its own full Git history and refs, a fork starts from an existing repo's history and then diverges independently, access is repo-scoped (each repo has its own tokens, each limited to read or write), and repos stay stored until you delete them — so every version is kept forever, not for 30 days (https://developers.cloudflare.com/artifacts/concepts/how-artifacts-works/). **Price:** **$0.50 per GB-month** after the first 1 GB, plus $0.15 per 1,000 operations over 10,000 a month; a GB-mo is the average peak per day over a 30-day period, and replicas add nothing (https://developers.cloudflare.com/artifacts/platform/pricing/). **Finder: no documented desktop client.** The docs name exactly three interfaces — Workers binding, REST API, standard Git client — and nine Artifacts doc pages read 2026-10-01 carry no Finder, desktop, mount, FUSE or rclone mention. That is what the research found; it is not a claim that no client can exist. | Any file a person has, in a mounted folder on macOS and Linux that streams on demand; 1 TB per account, no per-file cap; versions kept 1 day, then one a day for 30 days, and branches are server-side copies; 2¢ per GB-month by the minute, bill never above max($12, $8 × peak TB); stock rclone, and $1 free with no card. | **Beat** on price (2¢ against $0.50/GB-month, 25x, and operations are metered on top); **Beat** on opening a person's own files (no documented desktop client, and a 32 MB file cap rules out the 5 GB video the spec opens with); **Match** on how much one account may hold, their 1 TB per account raisable on request against our 1 TB with unlimited repos on their side, so capacity is an edge in neither direction; **Match** on an agent working in a repo through scoped tokens, their repo-scoped read/write tokens against our scoped keys plus a fork to work in. **Gap** on retained versions: they keep every commit until the repo is deleted, we keep 30 days (same Gap the the competitor table already carries). **Gap** on fork lineage: their fork starts from existing history, ours copies the bytes — though their 1 GB repo cap puts the huge-folder case out of their range entirely. | https://blog.cloudflare.com/next-git-platform-on-cloudflare/ (open beta, Workers Paid, billing, events), https://developers.cloudflare.com/artifacts/platform/pricing/, /artifacts/platform/limits/, /artifacts/concepts/how-artifacts-works/ — all read 2026-10-01. Step 8 and issue 133 track the retention; issue 133 is the open claim the pricing page and llms.txt make about it. |
 | **Cloudflare Container filesystem snapshots** (public beta, `durable_object` scheduling policy only; the `default` policy can neither take nor restore one). **Stores:** a saved point-in-time image of one running container's whole filesystem — repository, dependencies, build caches, config, edits — not memory or running processes, and the handle is a plain data object you store yourself. **Versions:** snapshots are **immutable**, so a changed workspace is a brand-new snapshot with nothing linking it to the last one; each is **tied to the container image version it was made from** and is not portable to a different image; **max 20 GB per snapshot, kept 30 days** from creation or the most recent restore, and a restore refreshes that 30 days (https://developers.cloudflare.com/containers/guides/snapshots/, /containers/platform/limits/). **Price: none published for stored snapshot bytes.** The nearest billed number is a *running* container's provisioned disk at $0.00000007 per GB-second with 200 GB-hours a month included (https://developers.cloudflare.com/containers/platform/pricing/), which works out at about $0.18 per GB-month over 730 hours for a live container's disk and is **not** a price for stored snapshot bytes — and reading anything costs CPU ($0.000020 per vCPU-second) and memory ($0.0000025 per GiB-second) on top. **Finder: no documented desktop client** — a person has to start a container from the snapshot to see a single byte, and pay it to run. | Files stay stored until the person deletes them, with no TTL; versions kept 1 day, then one a day for 30 days; 2¢ per GB-month by the minute against about $0.18, and nothing to pay to open a file; a mounted folder, stock rclone. | **Beat** on retention: a saved workspace on our drive does not expire, a snapshot is gone 30 days after the last restore. **Beat** on opening a person's files: no documented desktop client, and reading one byte means starting a container and paying it to run. **Gap** that we have no save-and-restore of a whole agent workspace between sessions, only files and branches — that is what a snapshot is for, and their pattern is the better one. **No price verdict is possible**, and that is the honest cell: Cloudflare publishes no per-GB price for stored snapshot bytes, so it cannot be called dearer or cheaper than 2¢. The published figures around it are compute, not storage, so a "Beat on price" here would be a comparison of two different things. | https://blog.cloudflare.com/faster-agent-sandboxes/ (snapshots in public beta, immutability, the eval pattern), https://developers.cloudflare.com/containers/guides/snapshots/, /containers/platform/limits/, /containers/platform/pricing/ — all read 2026-10-01. Step 11 (sandbox connectors) is where a snapshot is a place our drive gets mounted, the same read as boat.dev. |
 
 Two things this pass settles. **Billing starts 2026-10-14, not 2026-10-15** as the blog post says: both the Artifacts pricing page and the open-beta changelog post give October 14 (https://developers.cloudflare.com/changelog/post/2026-10-01-artifacts-open-beta/), and the blog post (https://blog.cloudflare.com/next-git-platform-on-cloudflare/) gives October 15. Either way it has not started, so no rival bill exists to measure yet. And **neither is a price threat on the numbers that exist**: Artifacts is 25x our rate at $0.50/GB-month, the only stored-byte price either of them publishes, while snapshots publish no per-GB price at all, so that one is unpriced rather than beaten and the figures around it are compute. Both are built for code and agent context rather than for a person's file library, which is the thing the rest of this spec is priced against.
@@ -147,23 +147,23 @@ Two things this pass settles. **Billing starts 2026-10-14, not 2026-10-15** as t
 
 | Customer | 1.5¢ | 1.75¢ | 2¢ |
 |---|---|---|---|
-| Under 750 GB kept all month (vs Space) | Wins | Wins | Wins |
-| Space customer whose 1 TB plan is under 60% full | Wins | Wins | Wins |
+| Under 750 GB kept all month (vs the competitor) | Wins | Wins | Wins |
+| the competitor customer whose 1 TB plan is under 60% full | Wins | Wins | Wins |
 | 0.75 to 2.7 TB kept all month | Wins vs monthly, ties yearly at 1 TB | Wins below 1.45 TB monthly | Loses above 1 TB |
-| Over 3 TB video archives (the revisit niche) | Loses (Space adds TB at $12) | Loses | Loses |
+| Over 3 TB video archives (the revisit niche) | Loses (the competitor adds TB at $12) | Loses | Loses |
 | Short agent jobs (a day or a week) | Wins on price | Wins | Wins |
 | Heavy streamers reading more than 3x stored | We lose money unless over-3x downloads are billed | Same | Same |
 | Anyone happy with iCloud/Google under 2 TB | Loses | Loses | Loses |
 
 **Risks**
 - **Short jobs vs the download allowance.** B2's free 3x is based on average stored data, and it's pooled across our whole account. A 1 TB job that lives one day counts as only 33 GB stored, so reading it once could use about $9 of download allowance on a $0.66 bill. Pooling with all-month customers covers this at small scale; billing downloads over 3x is the backstop.
-- **The >4 TB niche (changed by the 2026-09-30 ceiling).** The rows above were priced before the ceiling, when Space's $12/TB add-on beat us there; under the new bill (5 TB = $40 against Space's $63) the niche is won on price, so the vault's revisit trigger now waits on demand only. The who-wins table above is not re-run; it stands as the 2026-09-29 record.
+- **The >4 TB niche (changed by the 2026-09-30 ceiling).** The rows above were priced before the ceiling, when the competitor's $12/TB add-on beat us there; under the new bill (5 TB = $40 against the competitor's $63) the niche is won on price, so the vault's revisit trigger now waits on demand only. The who-wins table above is not re-run; it stands as the 2026-09-29 record.
 - **Fees on small top-ups.** $10 top-ups lose about 9.5%. Encourage $25 or more.
 - **Exchange rate.** Hetzner bills in euros. The €2/TB Storage Box figure assumes about $1.15 per euro.
 
 **Jev (2026-09-29 05:36 UTC, jev-1.13.0):** 2¢ at 0.52, 1.75¢ at 0.31, 1.5¢ at 0.17. Not decisive (below 0.9), so this recommendation is my call, and it matches Jev's lean. Why 2¢: every customer group we can win at 1.5¢ is also won at 2¢, except the 1 to 2.7 TB band. 2¢ keeps a 44% margin with a real backup copy. 1.5¢ keeps only 29%.
 
-Price sources (checked 2026-09-29): https://www.backblaze.com/cloud-storage/pricing , https://www.backblaze.com/cloud-storage/transaction-pricing , https://developers.cloudflare.com/r2/pricing/ , https://wasabi.com/pricing/faq , https://www.hetzner.com/storage/object-storage/ , https://docs.hetzner.com/storage/object-storage/overview/ , https://www.hetzner.com/storage/storage-box/bx41/ , https://www.idrive.com/s3-storage-e2/pricing , https://www.storj.io/pricing , https://dodopayments.com/pricing , https://spacefs.com
+Price sources (checked 2026-09-29): https://www.backblaze.com/cloud-storage/pricing , https://www.backblaze.com/cloud-storage/transaction-pricing , https://developers.cloudflare.com/r2/pricing/ , https://wasabi.com/pricing/faq , https://www.hetzner.com/storage/object-storage/ , https://docs.hetzner.com/storage/object-storage/overview/ , https://www.hetzner.com/storage/storage-box/bx41/ , https://www.idrive.com/s3-storage-e2/pricing , https://www.storj.io/pricing , https://dodopayments.com/pricing , the competitor's site
 
 ### How it works
 
@@ -245,7 +245,7 @@ Who builds it: queue workers, one issue per step, in a new product repo created 
 |---|---|---|
 | A bug loses someone's file | Fatal | Versioning on from step 1, agents can't hard-delete, nightly copy to a second company, restore tested in steps 1 and 8 |
 | Metering drifts from B2's real bill | High | Step 5 reconciles against B2's own report before anyone is charged |
-| Pricier than Space above 750 GB kept all month | High | Aim at part-full plans, small libraries and agent jobs; keep 1.5¢ for a yearly plan |
+| Pricier than the competitor above 750 GB kept all month | High | Aim at part-full plans, small libraries and agent jobs; keep 1.5¢ for a yearly plan |
 | Free credit gets abused with throwaway accounts | Medium | Without a card an account stops at $1 of usage (about 50 GB, about 35¢ a month to us); the free $1 covers storage only, not downloads above 3x |
 | Per-minute billing at tiny scale charges less than B2 bills us | Low | 1-hour minimum per file matches B2's byte-hour billing |
 | NFS mount quirks on macOS | Medium | Proven in step 2; the Swift app replaces it later |
@@ -272,10 +272,10 @@ Two alternatives were rejected:
 
 ## Sources (checked 2026-09-29)
 
-1. SpaceFS: https://spacefs.com
-2. Space founder update: https://newsletter-byjasonz.beehiiv.com/p/things-are-moving-fast-here-at-space
-3. Forbes on Space: https://www.forbes.com/sites/davidprosser/2026/08/18/space-paves-the-way-for-the-infinite-computer/
-4. Space $2.4M pre-seed: https://www.thesaasnews.com/news/space-raises-2-4m-pre-seed/
+1. The main competitor: the competitor's site
+2. Competitor founder update: press coverage
+3. Forbes on the competitor: press coverage
+4. Competitor $2.4M pre-seed: press coverage
 5. Backblaze B2 pricing: https://www.backblaze.com/cloud-storage/pricing
 6. Hetzner Storage Box BX41: https://www.hetzner.com/storage/storage-box/bx41/
 7. Hetzner Object Storage: https://www.hetzner.com/storage/object-storage/

@@ -12,6 +12,12 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import {
+  AFTER_SIGNIN_COOKIE,
+  AUTH_COOKIE_PREFIX,
+  SESSION_TTL_SECONDS,
+  SIGNIN_LINK_TTL_SECONDS,
+} from "../core/auth.js";
 import { BILLING_CONFIG } from "../core/billing.js";
 import { DEFAULT_CAP_USD } from "../core/cap-default.js";
 import {
@@ -105,6 +111,36 @@ test("the sign-in form links the terms and the privacy policy", () => {
   assert.ok(form, "signin.html carries the sign-in form");
   assert.match(form[0], /href="\/terms"/);
   assert.match(form[0], /href="\/privacy"/);
+});
+
+test("each collection form names the purpose and links the privacy page (drive#547)", () => {
+  const signin = readPublic("signin.html").match(/<form id="signin-form"[\s\S]*?<\/form>/);
+  assert.ok(signin, "signin.html carries the sign-in form");
+  assert.match(signin[0], /We use this address to send that sign-in link/);
+  assert.match(signin[0], /href="\/privacy"/);
+
+  const waitlist = readPublic("index.html").match(/<form class="waitlist"[\s\S]*?<\/form>/);
+  assert.ok(waitlist, "index.html carries the waitlist form");
+  assert.match(waitlist[0], /We use this address to send one email when sign-in opens/);
+  assert.match(waitlist[0], /Send means you agree to that email/);
+  assert.match(waitlist[0], /href="\/privacy"/);
+});
+
+test("the privacy page lists the two cookies and the analytics beacon (drive#547)", () => {
+  const privacy = legalText("privacy.html");
+  const sessionCookie = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
+  assert.ok(privacy.includes(sessionCookie), `privacy must name ${sessionCookie}`);
+  assert.equal(SESSION_TTL_SECONDS / (24 * 60 * 60), 30, "the session cookie lives 30 days");
+  assert.match(privacy, /30 days/);
+  assert.ok(privacy.includes(AFTER_SIGNIN_COOKIE), "privacy must name the after-signin cookie");
+  assert.equal(SIGNIN_LINK_TTL_SECONDS / 60, 10, "the after-signin cookie lives ten minutes");
+  assert.match(privacy, /ten minutes/);
+  assert.match(privacy, /Cloudflare Web Analytics beacon/);
+  assert.match(privacy, /sets no cookie/);
+});
+
+test("the terms carry an age line (drive#547)", () => {
+  assert.match(legalText("terms.html"), /You must be 18 or older to open an account/);
 });
 
 test("the four owner facts are marked placeholders, each in one place only", () => {

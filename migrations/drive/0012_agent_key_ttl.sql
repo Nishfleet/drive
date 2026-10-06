@@ -1,6 +1,6 @@
 -- The hour an agent's storage credential lives (drive issue #106).
 --
--- Space swaps a key for a one-hour scoped credential. Ours lived until the
+-- The competitor swaps a key for a one-hour scoped credential. Ours lived until the
 -- person revoked it, so a leaked agent key was a key that worked forever. This
 -- migration is the api Worker's own half of the bound: the row's credential is
 -- refused at `expires_at` and renewed only while the row is live
