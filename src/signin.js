@@ -51,6 +51,7 @@
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { json } from "../workers/api/src/http.js";
+import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
@@ -427,16 +428,32 @@ export async function handleSigninRequest(request, env) {
         if (db === undefined || db === null || typeof db !== "object") {
           everywhereError = failureMessage("drive-not-configured");
         } else {
-          try {
-            await createD1DeviceStore(db).revokeAllKeys(account);
-            await createD1DeviceSigninStore(db).revokeAllDeviceTokens(account);
+          // The deployment's own key provider, the one close and the cap
+          // route use (keyprovider-env.js), so a signed-out key is withdrawn
+          // at the vendor and not only refused by the api. Each of the three
+          // writes is attempted whatever the one before it did: a vendor
+          // refusal leaves that key live for the next tap to retry
+          // (devices.js revokeAccountCredentials), and it must not leave the
+          // device tokens or the browser sessions standing as well.
+          const keyProvider =
+            keyProviderFor(
+              /** @type {{[key: string]: unknown}} */ (/** @type {unknown} */ (env)),
+            ) ?? undefined;
+          const steps = [
+            () => createD1DeviceStore(db, { keyProvider }).revokeAllKeys(account),
+            () => createD1DeviceSigninStore(db).revokeAllDeviceTokens(account),
             // Better Auth's own adapter, not a hand-written delete against
             // its table. Its revoke-sessions endpoint would do the same, but
             // it demands a fresh session, so a day-old sign-in could not
             // sign out everywhere.
-            await (await auth.$context).internalAdapter.deleteUserSessions(account.id);
-          } catch (_error) {
-            everywhereError = failureMessage("storage-down");
+            async () => (await auth.$context).internalAdapter.deleteUserSessions(account.id),
+          ];
+          for (const step of steps) {
+            try {
+              await step();
+            } catch (_error) {
+              everywhereError = failureMessage("storage-down");
+            }
           }
         }
       }
