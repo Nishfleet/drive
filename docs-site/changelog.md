@@ -20,6 +20,14 @@ the live site.
 
 ## 2026-10-05
 
+- Your drive never works on an old copy: the app says which build it is when
+  it talks to the server, and the server tells an old build to run
+  `drive update` instead of failing in some other way.
+- `drive status` says when a newer drive is available, once a day, so you
+  learn about the update without running `drive update` to find out.
+- `drive update` now puts the drive back on the new build for you, and tells
+  you when the tool it uses to talk to the drive is too old for the new
+  mount.
 - The stored-bytes mark for one hour is what your drive held at the end of
   that hour, so a file you replace several times inside an hour counts once, not
   once per save. Each save is still billed for at least one hour, and the

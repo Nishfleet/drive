@@ -131,6 +131,10 @@ func runStatus(args []string) error {
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
+	// The once-a-day update notice (drive#560): the last line `drive status`
+	// prints. It never fails the command, and it never prints more than once
+	// in 24 hours.
+	noticeUpdateOnceADay(updateNoticeOptions{home: home})
 	return nil
 }
 
@@ -635,6 +639,7 @@ func readCostLine(apiBase, token string) string {
 	if token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
+	req.Header.Set("user-agent", userAgent())
 	client := &http.Client{Timeout: usageTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
