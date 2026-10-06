@@ -116,6 +116,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "low-balance",
     "device-approve-notice",
     "upload-arrivals",
+    "security-event",
   ]);
 });
 
@@ -373,6 +374,13 @@ function dataFor(kind) {
         ownerName: "Nish",
         folder: "Your drive",
         arrivals: [{ name: "contract.pdf", sizeLabel: "1.2 MB" }],
+      };
+    case "security-event":
+      return {
+        ...base,
+        event: "agent-key-minted",
+        deviceName: "office laptop",
+        happenedAt: "2026-10-06T09:00:00.000Z",
       };
     default:
       throw new Error(`no test data for ${kind}`);

@@ -518,7 +518,7 @@ function requireReplyTo(value) {
 // every send reads.
 //
 // The link and the reply address are here rather than in each template
-// (drive#522): eleven templates each spelling its own footer is eleven places
+// (drive#522): every kind in EMAIL_KINDS spelling its own footer is that many places
 // for a template to ship with a dead end, and the two facts — where a person
 // goes next, and where a reply lands — are the same for all of them. `finish`
 // is the only way a template returns, so this cannot be forgotten. The link
@@ -698,6 +698,75 @@ export function uploadArrivalsTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
+// ---------------------------------------------------------------------------
+// 12) Security event -- one template for keys, links, logout and cap
+//     (drive#551). { event, deviceName, happenedAt, detail? }
+// ---------------------------------------------------------------------------
+/** The event names the template accepts. One sentence each, so a caller cannot
+ *  smuggle free text into the subject. */
+export const SECURITY_EVENT_COPY = Object.freeze({
+  "agent-key-minted": "An agent key was minted",
+  "team-key-minted": "A team key was minted",
+  "branch-key-minted": "A branch key was minted",
+  "share-link-created": "A public share link was created",
+  "upload-request-created": "An upload-request link was created",
+  "signed-out-everywhere": "Every device was signed out",
+  "device-logged-out": "A device was signed out",
+  "cap-changed": "The spending cap was changed",
+});
+
+// USAGE_URL is the same absolute /usage.html the close-lane templates pass
+// to finish (defined at the top of this file). The revoke CTA is that page.
+const SECURITY_LINK = Object.freeze({
+  label: "Revoke access on the usage page",
+  url: USAGE_URL,
+});
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function securityEventTemplate(data = {}) {
+  const event = data.event;
+  if (typeof event !== "string" || !Object.hasOwn(SECURITY_EVENT_COPY, event)) {
+    throw new TypeError(
+      `event must be one of ${Object.keys(SECURITY_EVENT_COPY).join(", ")}, got ${String(event)}`,
+    );
+  }
+  const what = SECURITY_EVENT_COPY[/** @type {keyof typeof SECURITY_EVENT_COPY} */ (event)];
+  const deviceName = requireText(data.deviceName, "deviceName");
+  const happenedAt = requireText(data.happenedAt, "happenedAt");
+  const detail =
+    typeof data.detail === "string" && data.detail.trim() !== "" ? data.detail.trim() : "";
+  const subject = "A security event on your drive";
+  const lines = [
+    `${what}.`,
+    "",
+    `It happened at ${happenedAt}, from a device named ${deviceName}.`,
+  ];
+  if (detail !== "") {
+    lines.push("", detail);
+  }
+  lines.push("", "If this was not you, revoke access on the usage page.");
+  const safeWhat = escapeHtml(what);
+  const safeAt = escapeHtml(happenedAt);
+  const safeName = escapeHtml(deviceName);
+  const html_lines = [
+    `<p>${safeWhat}.</p>`,
+    `<p>It happened at ${safeAt}, from a device named ${safeName}.</p>`,
+  ];
+  if (detail !== "") {
+    html_lines.push(`<p>${escapeHtml(detail)}</p>`);
+  }
+  html_lines.push("<p>If this was not you, revoke access on the usage page.</p>");
+  return finish({
+    subject,
+    lines,
+    html_lines,
+    replyTo: data.replyTo,
+    link: SECURITY_LINK,
+  });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -712,6 +781,7 @@ export const EMAIL_KINDS = Object.freeze([
   "low-balance",
   "device-approve-notice",
   "upload-arrivals",
+  "security-event",
 ]);
 
 /**
@@ -730,6 +800,7 @@ const TEMPLATES = Object.freeze({
   "low-balance": lowBalanceTemplate,
   "device-approve-notice": deviceApproveNoticeTemplate,
   "upload-arrivals": uploadArrivalsTemplate,
+  "security-event": securityEventTemplate,
 });
 
 /**

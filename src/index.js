@@ -60,6 +60,7 @@ import {
   settleBalances,
 } from "../core/prepaid.js";
 import { createD1QueueStore } from "../core/queues.js";
+import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -802,6 +803,7 @@ export function createApp() {
     /** @type {Record<string, unknown>|null} */
     let usage = null;
     if (!account) return unauthorizedResponse();
+    let openPublicLinks = 0;
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
       capUsd = await store.getCapUsd(account.id);
@@ -814,6 +816,11 @@ export function createApp() {
       usage = /** @type {Record<string, unknown>} */ (
         await store.monthUsage(account.id, { capUsd })
       );
+      const now = Date.now();
+      const links = linksFor(c.env);
+      openPublicLinks =
+        (await links.shares.countOpen(account.id, now)) +
+        (await links.requests.countOpen(account.id, now));
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -831,7 +838,7 @@ export function createApp() {
       : null;
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, usage },
+      { ...account, capUsd, cardOnFile, usage, openPublicLinks },
       await liveQueueFor(c.env, account),
       balance,
       // The month these numbers belong to, sent as its first instant (drive#559):
@@ -913,7 +920,10 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store);
+    return handleCapRequest(c.req.raw, c.get("account"), store, {
+      ...mailFromEnv(c.env),
+      deviceName: sessionLabel(c.req.raw),
+    });
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -955,6 +965,8 @@ export function createApp() {
         // The mint route's own bound (drive issue #549). The per-account
         // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -975,6 +987,8 @@ export function createApp() {
       handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account"), {
         // The mint route's own bound (drive issue #549).
         limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
