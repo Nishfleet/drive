@@ -25,6 +25,7 @@ import {
   READ_ONLY_CAPABILITIES,
 } from "../../core/cap.js";
 import { createD1DeviceStore } from "../../core/devices.js";
+import { failureMessage } from "../../core/messages.js";
 import { MINUTE_MS, monthStart } from "../../core/meter.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
@@ -314,4 +315,47 @@ test("the cap read counts the one bill for every account, on the real schema", a
     );
     assert.equal(report.state, "read_only", "2 TB is $20, past the $15 cap");
   }
+});
+
+test("POST /api/cap on a closed account leaves it closed, and cancelClose still works", async () => {
+  // drive#537: an unguarded cap write set state back to active while closed_at
+  // stayed set, so the purge walk skipped the row and cancelClose threw
+  // close-not-closed. The route must 409 before any write, the row stays
+  // closed, and cancel still reopens it.
+  const at = Date.parse("2026-09-30T12:00:00.000Z");
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => at });
+  const account = { id: "acct-closed-cap", email: "closed-cap@example.com" };
+  await store.setCapCents(account, dollarsToCapCents(20));
+  await store.closeAccount(account, at / 1000);
+  assert.equal(await store.accountState(account.id), "closed");
+
+  const refused = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "8" }),
+    }),
+    account,
+    store,
+  );
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: failureMessage("cap-account-closed") });
+  const row = rowIn(
+    sqlite,
+    "SELECT state, closed_at, cap_cents FROM accounts WHERE id = ?",
+    account.id,
+  );
+  assert.equal(row.state, "closed");
+  assert.equal(row.closed_at, at / 1000);
+  assert.equal(row.cap_cents, dollarsToCapCents(20), "the cap must not move on a closed account");
+
+  await store.cancelClose(account.id);
+  const reopened = rowIn(
+    sqlite,
+    "SELECT state, closed_at FROM accounts WHERE id = ?",
+    account.id,
+  );
+  assert.equal(reopened.state, "active");
+  assert.equal(reopened.closed_at, null);
 });
