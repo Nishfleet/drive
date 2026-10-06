@@ -12,18 +12,20 @@
 
 import { sessionAccount } from "./auth.js";
 import { INSTALL_LINES } from "./install-lines.js";
-import { failureMessage } from "./messages.js";
+import { failureMessage, INSTALL_COMMAND, SIGN_IN_COMMAND } from "./messages.js";
 
-// The one command a new person runs after sign-up. build-spec.md "One-command
-// setup": `drive init` signs you in, mounts the drive and connects every agent
-// tool it finds. Kept here so the page, the CLI and the docs cannot disagree
-// about what the one command is.
-export const INSTALL_COMMAND = "drive init";
+// INSTALL_COMMAND is re-exported from the message table so the first-run page
+// and the tests keep importing it from here. It mounts the drive and connects
+// the agent tools. It does not sign anyone in: that is LOGIN_COMMAND.
+export { INSTALL_COMMAND };
 
 // The command that connects this machine to the account before `drive init`
 // runs: it opens the browser, mints the machine's key and writes the storage
-// settings, so init needs no pasted keys (drive issue #415).
-export const LOGIN_COMMAND = "drive login";
+// settings, so init needs no pasted keys (drive issue #415). The string is the
+// message table's SIGN_IN_COMMAND (drive#557), so the first-run page, the
+// emails, the home page and every failure sentence name the same one command
+// and none of them can point at `drive init`, which does not sign in.
+export const LOGIN_COMMAND = SIGN_IN_COMMAND;
 
 // The command that says what the drive on this machine is doing: whether it
 // is mounted, what is waiting to upload and what the month has cost. It
