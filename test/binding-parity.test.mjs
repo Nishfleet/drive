@@ -34,18 +34,24 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 // header of test/deploy-api-worker.test.mjs, drive#341). So this reads the same
 // text the deploy uploads, the way test/deploy-secrets.test.mjs reads it.
 //
-// Each binding is matched from its opening brace to its own closing one rather
-// than by a whole-line pattern, so the `name` and the `id` lines may be
-// reordered, re-indented or split across lines without turning the gate into a
-// formatting check. A binding that declares one field and not the other fails
-// here with the body it could not read, because a half-declared binding is the
-// case an edit makes by hand.
+// Each binding is matched from its opening brace to the first closing one
+// (`[^}]*`), not by a whole-line pattern, so the `name` and the `id` lines may
+// be reordered, re-indented or split across lines without turning the gate into
+// a formatting check. A d1 body that grows a nested object is a config change
+// this would stop reading, and that failure names the binding it could not read
+// rather than passing on a half of it. A binding that declares one field and not
+// the other fails the same way, because a half-declared binding is the case an
+// edit makes by hand.
 //
 // The name has to start a line (`^`) for the match to count. A d1 block written
 // out in prose — a comment that shows the wrong way to bind a name — is the one
 // shape that otherwise wins: the regex would read the example as the binding
 // and this map would hold the decoy under the real name, so the parity below
 // would compare a comment against a deploy.
+//
+// Each field is anchored to an object separator (`{` or `,`), so a longer field
+// name that contains `name` or `id` — `database_name:`, `preview_database_id:` —
+// cannot be read as the plain field.
 /** @typedef {{name: string, id: string}} D1Binding */
 
 /**
@@ -53,13 +59,13 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
  * @returns {Map<string, D1Binding>} the d1 bindings it declares, by the name it
  * binds them under
  */
-export const d1Bindings = (text) => {
+const d1Bindings = (text) => {
   /** @type {Map<string, D1Binding>} */
   const found = new Map();
-  const bindings = text.matchAll(/^[ \t]*(\w+)[ \t]*:[ \t]*bindings\.d1\(\{([^}]*)\}/gm);
+  const bindings = text.matchAll(/^[ \t]*(\w+)[ \t]*:[ \t]*bindings\.d1\((\{[^}]*\})/gm);
   for (const [, binding, body] of bindings) {
-    const name = /name:\s*"([^"]+)"/.exec(body)?.[1];
-    const id = /id:\s*"([^"]+)"/.exec(body)?.[1];
+    const name = /[{,]\s*name:\s*"([^"]+)"/.exec(body)?.[1];
+    const id = /[{,]\s*id:\s*"([^"]+)"/.exec(body)?.[1];
     assert.ok(
       name !== undefined && id !== undefined,
       `${binding} is a d1 binding whose body names no database: ${body.trim()}`,
@@ -139,8 +145,16 @@ ${read("cloudflare.config.ts")}
   const meter = binding(declared, "METER_DB");
   const drive = binding(declared, "DRIVE_DB");
   assert.equal(meter.id, drive.id, "the live METER_DB binding is the one the gate reads");
-  assert.equal(meter.name, "drive-data");
-  assert.equal(declared.size, 3, "only the declared bindings are parsed");
+  assert.equal(meter.name, drive.name, "the live METER_DB binding is the one the gate reads");
+  // The decoy parsed as a binding would sit under METER_DB's name and overwrite
+  // the live entry, so asserting its id is absent from every parsed binding is
+  // what says the comment lost. A fourth d1 binding added to the config later
+  // does not fail this line, which a count of the parsed bindings would.
+  const decoyId = "11111111-2222-3333-4444-555555555555";
+  assert.ok(
+    ![...declared.values()].some((entry) => entry.id === decoyId),
+    `the decoy's id ${decoyId} is parsed as a real binding`,
+  );
 });
 
 test("the waitlist keeps its own database, so the parity is a rule and not a coincidence", () => {
