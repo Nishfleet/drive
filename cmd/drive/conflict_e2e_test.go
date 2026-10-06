@@ -342,9 +342,11 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	seenBoth := false
+	var lastA, lastB error
 	for time.Now().Before(deadline) {
 		qa, errA := a.ReadQueue(context.Background())
 		qb, errB := b.ReadQueue(context.Background())
+		lastA, lastB = errA, errB
 		if errA != nil || errB != nil {
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -370,14 +372,13 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !seenBoth {
-		t.Logf("both devices did not queue %s within 20s; releasing whatever is held", name)
-	} else {
-		// The conflict guard hashes a save while it is still in the queue
-		// (conflict_guard.go sight). Releasing in the same instant the
-		// items appear lets a tiny file leave before the next 500ms pass,
-		// and then nothing writes a conflict copy.
-		time.Sleep(2 * conflictInterval)
+		t.Fatalf("both devices did not queue %s within 20s (A queue err=%v, B queue err=%v)", name, lastA, lastB)
 	}
+	// The conflict guard hashes a save while it is still in the queue
+	// (conflict_guard.go sight). Releasing in the same instant the
+	// items appear lets a tiny file leave before the next 500ms pass,
+	// and then nothing writes a conflict copy.
+	time.Sleep(2 * conflictInterval)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := a.ReleaseQueuedUploads(ctx); err != nil {

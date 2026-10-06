@@ -281,7 +281,7 @@ func (e *transferEnv) status() string {
 }
 
 func (e *transferEnv) objectPath(name string) string {
-	return filepath.Join(e.root, "data", e.cfg.Bucket, e.cfg.Prefix, name)
+	return standinObjectPath(e.root, e.cfg, name)
 }
 
 func waitForFile(t *testing.T, path string, size int64, d time.Duration) error {
