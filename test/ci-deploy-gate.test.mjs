@@ -51,7 +51,11 @@ test("the go job still runs the two-device conflict proof", () => {
   const stepEnd = step.search(/\n {6}- /);
   const lines = (stepEnd === -1 ? step : step.slice(0, stepEnd)).split("\n");
   for (const line of lines) {
-    assert.doesNotMatch(line, /continue-on-error/, `the proof step never continues: ${line.trim()}`);
+    assert.doesNotMatch(
+      line,
+      /continue-on-error/,
+      `the proof step never continues: ${line.trim()}`,
+    );
   }
 });
 
