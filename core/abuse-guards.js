@@ -439,7 +439,7 @@ export async function preChargeOverLimitAccounts(db) {
  *   db: D1Database,
  *   devices: Pick<DeviceStore, "listCapKeys" | "keyProviderFor">,
  * }} input
- * @returns {Promise<{overLimit: number, capped: number, failures: number, givenBack: number}>}
+ * @returns {Promise<{overLimit: number, capped: number, failures: number, givenBack: number}>} `capped` and `givenBack` count accounts, not keys
  */
 export async function runPreChargeLimitCron(input) {
   if (typeof input !== "object" || input === null) {
@@ -506,6 +506,7 @@ export async function runPreChargeLimitCron(input) {
  * @returns {Promise<{givenBack: number, failures: number}>}
  */
 async function givePreChargeKeysBack(db, devices) {
+  // A failure of this query throws out of the trip after the sweep ran; the next hourly run retries.
   const frozen = await db
     .prepare(
       `SELECT DISTINCT d.account_id AS account_id

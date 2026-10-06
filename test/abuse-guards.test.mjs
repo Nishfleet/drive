@@ -954,3 +954,80 @@ test("an account still over 1 TB with no first charge never gets its key back", 
   assert.deepEqual(JSON.parse(String(row.capabilities)), ["list", "read"]);
   assert.equal(row.capped_reason, "pre-charge-limit");
 });
+
+test("a revoked key marked 'pre-charge-limit' on an under-limit account widens nothing", async () => {
+  // listCapKeys and the give-back's own read both leave revoked rows out, so a
+  // revoked key is never swapped and never minted again.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "gone-key");
+  db.insertVersion({ accountId: "gone-key", fileId: "f", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("gone-key")
+    .mint({ prefix: "u/gone-key/", capabilities: WRITE_CAPS });
+  sqlite
+    .prepare(
+      "UPDATE devices SET capabilities = ?1, capped_from = ?2, capped_reason = ?3, revoked_at = ?4 WHERE id = ?5",
+    )
+    .run(
+      JSON.stringify(["list", "read"]),
+      JSON.stringify(WRITE_CAPS),
+      PRE_CHARGE_LIMIT_REASON,
+      NOW,
+      key.keyId,
+    );
+  const before = sqlite.prepare("SELECT * FROM devices").all();
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  assert.deepEqual(sqlite.prepare("SELECT * FROM devices").all(), before);
+});
+
+test("a $0-balance paused account the sweep froze gets its key back under 1 TB, and writes stay paused", async () => {
+  // The pause and the key are separate: the give-back widens the key the sweep
+  // froze, and writesPaused still refuses writes because the balance is $0.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "both");
+  db.insertVersion({
+    accountId: "both",
+    fileId: "big",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("both")
+    .mint({ prefix: "u/both/", capabilities: WRITE_CAPS });
+  assert.equal(await writesPaused(db, "both"), true);
+  await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+  assert.equal(await writesPaused(db, "both"), true);
+
+  sqlite.prepare("UPDATE file_versions SET hidden_at = ?1 WHERE account_id = 'both'").run(NOW);
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(report.givenBack, 1);
+  const live = await store.listCapKeys("both");
+  assert.ok(live[0].capabilities.includes("write"), "the key is widened");
+  assert.equal(await writesPaused(db, "both"), true, "the pause still refuses writes");
+});
+
+test("givenBack counts accounts, not keys: two frozen keys on one account are both widened and count 1", async () => {
+  const { db } = makeMeteredDB();
+  await insertAccount(db, "two");
+  db.insertVersion({
+    accountId: "two",
+    fileId: "big",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  for (const prefix of ["u/two/", "u/two/sub/"]) {
+    await store.keyProviderFor("two").mint({ prefix, capabilities: WRITE_CAPS });
+  }
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).capped, 1);
+  await db.prepare("UPDATE file_versions SET hidden_at = ?1").bind(NOW).run();
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(report.givenBack, 1);
+  const keys = await store.listCapKeys("two");
+  assert.equal(keys.length, 2);
+  assert.ok(keys.every((key) => key.capabilities.includes("write")));
+});
