@@ -100,6 +100,14 @@ export const MAX_OPEN_LINKS = 50;
 // counts the bytes, so a link cannot be filled by a script that drops files
 // faster than the count is written.
 export const REQUEST_MAX_FILES = 100;
+// One json_remove call cannot carry more arguments than SQLite's function
+// bound (SQLITE_MAX_FUNCTION_ARG, 127 stock), so a deep arrival queue is
+// cleared in chunks of this many front entries per UPDATE (drive issue #684).
+const REMOVE_CHUNK = 64;
+// The one-a-day bound (drive issue #684): 20 hours, so the shared nightly
+// cron at any time of day mails a link once, and a trip that fires twice
+// inside a day is caught by the stamp rather than by the clock.
+export const DIGEST_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
 // The longest file name an upload page accepts (drive issue #549): the same
 // 255 the owner's own Files page lives with, checked before the body is read.
 export const REQUEST_NAME_MAX_LENGTH = 255;
@@ -772,20 +780,34 @@ export function createD1LinkStore(db) {
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
       async markDigestSent(token, at, count) {
-        // The stamp and the clear are one statement. The clear removes only
-        // the arrivals the digest actually read, from the front of the array,
-        // so an upload accepted during the send window stays queued for the
-        // next run instead of being wiped unseen (drive issue #684). json_remove
-        // reads the column's old value, unlike a correlated subquery in SET.
-        // A count of zero is the drain for a row the digest could not read at
-        // all: parseArrivals already decided it holds no arrivals, and nothing
-        // but recordArrival writes the column back, so the only thing left to
-        // do with it is empty it rather than walk it every night.
-        const paths = Array.from({ length: Math.max(0, count) }, () => "'$[0]'").join(", ");
-        const clear = paths === "" ? "'[]'" : `json_remove(pending_uploads, ${paths})`;
+        // The stamp and the clear are separate statements, and the clear
+        // walks the front of the array in chunks: json_remove's argument list
+        // is bounded by SQLITE_MAX_FUNCTION_ARG (127 stock), so a queue deeper
+        // than one chunk cannot be handed a single call. Each chunk removes
+        // the new front repeatedly, which is one UPDATE per chunk and leaves
+        // the stamp for the end, after the whole queue is gone.
+        //
+        // The clear removes only the arrivals the digest actually read,
+        // from the front of the array, so an upload accepted during the send
+        // window stays queued for the next run instead of being wiped unseen
+        // (drive issue #684). json_remove reads the column's old value, unlike
+        // a correlated subquery in SET. A count of zero is the drain for a
+        // row the digest could not read at all: parseArrivals already decided
+        // it holds no arrivals, and nothing but recordArrival writes the
+        // column back, so the only thing left to do with it is empty it
+        // rather than walk it every night.
+        const clearCount = count === 0 ? 1 : Math.max(1, Math.floor(count));
+        for (let removed = 0; removed < clearCount; removed += REMOVE_CHUNK) {
+          const take = Math.min(REMOVE_CHUNK, clearCount - removed);
+          const paths = Array.from({ length: take }, () => "'$[0]'").join(", ");
+          await one(
+            `UPDATE upload_requests SET pending_uploads = ` +
+              `json_remove(pending_uploads, ${paths}) WHERE token = ?1 `,
+            [token],
+          );
+        }
         const row = await one(
-          `UPDATE upload_requests SET digest_at = ?1, pending_uploads = ${clear} ` +
-            "WHERE token = ?2 " +
+          `UPDATE upload_requests SET digest_at = ?1 WHERE token = ?2 ` +
             `RETURNING ${REQUEST_COLUMNS}`,
           [at, token],
         );
@@ -845,15 +867,21 @@ export async function purgeStaleLinks(db, now) {
 }
 
 /**
- * One arrival, as the request row stores it and the digest reads it back.
- * `name` is put through safeFileName, the same cleaner the upload used, so a
- * name in a digest cannot be one the upload route itself would refuse.
+ * One arrival queue, as the request row stores it and the digest reads it
+ * back. `name` is put through safeFileName, the same cleaner the upload used,
+ * so a name in a digest cannot be one the upload route itself would refuse.
+ *
+ * `rawCount` is the stored array's own length, junk entries included. The
+ * digest clears by position from the front of the array, so it must remove
+ * rawCount entries to drop the junk ahead of a real arrival — otherwise a
+ * junk entry shifts every later name one place and the next night's mail
+ * repeats an arrival it already sent (drive issue #684).
  * @param {unknown} raw
- * @returns {Array<{name: string, bytes: number}>}
+ * @returns {{arrivals: Array<{name: string, bytes: number}>, rawCount: number}}
  */
 function parseArrivals(raw) {
   if (typeof raw !== "string" || raw.length === 0) {
-    return [];
+    return { arrivals: [], rawCount: 0 };
   }
   let parsed;
   try {
@@ -862,12 +890,12 @@ function parseArrivals(raw) {
     // A row that is not the JSON this store wrote is treated as no arrivals
     // rather than throwing: the digest is a notification, and one malformed
     // row must not stop every other link's mail.
-    return [];
+    return { arrivals: [], rawCount: 0 };
   }
   if (!Array.isArray(parsed)) {
-    return [];
+    return { arrivals: [], rawCount: 0 };
   }
-  return parsed
+  const entries = parsed
     .filter((entry) => entry !== null && typeof entry === "object")
     .map((entry) => {
       const e = /** @type {{name?: unknown, bytes?: unknown}} */ (entry);
@@ -877,6 +905,7 @@ function parseArrivals(raw) {
         bytes: Number.isFinite(size) && size > 0 ? Math.floor(size) : 0,
       };
     });
+  return { arrivals: entries, rawCount: parsed.length };
 }
 
 /**
@@ -887,11 +916,19 @@ function parseArrivals(raw) {
  * stamps `digest_at` only after the send resolved, so a failed send leaves
  * the arrivals queued for the next run instead of dropping them.
  *
+ * "One email per link per day" rests on the schedule and on a stamp, not on
+ * the schedule alone: a link whose `digest_at` is younger than
+ * DIGEST_MIN_INTERVAL_MS is not mailed even if its queue is not empty. A
+ * deployment that ran the shared reconcile trip twice in a day would
+ * otherwise mail the same link twice, and the second mail would list the
+ * arrivals the first one had not cleared yet.
+ *
  * A link whose owner has no address is logged and skipped, like the close
  * cron's no-email rows: it is not an error that should stop the other links'
  * mail. `email` and `mailFrom` are the deployment's own settings; a missing
- * MAIL_FROM is refused before any link is read, because a digest from a
- * placeholder sender is worse than no digest.
+ * MAIL_FROM is an empty string here and the caller logs it and does not call
+ * this function at all, because a digest from a placeholder sender is worse
+ * than no digest.
  * @param {D1Database} db
  * @param {{email: unknown, mailFrom: string, owner: (accountId: string) => Promise<{id: string, name?: string, email?: string}|null>, now: number}} input
  * @returns {Promise<{sent: number, skipped: number}>}
@@ -908,18 +945,24 @@ export async function sendArrivalDigests(db, input) {
   let sent = 0;
   let skipped = 0;
   for (const record of pending) {
+    // The stamp, not the schedule, is what bounds a link to one mail a day.
+    if (record.digestAt !== null && input.now - record.digestAt < DIGEST_MIN_INTERVAL_MS) {
+      continue;
+    }
     try {
-      const arrivals = parseArrivals(record.pendingUploads);
-      if (arrivals.length === 0) {
+      const queue = parseArrivals(record.pendingUploads);
+      if (queue.arrivals.length === 0) {
         // A row the digest query selected (its queue is not the empty
         // literal) but the parse found no arrivals in: malformed JSON, or an
         // array of nulls. It is logged and drained, because nothing but
         // recordArrival ever writes this column back, so re-listing it every
-        // night would walk a queue that can never yield a mail.
+        // night would walk a queue that can never yield a mail. The raw
+        // count is cleared, junk entries included, so the drain leaves
+        // nothing behind either way.
         console.error(
           `upload digest: the link for account ${record.accountId} has an arrival queue that parses to nothing; clearing it`,
         );
-        await links.requests.markDigestSent(record.token, input.now, 0);
+        await links.requests.markDigestSent(record.token, input.now, queue.rawCount);
         skipped += 1;
         continue;
       }
@@ -939,7 +982,7 @@ export async function sendArrivalDigests(db, input) {
           ownerName:
             typeof owner.name === "string" && owner.name.length > 0 ? owner.name : owner.email,
           folder: folderDisplayName(record.folder),
-          arrivals: arrivals.map((arrival) => ({
+          arrivals: queue.arrivals.map((arrival) => ({
             name: arrival.name,
             sizeLabel: formatBytes(arrival.bytes),
           })),
@@ -947,7 +990,7 @@ export async function sendArrivalDigests(db, input) {
       });
       // Only the arrivals this digest read are cleared, so a drop accepted
       // during the send stays queued for the next run.
-      await links.requests.markDigestSent(record.token, input.now, arrivals.length);
+      await links.requests.markDigestSent(record.token, input.now, queue.rawCount);
       sent += 1;
     } catch (cause) {
       // One link's read or send must not hold every later link's mail. The
@@ -1112,7 +1155,18 @@ async function ownerNameFor(resolver, accountId) {
     return "";
   }
   const o = /** @type {{name?: unknown}} */ (owner);
-  return typeof o.name === "string" && o.name.trim().length > 0 ? o.name.trim() : "";
+  if (typeof o.name !== "string") {
+    return "";
+  }
+  const name = o.name.trim();
+  // A name is a display name, not a fallback address: a signup flow that
+  // seeded `name` from the email would otherwise publish the address to a
+  // stranger holding the link (drive issue #684). Anything that looks like an
+  // address is left off the page, the same as a blank name.
+  if (name.length === 0 || name.includes("@")) {
+    return "";
+  }
+  return name;
 }
 
 /** The request's own origin: the links are absolute so they can be copied.

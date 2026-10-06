@@ -380,6 +380,204 @@ test("one link's send failure does not stop the other link's digest", async () =
   assert.equal(fine.pendingUploads, "[]");
 });
 
+test("the digest reads a link's owner off the real user table the mint resolved to", async () => {
+  // drive#684 (in-run review): the join the digest depends on is
+  // upload_requests.account_id = "user".id, and every other test in this file
+  // stubs the owner resolver, so nothing proved that link. A real Better Auth
+  // user row, a real link row minted for its id, and the real `accountById`
+  // the Worker uses: if the columns ever stopped being the same table, the
+  // digest would silently skip every link each night.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare(
+      'INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") ' +
+        "VALUES (?1, ?2, ?3, 1, 0, 0)",
+    )
+    .bind("acct-real", "Nish Patel", "nish@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-real", folder: "/inbox", now: NOW, token: REQUEST_TOKEN }),
+  );
+  await links.requests.recordArrival(REQUEST_TOKEN, "report.pdf", 12000);
+
+  /** @type {Array<{to: string, text: string, subject: string}>} */
+  const sent = [];
+  const email = {
+    /** @param {unknown} message */
+    send: async (message) => {
+      sent.push(/** @type {any} */ (message));
+      return { messageId: `msg-${sent.length}` };
+    },
+  };
+  const result = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner: createD1DeviceStore(db).accountById,
+    now: NOW,
+  });
+  assert.deepEqual(result, { sent: 1, skipped: 0 });
+  assert.equal(sent.length, 1, "the real account read resolved the link's owner");
+  assert.equal(sent[0].to, "nish@example.com", "the mail lands on the user row's own address");
+  assert.match(sent[0].text, /report\.pdf/);
+  assert.match(sent[0].text, /Nish Patel/, "the digest names the account's display name");
+});
+
+test("a junk entry ahead of a real arrival is cleared with it, never re-sent", async () => {
+  // drive#684 (in-run review): the clear removes from the front of the array
+  // by position, so it must remove the stored array's own length, junk
+  // entries included. Removing only the parsed count would leave a junk entry
+  // at the front and shift every real name one place, so the next night's
+  // digest would mail an arrival it had already sent.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-mixed", "mixed@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-mixed", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  // A junk entry in front of a real arrival, set straight in the column.
+  await db
+    .prepare("UPDATE upload_requests SET pending_uploads = ?1 WHERE token = ?2")
+    .bind('[null, {"bytes": 9, "name": "real.txt"}]', REQUEST_TOKEN)
+    .run();
+
+  /** @type {Array<{text: string}>} */
+  const sent = [];
+  const email = {
+    /** @param {unknown} message */
+    send: async (message) => {
+      sent.push(/** @type {any} */ (message));
+      return { messageId: `msg-${sent.length}` };
+    },
+  };
+  /** @param {string} accountId */
+  const owner = async (accountId) => ({ id: accountId, name: "Mixed", email: "m@example.com" });
+  const result = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW,
+  });
+  assert.deepEqual(result, { sent: 1, skipped: 0 });
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /real\.txt/);
+
+  const reader = createD1LinkStore(db);
+  const row = await reader.requests.get(REQUEST_TOKEN);
+  assert.ok(row);
+  assert.equal(row.pendingUploads, "[]", "the junk entry left with the real one");
+  assert.deepEqual(await reader.requests.listPendingDigests(), [], "nothing is re-listed");
+  const second = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW + 1000,
+  });
+  assert.equal(second.sent, 0, "the real arrival is not mailed a second time");
+  assert.equal(sent.length, 1);
+});
+
+test("a queue deeper than one json_remove call is still fully drained", async () => {
+  // drive#684 (in-run review): SQLITE_MAX_FUNCTION_ARG bounds one json_remove
+  // call, so a link that filled its whole queue must be cleared in chunks.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-deep", "deep@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-deep", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  // Twice the chunk size, so the clear takes more than one UPDATE.
+  for (let index = 0; index < 130; index += 1) {
+    await links.requests.recordArrival(REQUEST_TOKEN, `file-${index}.bin`, index + 1);
+  }
+  /** @type {Array<{text: string}>} */
+  const sent = [];
+  const email = {
+    /** @param {unknown} message */
+    send: async (message) => {
+      sent.push(/** @type {any} */ (message));
+      return { messageId: `msg-${sent.length}` };
+    },
+  };
+  /** @param {string} accountId */
+  const owner = async (accountId) => ({ id: accountId, name: "Deep", email: "d@example.com" });
+  const result = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW,
+  });
+  assert.deepEqual(result, { sent: 1, skipped: 0 });
+  assert.equal(sent.length, 1);
+  const reader = createD1LinkStore(db);
+  const row = await reader.requests.get(REQUEST_TOKEN);
+  assert.ok(row);
+  assert.equal(row.pendingUploads, "[]", "every arrival was cleared, none left at the front");
+});
+
+test("a link mailed twenty hours ago is not mailed again by an extra trip", async () => {
+  // drive#684 (in-run review): the one-a-day bound must not rest on the
+  // schedule alone. The shared reconcile trip running twice in a day would
+  // otherwise mail the same link twice, and the second mail would list the
+  // arrivals the first had not cleared yet.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-twice", "twice@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-twice", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  await links.requests.recordArrival(REQUEST_TOKEN, "first.txt", 3);
+  /** @type {Array<{text: string}>} */
+  const sent = [];
+  const email = {
+    /** @param {unknown} message */
+    send: async (message) => {
+      sent.push(/** @type {any} */ (message));
+      return { messageId: `msg-${sent.length}` };
+    },
+  };
+  /** @param {string} accountId */
+  const owner = async (accountId) => ({ id: accountId, name: "Twice", email: "t@example.com" });
+  const first = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW,
+  });
+  assert.deepEqual(first, { sent: 1, skipped: 0 });
+
+  // An extra trip two hours later finds a new arrival on a stamped link.
+  await links.requests.recordArrival(REQUEST_TOKEN, "second.txt", 2);
+  const soon = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW + 2 * 60 * 60 * 1000,
+  });
+  assert.deepEqual(soon, { sent: 0, skipped: 0 }, "the stamp holds the second trip off");
+  assert.equal(sent.length, 1);
+
+  // Twenty-four hours later it goes.
+  const next = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW + 24 * 60 * 60 * 1000,
+  });
+  assert.deepEqual(next, { sent: 1, skipped: 0 });
+  assert.equal(sent.length, 2, "the next day's digest carries the held-back arrival");
+  assert.match(sent[1].text, /second\.txt/);
+});
+
 test("an arrival accepted during the send stays queued for the next digest", async () => {
   // drive#684: the digest reads the queue, sends, then clears. A drop that
   // lands in that window must survive — the clear removes only the arrivals
@@ -440,10 +638,10 @@ test("an arrival accepted during the send stays queued for the next digest", asy
     email,
     mailFrom: "drive@example.com",
     owner,
-    now: NOW + 1000,
+    now: NOW + 24 * 60 * 60 * 1000,
   });
   assert.deepEqual(second, { sent: 1, skipped: 0 });
-  assert.match(sent[1].text, /raced\.txt/, "the next run mails the raced drop");
+  assert.match(sent[1].text, /raced\.txt/, "the next day's run mails the raced drop");
   const after = await reader.requests.get(REQUEST_TOKEN);
   assert.ok(after);
   assert.equal(after.pendingUploads, "[]");

@@ -1256,7 +1256,9 @@ export default {
         // It shares the close cron's settings and its fire-and-forget shape:
         // the reconcile trip should not wait on a mail send, and an idle
         // deployment with no MAIL_FROM queues nothing rather than failing
-        // every night.
+        // every night. The no-sender case is logged once a night, so a
+        // deployment that lost its MAIL_FROM says so here instead of keeping
+        // every arrival queued with nothing in the log.
         if (secrets.MAIL_FROM) {
           context.waitUntil(
             sendArrivalDigests(env.DRIVE_DB, {
@@ -1275,6 +1277,8 @@ export default {
                 console.error(`upload arrival digest failed: ${String(error)}`);
               }),
           );
+        } else {
+          console.warn("upload arrival digest skipped: this deployment has no MAIL_FROM");
         }
         context.waitUntil(
           runAccountCloseCron({

@@ -585,6 +585,30 @@ test("an account with no display name is left unseen, never its address", async 
   assert.equal(body.owner, "", "a blank name hides the line rather than showing the address");
 });
 
+test("a display name that looks like an address is kept off the page", async () => {
+  // drive#684 (in-run review): a signup flow that seeded `name` from the
+  // email leaves an address in the name column. It is not a display name, so
+  // the info route hides it rather than publishing it to a stranger.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  /** @param {string} accountId */
+  const owner = async (accountId) => ({
+    id: accountId,
+    name: "nish@example.com",
+    email: "nish@example.com",
+  });
+  const response = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.open, true);
+  assert.equal(body.owner, "", "an address in the name column is not shown as a name");
+});
+
 test("a failing owner read does not close the public upload page", async () => {
   // drive#684: the name is a label. A read that throws degrades to no name and
   // the stranger can still upload; it must not turn the info route into a 500.

@@ -315,7 +315,9 @@ async function open() {
   // Who the drive belongs to (drive issue #684). The info route sends the
   // owner's display name; a deployment that cannot read it sends an empty
   // string, and the line stays hidden rather than showing a blank label.
-  if (info.owner) {
+  // An address in the name column is not a display name either, so the page
+  // drops it the same way instead of publishing it to a stranger.
+  if (info.owner && !info.owner.includes("@")) {
     ownerEl.textContent = info.owner;
     ownerLine.hidden = false;
   }
