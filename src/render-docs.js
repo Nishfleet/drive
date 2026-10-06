@@ -89,6 +89,50 @@ export function cliUsageText() {
 }
 
 /**
+ * The subcommands the CLI runs, from cmd/drive/main.go's `commands` table:
+ * the one place a subcommand exists, because the dispatch reads the table and
+ * the Go gates hold the agent notes and the help text to it. main answers
+ * `version` and `help` before the table, so they are answers a page may show
+ * as commands. Read here, so a docs gate and a Go gate cannot end up with
+ * two parses of one table.
+ * @returns {ReadonlySet<string>}
+ */
+export function cliSubcommands() {
+  const src = readFileSync(MAIN_GO, "utf8");
+  const start = src.indexOf("var commands = map[string]func([]string) error{");
+  if (start < 0) {
+    throw new Error("cmd/drive/main.go has no `var commands` table to read");
+  }
+  // Brace-count to the map's own close: a command value may carry braces of
+  // its own, and stopping at the first `}` would silently drop every command
+  // after it. The name pattern is the one the docs mention, digits and hyphens
+  // included, so a subcommand the CLI gains cannot be visible to one parse and
+  // invisible to the other.
+  const open = src.indexOf("{", start);
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close < 0) {
+    throw new Error("cmd/drive/main.go's command table has no closing brace");
+  }
+  const body = src.slice(open, close);
+  const names = [...body.matchAll(/"([a-z0-9-]+)":/g)].map((m) => m[1]);
+  if (names.length < 10) {
+    throw new Error("cmd/drive/main.go's command table parsed to fewer than 10 subcommands");
+  }
+  return new Set([...names, "version", "help"]);
+}
+
+/**
  * Write the eval's CLI-help snapshot from main.go, so the eval's context and
  * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
  * it directly, and the eval's own gate compares the committed file to the same
