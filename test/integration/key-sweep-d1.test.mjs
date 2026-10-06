@@ -5,7 +5,7 @@
 // so an expired row or a revoke whose vendor call failed leaves a key the
 // storage server still enforces. The sweep walks exactly those dead rows,
 // removes their vendor keys and stamps each row as accounted for
-// (migrations/drive/0031's `vendor_key_removed_at`), then records how many
+// (migrations/drive/0033's `vendor_key_removed_at`), then records how many
 // keys the vendor answers with.
 //
 // This proof runs the real store (createD1DeviceStore over the real

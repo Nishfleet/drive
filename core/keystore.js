@@ -278,6 +278,17 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * The device a code belongs to, for the approve page's intro (drive#558);
+     * the page reads it from whichever store the route was built with, so this
+     * stand-in forwards to the same inner store the other device methods do.
+     * @param {string} userCode
+     * @returns {Promise<{name: string}|null>}
+     */
+    async describeUserCode(userCode) {
+      return signin.describeUserCode(userCode);
+    },
+
+    /**
      * The CLI's poll. `pending` until the page approves, then the device token
      * (shown once) and the account. A code is consumed by the poll that
      * returns the token, so a stolen device code cannot mint a second token.

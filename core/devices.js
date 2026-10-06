@@ -908,7 +908,7 @@ export function createD1DeviceStore(db, options = {}) {
      * The rows whose vendor key may still exist while the row itself is
      * dead: revoked rows, and rows whose hour has passed (the vendor's key
      * has no hour of its own — 0012 put the hour on our row only). A row the
-     * sweep has already stamped (0031 `vendor_key_removed_at`) is left out,
+     * sweep has already stamped (0033 `vendor_key_removed_at`) is left out,
      * so one vendor key is removed at most once and the sweep's work cannot
      * grow with every key the account ever held. Rows with no vendor key id
      * (the stand-in credential, which never reached the vendor) are left out
