@@ -986,7 +986,6 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
 // held to the same figure. The caller divides, in the one place the price's
 // divisor lives (MINUTES_PER_MONTH); this read stays the meter's own numbers.
 const MONTH_USAGE_THROUGH_SQL = `SELECT
-
     COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(download_bytes), 0) AS download_bytes

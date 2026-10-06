@@ -10,8 +10,7 @@
 // the page sets and the CLI prints arrives finished in the summary's `labels`
 // (core/billing.js). This module holds only the words, so a dollar can never be
 // written down twice.
-import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
-import { MINUTE_MS } from "../core/meter.js";
+import { BILLING_CONFIG, MINUTE_MS, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
 /**
  * How often the page re-reads the month while it is open and visible. The

@@ -55,7 +55,7 @@ import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 // A minute is spelled MINUTE_MS here rather than imported from core/meter.js
 // for the same reason the GB below is declared here: the constant's real home is
 // behind this module in the import graph, so importing it would close a cycle.
-const MINUTE_MS = 60_000;
+export const MINUTE_MS = 60_000;
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
 // The month a "kept all month" quote is worked over when the caller names
 // none. A size held all month bills the same in every month length, so the
