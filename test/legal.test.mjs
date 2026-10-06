@@ -310,6 +310,11 @@ test("the status line keeps its painted height when the health answer lands", ()
   assert.ok(lock < script.indexOf('fetch("/api/health"'), "the height is pinned before the fetch");
   const texts = [...script.matchAll(/line\.textContent =\s*"([^"]*)"/g)].map((m) => m[1]);
   assert.ok(texts.length >= 3, "the three answers are read from the script");
+  assert.equal(
+    script.split("line.textContent =").length - 1,
+    texts.length,
+    "every answer is a literal this test can measure",
+  );
   const fallback = page.match(/<p id="status-line"[^>]*>([\s\S]*?)<\/p>/);
   assert.ok(fallback, "the page paints a default status line");
   const painted = fallback[1].replace(/<[^>]+>/g, "");
