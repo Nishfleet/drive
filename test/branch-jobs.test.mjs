@@ -407,12 +407,42 @@ test("approve plan lives in KV, not in the D1 job_cursor", async () => {
   assert.equal(cursor.added, undefined);
   assert.equal(cursor.branchFp, undefined);
   assert.equal(cursor.sourceFp, undefined);
+  // The cursor carries the list lengths, so a batch knows which list is next
+  // and where in it to resume without reading the plan (drive#766).
+  assert.equal(cursor.changedN, 1);
+  assert.equal(cursor.addedN, 0);
   assert.ok(JSON.stringify(cursor).length < 200, JSON.stringify(cursor));
-  const planJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
-  assert.ok(planJson);
-  const plan = JSON.parse(planJson);
-  assert.ok(Array.isArray(plan.changed) && plan.changed.includes("a.txt"));
+  // The plan is append-only parts, one line per path, so a batch reads the
+  // slice it applies instead of rewriting the whole plan every batch
+  // (drive#766). One part, one line: nothing carries the whole plan.
+  const planChanged = await assembleOrNull(
+    snapshots,
+    `${snapshotKey(ACCOUNT, "work")}/approve-plan.changed`,
+  );
+  assert.deepEqual(planChanged, ["a.txt"]);
+  const planAdded = await assembleOrNull(
+    snapshots,
+    `${snapshotKey(ACCOUNT, "work")}/approve-plan.added`,
+  );
+  assert.equal(planAdded, null, "an empty list writes no parts at all");
+  const wholePlan = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
+  assert.equal(wholePlan, null, "the whole plan is never written as one value again");
 });
+
+/**
+ * The lines a job's parts hold, or null when the store has none. A missing
+ * `assemble` reads as none, so the assertion below reads the same on a store
+ * that does not slice.
+ * @param {import("../src/branches.js").SnapshotStore} snapshots
+ * @param {string} key
+ * @returns {Promise<string[]|null>}
+ */
+async function assembleOrNull(snapshots, key) {
+  if (typeof snapshots.assemble !== "function") {
+    return null;
+  }
+  return snapshots.assemble(key);
+}
 
 test("approve clash persists job_error on the row the poll reads", async () => {
   const { raw, scoped, db, snapshots } = await driven();

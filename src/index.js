@@ -1507,6 +1507,7 @@ const handler = {
               scoped,
               { id: job.accountId },
               job.branchId,
+              job.cursor,
             );
             return { continue: result.done === false };
           },

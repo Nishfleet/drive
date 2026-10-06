@@ -266,6 +266,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That folder has too many files to branch.",
     next: "Branch a smaller folder, or split the files first.",
   }),
+  // A branch job that never finished and that the caller gave up on
+  // (drive#766). The copy this had made is gone and the name is free again, so
+  // the next step is the same branch from the start rather than a repair.
+  "branch-cancelled": Object.freeze({
+    what: "That branch job was cancelled and its copy removed.",
+    next: "Branch the folder again to start over.",
+  }),
   // An agent's own rewind is past the drive's 30-day window, so the copy this
   // would undo and the old versions behind it are both gone (issue #13, "the
   // 30-day undo"). Nothing was changed: the original folder is as it is.

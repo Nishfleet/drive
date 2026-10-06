@@ -63,6 +63,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Branch jobs (drive#563): progress and stored counts, plus the unique
   // index that covers in-flight approve/create states.
   "drive/0030_branch_jobs.sql",
+  // The branch job generation a queue message rides on (drive issue #766), so
+  // a redelivered message from an earlier claim is a no-op. Expand only, one
+  // column with a DEFAULT.
+  "drive/0031_branch_job_generation.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.

@@ -39,8 +39,13 @@ export const BRANCH_QUEUE_KINDS = Object.freeze({
 
 /**
  * @typedef {{send(body: unknown): Promise<unknown>, sendBatch?(messages: Array<{body: unknown}>): Promise<unknown>}} BranchJobsQueue
- * @typedef {{kind: string, accountId: string, branchId: number, name: string}} BranchJob
+ * @typedef {{kind: string, accountId: string, branchId: number, name: string, cursor?: number}} BranchJob
  */
+
+/** A message sent before the route and consumer could carry a cursor is 0,
+ * and it means "no cursor": a store that only ever had one message shape
+ * produces these, and the consumer runs them as before (drive#766). */
+export const BRANCH_JOB_CURSOR_UNSET = 0;
 
 /**
  * The bound queue producer, or null when the Worker has none.
@@ -82,12 +87,54 @@ export function branchJob(body) {
   if (!Number.isInteger(branchId) || branchId < 1) {
     throw new TypeError(`a branch job needs a branch id, got ${String(raw.branchId)}`);
   }
+  // The cursor is the row's own job generation, not a counter this file keeps.
+  // It rides the message so a redelivery that arrives after the row has moved
+  // on can be recognised and dropped, instead of running a batch of work the
+  // row already did (drive#766). A message without one is read as generation
+  // 0, which is what every message looked like before this change, so an old
+  // queue's in-flight messages still run.
+  const cursorRaw = raw.cursor;
+  const cursor =
+    cursorRaw === undefined || cursorRaw === null ? BRANCH_JOB_CURSOR_UNSET : Number(cursorRaw);
+  if (!Number.isSafeInteger(cursor) || cursor < 0) {
+    throw new TypeError(`a branch job cursor must be a whole number, got ${String(cursorRaw)}`);
+  }
   return {
     kind: /** @type {string} */ (raw.kind),
     accountId: raw.accountId,
     branchId,
     name: raw.name,
+    cursor,
   };
+}
+
+/**
+ * Whether this message still describes work the row wants done (drive#766).
+ *
+ * A redelivery is answered with the generation the row is on now. If the
+ * message's own cursor is behind, the row has already moved on - it was
+ * retried after it succeeded, or after the row was cancelled and re-claimed -
+ * so the batch would repeat work against a cursor that has moved. Such a
+ * message is a no-op: it is acked and nothing else happens.
+ *
+ * A message with no cursor, or a row with none, cannot be checked this way, so
+ * it runs. That is the earlier behaviour and it is the safe side to fail on:
+ * the batch's own `WHERE state = ?` guards stop it writing over a newer job.
+ *
+ * @param {BranchJob} job
+ * @param {number|undefined|null} rowCursor the row's current generation
+ * @returns {boolean} false when the message is stale
+ */
+export function branchJobIsCurrent(job, rowCursor) {
+  const now = Number(rowCursor);
+  if (!Number.isSafeInteger(now) || now < 1) {
+    return true;
+  }
+  const sent = Number(job.cursor);
+  if (!Number.isSafeInteger(sent) || sent === BRANCH_JOB_CURSOR_UNSET) {
+    return true;
+  }
+  return sent >= now;
 }
 
 /**
@@ -114,27 +161,42 @@ export async function sendBranchJob(queue, job) {
  * asks for a retry when it threw. A batch that is not the last one sends the
  * next message itself (the processor returns `{continue: true}`), so one
  * HTTP request never fans the whole folder out in one go.
+ *
+ * The ack happens before the continuation is enqueued, so a chain that fails
+ * half way cannot leave two messages for one batch of work (drive#766). The
+ * delivery that would have been the duplicate is dropped by
+ * `branchJobIsCurrent`, which the processor uses with the row's own cursor.
+ *
  * @param {{messages: readonly {body: unknown, ack(): void, retry(): void, attempts?: number}[]}} batch
- * @param {(job: BranchJob) => Promise<{continue?: boolean}>} process
+ * @param {(job: BranchJob) => Promise<{continue?: boolean, stale?: boolean}>} process
  * @param {BranchJobsQueue|null} [queue] the producer, so a batch that has more
  *   work can enqueue the next one
  * @param {(body: unknown, error: unknown) => Promise<unknown>} [onExhausted]
  *   runs when retries are used up, so a stuck creating/approving row does not
  *   occupy the name forever
- * @returns {Promise<{acked: number, retried: number}>}
+ * @returns {Promise<{acked: number, retried: number, stale: number}>}
  */
 export async function handleBranchJobs(batch, process, queue = null, onExhausted = undefined) {
   let acked = 0;
   let retried = 0;
+  let stale = 0;
   for (const message of batch.messages) {
     try {
       const job = branchJob(message.body);
+      // Ack first, then enqueue. The enqueue used to come first, so a batch
+      // that threw in the middle of a chain left a message behind that the
+      // retry then ran a second time (drive#766). The ack cannot be lost: a
+      // message the platform redelivers after this point carries the row's
+      // own cursor, and `branchJobIsCurrent` is what drops it.
       const result = await process(job);
+      message.ack();
+      acked += 1;
       if (result?.continue && queue) {
         await sendBranchJob(queue, job);
       }
-      message.ack();
-      acked += 1;
+      if (result?.stale === true) {
+        stale += 1;
+      }
     } catch (error) {
       const body = /** @type {{kind?: unknown, accountId?: unknown, name?: unknown}|null} */ (
         message.body
@@ -165,5 +227,5 @@ export async function handleBranchJobs(batch, process, queue = null, onExhausted
       retried += 1;
     }
   }
-  return { acked, retried };
+  return { acked, retried, stale };
 }

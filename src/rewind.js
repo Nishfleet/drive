@@ -43,6 +43,7 @@ import {
   listBranches,
   readSnapshot,
   readSnapshotObject,
+  resumeBranchJob,
 } from "./branches.js";
 
 /** The route family the rewind screen and the CLI read. */
@@ -211,12 +212,19 @@ export async function rewindBranchRow(db, snapshots, store, account, name) {
  * @param {number} now epoch milliseconds
  * @param {{send?: Function, sendBatch?: Function}|null} [queue]
  * @returns {Promise<{error: string, status: number, rewind?: RewindPreview}
- *   |{name: string, state: string, rewound: number, changedBy: string, progress?: {kind: string, done: number, total: number}}>}
+ *   |import("./branches.js").BranchJobResult>}
  */
 export async function rewindBranch(db, snapshots, store, account, name, now, queue = null) {
   const branch = await rewindBranchRow(db, snapshots, store, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
+  }
+  // A rewind that is already running resumes from its own cursor, before any
+  // of the checks below (drive#766). The preview that guards a fresh rewind
+  // needs an open branch, so a stuck `rewinding` row answered "that branch is
+  // not open" for as long as it was stuck, and there was no way to finish it.
+  if (branch.state === "rewinding" && branch.jobKind === "rewind") {
+    return resumeBranchJob(db, snapshots, store, account, branch, queue, "rewind");
   }
   if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
     console.error?.(`rewind refused unavailable snapshot for row ${branch.id}`);

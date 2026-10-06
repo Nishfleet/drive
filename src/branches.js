@@ -51,6 +51,7 @@ import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
+import { branchJobIsCurrent } from "./branch-jobs.js";
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
@@ -93,7 +94,43 @@ export const BRANCH_ACTIVE_STATES = Object.freeze([
 
 /** @typedef {{kind: string, done: number, total: number}} BranchProgress */
 /** @typedef {{send?: Function, sendBatch?: Function}|null} BranchQueue */
-/** @typedef {{done?: boolean, error?: string, status?: number, name?: string, state?: string, files?: number | string[], removed?: number, applied?: {added: string[], changed: string[], removed: string[]}, progress?: BranchProgress, sourcePrefix?: string, branchPrefix?: string, createdAt?: string, changedBy?: string}} BranchJobResult */
+/** @typedef {{done?: boolean, error?: string, status?: number, name?: string, state?: string, files?: number | string[], removed?: number, rewound?: number, applied?: {added: string[], changed: string[], removed: string[]}, progress?: BranchProgress, sourcePrefix?: string, branchPrefix?: string, createdAt?: string, changedBy?: string}} BranchJobResult */
+
+/**
+ * The lines a Map-backed job's parts hold, in line order, or null when the key
+ * holds no part at all. The in-memory store and its tests share this so the two
+ * stores answer a slice the same way.
+ * @param {Map<string, string>} values
+ * @param {string} key
+ * @returns {Promise<string[]|null>}
+ */
+async function orderedJobParts(values, key) {
+  const prefix = jobPartsPrefix(key);
+  /** @type {Map<number, string>} */
+  const parts = new Map();
+  for (const [name, value] of values) {
+    if (!name.startsWith(prefix)) {
+      continue;
+    }
+    const line = jobPartLine(key, name);
+    if (line !== null) {
+      parts.set(line, value);
+    }
+  }
+  if (parts.size === 0) {
+    return null;
+  }
+  /** @type {string[]} */
+  const ordered = [];
+  for (let line = 0; line < parts.size; line += 1) {
+    const value = parts.get(line);
+    if (value === undefined) {
+      throw new Error(`the job parts under ${key} are missing line ${line}`);
+    }
+    ordered.push(value);
+  }
+  return ordered;
+}
 
 /**
  * The snapshot store (drive issue #252, phase 2 of #157): the JSON for a
@@ -119,6 +156,24 @@ export const BRANCH_ACTIVE_STATES = Object.freeze([
  *   JSON back, or null when the key holds nothing.
  * @property {(key: string) => Promise<void>} [delete] Removes the value and
  *   any parts it was split into, so a job's scratch keys do not outlive it.
+ * @property {(key: string, lines: string[]) => Promise<number|null>} [appendParts]
+ *   Appends lines under `key` without reading or rewriting what is already
+ *   there, and answers how many lines the key then holds, or null when the
+ *   store cannot append. This is what lets a create batch write only its own
+ *   delta (drive#766): a batch of 80 files makes one write, not one write of the
+ *   whole snapshot, and no batch reads a snapshot it did not write.
+ * @property {(key: string, start: number, limit: number) => Promise<{lines: string[], next: number}|null>} [readParts]
+ *   Reads at most `limit` lines of `key` from the line `start`, and answers the
+ *   line the next slice begins at, or null when the store cannot slice. This is
+ *   what lets an approve batch read one slice of the plan instead of the whole
+ *   of it (drive#766).
+ * @property {(key: string) => Promise<string[]|null>} [assemble] Reads what
+ *   `appendParts` wrote, part by part, as the lines it holds, or null when the
+ *   key holds no part. The snapshot is assembled once, at the end of the job, by
+ *   `assembleSnapshot`.
+ * @property {(key: string) => Promise<number>} [deleteParts] Sweeps the parts
+ *   `appendParts` wrote under `key`, once they have been folded into the one
+ *   value the job's last batch wrote. Returns how many keys it removed.
  */
 
 /** The prefix every snapshot key carries, so one account's snapshot is never
@@ -144,10 +199,50 @@ export function snapshotKey(account, name) {
 /** KV key for the approve plan (path lists). The lists of a large branch do
  * not fit in `job_cursor` (D1's 1 MiB row limit, the same reason snapshots
  * moved to KV in drive#252). The D1 cursor only stores `{ready, addedI, …}`.
+ *
+ * The plan is a list of paths, so it is written and read as append-only parts
+ * under this key (drive#766) instead of as one value rewritten whole by every
+ * batch. Each batch reads only the slice it is about to apply and appends only
+ * what it applied, so a batch's KV cost is the size of its own slice rather
+ * than the size of the plan.
+ *
  * @param {string} key the branch's snapshot key
  */
 function approvePlanKey(key) {
   return `${key}/approve-plan`;
+}
+
+/** The part prefix a job appends a run of lines under, under one parent key.
+ * A part name is `<parent>.a<index>.<line>`, so `partLine` reads the line
+ * index back out of a name and the name itself says which job wrote it.
+ * @param {string} key the parent key
+ * @returns {string}
+ */
+function jobPartsPrefix(key) {
+  return `${key}.a`;
+}
+
+/**
+ * The line index a part name carries, or null when the name is not a part of
+ * this parent key. A name that is not ours is never read and never deleted,
+ * so a scratch key written by an earlier version (or by another job) cannot be
+ * swept by this one.
+ * @param {string} key the parent key
+ * @param {string} name a key the namespace listed under the parent
+ * @returns {number|null}
+ */
+function jobPartLine(key, name) {
+  const rest = name.slice(jobPartsPrefix(key).length);
+  const cut = rest.lastIndexOf(".");
+  if (cut <= 0) {
+    return null;
+  }
+  const line = Number(rest.slice(cut + 1));
+  const head = rest.slice(0, cut);
+  if (!Number.isSafeInteger(line) || line < 0 || !/^\d+$/.test(head)) {
+    return null;
+  }
+  return line;
 }
 
 /** Remove a job's scratch key once the job is done; a store without delete
@@ -417,6 +512,147 @@ export function createKvSnapshotStore(kv, options = {}) {
       // snapshot size without reading the value back.
       return bytes.length;
     },
+    /**
+     * Append this run of lines as parts, without reading or rewriting any
+     * part already under the key (drive#766).
+     *
+     * Workers KV allows one write per key per second, and a create of a
+     * 100,000-file branch is 1,250 batches. A batch that rewrote the whole
+     * snapshot made ~11 MiB of read and write traffic per batch on the same
+     * key, so the copy hit the write rate limit long before it hit its file
+     * cap. This writes each line under its own part key: one small write per
+     * line, never a write to a key another batch is writing, and nothing to
+     * read. The parts are named by their line index and sorted by it, so the
+     * order they were appended in is the order they are read back in.
+     *
+     * The count comes from the namespace's own listing, so the answer is what
+     * a reader will find. A namespace that cannot list falls back to the
+     * highest index it can see by probing, and a namespace that can do
+     * neither answers null: the caller then has to read the parts back, which
+     * is the old shape and is said out loud rather than guessed at.
+     *
+     * @param {string} key
+     * @param {string[]} lines
+     * @returns {Promise<number|null>}
+     */
+    async appendParts(key, lines) {
+      if (!Array.isArray(lines) || lines.length === 0) {
+        return 0;
+      }
+      if (typeof kv.list !== "function") {
+        return null;
+      }
+      const prefix = jobPartsPrefix(key);
+      const listed = await kv.list({ prefix });
+      const names = Array.isArray(listed?.keys) ? listed.keys : [];
+      let next = 0;
+      for (const entry of names) {
+        const name = typeof entry === "string" ? entry : entry?.name;
+        if (typeof name !== "string" || !name.startsWith(prefix)) {
+          continue;
+        }
+        const line = jobPartLine(key, name);
+        if (line !== null && line + 1 > next) {
+          next = line + 1;
+        }
+      }
+      for (const [offset, line] of lines.entries()) {
+        await kv.put(`${prefix}${next + offset}.${next + offset}`, line);
+      }
+      return next + lines.length;
+    },
+    /**
+     * Read the parts under `key` from the line `start`, up to `limit` lines.
+     * The names are listed once and only the parts this slice covers are read,
+     * so a batch pays for its own slice and not for the whole plan
+     * (drive#766).
+     * @param {string} key
+     * @param {number} start
+     * @param {number} limit
+     * @returns {Promise<{lines: string[], next: number}|null>}
+     */
+    async readParts(key, start, limit) {
+      const prefix = jobPartsPrefix(key);
+      const listed = typeof kv.list === "function" ? await kv.list({ prefix }) : null;
+      const names = Array.isArray(listed?.keys) ? listed.keys : [];
+      /** @type {Array<{line: number, name: string}>} */
+      const parts = [];
+      for (const entry of names) {
+        const name = typeof entry === "string" ? entry : entry?.name;
+        if (typeof name !== "string" || !name.startsWith(prefix)) {
+          continue;
+        }
+        const line = jobPartLine(key, name);
+        if (line !== null) {
+          parts.push({ line, name });
+        }
+      }
+      if (parts.length === 0) {
+        return null;
+      }
+      parts.sort((a, b) => a.line - b.line);
+      const wanted = parts.filter((part) => part.line >= start).slice(0, Math.max(0, limit));
+      /** @type {string[]} */
+      const out = [];
+      for (const part of wanted) {
+        const value = await kv.get(part.name);
+        if (value === null) {
+          throw new Error(
+            `the job parts under ${key} name line ${part.line}, and the namespace does not have it`,
+          );
+        }
+        out.push(value);
+      }
+      return { lines: out, next: wanted.length > 0 ? wanted[wanted.length - 1].line + 1 : start };
+    },
+    /**
+     * Read the parts under `key` in line order, without joining them. One
+     * entry per line, and a part the namespace does not hold is an error
+     * rather than a shorter read, because a short read would assemble a
+     * snapshot missing files and a diff would call them removed.
+     * @param {string} key
+     * @returns {Promise<string[]|null>}
+     */
+    async assemble(key) {
+      if (typeof kv.list !== "function") {
+        return null;
+      }
+      const prefix = jobPartsPrefix(key);
+      const listed = await kv.list({ prefix });
+      const names = Array.isArray(listed?.keys) ? listed.keys : [];
+      /** @type {Map<number, string>} */
+      const parts = new Map();
+      for (const entry of names) {
+        const name = typeof entry === "string" ? entry : entry?.name;
+        if (typeof name !== "string" || !name.startsWith(prefix)) {
+          continue;
+        }
+        const line = jobPartLine(key, name);
+        if (line === null) {
+          continue;
+        }
+        const value = await kv.get(name);
+        if (value === null) {
+          throw new Error(
+            `the job parts under ${key} name line ${line}, and the namespace does not have it`,
+          );
+        }
+        parts.set(line, value);
+      }
+      if (parts.size === 0) {
+        return null;
+      }
+      /** @type {string[]} */
+      const ordered = [];
+      for (let line = 0; line < parts.size; line += 1) {
+        const value = parts.get(line);
+        if (value === undefined) {
+          throw new Error(`the job parts under ${key} are missing line ${line}`);
+        }
+        ordered.push(value);
+      }
+      return ordered;
+    },
     async get(key) {
       const raw = await kv.get(key);
       if (raw === null) {
@@ -465,9 +701,41 @@ export function createKvSnapshotStore(kv, options = {}) {
       }
       return json;
     },
+    async deleteParts(key) {
+      const prefix = jobPartsPrefix(key);
+      if (typeof kv.list !== "function") {
+        return 0;
+      }
+      const listed = await kv.list({ prefix });
+      const names = Array.isArray(listed?.keys) ? listed.keys : [];
+      let swept = 0;
+      for (const entry of names) {
+        const name = typeof entry === "string" ? entry : entry?.name;
+        if (typeof name !== "string" || !name.startsWith(prefix)) {
+          continue;
+        }
+        await kv.delete(name);
+        swept += 1;
+      }
+      return swept;
+    },
     async delete(key) {
       const raw = await kv.get(key);
       await kv.delete(key);
+      if (typeof kv.list === "function") {
+        // The append-only parts of a create snapshot or an approve plan sit
+        // beside the key under one prefix (drive#766), and they are what the
+        // job spent its writes on, so clearing them is part of removing it.
+        const listed = await kv.list({ prefix: jobPartsPrefix(key) });
+        const names = Array.isArray(listed?.keys) ? listed.keys : [];
+        for (const entry of names) {
+          const name = typeof entry === "string" ? entry : entry?.name;
+          if (typeof name !== "string" || !name.startsWith(jobPartsPrefix(key))) {
+            continue;
+          }
+          await kv.delete(name);
+        }
+      }
       if (raw === null) {
         return;
       }
@@ -510,9 +778,57 @@ export function createMemorySnapshotStore(values = new Map()) {
     async get(key) {
       return values.has(key) ? /** @type {string} */ (values.get(key)) : null;
     },
+    async deleteParts(key) {
+      const prefix = jobPartsPrefix(key);
+      let swept = 0;
+      for (const name of [...values.keys()]) {
+        if (name.startsWith(prefix)) {
+          values.delete(name);
+          swept += 1;
+        }
+      }
+      return swept;
+    },
     /** @param {string} key */
     async delete(key) {
       values.delete(key);
+    },
+    /** @param {string} key @param {string[]} lines */
+    async appendParts(key, lines) {
+      const prefix = jobPartsPrefix(key);
+      let next = 0;
+      for (const name of values.keys()) {
+        if (name.startsWith(prefix)) {
+          const line = jobPartLine(key, name);
+          if (line !== null && line + 1 > next) {
+            next = line + 1;
+          }
+        }
+      }
+      for (const [offset, line] of lines.entries()) {
+        values.set(`${prefix}${next + offset}.${next + offset}`, line);
+      }
+      return next + lines.length;
+    },
+    /**
+     * Read the parts under `key` from the line `start`, up to `limit` lines.
+     * @param {string} key
+     * @param {number} start
+     * @param {number} limit
+     * @returns {Promise<{lines: string[], next: number}|null>}
+     */
+    async readParts(key, start, limit) {
+      const all = await orderedJobParts(values, key);
+      if (all === null) {
+        return null;
+      }
+      const first = Math.max(0, Math.min(start, all.length));
+      const lines = all.slice(first, first + Math.max(0, limit));
+      return { lines, next: first + lines.length };
+    },
+    /** @param {string} key */
+    async assemble(key) {
+      return orderedJobParts(values, key);
     },
   };
 }
@@ -524,6 +840,174 @@ export function createMemorySnapshotStore(values = new Map()) {
  */
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read one slice of a job's append-only parts: the lines from `start` for up
+ * to `limit` of them, and where the next slice starts (drive#766).
+ *
+ * A batch needs the lines it is about to apply and nothing else. Reading the
+ * whole list is what made an approve of a 100,000-file branch pay the size of
+ * its plan on every batch, so this reads a window and the caller moves `start`
+ * by what it read. `limit` is counted in parts, and a part is the size one
+ * batch writes, so a slice is one batch's work.
+ *
+ * A store with no parts of its own answers null, and the caller falls back to
+ * the single-value shape its earlier version wrote.
+ *
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the parent key the parts hang off
+ * @param {{start?: number, limit?: number}} [window]
+ * @returns {Promise<{lines: string[], next: number}|null>}
+ */
+async function readJobParts(snapshots, key, window = {}) {
+  const start =
+    Number.isSafeInteger(window.start) && Number(window.start) > 0 ? Number(window.start) : 0;
+  const limit =
+    Number.isSafeInteger(window.limit) && Number(window.limit) > 0
+      ? Number(window.limit)
+      : BRANCH_JOB_BATCH_FILES;
+  if (typeof snapshots.readParts === "function") {
+    return snapshots.readParts(key, start, limit);
+  }
+  return sliceJobParts(snapshots, key, start, limit);
+}
+
+/**
+ * One slice of a job's lines, in line order, or null when the key holds no
+ * part at all. `start` is a line index and `limit` a line count, so a batch
+ * reads exactly the lines it is about to work on (drive#766).
+ *
+ * The slice is cut from the part names before any value is read, so a slice of
+ * the first hundred lines of a 100,000-line plan reads a hundred values, not
+ * all of them. A part the namespace does not hold is an error rather than a
+ * shorter read, because a short read would apply a plan that is missing files.
+ *
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the parent key the parts hang off
+ * @param {number} start
+ * @param {number} limit
+ * @returns {Promise<{lines: string[], next: number}|null>}
+ */
+async function sliceJobParts(snapshots, key, start, limit) {
+  const all = await readAllJobParts(snapshots, key);
+  if (all === null) {
+    return null;
+  }
+  const first = Math.max(0, Math.min(start, all.length));
+  const lines = all.slice(first, first + Math.max(0, limit));
+  return { lines, next: first + lines.length };
+}
+
+/**
+ * Every line a job's parts hold, in line order, or null when it holds none.
+ * Only the batch that ends the job calls this, because it is the one that
+ * needs the whole thing (drive#766).
+ *
+ * @param {SnapshotStore} snapshots
+ * @param {string} key
+ * @returns {Promise<string[]|null>}
+ */
+async function readAllJobParts(snapshots, key) {
+  if (typeof snapshots.assemble !== "function") {
+    return null;
+  }
+  return snapshots.assemble(key);
+}
+
+/**
+ * Append this batch's own lines to a job's parts, and answer the whole count
+ * the parts then hold, or null when the store cannot say (drive#766).
+ *
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the parent key the parts hang off
+ * @param {string[]} lines
+ * @returns {Promise<number|null>}
+ */
+function appendJobParts(snapshots, key, lines) {
+  if (lines.length === 0 || typeof snapshots.appendParts !== "function") {
+    return Promise.resolve(null);
+  }
+  return snapshots.appendParts(key, lines);
+}
+
+/**
+ * The one place a job's parts become a snapshot: assembled once, at the end of
+ * the create, and written as the one value every reader already resolves
+ * (drive#766).
+ *
+ * A store with no parts answers null and the job cannot be finished honestly,
+ * because the files it copied are on disk but the snapshot that records them
+ * is not anywhere. That is a storage fault, not a job that ran out of files,
+ * so it fails the row the same way a failed copy does rather than opening the
+ * branch with a snapshot that has nothing in it.
+ *
+ * @param {SnapshotStore} snapshots
+ * @param {D1Database} db
+ * @param {number} id
+ * @param {string} key
+ * @returns {Promise<number|null>} the snapshot's file count, or null when the
+ *   parts are not there
+ */
+async function assembleSnapshot(snapshots, db, id, key) {
+  if (typeof snapshots.assemble !== "function") {
+    return null;
+  }
+  const lines = await snapshots.assemble(key);
+  if (lines === null) {
+    return null;
+  }
+  /** @type {Record<string, Fingerprint>} */
+  const snapshot = {};
+  for (const line of lines) {
+    if (line === "") {
+      continue;
+    }
+    const entry = parseSnapshotLine(line);
+    if (entry === null) {
+      throw new Error(`branch ${id} wrote a snapshot part that is not a file entry`);
+    }
+    snapshot[entry.rel] = entry.fp;
+  }
+  const saved = await saveSnapshot(db, id, snapshot, snapshots, key);
+  if (!saved.success) {
+    return null;
+  }
+  // The parts have been folded into the one value that `saveSnapshot` wrote, so
+  // they are swept here. Leaving them would keep every file of the branch in the
+  // namespace twice, and the next create of the same key would read them back
+  // (drive#766).
+  if (typeof snapshots.deleteParts === "function") {
+    await snapshots.deleteParts(key);
+  }
+  return Object.keys(snapshot).length;
+}
+
+/**
+ * One line of a create snapshot's parts: the JSON of `{rel, fp}`, or null when
+ * the line is not one. A line is read back as data, never executed, and a line
+ * that is not a file entry is refused here rather than becoming a snapshot key
+ * that came from nowhere.
+ * @param {string} line
+ * @returns {{rel: string, fp: Fingerprint}|null}
+ */
+function parseSnapshotLine(line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch (error) {
+    console.error?.(`a snapshot part is not JSON: ${errorText(error)}`);
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const record = /** @type {Record<string, unknown>} */ (parsed);
+  const fp = record.fp;
+  if (typeof record.rel !== "string" || fp === null || typeof fp !== "object") {
+    return null;
+  }
+  return { rel: record.rel, fp: /** @type {Fingerprint} */ (fp) };
 }
 
 /** The route family the CLI and the Branches screen read. */
@@ -803,30 +1287,28 @@ async function fileFingerprint(store, path, listings) {
 }
 
 /**
- * Copies every file under `source` into `dest` with one server-side copy each,
- * returning the snapshot of the original: the files' `{size, etag, modified}`
- * at the moment the branch was taken. This is what `drive branch` does and
- * what `approve` diffs against.
+ * The create walk, batch by batch: it copies the same files in the same order and
+ * answers the same cursor, and it hands back the files it copied as their own
+ * list instead of folding them into a snapshot object (drive#766).
  *
- * The size comes from the listing that found the file, and is handed to the
- * copy: over S3's 5 GiB single-copy limit a copy has to be a multipart copy,
- * and a folder walk that already holds each file's size must not pay a second
- * request per file to learn it again (drive#157).
- * @param {FileStore} store a scoped store
+ * The difference is the size of the result, not the work. A batch that carried
+ * a snapshot object carried the whole branch's fingerprints through every
+ * batch, so each one read them back out of KV and wrote the lot again. This
+ * returns only this batch's delta, which is what the batch appends.
+ * @param {FileStore} store
  * @param {string} source
  * @param {string} dest
- * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, snapshot?: Record<string, Fingerprint>}} [options]
- * @returns {Promise<{snapshot: Record<string, Fingerprint>, cursor: {current: string, skip: number, pending: string[]}, done: boolean, copied: number}>}
+ * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}}} [options]
+ * @returns {Promise<{copiedFiles: Array<{rel: string, fp: Fingerprint}>, cursor: {current: string, skip: number, pending: string[]}, done: boolean, copied: number}>}
  */
-async function copyFolder(store, source, dest, options = {}) {
+async function copyFolderDelta(store, source, dest, options = {}) {
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
-  /** @type {Record<string, Fingerprint>} */
-  const snapshot = { ...(options.snapshot ?? {}) };
   let current = options.cursor?.current ?? source;
   let skip = options.cursor?.skip ?? 0;
   let pending = [...(options.cursor?.pending ?? [])];
-  let copied = 0;
-  while (current && copied < limit) {
+  /** @type {Array<{rel: string, fp: Fingerprint}>} */
+  const copiedFiles = [];
+  while (current && copiedFiles.length < limit) {
     const entries = await store.list(current);
     /** @type {Array<{rel: string, path: string, size: number, fp: Fingerprint}>} */
     const files = [];
@@ -847,18 +1329,17 @@ async function copyFolder(store, source, dest, options = {}) {
       pending = pending.concat(children);
     }
     const rest = files.slice(skip);
-    const take = Number.isFinite(limit) ? rest.slice(0, limit - copied) : rest;
+    const take = Number.isFinite(limit) ? rest.slice(0, limit - copiedFiles.length) : rest;
     for (const file of take) {
       await store.copy(file.path, `${dest}/${file.rel}`, file.size);
-      snapshot[file.rel] = file.fp;
-      copied += 1;
+      copiedFiles.push({ rel: file.rel, fp: file.fp });
     }
     if (take.length < rest.length) {
       return {
-        snapshot,
+        copiedFiles,
         cursor: { current, skip: skip + take.length, pending },
         done: false,
-        copied,
+        copied: copiedFiles.length,
       };
     }
     current = pending[0] ?? "";
@@ -866,10 +1347,10 @@ async function copyFolder(store, source, dest, options = {}) {
     skip = 0;
   }
   return {
-    snapshot,
+    copiedFiles,
     cursor: { current: current || "", skip: 0, pending },
     done: !current,
-    copied,
+    copied: copiedFiles.length,
   };
 }
 
@@ -1004,7 +1485,7 @@ function toBranch(row, snapshot) {
 const BRANCH_COLUMNS =
   "id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, " +
   "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, job_error, " +
-  "changed_count, source_changed_count";
+  "changed_count, source_changed_count, job_generation";
 
 const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
 
@@ -1131,21 +1612,34 @@ async function writeJobProgress(db, id, fields) {
 }
 
 /**
+ * Send one job message for a claimed row (drive#766).
+ *
+ * The message carries the row's own `job_generation`, so a redelivery of a
+ * message from a claim the row has since moved past can be recognised and
+ * dropped by the consumer. The number is read from the row rather than passed
+ * in, because the claim's own UPDATE is what set it and a caller that guesses
+ * it would guess wrong on a resume.
+ *
+ * A row that has no generation (a row written before this column existed, or a
+ * direct call that never claimed one) sends the message without a cursor, which
+ * the consumer reads as "no cursor" and runs.
  * @param {{send?: Function, sendBatch?: Function}|null|undefined} queue
- * @param {{kind: string, accountId: string, branchId: number, name: string}} job
+ * @param {{kind: string, accountId: string, branchId: number, name: string, cursor?: number}} job
+ * @param {D1Database} [db] the row's table, to read the generation
  * @returns {Promise<boolean>}
  */
-async function enqueueJob(queue, job) {
+async function enqueueJob(queue, job, db) {
   if (!queue) {
     return false;
   }
+  const body = job.cursor === undefined && db ? await withCursor(db, job) : job;
   try {
     if (typeof queue.send === "function") {
-      await queue.send(job);
+      await queue.send(body);
       return true;
     }
     if (typeof queue.sendBatch === "function") {
-      await queue.sendBatch([{ body: job }]);
+      await queue.sendBatch([{ body }]);
       return true;
     }
   } catch (error) {
@@ -1156,12 +1650,42 @@ async function enqueueJob(queue, job) {
 }
 
 /**
+ * The job message with the row's own generation in it, or unchanged when the
+ * row cannot be read (drive#766).
+ *
+ * A row with no generation keeps the message as it was, so an enqueue that
+ * cannot read the row still reaches the queue and the batch runs as it did
+ * before this change.
  * @param {D1Database} db
- * @param {SnapshotStore} snapshots
+ * @param {{branchId: number}} job
+ * @returns {Promise<{cursor?: number}>}
+ */
+async function withCursor(db, job) {
+  try {
+    const row = await db
+      .prepare("SELECT job_generation FROM branches WHERE id = ?1")
+      .bind(job.branchId)
+      .first();
+    const generation = Number(row?.job_generation);
+    return Number.isSafeInteger(generation) && generation >= 1 ? { cursor: generation } : {};
+  } catch (error) {
+    console.error?.(`branch job generation read failed: ${errorText(error)}`);
+    return {};
+  }
+}
+
+/**
+ * The row a batch works on, without its snapshot.
+ *
+ * A batch never reads the snapshot (drive#766). Reading it here made every
+ * batch of a 100,000-file create pull ~11 MiB back out of KV, and the two
+ * batches that do need it - approve's clash checks and the answer a finished
+ * create reports - read it themselves, once, at the point they need it.
+ * @param {D1Database} db
  * @param {{id: string}} account
  * @param {number} id
  */
-async function loadJobRow(db, snapshots, account, id) {
+async function loadJobRow(db, account, id) {
   const row = await db
     .prepare(`SELECT ${BRANCH_COLUMNS} FROM branches WHERE id = ?1 AND account_id = ?2`)
     .bind(id, account.id)
@@ -1169,11 +1693,18 @@ async function loadJobRow(db, snapshots, account, id) {
   if (row === undefined || row === null) {
     return null;
   }
-  return toBranch(row, await readSnapshot(snapshots, String(row.snapshot_key ?? "")));
+  return toBranch(row, {});
 }
 
 /**
  * One create batch: clear leftover prefix keys, then copy the next files.
+ *
+ * Every batch writes only its own delta (drive#766). The 80 files it copies go
+ * into the snapshot as 80 append-only parts under the snapshot key, and the
+ * file count it reports comes off the row it keeps its own count in. A batch
+ * never reads the snapshot back, never rewrites it, and never touches a key
+ * another batch is writing. The snapshot itself is assembled once, from the
+ * parts, in the batch that finishes the copy.
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots
  * @param {FileStore} store
@@ -1190,9 +1721,8 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   const stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
   const doneSoFar = Number(raw?.job_done ?? 0) || 0;
   const phase = typeof stored.phase === "string" ? stored.phase : "clear";
-  const walkKey = createWalkKey(
-    branch.snapshotKey !== "" ? branch.snapshotKey : snapshotKey(account, branch.name),
-  );
+  const key = branch.snapshotKey !== "" ? branch.snapshotKey : snapshotKey(account, branch.name);
+  const walkKey = createWalkKey(key);
   if (phase === "clear") {
     const startAfter = typeof stored.startAfter === "string" ? stored.startAfter : undefined;
     const paths = await store.listKeys(branch.branchPrefix, {
@@ -1226,28 +1756,38 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       console.error?.(`create walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
     }
   }
-  const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
+  const copied = await copyFolderDelta(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
       current: typeof stored.current === "string" ? stored.current : branch.sourcePrefix,
       skip: Number(stored.skip ?? 0) || 0,
       pending,
     },
-    snapshot: branch.snapshot,
   });
-  const files = Object.keys(copied.snapshot).length;
+  // The count is this row's own, moved by what this batch appended. A batch
+  // that dies after appending and before this write re-appends on the retry
+  // and adds the same files twice, so the cursor carries the count the parts
+  // held when this batch read it: the retry reports the count it appended to,
+  // never the count it appended on top of.
+  const partsSoFar = Number(stored.parts ?? 0) || 0;
+  const files = partsSoFar + copied.copied;
   if (files > BRANCH_FILE_LIMIT) {
-    await removePrefixFiles(store, branch.branchPrefix);
     const error = failureMessage("branch-too-large");
-    await failJob(db, branch.id, "discarded", error);
+    await failCreateJob(db, snapshots, store, branch, key, error);
     return { error, status: 400, done: true };
   }
-  const key = snapshotKey(account, branch.name);
-  const saved = await saveSnapshot(db, branch.id, copied.snapshot, snapshots, key);
-  if (!saved.success) {
-    return { error: failureMessage("unexpected"), status: 500, done: true };
-  }
+  await appendJobParts(
+    snapshots,
+    key,
+    copied.copiedFiles.map((file) => JSON.stringify({ rel: file.rel, fp: file.fp })),
+  );
   if (copied.done) {
+    const assembled = await assembleSnapshot(snapshots, db, branch.id, key);
+    if (assembled === null) {
+      const error = failureMessage("storage-down");
+      await failCreateJob(db, snapshots, store, branch, key, error);
+      return { error, status: 500, done: true };
+    }
     try {
       await clearScratch(snapshots, walkKey);
     } catch (error) {
@@ -1255,8 +1795,8 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     }
     await writeJobProgress(db, branch.id, {
       cursor: {},
-      done: files,
-      total: files,
+      done: assembled,
+      total: assembled,
       kind: "",
       state: "open",
       changed: 0,
@@ -1270,8 +1810,8 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       state: "open",
       createdAt: branch.createdAt,
       changedBy: branch.changedBy,
-      files,
-      progress: { kind: "create", done: files, total: files },
+      files: assembled,
+      progress: { kind: "create", done: assembled, total: assembled },
     };
   }
   await snapshots.put(walkKey, JSON.stringify({ pending: copied.cursor.pending }));
@@ -1280,11 +1820,44 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       phase: "copy",
       current: copied.cursor.current,
       skip: copied.cursor.skip,
+      parts: files,
     },
     done: files,
     total: Math.max(files, doneSoFar),
   });
   return { done: false, progress: { kind: "create", done: files, total: files } };
+}
+
+/**
+ * A create that cannot finish removes what it copied before it closes the row.
+ *
+ * The copy is the half a retry must not find: the row's snapshot records none
+ * of it, so a branch left `creating` with files under its prefix reports a
+ * folder the snapshot never had. This is the same cleanup the create's catch
+ * path does when the walk itself throws, so a namespace that cannot be written
+ * answers `storage-down` with an empty prefix, not a stale half-branch
+ * (drive#766).
+ *
+ * @param {D1Database} db
+ * @param {SnapshotStore} snapshots
+ * @param {FileStore} store
+ * @param {Branch} branch
+ * @param {string} key the snapshot key whose parts the walk appended to
+ * @param {string} error
+ * @returns {Promise<void>}
+ */
+async function failCreateJob(db, snapshots, store, branch, key, error) {
+  try {
+    await removePrefixFiles(store, branch.branchPrefix);
+  } catch (cleanupError) {
+    console.error?.(`create cleanup failed for ${branch.id}: ${errorText(cleanupError)}`);
+  }
+  try {
+    await clearScratch(snapshots, key);
+  } catch (cleanupError) {
+    console.error?.(`create cleanup failed for ${branch.id}: ${errorText(cleanupError)}`);
+  }
+  await failJob(db, branch.id, "discarded", error);
 }
 
 /**
@@ -1318,7 +1891,7 @@ async function processApproveBatch(db, snapshots, store, branch) {
     .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
     .bind(branch.id)
     .first();
-  const stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
+  let stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
   const planKey = approvePlanKey(branch.snapshotKey);
   if (!stored.ready) {
     if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
@@ -1398,7 +1971,12 @@ async function processApproveBatch(db, snapshots, store, branch) {
       return { done: false };
     }
     const diff = diffFromListings(
-      branch.snapshot,
+      // The one read of the snapshot the diff itself needs: it compares the
+      // branch's files against what the branch recorded when it was created,
+      // and that is the whole snapshot. It happens in the batch that computes
+      // the diff, once, and never in a batch that applies the plan
+      // (drive#766).
+      await readSnapshot(snapshots, branch.snapshotKey),
       fingerprintMapFromObject(walk.branchFiles),
       fingerprintMapFromObject(walk.sourceFiles),
     );
@@ -1415,19 +1993,27 @@ async function processApproveBatch(db, snapshots, store, branch) {
       return { ...result, done: true };
     }
     const total = diff.added.length + diff.changed.length + diff.removed.length;
-    await snapshots.put(
-      planKey,
-      JSON.stringify({
-        added: diff.added,
-        changed: diff.changed,
-        removed: diff.removed,
-        appliedAdded: [],
-        appliedChanged: [],
-        appliedRemoved: [],
-      }),
-    );
+    const wrote = await writeApprovePlan(snapshots, planKey, {
+      added: diff.added,
+      changed: diff.changed,
+      removed: diff.removed,
+    });
+    if (!wrote) {
+      const error = failureMessage("storage-down");
+      await failJob(db, branch.id, "open", error);
+      return { error, status: 500, done: true };
+    }
     await writeJobProgress(db, branch.id, {
-      cursor: { ready: true, addedI: 0, changedI: 0, removedI: 0 },
+      cursor: {
+        ready: true,
+        addedI: 0,
+        changedI: 0,
+        removedI: 0,
+        addedN: diff.added.length,
+        changedN: diff.changed.length,
+        removedN: diff.removed.length,
+        planParts: true,
+      },
       done: 0,
       total,
     });
@@ -1440,56 +2026,103 @@ async function processApproveBatch(db, snapshots, store, branch) {
     }
     return { done: false };
   }
-  const planJson = await snapshots.get(planKey);
-  if (!planJson) {
-    const error = failureMessage("unexpected");
-    await failJob(db, branch.id, "open", error);
-    return { error, status: 500, done: true };
+  /**
+   * The one slice of the plan this batch applies: the list it is working down,
+   * from the index the cursor says it reached (drive#766). A store that cannot
+   * answer falls back to the single value its earlier version wrote, so a
+   * plan written before this change still runs.
+   */
+  /** @type {PlanLists} */
+  let lists;
+  const startedList = startedPlanList(stored);
+  const planLists = await readJobParts(snapshots, `${planKey}.${startedList.list}`, {
+    start: startedList.start,
+    limit: BRANCH_JOB_BATCH_FILES,
+  });
+  if (planLists !== null) {
+    lists = emptyPlanLists();
+    lists[startedList.list] = planLists.lines;
+  } else {
+    const planJson = await snapshots.get(planKey);
+    if (!planJson) {
+      const error = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", error);
+      return { error, status: 500, done: true };
+    }
+    /** @type {{added?: unknown, changed?: unknown, removed?: unknown}} */
+    let plan = {};
+    try {
+      plan = JSON.parse(planJson);
+    } catch (error) {
+      console.error?.(`approve plan is not JSON for ${branch.id}: ${errorText(error)}`);
+      const failed = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", failed);
+      return { error: failed, status: 500, done: true };
+    }
+    lists = {
+      added: stringList(plan.added),
+      changed: stringList(plan.changed),
+      removed: stringList(plan.removed),
+    };
+    // A plan written before this change has no lengths in the cursor, so the
+    // lists themselves are the lengths (drive#766).
+    stored = {
+      ...stored,
+      addedN: lists.added.length,
+      changedN: lists.changed.length,
+      removedN: lists.removed.length,
+    };
   }
-  /** @type {{added?: unknown, changed?: unknown, removed?: unknown, appliedAdded?: unknown, appliedChanged?: unknown, appliedRemoved?: unknown}} */
-  let plan = {};
-  try {
-    plan = JSON.parse(planJson);
-  } catch (error) {
-    console.error?.(`approve plan is not JSON for ${branch.id}: ${errorText(error)}`);
-    const failed = failureMessage("unexpected");
-    await failJob(db, branch.id, "open", failed);
-    return { error: failed, status: 500, done: true };
-  }
-  /** @type {string[]} */
-  const added = Array.isArray(plan.added)
-    ? plan.added.filter((item) => typeof item === "string")
-    : [];
-  /** @type {string[]} */
-  const changed = Array.isArray(plan.changed)
-    ? plan.changed.filter((item) => typeof item === "string")
-    : [];
-  /** @type {string[]} */
-  const removed = Array.isArray(plan.removed)
-    ? plan.removed.filter((item) => typeof item === "string")
-    : [];
-  /** @type {{added: string[], changed: string[], removed: string[]}} */
-  const applied = {
-    added: Array.isArray(plan.appliedAdded)
-      ? plan.appliedAdded.filter((item) => typeof item === "string")
-      : [],
-    changed: Array.isArray(plan.appliedChanged)
-      ? plan.appliedChanged.filter((item) => typeof item === "string")
-      : [],
-    removed: Array.isArray(plan.appliedRemoved)
-      ? plan.appliedRemoved.filter((item) => typeof item === "string")
-      : [],
-  };
+  const added = lists.added;
+  const changed = lists.changed;
+  const removed = lists.removed;
   let addedI = typeof stored.addedI === "number" ? stored.addedI : 0;
   let changedI = typeof stored.changedI === "number" ? stored.changedI : 0;
   let removedI = typeof stored.removedI === "number" ? stored.removedI : 0;
-  const snapshot = { ...branch.snapshot };
+  const appliedCount = addedI + changedI + removedI;
+  /**
+   * What this batch moved, and nothing else: the snapshot is a JSON value in
+   * KV, so the value is rewritten, but the batch reads it once and hands over
+   * only the entries it changed (drive#766).
+   * @type {Record<string, Fingerprint|null>|null}
+   */
+  let changes = null;
+  /**
+   * @param {string} rel
+   * @param {Fingerprint|null} value
+   */
+  const note = (rel, value) => {
+    if (changes === null) {
+      changes = {};
+    }
+    changes[rel] = value;
+  };
+  /** @type {Record<string, Fingerprint>|null} */
+  let snapshot = null;
+  /**
+   * The branch snapshot, read once for the whole batch, and only by a batch
+   * that needs it. A clash check compares the source's live fingerprint with
+   * what the branch recorded when it was created, and an added file has no
+   * clash check, so only the changed and removed loops ask (drive#766).
+   */
+  const branchSnapshot = async () => {
+    if (snapshot === null) {
+      snapshot = await readSnapshot(snapshots, branch.snapshotKey);
+    }
+    return snapshot;
+  };
   const listings = new Map();
   let remaining = BRANCH_JOB_BATCH_FILES;
   let failure = null;
+  /** @type {PlanLists} */
+  const appliedHere = emptyPlanLists();
   try {
-    while (addedI < added.length && remaining > 0 && failure === null) {
-      const rel = added[addedI];
+    // `localI` is the index inside this batch's slice, and the `*I` counters are
+    // the plan-wide indices the cursor carries (drive#766). A slice read from
+    // the plan resumes at the plan-wide index, so a plan that spans batches is
+    // applied in order with no list rewritten between batches.
+    for (let localI = 0; localI < added.length && remaining > 0 && failure === null; ) {
+      const rel = added[localI];
       const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
       if (sourceNow !== null) {
         failure = sourceMoved([rel], 1);
@@ -1498,38 +2131,41 @@ async function processApproveBatch(db, snapshots, store, branch) {
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
       const branchNow = await fileFingerprint(store, `${branch.branchPrefix}/${rel}`, listings);
       if (branchNow !== null) {
-        snapshot[rel] = branchNow;
+        note(rel, branchNow);
       }
-      applied.added.push(rel);
+      appliedHere.added.push(rel);
+      localI += 1;
       addedI += 1;
       remaining -= 1;
     }
-    while (changedI < changed.length && remaining > 0 && failure === null) {
-      const rel = changed[changedI];
+    for (let localI = 0; localI < changed.length && remaining > 0 && failure === null; ) {
+      const rel = changed[localI];
       const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
-      if (!sameFile(sourceNow, snapshot[rel])) {
+      if (!sameFile(sourceNow, (await branchSnapshot())[rel])) {
         failure = sourceMoved([rel], 1);
         break;
       }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
       const branchNow = await fileFingerprint(store, `${branch.branchPrefix}/${rel}`, listings);
       if (branchNow !== null) {
-        snapshot[rel] = branchNow;
+        note(rel, branchNow);
       }
-      applied.changed.push(rel);
+      appliedHere.changed.push(rel);
+      localI += 1;
       changedI += 1;
       remaining -= 1;
     }
-    while (removedI < removed.length && remaining > 0 && failure === null) {
-      const rel = removed[removedI];
+    for (let localI = 0; localI < removed.length && remaining > 0 && failure === null; ) {
+      const rel = removed[localI];
       const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
-      if (!sameFile(sourceNow, snapshot[rel])) {
+      if (!sameFile(sourceNow, (await branchSnapshot())[rel])) {
         failure = sourceMoved([rel], 1);
         break;
       }
       await store.remove(`${branch.sourcePrefix}/${rel}`);
-      delete snapshot[rel];
-      applied.removed.push(rel);
+      note(rel, null);
+      appliedHere.removed.push(rel);
+      localI += 1;
       removedI += 1;
       remaining -= 1;
     }
@@ -1537,33 +2173,208 @@ async function processApproveBatch(db, snapshots, store, branch) {
     console.error?.(`approve failed for ${branch.id}: ${errorText(error)}`);
     failure = { error: failureMessage("storage-down"), status: 500 };
   }
-  await saveSnapshot(db, branch.id, snapshot, snapshots);
-  const appliedCount = applied.added.length + applied.changed.length + applied.removed.length;
-  const total = added.length + changed.length + removed.length;
+  if (changes !== null) {
+    const saved = await saveSnapshot(db, branch.id, {}, snapshots, "", { changes });
+    if (!saved.success) {
+      const error = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", error);
+      return { error, status: 500, done: true };
+    }
+  }
+  // The paths this batch moved are appended to the plan's applied list, so the
+  // answer the job finishes with names every file that moved without any batch
+  // rewriting the plan (drive#766). A store that cannot append parts answers
+  // null and the finish falls back to the single value the earlier version
+  // wrote.
+  for (const list of PLAN_LIST_NAMES) {
+    if (appliedHere[list].length === 0) {
+      continue;
+    }
+    await appendJobParts(snapshots, `${planKey}.${list}.applied`, appliedHere[list]);
+  }
+  const planSizes = planListSizes(stored);
+  const total = planSizes.added + planSizes.changed + planSizes.removed;
   if (failure !== null) {
     await failJob(db, branch.id, "open", failure.error);
     return { ...failure, done: true };
   }
-  await snapshots.put(
-    planKey,
-    JSON.stringify({
-      added,
-      changed,
-      removed,
-      appliedAdded: applied.added,
-      appliedChanged: applied.changed,
-      appliedRemoved: applied.removed,
-    }),
-  );
-  if (addedI >= added.length && changedI >= changed.length && removedI >= removed.length) {
-    return await finishApprove(db, store, snapshots, branch, applied);
+  const finished =
+    addedI >= planSizes.added && changedI >= planSizes.changed && removedI >= planSizes.removed;
+  if (finished) {
+    return await finishApprove(db, store, snapshots, branch, {
+      added: await allAppliedPaths(snapshots, planKey, "added"),
+      changed: await allAppliedPaths(snapshots, planKey, "changed"),
+      removed: await allAppliedPaths(snapshots, planKey, "removed"),
+    });
   }
+  const done =
+    appliedCount +
+    appliedHere.added.length +
+    appliedHere.changed.length +
+    appliedHere.removed.length;
   await writeJobProgress(db, branch.id, {
-    cursor: { ready: true, addedI, changedI, removedI },
-    done: appliedCount,
+    cursor: {
+      ready: true,
+      addedI,
+      changedI,
+      removedI,
+      addedN: planSizes.added,
+      changedN: planSizes.changed,
+      removedN: planSizes.removed,
+      planParts: true,
+    },
+    done,
     total,
   });
-  return { done: false, progress: { kind: "approve", done: appliedCount, total } };
+  return { done: false, progress: { kind: "approve", done, total } };
+}
+
+/**
+ * The plan's three list lengths, as the cursor records them. A cursor written
+ * before this change carries no lengths, so every list reads as empty and the
+ * legacy single-value plan path answers for itself (drive#766).
+ * @param {Record<string, unknown>} stored the D1 job cursor
+ * @returns {{added: number, changed: number, removed: number}}
+ */
+function planListSizes(stored) {
+  /**
+   * @param {string} name
+   * @returns {number}
+   */
+  const size = (name) => {
+    const value = stored[`${name}N`];
+    return typeof value === "number" && value > 0 ? value : 0;
+  };
+  return { added: size("added"), changed: size("changed"), removed: size("removed") };
+}
+
+/**
+ * One plan list, only the strings in it. The value an earlier version wrote is
+ * read as data and never trusted for its shape.
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function stringList(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+
+/**
+ * The three plan lists, each one the slice the batch is about to apply.
+ * @typedef {{added: string[], changed: string[], removed: string[]}} PlanLists
+ */
+
+/** The plan's three list names, in the order the approve applies them. */
+const PLAN_LIST_NAMES = /** @type {const} */ (["added", "changed", "removed"]);
+
+/**
+ * The three plan lists, empty, so a batch reads a slice of one list and the
+ * other two name nothing (drive#766).
+ * @returns {PlanLists}
+ */
+function emptyPlanLists() {
+  return { added: [], changed: [], removed: [] };
+}
+
+/**
+ * Which plan list this batch is working down, and where in it: the first one
+ * whose index is behind its own length, in the order the approve applies them
+ * (drive#766). The lists are applied added, then changed, then removed, so the
+ * first list that is not finished is the one this batch continues.
+ * @param {Record<string, unknown>} stored the D1 job cursor
+ * @returns {{list: "added"|"changed"|"removed", start: number}}
+ */
+function startedPlanList(stored) {
+  /**
+   * @param {string} name
+   * @returns {number}
+   */
+  const index = (name) => {
+    const value = stored[name];
+    return typeof value === "number" ? value : 0;
+  };
+  const sizes = planListSizes(stored);
+  // The three lists in the order they are applied. Each one's own length rides
+  // in the cursor, so an empty list is finished rather than a slice to read,
+  // and a list that spans batches resumes at its own index (drive#766).
+  const lists = PLAN_LIST_NAMES;
+  for (const list of lists) {
+    const done = index(`${list}I`);
+    if (done < sizes[list]) {
+      return { list, start: done };
+    }
+  }
+  return { list: "removed", start: 0 };
+}
+
+/**
+ * Every path of one applied plan list, for the answer an approve finishes
+ * with. It reads the whole applied list once, in the batch that ends the job,
+ * because the answer the caller gets names every file that moved.
+ * @param {SnapshotStore} snapshots
+ * @param {string} planKey
+ * @param {"added"|"changed"|"removed"} list
+ * @returns {Promise<string[]>}
+ */
+async function allAppliedPaths(snapshots, planKey, list) {
+  const parts = await readJobParts(snapshots, `${planKey}.${list}.applied`, {
+    limit: Number.MAX_SAFE_INTEGER,
+  });
+  if (parts !== null) {
+    return parts.lines.filter((line) => line !== "");
+  }
+  const value = await snapshots.get(`${planKey}.applied.${list}`);
+  return typeof value === "string" && value !== "" ? [value] : [];
+}
+
+/**
+ * Write the plan's three lists as append-only parts, one line per path, so a
+ * batch can read the slice it is about to apply and nothing else (drive#766).
+ *
+ * `added` and `changed` are each one batch-sized part and `removed` is too, so
+ * the part count is bounded by the plan's size and every part is one batch's
+ * work. The progress a batch makes is the D1 cursor, which the batch already
+ * writes, so no batch rewrites the plan to record that it moved.
+ *
+ * A store that cannot append parts answers false, and the caller falls back to
+ * the single value the earlier version wrote rather than starting an approve
+ * whose plan is nowhere.
+ * @param {SnapshotStore} snapshots
+ * @param {string} planKey
+ * @param {{added: string[], changed: string[], removed: string[]}} lists
+ * @returns {Promise<boolean>}
+ */
+async function writeApprovePlan(snapshots, planKey, lists) {
+  if (typeof snapshots.appendParts !== "function") {
+    await snapshots.put(
+      planKey,
+      JSON.stringify({
+        added: lists.added,
+        changed: lists.changed,
+        removed: lists.removed,
+        appliedAdded: [],
+        appliedChanged: [],
+        appliedRemoved: [],
+      }),
+    );
+    return true;
+  }
+  for (const list of PLAN_LIST_NAMES) {
+    const paths = lists[list];
+    if (paths.length === 0) {
+      continue;
+    }
+    for (let offset = 0; offset < paths.length; offset += BRANCH_JOB_BATCH_FILES) {
+      const wrote = await appendJobParts(
+        snapshots,
+        `${planKey}.${list}`,
+        paths.slice(offset, offset + BRANCH_JOB_BATCH_FILES),
+      );
+      if (wrote === null) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /**
@@ -1666,15 +2477,46 @@ async function processDiscardBatch(db, store, branch) {
 /**
  * One job batch for a claimed row. The HTTP handler either runs this in a
  * loop (no queue) or the queue consumer runs it once per message (drive#563).
+ *
+ * `cursor` is the generation the message was sent for (drive#766). A message
+ * from an earlier claim is a no-op: it is acked without reading the row's
+ * snapshot, without copying a file and without moving the cursor, because the
+ * row has already been claimed again and this batch's work is either done or
+ * someone else's to do. The cursor can only be behind, never ahead, because the
+ * claim that sends a message writes the generation and then reads it back.
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots
  * @param {FileStore} store
  * @param {{id: string}} account
  * @param {number} branchId
+ * @param {number} [cursor] the generation this message was sent for
  * @returns {Promise<BranchJobResult>}
  */
-export async function processBranchJob(db, snapshots, store, account, branchId) {
-  const branch = await loadJobRow(db, snapshots, account, branchId);
+export async function processBranchJob(db, snapshots, store, account, branchId, cursor) {
+  if (cursor !== undefined && Number(cursor) > 0) {
+    const row = await db
+      .prepare(`SELECT ${BRANCH_COLUMNS} FROM branches WHERE id = ?1 AND account_id = ?2`)
+      .bind(branchId, account.id)
+      .first();
+    if (row === undefined || row === null) {
+      return { done: true };
+    }
+    const branch = toBranch(row, {});
+    const messageCursor = Number(cursor);
+    if (
+      !branchJobIsCurrent(
+        { kind: "", accountId: account.id, branchId, name: branch.name, cursor: messageCursor },
+        Number(row.job_generation),
+      )
+    ) {
+      console.error?.(
+        `branch job ${branchId} redelivered at generation ${messageCursor}, row is at ` +
+          `${String(row.job_generation)}: nothing to do`,
+      );
+      return { done: true };
+    }
+  }
+  const branch = await loadJobRow(db, account, branchId);
   if (!branch) {
     return { done: true };
   }
@@ -1729,6 +2571,106 @@ export async function runBranchJobToEnd(db, snapshots, store, account, branchId)
 }
 
 /**
+ * Pick a stuck row's job back up (drive#766).
+ *
+ * A row left in `creating` or `rewinding` holds its name against the open-name
+ * index, so without this the name is stuck forever: `createBranch` said "that
+ * branch exists", `discardBranch` needs an open branch, and a rewind needs an
+ * open one to preview. This is the one path that runs such a row again.
+ *
+ * It sends a fresh message for the row's own current generation, so any message
+ * still in flight for an earlier claim is dropped rather than run beside it.
+ * With no queue bound it runs the remaining batches in-process, which is what
+ * the HTTP handler already does for a job it claims itself.
+ *
+ * @param {D1Database} db
+ * @param {SnapshotStore} snapshots
+ * @param {FileStore} store
+ * @param {{id: string}} account
+ * @param {Branch} branch the stuck row, as `getBranch` returned it
+ * @param {{send?: Function, sendBatch?: Function}|null} queue
+ * @param {string} kind the job kind to send, `create` or `rewind`
+ * @returns {Promise<BranchJobResult>}
+ */
+export async function resumeBranchJob(db, snapshots, store, account, branch, queue, kind) {
+  if (
+    await enqueueJob(
+      queue,
+      {
+        kind: kind === "rewind" ? "branch.rewind" : "branch.create",
+        accountId: account.id,
+        branchId: branch.id,
+        name: branch.name,
+      },
+      db,
+    )
+  ) {
+    return {
+      name: branch.name,
+      state: branch.state,
+      files: branch.jobDone,
+      progress: { kind, done: branch.jobDone, total: branch.jobTotal },
+    };
+  }
+  return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
+}
+
+/**
+ * Cancel a create that is stuck, and give the name back (drive#766).
+ *
+ * The row's own copy is removed, the name is freed, and the job is left
+ * cancelled rather than half done: a `creating` row that keeps its claim holds
+ * every later create of that name at a 409 forever. This is the answer to
+ * "I do not want that branch any more" for a create that never finished, which
+ * before this change had no route out at all.
+ *
+ * The copy is removed first and the row is freed second, in that order. If the
+ * removal fails the row keeps its claim, so a second cancel tries again rather
+ * than freeing a name whose files are still on disk: the next create of that
+ * name starts with a `clear` batch that would take them out, and a name freed
+ * over a leftover copy would hide the leftover.
+ *
+ * @param {D1Database} db
+ * @param {SnapshotStore} snapshots
+ * @param {FileStore} store
+ * @param {Branch} branch the `creating` row
+ * @returns {Promise<BranchJobResult>}
+ */
+async function cancelCreatingBranch(db, snapshots, store, branch) {
+  try {
+    await removePrefixFiles(store, branch.branchPrefix);
+    await clearScratch(snapshots, branch.snapshotKey);
+  } catch (error) {
+    console.error?.(`cancel of branch ${branch.id} could not remove its copy: ${errorText(error)}`);
+    const failure = { error: failureMessage("storage-down"), status: 500 };
+    await failJob(db, branch.id, "creating", failure.error);
+    return { ...failure, done: true };
+  }
+  const cancelled = await db
+    .prepare(
+      "UPDATE branches SET state = 'discarded', job_kind = '', job_cursor = '', job_error = ?2, " +
+        "job_generation = job_generation + 1 WHERE id = ?1 AND state = 'creating'",
+    )
+    .bind(branch.id, failureMessage("branch-cancelled"))
+    .run();
+  if (!cancelled.success || typeof cancelled.meta.changes !== "number") {
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
+  if (cancelled.meta.changes === 0) {
+    // The row moved between the read and this write, so whoever moved it owns
+    // the name now and this cancel says so instead of claiming it did the work.
+    return { error: failureMessage("branch-not-open"), status: 409 };
+  }
+  return {
+    done: true,
+    name: branch.name,
+    state: "discarded",
+    removed: branch.jobDone,
+    progress: { kind: "create", done: branch.jobDone, total: branch.jobDone },
+  };
+}
+
+/**
  * The HTTP/CLI answer for a finished job: drop the internal `done` flag the
  * batch loop uses.
  * @param {BranchJobResult} ran
@@ -1758,7 +2700,7 @@ function publicJobResult(ran) {
  *   check already refuses one).
  * @param {import("../core/files.js").FileStore} store
  * @param {{id: string}} account
- * @param {{folder: unknown, name: unknown, changedBy?: unknown}} request
+ * @param {{folder: unknown, name: unknown, changedBy?: unknown, cancel?: unknown}} request
  * @param {() => number} [now]
  * @param {BranchQueue} [queue]
  * @returns {Promise<*>}
@@ -1815,6 +2757,16 @@ export async function createBranch(
   }
   const existing = await getBranch(db, snapshots, account, name);
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
+    // A create that is already running resumes from its own cursor instead of
+    // answering "that name is taken" (drive#766). The row's cursor is where the
+    // last batch stopped, so the resumed job copies the files that are left and
+    // writes nothing twice.
+    if (existing.state === "creating" && existing.jobKind === "create") {
+      if (request.cancel === true) {
+        return cancelCreatingBranch(db, snapshots, store, existing);
+      }
+      return resumeBranchJob(db, snapshots, store, account, existing, queue, "create");
+    }
     return { error: failureMessage("branch-exists"), status: 409 };
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
@@ -1834,8 +2786,9 @@ export async function createBranch(
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
-          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind) " +
-          "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,?7,'create')",
+          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind, " +
+          "job_generation) " +
+          "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',1)",
       )
       .bind(account.id, name, folderPath, branchPrefix, snapKey, createdAt, changedBy)
       .run();
@@ -1894,6 +2847,7 @@ export async function createBranch(
       accountId: account.id,
       branchId: claimId,
       name,
+      cursor: 1,
     })
   ) {
     return {
@@ -2048,7 +3002,8 @@ export async function approveBranch(db, snapshots, store, account, name, queue =
   const claimed = await db
     .prepare(
       "UPDATE branches SET state = 'approving', job_kind = 'approve', job_cursor = '', " +
-        "job_done = 0, job_total = 0, job_error = '' WHERE id = ?1 AND state = 'open'",
+        "job_done = 0, job_total = 0, job_error = '', job_generation = job_generation + 1 " +
+        "WHERE id = ?1 AND state = 'open'",
     )
     .bind(branch.id)
     .run();
@@ -2059,12 +3014,16 @@ export async function approveBranch(db, snapshots, store, account, name, queue =
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
   if (
-    await enqueueJob(queue, {
-      kind: "branch.approve",
-      accountId: account.id,
-      branchId: branch.id,
-      name,
-    })
+    await enqueueJob(
+      queue,
+      {
+        kind: "branch.approve",
+        accountId: account.id,
+        branchId: branch.id,
+        name,
+      },
+      db,
+    )
   ) {
     return {
       name,
@@ -2109,7 +3068,7 @@ export async function discardBranch(db, snapshots, store, account, name, options
   const claimed = await db
     .prepare(
       "UPDATE branches SET state = ?2, job_kind = ?3, job_cursor = '', job_done = 0, job_total = 0, " +
-        "job_error = '' WHERE id = ?1 AND state = ?4",
+        "job_error = '', job_generation = job_generation + 1 WHERE id = ?1 AND state = ?4",
     )
     .bind(branch.id, jobState, jobKind, fromState)
     .run();
@@ -2120,12 +3079,16 @@ export async function discardBranch(db, snapshots, store, account, name, options
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
   if (
-    await enqueueJob(options.queue, {
-      kind: jobKind === "rewind" ? "branch.rewind" : "branch.discard",
-      accountId: account.id,
-      branchId: branch.id,
-      name,
-    })
+    await enqueueJob(
+      options.queue,
+      {
+        kind: jobKind === "rewind" ? "branch.rewind" : "branch.discard",
+        accountId: account.id,
+        branchId: branch.id,
+        name,
+      },
+      db,
+    )
   ) {
     return {
       name,
@@ -2148,22 +3111,28 @@ export async function discardBranch(db, snapshots, store, account, name, options
 // copies. The row's byte length is refreshed, so `snapshotBytes` stays the
 // honest length of the value the diff reads.
 /**
+ * Write the snapshot to its key and record the pointer and byte length on the
+ * row. A `changes` argument is a delta: it is merged into the value already at
+ * the key, entry by entry, and an entry in `removed` deletes the key's entry.
+ * An approve applies 80 files at a time, so merging what it applied is what
+ * stops each of its batches rewriting the whole snapshot (drive#766).
+ *
+ * Without a `changes` argument the object is the snapshot, and it replaces the
+ * value at the key whole. That is the create's final assembly and any call
+ * that means "this is the snapshot".
+ *
  * @param {D1Database} db
  * @param {number} id the row's own id
  * @param {Record<string, Fingerprint>} snapshot
  * @param {SnapshotStore} snapshots the KV snapshot store
  * @param {string} [key] the KV key to write on first save of a claimed row
+ * @param {{changes?: Record<string, Fingerprint|null>}} [options]
  * @returns {Promise<D1Result>}
  */
-async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
-  const json = JSON.stringify(snapshot);
+async function saveSnapshot(db, id, snapshot, snapshots, key = "", options = {}) {
   if (!snapshots) {
     throw new TypeError("saveSnapshot needs the branch snapshot store");
   }
-  // The row decides the key, not this function, except the first save of a
-  // newly claimed row which has not stored a pointer yet. `branches.snapshot_key`
-  // is already `u/<id>/branch/<name>` after that, so an approve can never
-  // write another account's value even if the caller handed it a strange store.
   const row = await db
     .prepare(
       "SELECT snapshot_key FROM branches WHERE id = ?1 AND state IN ('open', 'creating', 'approving')",
@@ -2175,6 +3144,10 @@ async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
   if (resolved === "") {
     throw new Error(`branch id ${id} has no snapshot pointer to save under`);
   }
+  const json =
+    options.changes === undefined
+      ? JSON.stringify(snapshot)
+      : await mergeSnapshotChanges(snapshots, resolved, options.changes);
   const bytes = await snapshots.put(resolved, json);
   return db
     .prepare(
@@ -2182,6 +3155,33 @@ async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
     )
     .bind(id, resolved, bytes)
     .run();
+}
+
+/**
+ * The snapshot at `key` with this batch's changes folded in.
+ *
+ * The whole value is read once here because a JSON object cannot be edited in
+ * place in KV: the merge is a read and a write of the value, not of this
+ * batch's delta. What changed is how much of the job that costs. An approve
+ * of 100,000 files used to read the snapshot and write it back once per batch
+ * of 80, from `loadJobRow` and again from the batch; it now does it once, in
+ * the batch that needs the whole value, and only for the batches that apply a
+ * change the snapshot has to record.
+ * @param {SnapshotStore} snapshots
+ * @param {string} key
+ * @param {Record<string, Fingerprint|null>} changes
+ * @returns {Promise<string>}
+ */
+async function mergeSnapshotChanges(snapshots, key, changes) {
+  const current = await readSnapshot(snapshots, key);
+  for (const [rel, value] of Object.entries(changes)) {
+    if (value === null) {
+      delete current[rel];
+      continue;
+    }
+    current[rel] = value;
+  }
+  return JSON.stringify(current);
 }
 
 // Every file under a prefix, removed, returning how many. A branch prefix is a
