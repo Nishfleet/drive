@@ -738,10 +738,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
-	// The cache and the conflict-staging dir are the mount's transient bytes
-	// (issue #561); keep macOS's own backup tool off them. Everywhere else
-	// the CACHEDIR.TAG marker is the signal a backup tool reads, so there is
-	// nothing to call here.
+	// The cache holds the mount's transient bytes (issue #561); keep macOS's
+	// own backup tool off it. Everywhere else the CACHEDIR.TAG marker is the
+	// signal a backup tool reads, so there is nothing to call here.
 	excludeTransientFromBackup(goos, p)
 	printMountedLine(p.MountDir)
 	return nil
@@ -848,8 +847,7 @@ func writeCacheTag(cacheDir string) error {
 // excludeTransientFromBackup keeps macOS's own backup tool (Time
 // Machine, which walks the home folder by default) off the mount's
 // transient bytes (issue #561): the cache dir, whose chunks can fill
-// the backup's quota, and the conflict-staging dir, whose bytes are
-// only ever in flight. Both are regenerable, so excluding them loses
+// the backup's quota. It is regenerable, so excluding it loses
 // nothing. A refusal is a note, not a mount failure: the drive works
 // without the exclusion, and the CACHEDIR.TAG marker still tells a
 // tool that reads it. Everywhere but macOS there is no command to
@@ -858,13 +856,11 @@ func excludeTransientFromBackup(goos string, p MountPlan) {
 	if goos != "darwin" {
 		return
 	}
-	for _, dir := range []string{p.CacheDir, p.StagingDir} {
-		if dir == "" {
-			continue
-		}
-		if out, err := exec.Command("tmutil", "addexclusion", dir).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "note: could not exclude %s from Time Machine backups (%v): %s\n", dir, err, out)
-		}
+	if p.CacheDir == "" {
+		return
+	}
+	if out, err := exec.Command("tmutil", "addexclusion", p.CacheDir).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not exclude %s from Time Machine backups (%v): %s\n", p.CacheDir, err, out)
 	}
 }
 
