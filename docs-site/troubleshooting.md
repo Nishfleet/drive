@@ -45,8 +45,10 @@ reads.
   `journalctl --user -u drive-mount.service -n 20`. A machine with no user
   session (a container, a headless box) has the same file macOS has instead:
   `~/.config/drive/mount.log`.
-- **Windows:** the login task writes the log to
-  `%USERPROFILE%\.config\drive\mount.log`.
+- **Windows is not in version 1: it installs with an unsigned MSI, not a
+  published release.** When it does run, the logon task writes the log to
+  `%USERPROFILE%\.config\drive\mount.log`, the same place the other two
+  systems use.
 
 `drive doctor` reads the right one for your system and puts its last lines in
 the block, so you do not have to find the file unless you want to.
