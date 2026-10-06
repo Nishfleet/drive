@@ -60,6 +60,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS file_index_fts USING fts5(
 -- the delete-then-insert the write path does finds the right row. On an empty
 -- table it is a no-op.
 --
+-- A D1 migration file is not atomic across statements. If the CREATE commits
+-- and the INSERT then fails, a retry must not hit duplicate rowids: the
+-- CREATE is IF NOT EXISTS (a no-op the second time) and this INSERT skips
+-- rowids the trigram table already holds, so a partial backfill continues
+-- rather than failing for good. D1 has no down-migration, so the file has
+-- to be safe to run twice.
+--
 -- The reconciler is what makes this table complete, not this statement: it
 -- walks an account and rewrites every one of its rows nightly
 -- (src/search.js reconcileIndex), chunked, so it is not bound by the row
@@ -70,4 +77,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS file_index_fts USING fts5(
 -- `file_index` itself has always had: the write path keeps it current and the
 -- reconciler is what repairs anything it missed.
 INSERT INTO file_index_fts (rowid, name, account_id, path)
-  SELECT rowid, name, account_id, path FROM file_index;
+  SELECT fi.rowid, fi.name, fi.account_id, fi.path
+  FROM file_index fi
+  WHERE NOT EXISTS (
+    SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid
+  );

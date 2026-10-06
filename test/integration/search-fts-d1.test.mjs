@@ -11,16 +11,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../../core/files.js";
-import { reconcileIndex, searchDrive, withIndex } from "../../src/search.js";
+import { reconcileIndex, searchDrive, searchSql, withIndex } from "../../src/search.js";
 import { createTestD1, DRIVE_MIGRATIONS } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 
-/** Every migration up to but not including 0031, so a test can put one drive
+/** Every default-schema migration except 0031, so a test can put one drive
  * into the state production is in the moment 0031 lands and then run the real
- * file over it.
+ * file over it. Filtered by name, not by position, so a later file appended
+ * to DRIVE_MIGRATIONS does not silently change what this builds.
  * @returns {readonly string[]} */
-const migrationsBefore0031 = () => DRIVE_MIGRATIONS.slice(0, -1);
+const migrationsBefore0031 = () =>
+  DRIVE_MIGRATIONS.filter((name) => !name.endsWith("0031_file_index_fts.sql"));
 
 /** The real migration file, read from disk rather than copied into the test.
  * A test that re-typed its SQL would pass even if the file it ships had lost
@@ -64,6 +66,24 @@ test("0031 backfills the trigram table from the rows the index already had", asy
   assert.equal(found.results[0].path, "/Q4-report.pdf");
   assert.equal(found.results[0].sizeBytes, 12);
   assert.equal(found.results[0].modifiedAt, "2026-09-30T00:00:00.000Z");
+});
+
+test("0031 can be applied twice without failing or duplicating rows", async () => {
+  const db = createTestD1({ migrations: migrationsBefore0031() });
+  await db.batch([
+    db
+      .prepare(
+        "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
+          "VALUES ('acct-1', '/Q4-report.pdf', 'Q4-report.pdf', '/', 12, '2026-09-30T00:00:00.000Z', '2026-09-30T00:00:00.000Z')",
+      )
+      .bind(),
+  ]);
+  db.sqlite.exec(migration0031());
+  db.sqlite.exec(migration0031());
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get()?.c, 1);
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index_fts").get()?.c, 1);
+  const found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 1);
 });
 
 test("0031 is additive: it creates the trigram table without touching file_index", async () => {
@@ -165,6 +185,13 @@ test("0031's rebuild re-creates the trigram rows, so a removed file stops matchi
   assert.deepEqual(ftsNames(db, ACCOUNT.id), ["keep.pdf"]);
   const found = await searchDrive(db, ACCOUNT, "gone");
   assert.equal(found.count, 0);
+  const indexCount = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index WHERE account_id = ?")
+    .get(ACCOUNT.id)?.c;
+  const ftsCount = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index_fts WHERE account_id = ?")
+    .get(ACCOUNT.id)?.c;
+  assert.equal(indexCount, ftsCount, "a rebuild leaves the two tables the same size");
 });
 
 test("0031 keeps one account's names away from another's, on the trigram path", async () => {
@@ -291,4 +318,69 @@ test("a name with a quote, a percent or an underscore is matched literally (driv
   // another order, and a query for a bare percent must not match every name.
   const percentAlone = await searchDrive(db, ACCOUNT, "quoted");
   assert.equal(percentAlone.count, 1, "only the name holding the word matches");
+});
+
+test("0031's FTS path returns the same names a LIKE over file_index would", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/fin/Q4-report.pdf", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/photos/beach.jpg", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/notes/report-draft.txt", new Blob(["x"]).stream(), "text/plain");
+  await reconcileIndex(db, store, ACCOUNT);
+
+  assert.equal(
+    searchSql(["report"], { accountId: ACCOUNT.id, limit: 50 }).engine,
+    "fts",
+    "a three-letter-or-longer word uses the trigram path",
+  );
+  const fts = await searchDrive(db, ACCOUNT, "report");
+  const likeRows = db.sqlite
+    .prepare(
+      "SELECT name FROM file_index WHERE account_id = ? AND name LIKE ? ESCAPE '\\' ORDER BY name",
+    )
+    .all(ACCOUNT.id, "%report%")
+    .map((row) => String(row.name));
+  assert.deepEqual(
+    (fts.results ?? []).map((row) => row.name).sort(),
+    likeRows,
+    "the trigram path and a LIKE over file_index name the same files",
+  );
+});
+
+test("0031 matches mixed case and non-ASCII on both paths", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/fin/Q4-Report.pdf", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/ab.TXT", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/Café.pdf", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/éé.txt", new Blob(["x"]).stream(), "text/plain");
+  await reconcileIndex(db, store, ACCOUNT);
+
+  assert.equal(searchSql(["report"], { accountId: ACCOUNT.id, limit: 50 }).engine, "fts");
+  const ftsCase = await searchDrive(db, ACCOUNT, "REPORT");
+  assert.deepEqual(
+    (ftsCase.results ?? []).map((row) => row.name),
+    ["Q4-Report.pdf"],
+    "the trigram path folds ASCII case",
+  );
+
+  assert.equal(searchSql(["AB"], { accountId: ACCOUNT.id, limit: 50 }).engine, "like");
+  const likeCase = await searchDrive(db, ACCOUNT, "AB");
+  assert.ok(
+    (likeCase.results ?? []).some((row) => row.name === "ab.TXT"),
+    "the LIKE path folds ASCII case",
+  );
+
+  const ftsAccent = await searchDrive(db, ACCOUNT, "café");
+  assert.deepEqual(
+    (ftsAccent.results ?? []).map((row) => row.name),
+    ["Café.pdf"],
+    "the trigram path matches a non-ASCII name",
+  );
+  const likeAccent = await searchDrive(db, ACCOUNT, "éé");
+  assert.deepEqual(
+    (likeAccent.results ?? []).map((row) => row.name),
+    ["éé.txt"],
+    "the LIKE path matches a two-character non-ASCII name",
+  );
 });

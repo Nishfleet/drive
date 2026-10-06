@@ -99,8 +99,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The trigram table `src/search.js` now answers a search from (drive issue
   // #571): the search reads this table on every query, so it belongs in the
   // default list or the default schema is one the Worker cannot run against.
-  // Numbered 0031 because 0025 is already two files on main and 0026–0030
-  // are taken; a new duplicate prefix fails test/migrations.test.mjs.
+  // Numbered 0031 because 0025 is already two files on main (link_caps,
+  // meter_scale), 0026 and 0027 exist, 0028 is unused, 0029 (welcome) is not
+  // in this short list, and 0030_branch_jobs is listed above with the other
+  // branch tables. A new duplicate prefix fails test/migrations.test.mjs.
   "drive/0031_file_index_fts.sql",
 ]);
 

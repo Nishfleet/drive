@@ -655,49 +655,48 @@ const SEARCH_BUDGET_MS = 1000;
  * in the hundreds of milliseconds at this size.
  */
 const NAMED_SEARCH_MS = 100;
+/** Ceiling for the every-name-matches case limits.md calls "on the order of a
+ * second". It is not the issue's 1s bar (that bar is the named-file search);
+ * this only fails a hang. */
+const DEGENERATE_SEARCH_MS = 10_000;
 test("1,000,000 files: a search returns in under one second and reads only its matches", async () => {
   const db = makeD1();
   const TOTAL = 1_000_000;
-  /** @type {Array<{account_id: string, path: string, name: string, parent: string, size_bytes: number, modified_at: string, indexed_at: string}>} */
-  const rows = [];
-  for (let i = 0; i < TOTAL; i++) {
-    const bucket = i % 20;
-    const name = `file-${String(i).padStart(7, "0")}-invoice-${i}.pdf`;
-    rows.push({
-      account_id: ACCOUNT.id,
-      path: `/folder-${bucket}/${name}`,
-      name,
-      parent: `/folder-${bucket}`,
-      size_bytes: 100,
-      modified_at: "2026-09-30T00:00:00.000Z",
-      indexed_at: "2026-09-30T00:00:00.000Z",
-    });
-  }
+  // Rows are built a batch at a time. Holding all 1,000,000 as JS objects
+  // plus the SQLite tables OOM'd a 3 GiB runner; the issue still wants a
+  // million-row account, so the engine holds the million and JS holds one
+  // batch (896 rows, the same shape reconcileIndex writes).
+  const BATCH = 14 * 64;
   const started = performance.now();
   await db.batch([
     db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(ACCOUNT.id),
     db.prepare("DELETE FROM file_index_fts WHERE account_id = ?1").bind(ACCOUNT.id),
   ]);
-  for (let start = 0; start < rows.length; start += 14 * 64) {
-    const slice = rows.slice(start, start + 14 * 64);
+  for (let start = 0; start < TOTAL; start += BATCH) {
+    const end = Math.min(start + BATCH, TOTAL);
     const statements = [];
-    for (let s = 0; s < slice.length; s += 14) {
-      const chunk = slice.slice(s, s + 14);
-      const values = chunk
-        .map(
-          (_, rowIndex) =>
-            `(?${rowIndex * 7 + 1}, ?${rowIndex * 7 + 2}, ?${rowIndex * 7 + 3}, ?${rowIndex * 7 + 4}, ?${rowIndex * 7 + 5}, ?${rowIndex * 7 + 6}, ?${rowIndex * 7 + 7})`,
-        )
-        .join(", ");
-      const params = chunk.flatMap((r) => [
-        r.account_id,
-        r.path,
-        r.name,
-        r.parent,
-        r.size_bytes,
-        r.modified_at,
-        r.indexed_at,
-      ]);
+    for (let s = start; s < end; s += 14) {
+      const chunkEnd = Math.min(s + 14, end);
+      const values = Array.from(
+        { length: chunkEnd - s },
+        (_, rowIndex) =>
+          `(?${rowIndex * 7 + 1}, ?${rowIndex * 7 + 2}, ?${rowIndex * 7 + 3}, ?${rowIndex * 7 + 4}, ?${rowIndex * 7 + 5}, ?${rowIndex * 7 + 6}, ?${rowIndex * 7 + 7})`,
+      ).join(", ");
+      /** @type {Array<string|number>} */
+      const params = [];
+      for (let i = s; i < chunkEnd; i++) {
+        const bucket = i % 20;
+        const name = `file-${String(i).padStart(7, "0")}-invoice-${i}.pdf`;
+        params.push(
+          ACCOUNT.id,
+          `/folder-${bucket}/${name}`,
+          name,
+          `/folder-${bucket}`,
+          100,
+          "2026-09-30T00:00:00.000Z",
+          "2026-09-30T00:00:00.000Z",
+        );
+      }
       statements.push(
         db
           .prepare(
@@ -786,13 +785,17 @@ test("1,000,000 files: a search returns in under one second and reads only its m
       `docs-site/limits.md claims about 5ms so it must stay under ${NAMED_SEARCH_MS}ms`,
   );
   // A term every file matches is the degenerate worst case: the index must
-  // rank all of the matches, so it legitimately reads all of them. It is
-  // logged rather than gated at one second (see docs-site/limits.md), but a
-  // search must still never return more than the limit, whatever matched.
+  // rank all of the matches, so it legitimately reads all of them. docs-site/
+  // limits.md names this "on the order of a second"; the issue's 1s bar is
+  // the named-file search above. This gate is a hang detector, not that bar.
   const degenerate = await searchDrive(db, ACCOUNT, "invoice", { now: () => performance.now() });
   assert.equal(degenerate.count, DEFAULT_LIMIT);
   assert.equal(degenerate.truncated, true);
   assert.ok(degenerate.results.length <= DEFAULT_LIMIT, "a search returns at most the limit");
+  assert.ok(
+    degenerate.tookMs < DEGENERATE_SEARCH_MS,
+    `every-file-matches took ${degenerate.tookMs.toFixed(1)}ms, hang budget ${DEGENERATE_SEARCH_MS}ms`,
+  );
   console.log(
     `# search-1m: index ${TOTAL} files in ${indexMs.toFixed(0)}ms; ` +
       `"file-0999999" ${timed.tookMs.toFixed(1)}ms (budget ${SEARCH_BUDGET_MS}ms); ` +

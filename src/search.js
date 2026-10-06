@@ -447,7 +447,9 @@ export function upsertStatements(db, rows) {
 /** The one prepared statement that drops one row, in both tables. The trigram
  * table is keyed by file_index's rowid, and a DELETE ... RETURNING gives that
  * rowid back in the same statement, so the search row goes with the index row
- * and a scan of the trigram table is never needed.
+ * and a scan of the trigram table is never needed. D1 answers RETURNING
+ * through `.all()` (the same method a SELECT uses); `withIndex.remove` is
+ * the only caller and reads `.results[0]`.
  * @param {D1Database} db
  * @param {{id: string}} account
  * @param {string} path */
@@ -527,10 +529,18 @@ export async function reconcileIndex(db, store, account, options = {}) {
   // The trigram table is rebuilt with the index, not left stale: the rows it
   // holds mirror file_index's rowids, and this rebuild re-creates those rows,
   // so the old rowids are dropped first or a search would answer from rows
-  // the store no longer has.
+  // the store no longer has. `account_id` on the trigram table is UNINDEXED,
+  // so a `DELETE ... WHERE account_id = ?` would scan every account's FTS
+  // rows. Deleting by the rowids `file_index` already has (a seek on its
+  // account_id index, then a rowid seek in FTS) stays O(this account).
   await db.batch([
+    db
+      .prepare(
+        "DELETE FROM file_index_fts WHERE rowid IN " +
+          "(SELECT rowid FROM file_index WHERE account_id = ?1)",
+      )
+      .bind(account.id),
     db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id),
-    db.prepare("DELETE FROM file_index_fts WHERE account_id = ?1").bind(account.id),
   ]);
   for (let start = 0; start < rows.length; start += batchSize * ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * ROWS_PER_STATEMENT);
