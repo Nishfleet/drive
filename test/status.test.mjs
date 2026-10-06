@@ -1063,6 +1063,10 @@ test("the Worker reads a device's reported queue into the status payload", async
     .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
     .bind(account.id)
     .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
+    .bind(account.id)
+    .run();
   const paused = await (await poll()).json();
   assert.equal(paused.upload.paused, true);
   assert.ok(
@@ -1077,6 +1081,10 @@ test("the Worker reads a device's reported queue into the status payload", async
   // makes a report stale and there is no wall clock to wait out here.
   await made.db
     .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
+    .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
     .run();
   const stale = await (await poll()).json();

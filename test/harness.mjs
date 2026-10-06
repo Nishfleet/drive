@@ -90,6 +90,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-address send counters (drive#550): 5 links an hour, 20 a day
   // per inbox; the guard spends a slot only when both windows have room.
   "drive/0026_signin_address_sends.sql",
+  // Per-device upload-queue reports (drive#516). Additive table keyed by
+  // account and device. Numbered 0027 because 0022–0026 are already taken.
+  "drive/0027_device_queue_reports.sql",
 ]);
 
 /**
