@@ -362,6 +362,12 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 	return renewed, nil
 }
 
+// ClearQueueReport drops this device's live upload-queue row so a 15-minute
+// freshness window cannot show a ghost queue after logout.
+func (c *APIClient) ClearQueueReport() error {
+	return c.do(http.MethodDelete, queueReportPath, nil, nil)
+}
+
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE
 // /v1/device/token). The Authorization header carries the token, so the
 // caller revokes exactly its own credential. A 401 from the Worker means the

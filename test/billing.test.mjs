@@ -25,6 +25,7 @@ import {
   gbMonths,
   handleUsageRequest,
   meteredMonthlyBillUsd,
+  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
@@ -51,6 +52,9 @@ const workerFetch =
 // The minutes in a 30-day calendar month, the divisor for a month like April
 // (drive#531). Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
 const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
@@ -58,6 +62,20 @@ const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 /** The same dollars the module formats, for a label assertion. */
 /** @param {number} cents */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+test("the divisor is the calendar month's own minutes, whatever the month", () => {
+  // drive#531: each month divides by its own length, so 1 TB held all month
+  // is $10.00 in a 30-day month and in a 31-day one alike. The literals are
+  // the gate: monthBillCents divides by monthMinutes directly, so a wrong
+  // bill needs no comparison to ship, and every caller reads the month through
+  // this one function (src/billing.js minutesInMonth reads UTC). Only a
+  // literal catches it. Chosen mid-month and mid-day: a local-time read would
+  // name the adjacent month on the other side of the world.
+  assert.equal(minutesInMonth("2026-09-16T12:00:00.000Z"), 43_200, "September (30 days)");
+  assert.equal(minutesInMonth("2026-10-16T12:00:00.000Z"), 44_640, "October (31 days)");
+  assert.equal(minutesInMonth("2027-02-16T12:00:00.000Z"), 40_320, "February (28 days)");
+  assert.equal(minutesInMonth("2028-02-16T12:00:00.000Z"), 41_760, "February (leap, 29 days)");
+});
 
 test("the formula edges, held all month", () => {
   // [GB, cents].
@@ -364,7 +382,13 @@ test("the usage summary is the empty month before the meter lands", () => {
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
   const account = { id: "1", name: "Your drive" };
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -381,9 +405,36 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     account,
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
   assert.equal(posted.headers.get("allow"), "GET");
+});
+
+test("the usage endpoint refuses a month that is not an instant, and one it was not given", () => {
+  // drive#559: the month is the caller's (src/index.js owns the one boundary)
+  // and the answer names it, so a caller that hands over nothing, or a day
+  // that is not an instant, is a caller bug the read refuses by name rather
+  // than shipping a heading nobody can check a statement against. The gate is
+  // first (account-gate.test.mjs pins the 401 below it), so the account here
+  // is signed in and only the month is wrong.
+  const account = { id: "1", name: "Your drive" };
+  const withNone = () =>
+    handleUsageRequest(new Request("https://drive.test/api/usage"), account, null, null, "");
+  assert.throws(withNone, /handleUsageRequest needs the month's first instant/);
+  assert.throws(
+    () =>
+      handleUsageRequest(
+        new Request("https://drive.test/api/usage"),
+        account,
+        null,
+        null,
+        "next month",
+      ),
+    /handleUsageRequest needs the month's first instant/,
+  );
 });
 
 test("the Worker routes the usage read to the handler", async () => {
