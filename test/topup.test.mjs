@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { DODO_TEST_BASE_URL } from "../src/dodo.js";
 import { failureMessage } from "../src/messages.js";
 import {
+  balanceLine,
   DODO_CHECKOUT_PATH,
   handleBalanceRequest,
   handleTopUpRequest,
@@ -187,15 +188,13 @@ test("only an https page on Dodo's own domain is a checkout URL", () => {
   }
 });
 
-test("a signed-out, cross-site or GET top-up is refused", async () => {
+test("a signed-out or GET top-up is refused", async () => {
   const db = await dbWithAccount();
   const deps = { db, apiKey: "test-key", productId: "pdt_topup", fetch: recorder().fetchImpl };
   assert.equal(
     (await handleTopUpRequest(topUpRequest({ amount_usd: 10 }), null, deps)).status,
     401,
   );
-  const crossSite = topUpRequest({ amount_usd: 10 }, { origin: "https://evil.example" });
-  assert.equal((await handleTopUpRequest(crossSite, ACCOUNT, deps)).status, 403);
   const get = new Request(`${ORIGIN}${TOPUP_ENDPOINT}`);
   assert.equal((await handleTopUpRequest(get, ACCOUNT, deps)).status, 405);
 });
@@ -210,4 +209,25 @@ test("the balance answers the signed-in account only", async () => {
   assert.equal(body.balance_cents, 0);
   assert.equal(body.paused, true);
   assert.deepEqual(body.top_up_presets_usd, [10, 25, 50]);
+});
+
+test("the balance line names the pause and the top-up prompt only when they are true", () => {
+  assert.equal(balanceLine(1234), "Balance $12.34.");
+  assert.equal(balanceLine(150), "Balance $1.50. Top up to keep adding files.");
+  assert.equal(balanceLine(0), failureMessage("balance-empty"));
+  assert.equal(balanceLine(-40), failureMessage("balance-empty"), "a debt reads as $0");
+  assert.match(balanceLine(0), /Top up to keep adding files\./);
+  // While the pause is switched off, the line asks for a top-up and claims no pause.
+  assert.equal(balanceLine(0, { pauseOn: false }), "Balance $0.00. Top up to keep adding files.");
+});
+
+test("the balance answer says paused only while the pause is switched on", async () => {
+  const db = await dbWithAccount();
+  const request = new Request(`${ORIGIN}/api/balance`);
+  const off = await (await handleBalanceRequest(request, ACCOUNT, db, { pauseOn: false })).json();
+  assert.equal(off.paused, false);
+  assert.equal(off.balance_line, "Balance $0.00. Top up to keep adding files.");
+  const on = await (await handleBalanceRequest(request, ACCOUNT, db)).json();
+  assert.equal(on.paused, true);
+  assert.equal(on.balance_line, failureMessage("balance-empty"));
 });

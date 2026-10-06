@@ -13,6 +13,10 @@
 // secret, a key, another user's path, or raw error text. test/messages.test.mjs
 // enforces both shapes on every entry, so a new entry cannot ship a stack, a
 // token or a two-step fix-it list.
+// The one top-up prompt (drive#586): the $0 pause, the low balance line, the
+// "$2 left" email and the CLI all say it in these words.
+export const TOP_UP_PROMPT = "Top up to keep adding files.";
+
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
   offline: Object.freeze({
@@ -160,6 +164,26 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Set a whole number of bytes for this page's cap.",
     next: "Pick a whole number of at least 1.",
   }),
+  // The owner's drive holds as many open links as one account may keep (drive
+  // issue #549): 50 share links or 50 upload pages. The cap is by count, not
+  // bytes, so the next step is to revoke one rather than to wait.
+  "too-many-links": Object.freeze({
+    what: "You have as many open links as one account can keep.",
+    next: "Revoke a link you no longer need, then make this one.",
+  }),
+  // A share link has served its per-link byte cap (drive issue #549): the
+  // file's own size times 30. The owner sets no cap on a public link, so the
+  // one next step is to ask for a fresh one.
+  "download-link-cap": Object.freeze({
+    what: "This link has handed out as much of the file as it can.",
+    next: "Ask the person who shared it for a new link.",
+  }),
+  // An upload-request drop named a file longer than the 255-character cap
+  // (drive issue #549). Nothing was stored; the next step is a shorter name.
+  "upload-name-too-long": Object.freeze({
+    what: "That file name is too long for this drive.",
+    next: "Rename the file to 255 characters or fewer and drop it again.",
+  }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
   // src/email-send.js is the pattern this words.
@@ -173,6 +197,12 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-exists": Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
+  }),
+  // An upload-request drop named a file the owner already has. Overwriting
+  // that file from a public link is the bug drive#518 closes.
+  "upload-name-taken": Object.freeze({
+    what: "A file with that name is already in this folder.",
+    next: "Choose another name and drop the file again.",
   }),
   // The branch this call named does not exist on this drive.
   "branch-not-found": Object.freeze({
@@ -191,6 +221,31 @@ export const FAILURE_MESSAGES = Object.freeze({
   "file-not-found": Object.freeze({
     what: "That file is not here.",
     next: "Open the folder again to see what is in it.",
+  }),
+  // The storage key this path lives at is longer than the store can hold, so the
+  // file cannot be written, parked or put back. `validatePath` counts
+  // characters and a key is counted in bytes, and the trash name percent-encodes
+  // every non-ASCII byte into three characters, so a long path that is not ASCII
+  // becomes a key the storage refuses (drive issue #567). It is the file's own
+  // name that has to change, not the drive.
+  "path-too-long": Object.freeze({
+    what: "That path is too long for this drive to store.",
+    next: "Shorten the name or move the file to a shorter folder.",
+  }),
+  // The bytes at this path changed while a delete was moving them, so the
+  // original was left alone rather than removed: the newer bytes are a save
+  // that landed while the delete ran (drive issue #567). Nothing was lost, and
+  // the delete is safe to ask for again.
+  "delete-file-changed": Object.freeze({
+    what: "That file changed while it was being deleted, so it was left alone.",
+    next: "Try the delete again.",
+  }),
+  // The same refusal on the restore half: the copy in Recently deleted
+  // changed under the restore, so it is still parked rather than removed, and
+  // the copy that ran first is what the drive holds (drive issue #567).
+  "restore-file-changed": Object.freeze({
+    what: "That file in Recently deleted changed while it was being put back.",
+    next: "Try the restore again.",
   }),
   // The branch was already approved or discarded, so there is nothing left to
   // apply or throw away.
@@ -310,6 +365,25 @@ export const FAILURE_MESSAGES = Object.freeze({
   "topup-failed": Object.freeze({
     what: "The payment page did not open, and nothing was charged.",
     next: "Try again in a minute.",
+  }),
+  // The prepaid balance is $0 or less, so uploads and new writes pause
+  // (drive#586). Reads, downloads and restore keep working, and nothing is
+  // deleted. The same words on the web, in the CLI and in an agent key error.
+  "balance-empty": Object.freeze({
+    what: "Your balance is $0, so uploads are paused while your files stay safe and downloads keep working.",
+    next: TOP_UP_PROMPT,
+  }),
+  // Auto top-up charges the card saved by a top-up, so it cannot be turned on
+  // before the first one (drive#586).
+  "auto-topup-needs-card": Object.freeze({
+    what: "Auto top-up uses the card from your first top-up, and there is none yet.",
+    next: "Top up once, then turn auto top-up on.",
+  }),
+  // The same pause seen by a stranger on a public upload page: they cannot top
+  // up someone else's drive, so they are told who can act.
+  "upload-paused-balance": Object.freeze({
+    what: "This drive is not taking uploads right now.",
+    next: "Tell the person who shared this page and try again later.",
   }),
   // The billing portal (drive#575) for an account with no Dodo customer yet:
   // there is no card to update and no invoice to read, so the next step is the

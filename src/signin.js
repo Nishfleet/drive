@@ -50,6 +50,7 @@
 
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { json } from "../workers/api/src/http.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
@@ -64,11 +65,12 @@ import {
   safeAfterSigninPath,
   sessionAccount,
 } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
+import { provisionAccountBucket } from "./files.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
+import { signinSendOutcome } from "./signin-send-limit.js";
 
 /** @typedef {import("./auth.js").Auth} Auth */
 
@@ -146,7 +148,7 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
-  noMinimumLine: PRICE.noMinimumLine,
+  noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
   emailButton: "Email me a link",
@@ -352,11 +354,6 @@ export async function handleSigninRequest(request, env) {
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  // State-changing and cookie-changing, so it refuses a request another site
-  // made on the visitor's behalf, the same rule the send route uses.
-  if (!isSameOriginRequest(request)) {
-    return json({ error: failureMessage("cross-site") }, 403);
-  }
   // The edge limits, in the same place the waitlist runs its own: after the
   // guards that refuse a request outright (a refused cross-site post spends no
   // quota) and before the body is read or the auth instance is asked, so a
@@ -522,6 +519,33 @@ export async function handleSigninRequest(request, env) {
       }
     }
   }
+  // drive#550: the per-IP and global limits above bound mail volume per IP,
+  // so a script spread across hosts still fills one inbox. This guard is
+  // keyed on the address instead: 5 links an hour and 20 a day per inbox,
+  // however many IPs the asks come from. The key is the lowercased address
+  // because that is the account key the user row is looked up by (the
+  // lower(email) query in emailHasUser), so Alice@, alice@ and ALICE@ share
+  // one ceiling. The check runs after validation and before the library is
+  // handed the send, so a refused address costs no link and no mail.
+  //
+  // The two answers differ on purpose. Over the limit the page still says
+  // "check your inbox": answering differently would tell a stranger that
+  // this is a real address that was signed up for recently, which is the
+  // enumeration the sign-in screen avoids everywhere else. A counter that
+  // failed to write is a deployment problem, not a caller over a ceiling, so
+  // it keeps drive#431's rule and answers that no link went out rather than
+  // the 202 a refused address gets — the caller gets the truth, and the
+  // failure travels to the log (src/signin-send-limit.js).
+  const sendOutcome = await signinSendOutcome(env.DRIVE_DB, email.toLowerCase());
+  if (sendOutcome === "broken") {
+    return json(signinEmailFailedBody(), 503);
+  }
+  if (sendOutcome === "refused") {
+    return json(
+      { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
+      202,
+    );
+  }
   try {
     // Hand the send to Better Auth's own handler so its rate limiter runs.
     // The in-process `auth.api` call bypasses the router's onRequest hook, so
@@ -643,6 +667,22 @@ export async function handleSigninLinkVerify(request, env) {
       } catch (cause) {
         console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
       }
+      // The account's own bucket exists from the first sign-in (drive#540):
+      // the verify step provisions `drv-<id>` through the one provisionBucket
+      // call the key mint also makes, so a customer who only ever uses the
+      // website has a bucket for the Files page and web upload, with no device
+      // key minted. Idempotent, so a returning sign-in re-checks the bucket for
+      // free and an account from before this call existed catches up here. A
+      // provisioning failure is logged loudly and the sign-in lands anyway —
+      // the Files page answers an empty folder for a bucket that is not there
+      // yet, and the key mint keeps its own call as the safety net.
+      try {
+        await provisionAccountBucket(env, account.id);
+      } catch (cause) {
+        console.error(
+          `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,
+        );
+      }
     }
   }
   // The one thing this route does is take the cookie Better Auth set onto a
@@ -695,6 +735,15 @@ function signinLinkRequest(auth, email, request) {
   const clientIp = request.headers.get("cf-connecting-ip");
   if (clientIp !== null) {
     headers.set("cf-connecting-ip", clientIp);
+  }
+  // The user-agent travels so the mail can name the browser or device
+  // that asked (drive#550): the library's own request context carries
+  // the forwarded headers into the magic-link callback, which is where
+  // the mail is built. It is a person's own string, not a key anything
+  // is bound to.
+  const userAgent = request.headers.get("user-agent");
+  if (userAgent !== null) {
+    headers.set("user-agent", userAgent);
   }
   // The body is the library's own shape, not the route's `step` wrapper.
   headers.set("content-type", "application/json");
@@ -759,23 +808,5 @@ function redirect(location, extraHeaders = {}) {
       "cache-control": "no-store",
       ...extraHeaders,
     },
-  });
-}
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} status
- * @param {Record<string, string|string[]>} [extraHeaders]
- * @returns {Response}
- */
-function json(body, status, extraHeaders = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...extraHeaders },
   });
 }

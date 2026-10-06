@@ -28,7 +28,6 @@ import worker from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
 import { DOC_PAGES } from "../src/render-docs.js";
 import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../src/seo.js";
-import { TOPUP_ENDPOINT } from "../src/topup.js";
 import apiWorker, { dispatch } from "../workers/api/src/index.js";
 import { createMemoryStore } from "../workers/api/src/keystore.js";
 import { API_PREFIX } from "../workers/api/src/routes.js";
@@ -217,6 +216,22 @@ test("the site's own asset files ship, and the API is left to the Worker", () =>
   }
 });
 
+test("the built assets carry CSP, frame-ancestors, nosniff, Referrer-Policy and HSTS", () => {
+  // public/ is the directory cf build copies into the asset layer
+  // (cloudflare.config.ts assets, this file's own comment). `_headers` is the
+  // stock Workers Static Assets file that layer parses; it is not itself a
+  // page. A missing file, or a file that drops one of these headers, is the
+  // gap drive#506 names: files, usage, sign-in and upload ship with none of
+  // them today because runWorkerFirst never sees those paths.
+  const headers = read("public/_headers");
+  assert.match(headers, /^\/\*/m, "the rules apply to every static path");
+  assert.match(headers, /Content-Security-Policy:/);
+  assert.match(headers, /frame-ancestors 'none'/);
+  assert.match(headers, /X-Content-Type-Options:\s*nosniff/i);
+  assert.match(headers, /Referrer-Policy:\s*no-referrer/i);
+  assert.match(headers, /Strict-Transport-Security:/);
+});
+
 // ------------------------------------------------------------ served, not built
 
 /**
@@ -280,6 +295,11 @@ test("the pages the issue names are served from the shipped directory", async ()
       [SITE.llmsPath, "text/plain"],
       [SITE.sitemapPath, "application/xml"],
       [SEO_DOC_PAGES[0].path, "text/html"],
+      // drive#584: the trust pages the launch checklist names, and the site's
+      // own 5xx page. Each is a public/ asset the deploy copies verbatim.
+      ["/accessibility.html", "text/html"],
+      ["/status.html", "text/html"],
+      ["/500.html", "text/html"],
     ]) {
       const response = await fetch(`${site.origin}${path}`);
       assert.equal(response.status, 200, `${path} must be served from public/`);
@@ -289,6 +309,14 @@ test("the pages the issue names are served from the shipped directory", async ()
         `${path} answered content-type ${type}, expected ${contentType}`,
       );
       assert.ok((await response.text()).length > 0, `${path} served an empty body`);
+    }
+    // The new pages are reachable: the served copy of each links both, so a
+    // person who lands on one can reach the other.
+    for (const path of ["/accessibility.html", "/status.html"]) {
+      const html = await (await fetch(`${site.origin}${path}`)).text();
+      for (const link of ["/accessibility", "/status"]) {
+        assert.ok(html.includes(`href="${link}"`), `${path} must link ${link}`);
+      }
     }
     // The served sitemap is the committed one, byte for byte: the deploy ships
     // what main carries, not a stale copy from an earlier build.
@@ -454,6 +482,120 @@ test("a binding that fails answers the one failure table's words", async () => {
   );
 });
 
+test("a browser that asked for a page gets the site's 5xx page, not JSON", async () => {
+  // drive#584: app.onError serves public/500.html when the request carries a
+  // text/html Accept, so a person following a link does not land on a bare
+  // JSON body. The JSON caller's answer above must not change, so this is the
+  // page side of the same failure. The asset layer throws on the page request
+  // and answers the 500 page, which is the real shape: the failure is wherever
+  // the asset layer is.
+  const page = read("public/500.html");
+  const response = await siteRequest(
+    new Request("https://drive.test/privacy", {
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        // A cache modifier a page request carries: it must not ride onto the
+        // error the route layer answers for the path (no-store is pinned).
+        "cache-control": "max-age=3600",
+      },
+    }),
+    {
+      ASSETS: {
+        fetch: (/** @type {Request} */ request) =>
+          new URL(request.url).pathname === "/500.html"
+            ? Promise.resolve(new Response(page, { status: 200 }))
+            : Promise.reject(new Error("the asset layer threw")),
+      },
+    },
+  );
+  assert.equal(response.status, 500, "a failed page request is still a 500");
+  const body = await response.text();
+  assert.match(body, /That did not work/, "the browser gets the site's own words");
+  assert.ok(!body.trimStart().startsWith("{"), "a browser is not handed JSON");
+  assert.equal(
+    response.headers.get("cache-control"),
+    "no-store",
+    "an error response is never cacheable, whatever the request asked for",
+  );
+  assert.equal(
+    response.headers.get("x-robots-tag"),
+    "noindex",
+    "an error page stays out of a crawler's index",
+  );
+});
+
+test("the 5xx page's asset layer going down falls back to the JSON table", async () => {
+  // The same request with no ASSETS bound at all: the branch cannot serve the
+  // page, so the caller keeps the one failure table's JSON. This is also the
+  // no-ASSETS deployment, where the 500 branch is skipped on purpose.
+  const response = await siteRequest(
+    new Request("https://drive.test/privacy", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    }),
+    {
+      ASSETS: {
+        fetch: () => Promise.reject(new Error("the asset layer is down entirely")),
+      },
+    },
+  );
+  assert.equal(response.status, 500, "the fall back answer is still a 500");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "the fallback is the message table's own words, not a stack",
+  );
+});
+
+test("a /v1/* caller that sent a browser Accept header still gets JSON", async () => {
+  // drive#584: the page-vs-JSON choice must key off the route family, not the
+  // Accept header. Java's HttpURLConnection sends
+  // "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2" by default, so an
+  // answer chosen on Accept alone would hand the CLI a page. The /v1/* family
+  // is the api Worker's, so it keeps the message table's JSON.
+  const response = await siteRequest(
+    new Request("https://drive.test/v1/health", {
+      headers: { accept: "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2" },
+    }),
+    {
+      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
+      ASSETS: { fetch: async () => new Response("<html>page</html>", { status: 200 }) },
+    },
+  );
+  assert.equal(response.status, 500, "a throwing dependency is an error status, not an open one");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "an API caller keeps the JSON table whatever Accept it sent",
+  );
+});
+
+test("an /api/* caller that sent a browser Accept header still gets JSON", async () => {
+  // The sites route family's own case, beside the /v1/* one: the page-vs-JSON
+  // choice keys off the family, so an /api/* route that threw keeps the
+  // message table's JSON whatever Accept it carried. The route is the one
+  // /api/* path that forwards to the api Worker (POST /api/keys/revoke), so a
+  // throwing binding is the real shape.
+  const response = await siteRequest(
+    new Request("https://drive.test/api/keys/revoke", {
+      method: "POST",
+      headers: {
+        accept: "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2",
+        authorization: `Basic ${btoa("k_test:not-the-secret")}`,
+      },
+    }),
+    {
+      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
+      ASSETS: { fetch: async () => new Response("<html>page</html>", { status: 200 }) },
+    },
+  );
+  assert.equal(response.status, 500, "a throwing dependency is an error status, not an open one");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "an /api/* caller keeps the JSON table whatever Accept it sent",
+  );
+});
+
 test("one host answers both families: the api Worker behind the binding", async () => {
   // The proof this issue asks for, at the level a worker can prove it: the
   // site's own route table, a service binding, and the api Worker's own
@@ -502,21 +644,12 @@ test("this Worker mounts one /api/* route ahead of the gate, and it is the revok
   // order; a middlewares array is a library detail.
 
   // The account lane's own mounts, as paths, in the order Hono runs them: the
-  // forwarded route, the gate, and the account lane's own CSRF middleware.
+  // forwarded route, the gate, and one CSRF middleware on every /api/* write
+  // (drive#506), after the gate so an anonymous request is 401 not 403.
   const lane = routes
     .filter((r) => r.method === "ALL" && r.path.startsWith("/api/"))
     .map((r) => r.path);
-  // The account-close pair (drive#235) adds two CSRF mounts, both after the
-  // gate, so the revoke is still the only /api/* route ahead of it.
-  assert.deepEqual(lane, [
-    REVOKE_PATH,
-    "/api/*",
-    "/api/files/*",
-    "/api/account/close",
-    "/api/account/close/cancel",
-    // The top-up's browser-CSRF mount (drive#586), also after the gate.
-    TOPUP_ENDPOINT,
-  ]);
+  assert.deepEqual(lane, [REVOKE_PATH, "/api/*", "/api/*"]);
   const forward = routes.findIndex((r) => r.path === REVOKE_PATH);
   const gate = routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
   assert.ok(

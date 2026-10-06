@@ -29,6 +29,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
+import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
@@ -55,25 +56,6 @@ export {
 };
 
 /**
- * Constant-time string comparison for two equal-length hex digests. A plain
- * `===` on a secret hash leaks, through timing, how many leading characters
- * were right; the lengths here are fixed by SHA-256, so the loop is a full
- * comparison either way.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
-/**
  * The stand-in key and object store. One instance per Worker isolate
  * (src/index.js), the same choice the Web Files page made for its bytes
  * (src/files.js) until the real store lands.
@@ -89,12 +71,21 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
+ * `writesPaused` is the prepaid pause (drive#586): when set, it answers
+ * whether an account's balance is $0 so its keys may not write. It is unset
+ * while the pause is switched off.
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
   const keyProvider = options.keyProvider;
   const deviceStore = options.deviceStore;
+  // Whether this deployment's provider mints credentials that die on their
+  // own (the STS path, s3-keys.js `namesSession`). The in-memory
+  // authenticate below refuses a null-expiry device row on that signal,
+  // exactly as the D1 store does, so a deployment without a database reads
+  // the same rule the D1 one enforces (drive#713).
+  const providerNamesSessions = keyProvider !== undefined && keyProvider.namesSession === true;
   const storage = options.storage;
   const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
@@ -204,6 +195,15 @@ export function createMemoryStore(options = {}) {
      */
     async requestDeviceCode(request = {}) {
       return signin.requestDeviceCode(request);
+    },
+
+    /**
+     * The pending code the approval page names, or null.
+     * @param {string} userCode
+     * @returns {Promise<import("./device-signin.js").PendingDeviceApproval|null>}
+     */
+    async pendingDeviceApproval(userCode) {
+      return signin.pendingDeviceApproval(userCode);
     },
 
     /**
@@ -332,9 +332,12 @@ export function createMemoryStore(options = {}) {
 
     /**
      * The account's keys, newest last, with no secret (there is no copy).
+     * Always a promise: the D1 store's `listPublic` is, and an un-awaited
+     * call serialises as `{}` in the export document (drive#518).
      * @param {{id: string}} account
+     * @returns {Promise<ReturnType<typeof publicDevice>[]>}
      */
-    listKeys(account) {
+    async listKeys(account) {
       if (deviceStore?.listPublic) {
         return deviceStore.listPublic(account);
       }
@@ -537,13 +540,29 @@ export function createMemoryStore(options = {}) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
-        if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+        // The one compare in http.js. A device is stored only as the hash of
+        // its secret, so both sides here are hashes: the stored one, and the
+        // hash of the secret this request presented.
+        if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
           return null;
         }
         const at = nowSeconds(now());
         // Absent and null both mean "this kind never expires" (a person's own
         // device key), so both are checked rather than one being assumed.
         if (device.expiresAt !== undefined && device.expiresAt !== null && at >= device.expiresAt) {
+          return null;
+        }
+        // drive#713: the D1 store's refusal, mirrored here. On a provider
+        // that names a session, a device row with no expiry is a row minted
+        // over a session the vendor has since ended, not a permanent key;
+        // the api holds only the secret's hash, so there is no re-minting
+        // for the caller and the row is refused with no write. A provider
+        // that names no session keeps the row a permanent key.
+        if (
+          providerNamesSessions &&
+          device.kind === "device" &&
+          (device.expiresAt === undefined || device.expiresAt === null)
+        ) {
           return null;
         }
         device.lastSeenAt = at;
@@ -660,6 +679,17 @@ export function createMemoryStore(options = {}) {
      */
     canWrite(device) {
       return device.capabilities.includes("write");
+    },
+
+    /**
+     * Whether the key's account is paused at a $0 balance (drive#586). The
+     * key keeps its powers, so reads go on and a top-up lets the same key
+     * write again at once, with nothing to mint.
+     * @param {{accountId: string}} device
+     * @returns {Promise<boolean>}
+     */
+    async balancePaused(device) {
+      return options.writesPaused ? options.writesPaused(device.accountId) : false;
     },
 
     /**

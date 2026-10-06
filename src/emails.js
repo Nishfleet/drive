@@ -10,6 +10,8 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { escapeHtml } from "./escape-html.js";
+import { TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
 export { DEFAULT_CAP_USD };
@@ -234,8 +236,49 @@ export function paymentFailedTemplate(data = {}) {
 
 // ---------------------------------------------------------------------------
 // 5) Monthly receipt -- this month's bill and, when there is one, the saved
-//    line. { billUsd, meteredUsd, ceilingUsd, capped }
+//    line. { monthIso, billUsd, meteredUsd, ceilingUsd, capped }
 // ---------------------------------------------------------------------------
+// The month the receipt is for, as an instant: the first millisecond of the
+// UTC month (`monthStart`, src/meter.js), sent as "2026-10-01T00:00:00.000Z".
+// The month is NAME rather than "this month" (drive#559) because a mail is
+// read days later and "this month" is whatever month the reader is in now. It
+// is a month, never a day, so the guard is the month shape itself: a value
+// that is not the first instant of a UTC month is refused rather than guessed
+// at, and no caller text reaches the subject.
+const MONTH_ISO = /^\d{4}-(0[1-9]|1[0-2])-01T00:00:00\.000Z$/;
+// Twelve names, one per month, in one place and in one order: the month a
+// customer reads out of their inbox. A table rather than the runtime's locale
+// table, because the receipt's words are a decision (docs/build-spec.md) and
+// an email reader's zone must not turn "October" into "Oktobri".
+const MONTH_NAMES = Object.freeze([
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+]);
+
+/**
+ * @param {unknown} value
+ * @returns {string} the month named "October 2026", for the subject and the first line
+ */
+function monthLabel(value) {
+  if (typeof value !== "string" || !MONTH_ISO.test(value)) {
+    throw new TypeError(
+      `monthIso must be a month's first instant (2026-10-01T00:00:00.000Z), got ${String(value)}`,
+    );
+  }
+  const at = new Date(value);
+  return `${MONTH_NAMES[at.getUTCMonth()]} ${at.getUTCFullYear()}, UTC`;
+}
+
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -243,6 +286,10 @@ export function paymentFailedTemplate(data = {}) {
 export function monthlyReceiptTemplate(data = {}) {
   const { billUsd, meteredUsd, ceilingUsd, capped } = data;
   const bill = requireMoney(billUsd, "billUsd");
+  // The month the rest of the numbers describe. It is checked first, before
+  // anything is rendered, so a receipt with no month in it never renders at
+  // all rather than going out with a name missing from its subject.
+  const month = monthLabel(data.monthIso);
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a
   // receipt that guessed the baseline would state the wrong saving.
@@ -252,14 +299,20 @@ export function monthlyReceiptTemplate(data = {}) {
     ceilingUsd: requireMoney(ceilingUsd, "ceilingUsd"),
     capped,
   });
-  const subject = `Your Drive receipt: ${usd(bill)} this month`;
+  const subject = `Your Drive receipt: ${month}`;
   const lines = [
-    `Your Drive bill for this month is ${usd(bill)}.`,
+    `Your Drive bill for ${month} is ${usd(bill)}.`,
+    "",
+    // The same sentence the usage page states (src/usage.js USAGE_LABELS.monthNote):
+    // a month read in two zones is two different months, so one surface says
+    // the rule once and in the same words.
+    "Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
     "",
     "This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.",
   ];
   const html_lines = [
-    `<p>Your Drive bill for this month is ${usd(bill)}.</p>`,
+    `<p>Your Drive bill for ${month} is ${usd(bill)}.</p>`,
+    "<p>Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>",
     "<p>This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.</p>",
   ];
   if (saved) {
@@ -287,15 +340,20 @@ function requireDays(value, name) {
  * @returns {string}
  */
 function requireDay(value, name) {
-  // "3 Nov", the shape purgeOnDate() sends since drive#422: a day
-  // number and the month's short name, no year. The close window is
-  // 30 days, so the year never belongs in the sentence.
+  // "3 Nov (UTC)", the shape purgeOnDate() sends since drive#689: a day
+  // number, the month's short name, and the zone the day is in. The close
+  // window is 30 days, so the year never belongs in the sentence.
+  // The zone is required, not optional: drive#689 named it because a bare
+  // day was the UTC day, and this is the gate that stops a close email
+  // going out with the silence back in it.
   // en-GB's numeric day never pads, so neither does the guard.
   if (
     typeof value !== "string" ||
-    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(value)
+    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \(UTC\)$/.test(value)
   ) {
-    throw new TypeError(`${name} must be a short date (3 Nov), got ${String(value)}`);
+    throw new TypeError(
+      `${name} must be a short date with its zone (3 Nov (UTC)), got ${String(value)}`,
+    );
   }
   return value;
 }
@@ -374,6 +432,102 @@ function finish({ subject, lines, html_lines, saved = null }) {
   return { subject, text, html: htmlLines.join("\n"), saved };
 }
 
+// ---------------------------------------------------------------------------
+// 8) Top-up receipt -- money moved onto the balance (drive#586). Sent only
+//    when the signed webhook credits a payment, never for usage.
+//    { amountUsd, balanceUsd, auto }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function topUpReceiptTemplate(data = {}) {
+  const amount = requireMoney(data.amountUsd, "amountUsd");
+  const balance = requireMoney(data.balanceUsd, "balanceUsd");
+  if (typeof data.auto !== "boolean") {
+    throw new TypeError(`auto must be true or false, got ${String(data.auto)}`);
+  }
+  const subject = `Your Drive receipt: ${usd(amount)} added`;
+  const first = data.auto
+    ? `Auto top-up added ${usd(amount)} to your Drive balance.`
+    : `You added ${usd(amount)} to your Drive balance.`;
+  const lines = [
+    first,
+    "",
+    `Your balance is now ${usd(balance)}. It never expires.`,
+    "",
+    "Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.",
+  ];
+  const html_lines = [
+    `<p>${first}</p>`,
+    `<p>Your balance is now ${usd(balance)}. It never expires.</p>`,
+    "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
+// ---------------------------------------------------------------------------
+// 9) Low balance -- the balance is at $2 or less, sent once per crossing
+//    (drive#586). { balanceUsd, autoTopUpUsd }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function lowBalanceTemplate(data = {}) {
+  const balance = requireMoney(data.balanceUsd, "balanceUsd");
+  const auto =
+    data.autoTopUpUsd === null || data.autoTopUpUsd === undefined
+      ? null
+      : requireMoney(data.autoTopUpUsd, "autoTopUpUsd");
+  const subject = `Your Drive balance is ${usd(balance)}`;
+  const next =
+    auto === null
+      ? `${TOP_UP_PROMPT} At $0 uploads pause. Downloads keep working, and nothing is deleted.`
+      : `Auto top-up is on, so ${usd(auto)} will be added from your saved card.`;
+  const lines = [`Your Drive balance is ${usd(balance)}.`, "", next];
+  const html_lines = [`<p>Your Drive balance is ${usd(balance)}.</p>`, `<p>${next}</p>`];
+  return finish({ subject, lines, html_lines });
+}
+
+// ---------------------------------------------------------------------------
+// 10) Device approve notice -- a signed-in owner approved a CLI.
+//     { deviceName, requestedAt }
+// ---------------------------------------------------------------------------
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
+function requireText(value, name) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${name} must be a non-empty string, got ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function deviceApproveNoticeTemplate(data = {}) {
+  const deviceName = requireText(data.deviceName, "deviceName");
+  const requestedAt = requireText(data.requestedAt, "requestedAt");
+  const subject = "A device asked to connect to your drive";
+  const lines = [
+    `A device named ${deviceName} asked to connect to your drive.`,
+    "",
+    `It asked at ${requestedAt}.`,
+    "",
+    "If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.",
+  ];
+  const safeName = escapeHtml(deviceName);
+  const safeAt = escapeHtml(requestedAt);
+  const html_lines = [
+    `<p>A device named ${safeName} asked to connect to your drive.</p>`,
+    `<p>It asked at ${safeAt}.</p>`,
+    "<p>If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -383,6 +537,9 @@ export const EMAIL_KINDS = Object.freeze([
   "monthly-receipt",
   "account-closed",
   "account-close-reminder",
+  "top-up-receipt",
+  "low-balance",
+  "device-approve-notice",
 ]);
 
 /**
@@ -396,6 +553,9 @@ const TEMPLATES = Object.freeze({
   "monthly-receipt": monthlyReceiptTemplate,
   "account-closed": accountClosedTemplate,
   "account-close-reminder": accountCloseReminderTemplate,
+  "top-up-receipt": topUpReceiptTemplate,
+  "low-balance": lowBalanceTemplate,
+  "device-approve-notice": deviceApproveNoticeTemplate,
 });
 
 /**

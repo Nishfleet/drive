@@ -9,7 +9,8 @@
 //
 // The rule (drive#463, Nish 2026-10-04: pay only for what you store):
 //
-//     avg_GB       = the month's GB-minutes / 43,800 (time-weighted average)
+//     avg_GB       = the month's GB-minutes / the minutes in that UTC calendar
+//                    month (time-weighted average, drive#531)
 //     storage      = min(rate x avg_GB, maxPerTb x max(1, avg_GB / 1000))
 //                    rate 2¢/GB-month, maxPerTb $10, the same for everyone
 //     downloads    = 1¢/GB above 3x the month's average stored size
@@ -45,14 +46,19 @@ import { failureMessage } from "./messages.js";
 import { PRICE, usualPlanMonthlyUsd } from "./pricing.js";
 import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 
-// Minutes in an average month (the spec's divisor): 43,800, which is
-// 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
-// 43,800 (minutes in an average month)"), kept verbatim so the meter, the
-// invoice and the page all divide by the same 43,800. Exported because the
-// pricing copy test builds its worked examples as "kept all month", which is
-// gbMinutes for a size held the whole month, and it must not work out that
-// conversion a second way.
-export const MINUTES_PER_MONTH = 43800;
+// The month's average divides by the minutes in that UTC calendar month
+// (drive#531): 40,320 for a 28-day February up to 44,640 for a 31-day month.
+// A fixed 43,800-minute "average month" read 1 TB held all of October as
+// 1.019 TB and billed $10.19, which broke "never more than $10 per TB". So
+// there is no month constant: every function below takes the month's length
+// as input, and minutesInMonth() is the one place it is worked out.
+const MINUTE_MS = 60_000;
+const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
+// The month a "kept all month" quote is worked over when the caller names
+// none. A size held all month bills the same in every month length, so the
+// choice changes no figure. It is the longest month, the one the old divisor
+// over-billed, so the worked examples are the ones the issue checked.
+export const QUOTE_MONTH_MINUTES = 31 * 1440;
 // Exported for the same reason: the docs page's worked table divides by it too,
 // so a docs example and an invoice example cannot disagree about what a TB is.
 export const GB_PER_TB = 1000;
@@ -78,11 +84,6 @@ export function billingConfigFor(price) {
     // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
-    // A bill under this rolls into the next month, and the card is charged
-    // when the running balance reaches it. One number the FAQ's words and the
-    // future collection step both read, so the copy cannot name a threshold
-    // the ledger does not use.
-    chargeThresholdUsd: 5,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
@@ -159,6 +160,40 @@ function checked(value, name, { min = 0 } = {}) {
 }
 
 /**
+ * Refuses a month length a calendar cannot have. A caller that leaves it out,
+ * or passes the retired 43,800 or a dollar cap in its place, fails here by name
+ * instead of billing on a guessed month.
+ * @param {unknown} value
+ * @returns {number}
+ */
+function checkedMonthMinutes(value) {
+  if (typeof value !== "number" || !VALID_MONTH_MINUTES.includes(value)) {
+    throw new TypeError(
+      `monthMinutes must be the minutes in a calendar month (28 to 31 days), got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * The minutes in the UTC calendar month an instant falls in (drive#531): the
+ * divisor every bill, cap and usage figure for that month reads.
+ * @param {number|Date|string} at any instant in the month
+ * @returns {number}
+ */
+export function minutesInMonth(at) {
+  const millis =
+    at instanceof Date ? at.getTime() : typeof at === "string" ? Date.parse(at) : Number(at);
+  if (typeof at === "boolean" || at === null || !Number.isFinite(millis)) {
+    throw new TypeError(`minutesInMonth needs an instant, got ${String(at)}`);
+  }
+  const instant = new Date(millis);
+  const year = instant.getUTCFullYear();
+  const month = instant.getUTCMonth();
+  return (Date.UTC(year, month + 1, 1) - Date.UTC(year, month, 1)) / MINUTE_MS;
+}
+
+/**
  * Stored bytes in decimal GB, the one conversion from the meter's unit
  * (usage_minutes.stored_bytes, drive issue #163). Exported so a caller that
  * holds the meter's own numbers reduces them here rather than dividing by a
@@ -175,26 +210,27 @@ export function storedGb(bytesValue) {
 }
 
 /**
- * GB-months: the meter's GB-minutes over the spec's 43,800-minute month. It is
- * also the month's time-weighted average stored size in GB, the avg_GB both
- * halves of the price read. `drive usage` and the usage page show it, so the
- * divisor lives in one place.
+ * GB-months: the meter's GB-minutes over the minutes in that calendar month.
+ * It is also the month's time-weighted average stored size in GB, the avg_GB
+ * both halves of the price read. `drive usage` and the usage page show it, so
+ * the division lives in one place.
  * @param {unknown} gbMinutes
+ * @param {unknown} monthMinutes minutesInMonth() of the month being billed
  */
-export function gbMonths(gbMinutes) {
+export function gbMonths(gbMinutes, monthMinutes) {
   const minutes = checked(gbMinutes, "gbMinutes");
-  return minutes / MINUTES_PER_MONTH;
+  return minutes / checkedMonthMinutes(monthMinutes);
 }
 
 /**
  * The metered cost of a month, in dollars, before the maximum: the rate on the
- * month's GB-months, so the meter, the page and the CLI divide by the same
- * 43,800.
+ * month's GB-months, so the meter, the page and the CLI divide the same way.
  * @param {number} gbMinutes the `usage_minutes` rollup for the month
+ * @param {number} monthMinutes minutesInMonth() of the month being billed
  * @param {BillingConfig} [config]
  */
-export function meteredMonthlyBillUsd(gbMinutes, config = BILLING_CONFIG) {
-  return gbMonths(gbMinutes) * billingConfig(config).rateUsdPerGbMonth;
+export function meteredMonthlyBillUsd(gbMinutes, monthMinutes, config = BILLING_CONFIG) {
+  return gbMonths(gbMinutes, monthMinutes) * billingConfig(config).rateUsdPerGbMonth;
 }
 
 /**
@@ -215,10 +251,13 @@ export function monthlyMaximumUsd(averageGb, config = BILLING_CONFIG) {
  * monthBillCents().totalCents, and the name says storage so a caller cannot
  * mistake it for the whole bill.
  * @param {number} gbMinutes the month's metered GB-minutes
+ * @param {number} monthMinutes minutesInMonth() of the month being billed
  * @param {BillingConfig} [config=BILLING_CONFIG]
  */
-export function monthlyStorageBillUsd(gbMinutes, config = BILLING_CONFIG) {
-  return monthBillCents({ gbMinutes, config: billingConfig(config) }).storageCents / 100;
+export function monthlyStorageBillUsd(gbMinutes, monthMinutes, config = BILLING_CONFIG) {
+  return (
+    monthBillCents({ gbMinutes, monthMinutes, config: billingConfig(config) }).storageCents / 100
+  );
 }
 
 /**
@@ -228,12 +267,20 @@ export function monthlyStorageBillUsd(gbMinutes, config = BILLING_CONFIG) {
  * is the one call the copy gate and anything else quoting a size share.
  * @param {unknown} tb the stored size in TB, held the whole month
  * @param {BillingConfig} [config=BILLING_CONFIG]
+ * @param {number} [monthMinutes=QUOTE_MONTH_MINUTES] the month it is held for;
+ *   a size held all month bills the same in every month length
  * @returns {{storageUsd: number, maximumUsd: number, billUsd: number}}
  */
-export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
+export function monthlyBillForStoredTb(
+  tb,
+  config = BILLING_CONFIG,
+  monthMinutes = QUOTE_MONTH_MINUTES,
+) {
   const size = checked(tb, "tb");
+  const minutes = checkedMonthMinutes(monthMinutes);
   const bill = monthBillCents({
-    gbMinutes: size * GB_PER_TB * MINUTES_PER_MONTH,
+    gbMinutes: size * GB_PER_TB * minutes,
+    monthMinutes: minutes,
     config: billingConfig(config),
   });
   return Object.freeze({
@@ -303,7 +350,8 @@ function refuseFoundingFields(input, name) {
  * The month's bill, in integer cents (drive#463): the one function the
  * invoice, the usage page and the cap all read.
  *
- *   meteredCents  = rate x avg GB, avg = month.gbMinutes / 43,800
+ *   meteredCents  = rate x avg GB, avg = month.gbMinutes / month.monthMinutes
+ *                   (the minutes in that UTC calendar month, drive#531)
  *   maximumCents  = maxPerTb x max(1, avg TB)
  *   storageCents  = min(metered, maximum)
  *   downloadCents = 1¢/GB for the bytes over 3x the month's average stored
@@ -320,7 +368,7 @@ export function monthBillCents(month) {
     throw new TypeError(`monthBillCents needs a month object, got ${String(month)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
+    /** @type {{gbMinutes?: unknown, monthMinutes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
       month
     );
   for (const retired of RETIRED_MONTH_FIELDS) {
@@ -332,6 +380,7 @@ export function monthBillCents(month) {
   }
   refuseFoundingFields(month, "month");
   const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
+  const monthMinutes = checkedMonthMinutes(fields.monthMinutes);
   const downloadBytes =
     fields.downloadBytes === undefined ? 0 : checked(fields.downloadBytes, "month.downloadBytes");
   const averageStoredGb =
@@ -348,8 +397,8 @@ export function monthBillCents(month) {
       "month.downloadBytes needs month.averageStoredGb: a month with downloads cannot have no stored average",
     );
   }
-  const averageGb = gbMonths(gbMinutes);
-  const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, config) * 100);
+  const averageGb = gbMonths(gbMinutes, monthMinutes);
+  const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, monthMinutes, config) * 100);
   const maximumCents = Math.round(monthlyMaximumUsd(averageGb, config) * 100);
   const storageCents = Math.min(meteredCents, maximumCents);
   const downloadCents = Math.round(
@@ -386,9 +435,10 @@ export function monthBillCents(month) {
  * saving at all.
  * @param {unknown} bill a monthBillCents() result
  * @param {number} gbMinutes the same month's GB-minutes, for the plan's size
+ * @param {number} monthMinutes minutesInMonth() of the same month
  * @returns {{usd: number, planUsd: number, copy: string}|null}
  */
-export function savedLine(bill, gbMinutes) {
+export function savedLine(bill, gbMinutes, monthMinutes) {
   if (typeof bill !== "object" || bill === null) {
     throw new TypeError(`savedLine needs a monthBillCents result, got ${String(bill)}`);
   }
@@ -397,7 +447,7 @@ export function savedLine(bill, gbMinutes) {
   const metered = checked(fields.meteredCents, "bill.meteredCents");
   const maximum = checked(fields.maximumCents, "bill.maximumCents");
   const storage = checked(fields.storageCents, "bill.storageCents");
-  const averageTb = gbMonths(gbMinutes) / GB_PER_TB;
+  const averageTb = gbMonths(gbMinutes, monthMinutes) / GB_PER_TB;
   if (storage === 0) {
     return null;
   }
@@ -428,23 +478,39 @@ export function savedLine(bill, gbMinutes) {
 
 /**
  * The bill so far, compared with the cap, and whether the drive is read-only.
- * The cap counts the storage line of monthBillCents() — min(metered so far,
- * maximum) — not the raw meter, so the cap can never pass what the invoice
- * will be. At the cap the api Worker deletes each write-capable key and mints
- * read-only ones; the CLI restarts the mount. Nothing is deleted.
+ * The cap counts the total of monthBillCents() — the storage line, min(metered
+ * so far, maximum), plus the download line — not the raw meter, so the cap can
+ * never pass what the invoice will be, and a month of downloads alone reaches
+ * the cap the way a month of storage does (drive#496). At the cap the api
+ * Worker deletes each write-capable key and mints read-only ones; the CLI
+ * restarts the mount. Nothing is deleted.
  * @param {unknown} gbMinutes metered so far this month
+ * @param {unknown} monthMinutes minutesInMonth() of this month
  * @param {unknown} capUsd the account's cap in dollars
  * @param {BillingConfig} [config=BILLING_CONFIG]
+ * @param {{downloadBytes?: number, averageStoredGb?: number}} [downloads] the
+ *   month's download bytes and average stored size; omitted is a storage-only
+ *   month
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
-export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG) {
+export function capStatus(
+  gbMinutes,
+  monthMinutes,
+  capUsd,
+  config = BILLING_CONFIG,
+  downloads = {},
+) {
   const minutes = checked(gbMinutes, "gbMinutes");
+  const length = checkedMonthMinutes(monthMinutes);
   const cap = checked(capUsd, "capUsd");
   const counted =
     monthBillCents({
       gbMinutes: minutes,
+      monthMinutes: length,
+      downloadBytes: downloads.downloadBytes ?? 0,
+      averageStoredGb: downloads.averageStoredGb ?? 0,
       config: billingConfig(config),
-    }).storageCents / 100;
+    }).totalCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it: a bill
   // that lands exactly on the cap is what the person agreed to pay. Passing the
   // cap is what cuts writes off.
@@ -557,7 +623,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown}} */ (
+    /** @type {{gbMinutes?: unknown, monthMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown}} */ (
       usage
     );
   // The peak no longer sets any number on the bill (drive#463: the maximum
@@ -569,6 +635,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
   }
   refuseFoundingFields(usage, "usage");
   const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
+  const monthMinutes = checkedMonthMinutes(fields.monthMinutes);
   const storedGb = checked(fields.storedGb, "usage.storedGb");
   const downloadBytes = checked(fields.downloadBytes, "usage.downloadBytes");
   const averageStoredGb = checked(fields.averageStoredGb, "usage.averageStoredGb");
@@ -588,12 +655,13 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
   const cardOnFile =
     fields.cardOnFile === undefined ? fields.cardAdded === true : fields.cardOnFile === true;
   const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
-  const months = gbMonths(gbMinutes);
+  const months = gbMonths(gbMinutes, monthMinutes);
   // The one bill function (drive#463): storage up to the maximum, plus the
   // download line. The page's cost and the cap both read it, so neither can
   // work out a different number.
   const bill = monthBillCents({
     gbMinutes,
+    monthMinutes,
     downloadBytes,
     averageStoredGb,
     config,
@@ -608,14 +676,17 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     // The one function's whole result, cents and invoice lines, so the page,
     // the CLI and the Dodo push read the same bytes.
     billCents: bill,
-    saved: savedLine(bill, gbMinutes),
+    saved: savedLine(bill, gbMinutes, monthMinutes),
     downloads: Object.freeze({
       freeBytes: downloads.freeBytes,
       usedBytes: downloadBytes,
       billableBytes: downloads.billableBytes,
       usd: downloads.usd,
     }),
-    cap: capStatus(gbMinutes, effectiveCap, config),
+    cap: capStatus(gbMinutes, monthMinutes, effectiveCap, config, {
+      downloadBytes,
+      averageStoredGb,
+    }),
     // The finished strings the page sets and `drive usage` prints. One place
     // formats each number, so a change here moves both surfaces together.
     labels: Object.freeze({
@@ -714,10 +785,20 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null}|null} account the signed-in account, or null when signed out. `usage` is the
+ *   month's own metered numbers, read by the route from the account store's
+ *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
+ * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
+ * @param {string} [monthIso] the month's own first instant as the Worker sends it ("2026-10-01T00:00:00.000Z"), from the one boundary the meter, the cap walk and the invoice read (src/index.js, src/meter.js monthStart). The caller owns the month so this module carries no second answer to what month the numbers belong to. It sits behind the two defaults above, so it is written `[monthIso]` and defaults to empty: a caller that leaves it out is refused below by name, the same as one that sends a day that is not an instant.
  */
-export function handleUsageRequest(request, account, upload = null) {
+export function handleUsageRequest(
+  request,
+  account,
+  upload = null,
+  balanceLine = null,
+  monthIso = "",
+) {
   // The gate is first, before the method: an anonymous request learns nothing
   // about whether it could write, only that it is not signed in.
   if (!account) {
@@ -733,23 +814,52 @@ export function handleUsageRequest(request, account, upload = null) {
     typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
       ? account.capUsd
       : BILLING_CONFIG.defaultCapUsd;
-  const empty = usageSummary({
-    gbMinutes: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd,
-    // The write-cap basis is a provisioned account's own (unchanged): the cap
-    // line this endpoint reports still matches the cap enforceCap() stops
-    // writes at (src/index.js capStateFor). The card on file is the account's
-    // own stamp, read from the accounts row (drive#417); until it is really on
-    // file there is no charge to report, so the honest label is "no charge
-    // yet" and the page shows no bill. It is absent (false) for a caller that
-    // names no card, so the check fails closed.
-    cardAdded: true,
-    cardOnFile: account.cardOnFile === true,
-  });
+  // The month these numbers belong to, named (drive#559): the first instant of
+  // the UTC month, sent by the caller (src/index.js) from the one boundary the
+  // meter, the cap walk and the invoice read. A month that is not one is a
+  // caller bug, so it fails the read rather than shipping a page with a
+  // heading nobody can check a statement against.
+  if (typeof monthIso !== "string" || Number.isNaN(new Date(monthIso).getTime())) {
+    throw new TypeError(
+      `handleUsageRequest needs the month's first instant, got ${String(monthIso)}`,
+    );
+  }
+  // The month's own numbers, when the route read them (drive#496). The route
+  // passes the account store's `monthUsage` result — `monthUsageThrough` behind
+  // `usageSummary`'s shape, the same metered month the cap and the invoice
+  // read — so /api/usage reports what the drive actually holds and has
+  // downloaded rather than the empty month this used to build. Without it
+  // (the unit tests that call the handler directly, and a deployment with no
+  // DRIVE_DB) the empty month stands and the response is still well formed;
+  // a real deployment always has the binding, and the route passes the read
+  // whenever it can.
+  const metered = account.usage;
+  const empty =
+    metered !== null && typeof metered === "object"
+      ? usageSummary(
+          /** @type {Parameters<typeof usageSummary>[0]} */ (
+            /** @type {Record<string, unknown>} */ (metered)
+          ),
+        )
+      : usageSummary({
+          gbMinutes: 0,
+          // The month this read falls in sets the divisor (drive#531).
+          monthMinutes: minutesInMonth(Date.now()),
+          storedGb: 0,
+          storedDaily: [],
+          downloadBytes: 0,
+          averageStoredGb: 0,
+          capUsd,
+          // The write-cap basis is a provisioned account's own (unchanged): the cap
+          // line this endpoint reports still matches the cap enforceCap() stops
+          // writes at (src/index.js capStateFor). The card on file is the account's
+          // own stamp, read from the accounts row (drive#417); until it is really on
+          // file there is no charge to report, so the honest label is "no charge
+          // yet" and the page shows no bill. It is absent (false) for a caller that
+          // names no card, so the check fails closed.
+          cardAdded: true,
+          cardOnFile: account.cardOnFile === true,
+        });
   // The cap line rides on the response rather than inside usageSummary(): the
   // summary is money (numbers only, which is what the usage page's chart and
   // the invoice read), and building the line here is what lets the Go CLI print
@@ -762,7 +872,10 @@ export function handleUsageRequest(request, account, upload = null) {
   // throws on a value that is not a queue, so a broken report fails the read
   // rather than printing a plausible line about bytes nobody counted.
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
-  const body = { ...empty, capLine: capLine(empty.cap), uploadLine };
+  // The month rides on the answer finished: the instant, not a name, because
+  // the page writes the month's name in the browser's own words and a date
+  // rendered on the server is a UTC date (drive#559).
+  const body = { ...empty, monthIso, capLine: capLine(empty.cap), uploadLine, balanceLine };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
 

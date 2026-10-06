@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The conflict rule (drive issue #30). Each test drives the real code
@@ -128,13 +129,46 @@ type fakeConflictBackend struct {
 	// alwaysClobber clobbers every name, which is the case where the
 	// guard must give up rather than claim another writer's save.
 	alwaysClobber bool
+	hashErr       map[string]error
+	// versions is the size and mtime operations/stat reports per object.
+	versions map[string]objectVersion
+}
+
+type objectVersion struct {
+	size    int64
+	modTime time.Time
 }
 
 func newFakeBackend() *fakeConflictBackend {
 	return &fakeConflictBackend{
-		objects: map[string]string{},
-		exports: map[string]string{},
+		objects:  map[string]string{},
+		exports:  map[string]string{},
+		hashErr:  map[string]error{},
+		versions: map[string]objectVersion{},
 	}
+}
+
+func (f *fakeConflictBackend) remoteVersion(_ context.Context, name string) (int64, time.Time, bool, error) {
+	if f.failWith != nil {
+		return 0, time.Time{}, false, f.failWith
+	}
+	if _, ok := f.objects[name]; !ok {
+		return 0, time.Time{}, false, nil
+	}
+	v := f.versions[name]
+	return v.size, v.modTime, true, nil
+}
+
+// landAs records the object at name as the version of the local file p,
+// which is what rclone's upload of this device's save leaves in storage.
+func (f *fakeConflictBackend) landAs(t *testing.T, name, etag, p string) {
+	t.Helper()
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.objects[name] = etag
+	f.versions[name] = objectVersion{size: info.Size(), modTime: info.ModTime()}
 }
 
 func (f *fakeConflictBackend) queue(context.Context) ([]queueEntry, error) {
@@ -152,6 +186,9 @@ func (f *fakeConflictBackend) remoteHas(_ context.Context, name string) (bool, e
 func (f *fakeConflictBackend) remoteHash(_ context.Context, name string) (string, error) {
 	if f.failWith != nil {
 		return "", f.failWith
+	}
+	if err := f.hashErr[name]; err != nil {
+		return "", err
 	}
 	return f.objects[name], nil
 }
@@ -289,22 +326,18 @@ func TestConflictGuardNamesASkipOnce(t *testing.T) {
 	if err := os.MkdirAll(mountDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	big := filepath.Join(mountDir, "movie.mov")
-	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Truncate(big, conflictStageMax+1); err != nil {
-		t.Fatal(err)
-	}
+	// A save that left the drive before the pass can stage it is still a
+	// named skip. A file over the staging cap is not: that case is watched
+	// by fingerprint (TestConflictGuardComparesALargeFileByFingerprint).
 	f := newFakeBackend()
 	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
-	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	f.pending = []queueEntry{{Name: "gone.txt", Size: 4}}
 	first, err := g.pass(context.Background(), f)
 	if err != nil {
 		t.Fatalf("pass: %v", err)
 	}
-	if len(first.Skipped) != 1 || first.Skipped[0].Remote != "movie.mov" {
-		t.Fatalf("Skipped = %+v, want movie.mov", first.Skipped)
+	if len(first.Skipped) != 1 || first.Skipped[0].Remote != "gone.txt" {
+		t.Fatalf("Skipped = %+v, want gone.txt", first.Skipped)
 	}
 	second, err := g.pass(context.Background(), f)
 	if err != nil {
@@ -603,8 +636,11 @@ func TestConflictGuardWaitsForASaveThatHasNotLandedYet(t *testing.T) {
 	}
 }
 
-// TestConflictGuardSkipsASaveTooLargeToStage proves the one skip is named.
-func TestConflictGuardSkipsASaveTooLargeToStage(t *testing.T) {
+// TestConflictGuardComparesALargeFileByFingerprint proves a save over the
+// staging cap is still watched: it is compared by size/mtime (and the remote
+// ETag via remoteHash) rather than skipped, and a conflict is named without
+// claiming a copy there are no staged bytes for.
+func TestConflictGuardComparesALargeFileByFingerprint(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
 	if err := os.MkdirAll(mountDir, 0o700); err != nil {
@@ -624,20 +660,112 @@ func TestConflictGuardSkipsASaveTooLargeToStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pass: %v", err)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
-		t.Errorf("Skipped = %+v, want the save that was left alone", res.Skipped)
+	if len(res.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want the large save watched not skipped", res.Skipped)
 	}
-	if len(res.Skipped) == 1 && res.Skipped[0].Reason == "" {
-		t.Error("a skip with no reason is a lost save nobody was told about")
+	if g.seen["movie.mov"] == nil {
+		t.Fatal("the large save is not watched")
 	}
-	// A skipped save is not a watched save: the guard never claims it.
 	f.pending = nil
-	f.objects["movie.mov"] = "someone-elses-save"
-	if _, err := g.pass(context.Background(), f); err != nil {
+	f.landAs(t, "movie.mov", "this-device-etag", big)
+	res, err = g.pass(context.Background(), f)
+	if err != nil {
 		t.Fatalf("pass: %v", err)
 	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want no skip when this device's large upload lands", res.Skipped)
+	}
+}
+
+func TestConflictGuardOwnLargeUploadIsNotASkip(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.landAs(t, "movie.mov", "etag-of-this-upload", big)
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want none for this device's own large upload", res.Skipped)
+	}
 	if len(f.copied) != 0 {
-		t.Errorf("claimed a conflict for a save it had skipped: %v", f.copied)
+		t.Errorf("claimed a conflict copy with no staged bytes: %v", f.copied)
+	}
+}
+
+// TestConflictGuardNamesALargeOverwrite proves the late overwrite the
+// fingerprint watch exists for: another device's version of a file too large
+// to stage lands, its size and mtime are not this device's, and the guard
+// names it rather than reading it as this device's own upload.
+func TestConflictGuardNamesALargeOverwrite(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["movie.mov"] = "etag:other-device"
+	f.versions["movie.mov"] = objectVersion{size: conflictStageMax + 2, modTime: time.Now().Add(time.Minute)}
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
+		t.Errorf("Skipped = %+v, want the overwritten large save named", res.Skipped)
+	}
+	if len(g.seen) != 0 {
+		t.Errorf("still watches %v", g.seen)
+	}
+}
+
+func TestConflictGuardNamesAPersistentHashError(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"ok.txt": "ok\n"})
+	f.pending = []queueEntry{{Name: "ok.txt", Size: 3}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.hashErr["ok.txt"] = errors.New("empty md5")
+	var res ConflictResult
+	var err error
+	for i := 0; i < conflictHashFailPolls; i++ {
+		res, err = g.pass(context.Background(), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "ok.txt" {
+		t.Errorf("Skipped = %+v, want the hash error named after %d fails", res.Skipped, conflictHashFailPolls)
 	}
 }
 
@@ -669,6 +797,147 @@ func TestConflictGuardReportsAFailingPass(t *testing.T) {
 
 var errConflictTestQueue = &conflictTestError{"queue"}
 
+func TestConflictGuardHoldsAHashErrorOnThatEntryOnly(t *testing.T) {
+	g, mountDir, f := guardFor(t, "mac", map[string]string{
+		"ok.txt":  "ok\n",
+		"bad.txt": "bad\n",
+	})
+	_ = mountDir
+	f.pending = []queueEntry{{Name: "ok.txt", Size: 3}, {Name: "bad.txt", Size: 4}}
+	f.hashErr["bad.txt"] = errors.New("empty md5")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("a hash error on one path failed the pass: %v", err)
+	}
+	if g.seen["ok.txt"] == nil {
+		t.Fatal("the good save was not watched")
+	}
+	if g.seen["bad.txt"] == nil {
+		t.Fatal("the failing hash did not hold its entry")
+	}
+	if len(res.Claimed) != 0 {
+		t.Errorf("claimed %v on a pass with a hash error", res.Claimed)
+	}
+}
+
+// TestConflictGuardDoesNotClaimAnUnreadBaseline proves a save whose baseline
+// hash could not be read at first sight is not claimed as a conflict against
+// the version it was always going to replace, and that the baseline is read
+// again on the next pass.
+func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
+	f.objects["report.txt"] = md5Hex("the version before the save\n")
+	f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
+	f.hashErr["report.txt"] = errors.New("hashsum timed out")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if !g.seen["report.txt"].baselineUnknown {
+		t.Fatal("a failed baseline read is not marked unknown")
+	}
+	// The upload leaves the queue without landing, and the read works again.
+	delete(f.hashErr, "report.txt")
+	f.pending = nil
+	var named []ConflictSkip
+	for i := 0; i < conflictClaimPolls+1; i++ {
+		res, err := g.pass(context.Background(), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Claimed) != 0 {
+			t.Fatalf("claimed %v against the version the save replaces", res.Claimed)
+		}
+		named = append(named, res.Skipped...)
+	}
+	if len(f.copied) != 0 {
+		t.Errorf("copied %v", f.copied)
+	}
+	if len(named) != 1 || named[0].Remote != "report.txt" {
+		t.Errorf("Skipped = %+v, want the save with an unread baseline named once", named)
+	}
+}
+
+// TestConflictGuardRereadsTheBaselineWhileQueued proves the baseline is read
+// again on the next pass while the save is still queued.
+func TestConflictGuardRereadsTheBaselineWhileQueued(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
+	before := md5Hex("the version before the save\n")
+	f.objects["report.txt"] = before
+	f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
+	f.hashErr["report.txt"] = errors.New("hashsum timed out")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.hashErr, "report.txt")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	save := g.seen["report.txt"]
+	if save.baselineUnknown || save.previous != before {
+		t.Errorf("baselineUnknown=%v previous=%q, want the re-read baseline %q", save.baselineUnknown, save.previous, before)
+	}
+}
+
+// TestConflictGuardNamesALargeFileWhoseVersionCannotBeRead proves a failing
+// version read on a large file is named after conflictHashFailPolls passes
+// rather than retried silently for ever.
+func TestConflictGuardNamesALargeFileWhoseVersionCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := &versionFailBackend{fakeConflictBackend: newFakeBackend()}
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["movie.mov"] = "etag:new"
+	var named []ConflictSkip
+	for i := 0; i < conflictHashFailPolls; i++ {
+		res, err := g.pass(context.Background(), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		named = append(named, res.Skipped...)
+	}
+	if len(named) != 1 || named[0].Remote != "movie.mov" {
+		t.Errorf("Skipped = %+v, want the unreadable large save named once", named)
+	}
+}
+
+type versionFailBackend struct{ *fakeConflictBackend }
+
+func (versionFailBackend) remoteVersion(context.Context, string) (int64, time.Time, bool, error) {
+	return 0, time.Time{}, false, errors.New("stat timed out")
+}
+
+func TestConflictGuardUsesLastSyncedAsBaseline(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "newer save\n"})
+	g.synced["report.txt"] = "last-synced-hash"
+	f.objects["report.txt"] = "other-device-already-there"
+	f.pending = []queueEntry{{Name: "report.txt", Size: 11}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	save := g.seen["report.txt"]
+	if save == nil {
+		t.Fatal("the save is not watched")
+	}
+	if save.previous != "last-synced-hash" {
+		t.Errorf("previous = %q, want the last-synced hash, not the current remote", save.previous)
+	}
+}
+
 // TestConflictGuardNamesASaveItCanNoLongerRestage proves that when a save
 // grows past the staging cap between two passes, the guard does not claim
 // the older staged bytes: a conflict copy of a version nobody uploaded is
@@ -694,30 +963,26 @@ func TestConflictGuardNamesASaveItCanNoLongerRestage(t *testing.T) {
 	if err := os.Truncate(path, conflictStageMax+1); err != nil {
 		t.Fatal(err)
 	}
-	res, err := g.pass(context.Background(), f)
-	if err != nil {
+	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass after the save grew: %v", err)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
-		t.Fatalf("Skipped = %+v, want the save left alone", res.Skipped)
-	}
-	if len(res.Skipped) == 1 && res.Skipped[0].Reason == "" {
-		t.Error("the skip has no reason, so a person cannot act on it")
-	}
-	// The other device's save lands on top, but this device has nothing
-	// correct to keep, so it writes no conflict copy.
+	// The other device's save lands on top. There are no staged bytes for the
+	// grown file, so the guard names it and writes no conflict copy.
 	f.pending = nil
 	f.objects["movie.mov"] = md5Hex("another device's save\n")
-	if _, err := g.pass(context.Background(), f); err != nil {
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
 		t.Fatalf("pass after the other device's save landed: %v", err)
 	}
 	if len(f.copied) != 0 {
 		t.Errorf("copied %v for a save it could not restage", f.copied)
 	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
+		t.Errorf("Skipped = %+v, want the grown save named", res.Skipped)
+	}
 	if len(g.seen) != 0 {
 		t.Errorf("still watches %v", g.seen)
 	}
-	t.Logf("skip: %+v", res.Skipped)
 }
 
 type conflictTestError struct{ what string }
@@ -757,6 +1022,13 @@ func TestMatchHashSum(t *testing.T) {
 	}
 	if _, err := matchHashSum(lines, "missing.txt"); err == nil {
 		t.Error("matchHashSum accepted a path it cannot find")
+	}
+	got, err = matchHashSum([]string{"  multipart.bin"}, "multipart.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("empty md5 = %q, want empty so the caller compares by ETag", got)
 	}
 }
 

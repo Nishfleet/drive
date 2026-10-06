@@ -190,12 +190,12 @@ button:disabled {
     <p class="lede">One link by email.</p>
     <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
     <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
-    <p class="free">No minimum. No plans.</p>
+    <p class="free">No plans. Your balance never expires.</p>
     <!-- drive#420: the one place this page says why a card is needed
          (SIGNIN_COPY.needCard, src/signin.js). The tick box below carries only
          the short consent line, and test/signin.test.mjs fails CI when a second
          copy of the sentence comes back. -->
-    <p class="free">We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.</p>
+    <p class="free">We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
 
     <div class="card">
       <!-- Not Django: this is a static asset, and the route it posts to is not
@@ -218,6 +218,7 @@ button:disabled {
           <button class="primary" id="email-button" type="submit">Email me a link</button>
         </div>
         <p class="hint">We email a link that signs you in. No password to remember.</p>
+        <p class="hint">Signing up means you agree to the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
       </form>
 
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
@@ -225,6 +226,15 @@ button:disabled {
   </main>
 
   <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
     <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
 
