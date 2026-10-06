@@ -93,6 +93,7 @@ import {
   handleBranchesRequest,
   processBranchJob,
 } from "./branches.js";
+import { DEVICES_ENDPOINT, handleDevicesRequest } from "./devices-page.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -950,6 +951,23 @@ export function createApp() {
       fetch: dodo.DODO_FETCH,
     });
   });
+
+  // Devices page (drive#525): list live keys and revoke one at the provider.
+  // The site Worker holds DRIVE_DB, so this route works while the api Worker
+  // is undeployed (#342). The store is built with the same keyProviderFor
+  // the cap and close paths use, so a revoke here withdraws the vendor key.
+  /** @param {DriveContext} c */
+  const devicesHandler = (c) => {
+    const db = c.env.DRIVE_DB;
+    const store = db
+      ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
+      : null;
+    return handleDevicesRequest(c.req.raw, c.get("account"), store);
+  };
+  app.get(DEVICES_ENDPOINT, devicesHandler);
+  app.delete(DEVICES_ENDPOINT, devicesHandler);
+  app.get(`${DEVICES_ENDPOINT}/*`, devicesHandler);
+  app.delete(`${DEVICES_ENDPOINT}/*`, devicesHandler);
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
   // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
