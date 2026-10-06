@@ -38,18 +38,35 @@ export const V1_PLATFORMS = Object.freeze(["macOS", "Linux"]);
 
 // Words that cannot be read as anything but the out-of-v1 platform and the
 // installer that carries it. A block that names one of these may stay, but only
-// when that block carries a denial below, and the sentence naming the MSI
-// carries one itself: the drive's own code has a Windows mount behind it, and
-// the honest sentence is that nothing signed ships. `winget` is deliberately
-// absent: `drive update` names it as one of four package managers on the line
-// it prints on every platform.
-export const OUT_OF_V1_PLATFORM_WORDS = Object.freeze([/\bWindows\b/i, /\bMSI\b/, /\bWinFsp\b/i]);
+// when that block says in words that the platform is outside version 1, and the
+// sentence naming the MSI carries its own label: the drive's own code has a
+// Windows mount behind it, and the honest sentence is that nothing signed
+// ships. `winget` is deliberately absent: `drive update` names it as one of
+// four package managers on the line it prints on every platform. The platform
+// and installer patterns are case-sensitive so the ordinary noun ("windows",
+// the plural of window) cannot fail a build.
+export const OUT_OF_V1_PLATFORM_WORDS = Object.freeze([
+  { label: "Windows", pattern: /\bWindows\b/ },
+  { label: "MSI", pattern: /\bMSI\b/ },
+  { label: "WinFsp", pattern: /\bWinFsp\b/i },
+]);
 
-// The denial such a sentence must carry, in that same sentence.
+// The denial a block naming an out-of-v1 platform must carry: it must say, in
+// words, that the platform is outside version 1. "unsigned" alone is not
+// enough here, or a block that offers the installer without ever saying the
+// platform is out of version 1 would pass.
 export const OUT_OF_V1_PLATFORM_DENIALS = Object.freeze([
   /not in version 1/i,
   /not a version 1/i,
   /not in v1\b/i,
+]);
+
+// The label the sentence that names the MSI must carry itself: it may say the
+// platform is out of version 1, or that the installer is unsigned or has no
+// published release. A reader skimming the bullets reads that one sentence, so
+// the label cannot live in a neighbour.
+export const OUT_OF_V1_MSI_DENIALS = Object.freeze([
+  ...OUT_OF_V1_PLATFORM_DENIALS,
   /not ready yet/i,
   /not yet released/i,
   /no published release/i,

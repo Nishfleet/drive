@@ -103,8 +103,29 @@ export function cliSubcommands() {
   if (start < 0) {
     throw new Error("cmd/drive/main.go has no `var commands` table to read");
   }
-  const body = src.slice(start, src.indexOf("}", start));
-  const names = [...body.matchAll(/"([a-z]+)":/g)].map((m) => m[1]);
+  // Brace-count to the map's own close: a command value may carry braces of
+  // its own, and stopping at the first `}` would silently drop every command
+  // after it. The name pattern is the one the docs mention, digits and hyphens
+  // included, so a subcommand the CLI gains cannot be visible to one parse and
+  // invisible to the other.
+  const open = src.indexOf("{", start);
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close < 0) {
+    throw new Error("cmd/drive/main.go's command table has no closing brace");
+  }
+  const body = src.slice(open, close);
+  const names = [...body.matchAll(/"([a-z0-9-]+)":/g)].map((m) => m[1]);
   if (names.length < 10) {
     throw new Error("cmd/drive/main.go's command table parsed to fewer than 10 subcommands");
   }

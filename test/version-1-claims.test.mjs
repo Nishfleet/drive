@@ -21,6 +21,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   NOT_OPEN,
+  OUT_OF_V1_MSI_DENIALS,
   OUT_OF_V1_PLATFORM_DENIALS,
   OUT_OF_V1_PLATFORM_WORDS,
   V1_PLATFORMS,
@@ -57,12 +58,15 @@ const shipped = (page) => {
 // first, so a page that renders but ships the wrong words fails here. The
 // changelog is left out, the way this file leaves out the spec and the
 // scoreboard: it says what past versions did, not what a reader is offered
-// today.
-const SHIPPED_PAGES = readdirSync(new URL("../public/docs/", import.meta.url))
-  .filter((name) => name.endsWith(".md") && !name.startsWith("llms"))
-  .map((name) => name.slice(0, -3))
-  .filter((page) => page !== "changelog")
-  .sort();
+// today. Lazy, so running one test file before `npm run docs:build` fails
+// inside the test with the ENOENT the missing build produces, rather than at
+// import and taking the file's other tests with it.
+const shippedPages = () =>
+  readdirSync(new URL("../public/docs/", import.meta.url))
+    .filter((name) => name.endsWith(".md") && !name.startsWith("llms"))
+    .map((name) => name.slice(0, -3))
+    .filter((page) => page !== "changelog")
+    .sort();
 
 /** The sentences of one surface, as a reader sees them: a page hard-wraps a
  * sentence across lines, and the label that makes an out-of-v1 sentence honest
@@ -233,12 +237,18 @@ test("no docs surface offers a platform version 1 does not ship", () => {
   // a reader could take. The Windows mount is real code behind an unsigned
   // installer, so the fix is not to delete the platform from the docs: it is
   // that every block naming it must say, in that block, that it is out of
-  // version 1, and that the one sentence naming the MSI must say so too.
-  const surfaces = [...SHIPPED_PAGES.map((page) => `public/docs/${page}.md`), "public/llms.txt"];
+  // version 1, and that the one sentence naming the MSI must say so too. The
+  // README is a customer surface in this file's own list, so a README that
+  // offers the Windows install is the same drift.
+  const surfaces = [
+    ...shippedPages().map((page) => `public/docs/${page}.md`),
+    "public/llms.txt",
+    "README.md",
+  ];
   for (const surface of surfaces) {
     for (const block of blocksOf(read(surface))) {
-      const named = OUT_OF_V1_PLATFORM_WORDS.filter((word) => word.test(block)).map((word) =>
-        String(word),
+      const named = OUT_OF_V1_PLATFORM_WORDS.filter((word) => word.pattern.test(block)).map(
+        (word) => word.label,
       );
       if (named.length === 0) continue;
       const denied = OUT_OF_V1_PLATFORM_DENIALS.some((denial) => denial.test(block));
@@ -249,10 +259,12 @@ test("no docs surface offers a platform version 1 does not ship", () => {
       );
       // The sentence that names the installer carries the label itself: a
       // reader skimming the bullets reads that one sentence, not the block.
+      // Leave the label in the same sentence as the MSI when you edit: the
+      // sentence-level rule fails any MSI-bearing sentence that lacks it.
       for (const sentence of sentencesOf(block)) {
         if (!/\bMSI\b/.test(sentence)) continue;
         assert.ok(
-          OUT_OF_V1_PLATFORM_DENIALS.some((denial) => denial.test(sentence)),
+          OUT_OF_V1_MSI_DENIALS.some((denial) => denial.test(sentence)),
           `${surface} says "${sentence.trim()}", which names the MSI without saying in the ` +
             "same sentence that the MSI is unsigned and outside version 1",
         );
