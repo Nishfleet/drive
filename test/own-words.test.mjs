@@ -118,7 +118,7 @@ function scanCustomerPages() {
       stripMarkupComments(readFileSync(join(root, "get-started.html"), "utf8")),
     ),
   );
-  for (const rel of walkFiles(join(root, "src"))) {
+  for (const rel of PRODUCT_JS_TREES.flatMap((tree) => walkFiles(join(root, tree)))) {
     if (!SRC_JS_EXT.has(extname(rel))) {
       continue;
     }
@@ -141,9 +141,15 @@ const TEXT_EXT = new Set([
   ".xml",
 ]);
 const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
+// The two product-JS trees this gate walks: the shared core both Workers
+// import (drive#616) and the site Worker's own src/. Customer-facing copy
+// moved into core/ with everything else, so a walk of src/ alone would stop
+// covering it.
+const PRODUCT_JS_TREES = ["core", "src"];
 // The rival's name lives in these two modules as internal data (scoreboard
-// figures, PRICE.rival). Nowhere else in src/ may a "Space" string pass.
-const RIVAL_NAME_FILES = new Set(["src/docs.js", "src/pricing.js"]);
+// figures, PRICE.rival). Nowhere else in the product trees may a "Space"
+// string pass.
+const RIVAL_NAME_FILES = new Set(["core/pricing.js", "src/docs.js"]);
 
 /** @param {string} text */
 function dropExactRivalName(text) {
@@ -336,7 +342,7 @@ function scanTree() {
   for (const rel of walkFiles(join(root, "docs-site"))) {
     hits.push(...hitsIn(rel, readFileSync(join(root, rel), "utf8")));
   }
-  for (const rel of walkFiles(join(root, "src"))) {
+  for (const rel of PRODUCT_JS_TREES.flatMap((tree) => walkFiles(join(root, tree)))) {
     if (!SRC_JS_EXT.has(extname(rel))) {
       continue;
     }
@@ -401,24 +407,24 @@ test("a price comparison that names the rival fails the public scan", () => {
     "an against-Space figure in llms.txt must fail",
   );
   assert.deepEqual(
-    hitsIn("src/pricing.js", "Space", { allowRivalName: true }),
+    hitsIn("core/pricing.js", "Space", { allowRivalName: true }),
     [],
     "the rival name constant in pricing.js stays allowed",
   );
 });
 
 test("the rival name constant is allowed only in the two comparison modules", () => {
-  const pricing = quotedStrings(readFileSync(join(root, "src/pricing.js"), "utf8")).join("\n");
+  const pricing = quotedStrings(readFileSync(join(root, "core/pricing.js"), "utf8")).join("\n");
   assert.deepEqual(
-    hitsIn("src/pricing.js", pricing, { allowRivalName: true }).filter(
+    hitsIn("core/pricing.js", pricing, { allowRivalName: true }).filter(
       (hit) => hit.term === "Space",
     ),
     [],
   );
   const other = quotedStrings('export const title = "Space";').join("\n");
   assert.ok(
-    hitsIn("src/status.js", other).some((hit) => hit.term === "Space"),
-    "a Space title in any other src module must fail",
+    hitsIn("core/status.js", other).some((hit) => hit.term === "Space"),
+    "a Space title in any other core module must fail",
   );
 });
 

@@ -12,7 +12,7 @@ import {
   minutesInMonth,
   monthBillCents,
   monthlyBillForStoredTb,
-} from "../src/billing.js";
+} from "../core/billing.js";
 
 const MONTHS = Object.freeze([
   { at: "2026-02-14T12:00:00.000Z", days: 28 },

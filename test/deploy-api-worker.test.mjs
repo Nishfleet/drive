@@ -23,12 +23,12 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { failureMessage } from "../src/messages.js";
+import { DEVICE_CODE_INTERVAL_SECONDS } from "../core/device-signin.js";
+import { createMemoryStore } from "../core/keystore.js";
+import { failureMessage } from "../core/messages.js";
 import apiConfig from "../workers/api/cloudflare.config.ts";
 import { DEVICE_GLOBAL_LIMIT, DEVICE_IP_LIMIT } from "../workers/api/src/device-routes.js";
-import { DEVICE_CODE_INTERVAL_SECONDS } from "../workers/api/src/device-signin.js";
 import { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");

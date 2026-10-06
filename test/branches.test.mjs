@@ -2,13 +2,15 @@
 // branches table is exercised against a real SQLite engine via node:sqlite,
 // with the shipped migrations applied — D1 is SQLite, so the SQL the Worker
 // runs is the SQL these tests run. Storage is the in-memory FileStore
-// (src/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
+// (core/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
 // own copy call is pinned separately in test/files.test.mjs.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
   approveBranch,
   BRANCHES_ENDPOINT,
@@ -28,9 +30,7 @@ import {
   sameFile,
   snapshotKey,
 } from "../src/branches.js";
-import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
 import { REQUIRED_BINDINGS } from "../src/health.js";
-import { failureMessage } from "../src/messages.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -57,8 +57,12 @@ function makeD1() {
     "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
+    // for the job columns and in-flight unique index it inserts through
+    // (drive#563).
     "drive/0016_founding.sql",
     "drive/0019_abuse_guards.sql",
+    "drive/0030_branch_jobs.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -237,7 +241,7 @@ async function driven() {
 }
 
 /**
- * @param {import("../src/files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {string} path
  * @returns {Promise<string|null>}
  */
@@ -379,7 +383,7 @@ test("the folder walk hands each copy the size its listing reported", async () =
   /** @type {Array<{from: string, to: string, size: number|undefined}>} */
   const copies = [];
   const listing = scoped.list.bind(scoped);
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const store = {
     ...scoped,
     async list(path) {
@@ -479,8 +483,8 @@ test("createBranch refuses a bad folder, a bad name and the branches folder", as
   assert.match(/** @type {{error: string}} */ (branches).error, /branches folder/);
 });
 
-test("listBranches reports the live changed count and the original's drift", async () => {
-  const { scoped, db, snapshots } = await driven();
+test("listBranches reports stored counts, not a live walk", async () => {
+  const { scoped, raw, db, snapshots } = await driven();
   await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   let [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.changed, 0);
@@ -488,10 +492,27 @@ test("listBranches reports the live changed count and the original's drift", asy
 
   await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
   [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.equal(branch.changed, 0, "the list does not walk the store");
+
+  const detail = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(detail.status, 200);
+  [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.changed, 1);
-  assert.equal(branch.sourceChanged, 0);
 
   await scoped.write("/Photos/a.txt", new Blob(["changed under it"]).stream(), "text/plain");
+  await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
   [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.sourceChanged, 1);
 });
@@ -579,7 +600,8 @@ test("discard throws the branch away and leaves the original untouched", async (
   );
 
   const result = await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
-  assert.deepEqual(result, { name: "work", state: "discarded", removed: 2 });
+  assert.equal(result.state, "discarded");
+  assert.equal(result.removed, 2);
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), null);
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/sub/b.txt`), null);
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
@@ -650,7 +672,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     account,
     ALLOWED,
   );
-  assert.equal(created.status, 201);
+  assert.equal(created.status, 202);
   const createdBody = await created.json();
   assert.equal(createdBody.branch.name, "work");
   assert.equal(createdBody.branch.files, 2);
@@ -687,7 +709,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     raw,
     account,
   );
-  assert.equal(approved.status, 200);
+  assert.equal(approved.status, 202);
   assert.equal((await approved.json()).state, "approved");
 
   const second = await handleBranchesRequest(
@@ -698,7 +720,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     account,
     ALLOWED,
   );
-  assert.equal(second.status, 201);
+  assert.equal(second.status, 202);
   const discarded = await handleBranchesRequest(
     request("POST", `${BRANCHES_ENDPOINT}/second/discard`, {}),
     db,
@@ -706,7 +728,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     raw,
     account,
   );
-  assert.equal(discarded.status, 200);
+  assert.equal(discarded.status, 202);
   assert.equal((await discarded.json()).state, "discarded");
 });
 
@@ -854,7 +876,7 @@ test("the route answers a closed branch with an empty diff and its state", async
     raw,
     ACCOUNT,
   );
-  assert.equal(approved.status, 200);
+  assert.equal(approved.status, 202);
   await handleBranchesRequest(
     request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
     db,
@@ -1089,7 +1111,10 @@ test("a create whose prefix clear fails closes its own claim row", async () => {
 
   const broken = {
     ...scopeStore(raw, ACCOUNT),
-    remove: async () => {
+    listKeys: async () => {
+      throw new Error("storage is down");
+    },
+    removeBatch: async () => {
       throw new Error("storage is down");
     },
   };
@@ -1169,7 +1194,7 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
   /** @type {Array<unknown>} */
   const copies = [];
   const copying = scoped.copy.bind(scoped);
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const store = {
     ...scoped,
     async copy(from, to, size) {
@@ -1247,7 +1272,7 @@ test("a pre-charge account at 900 GB cannot branch a 200 GB folder", async () =>
   /** @type {Array<unknown>} */
   const copies = [];
   const listing = scoped.list.bind(scoped);
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const store = {
     ...scoped,
     async list(path) {
@@ -1307,7 +1332,7 @@ test("branch bytes already held count toward the pre-charge limit", async () => 
   const branchBytes = 200 * GB;
   const folderBytes = 1 * GB;
   const listing = scoped.list.bind(scoped);
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const store = {
     ...scoped,
     async list(path) {
