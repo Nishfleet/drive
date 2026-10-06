@@ -26,7 +26,7 @@ import {
   scoreboardVerdict,
 } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
-import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
+import { applyMarkers, cliSubcommands, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
@@ -572,10 +572,7 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // agent notes and the help text to it), and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
-  const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
-  const tableStart = mainGo.indexOf("var commands = map[string]func([]string) error{");
-  const tableBody = mainGo.slice(tableStart, mainGo.indexOf("}", tableStart));
-  const subcommands = new Set([...tableBody.matchAll(/"([a-z]+)":/g)].map((m) => m[1]));
+  const subcommands = cliSubcommands();
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",
