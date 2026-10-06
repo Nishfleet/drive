@@ -63,6 +63,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Branch jobs (drive#563): progress and stored counts, plus the unique
   // index that covers in-flight approve/create states.
   "drive/0030_branch_jobs.sql",
+  // The bytes a queued branch create reserved (drive#553): the pre-charge
+  // guard sums it over the rows still in 'creating', and the create claim
+  // writes it. Nullable expand, so a row from before it reads as nothing.
+  "drive/0031_branch_reserved_bytes.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.

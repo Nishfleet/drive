@@ -59,10 +59,11 @@ function makeD1() {
     "drive/0015_branch_row_id.sql",
     // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
     // for the job columns and in-flight unique index it inserts through
-    // (drive#563).
+    // (drive#563), 0031 for the reserved_bytes it claims with and sums.
     "drive/0016_founding.sql",
     "drive/0019_abuse_guards.sql",
     "drive/0030_branch_jobs.sql",
+    "drive/0031_branch_reserved_bytes.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -1301,6 +1302,85 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
   const names = (await listBranches(db, snapshots, store, ACCOUNT)).map((branch) => branch.name);
   assert.deepEqual(names, ["held"]);
 });
+test("the cap's claim is what refuses the eleventh create, not the earlier count", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // The race the claim's WHERE clause exists for: the pre-check counts the
+  // account's branches, and between that count and the claim a tenth create
+  // lands. Only then does the count and the claim disagree, and only the
+  // claim's own predicate can catch it. This test builds exactly that state
+  // with real rows in the real database — ten 'open' rows already on disk —
+  // and makes the pre-check report the stale number it read before they
+  // landed. Everything else is the real adapter and the real schema, so the
+  // claim INSERT runs as it ships.
+  //
+  // Delete the `WHERE (SELECT COUNT(*) ...)` from the claim and this test
+  // fails, because the eleventh row lands, `changes` is 1, and the copy runs.
+  for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
+    db.sqlite
+      .prepare(
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, state) " +
+          "VALUES (?1,?2,?3,?4,'open')",
+      )
+      .run(ACCOUNT.id, `taken-${i}`, "/Photos", `/.branches/taken-${i}`);
+  }
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  // Only the earlier count is faked, and only down to the number it would have
+  // read one statement earlier. The claim is untouched.
+  const staleCountDb = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          if (!/SELECT COUNT\(\*\) AS open/.test(sql)) {
+            return target.prepare(sql);
+          }
+          const statement = target.prepare(sql);
+          return {
+            sql,
+            /** @param {...unknown} values */
+            bind(...values) {
+              return {
+                sql,
+                async first() {
+                  // Run the real query too, so a renamed column or a changed
+                  // state list makes this fail rather than pass dark.
+                  await statement.bind(...values).first();
+                  return { open: MAX_OPEN_BRANCHES - 1 };
+                },
+              };
+            },
+          };
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const loser = await createBranch(staleCountDb, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "eleventh",
+  });
+  assert.equal(loser.error, failureMessage("branch-limit"));
+  assert.equal(loser.status, 409);
+  assert.deepEqual(copies, [], "the loser never asked for a copy");
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "eleventh"), null);
+  // The claim really was refused by the predicate: the ten rows are still the
+  // only rows this account has.
+  const held = await listBranches(db, snapshots, store, ACCOUNT);
+  assert.equal(
+    held.length,
+    MAX_OPEN_BRANCHES,
+    "the claim inserted nothing, so the cap is not one row over",
+  );
+});
 
 // ------------------------------------------- the pre-charge guard (#553, #536)
 
@@ -1419,6 +1499,94 @@ test("branch bytes already held count toward the pre-charge limit", async () => 
     name: "work",
   });
   assert.equal(allowed.state, "open");
+});
+
+// ---------------------------------------- the queued create's reservation (#553)
+
+test("a queued create reserves the bytes it is about to copy", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // An unpaid account 700 GB into the 1 TB pre-charge limit, and a folder whose
+  // listing reports 200 GB. The create is queued (drive#563), so between the
+  // claim and the copy job's first batch the branch's bytes are in neither the
+  // file index nor the store. A create queued behind it must count them: each
+  // one measures only its own folder, so without a reservation ten queued
+  // creates of this folder would each pass a limit that would have refused
+  // the second, and then all ten copies land at 2 TB.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 700 * GB, 1);
+  const folderBytes = 200 * GB;
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      // The folder about to be branched reports one 200 GB file; no such bytes
+      // exist here.
+      return entries.map((entry) =>
+        entry.name === "a.txt" && path === "/Photos" ? { ...entry, size: folderBytes } : entry,
+      );
+    },
+  };
+  const queue = { async send() {} };
+  const first = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "queued-1" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(first.state, "creating", "the copy is the queue's job, not this request's");
+  // The claim wrote what the guard measured: the whole folder's listing, so
+  // the row carries the copy's own size and not a guess from a file count. The
+  // expected total is the fake listing's own sum — the 200 GB file plus the
+  // two bytes of the nested one it hides.
+  const listed = await store.list("/Photos");
+  const folderTotal = listed.reduce((total, entry) => total + (entry.size ?? 0), 0) + 2;
+  const row = db.sqlite
+    .prepare("SELECT reserved_bytes FROM branches WHERE name = ?")
+    .get("queued-1");
+  assert.equal(Number(row?.reserved_bytes), folderTotal);
+  // The second create is over the limit with the first one's bytes included:
+  // 700 GB live + 200 GB reserved + 200 GB incoming.
+  const second = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "queued-2" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(second.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(second.status, 403);
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "queued-2"), null);
+  // The reservation is released by the state, not by a write: once the copy
+  // has run the row leaves 'creating', and its real bytes are the store walk's
+  // to count. An absurd reservation on a row that is no longer 'creating'
+  // cannot refuse anything, which is what stops a stale column from pinning an
+  // account at the limit forever.
+  db.sqlite
+    .prepare("UPDATE branches SET state = 'open', reserved_bytes = ? WHERE name = ?")
+    .run(900 * GB, "queued-1");
+  const third = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "queued-3" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(third.state, "creating");
 });
 
 test("the branch route limits a create and fails closed without a limiter", async () => {
