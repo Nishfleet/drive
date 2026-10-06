@@ -217,7 +217,7 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 
 	cfg, _ := standinOn(t, root, "u/stray")
 	rcAddr := "127.0.0.1:" + freePort(t)
-	var note bytes.Buffer
+	var note lockedBuffer
 	cmd := exec.Command(driveBin(t), "mount",
 		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
 		"--prefix", cfg.Prefix, "--foreground")
@@ -233,7 +233,8 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	stop := func() { stopStandinProcess(cmd, mountDir) }
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { stopStandinProcess(cmd, mountDir) }) }
 	t.Cleanup(stop)
 	if !waitForMount(t, cmd, mountDir) {
 		log, _ := os.ReadFile(filepath.Join(DefaultConfigDir(home), "mount.log"))
@@ -247,7 +248,7 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 			"NFS mount", mountDir, mountSkipReason())
 	}
 
-	copiedDeadline := time.Now().Add(15 * time.Second)
+	copiedDeadline := testUntil(t, 15*time.Second)
 	var got []byte
 	var err error
 	for time.Now().Before(copiedDeadline) {
@@ -271,22 +272,34 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 		t.Errorf("stderr does not name the holding folder the files were parked in:\n%s", logged)
 	}
 
-	matches, err := filepath.Glob(strayHoldingDir(mountDir) + "*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, holding := range matches {
-		entries, readErr := os.ReadDir(holding)
-		if readErr == nil && len(entries) > 0 {
-			t.Errorf("holding folder %s still has %v after the copy into the drive", holding, namesOf(entries))
+	holdingDeadline := testUntil(t, 5*time.Second)
+	var leftover []string
+	for time.Now().Before(holdingDeadline) {
+		leftover = nil
+		matches, globErr := filepath.Glob(strayHoldingDir(mountDir) + "*")
+		if globErr != nil {
+			t.Fatal(globErr)
 		}
+		for _, holding := range matches {
+			entries, readErr := os.ReadDir(holding)
+			if readErr == nil && len(entries) > 0 {
+				leftover = append(leftover, holding+":"+strings.Join(namesOf(entries), ","))
+			}
+		}
+		if leftover == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if leftover != nil {
+		t.Errorf("holding folders still have files after the copy into the drive: %v", leftover)
 	}
 
 	seedEnv := append(os.Environ(),
 		"RCLONE_CONFIG="+RcloneConfigPath(home),
 		rcloneSecretEnv+"="+cfg.SecretKey,
 	)
-	storageDeadline := time.Now().Add(20 * time.Second)
+	storageDeadline := testUntil(t, 20*time.Second)
 	var stored []byte
 	var storeErr error
 	for time.Now().Before(storageDeadline) {
@@ -309,6 +322,47 @@ func namesOf(entries []os.DirEntry) []string {
 		names[i] = e.Name()
 	}
 	return names
+}
+
+// lockedBuffer is a bytes.Buffer that a test can read while rclone is still
+// writing the child's stderr into it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func (l *lockedBuffer) Bytes() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]byte, l.b.Len())
+	copy(out, l.b.Bytes())
+	return out
+}
+
+// testUntil is now+d, or the test deadline minus a couple of seconds so a
+// poll cannot run past the runner's own timeout.
+func testUntil(t *testing.T, d time.Duration) time.Time {
+	t.Helper()
+	at := time.Now().Add(d)
+	if dl, ok := t.Deadline(); ok {
+		leave := dl.Add(-2 * time.Second)
+		if leave.Before(at) {
+			return leave
+		}
+	}
+	return at
 }
 
 // TestStandinPauseProof is the drive issue #100 done-when proof, run against a
