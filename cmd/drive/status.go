@@ -48,7 +48,12 @@ const usageTimeout = 10 * time.Second
 // place to put the page that answers the question — every run's last line,
 // not only the broken ones, so the page is found before the drive breaks —
 // and it stays one line because the command answers in under ten.
-const troubleshootingDocsLine = "what to try: " + defaultAPIBase + "/docs/troubleshooting"
+//
+// It is a function, not a constant, because defaultAPIBase is the embedded
+// site address and only a call can read it: the address is decided at run
+// time, so a const initializer over it does not compile. The address itself
+// is docsTroubleshootingURL's, the one place this PR names the page.
+func troubleshootingDocsLine() string { return "what to try: " + docsTroubleshootingURL() }
 
 // runStatus is `drive status`: is it working, what is waiting, how much am I
 // spending (drive#117). Three questions, under ten lines. The rclone config
@@ -136,7 +141,7 @@ func runStatus(args []string) error {
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
-	fmt.Println(troubleshootingDocsLine)
+	fmt.Println(troubleshootingDocsLine())
 	return nil
 }
 
