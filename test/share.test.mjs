@@ -834,7 +834,11 @@ test("a share link serves the XML document family as a download, never a page", 
     );
     assert.equal(opened.status, 200, name);
     assert.equal(opened.headers.get("content-type"), "application/octet-stream", name);
-    assert.equal(opened.headers.get("content-disposition"), `attachment; filename="${name}"`, name);
+    assert.equal(
+      opened.headers.get("content-disposition"),
+      `attachment; filename="${name}"; filename*=UTF-8''${name}`,
+      name,
+    );
     assert.equal(opened.headers.get("x-content-type-options"), "nosniff", name);
     assert.equal(opened.headers.get("content-security-policy"), "sandbox", name);
   }
@@ -1003,7 +1007,9 @@ test("a shared file can never act as a page on our origin", async () => {
     // which no browser renders as a page, and keeps opening inline.
     assert.equal(
       opened.headers.get("content-disposition"),
-      name === "logo.svg" ? 'attachment; filename="logo.svg"' : "inline",
+      name === "logo.svg"
+        ? "attachment; filename=\"logo.svg\"; filename*=UTF-8''logo.svg"
+        : "inline",
       `${name} leaves with the disposition its served type earns`,
     );
     assert.equal(

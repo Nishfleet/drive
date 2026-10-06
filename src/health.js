@@ -73,6 +73,11 @@
 //   - The email binding. Only the token-gated internal send route uses it
 //     (src/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
+//   - HEALTH_RATE_LIMITER. It is this route's own gate (handleHealthRequest
+//     runs enforceEdgeLimits before any probe), not a dependency another
+//     route fails closed without. Probing it with a fresh random key would
+//     not prove the per-IP bucket and would add a billed op on every poll
+//     (drive#539).
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read
@@ -80,6 +85,8 @@
 // dependencies still answer inside HEALTH_TIMEOUT_MS, not three times it.
 // A dependency that does not answer in its share reports itself by name, so
 // the alert says which dependency rather than "unhealthy".
+
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
 /** The path the outside monitor (#36) polls. Public, and reads no account. */
 export const HEALTH_PATH = "/api/health";
@@ -512,6 +519,26 @@ export async function handleHealthRequest(request, env) {
       status: 405,
       headers: { allow: "GET", ...JSON_HEADERS },
     });
+  }
+  // The probe fans out to every D1, five rate-limit bindings, KV and ASSETS.
+  // The per-IP gate runs first so a stranger cannot spend those billed ops
+  // in a loop (drive#539). A missing binding fails closed, the same posture
+  // every other limited route uses.
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding:
+          /** @type {{limit(options: {key: string}): Promise<{success: boolean}>}|undefined} */ (
+            env.HEALTH_RATE_LIMITER
+          ),
+        key: clientIpKey(request, "health"),
+        name: "HEALTH_RATE_LIMITER",
+      },
+    ],
+    "health",
+  );
+  if (limited) {
+    return limited;
   }
   const result = await checkHealth(env);
   if (result.ok) {
