@@ -618,6 +618,29 @@ export function lowBalanceTemplate(data = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Fair-use pause (drive#364) -- young deletes would cost more than this
+// account pays. { copy } is the same sentence the usage page and
+// `drive status` print, so the inbox cannot disagree with them.
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function fairUsePauseTemplate(data = {}) {
+  const copy = requireText(data.copy, "copy");
+  const subject = "Uploads are paused because young deletes still count";
+  const lines = [
+    copy,
+    "",
+    "You can still open, download and delete files, and nothing extra is charged.",
+  ];
+  const html_lines = [
+    `<p>${escapeHtml(copy)}</p>`,
+    "<p>You can still open, download and delete files, and nothing extra is charged.</p>",
+  ];
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+}
+
+// ---------------------------------------------------------------------------
 // 10) Device approve notice -- a signed-in owner approved a CLI.
 //     { deviceName, requestedAt }
 // ---------------------------------------------------------------------------
@@ -669,6 +692,7 @@ export const EMAIL_KINDS = Object.freeze([
   "files-deleted",
   "top-up-receipt",
   "low-balance",
+  "fair-use-pause",
   "device-approve-notice",
 ]);
 
@@ -686,6 +710,7 @@ const TEMPLATES = Object.freeze({
   "files-deleted": filesDeletedTemplate,
   "top-up-receipt": topUpReceiptTemplate,
   "low-balance": lowBalanceTemplate,
+  "fair-use-pause": fairUsePauseTemplate,
   "device-approve-notice": deviceApproveNoticeTemplate,
 });
 

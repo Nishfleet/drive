@@ -43,7 +43,13 @@ import { failureMessage } from "./messages.js";
 // metered rate and the maximum per TB are declared there
 // once, so this file's arithmetic and the page's copy cannot disagree. What is
 // added here is operational: the default cap and the download allowance.
-import { PRICE, usualPlanMonthlyUsd } from "./pricing.js";
+import {
+  PAYMENT_FEE_BPS,
+  PRICE,
+  STORAGE,
+  storageCostCentsPerTbMonth,
+  usualPlanMonthlyUsd,
+} from "./pricing.js";
 import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 
 // The month's average divides by the minutes in that UTC calendar month
@@ -63,6 +69,7 @@ export const QUOTE_MONTH_MINUTES = 31 * 1440;
 // so a docs example and an invoice example cannot disagree about what a TB is.
 export const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
+const BYTES_PER_TB = GB_PER_TB * BYTES_PER_GB;
 
 /**
  * The billing config for a price: the price's own numbers plus the
@@ -419,6 +426,244 @@ export function monthBillCents(month) {
     downloadCents,
     totalCents: storageCents + downloadCents,
     lines,
+  });
+}
+
+/**
+ * Whole bytes, or a throw: the pause compares in bytes, so a fractional
+ * count cannot be a limit or a used total.
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {number}
+ */
+function wholeBytes(value, name) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be 0 or more whole bytes, got ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * Storage-provider numbers the pause reads. A partial object is refused
+ * rather than filled in, so a test cannot silently drop the floor or the
+ * stay.
+ * @param {unknown} storage
+ */
+function storageConfig(storage) {
+  if (typeof storage !== "object" || storage === null) {
+    throw new TypeError(`a storage config must be an object, got ${String(storage)}`);
+  }
+  const fields =
+    /** @type {{minimumStayDays?: unknown, fairUseFloorMultiple?: unknown, idriveCostCentsPerTbMonth?: unknown, backupCostCentsPerTbMonth?: unknown}} */ (
+      storage
+    );
+  if (
+    typeof fields.minimumStayDays !== "number" ||
+    !Number.isInteger(fields.minimumStayDays) ||
+    fields.minimumStayDays < 0
+  ) {
+    throw new TypeError(
+      `storage.minimumStayDays must be 0 or more whole days, got ${String(fields.minimumStayDays)}`,
+    );
+  }
+  if (
+    typeof fields.fairUseFloorMultiple !== "number" ||
+    !Number.isInteger(fields.fairUseFloorMultiple) ||
+    fields.fairUseFloorMultiple < 1
+  ) {
+    throw new TypeError(
+      `storage.fairUseFloorMultiple must be a whole number of 1 or more, got ${String(fields.fairUseFloorMultiple)}`,
+    );
+  }
+  return /** @type {typeof STORAGE} */ (storage);
+}
+
+/**
+ * What we keep after the payment fee, in integer cents. Floor is the honest
+ * leftover: a fractional cent is not money we received.
+ * @param {number} payCents
+ * @param {number} [feeBps]
+ */
+export function payAfterFeeCents(payCents, feeBps = PAYMENT_FEE_BPS) {
+  if (!Number.isSafeInteger(payCents) || payCents < 0) {
+    throw new TypeError(`payCents must be 0 or more whole cents, got ${String(payCents)}`);
+  }
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps >= 10000) {
+    throw new TypeError(`feeBps must be a whole number below 10000, got ${String(feeBps)}`);
+  }
+  return Math.floor((payCents * (10000 - feeBps)) / 10000);
+}
+
+/**
+ * The break-even size in bytes: what the account paid after the fee, divided
+ * by our cost per byte. The division rounds up (ceil), so the customer gets
+ * at most one extra byte of room — less than 1 MB — never a byte less.
+ * @param {number} payAfterFee
+ * @param {number} costCentsPerTb
+ */
+function breakEvenBytes(payAfterFee, costCentsPerTb) {
+  if (costCentsPerTb <= 0 || !Number.isInteger(costCentsPerTb)) {
+    throw new TypeError(
+      `cost per TB must be a whole number of cents above 0, got ${String(costCentsPerTb)}`,
+    );
+  }
+  const num = BigInt(payAfterFee) * BigInt(BYTES_PER_TB);
+  const den = BigInt(costCentsPerTb);
+  const limit = (num + den - 1n) / den;
+  if (limit > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Number(limit);
+}
+
+/**
+ * The fair-use upload limit in bytes for a size30 (drive#364): the larger of
+ * the break-even size and (floorMultiple x size30). Built from monthBillCents()
+ * — the one bill function — and the storage-provider config. No ratio or
+ * percent literal lives here.
+ * @param {{size30Bytes: unknown, config?: BillingConfig, storage?: typeof STORAGE}} input
+ */
+export function fairUseLimitBytes(input) {
+  if (typeof input !== "object" || input === null) {
+    throw new TypeError(`fairUseLimitBytes needs {size30Bytes}, got ${String(input)}`);
+  }
+  const size30Bytes = wholeBytes(input.size30Bytes, "size30Bytes");
+  const storage = storageConfig(input.storage ?? STORAGE);
+  if (storage.minimumStayDays === 0) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  const config = billingConfig(input.config ?? BILLING_CONFIG);
+  const tb = size30Bytes / BYTES_PER_TB;
+  const payCents = monthBillCents({
+    gbMinutes: tb * GB_PER_TB * QUOTE_MONTH_MINUTES,
+    monthMinutes: QUOTE_MONTH_MINUTES,
+    config,
+  }).storageCents;
+  const afterFee = payAfterFeeCents(payCents);
+  const cost = storageCostCentsPerTbMonth(storage);
+  const breakEven = breakEvenBytes(afterFee, cost);
+  const floor = storage.fairUseFloorMultiple * size30Bytes;
+  return Math.max(breakEven, floor);
+}
+
+/**
+ * The three facts the refusal, the usage page and `drive status` all print,
+ * from one check, so they cannot disagree (drive#364).
+ * @param {{
+ *   remainingBytes: number,
+ *   allowed: boolean,
+ *   opensAt: number,
+ *   now?: number,
+ * }} status
+ */
+export function fairUseLine(status) {
+  if (typeof status !== "object" || status === null) {
+    throw new TypeError(`fairUseLine needs a fairUseCheck result, got ${String(status)}`);
+  }
+  const remaining = wholeBytes(status.remainingBytes, "remainingBytes");
+  const opensAt = wholeBytes(status.opensAt, "opensAt");
+  const now = status.now === undefined ? opensAt : wholeBytes(status.now, "now");
+  const room =
+    remaining === 0 ? "No upload room left" : `${formatBytes(remaining)} of upload room left`;
+  const date = fairUseDay(opensAt);
+  const why = status.allowed
+    ? "Young deletes still count toward the pause until they age out."
+    : `Uploads pause because young deletes still count until ${date}.`;
+  const opens =
+    status.allowed && opensAt <= now ? "Uploads are open." : `Uploads open again on ${date}.`;
+  return Object.freeze({
+    remaining: `${room}.`,
+    why,
+    opens,
+    copy: `${room}. ${why} ${opens}`,
+  });
+}
+
+/**
+ * @param {number} ms
+ */
+function fairUseDay(ms) {
+  return new Date(ms).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * Whether this upload may go up (drive#364). The check is:
+ *
+ *   live + ghost + this upload  <=  limit(max(size30, live + this upload))
+ *
+ * Whole bytes only. Missing data is the caller's to fail open: this function
+ * throws rather than guessing a size.
+ *
+ * @param {{
+ *   liveBytes: unknown,
+ *   ghostBytes: unknown,
+ *   uploadBytes: unknown,
+ *   size30Bytes: unknown,
+ *   now: unknown,
+ *   oldestGhostCreatedAt?: unknown,
+ *   config?: BillingConfig,
+ *   storage?: typeof STORAGE,
+ * }} input
+ */
+export function fairUseCheck(input) {
+  if (typeof input !== "object" || input === null) {
+    throw new TypeError(`fairUseCheck needs a snapshot, got ${String(input)}`);
+  }
+  const liveBytes = wholeBytes(input.liveBytes, "liveBytes");
+  const ghostBytes = wholeBytes(input.ghostBytes, "ghostBytes");
+  const uploadBytes = wholeBytes(input.uploadBytes, "uploadBytes");
+  const size30Bytes = wholeBytes(input.size30Bytes, "size30Bytes");
+  const now = wholeBytes(input.now, "now");
+  const storage = storageConfig(input.storage ?? STORAGE);
+  const stayMs = storage.minimumStayDays * 24 * 60 * 60 * 1000;
+  if (stayMs === 0) {
+    const line = fairUseLine({
+      remainingBytes: Number.MAX_SAFE_INTEGER,
+      allowed: true,
+      opensAt: now,
+      now,
+    });
+    return Object.freeze({
+      allowed: true,
+      wouldRefuse: false,
+      usedBytes: liveBytes + uploadBytes,
+      limitBytes: Number.MAX_SAFE_INTEGER,
+      remainingBytes: Number.MAX_SAFE_INTEGER,
+      opensAt: now,
+      line,
+    });
+  }
+  const effectiveSize30 = Math.max(size30Bytes, liveBytes + uploadBytes);
+  const limitBytes = fairUseLimitBytes({
+    size30Bytes: effectiveSize30,
+    config: input.config,
+    storage,
+  });
+  const usedBytes = liveBytes + ghostBytes + uploadBytes;
+  const allowed = usedBytes <= limitBytes;
+  const remainingBytes = Math.max(0, limitBytes - usedBytes);
+  let opensAt = now;
+  if (!allowed) {
+    const oldest =
+      input.oldestGhostCreatedAt === undefined || input.oldestGhostCreatedAt === null
+        ? now
+        : wholeBytes(input.oldestGhostCreatedAt, "oldestGhostCreatedAt");
+    opensAt = oldest + stayMs;
+  }
+  const line = fairUseLine({ remainingBytes, allowed, opensAt, now });
+  return Object.freeze({
+    allowed,
+    wouldRefuse: !allowed,
+    usedBytes,
+    limitBytes,
+    remainingBytes,
+    opensAt,
+    line,
   });
 }
 
@@ -872,11 +1117,45 @@ export function handleUsageRequest(
   // throws on a value that is not a queue, so a broken report fails the read
   // rather than printing a plausible line about bytes nobody counted.
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
-  // The month rides on the answer finished: the instant, not a name, because
-  // the page writes the month's name in the browser's own words and a date
-  // rendered on the server is a UTC date (drive#559).
-  const body = { ...empty, monthIso, capLine: capLine(empty.cap), uploadLine, balanceLine };
+  const fairUseLineText = fairUseLineFromAccount(account);
+  const body = {
+    ...empty,
+    monthIso,
+    capLine: capLine(empty.cap),
+    uploadLine,
+    balanceLine,
+    fairUseLine: fairUseLineText,
+  };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
+}
+
+/**
+ * The fair-use line the usage page and `drive status` print, from the same
+ * check the upload path uses. Missing snapshot data is null, not a guessed
+ * line: the page hides it, and a later read that can see the meter fills it.
+ * @param {{fairUse?: unknown}} account
+ */
+function fairUseLineFromAccount(account) {
+  const snapshot = account.fairUse;
+  if (snapshot === undefined || snapshot === null) {
+    return null;
+  }
+  if (typeof snapshot !== "object") {
+    throw new TypeError(`account.fairUse must be a snapshot, got ${String(snapshot)}`);
+  }
+  const fields =
+    /** @type {{liveBytes?: unknown, ghostBytes?: unknown, size30Bytes?: unknown, oldestGhostCreatedAt?: unknown, now?: unknown}} */ (
+      snapshot
+    );
+  const now = fields.now === undefined ? Date.now() : wholeBytes(fields.now, "fairUse.now");
+  return fairUseCheck({
+    liveBytes: fields.liveBytes,
+    ghostBytes: fields.ghostBytes,
+    uploadBytes: 0,
+    size30Bytes: fields.size30Bytes,
+    oldestGhostCreatedAt: fields.oldestGhostCreatedAt,
+    now,
+  }).line.copy;
 }
 
 const QUOTE_HEADERS = Object.freeze({

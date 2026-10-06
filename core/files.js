@@ -2504,7 +2504,7 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
  *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
  *   can read stored bytes, whether the pause at a $0 balance is on
  *   (drive#586), and the account's own state, so a read-only drive refuses a
@@ -2926,7 +2926,7 @@ async function listingEntry(store, path) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -2961,6 +2961,36 @@ async function uploadRequest(request, url, store, account, options = {}) {
     // the upload. Listing, downloads, deletes and restores never come here.
     // 402, so a client can tell "add money" from every other refusal.
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
+  }
+  const incomingForFairUse = incomingLength === null ? 0 : incomingLength;
+  if (typeof options.fairUseForUpload === "function") {
+    try {
+      const result = await options.fairUseForUpload(account.id, incomingForFairUse);
+      if (result !== null && result !== undefined) {
+        if (typeof result !== "object" || typeof result.wouldRefuse !== "boolean") {
+          throw new TypeError("fairUseForUpload must return a fairUseCheck result or null");
+        }
+        if (result.wouldRefuse === true && options.fairUseRefuse === true) {
+          if (
+            typeof result.line !== "object" ||
+            result.line === null ||
+            typeof result.line.copy !== "string"
+          ) {
+            throw new TypeError("fairUseCheck result needs line.copy");
+          }
+          return json(
+            { error: failureMessage("fair-use-pause"), fairUseLine: result.line.copy },
+            429,
+          );
+        }
+      }
+    } catch (error) {
+      // Missing meter data fails open and loud (drive#364): the upload goes
+      // through, and the caller reports the throw so it is not a quiet skip.
+      if (typeof options.onFairUseError === "function") {
+        options.onFairUseError(error);
+      }
+    }
   }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);

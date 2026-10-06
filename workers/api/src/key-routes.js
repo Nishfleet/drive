@@ -345,6 +345,21 @@ export async function storageWriteRoute(request, ctx) {
     return errorResponse(402, failureMessage("balance-empty"));
   }
   const body = new Uint8Array(await request.arrayBuffer());
+  if (typeof ctx.store.fairUseForUpload === "function") {
+    try {
+      const result = await ctx.store.fairUseForUpload(device, body.byteLength);
+      if (
+        result !== null &&
+        result !== undefined &&
+        result.wouldRefuse === true &&
+        ctx.store.fairUseRefuse === true
+      ) {
+        return errorResponse(429, failureMessage("fair-use-pause"));
+      }
+    } catch (error) {
+      ctx.store.onFairUseError(error);
+    }
+  }
   ctx.store.putObject(authorized.path, body);
   return json(
     { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },

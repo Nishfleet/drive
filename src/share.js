@@ -1426,7 +1426,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1499,6 +1499,33 @@ export async function handleRequestUploadRequest(request, files, links, capState
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
+  }
+  if (typeof options.fairUseForUpload === "function") {
+    try {
+      const result = await options.fairUseForUpload(record.accountId, sized.bytes);
+      if (result !== null && result !== undefined) {
+        if (typeof result !== "object" || typeof result.wouldRefuse !== "boolean") {
+          throw new TypeError("fairUseForUpload must return a fairUseCheck result or null");
+        }
+        if (result.wouldRefuse === true && options.fairUseRefuse === true) {
+          if (
+            typeof result.line !== "object" ||
+            result.line === null ||
+            typeof result.line.copy !== "string"
+          ) {
+            throw new TypeError("fairUseCheck result needs line.copy");
+          }
+          return json(
+            { error: failureMessage("fair-use-pause"), fairUseLine: result.line.copy },
+            429,
+          );
+        }
+      }
+    } catch (error) {
+      if (typeof options.onFairUseError === "function") {
+        options.onFairUseError(error);
+      }
+    }
   }
   if (options.db) {
     // The owner's 1 TB pre-charge limit, judged on the bytes actually read,

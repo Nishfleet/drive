@@ -93,6 +93,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // Fair-use pause (drive#364): decisions table and the once-per-30-days
+  // notice stamp. The upload path writes a row on every check.
+  "drive/0030_fair_use.sql",
 ]);
 
 /**

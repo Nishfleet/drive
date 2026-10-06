@@ -58,6 +58,7 @@ The first says don't build. The second says if you build, sell to people first. 
 | Free credit | $1 of storage free every month (about 50 GB), no card needed to start; a card only to go past it. Shown in dollars, never as credit units or expiring balances (Nish, 2026-09-29, from the Higgsfield research) |
 | Headline | "Never more than $12 a TB, then $8" as the ceiling line under the rate; never an "unlimited" plan (Nish, 2026-09-30) |
 | Spending cap | Each account sets one, default $20; storage goes read-only on exceeding the cap, nothing is deleted. Email at 80%. The cap counts min(metered so far, ceiling) (Nish via #464, 2026-10-04) |
+| Fair-use pause | Uploads pause when files deleted before 30 days old would make the drive cost more than the account pays that month. A limit, never a fee. live + ghost + this upload ≤ max(break-even, 2 × size30). Report-only until FAIR_USE_REFUSE=on (Nish via #364, 2026-10-05) |
 | "You saved" line | Copy varies by month type (Nish via #39, 2026-09-30): capped month (metered > ceiling) "Our price cap saved you $X", X = metered − bill; uncapped month "You paid $X less than a flat plan", X = ceiling − bill. Hidden when X ≤ 0, or when the month's bill is $0 |
 | Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum |
 | Snapshots | Paid add-on only |

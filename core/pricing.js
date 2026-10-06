@@ -56,6 +56,44 @@ export const PREPAID = Object.freeze({
   maxTopUpUsd: 1000,
 });
 
+// Storage-provider cost and the fair-use pause (drive#364). The pause is a
+// limit, never a fee: live + ghost + this upload may not pass the larger of
+// break-even and (floorMultiple x size30). Both cost numbers and the stay
+// live here so a provider change moves the pause without a second copy of
+// the arithmetic. Backblaze B2 (the standby) sets minimumStayDays to 0 and
+// the pause never fires. The 2x floor is this one number, never a literal
+// in the check.
+export const STORAGE = Object.freeze({
+  minimumStayDays: 30,
+  idriveCostCentsPerTbMonth: 500,
+  backupCostCentsPerTbMonth: 230,
+  fairUseFloorMultiple: 2,
+});
+
+/** Our cost per TB-month, in integer cents: iDrive plus the backup copy. */
+export function storageCostCentsPerTbMonth(storage = STORAGE) {
+  return storage.idriveCostCentsPerTbMonth + storage.backupCostCentsPerTbMonth;
+}
+
+// Dodo on a $10 top-up: 4% + 0.5% + 1.5% + 40 cents, the worst case, about
+// 10%. The pause uses this so a cheaper fee cannot quietly raise the limit.
+export const PAYMENT_FEE_BPS = 1000;
+
+/** The env value that turns the pause from report-only into a real refusal. */
+export const FAIR_USE_REFUSE_ON = "on";
+
+/**
+ * Whether uploads are refused when the fair-use check fails. Off (report-only)
+ * until the operator sets FAIR_USE_REFUSE to "on", because the check ships
+ * recording every would-refuse and refusing nothing until a real iDrive run
+ * matches the hand-worked cases (drive#364).
+ * @param {unknown} env
+ */
+export function fairUseRefuseOn(env) {
+  const value = /** @type {{FAIR_USE_REFUSE?: unknown}|null|undefined} */ (env)?.FAIR_USE_REFUSE;
+  return value === FAIR_USE_REFUSE_ON;
+}
+
 /**
  * Whole cents from a dollar rate, or a throw: a rate that is not a whole
  * number of cents would put a headline on the page the meter does not charge.

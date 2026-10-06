@@ -13,9 +13,12 @@
 // Worker's own event route are the same bytes, and reading them two ways is
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
+import { fairUseCheck } from "./billing.js";
+import { sendEmail } from "./email-send.js";
 import { decodeNotificationKey } from "./event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
+import { STORAGE } from "./pricing.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
@@ -2134,6 +2137,266 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
     throw new TypeError("the retention delete reported no change count");
   }
   return { pruned: result.meta.changes, cutoff, skipped: null };
+}
+
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Ghost bytes from already-loaded version rows (drive#364): a young hide
+ * (life shorter than the provider's minimum stay) still in the stay window,
+ * counted once per version id. A same-size successor that began at the hide
+ * instant is a folder move's copy-then-delete of the same bytes, so it is
+ * not a ghost — the bytes never left. A provider with 0 stay days has no
+ * ghosts.
+ *
+ * @param {ReadonlyArray<{b2FileId: string, sizeBytes: number, createdAt: number, hiddenAt: number|null}>} versions
+ * @param {number} now
+ * @param {{minimumStayDays?: number}} [storage]
+ * @returns {{bytes: number, oldestCreatedAt: number|null}}
+ */
+export function ghostFromVersions(versions, now, storage = STORAGE) {
+  if (!Array.isArray(versions)) {
+    throw new TypeError(`ghostFromVersions needs a list of versions, got ${String(versions)}`);
+  }
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new TypeError(`now must be 0 or more whole milliseconds, got ${String(now)}`);
+  }
+  const stayDays = storage.minimumStayDays ?? STORAGE.minimumStayDays;
+  if (!Number.isInteger(stayDays) || stayDays < 0) {
+    throw new TypeError(`minimumStayDays must be 0 or more whole days, got ${String(stayDays)}`);
+  }
+  if (stayDays === 0) {
+    return Object.freeze({ bytes: 0, oldestCreatedAt: null });
+  }
+  const stayMs = stayDays * DAY_MS;
+  /** @type {Map<string, (typeof versions)[number]>} */
+  const byId = new Map();
+  for (const version of versions) {
+    if (typeof version !== "object" || version === null) {
+      throw new TypeError(`ghostFromVersions needs version rows, got ${String(version)}`);
+    }
+    if (typeof version.b2FileId !== "string" || version.b2FileId === "") {
+      throw new TypeError("ghostFromVersions needs a version id on every row");
+    }
+    byId.set(version.b2FileId, version);
+  }
+  const unique = [...byId.values()];
+  let bytes = 0;
+  /** @type {number|null} */
+  let oldestCreatedAt = null;
+  for (const version of unique) {
+    if (version.hiddenAt === null || version.hiddenAt === undefined) {
+      continue;
+    }
+    if (!Number.isSafeInteger(version.sizeBytes) || version.sizeBytes < 0) {
+      throw new TypeError(
+        `sizeBytes must be 0 or more whole bytes, got ${String(version.sizeBytes)}`,
+      );
+    }
+    if (!Number.isSafeInteger(version.createdAt) || !Number.isSafeInteger(version.hiddenAt)) {
+      throw new TypeError("ghostFromVersions needs whole createdAt and hiddenAt");
+    }
+    const life = version.hiddenAt - version.createdAt;
+    if (life >= stayMs) {
+      continue;
+    }
+    if (version.createdAt + stayMs <= now) {
+      continue;
+    }
+    const handoff = unique.some(
+      (successor) =>
+        successor.b2FileId !== version.b2FileId &&
+        successor.sizeBytes === version.sizeBytes &&
+        successor.createdAt === version.hiddenAt,
+    );
+    if (handoff) {
+      continue;
+    }
+    bytes += version.sizeBytes;
+    if (oldestCreatedAt === null || version.createdAt < oldestCreatedAt) {
+      oldestCreatedAt = version.createdAt;
+    }
+  }
+  return Object.freeze({ bytes, oldestCreatedAt });
+}
+
+export const GHOST_BYTES_SQL = `SELECT
+    COALESCE(SUM(v.size_bytes), 0) AS ghost_bytes,
+    MIN(v.created_at) AS oldest_created_at
+  FROM file_versions v
+  WHERE v.account_id = ?1
+    AND v.hidden_at IS NOT NULL
+    AND (v.hidden_at - v.created_at) < ?2
+    AND (v.created_at + ?2) > ?3
+    AND NOT EXISTS (
+      SELECT 1 FROM file_versions s
+       WHERE s.account_id = v.account_id
+         AND s.size_bytes = v.size_bytes
+         AND s.created_at = v.hidden_at
+         AND s.b2_file_id != v.b2_file_id
+    )`;
+
+export const SIZE30_BYTES_SQL = `SELECT COALESCE(MAX(stored_bytes), 0) AS size30_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1 AND hour >= ?2`;
+
+export const LIVE_BYTES_SQL = `SELECT COALESCE(SUM(size_bytes), 0) AS live_bytes
+  FROM file_versions
+  WHERE account_id = ?1 AND hidden_at IS NULL`;
+
+/**
+ * Live bytes, ghost bytes and size30 for one account at `now` (drive#364).
+ * size30 is the larger of the trailing-30-day peak in usage_minutes and the
+ * bytes live now, so an upload that has not yet rolled still raises it.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} [now]
+ * @param {typeof STORAGE} [storage]
+ */
+export async function fairUseSnapshot(db, accountId, now = Date.now(), storage = STORAGE) {
+  if (!db) {
+    throw new Error("fair-use snapshot: METER_DB binding is not configured");
+  }
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`fairUseSnapshot needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new TypeError(`now must be 0 or more whole milliseconds, got ${String(now)}`);
+  }
+  const stayMs = storage.minimumStayDays * DAY_MS;
+  const liveRow = await db.prepare(LIVE_BYTES_SQL).bind(accountId).first();
+  const liveBytes = Number(/** @type {{live_bytes?: unknown}|null} */ (liveRow)?.live_bytes ?? 0);
+  if (!Number.isSafeInteger(liveBytes) || liveBytes < 0) {
+    throw new TypeError(`live bytes must be 0 or more whole bytes, got ${String(liveBytes)}`);
+  }
+  let ghostBytes = 0;
+  /** @type {number|null} */
+  let oldestGhostCreatedAt = null;
+  if (stayMs > 0) {
+    const ghostRow = await db.prepare(GHOST_BYTES_SQL).bind(accountId, stayMs, now).first();
+    ghostBytes = Number(/** @type {{ghost_bytes?: unknown}|null} */ (ghostRow)?.ghost_bytes ?? 0);
+    const oldest = /** @type {{oldest_created_at?: unknown}|null} */ (ghostRow)?.oldest_created_at;
+    oldestGhostCreatedAt = oldest === null || oldest === undefined ? null : Number(oldest);
+    if (!Number.isSafeInteger(ghostBytes) || ghostBytes < 0) {
+      throw new TypeError(`ghost bytes must be 0 or more whole bytes, got ${String(ghostBytes)}`);
+    }
+    if (oldestGhostCreatedAt !== null && !Number.isSafeInteger(oldestGhostCreatedAt)) {
+      throw new TypeError(
+        `oldest ghost created_at must be whole milliseconds, got ${String(oldest)}`,
+      );
+    }
+  }
+  const windowStart = now - 30 * DAY_MS;
+  const peakRow = await db.prepare(SIZE30_BYTES_SQL).bind(accountId, windowStart).first();
+  const peakBytes = Number(
+    /** @type {{size30_bytes?: unknown}|null} */ (peakRow)?.size30_bytes ?? 0,
+  );
+  if (!Number.isSafeInteger(peakBytes) || peakBytes < 0) {
+    throw new TypeError(`size30 bytes must be 0 or more whole bytes, got ${String(peakBytes)}`);
+  }
+  const size30Bytes = Math.max(peakBytes, liveBytes);
+  return Object.freeze({ liveBytes, ghostBytes, size30Bytes, oldestGhostCreatedAt, now });
+}
+
+/**
+ * Snapshot plus the same check the upload path, the usage page and
+ * `drive status` share (drive#364). Missing data throws, so the caller can
+ * fail open and report rather than guessing a size.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} uploadBytes
+ * @param {number} [now]
+ */
+export async function runFairUseCheck(db, accountId, uploadBytes, now = Date.now()) {
+  const snapshot = await fairUseSnapshot(db, accountId, now);
+  const check = fairUseCheck({ ...snapshot, uploadBytes });
+  return Object.freeze({ snapshot, check });
+}
+
+const FAIR_USE_DECISION_SQL = `INSERT INTO fair_use_decisions
+  (account_id, decided_at, live_bytes, ghost_bytes, upload_bytes, size30_bytes, limit_bytes, would_refuse, refused)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`;
+
+/**
+ * One row per check, including report-only would-refuse (drive#364). The
+ * refused flag is whether this request actually stopped the upload.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{liveBytes: number, ghostBytes: number, size30Bytes: number, now: number}} snapshot
+ * @param {{limitBytes: number, wouldRefuse: boolean}} check
+ * @param {number} uploadBytes
+ * @param {boolean} refused
+ */
+export async function recordFairUseDecision(db, accountId, snapshot, check, uploadBytes, refused) {
+  if (!db) {
+    throw new Error("fair-use decision: METER_DB binding is not configured");
+  }
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`recordFairUseDecision needs an account id, got ${String(accountId)}`);
+  }
+  await db
+    .prepare(FAIR_USE_DECISION_SQL)
+    .bind(
+      accountId,
+      snapshot.now,
+      snapshot.liveBytes,
+      snapshot.ghostBytes,
+      uploadBytes,
+      snapshot.size30Bytes,
+      check.limitBytes,
+      check.wouldRefuse ? 1 : 0,
+      refused ? 1 : 0,
+    )
+    .run();
+}
+
+const FAIR_USE_NOTICE_READ_SQL =
+  "SELECT email, fair_use_notice_sent_at FROM accounts WHERE id = ?1";
+const FAIR_USE_NOTICE_STAMP_SQL = `UPDATE accounts SET fair_use_notice_sent_at = ?2
+  WHERE id = ?1 AND (fair_use_notice_sent_at IS NULL OR fair_use_notice_sent_at <= ?3)`;
+
+/**
+ * Mails the pause once per 30 days (drive#364). No address or no EMAIL
+ * binding is a skip, not a stamp, so a later send still goes out.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{line: {copy: string}, opensAt: number}} check
+ * @param {{email?: {send: Function}, from?: string, now?: number}} options
+ */
+export async function sendFairUsePauseIfDue(db, accountId, check, options = {}) {
+  if (!db) {
+    throw new Error("fair-use notice: METER_DB binding is not configured");
+  }
+  const now = options.now ?? Date.now();
+  const row = await db.prepare(FAIR_USE_NOTICE_READ_SQL).bind(accountId).first();
+  const fields = /** @type {{email?: unknown, fair_use_notice_sent_at?: unknown}|null} */ (row);
+  const email = typeof fields?.email === "string" ? fields.email.trim() : "";
+  if (email.length === 0) {
+    console.error(`fair-use: account ${accountId} is due a pause notice but has no email`);
+    return false;
+  }
+  const last = fields?.fair_use_notice_sent_at;
+  const lastMs = last === null || last === undefined ? null : Number(last);
+  if (lastMs !== null && Number.isSafeInteger(lastMs) && now - lastMs < 30 * DAY_MS) {
+    return false;
+  }
+  if (options.email === undefined) {
+    console.error("fair-use: no email binding on this deployment, so no pause notice went out");
+    return false;
+  }
+  if (typeof options.from !== "string" || options.from.trim().length === 0) {
+    console.error("fair-use: MAIL_FROM is not set, so no pause notice went out");
+    return false;
+  }
+  await sendEmail(/** @type {import("./email-send.js").EmailBinding} */ (options.email), {
+    to: email,
+    from: options.from,
+    kind: "fair-use-pause",
+    data: { copy: check.line.copy },
+  });
+  const cutoff = now - 30 * DAY_MS;
+  await db.prepare(FAIR_USE_NOTICE_STAMP_SQL).bind(accountId, now, cutoff).run();
+  return true;
 }
 
 const NIGHTLY_SIZES_WRITE_SQL = `INSERT INTO nightly_sizes

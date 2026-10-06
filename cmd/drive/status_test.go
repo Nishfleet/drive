@@ -218,6 +218,27 @@ func TestReadCostLinePrintsTheWorkersBalanceLine(t *testing.T) {
 	}
 }
 
+func TestReadCostLinePrintsTheWorkersFairUseLine(t *testing.T) {
+	const fairUseLine = "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $20.00: $0.00 counted this month, $20.00 left."
+		u.FairUseLine = fairUseLine
+		u.Cap.State = "active"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want the cap and fair-use lines", reason)
+		}
+	})
+	if !strings.Contains(out, fairUseLine) {
+		t.Errorf("got %q, want the Worker's fair-use line printed as-is", out)
+	}
+}
+
 func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string

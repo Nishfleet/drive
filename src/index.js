@@ -38,6 +38,7 @@ import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
 import {
   downloadRecorder,
+  fairUseSnapshot,
   HOUR_MS,
   handleStorageEventRequest,
   hourStart,
@@ -47,8 +48,11 @@ import {
   monthStart,
   pruneHiddenVersions,
   reconcileMeter,
+  recordFairUseDecision,
   recordNightlySizes,
+  runFairUseCheck,
   runMeterCron,
+  sendFairUsePauseIfDue,
   toMillis,
 } from "../core/meter.js";
 import {
@@ -58,6 +62,7 @@ import {
   prepaidPauseOn,
   settleBalances,
 } from "../core/prepaid.js";
+import { fairUseRefuseOn } from "../core/pricing.js";
 import { createD1QueueStore } from "../core/queues.js";
 import {
   handleFirstRunStatusRequest,
@@ -207,7 +212,7 @@ export const PUBLIC_ROUTES = Object.freeze([
  * @param {Env} env
  */
 function dodoEnv(env) {
-  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string}} */ (
+  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string, FAIR_USE_REFUSE?: string}} */ (
     /** @type {unknown} */ (env)
   );
 }
@@ -586,10 +591,65 @@ const filesHandler = async (c) => {
           prepaidPause: prepaidPauseOn(c.env),
           accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
           recordDownload: downloadRecorder(c.env.DRIVE_DB),
+          ...fairUseUploadOptions(c.env),
         }
       : { prepaidPause: prepaidPauseOn(c.env) },
   );
 };
+
+/**
+ * The fair-use upload check (drive#364): one snapshot, one check, record every
+ * decision, mail a would-refuse at most once per 30 days. A throw fails open
+ * and is reported, so a missing meter never pauses an upload by guesswork.
+ * @param {Env} env
+ */
+function fairUseUploadOptions(env) {
+  const db = env.DRIVE_DB;
+  if (!db) {
+    return {};
+  }
+  const refuse = fairUseRefuseOn(env);
+  const secrets = dodoEnv(env);
+  return {
+    fairUseRefuse: refuse,
+    onFairUseError: (error) => captureError(error, "fair-use snapshot"),
+    /**
+     * @param {string} accountId
+     * @param {number} uploadBytes
+     */
+    fairUseForUpload: async (accountId, uploadBytes) => {
+      try {
+        const { snapshot, check } = await runFairUseCheck(db, accountId, uploadBytes);
+        try {
+          await recordFairUseDecision(
+            db,
+            accountId,
+            snapshot,
+            check,
+            uploadBytes,
+            refuse && check.wouldRefuse,
+          );
+        } catch (error) {
+          captureError(error, "fair-use decision record");
+        }
+        if (check.wouldRefuse) {
+          try {
+            await sendFairUsePauseIfDue(db, accountId, check, {
+              email: env.EMAIL,
+              from: secrets.MAIL_FROM ?? "",
+            });
+          } catch (error) {
+            captureError(error, "fair-use notice");
+          }
+        }
+        return check;
+      } catch (error) {
+        captureError(error, "fair-use snapshot");
+        return null;
+      }
+    },
+  };
+}
 
 /**
  * Create the Hono app. All route logic lives here so the Worker export is a
@@ -801,9 +861,18 @@ export function createApp() {
           pauseOn: prepaidPauseOn(c.env),
         })
       : null;
+    /** @type {Awaited<ReturnType<typeof fairUseSnapshot>>|undefined} */
+    let fairUse;
+    if (c.env.DRIVE_DB) {
+      try {
+        fairUse = await fairUseSnapshot(c.env.DRIVE_DB, account.id);
+      } catch (error) {
+        captureError(error, "fair-use snapshot");
+      }
+    }
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, usage },
+      { ...account, capUsd, cardOnFile, usage, fairUse },
       await liveQueueFor(c.env, account),
       balance,
       // The month these numbers belong to, sent as its first instant (drive#559):
@@ -979,6 +1048,7 @@ export function createApp() {
         linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
         db: c.env.DRIVE_DB,
         prepaidPause: prepaidPauseOn(c.env),
+        ...fairUseUploadOptions(c.env),
       }),
     ),
   );

@@ -114,6 +114,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "files-deleted",
     "top-up-receipt",
     "low-balance",
+    "fair-use-pause",
     "device-approve-notice",
   ]);
 });
@@ -360,6 +361,11 @@ function dataFor(kind) {
       return { ...base, amountUsd: 25, balanceUsd: 31.5, auto: false };
     case "low-balance":
       return { ...base, balanceUsd: 1.8, autoTopUpUsd: null };
+    case "fair-use-pause":
+      return {
+        ...base,
+        copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+      };
     case "device-approve-notice":
       return {
         ...base,
@@ -1052,4 +1058,14 @@ test("the low-balance email says what happens at $0, or that auto top-up covers 
   assert.match(off.text, /nothing is deleted/);
   const on = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: 25, replyTo: REPLY_TO });
   assert.match(on.text, /Auto top-up is on, so \$25\.00 will be added/);
+});
+
+test("the fair-use pause email uses the same sentence the usage page prints", () => {
+  const copy =
+    "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.";
+  const mail = renderEmail("fair-use-pause", { copy, replyTo: REPLY_TO });
+  assert.equal(mail.subject, "Uploads are paused because young deletes still count");
+  assert.match(mail.text, /No upload room left/);
+  assert.match(mail.text, /nothing extra is charged/);
+  assert.match(mail.html, /No upload room left/);
 });
