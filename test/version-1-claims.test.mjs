@@ -11,11 +11,23 @@
 //   2. every surface the issue names must state the facts it is about, read
 //      from the BUILT docs pages, so a page that renders but ships the wrong
 //      words fails here rather than in a browser.
+//
+// drive#776 added two more, one per drift the walkthrough found on the same
+// surfaces: a platform the spec left out of v1 offered as an install, and an
+// access path in llms.txt that no command mints a key for.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { NOT_OPEN, VERSION_HISTORY, VERSION_HISTORY_PROMISES } from "../src/release-state.js";
+import {
+  NOT_OPEN,
+  OUT_OF_V1_PLATFORM_DENIALS,
+  OUT_OF_V1_PLATFORM_WORDS,
+  V1_PLATFORMS,
+  VERSION_HISTORY,
+  VERSION_HISTORY_PROMISES,
+} from "../src/release-state.js";
+import { cliSubcommands } from "../src/render-docs.js";
 
 /**
  * @param {string} path
@@ -41,6 +53,63 @@ const shipped = (page) => {
   }
 };
 
+// Every docs page that ships, read from the build output `npm test` writes
+// first, so a page that renders but ships the wrong words fails here. The
+// changelog is left out, the way this file leaves out the spec and the
+// scoreboard: it says what past versions did, not what a reader is offered
+// today.
+const SHIPPED_PAGES = readdirSync(new URL("../public/docs/", import.meta.url))
+  .filter((name) => name.endsWith(".md") && !name.startsWith("llms"))
+  .map((name) => name.slice(0, -3))
+  .filter((page) => page !== "changelog")
+  .sort();
+
+/** The sentences of one surface, as a reader sees them: a page hard-wraps a
+ * sentence across lines, and the label that makes an out-of-v1 sentence honest
+ * sits in the same one, so the text is folded before it is cut.
+ * @param {string} text
+ * @returns {ReadonlyArray<string>} */
+const sentencesOf = (text) => oneLine(text).split(/(?<=[.!?])\s+/);
+
+/** The blocks of one surface, each folded to one line. A bullet is one
+ * statement and a paragraph is another, so the label that keeps an out-of-v1
+ * mention honest must sit inside the block a reader takes as one thing.
+ * @param {string} text
+ * @returns {ReadonlyArray<string>} */
+const blocksOf = (text) => {
+  /** @type {string[]} */
+  const blocks = [];
+  /** @type {string[]} */
+  let block = [];
+  const flush = () => {
+    if (block.length > 0) blocks.push(oneLine(block.join(" ")));
+    block = [];
+  };
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#") || /^[*-]\s/.test(trimmed)) {
+      flush();
+    }
+    if (trimmed !== "") block.push(trimmed);
+  }
+  flush();
+  return blocks;
+};
+
+/** The `drive <name>` mentions in a text, inside code spans only. Prose cannot
+ * be read this way: "the drive folder" and "the drive goes read-only" are
+ * sentences about the product, not commands, and a gate that matched them
+ * would fail on ordinary English.
+ * @param {string} text
+ * @returns {ReadonlyArray<string>} */
+const namedCommands = (text) => [
+  ...new Set([...text.matchAll(/`drive ([a-z][a-z0-9-]*)/g)].map((m) => m[1])),
+];
+
+// A sentence that promises a key promises an access path, which in version 1
+// comes from a command. drive#776: llms.txt promised "the S3 API, each with its
+// own scoped key" while no command mints a key for that path.
+const KEY_PROMISE = /\b(?:scoped key|API key|own key|key of its own)\b/i;
 // Every surface a customer reads, plus the repository README. The spec, the
 // scoreboard and the changelog are excluded on purpose: they say what version
 // 1 would carry and what past versions did, not what a customer is promised
@@ -136,5 +205,109 @@ test("every surface named in the issue states the facts it is about", () => {
     read("get-started.html"),
     /not open yet/i,
     "the get-started page must say the drive is not open yet",
+  );
+});
+
+test("the spec's Platforms row is still the list this file holds", () => {
+  // src/release-state.js holds the platforms as words, because a test cannot
+  // read a Go map and a docs page cannot import one. This ties those words to
+  // the row they came from, so the day the spec ships Windows the row stops
+  // matching and this gate says which file to edit.
+  const spec = read("docs/build-spec.md");
+  const row = spec.match(/^\|\s*Platforms\s*\|([^|\n]+)\|/m);
+  assert.ok(row, "docs/build-spec.md must carry a Platforms row");
+  const cells = row[1];
+  for (const platform of V1_PLATFORMS) {
+    assert.match(
+      cells,
+      new RegExp(platform, "i"),
+      `the spec's Platforms row must name ${platform}`,
+    );
+  }
+  assert.match(cells, /No Windows in v1/i, "the spec's Platforms row must leave Windows out of v1");
+});
+
+test("no docs surface offers a platform version 1 does not ship", () => {
+  // drive#776: the quickstart offered a Windows install in the same breath as
+  // the two platforms that ship, and the limits page called the MSI an install
+  // a reader could take. The Windows mount is real code behind an unsigned
+  // installer, so the fix is not to delete the platform from the docs: it is
+  // that every block naming it must say, in that block, that it is out of
+  // version 1, and that the one sentence naming the MSI must say so too.
+  const surfaces = [...SHIPPED_PAGES.map((page) => `public/docs/${page}.md`), "public/llms.txt"];
+  for (const surface of surfaces) {
+    for (const block of blocksOf(read(surface))) {
+      const named = OUT_OF_V1_PLATFORM_WORDS.filter((word) => word.test(block)).map((word) =>
+        String(word),
+      );
+      if (named.length === 0) continue;
+      const denied = OUT_OF_V1_PLATFORM_DENIALS.some((denial) => denial.test(block));
+      assert.ok(
+        denied,
+        `${surface} says "${block.trim()}", which names ${named.join(" and ")} ` +
+          "without saying in the same block that it is outside version 1",
+      );
+      // The sentence that names the installer carries the label itself: a
+      // reader skimming the bullets reads that one sentence, not the block.
+      for (const sentence of sentencesOf(block)) {
+        if (!/\bMSI\b/.test(sentence)) continue;
+        assert.ok(
+          OUT_OF_V1_PLATFORM_DENIALS.some((denial) => denial.test(sentence)),
+          `${surface} says "${sentence.trim()}", which names the MSI without saying in the ` +
+            "same sentence that the MSI is unsigned and outside version 1",
+        );
+      }
+    }
+  }
+  // And the page a reader starts from names the platforms that ship, so a page
+  // that dropped the mention entirely fails here too.
+  assert.match(
+    shipped("quickstart"),
+    /macOS or Linux|macOS and Linux/i,
+    "the quickstart must name the platforms version 1 ships",
+  );
+});
+
+test("llms.txt names only commands the CLI has, and ties every key promise to one", () => {
+  // drive#776: llms.txt promised "the S3 API, each with its own scoped key",
+  // and no command mints a key for that path: cmd/drive/main.go has no `s3`
+  // subcommand, and the spec's own step for it (drive#525) is not built. The
+  // sentence now names `drive init`, the command that does mint a key per
+  // tool. This gate holds the two halves of that: every command the file
+  // names must exist, and a sentence that promises a key must name the
+  // command.
+  const llms = oneLine(read("public/llms.txt"));
+  const commands = cliSubcommands();
+  const named = namedCommands(llms);
+  assert.ok(named.length >= 3, `public/llms.txt must name the commands it uses (found ${named})`);
+  for (const name of ["init", "cache", "status"]) {
+    assert.ok(
+      named.includes(name),
+      `public/llms.txt must name \`drive ${name}\`, the command its own text describes`,
+    );
+  }
+  for (const name of named) {
+    assert.ok(
+      commands.has(name),
+      `public/llms.txt names \`drive ${name}\`, which is not a subcommand in cmd/drive/main.go`,
+    );
+  }
+  const promising = sentencesOf(llms).filter((sentence) => KEY_PROMISE.test(sentence));
+  assert.ok(promising.length > 0, "public/llms.txt must state what an agent's key is for");
+  for (const sentence of promising) {
+    const minted = namedCommands(sentence);
+    assert.ok(
+      minted.length > 0 && minted.every((name) => commands.has(name)),
+      `public/llms.txt promises a key in "${sentence.trim()}" without naming a command in ` +
+        "cmd/drive/main.go that mints it",
+    );
+  }
+  // The path the drift was found on must not come back as an unqualified
+  // promise: a raw s3 key is a key of its own kind in core/keyprovider.js and
+  // no shipped command hands one to a person.
+  assert.doesNotMatch(
+    llms,
+    /\bS3 API\b/i,
+    "public/llms.txt must not offer the S3 API as a path a person can take, because no command mints a key for it",
   );
 });

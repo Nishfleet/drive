@@ -89,6 +89,29 @@ export function cliUsageText() {
 }
 
 /**
+ * The subcommands the CLI runs, from cmd/drive/main.go's `commands` table:
+ * the one place a subcommand exists, because the dispatch reads the table and
+ * the Go gates hold the agent notes and the help text to it. main answers
+ * `version` and `help` before the table, so they are answers a page may show
+ * as commands. Read here, so a docs gate and a Go gate cannot end up with
+ * two parses of one table.
+ * @returns {ReadonlySet<string>}
+ */
+export function cliSubcommands() {
+  const src = readFileSync(MAIN_GO, "utf8");
+  const start = src.indexOf("var commands = map[string]func([]string) error{");
+  if (start < 0) {
+    throw new Error("cmd/drive/main.go has no `var commands` table to read");
+  }
+  const body = src.slice(start, src.indexOf("}", start));
+  const names = [...body.matchAll(/"([a-z]+)":/g)].map((m) => m[1]);
+  if (names.length < 10) {
+    throw new Error("cmd/drive/main.go's command table parsed to fewer than 10 subcommands");
+  }
+  return new Set([...names, "version", "help"]);
+}
+
+/**
  * Write the eval's CLI-help snapshot from main.go, so the eval's context and
  * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
  * it directly, and the eval's own gate compares the committed file to the same

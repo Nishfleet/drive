@@ -28,3 +28,30 @@ export const VERSION_HISTORY_PROMISES = Object.freeze([
   /every version of a file/i,
   /restore any earlier version/i,
 ]);
+
+// The platforms version 1 ships, read as words, from docs/build-spec.md's
+// Platforms row ("macOS and Linux. No Windows in v1"). drive#776 found the
+// quickstart offering Windows install in the same breath as the two platforms
+// that ship, so the docs now offer the macOS and Linux packages and name the
+// MSI only inside a sentence that says it is out of version 1.
+export const V1_PLATFORMS = Object.freeze(["macOS", "Linux"]);
+
+// Words that cannot be read as anything but the out-of-v1 platform and the
+// installer that carries it. A block that names one of these may stay, but only
+// when that block carries a denial below, and the sentence naming the MSI
+// carries one itself: the drive's own code has a Windows mount behind it, and
+// the honest sentence is that nothing signed ships. `winget` is deliberately
+// absent: `drive update` names it as one of four package managers on the line
+// it prints on every platform.
+export const OUT_OF_V1_PLATFORM_WORDS = Object.freeze([/\bWindows\b/i, /\bMSI\b/, /\bWinFsp\b/i]);
+
+// The denial such a sentence must carry, in that same sentence.
+export const OUT_OF_V1_PLATFORM_DENIALS = Object.freeze([
+  /not in version 1/i,
+  /not a version 1/i,
+  /not in v1\b/i,
+  /not ready yet/i,
+  /not yet released/i,
+  /no published release/i,
+  /\bunsigned\b/i,
+]);
