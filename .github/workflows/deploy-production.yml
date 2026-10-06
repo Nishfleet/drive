@@ -42,7 +42,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    runs-on: ubuntu-latest
     # A job with an environment gets a GitHub Deployment and deployment_status
     # events for free. No `url` while the site has no public address.
     environment:
@@ -103,9 +103,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          # No cache on own runners: npm's cache is already on this disk, and
-          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
-          package-manager-cache: false
+          cache: npm
       - run: npm ci
       - run: npm run build
       - name: Warn when there is no sender (drive#522)
