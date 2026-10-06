@@ -352,10 +352,13 @@ func unmountAgentDir(goos, mountDir string) error {
 		}
 		return nil
 	}
-	for _, bin := range []string{"fusermount3", "fusermount"} {
-		if err := exec.Command(bin, "-u", mountDir).Run(); err == nil {
-			return nil
-		}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if err := exec.Command("fusermount3", "-u", mountDir).Run(); err == nil {
+		return nil
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if err := exec.Command("fusermount", "-u", mountDir).Run(); err == nil {
+		return nil
 	}
 	return failDetail("unexpected", fmt.Errorf("unmount %s: no fuse unmount succeeded", mountDir))
 }
