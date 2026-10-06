@@ -22,13 +22,25 @@ import {
 } from "../core/abuse-guards.js";
 import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import {
+  BRANCHES_PATH,
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
 import { failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
+import {
+  createD1LinkStore,
+  handleRequestUploadRequest,
+  newRequestRecord,
+  REQUEST_ENDPOINT,
+} from "../src/share.js";
 import { hasSignupCard } from "../src/signin.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, createTestD1, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 
@@ -463,6 +475,126 @@ test("the counting stream lets the allowance through and fails one byte past it"
     assert.equal(error.message, failureMessage("pre-charge-storage-limit"));
     return true;
   });
+});
+
+/**
+ * A drive holding branch bytes against a live `file_versions` sum 100 bytes
+ * short of the limit, and the branch copy that takes it over. The live rows
+ * are the rows an account's own saves would have written, and the copy is a
+ * real object under `.branches`, written through scopeStore the way
+ * src/branches.js's copyFolder writes it. The account row and the version rows
+ * go in through the metered adapter, so the drive keeps its metering views
+ * while `made.sqlite` stays the raw handle a test stamps first_charged_at on.
+ * @param {{db: import("./d1-sqlite.mjs").MeteredD1, sqlite: import("./d1-sqlite.mjs").TestSqlite}} made
+ *   the makeMeteredDB() answer
+ * @param {string} accountId
+ * @returns {Promise<{store: import("../core/files.js").FileStore, scoped: import("../core/files.js").FileStore, copy: string, remove: () => Promise<void>, plant: () => Promise<void>}>}
+ */
+async function branchedDrive(made, accountId) {
+  const db = made.db;
+  await insertAccount(db, accountId);
+  db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const store = createMemoryStore();
+  const scoped = scopeStore(store, { id: accountId });
+  const copy = `${BRANCHES_PATH}/work/mirror.bin`;
+  const plant = async () =>
+    scoped.write(copy, new Blob([new Uint8Array(200)]).stream(), "application/octet-stream");
+  await plant();
+  return { store, scoped, copy, plant, remove: async () => void (await scoped.remove(copy)) };
+}
+
+/** An edge rate-limit binding that always lets the caller through. */
+function passLimiter() {
+  return { limit: () => Promise.resolve({ success: true }) };
+}
+
+/**
+ * The share link store. Its reservations answer through `UPDATE … RETURNING`,
+ * which is a read, so the adapter must hand rows back — a write-only adapter
+ * would read as a full link (the comment on the harness's runOne names exactly
+ * this trap). `createTestD1()` is the adapter the rest of the share tests use;
+ * the links table lives only on the request store, while the guard reads the
+ * drive's own `made.db`, so the two databases are free to be separate, the
+ * way a real request store and a real database would be.
+ * @param {unknown} made the drive's makeMeteredDB() answer, unused
+ */
+function makeShareLinks(made) {
+  void made;
+  return createD1LinkStore(createTestD1());
+}
+
+test("branch copies hold an unpaid account at 1 TB on the upload path", async () => {
+  // drive#800: a branch copy is written with store.copy and never through
+  // withIndex, so it lands in neither `file_versions` nor the file index. An
+  // account that copied its drive into a branch has therefore spent zero
+  // recorded bytes, and both upload routes answered it with an empty drive's
+  // allowance. The bytes are the store's own, so the guard has to read them
+  // there: the live rows here are 100 bytes under the limit and the copy is
+  // what refuses the save.
+  const made = makeMeteredDB();
+  const drive = await branchedDrive(made, "branched");
+  const upload = (/** @type {string} */ name) =>
+    handleFilesRequest(
+      new Request(`https://drive.example/api/files/upload?path=%2F&name=${name}`, {
+        method: "POST",
+        body: new Uint8Array(8),
+      }),
+      drive.store,
+      { id: "branched", name: "branched" },
+      NOW,
+      { db: made.db },
+    );
+  const held = await upload("over.bin");
+  assert.equal(held.status, 403, "the upload route counted the branch copy as free bytes");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+  // The rows alone are under the limit, so the copy is what refused it: the
+  // same save lands once the copy is gone.
+  await drive.remove();
+  assert.equal((await upload("fits.bin")).status, 201);
+  // And a charged account is lifted even holding the copy, so the walk does
+  // not run for it.
+  await drive.plant();
+  stampFirstCharge(made.sqlite, "branched", NOW);
+  assert.equal((await upload("after.bin")).status, 201);
+});
+
+test("branch copies hold an unpaid account at 1 TB on the share upload path", async () => {
+  // The same refusal at the other upload door, driven as src/share.js reads
+  // it: the owner's account comes from the request row, so the branch walk
+  // has to be scoped to that owner and not to the link.
+  const made = makeMeteredDB();
+  const drive = await branchedDrive(made, "branched");
+  const links = makeShareLinks(made);
+  const token = "AAAAAAAAAAAAAAAAAAAAAA";
+  await links.requests.create(
+    newRequestRecord({ accountId: "branched", folder: "/", now: NOW, token }),
+  );
+  const drop = (/** @type {string} */ name) =>
+    handleRequestUploadRequest(
+      new Request(`https://drive.test${REQUEST_ENDPOINT}/upload?k=${token}&name=${name}`, {
+        method: "POST",
+        body: "the bytes a stranger drops",
+      }),
+      drive.store,
+      links,
+      () => "active",
+      { now: NOW, ipLimiter: passLimiter(), linkLimiter: passLimiter(), db: made.db },
+    );
+  const held = await drop("over.bin");
+  assert.equal(held.status, 403, "the share upload route counted the branch copy as free bytes");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+  await drive.remove();
+  assert.equal((await drop("fits.bin")).status, 201);
+  // One refusal did not take the name, so it is not a 403 that counted a
+  // drop that never happened (the same 201-vs-409 contract every share test
+  // above proves); nothing was written on the way.
+  const stat = await scopeStore(drive.store, { id: "branched" }).stat("/over.bin");
+  assert.equal(stat, null, "the refused drop left a file behind");
 });
 
 test("the upload route holds a pre-charge account at 1 TB even with no length header", async () => {

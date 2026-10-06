@@ -488,6 +488,63 @@ export function withoutTrash(entries, path) {
 }
 
 /**
+ * Every byte of file data stored under a drive path, read from the store
+ * itself (drive#800).
+ *
+ * `.branches` is the one folder whose bytes no other accounting knows: a
+ * branch is written with `store.copy` and never through `withIndex`, so it
+ * lands in `file_versions` only after the nightly meter reconcile walks it,
+ * and it lands in the file index not at all. An account that has copied its
+ * whole drive into a branch has therefore spent zero recorded bytes against
+ * the 1 TB pre-charge limit, and every upload it makes after that gets the
+ * allowance an empty drive gets.
+ *
+ * The recursive `listAll` walk is the store's own answer about its own
+ * objects, so it counts a copy whatever wrote it; folders are skipped,
+ * because a folder is a key prefix rather than an object holding bytes.
+ * An empty (or absent) folder sums to 0, so a drive with no branch adds
+ * nothing.
+ * @param {FileStore} store a store already scoped to one account
+ * @param {string} path a validated drive path, e.g. BRANCHES_PATH
+ * @returns {Promise<number>} bytes stored under `path`
+ */
+async function storedBytesUnder(store, path) {
+  const entries = await store.listAll(path);
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.kind !== "folder") {
+      // A file row carries its size on both stores, so a row without one
+      // reads as zero bytes rather than being guessed at: the guard IS a
+      // size read, and 0 is the number that fails toward a refusal.
+      total += entry.size || 0;
+    }
+  }
+  return total;
+}
+
+/**
+ * The stored bytes the pre-charge limit counts for one account at an
+ * upload door (drive#800): the live `file_versions` rows plus the branch
+ * copies the store holds, which are written without `withIndex` and so
+ * are in neither `file_versions` nor the search index. A charged account
+ * is lifted, so its branch copies are not walked; an unpaid walk is one Store
+ * listing per upload door, which is what counting what the store holds costs
+ * on the two paths that add bytes to somebody else's limit.
+ * @param {D1Database} db
+ * @param {FileStore} store a store already scoped to one account
+ * @param {string} accountId
+ * @param {number|null} firstChargedAt epoch milliseconds, or null unpaid
+ * @returns {Promise<number>}
+ */
+export async function preChargeStoredBytes(db, store, accountId, firstChargedAt) {
+  const stored = await accountStoredBytes(db, accountId);
+  if (firstChargedAt !== null) {
+    return stored;
+  }
+  return stored + (await storedBytesUnder(store, BRANCHES_PATH));
+}
+
+/**
  * The child path a file is parked under when deleted, relative to the trash
  * folder. The original path IS the key (drive#570): a deleted `/Photos/a.txt`
  * lives at `.trash/Photos/a.txt/<ts>`, so every version of one path shares
@@ -2963,7 +3020,8 @@ async function uploadRequest(request, url, store, account, options = {}) {
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
   }
   if (options.db) {
-    const stored = await accountStoredBytes(options.db, account.id);
+    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
+    const stored = await preChargeStoredBytes(options.db, store, account.id, firstChargedAt);
     // A missing length is 0 while under the limit. At or past 1 TB it is 1
     // byte so an upload with no length cannot sneak past the exact-limit
     // edge (stored + 0 is not greater than the limit).
@@ -2973,7 +3031,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
         : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
           ? 1
           : 0;
-    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
     const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
     if (blocked !== null) {
       return json({ error: blocked }, 403);
