@@ -717,6 +717,7 @@ func TestExpiryLabelNamesTheInstantOrTheAbsenceOfOne(t *testing.T) {
 // person runs `drive init` and the line they read is the one the api Worker
 // answers with, never the mint's value the CLI already had.
 func TestInitShowsTheExpiryTheToolHolds(t *testing.T) {
+	stubAgentPath(t)
 	home := t.TempDir()
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
