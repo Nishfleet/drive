@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -305,7 +305,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // The hourly trip's env carries both bindings: the same cron runs the
+  // pre-charge sweep off DRIVE_DB (drive#536), and the deploy binds the one
+  // database under both names (cloudflare.config.ts). The sweep gets the raw
+  // db, not the outage proxy: it reads no ledger rows.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -327,8 +331,12 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    // The same shape the draw itself bills with (src/prepaid.js drawFor):
+    // each month divides by its own minutes (drive#531), so a September
+    // figure and an October figure are never divided alike.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes: minutesInMonth(hour),
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
     }).totalCents;
