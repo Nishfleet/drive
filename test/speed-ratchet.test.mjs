@@ -255,7 +255,42 @@ test("the site Worker bundle stays within its baseline size", (t) => {
   t.diagnostic(`site-bundle: ${bytes} bytes, budget ${budget.mean} bytes`);
 });
 
-test("the site Worker bundle does not ship unused SQL dialect chunks", (t) => {
+/**
+ * Every chunk the Worker can reach from its own entry, following the Vite
+ * manifest's own static and dynamic edges. Walking the graph rather than
+ * reading every key is the point: a chunk that ships only because something
+ * deep in the graph dynamically imports it is still a chunk the browser
+ * downloads, and a name this test never thought of is still a name the
+ * pattern below catches.
+ * @param {Record<string, {file?: string, src?: string, imports?: string[], dynamicImports?: string[]}>} manifest
+ * @returns {string[]} one `src -> file` line per reachable chunk
+ */
+function reachableChunks(manifest) {
+  const seen = new Set();
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {string[]} */
+  const queue = ["virtual:cloudflare/worker-entry"];
+  while (queue.length > 0) {
+    const key = queue.pop();
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    const entry = manifest[key];
+    if (entry === undefined) {
+      // A manifest that points at a chunk it does not describe means the walk
+      // below is reading a shape it does not understand, which would turn
+      // this into a test that always passes. Fail instead.
+      throw new Error(`site-bundle manifest names a chunk it does not describe: ${key}`);
+    }
+    lines.push(`${entry.src ?? key} -> ${entry.file ?? "(inlined)"}`);
+    for (const next of [...(entry.imports ?? []), ...(entry.dynamicImports ?? [])]) {
+      queue.push(next);
+    }
+  }
+  return lines;
+}
+
+test("the site Worker bundle does not ship an unused SQL dialect", (t) => {
   const manifestPath = fileURLToPath(
     new URL("../.cloudflare/output/v0/workers/default/bundle/.vite/manifest.json", import.meta.url),
   );
@@ -264,20 +299,17 @@ test("the site Worker bundle does not ship unused SQL dialect chunks", (t) => {
     return;
   }
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const unused = Object.values(manifest)
-    .map((entry) =>
-      typeof entry === "object" && entry !== null && "src" in entry ? entry.src : "",
-    )
-    .filter(
-      (src) =>
-        typeof src === "string" &&
-        /kysely-adapter|bun-sqlite|node-sqlite|postgres-dialect|mysql-dialect|mssql-dialect/.test(
-          src,
-        ),
-    );
+  // Matched against the source path and the emitted file name together: a
+  // dialect named `dialect/postgres` or shipped as `assets/dist-*.js` is
+  // caught by the pattern on one side or the other, and Kysely's own
+  // `sqlite-introspector` chunk — 285,706 bytes of origin/main's bundle — is
+  // named by neither the `dialect` nor the `kysely` stem.
+  const dialects = reachableChunks(manifest).filter((line) =>
+    /dialect|sqlite-introspector|kysely/.test(line),
+  );
   assert.deepEqual(
-    unused,
+    dialects,
     [],
-    `unused SQL dialect modules came back in the site Worker bundle: ${unused.join(", ")}`,
+    `unused SQL dialect chunks are reachable from the Worker entry: ${dialects.join(", ")}`,
   );
 });
