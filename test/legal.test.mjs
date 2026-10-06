@@ -296,3 +296,27 @@ test("the site's own 5xx page ships as a noindex asset", () => {
   const sitemap = readPublic("sitemap.xml");
   assert.equal(sitemap.includes("/500.html"), false, "the 5xx page is not a destination");
 });
+
+// The status line is rewritten after first paint, and every rewrite is shorter
+// than the sentence the page paints with. A paragraph that shrank pulled the
+// sections below it up, and that layout shift failed the CLS budget
+// (lighthouserc.json) on main. The script pins the painted height before the
+// health answer can arrive.
+test("the status line keeps its painted height when the health answer lands", () => {
+  const page = readFileSync(new URL("../public/status.html", import.meta.url), "utf8");
+  const script = page.slice(page.lastIndexOf("<script>"));
+  const lock = script.indexOf("line.style.minHeight = `${line.offsetHeight}px`;");
+  assert.ok(lock !== -1, "the script pins the status line's painted height");
+  assert.ok(lock < script.indexOf('fetch("/api/health"'), "the height is pinned before the fetch");
+  const texts = [...script.matchAll(/line\.textContent =\s*"([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(texts.length >= 3, "the three answers are read from the script");
+  const fallback = page.match(/<p id="status-line"[^>]*>([\s\S]*?)<\/p>/);
+  assert.ok(fallback, "the page paints a default status line");
+  const painted = fallback[1].replace(/<[^>]+>/g, "");
+  for (const text of texts) {
+    assert.ok(
+      text.length < painted.length,
+      `"${text}" is shorter than the painted line, so min-height holds it`,
+    );
+  }
+});
