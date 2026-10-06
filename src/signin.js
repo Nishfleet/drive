@@ -262,13 +262,24 @@ export function readSigninRequest(body) {
 }
 
 /**
+ * Whether a posted field is a tick. The page's checkbox posts "on"; JSON posts
+ * true. The one four-value check every required sign-up box reads, so the card
+ * (drive#387) and the age box (drive#781) cannot drift from each other.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isTick(value) {
+  return value === true || value === "true" || value === "on" || value === "1";
+}
+
+/**
  * Whether a posted field is a card-at-sign-up yes. The page's checkbox posts
  * "on"; JSON posts true. Anything else is not a card.
  * @param {unknown} value
  * @returns {boolean}
  */
 export function hasSignupCard(value) {
-  return value === true || value === "true" || value === "on" || value === "1";
+  return isTick(value);
 }
 
 /**
@@ -279,19 +290,7 @@ export function hasSignupCard(value) {
  * @returns {string|null}
  */
 export function refuseSignupWithoutCard(card) {
-  return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
-}
-
-/**
- * Whether a posted field is an age yes. The page's checkbox posts "on"; JSON
- * posts true. Anything else is not an age confirmation. The same four values
- * hasSignupCard reads, because both are a required tick the page and the
- * route must agree on (drive#781).
- * @param {unknown} value
- * @returns {boolean}
- */
-export function hasAgeConfirm(value) {
-  return value === true || value === "true" || value === "on" || value === "1";
+  return isTick(card) ? null : SIGNIN_COPY.needCard;
 }
 
 /**
@@ -302,7 +301,7 @@ export function hasAgeConfirm(value) {
  * @returns {string|null}
  */
 export function refuseSignupWithoutAge(age) {
-  return hasAgeConfirm(age) ? null : SIGNIN_COPY.needAge;
+  return isTick(age) ? null : SIGNIN_COPY.needAge;
 }
 
 /**

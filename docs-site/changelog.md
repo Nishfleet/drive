@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-06
 
+- Opening an account now asks for a tick that you are 18 or older, and the
+  sign-in route refuses to open one without it. The terms already carry the
+  rule.
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states

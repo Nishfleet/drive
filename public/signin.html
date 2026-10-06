@@ -215,9 +215,9 @@ button:disabled {
              (public/terms.html, drive#547). The sentence above the box is
              SIGNIN_COPY.needAge and the route refuses a start without the
              box with those same words; the label is the short consent line. -->
-        <p class="hint">You must be 18 or older to open an account.</p>
+        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
         <label class="hint" for="age">
-          <input id="age" name="age" type="checkbox" value="on" required>
+          <input id="age" name="age" type="checkbox" value="on" required aria-describedby="age-sentence">
           I am 18 or older
         </label>
         <label for="email">Email</label>
