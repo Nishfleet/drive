@@ -9,12 +9,12 @@
 // The price itself is not declared here: core/pricing.js is the one price
 // source, and BILLING below is built from PRICE so the tags, the JSON-LD and
 // llms.txt render the same numbers and sentences the page does (issue #23).
-// The rule (drive#463, Nish 2026-10-04): pay only for what you store.
+// The rule (drive#642, Nish 2026-10-05): pay for the biggest size in 30 days.
 //
-//     bill = min(2¢ x avg GB, $10 x max(1, avg TB))
+//     bill = min(2¢ x size30 GB, $15 x max(1, size30 TB))
 //
-// So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
-// bills $30. No plans, and the prepaid balance never expires (drive#586).
+// So 200 GB bills $4, 750 GB to 1 TB bills $15, 1.5 TB bills $22.50 and 4 TB
+// bills $60. No plans, and the prepaid balance never expires (drive#586).
 
 // The one site address (drive#527). cmd/drive/site.json is the single file
 // that holds it: the CLI embeds it (//go:embed in login.go), the docs config

@@ -20,6 +20,7 @@ import {
   monthlyBillForStoredTb,
   savedLine,
   SIZE30_MS,
+  size30Window,
 } from "../core/billing.js";
 import { PRICE } from "../core/pricing.js";
 
@@ -165,4 +166,37 @@ test("gbMinutes is refused: the bill follows size30, not the month's average", (
     () => monthBillCents({ size30Bytes: 0, gbMinutes: 1, monthMinutes: 30 * 1440 }),
     /gbMinutes/,
   );
+});
+
+test("the size30 window is today plus 29 UTC days, across a month end and a leap day", () => {
+  const april = size30Window(Date.parse("2026-04-01T00:00:00.000Z"));
+  assert.equal(april.today, "2026-04-01");
+  assert.equal(new Date(april.from).toISOString(), "2026-03-03T00:00:00.000Z");
+  const leap = size30Window(Date.parse("2028-02-29T12:00:00.000Z"));
+  assert.equal(leap.today, "2028-02-29");
+  assert.equal(new Date(leap.from).toISOString(), "2028-01-31T00:00:00.000Z");
+});
+
+test("a peak at the window start is still in, and one minute before it is out", () => {
+  const through = Date.parse("2026-04-30T12:00:00.000Z");
+  const window = size30Window(through);
+  assert.ok(window.from >= window.from && window.from <= window.through);
+  const gone = window.from - 60_000;
+  assert.ok(gone < window.from);
+});
+
+test("property: a draw is never negative and never above monthly/30 plus remainder", () => {
+  for (let gb = 0; gb <= 4000; gb += 17) {
+    const monthly = monthBillCents({ size30Bytes: Math.round(gb * GB) }).totalMillicents;
+    let remainder = 0;
+    let sum = 0;
+    for (let day = 0; day < DRAW_DAYS; day += 1) {
+      const step = dailyDrawMillicents(monthly, remainder);
+      assert.ok(step.drawMillicents >= 0);
+      assert.ok(step.drawMillicents <= Math.floor((monthly + DRAW_DAYS - 1) / DRAW_DAYS));
+      sum += step.drawMillicents;
+      remainder = step.remainderMillicents;
+    }
+    assert.equal(sum, monthly);
+  }
 });

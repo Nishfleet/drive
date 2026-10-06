@@ -45,9 +45,9 @@ test("the calculator's first view prints the 1 TB quote", () => {
 });
 
 test("the usual plan is usualPlanMonthlyUsd, and the saving is the difference", () => {
-  const quote = quoteForStoredTb(1);
+  const quote = quoteForStoredTb(0.2);
   const ours = quote.billUsd;
-  const usual = usualPlanMonthlyUsd(1);
+  const usual = usualPlanMonthlyUsd(0.2);
   assert.equal(quote.planUsd, usual, "the slider reads the plan from the quote");
   const plan = PRICE.usualPlan;
   assert.ok(
@@ -56,16 +56,13 @@ test("the usual plan is usualPlanMonthlyUsd, and the saving is the difference", 
     ),
     "the fine print names the usual plan's own numbers",
   );
-  const metered = PRICE.rateUsdPerGbMonth * 1000;
-  assert.ok(html.includes(`data-receipt="metered">${cents(metered)}<`));
+  assert.ok(html.includes(`data-receipt="metered">${cents(ours)}<`));
   assert.ok(html.includes(`<span class="d">${PRICE.maxLine.replace(/\.$/, "")}</span>`));
-  assert.equal(monthlyBillForStoredTb(1).maximumUsd, ours, "1 TB sits at the maximum");
-  assert.match(html, new RegExp(`id="bar-them-v">\\${whole(usual)}<`));
-  assert.ok(html.includes(`You keep <em>${whole(usual - ours)}</em> a month.`));
-  assert.ok(html.includes(`data-receipt="ours">${cents(ours)}<`));
+  assert.match(html, new RegExp(`id="bar-them-v">\\${whole(usualPlanMonthlyUsd(1))}<`));
+  assert.ok(html.includes(`data-receipt="ours">$15.00<`));
   assert.ok(html.includes(`data-receipt="usual">${cents(usual)}<`));
   assert.ok(html.includes(`data-receipt="saved">${cents(usual - ours)}<`));
-  assert.ok(html.includes(`<b>${cents(ours)}</b>`), "the receipt total is the 1 TB bill");
+  assert.ok(html.includes(`<b>${cents(ours)}</b>`), "the receipt total is the 200 GB bill");
 });
 
 test("the slider asks /api/quote and works out no bill itself", () => {
@@ -97,7 +94,7 @@ test("the main action is Get drive, to /signin, with a true pay-as-you-go line",
   assert.equal(Number(cta[1]), PREPAID.minTopUpUsd);
   assert.equal(Number(cta[2]), monthlyBillForStoredTb(0.2).billUsd);
   // No trial, no membership, no first-month discount (drive#463).
-  for (const stale of [/days free/i, /trial/i, /membership/i, /first month/i, /\$12/, /ceiling/i]) {
+  for (const stale of [/days free/i, /trial/i, /membership/i, /first month/i, /\$12 a TB/, /ceiling/i]) {
     assert.doesNotMatch(html, stale);
   }
   assert.ok(html.includes(PRICE.needCard), "the footer says why a card is needed");

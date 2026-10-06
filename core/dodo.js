@@ -36,9 +36,9 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { gbMonths, minutesInMonth, monthBillCents } from "./billing.js";
+import { monthBillCents, size30Window } from "./billing.js";
 import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
-import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
 
 // The two hosts Dodo serves its API on, named once because the check that
 // guards the bearer key is an exact match against them and nothing else
@@ -333,18 +333,11 @@ export async function pushBillingHours(db, hours, options = {}) {
       if (already.has(`${accountId}|${hour}`)) {
         continue;
       }
-      const usage = await monthUsageThrough(db, accountId, hour);
+      const window = size30Window(hour);
+      const size30 = await size30Through(db, accountId, window.from, hour);
       const bill = monthBillCents({
-        gbMinutes: usage.gbMinutes,
-        monthMinutes: minutesInMonth(hour),
-        downloadBytes: usage.downloadBytes,
-        // The free download allowance follows the same average the storage
-        // price reads, derived here from the month's GB-minutes rather than
-        // from the hour's stored-bytes marks (drive#535): a file saved six
-        // times in one hour marks one size, and its average is one size too.
-        // gbMonths() is the one conversion, in billing.js, where the price's
-        // divisor lives, and it divides by that month's own minutes.
-        averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
+        size30Bytes: size30.size30Bytes,
+        downloadBytes: size30.downloadBytes,
       });
       const previously = running.get(accountId) ?? 0;
       // High-water: a reroll that lowered this month's bill (a late hide)

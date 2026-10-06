@@ -23,7 +23,6 @@ import {
   meteredMonthlyBillUsd,
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
-  QUOTE_MONTH_MINUTES,
 } from "../core/billing.js";
 import { INSTALL_LINES } from "../core/install-lines.js";
 import { PRICE } from "../core/pricing.js";
@@ -45,8 +44,8 @@ export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}
  * old fixed divisor over-billed (drive#531).
  * @param {number} gbMinutes
  */
-export function meteredUsdFor(gbMinutes) {
-  return meteredMonthlyBillUsd(gbMinutes, QUOTE_MONTH_MINUTES);
+export function meteredUsdFor(size30Bytes) {
+  return meteredMonthlyBillUsd(size30Bytes);
 }
 
 /**
@@ -64,7 +63,7 @@ export const BILL_EXAMPLES = Object.freeze(
     return Object.freeze({
       tb,
       stored: `${tb} TB`,
-      metered: dollars(meteredUsdFor(gb * QUOTE_MONTH_MINUTES)),
+      metered: dollars(meteredUsdFor(Math.round(gb * 1e9))),
       maximum: dollars(monthlyMaximumUsd(gb)),
       bill: dollars(bill.billUsd),
     });
@@ -207,7 +206,7 @@ export const FAQ = Object.freeze([
     scoreboard: ["price at 1 TB"],
     answer: [
       "{{HEADLINE}}",
-      "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
+      "{{SIZE30}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
       "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
@@ -304,6 +303,7 @@ export function markerValues(extra = {}) {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
+    SIZE30: PRICE.size30Line,
     NO_PLANS: PRICE.noPlansLine,
     VERSION_MINIMUM: PRICE.versionMinimumLine,
     PRICE_RULE: PRICE.rule,

@@ -27,10 +27,12 @@ import { BYTES_PER_GB, MINUTE_MS, recordUsage, size30Through } from "../../core/
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
+  checkYesterdayDraws,
   drawUsageHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalance,
+  size30DayUnpaid,
   writesPaused,
 } from "../../core/prepaid.js";
 import {
@@ -609,4 +611,107 @@ test("an agent key at $0 cannot write, keeps its powers, and writes again after 
     now: now(),
   });
   assert.equal((await write(store, `/u/${ACCOUNT}/c.md`)).status, 201, "the same key, no new mint");
+});
+
+test("size30DayUnpaid is false when the upload does not raise size30", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await storeHours(db, 400, 1);
+  assert.equal(await size30DayUnpaid(db, ACCOUNT, 1), false);
+});
+
+test("size30DayUnpaid is true when a raise cannot cover one daily draw", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "adjustment",
+    amountCents: 1,
+    idempotencyKey: "adj-cent",
+    reason: "test: one cent",
+    now: midnight(),
+  });
+  assert.equal(await size30DayUnpaid(db, ACCOUNT, 400 * BYTES_PER_GB), true);
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_enough",
+    amountCents: 1000,
+    now: midnight(),
+  });
+  assert.equal(await size30DayUnpaid(db, ACCOUNT, 400 * BYTES_PER_GB), false);
+});
+
+test("an upload that would raise size30 with too little balance is 402", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "adjustment",
+    amountCents: 1,
+    idempotencyKey: "adj-cent-upload",
+    reason: "test: one cent",
+    now: midnight(),
+  });
+  const store = createMemoryStore();
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  const allowed = await handleFilesRequest(
+    new Request("https://drive.example/api/files/upload?path=%2F&name=tiny.bin", {
+      method: "POST",
+      headers: { "content-length": "5" },
+      body: "hello",
+    }),
+    store,
+    { id: ACCOUNT, name: ACCOUNT },
+    now,
+    {
+      db,
+      prepaidPause: true,
+      size30DayUnpaid: (accountId, extraBytes) => size30DayUnpaid(db, accountId, extraBytes),
+    },
+  );
+  assert.equal(allowed.status, 201, "5 bytes at empty size30 does not raise a billable day");
+  const refused = await handleFilesRequest(
+    new Request("https://drive.example/api/files/upload?path=%2F&name=raise.bin", {
+      method: "POST",
+      headers: { "content-length": "5" },
+      body: "hello",
+    }),
+    store,
+    { id: ACCOUNT, name: ACCOUNT },
+    now,
+    { db, prepaidPause: true, size30DayUnpaid: async () => true },
+  );
+  assert.equal(refused.status, 402);
+  assert.deepEqual(await refused.json(), {
+    error: failureMessage("size30-unpaid"),
+    top_up: "/usage",
+  });
+});
+
+test("checkYesterdayDraws is empty when yesterday's draw matches", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const yesterday = Date.parse("2026-10-05T00:00:00Z");
+  const hours = await storeHours(db, 400, 24, yesterday);
+  await drawUsageHours(db, hours, { now: yesterday + 24 * HOUR_MS });
+  const check = await checkYesterdayDraws(db, yesterday + 36 * HOUR_MS);
+  assert.equal(check.yesterday, "2026-10-05");
+  assert.deepEqual(check.mismatches, []);
+});
+
+test("checkYesterdayDraws names a missing draw and a millicent mismatch", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const yesterday = Date.parse("2026-10-05T00:00:00Z");
+  const hours = await storeHours(db, 400, 24, yesterday);
+  await drawUsageHours(db, hours, { now: yesterday + 24 * HOUR_MS });
+  sqlite.prepare("UPDATE daily_draws SET draw_millicents = 1 WHERE account_id = ?").run(ACCOUNT);
+  const wrong = await checkYesterdayDraws(db, yesterday + 36 * HOUR_MS);
+  assert.equal(wrong.mismatches.length, 1);
+  assert.equal(wrong.mismatches[0].accountId, ACCOUNT);
+  assert.match(wrong.mismatches[0].reason, /stored 1 millicents/);
+  sqlite.prepare("DELETE FROM daily_draws WHERE account_id = ?").run(ACCOUNT);
+  const missing = await checkYesterdayDraws(db, yesterday + 36 * HOUR_MS);
+  assert.equal(missing.mismatches.length, 1);
+  assert.equal(missing.mismatches[0].reason, "missing draw");
 });

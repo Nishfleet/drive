@@ -91,17 +91,15 @@ const MOUNT_FLAGS = [
 // does not straddle the cap.
 const MONTH_MINUTES = 30 * 1440;
 const STRADDLING_MONTH = Object.freeze({
-  gbMinutes: 2000 * MONTH_MINUTES,
-  monthMinutes: MONTH_MINUTES,
+  size30Bytes: 2000 * 1e9,
   storedGb: 2000,
   storedDaily: [],
   downloadBytes: 0,
-  averageStoredGb: 2000,
   capUsd: 12,
   cardAdded: true,
 });
 const CAP_BEFORE = 12;
-const CAP_AFTER = 25;
+const CAP_AFTER = 35;
 
 const REGION = "us-east-1";
 /** rclone 1.71 is on PATH in CI and on the VPS. */
@@ -658,7 +656,7 @@ async function proof(t, workDir) {
     { usage: raisedMonth, keys: await store.listCapKeys(account.id) },
     store.keyProviderFor(account.id),
   );
-  assert.equal(raised.state, "active", "the same month under a $25 cap is active");
+  assert.equal(raised.state, "active", "the same month under a $35 cap is active");
   assert.equal(raised.mount.restart, true, "and the restore restarts the mount too");
   await store.setAccountState(account.id, raised.state);
   assert.equal(raised.applied.length, 1, "the read-only key is the one replaced on the restore");
@@ -756,8 +754,8 @@ test("the straddling month really does straddle the cap", async () => {
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
   const { capStatus } = await import("../../core/billing.js");
-  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, MONTH_MINUTES, CAP_BEFORE).state, "read_only");
-  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, MONTH_MINUTES, CAP_AFTER).state, "active");
+  assert.equal(capStatus(STRADDLING_MONTH.size30Bytes, CAP_BEFORE).state, "read_only");
+  assert.equal(capStatus(STRADDLING_MONTH.size30Bytes, CAP_AFTER).state, "active");
 });
 
 test("the cap swap on a real mount: read-only, no file lost, writing again after the raise", async (t) => {

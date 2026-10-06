@@ -12,7 +12,7 @@ Revisit when both are true:
 
 ## Pressure test (2026-09-29)
 
-These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bill ceiling, and are kept as the record. The current price is 2¢/GB billed by the minute, with the monthly bill capped at max($12, $8 × peak TB) (see Pricing).
+These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bill ceiling, and are kept as the record. **Current price (drive#642, Nish 2026-10-05, replaces drive#463's per-minute average):** you pay for the biggest size your drive reached in the last 30 days, 2¢ per GB a month, never more than $15 per TB. The prepaid balance is drawn once a day. See Pricing below and `core/pricing.js`.
 
 | Question | Finding |
 |---|---|
@@ -37,7 +37,7 @@ The first says don't build. The second says if you build, sell to people first. 
 
 ## What to build if greenlit
 
-**A drive for people and their agents: a Finder folder that streams plain files from Backblaze B2, set up with one command that also connects Claude Code, Codex, Cursor, Gemini and Kiro. Billed only for what is stored, 2¢/GB/month billed by the minute, and the monthly bill never passes max($12, $8 × peak TB) — never more than $12 a TB, then $8.**
+**A drive for people and their agents: a Finder folder that streams plain files from Backblaze B2, set up with one command that also connects Claude Code, Codex, Cursor, Gemini and Kiro. Current bill (drive#642, replaces drive#463): you pay for the biggest size your drive reached in the last 30 days, 2¢/GB/month, never more than $15 per TB.**
 
 - **Who it's for:** people first (solo creators with libraries bigger than their laptop disk). Agents are a free extra, not the product.
 - **Why it could win:** no plan floor, pay only for the GB-hours you use, and the bill never passes max($12, $8 × peak TB). Honest limit: it costs more than iCloud/Google for files kept all month.
@@ -46,11 +46,13 @@ The first says don't build. The second says if you build, sell to people first. 
 
 ### Pricing
 
-**Recommendation (updated 2026-09-30, Nish): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store. The monthly bill is min(metered, max($12, $8 × peak TB)), TB measured to the GB; on the B2 fallback the ceiling rate is $10/TB (so max($12, $10 × peak TB)) — the page's "$8" holds only while iDrive is primary.** 1.5¢ is the hard floor for the metered rate (Nish); the ceiling deliberately prices below it ($12 for 1 TB is 1.2¢/GB, $8 a TB above 1.5 TB is 0.8¢/GB). Keep 1.5¢ in reserve for a yearly prepaid plan, the way Space discounts yearly billing by 25%. The full test is below.
+**Current rule (drive#642, Nish 2026-10-05, replaces drive#463):** you pay for the biggest size your drive reached in the last 30 days. 2 cents per GB a month, never more than $15 per TB. The prepaid balance is drawn once a day (monthly / 30, remainder carried). The pitch is "pay only for what you use", not cheaper than a plan (at 1 TB we cost the same $15). Historical #463 per-minute average and the $10/$12/$8 ceilings below are replaced.
+
+**Recommendation (updated 2026-09-30, Nish, now replaced by drive#642 above): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store. The monthly bill is min(metered, max($12, $8 × peak TB)), TB measured to the GB; on the B2 fallback the ceiling rate is $10/TB (so max($12, $10 × peak TB)) — the page's "$8" holds only while iDrive is primary.** 1.5¢ is the hard floor for the metered rate (Nish); the ceiling deliberately prices below it ($12 for 1 TB is 1.2¢/GB, $8 a TB above 1.5 TB is 0.8¢/GB). Keep 1.5¢ in reserve for a yearly prepaid plan, the way Space discounts yearly billing by 25%. The full test is below.
 
 | Item | Choice |
 |---|---|
-| Price | 2¢/GB-month, billed by the minute, shown as a monthly total |
+| Price | **drive#642:** 2¢/GB-month on size30 (biggest size in the last 30 days), never more than $15 per TB. Historical: 2¢/GB-month, billed by the minute, shown as a monthly total |
 | Bill ceiling | min(metered, max($12, $8 × peak TB)), TB measured to the GB; B2 fallback $10/TB (Nish, 2026-09-30) |
 | Minimum per file | 1 hour of storage (B2 bills us by the byte-hour; proposed 2026-09-29, not yet confirmed by Nish) |
 | Downloads | Free up to 3x your average stored data each month, then 1¢/GB (the same rule B2 applies to us) |

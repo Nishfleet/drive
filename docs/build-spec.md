@@ -11,8 +11,8 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Decision | Value | State |
 |---|---|---|
 | Primary storage | **iDrive e2** at $5/TB-month (reseller plan), one bucket per customer, each key limited to that one bucket (drive#371). Backblaze B2 is the standby if iDrive's reseller API stops answering. The spec says B2 further down; those lines are updated with this row | Nish, 2026-09-29; iDrive stays primary 2026-10-04 (drive#371) |
-| Price | 2¢ per GB-month, billed by the minute; the monthly bill never passes max($12, $8 × peak TB), TB measured to the GB. B2 fallback: $10/TB | Nish, 2026-09-30 |
-| Billing unit | **Per minute** (not per second). The headline stays "2¢ per GB a month, billed by the minute". Never advertise a per-minute price. | Nish leaning, 2026-09-29; coordinator and I agree |
+| Price | **drive#642 (current, replaces #463):** 2¢ per GB-month on the biggest size in the last 30 days, never more than $15 per TB. Historical #463: 2¢ per GB-month, billed by the minute; the monthly bill never passes max($12, $8 × peak TB), TB measured to the GB. B2 fallback: $10/TB | Nish, 2026-10-05 (#642); 2026-09-30 (#463, replaced) |
+| Billing unit | **drive#642:** trailing 30-day peak (size30), drawn once a day. Historical: **Per minute** (not per second). Never advertise a per-minute price. | Nish, 2026-10-05 (#642); 2026-09-29 (#463, replaced) |
 | Minimum per file | 1 hour | Asked 2026-09-29; default **yes** until Nish answers |
 | Membership | $10 a month, and storage use counts toward it. Go past $10 and you pay by the minute for the rest. A card is needed at sign-up because there is no free tier. | Nish, 2026-10-03 (Drop free); copy drive#387 |
 | Old versions | **Free to the user.** Kept 1 day in B2, then 30 days on the Hetzner Storage Box (about $2.3/TB against B2's $6.95) | Nish, 2026-09-29 ("move it to hetzner for 30 days"). Catch: if a file is saved several times in one day, only that day's last version reaches Hetzner |

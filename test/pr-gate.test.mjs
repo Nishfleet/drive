@@ -847,24 +847,22 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   //   2 TB all month: 4000¢ metered, held to $10 × 2 TB = $20 → 2000¢
   // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
   const MONTH_MINUTES = 30 * 1440;
-  /** @type {Array<[{gbMinutes: number, downloadBytes?: number, averageStoredGb?: number}, {storageCents: number, downloadCents: number, totalCents: number}]>} */
   const cases = [
-    [{ gbMinutes: 400 * MONTH_MINUTES }, { storageCents: 800, downloadCents: 0, totalCents: 800 }],
+    [{ size30Bytes: 400 * 1e9 }, { storageCents: 800, downloadCents: 0, totalCents: 800 }],
     [
       {
-        gbMinutes: 400 * MONTH_MINUTES,
-        downloadBytes: 400e9,
-        averageStoredGb: 100,
+        size30Bytes: 400 * 1e9,
+        downloadBytes: 1300e9,
       },
       { storageCents: 800, downloadCents: 100, totalCents: 900 },
     ],
     [
-      { gbMinutes: 2000 * MONTH_MINUTES },
-      { storageCents: 2000, downloadCents: 0, totalCents: 2000 },
+      { size30Bytes: 2000 * 1e9 },
+      { storageCents: 3000, downloadCents: 0, totalCents: 3000 },
     ],
   ];
   for (const [input, expected] of cases) {
-    const bill = monthBillCents({ ...input, monthMinutes: MONTH_MINUTES });
+    const bill = monthBillCents(input);
     for (const [field, cents] of Object.entries(expected)) {
       const value = /** @type {Record<string, number>} */ (/** @type {unknown} */ (bill))[field];
       assert.equal(value, cents, `${field} for ${JSON.stringify(input)}`);

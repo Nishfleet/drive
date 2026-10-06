@@ -73,13 +73,8 @@ test("an account of empty files gets a real answer from POST /api/cap", async ()
   }
 
   const month = await store.monthUsage(account.id, { capUsd: 8 });
-  assert.equal(month.gbMinutes, 0, "a 0-byte file holds zero GB-minutes");
+  assert.equal(month.size30Bytes, 0, "a 0-byte file holds zero size30");
   assert.equal(month.storedGb, 0, "a 0-byte file holds no peak");
-  assert.equal(
-    month.averageStoredGb,
-    0,
-    "and its month average is 0 - the 3x free download allowance follows it",
-  );
 
   const answered = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -144,13 +139,11 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
 
   // 2 TB held all of a 30-day month (drive#531: the month's own minutes).
   const month = {
-    gbMinutes: 2000 * 30 * 1440,
-    monthMinutes: 30 * 1440,
+    size30Bytes: 2000 * 1e9,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,
-    averageStoredGb: 2000,
-    // The account chose $12 above, under the $20 default, so 2 TB ($20) is past it.
+    // The account chose $12 above, under the $20 default, so 2 TB ($30) is past it.
     capUsd: 12,
     cardAdded: true,
   };
@@ -171,8 +164,8 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
     "read_only",
   );
 
-  const raisedMonth = { ...month, capUsd: 20 };
-  await store.setCapCents(account, dollarsToCapCents(20));
+  const raisedMonth = { ...month, capUsd: 35 };
+  await store.setCapCents(account, dollarsToCapCents(35));
   const raised = await enforceCap(
     { usage: raisedMonth, keys: await store.listCapKeys(account.id) },
     store.keyProviderFor(account.id),

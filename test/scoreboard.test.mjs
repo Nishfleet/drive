@@ -125,7 +125,7 @@ test("the price rows are computed from monthBillCents, not typed", () => {
   for (const [metric, gb] of cases) {
     const cells = row(metric);
     // The month's bill for that size held all month (drive#463).
-    const bill = monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: gb * MONTH_MINUTES });
+    const bill = monthBillCents({ size30Bytes: gb * 1e9 });
     const dollars = `$${(bill.totalCents / 100).toFixed(2)}`;
     // Every dollar figure the cell states, parsed out: exactly one, and it is
     // the computed one. A cell carrying a stale figure beside the right one

@@ -16,7 +16,7 @@ write the same folder.
   storage takes that key's delete but keeps the deleted copy for 1 day, and we
   can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
   storage limits a key to the whole Drive.
-- **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
+- **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and

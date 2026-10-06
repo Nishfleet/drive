@@ -380,6 +380,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Your balance is $0, so uploads are paused while your files stay safe and downloads keep working.",
     next: TOP_UP_PROMPT,
   }),
+  // An upload that would raise size30 when the balance cannot cover one day
+  // at the new size (drive#642). The existing $0 pause covers a spent
+  // balance; this covers a raise that the next daily draw could not pay.
+  "size30-unpaid": Object.freeze({
+    what: "This upload would raise the biggest size your drive reached in the last 30 days, and your balance cannot cover one day at the new size.",
+    next: TOP_UP_PROMPT,
+  }),
   // Auto top-up charges the card saved by a top-up, so it cannot be turned on
   // before the first one (drive#586).
   "auto-topup-needs-card": Object.freeze({

@@ -337,12 +337,8 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     // each month divides by its own minutes (drive#531), so a September
     // figure and an October figure are never divided alike.
     return monthBillCents({
-      gbMinutes: usage.gbMinutes,
-      monthMinutes,
+      size30Bytes: usage.peakBytes,
       downloadBytes: usage.downloadBytes,
-      // The same average the draw passes (drive#535): derived from the
-      // GB-minutes, not read off the hours.
-      averageStoredGb: gbMonths(usage.gbMinutes, monthMinutes),
     }).totalCents;
   };
   /** @param {number} from @param {number} to */

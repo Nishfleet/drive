@@ -15,6 +15,7 @@
 //   - settleBalance: after a draw, the "$2 left" email (once per crossing) and
 //     the auto top-up (off by default; at most one started per day).
 
+import { accountStoredBytes } from "./abuse-guards.js";
 import {
   dailyDrawMillicents,
   MILLICENTS_PER_CENT,
@@ -66,6 +67,37 @@ export function prepaidPauseOn(env) {
  */
 export async function writesPaused(db, accountId) {
   return (await balanceCents(db, accountId)) <= 0;
+}
+
+/**
+ * Whether an upload of `extraBytes` would raise size30 while the balance
+ * cannot cover one day at the new size (drive#642). A raise that does not
+ * change today's draw, and an upload that does not raise size30, return
+ * false: the $0 pause covers a spent balance.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {unknown} extraBytes
+ */
+export async function size30DayUnpaid(db, accountId, extraBytes) {
+  if (!Number.isSafeInteger(extraBytes) || /** @type {number} */ (extraBytes) <= 0) {
+    return false;
+  }
+  const extra = /** @type {number} */ (extraBytes);
+  const now = Date.now();
+  const window = size30Window(now);
+  const size30 = await size30Through(db, accountId, window.from, now);
+  const stored = await accountStoredBytes(db, accountId);
+  const nextBytes = stored + extra;
+  if (nextBytes <= size30.size30Bytes) {
+    return false;
+  }
+  const bill = monthBillCents({ size30Bytes: nextBytes });
+  const day = dailyDrawMillicents(bill.totalMillicents, 0);
+  if (day.drawMillicents <= 0) {
+    return false;
+  }
+  const balanceMilli = (await balanceCents(db, accountId)) * MILLICENTS_PER_CENT;
+  return balanceMilli < day.drawMillicents;
 }
 
 /**
@@ -301,6 +333,83 @@ async function drawForDay(db, accountId, day, now) {
     now,
   });
   return inserted ? amountCents : 0;
+}
+
+/**
+ * Recomputes yesterday's draw for every account that had meter rows or a
+ * stored draw that day, and names every mismatch (drive#642 daily check).
+ * Missing or unparseable meter rows are mismatches, never a silent $0.
+ * @param {D1Database} db
+ * @param {number} [now]
+ * @returns {Promise<{yesterday: string, mismatches: ReadonlyArray<{accountId: string, reason: string}>}>}
+ */
+export async function checkYesterdayDraws(db, now = Date.now()) {
+  if (!db) {
+    throw new Error("prepaid draw check: METER_DB binding is not configured");
+  }
+  const at = new Date(now);
+  const todayStart = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate());
+  const yesterdayStart = todayStart - 24 * HOUR_MS;
+  const yesterday = new Date(yesterdayStart).toISOString().slice(0, 10);
+  const through = todayStart - 1;
+  const window = size30Window(through);
+  const listed = await db
+    .prepare(
+      `SELECT DISTINCT account_id AS id FROM usage_minutes
+        WHERE hour >= ?1 AND hour < ?2 AND account_id <> ''
+       UNION
+       SELECT account_id AS id FROM daily_draws WHERE day = ?3`,
+    )
+    .bind(yesterdayStart, todayStart, yesterday)
+    .all();
+  /** @type {Array<{accountId: string, reason: string}>} */
+  const mismatches = [];
+  for (const raw of listed.results ?? []) {
+    const accountId = String(/** @type {{id?: unknown}} */ (raw).id ?? "");
+    if (accountId === "") {
+      continue;
+    }
+    try {
+      const size30 = await size30Through(db, accountId, window.from, through);
+      const bill = monthBillCents({
+        size30Bytes: size30.size30Bytes,
+        downloadBytes: size30.downloadBytes,
+      });
+      const previousDay = new Date(yesterdayStart - 24 * HOUR_MS).toISOString().slice(0, 10);
+      const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
+        await db
+          .prepare("SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
+          .bind(accountId, previousDay)
+          .first()
+      );
+      const remainderIn = Number(prev?.remainder_millicents ?? 0);
+      const expected = dailyDrawMillicents(
+        bill.totalMillicents,
+        Number.isSafeInteger(remainderIn) ? remainderIn : 0,
+      ).drawMillicents;
+      const stored = /** @type {{draw_millicents?: unknown}|null} */ (
+        await db
+          .prepare("SELECT draw_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
+          .bind(accountId, yesterday)
+          .first()
+      );
+      if (stored === null) {
+        mismatches.push({ accountId, reason: "missing draw" });
+        continue;
+      }
+      const drawn = Number(stored.draw_millicents);
+      if (drawn !== expected) {
+        mismatches.push({
+          accountId,
+          reason: `stored ${drawn} millicents, recomputed ${expected}`,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      mismatches.push({ accountId, reason: message });
+    }
+  }
+  return Object.freeze({ yesterday, mismatches: Object.freeze(mismatches) });
 }
 
 /**

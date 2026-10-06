@@ -12,7 +12,7 @@ import {
 } from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
-import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
+import { prepaidPauseOn, size30DayUnpaid, writesPaused } from "../../../core/prepaid.js";
 import { createD1QueueStore } from "../../../core/queues.js";
 import { signedInAccount } from "../../../core/status.js";
 import { createD1TeamStore } from "../../../core/teams.js";
@@ -499,6 +499,10 @@ function storeFor(env) {
       writesPaused:
         env.DRIVE_DB && prepaidPauseOn(env)
           ? (accountId) => writesPaused(env.DRIVE_DB, accountId)
+          : undefined,
+      size30DayUnpaid:
+        env.DRIVE_DB && prepaidPauseOn(env)
+          ? (accountId, extraBytes) => size30DayUnpaid(env.DRIVE_DB, accountId, extraBytes)
           : undefined,
     });
     keyStoreDb = env.DRIVE_DB;

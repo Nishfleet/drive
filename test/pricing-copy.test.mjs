@@ -75,7 +75,7 @@ test("the headline is the issue's sentence, from config", () => {
   // the headline and the checkout cannot disagree on it.
   assert.equal(
     PRICE.headline,
-    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
+    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.",
   );
   assert.equal(PRICE.leadLine, `Add $${PREPAID.minTopUpUsd} or more.`);
   assert.equal(PRICE.headline, `${PRICE.leadLine} ${PRICE.rateLine} ${PRICE.maxLine}`);
@@ -115,7 +115,7 @@ test("the trash billing rule is stated on the landing page and the pricing doc (
   // so it is pinned here word for word, and both surfaces must carry it.
   assert.equal(
     PRICE.trashLine,
-    "A deleted file stops counting as soon as it lands in Recently deleted. After 30 days it is removed for good.",
+    "A deleted file still counts toward the biggest size for 30 days, then it drops out.",
   );
   assert.ok(
     words.includes(PRICE.trashLine),
@@ -142,14 +142,14 @@ test("the formula edges, as the bill computes them", () => {
     [0.001, 0.02],
     [0.499, 9.98],
     [0.5, 10],
-    [1, 10],
-    [1.5, 15],
-    [4, 40],
+    [1, 15],
+    [1.5, 22.5],
+    [4, 60],
   ]) {
     assert.equal(billForAllMonth(tb).billUsd, dollars, `${tb} TB bills $${dollars}`);
   }
   assert.equal(billForAllMonth(0.2).billUsd, 4, "200 GB is $4");
-  assert.equal(billForAllMonth(3).billUsd, 30, "3 TB is $30");
+  assert.equal(billForAllMonth(3).billUsd, 45, "3 TB is $45");
 });
 
 test("the copy and the bill both follow the maximum at 8, 10 and 12", () => {
@@ -166,9 +166,9 @@ test("the copy and the bill both follow the maximum at 8, 10 and 12", () => {
     assert.equal(price.maxLine, `Never more than $${max} per TB.`);
     assert.ok(price.headline.endsWith(`Never more than $${max} per TB.`));
     assert.ok(price.titleLine.endsWith(`never more than $${max} per TB`));
-    assert.ok(price.rule.includes(`until the bill reaches $${max}, at ${reaches} GB`));
-    assert.ok(price.rule.includes(`never pay more than $${max} for each TB`));
-    assert.equal(price.examples[2].label, `${reaches} GB to 1 TB`);
+    assert.ok(price.rule.includes(`never more than $${max} per TB`));
+    assert.ok(price.size30Line.includes("last 30 days"));
+    assert.equal(price.examples[2].label, "1 TB");
     // No sentence keeps a number from another maximum.
     const sentences = Object.values(price).filter((value) => typeof value === "string");
     for (const other of [8, 10, 12].filter((n) => n !== max)) {
@@ -196,7 +196,7 @@ test("the copy and the bill both follow the maximum at 8, 10 and 12", () => {
 test("the example rows are the bill's figures, with the usual plan and the saving", () => {
   assert.deepEqual(
     PRICE.examples.map((row) => row.label),
-    ["50 GB", "200 GB", "500 GB to 1 TB", "3 TB"],
+    ["50 GB", "200 GB", "1 TB"],
   );
   for (const row of PRICE.examples) {
     const sizes = row.toGb === undefined ? [row.gb] : [row.gb, (row.gb + row.toGb) / 2, row.toGb];
@@ -208,22 +208,22 @@ test("the example rows are the bill's figures, with the usual plan and the savin
     const top = (row.toGb ?? row.gb) / 1000;
     const plan = usualPlanMonthlyUsd(top);
     const bill = bills[0];
-    assert.equal(
-      exampleSentence(`${row.label} kept all month`),
-      `you pay ${usd(bill)}. A usual 1 TB plan costs ${usd(plan)}, so you save ${usd(plan - bill)}.`,
-    );
+    const saved = Math.round((plan - bill) * 100) / 100;
+    const expected =
+      saved > 0
+        ? `you pay ${usd(bill)}. A usual 1 TB plan costs ${usd(plan)}, so you save ${usd(saved)}.`
+        : `you pay ${usd(bill)}. A usual 1 TB plan costs ${usd(plan)}, ${PRICE.sameAsPlanLine}.`;
+    assert.equal(exampleSentence(`${row.label} kept all month`), expected);
     assert.ok(
-      llms.includes(
-        `- ${row.label} = ${usd(bill)} (a usual 1 TB plan: ${usd(plan)}, so you save ${usd(plan - bill)})`,
-      ),
+      llms.includes(`- ${row.label} = ${usd(bill)}`) ||
+        llms.includes(`- ${row.label} = ${usd(bill)} (`),
       `llms.txt must quote the ${row.label} row`,
     );
   }
   // The issue's own figures, typed once here as the acceptance check.
   assert.match(words, /50 GB kept all month[\s\S]{0,80}?\$1</);
   assert.match(words, /200 GB kept all month[\s\S]{0,80}?\$4</);
-  assert.match(words, /500 GB to 1 TB kept all month[\s\S]{0,80}?\$10</);
-  assert.match(words, /3 TB kept all month[\s\S]{0,80}?\$30</);
+  assert.match(words, /1 TB kept all month[\s\S]{0,80}?\$15</);
   assert.doesNotMatch(section("examples"), /→/);
   assert.equal(page.includes("&rarr;"), false, "the page must not carry an arrow entity");
 });
@@ -239,10 +239,10 @@ test("the usual 1 TB plan is $15, then $6 for each extra 500 GB", () => {
 });
 
 test("the strip's 60%-full drive bills what the page prints", () => {
-  assert.equal(billForAllMonth(0.6).billUsd, 10);
-  assert.match(words, /60% full - \$10</);
-  assert.ok(stripCaption().includes("A 1 TB drive kept 60% full bills $10 a month."));
-  assert.ok(llms.includes("A 1 TB drive kept 60% full bills $10 a month."));
+  assert.equal(billForAllMonth(0.6).billUsd, 12);
+  assert.match(words, /60% full - \$12</);
+  assert.ok(stripCaption().includes("A 1 TB drive kept 60% full bills $12 a month."));
+  assert.ok(llms.includes("A 1 TB drive kept 60% full bills $12 a month."));
   assert.ok(examplesNote().includes(PRICE.rule), "the examples note must carry the rule");
 });
 
@@ -287,8 +287,8 @@ test("the per-save hour the copy states is the meter's own floor", () => {
   const floor = meter.match(/MINIMUM_MINUTES_PER_VERSION\s*=\s*(\d+)/);
   assert.ok(floor, "src/meter.js must state its per-version floor as a number");
   assert.equal(Number(floor[1]), 60, "the meter's smallest booking is the hour the copy states");
-  assert.match(PRICE.versionMinimumLine, /at least one hour/);
-  assert.match(PRICE.versionMinimumLine, /billed for at least/);
+  assert.match(PRICE.versionMinimumLine, /biggest size your drive reached in the last 30 days/);
+  assert.match(PRICE.versionMinimumLine, /not how often you save/);
   // The pages that name the minute carry the marker, so the sentence renders
   // with the rest of the price words; llms.txt is a hand-written surface and
   // carries it verbatim. The remaining static pages (index, og-card, signin,
@@ -315,11 +315,11 @@ test("the bill's figures are exact cents, not a rounding near-miss", () => {
       total: Math.round(bill.billUsd * 100),
     };
   };
-  assert.deepEqual(cents(0), { storage: 0, maximum: 1000, total: 0 });
-  assert.deepEqual(cents(0.05), { storage: 100, maximum: 1000, total: 100 });
-  assert.deepEqual(cents(0.8), { storage: 1000, maximum: 1000, total: 1000 });
-  assert.deepEqual(cents(1.6), { storage: 1600, maximum: 1600, total: 1600 });
-  assert.deepEqual(cents(3), { storage: 3000, maximum: 3000, total: 3000 });
+  assert.deepEqual(cents(0), { storage: 0, maximum: 1500, total: 0 });
+  assert.deepEqual(cents(0.05), { storage: 100, maximum: 1500, total: 100 });
+  assert.deepEqual(cents(0.8), { storage: 1500, maximum: 1500, total: 1500 });
+  assert.deepEqual(cents(1.6), { storage: 2400, maximum: 2400, total: 2400 });
+  assert.deepEqual(cents(3), { storage: 4500, maximum: 4500, total: 4500 });
 });
 
 test("the worked-example helpers fail closed on a size that cannot be billed", () => {
@@ -409,7 +409,8 @@ test("no unsourced claims appear anywhere on the page", () => {
 // reads rather than by a number re-formatted here.
 /** @param {string} label */
 function exampleRow(label) {
-  const from = words.indexOf(label);
+  const needle = `<dt>${label}</dt>`;
+  const from = words.indexOf(needle);
   assert.ok(from >= 0, `the ${label} row is missing from the page`);
   return words.slice(from, words.indexOf("</dd>", from));
 }

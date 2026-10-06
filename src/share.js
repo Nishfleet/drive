@@ -1426,7 +1426,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1499,6 +1499,14 @@ export async function handleRequestUploadRequest(request, files, links, capState
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
+  }
+  if (
+    options.size30DayUnpaid &&
+    options.prepaidPause &&
+    sized.bytes > 0 &&
+    (await options.size30DayUnpaid(record.accountId, sized.bytes))
+  ) {
+    return json({ error: failureMessage("upload-paused-balance") }, 403);
   }
   if (options.db) {
     // The owner's 1 TB pre-charge limit, judged on the bytes actually read,

@@ -319,12 +319,14 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   }
   const bill = monthlyBillForStoredTb(size, config);
   const planUsd = usualPlanMonthlyUsd(size);
+  const savedUsd = Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100);
   return Object.freeze({
     tb: size,
     storageUsd: bill.storageUsd,
     billUsd: bill.billUsd,
     maximumUsd: bill.maximumUsd,
     planUsd,
+    savedUsd,
     labels: Object.freeze({
       bill: formatUsd(bill.billUsd),
       maximum: formatUsd(bill.maximumUsd),
@@ -774,7 +776,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
   const capUsd = checked(fields.capUsd, "usage.capUsd");
   const series = storedSeries(fields.storedDaily);
   const size30ReachedDay =
-    fields.size30ReachedDay === undefined
+    fields.size30ReachedDay === undefined || fields.size30ReachedDay === null
       ? null
       : isDay(fields.size30ReachedDay)
         ? fields.size30ReachedDay
@@ -784,7 +786,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
             );
           })();
   const size30DropsOutDay =
-    fields.size30DropsOutDay === undefined
+    fields.size30DropsOutDay === undefined || fields.size30DropsOutDay === null
       ? null
       : isDay(fields.size30DropsOutDay)
         ? fields.size30DropsOutDay

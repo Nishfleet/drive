@@ -51,7 +51,7 @@ const OCTOBER_MINUTES = minutesInMonth("2026-10-15T00:00:00.000Z");
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ gbMinutes: gb * OCTOBER_MINUTES, monthMinutes: OCTOBER_MINUTES });
+  return monthBillCents({ size30Bytes: Math.round(gb * 1e9) });
 }
 
 /** @param {number} amount */
