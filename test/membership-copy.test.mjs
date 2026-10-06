@@ -10,6 +10,7 @@ import { FAILURE_MESSAGES } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { FAQ } from "../src/docs.js";
 import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/signin.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const CREDIT_TEXT =
   /\$1\s+free|free\s+\$1|\$1\s+credit|free credit|no card needed|No card asked|No card to start/i;
@@ -250,7 +251,7 @@ test("the public site never contains the founding cap or a spots count", () => {
 });
 
 test("the public site never names a rival or quotes a rival's price", () => {
-  const rival = /\bSpace\b/;
+  const rival = RIVAL_PRODUCT;
   for (const page of pages) {
     assert.doesNotMatch(page.text, rival, page.name);
   }
