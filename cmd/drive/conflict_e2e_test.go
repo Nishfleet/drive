@@ -111,9 +111,9 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// write-back timers are independent, so write order is not land order.
 	// The rule is checked by what is kept rather than by who won.
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
-	seenDeadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	var kept string
-	for time.Now().Before(seenDeadline) {
+	for time.Now().Before(deadline) {
 		for _, n := range candidates {
 			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
 				kept = n
@@ -149,11 +149,12 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// The earlier save is the conflict copy, on both devices. This is the
 	// "both devices are notified" half: a device that lost the save and the
 	// other one both see both files through their own mount. Device B sees
-	// the copy on the fill loop's next vfs/refresh (issue #541), not a 5s
-	// directory-cache expiry — and that refresh is the fill loop's own
-	// one-minute pass, so this wait gets its own window rather than whatever
-	// is left of device A's: a window shorter than one fill pass proves
-	// nothing either way.
+	// the copy on the fill loop's next vfs/refresh (issue #541), not a 24h
+	// directory-cache expiry, because that refresh is the fill loop's own
+	// one-minute pass. So this wait opens its own window: sharing device A's
+	// left-device-B-with-less-than-one-pass, and a window shorter than one
+	// fill pass proves nothing either way.
+	seenDeadline := time.Now().Add(90 * time.Second)
 	seenOnB := false
 	for time.Now().Before(seenDeadline) {
 		if _, err := os.Stat(filepath.Join(mountB, ConflictName(name, deviceA))); err == nil {
@@ -216,7 +217,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// copy, named for the device that lost it. Either device can lose, so the
 	// rule is checked by what is kept rather than by who won.
 	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
-	deadline := time.Now().Add(90 * time.Second)
+	deadline = time.Now().Add(90 * time.Second)
 	kept = ""
 	for time.Now().Before(deadline) {
 		for _, n := range candidates {

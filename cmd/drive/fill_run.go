@@ -254,6 +254,9 @@ const loopbackRCAddr = "127.0.0.1:5572"
 // read what happened without re-running it. It reports the cache's own
 // numbers (before and after) rather than a guess: bytesUsed is vfs/stats.
 type FillResult struct {
+	// Refreshed reports that the pass ran, which is not the same as saying
+	// listings are fresh: a pass with storage down runs, refreshes nothing and
+	// only keeps the kept-offline set warm (issue #541).
 	Refreshed   bool
 	Idle        bool
 	BytesBefore int64
@@ -313,9 +316,16 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	// under the cap, so a fill never competes with a foreground open and never
 	// loops the drive once the cache is full (drive#568).
 	offline := len(targets.offline) > 0
-	fillRecent := idle && !atCap && len(targets.recent) > 0
 	res.Idle = ShouldFill(offline, load1, load5)
 	storageUp := c.reachable(ctx) == nil
+	// A recently-opened file is filled only while storage answers. The probe
+	// is a list on the mount's own remote, so it is the same question the read
+	// asks: with the link down the file is either already in the cache or
+	// cannot be fetched at all, and trying anyway turns one dropped link into
+	// one I/O error per recently-opened file on every pass. A kept-offline set
+	// is different and still warms (#115): those files are the promise, and a
+	// read rclone already has is not a round trip.
+	fillRecent := storageUp && idle && !atCap && len(targets.recent) > 0
 	// A non-recursive root refresh, and never a recursive one: a whole-tree
 	// refresh every minute is what listed the drive and re-read it forever
 	// (drive#568). Freshness for the other machine is this call, while
@@ -328,7 +338,7 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 		}
 		if dirs := listingDirs(targets); len(dirs) > 0 {
 			if err := c.refreshDirs(ctx, dirs); err != nil {
-				return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+				return res, fmt.Errorf("fill: refresh the folders: %w", err)
 			}
 		}
 	}

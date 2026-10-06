@@ -272,16 +272,20 @@ func TestParseSizeSuffix(t *testing.T) {
 // (TestBackgroundFillFillsThroughTheCappedCache), and this one is what makes the
 // "the fill stops at the cap" branch a failing test rather than a comment.
 type countedBackend struct {
-	used      int64
-	cap       int64
+	used int64
+	cap  int64
+	// refreshes counts the root refreshes and nothing else, so "the listing
+	// was refreshed once" names one call. Named folders are counted
+	// separately: they are a different remote-control call (issue #541).
 	refreshes int
+	// namedDirRefreshes counts directories passed to refreshDirs (issue #541
+	// nested listings).
+	namedDirRefreshes int
 	// recursiveRefreshes counts the refreshes that asked for a whole-tree
 	// listing, which the fill must never do on a timer (drive#568).
 	recursiveRefreshes int
 	// addPerRead is how many bytes the fake read puts in the cache.
 	addPerRead int64
-	// namedDirs counts directories passed to refreshDirs (issue #541 nested listings).
-	namedDirs int
 	// unreach is the error reachable returns. Nil means storage answers,
 	// which is the fill's usual case; a set error is a dropped link
 	// (issue #541).
@@ -309,8 +313,7 @@ func (b *countedBackend) refreshDirs(_ context.Context, dirs []string) error {
 	if len(dirs) == 0 {
 		return nil
 	}
-	b.refreshes++
-	b.namedDirs += len(dirs)
+	b.namedDirRefreshes += len(dirs)
 	return nil
 }
 
@@ -656,6 +659,70 @@ func TestFillSkipsRefreshWhenStorageIsDownAndStillKeepWarms(t *testing.T) {
 	}
 }
 
+// A dropped link must not read recently-opened files either: the probe that
+// gated the refresh is a list on the same remote the read goes through, so a
+// file that is not already in the cache cannot be fetched, and trying turns
+// one dropped link into one I/O error per recently-opened file on every pass.
+// The kept-offline set is the opposite and still warms (#115).
+func TestFillSkipsRecentOpensWhenStorageIsDown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, unreach: errors.New("storage is down")}
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"opened.txt"},
+		readFile: func(p string) (int64, error) {
+			reads = append(reads, p)
+			return int64(len(p)), nil
+		},
+	}
+	res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage down: %v", err)
+	}
+	if !res.Ran() {
+		t.Error("the keep-warm pass did not run while storage was down")
+	}
+	if len(reads) != 0 {
+		t.Errorf("the fill read %v with storage down, want no recently-opened file", reads)
+	}
+}
+
+// A recently-opened file is read through the same injected readFile, so the
+// assertion above is not vacuous: with storage back up the same targets fill
+// the opened file. This is the half of the rule that must not become "never
+// fill recent opens".
+func TestFillFillsRecentOpensWhenStorageAnswers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "opened.txt"), []byte("opened"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30}
+	targets := fillTargets{
+		root:   dir,
+		recent: []string{"opened.txt"},
+		readFile: func(p string) (int64, error) {
+			reads = append(reads, p)
+			return 1, nil
+		},
+	}
+	res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage up: %v", err)
+	}
+	if !res.Ran() || !res.Idle {
+		t.Errorf("an idle fill with storage up did not run: %+v", res)
+	}
+	if len(reads) != 1 || reads[0] != filepath.Join(dir, "opened.txt") {
+		t.Errorf("the fill read %v with storage up, want the opened file", reads)
+	}
+}
+
 func TestFillRefreshesAKeptOfflineFolder(t *testing.T) {
 	dir := t.TempDir()
 	keep := filepath.Join(dir, "photos")
@@ -673,8 +740,8 @@ func TestFillRefreshesAKeptOfflineFolder(t *testing.T) {
 	if !res.Ran() {
 		t.Fatal("the keep-warm pass did not run")
 	}
-	if b.namedDirs != 1 {
-		t.Errorf("named directory refreshes = %d, want 1 (the kept folder)", b.namedDirs)
+	if b.namedDirRefreshes != 1 {
+		t.Errorf("named directory refreshes = %d, want 1 (the kept folder)", b.namedDirRefreshes)
 	}
 }
 

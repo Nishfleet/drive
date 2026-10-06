@@ -48,7 +48,9 @@ drive online <path>       # stop keeping it here; with no path, all of it
 `drive status` says what is kept offline. What is kept here is a copy on this
 machine's disk, so it is the one thing that a wiped laptop can lose. A kept
 folder still opens, lists and accepts a new file after the network has been
-down for more than five minutes.
+down for more than five minutes. While the network is down that listing is
+the one last seen: a file another machine saved in the meantime is not in it
+until the network is back.
 
 ## Stopping the uploads for a while
 
