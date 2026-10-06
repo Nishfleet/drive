@@ -83,7 +83,13 @@ import {
   handleCloseStatusRequest,
   runAccountCloseCron,
 } from "./account-close.js";
-import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
+import { branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
+import {
+  BRANCHES_ENDPOINT,
+  createKvSnapshotStore,
+  handleBranchesRequest,
+  processBranchJob,
+} from "./branches.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -699,6 +705,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -716,6 +724,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
@@ -1406,13 +1416,53 @@ const handler = {
    * @param {import("../core/files.js").FileStore} [store] injectable like scheduled's
    */
   async queue(batch, env, _context, store = storeFor(env)) {
+    const branchMessages = [];
+    const meterMessages = [];
+    for (const message of batch.messages) {
+      const kind =
+        message.body !== null && typeof message.body === "object"
+          ? /** @type {{kind?: unknown}} */ (message.body).kind
+          : "";
+      if (typeof kind === "string" && kind.startsWith("branch.")) {
+        branchMessages.push(message);
+      } else {
+        meterMessages.push(message);
+      }
+    }
+    if (branchMessages.length > 0) {
+      if (!env.DRIVE_DB) {
+        throw new Error("branch jobs: DRIVE_DB binding is not configured");
+      }
+      const snapshots = snapshotsFor(env);
+      if (!snapshots) {
+        throw new Error("branch jobs: BRANCH_SNAPSHOTS binding is not configured");
+      }
+      await handleBranchJobs(
+        { messages: branchMessages },
+        async (job) => {
+          const scoped = store ? scopeStore(store, { id: job.accountId }) : store;
+          const result = await processBranchJob(
+            env.DRIVE_DB,
+            snapshots,
+            scoped,
+            { id: job.accountId },
+            job.branchId,
+          );
+          return { continue: result?.done === false };
+        },
+        branchJobsQueue(env),
+      );
+    }
+    if (meterMessages.length === 0) {
+      return;
+    }
     if (!env.METER_DB) {
       throw new Error("meter jobs: METER_DB binding is not configured");
     }
     const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
     const dodo = dodoEnv(env);
     await handleMeterJobs(
-      batch,
+      { messages: meterMessages },
       meterJobHandlers({
         meterDb: env.METER_DB,
         capStore: env.DRIVE_DB

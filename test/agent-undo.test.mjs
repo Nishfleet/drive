@@ -84,6 +84,7 @@ function makeD1() {
     "drive/0004_agent_undo.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    "drive/0030_branch_jobs.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -477,6 +478,7 @@ test("the rewind route lists, previews, rewinds and refuses the rest", async () 
 
   // Then the one click.
   const done = await call("/fix", { method: "POST" });
+  assert.equal(done.status, 202);
   const body = await done.json();
   assert.equal(body.state, "discarded");
   assert.equal(body.rewound, 2);
