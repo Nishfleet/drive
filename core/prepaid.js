@@ -322,11 +322,21 @@ export async function settleBalances(db, accountIds, deps) {
       );
     }
     if (deps.devices) {
-      await pauseAccountKeys(accountId, {
-        db,
-        devices: deps.devices,
-        pauseOn: deps.pauseOn === true,
-      });
+      // A failed swap is logged and the next account is still settled: the
+      // swap reads live state, so the next hour retries it.
+      try {
+        await pauseAccountKeys(accountId, {
+          db,
+          devices: deps.devices,
+          pauseOn: deps.pauseOn === true,
+        });
+      } catch (error) {
+        console.error(
+          "prepaid: the key swap failed",
+          `account=${accountId}`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
   return { lowBalanceSent, autoTopUpsStarted };

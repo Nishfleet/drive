@@ -1333,11 +1333,21 @@ const handler = {
           const drawnSet = new Set(drawn.accounts);
           for (const accountId of await listMeteredAccounts(env.METER_DB)) {
             if (!drawnSet.has(accountId)) {
-              await pauseAccountKeys(accountId, {
-                db: env.METER_DB,
-                devices: pause.devices,
-                pauseOn: pause.pauseOn,
-              });
+              try {
+                await pauseAccountKeys(accountId, {
+                  db: env.METER_DB,
+                  devices: pause.devices,
+                  pauseOn: pause.pauseOn,
+                });
+              } catch (error) {
+                // One account's failed swap must not skip the rest or the
+                // over-limit trip below. The next hour retries it.
+                console.error(
+                  "prepaid: the key swap failed",
+                  `account=${accountId}`,
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
             }
           }
         }
