@@ -6,10 +6,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
+import { METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import worker from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
-import { METER_RECONCILE_SCHEDULE } from "../src/meter.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";

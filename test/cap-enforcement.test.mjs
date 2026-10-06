@@ -10,12 +10,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runCapEnforcement } from "../src/cap.js";
-import { createMemoryStore } from "../src/files.js";
+import { runCapEnforcement } from "../core/cap.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { createMemoryStore } from "../core/files.js";
+import { HOUR_MS, hourStart, METER_CRON, monthStart } from "../core/meter.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
-import { HOUR_MS, hourStart, METER_CRON, monthStart } from "../src/meter.js";
 import { createD1LinkStore, newRequestRecord } from "../src/share.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** @type {(request: Request, env?: unknown) => Promise<Response>} */

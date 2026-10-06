@@ -5,7 +5,7 @@
 // This module is the branch lifecycle as plain logic over two things the drive
 // already has:
 //
-//   * the FileStore (src/files.js), for the copy and for the file listings the
+//   * the FileStore (core/files.js), for the copy and for the file listings the
 //     diff compares, and
 //   * the `branches` table (migration 0003), for the branch's state
 //     (`open` / `approved` / `discarded`), and
@@ -43,16 +43,16 @@
 // throws it away. Every route needs the signed-in account, exactly like every
 // other drive read that names files (src/index.js gates it with
 // signedInAccount()). The `checkedBranchName` rule is shared with the api
-// Worker's key scoping (workers/api/src/keyprovider.js), so a branch name and
+// Worker's key scoping (core/keyprovider.js), so a branch name and
 // a branch key prefix can never accept a different shape of name.
 
-import { json } from "../workers/api/src/http.js";
-import { checkedBranchName } from "../workers/api/src/keyprovider.js";
-import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
-import { failureMessage } from "./messages.js";
-import { unauthorizedResponse } from "./status.js";
+import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
+import { checkedBranchName } from "../core/keyprovider.js";
+import { failureMessage } from "../core/messages.js";
+import { unauthorizedResponse } from "../core/status.js";
 
-/** @typedef {import("./files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
 /** @typedef {{size: number, etag: string|null, modified: number|null}} Fingerprint */
 /** One row of the `branches` table as this module uses it. The snapshot is
@@ -93,7 +93,7 @@ import { unauthorizedResponse } from "./status.js";
 /** The prefix every snapshot key carries, so one account's snapshot is never
  * another's. The account id sits in a full segment (`u/<id>/…`) so an id that
  * is a prefix of another (`1` and `10`) cannot reach across — the same rule
- * `accountPrefix` applies to storage keys (src/files.js).
+ * `accountPrefix` applies to storage keys (core/files.js).
  * @param {{id: string}} account
  * @param {string} name the branch name
  * @returns {string} the KV key
@@ -705,7 +705,7 @@ async function copyFolder(store, source, dest) {
  * Whether a drive path is a folder, a file, or not there. A missing folder and
  * an empty folder are different answers, and only a listing of the parent can
  * tell them apart on a store keyed by prefix.
- * @param {import("./files.js").FileStore} store a scoped store
+ * @param {import("../core/files.js").FileStore} store a scoped store
  * @param {string} path
  * @returns {Promise<"folder"|"file"|"missing">}
  */
@@ -866,7 +866,7 @@ export async function getBranch(db, snapshots, account, name) {
  * @param {SnapshotStore} snapshots the KV snapshot store; the snapshot lives
  *   only there, so a deployment without the namespace cannot branch (the health
  *   check already refuses one).
- * @param {import("./files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {{id: string}} account
  * @param {{folder: unknown, name: unknown, changedBy?: unknown}} request
  * @param {() => number} now
@@ -1110,7 +1110,7 @@ export async function createBranch(db, snapshots, store, account, request, now =
  *
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots the KV snapshot store
- * @param {import("./files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {{id: string}} account
  */
 export async function listBranches(db, snapshots, store, account) {
@@ -1157,7 +1157,7 @@ export async function listBranches(db, snapshots, store, account) {
  * files as drift and locking the branch forever.
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots the KV snapshot store
- * @param {import("./files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
  * @returns {Promise<{name: string, state: string, applied: {added: string[], changed: string[], removed: string[]}}
@@ -1176,7 +1176,7 @@ export async function approveBranch(db, snapshots, store, account, name) {
     // drive#329: the snapshot has one source. An empty pointer, a missing KV
     // value, or JSON that is not an object would make every copy file look
     // added. Refuse before anything is copied. `unexpected` is the closest
-    // word in src/messages.js: this is a programmer/data fault, not
+    // word in core/messages.js: this is a programmer/data fault, not
     // storage-down (the namespace is bound) and not branch-not-found.
     console.error?.(`approve refused unavailable snapshot for row ${branch.id}`);
     return { error: failureMessage("unexpected"), status: 500 };
@@ -1295,7 +1295,7 @@ export async function approveBranch(db, snapshots, store, account, name) {
  * version history for 30 days (docs/build-spec.md, "Old versions").
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots the KV snapshot store
- * @param {import("./files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
  * @returns {Promise<{name: string, state: string, removed: number}
@@ -1395,7 +1395,7 @@ async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
 // into a bulk delete of the account's own files. Both the approve cleanup and
 // the discard path go through here, so the guard covers both.
 /**
- * @param {import("./files.js").FileStore} store a scoped store
+ * @param {import("../core/files.js").FileStore} store a scoped store
  * @param {string} prefix
  * @returns {Promise<number>}
  */
@@ -1421,7 +1421,7 @@ export async function removePrefixFiles(store, prefix) {
 // branch's additions and the next approve would copy a file the original had
 // deleted straight back into it.
 /**
- * @param {import("./files.js").FileStore} store a scoped store
+ * @param {import("../core/files.js").FileStore} store a scoped store
  * @param {{sourcePrefix: string, branchPrefix: string, snapshot: Record<string, Fingerprint>}} branch
  */
 async function removeBranchFiles(store, branch) {
@@ -1470,7 +1470,7 @@ function sourceMoved(named, total) {
  *   no namespace is a 503, because the legacy column a branch could fall back
  *   to is gone (drive#329) and the health check already reports the missing
  *   binding by name
- * @param {import("./files.js").FileStore|null} store the shared, unscoped store
+ * @param {import("../core/files.js").FileStore|null} store the shared, unscoped store
  * @param {{id: string, name: string}|null} account the signed-in account
  * @param {() => number} now
  */

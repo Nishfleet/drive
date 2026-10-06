@@ -10,9 +10,9 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { platform } from "node:os";
 import { test } from "node:test";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { createS3Client, readBucketConfig } from "../core/s3.js";
 import worker from "../src/index.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { createS3Client, readBucketConfig } from "../workers/api/src/s3.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_BASE_URL } from "./harness.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 
@@ -181,7 +181,11 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
     const upload = await workerFetch(
       new Request(
         `${TEST_BASE_URL}/api/files/upload?path=${encodeURIComponent("/")}&name=${encodeURIComponent("hello.txt")}`,
-        { method: "POST", headers: { origin: TEST_BASE_URL, cookie }, body: "hello drive" },
+        {
+          method: "POST",
+          headers: { origin: TEST_BASE_URL, cookie, "content-length": "11" },
+          body: "hello drive",
+        },
       ),
       env,
     );

@@ -19,14 +19,14 @@ import {
   preChargeUploadBlocked,
   runPreChargeLimitCron,
   signupCardFingerprint,
-} from "../src/abuse-guards.js";
-import { BILLING_CONFIG, GB_PER_TB } from "../src/billing.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
+} from "../core/abuse-guards.js";
+import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
+import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
-import { BYTES_PER_GB, METER_CRON } from "../src/meter.js";
 import { hasSignupCard } from "../src/signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 

@@ -7,8 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { minutesInMonth, monthBillCents } from "../src/billing.js";
-import worker from "../src/index.js";
+import { minutesInMonth, monthBillCents } from "../core/billing.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
@@ -24,7 +23,8 @@ import {
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import worker from "../src/index.js";
 import { METER_JOB_KINDS } from "../src/meter-jobs.js";
 import { applyMigrations, at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -66,7 +66,7 @@ async function storeVersion(db, accountId, overrides = {}) {
  * @param {Record<string, unknown[] | Error>} byPrefix
  */
 function providerStore(byPrefix) {
-  return /** @type {import("../src/files.js").FileStore} */ (
+  return /** @type {import("../core/files.js").FileStore} */ (
     /** @type {unknown} */ ({
       async listVersions(/** @type {string} */ prefix) {
         const listed = byPrefix[prefix];
@@ -305,8 +305,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  // The hourly trip also runs the pre-charge limit sweep (drive#536), which
-  // fails the trigger without DRIVE_DB, so the same database serves both.
+  // The hourly trip's env carries both bindings: the same cron runs the
+  // pre-charge sweep off DRIVE_DB (drive#536), and the deploy binds the one
+  // database under both names (cloudflare.config.ts). The sweep takes the
+  // raw db: the outage proxy stands in for the draw's ledger failure, and
+  // the sweep is not part of this outage scenario.
   const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
@@ -329,6 +332,9 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    // The same shape the draw itself bills with (src/prepaid.js drawFor):
+    // each month divides by its own minutes (drive#531), so a September
+    // figure and an October figure are never divided alike.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
       monthMinutes: minutesInMonth(hour),

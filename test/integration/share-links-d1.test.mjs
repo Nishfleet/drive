@@ -24,12 +24,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, handleFilesRequest, scopeStore } from "../../src/files.js";
-import { failureMessage } from "../../src/messages.js";
+import { createMemoryStore, handleFilesRequest, scopeStore } from "../../core/files.js";
+import { failureMessage } from "../../core/messages.js";
 import {
   createD1LinkStore,
   DAY_MS,
-  expiresLabel,
+  expiresAtIso,
   handleRequestInfoRequest,
   handleRequestRequest,
   handleRequestUploadRequest,
@@ -327,7 +327,7 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
   assert.deepEqual(await info.json(), {
     open: true,
     folder: "inbox",
-    expiresLabel: expiresLabel(now + 7 * DAY_MS),
+    expiresAtIso: expiresAtIso(now + 7 * DAY_MS),
   });
 
   // The upload itself, through a fresh store, lands in the owner's folder.

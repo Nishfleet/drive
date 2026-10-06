@@ -112,12 +112,12 @@ jobs:
               - docs/scoreboard.md
               - docs/benchmarks.md
               - cmd/drive/main.go
-            # Read by the Go tests (os.ReadFile of ../../src and ../../workers).
+            # Read by the Go tests (os.ReadFile of ../../core).
             go_extra:
-              - src/messages.js
-              - src/seo.js
-              - src/status.js
-              - workers/api/src/queues.js
+              - core/messages.js
+              - core/seo.js
+              - core/status.js
+              - core/queues.js
 
   verify:
     needs: changes

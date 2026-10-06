@@ -5,9 +5,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { failureMessage } from "../../../src/messages.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
 import apiWorker, { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 
 const apiFetch = /** @type {(request: Request, env: unknown) => Promise<Response>} */ (
   /** @type {unknown} */ (apiWorker.fetch)

@@ -6,10 +6,10 @@
 //
 //     charge = min(2¢ x avg GB, MAX_USD_PER_TB x max(1, avg TB))
 //
-// The numbers and every sentence rendered from them live in src/pricing.js
-// (PRICE), the one price source, and the bill is src/billing.js's
+// The numbers and every sentence rendered from them live in core/pricing.js
+// (PRICE), the one price source, and the bill is core/billing.js's
 // monthBillCents(). The expectations here are built from that config and that
-// function, so page copy that drifts from either fails this file. src/seo.js
+// function, so page copy that drifts from either fails this file. core/seo.js
 // builds the meta tags and the JSON-LD from the same PRICE, so the copy, the
 // tags and llms.txt cannot disagree.
 //
@@ -20,10 +20,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { billingConfigFor, monthlyBillForStoredTb } from "../src/billing.js";
+import { billingConfigFor, monthlyBillForStoredTb } from "../core/billing.js";
+import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
+import { BILLING, SITE, softwareApplicationLd } from "../core/seo.js";
 import { markerValues } from "../src/docs.js";
-import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
-import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const llms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
@@ -36,7 +36,7 @@ const words = page
   .replaceAll("&rarr;", "→")
   .replaceAll("&amp;", "&");
 
-// The bill for a size in TB kept all month: src/billing.js's monthBillCents(),
+// The bill for a size in TB kept all month: core/billing.js's monthBillCents(),
 // the one function the invoice, the page and the cap all read.
 const billForAllMonth = monthlyBillForStoredTb;
 

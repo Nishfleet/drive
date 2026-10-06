@@ -2,7 +2,7 @@
 //
 // Everything here runs through the REAL database: the rollup's own SQL against
 // the real migrations on a real node:sqlite database, the month's reads, and
-// monthBillCents() in src/billing.js - the one function that turns the month's
+// monthBillCents() in core/billing.js - the one function that turns the month's
 // numbers into money. No fake D1 and no hand-rolled month: a case is set up by
 // storing file versions the way the storage provider reports them and letting
 // the hourly trigger roll the hours, so the GB-minutes the bill reads are the
@@ -34,7 +34,7 @@ import {
   monthBillCents,
   monthlyMaximumUsd,
   storedGb,
-} from "../src/billing.js";
+} from "../core/billing.js";
 import {
   gbMinutesInHour,
   MINUTE_MS,
@@ -45,7 +45,7 @@ import {
   runMeterCron,
   toVersion,
   validateEvent,
-} from "../src/meter.js";
+} from "../core/meter.js";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
 
 const TB = 1000 * GB;
@@ -273,7 +273,7 @@ async function storedAllMonth(sizeBytes, monthLabel = "2026-09") {
 
 /**
  * The metered charge of `gbMinutes`, in cents, worked out the way
- * src/billing.js does it, for a test that has to state a number rather than
+ * core/billing.js does it, for a test that has to state a number rather than
  * read one. The divisor is the billed month's own minutes (drive#531), so a
  * size held all of any month meters exactly its GB at the rate.
  * @param {number} gbMinutes

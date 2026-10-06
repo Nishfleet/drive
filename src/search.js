@@ -21,13 +21,13 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
-import { json } from "../workers/api/src/http.js";
-import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
-import { failureMessage } from "./messages.js";
+import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
 
-/** One account's file store, the shape src/files.js exports and every helper
+/** One account's file store, the shape core/files.js exports and every helper
  * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
-/** @typedef {import("./files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One row of the file index, as it is written to D1. */
 /**
  * @typedef {{account_id: string, path: string, name: string, parent: string,
@@ -429,7 +429,7 @@ function countedBody(body) {
  * never lists, so no request pays for a walk.
  *
  * Position matters, and it is the one thing to get right: the write comes from
- * `scopeStore` (src/files.js), so the key this wrapper is handed is
+ * `scopeStore` (core/files.js), so the key this wrapper is handed is
  * `u/<id>/…`, never a drive path. `drivePathFromKey` is the inverse of the
  * scope's own mapping — the index stores the drive path the page and the CLI
  * print, and the account id the row belongs to, exactly as `reconcileIndex`
@@ -464,8 +464,9 @@ export function withIndex(store, db, account, now = () => Date.now()) {
     ...store,
     /** @param {string} key
      * @param {BodyInit|null|undefined} body
-     * @param {string} contentType */
-    async write(key, body, contentType) {
+     * @param {string} contentType
+     * @param {{contentLength?: number}} [options] */
+    async write(key, body, contentType, options) {
       // The row the search reads is written after the store has read the body,
       // and the body is counted on the way through (a stream carries no length
       // a store would answer back), so a file is searchable with the size and
@@ -475,7 +476,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       // that set carries no length, and it is refused by name rather than
       // indexed as a size of 0.
       const counted = countedBody(body);
-      await write(key, counted.body, contentType);
+      await write(key, counted.body, contentType, options);
       const path = drivePathFromKey(key, account);
       if (locate(path).trashed) {
         return;

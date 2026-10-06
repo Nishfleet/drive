@@ -1,18 +1,22 @@
 import { Hono } from "hono";
 import { methodNotAllowed } from "hono/method-not-allowed";
 
-import { authFor } from "../../../src/auth.js";
-import { failureMessage } from "../../../src/messages.js";
-import { prepaidPauseOn, writesPaused } from "../../../src/prepaid.js";
-import { signedInAccount } from "../../../src/status.js";
-import { createD1DeviceSigninStore } from "./device-signin.js";
-import { createD1DeviceStore } from "./devices.js";
-import { bearerToken, errorResponse } from "./http.js";
-import { keyProviderFor, storageLocationFromEnv } from "./keyprovider-env.js";
-import { createMemoryStore } from "./keystore.js";
-import { createD1QueueStore } from "./queues.js";
+import { authFor } from "../../../core/auth.js";
+import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
+import { createD1DeviceStore } from "../../../core/devices.js";
+import { bearerToken, errorResponse } from "../../../core/http.js";
+import {
+  downloadFromEnv,
+  keyProviderFor,
+  storageLocationFromEnv,
+} from "../../../core/keyprovider-env.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
+import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
+import { createD1QueueStore } from "../../../core/queues.js";
+import { signedInAccount } from "../../../core/status.js";
+import { createD1TeamStore } from "../../../core/teams.js";
 import { routes } from "./routes.js";
-import { createD1TeamStore } from "./teams.js";
 
 // Kept as a named export of this entry: it was one before the provider choice
 // moved to keyprovider-env.js, and an importer of this Worker's entry should
@@ -39,13 +43,13 @@ const missingApiStoreLogged = new WeakSet();
  * key provider answers 503 at fetch rather than minting stand-in credentials
  * that vanish with the isolate (drive#505). Tests that need the in-memory
  * stand-in import createMemoryStore themselves and pass it to dispatch.
- * `accounts` is the sign-in flow's Better Auth instance (src/auth.js `authFor`),
- * read through src/status.js `signedInAccount` for the browser half of a device
+ * `accounts` is the sign-in flow's Better Auth instance (core/auth.js `authFor`),
+ * read through core/status.js `signedInAccount` for the browser half of a device
  * approval; a deployment with no database, secret or address has no instance
  * and stays signed out. `queues` is the D1-backed upload-queue report store
  * (queues.js), or null where no database is bound: the queue report route
  * refuses rather than answering as though it had stored a row.
- * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL, queues?: ReturnType<typeof import("./queues.js").createD1QueueStore>|null}} Ctx
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL, queues?: ReturnType<typeof import("../../../core/queues.js").createD1QueueStore>|null}} Ctx
  *
  * The per-request value Hono's context carries. `account` is resolved once by
  * the gate middleware and read from the context by every handler, so a handler
@@ -58,7 +62,7 @@ const missingApiStoreLogged = new WeakSet();
  * nothing else. A CLI request proves one with an `Authorization: Bearer
  * <device token>` header, hashed and looked up in the key store; a browser
  * approving a device proves one with the sign-in session cookie, resolved
- * through the same src/status.js `signedInAccount` gate every site account
+ * through the same core/status.js `signedInAccount` gate every site account
  * route uses (drive#109), against `ctx.accounts`. No cookie value, query value
  * or body field is trusted, and the expiry and revocation checks live in the
  * store's one lookup (device-signin.js `accountForDeviceToken`), so a dead
@@ -204,7 +208,7 @@ export function createApp(table = routes) {
    * cookie the sign-in flow minted. A cookie is only read here, on a path that
    * needs an account, so a public route never pays for a session lookup
    * (drive#109); a deployment with no sign-in instance (`ctx.accounts` null)
-   * stays signed out, the closed door src/auth.js `authFor` documents.
+   * stays signed out, the closed door core/auth.js `authFor` documents.
    * @type {import("hono").MiddlewareHandler<{Bindings: Ctx, Variables: ApiVariables}>}
    */
   const gate = async (c, next) => {
@@ -328,7 +332,7 @@ export function createApp(table = routes) {
   app.notFound(() => errorResponse(404, "Not found."));
 
   // The real error goes to the Worker's log; the caller gets the fixed
-  // sentence from the one message table (src/messages.js) and can learn
+  // sentence from the one message table (core/messages.js) and can learn
   // nothing about ours from it. Only the method, the route's own registered
   // path and the error are logged: the request's path is not, because a
   // :param can be an account id or a one-time code. `routePath` is empty when
@@ -403,7 +407,7 @@ let keyStoreDb;
 
 /**
  * The account whose email is this address, read from the sign-in flow's own
- * `user` table on the customer database (src/auth.js built it;
+ * `user` table on the customer database (core/auth.js built it;
  * migrations/drive/0005_better_auth.sql owns it). This is the one resolver a
  * team invite binds through, so an invite to an address a signed-in account
  * already has stays pending until that person accepts, and the same call on a
@@ -482,6 +486,9 @@ function storeFor(env) {
       signin: createD1DeviceSigninStore(env.DRIVE_DB),
       keyProvider: keyProviderFor(env) ?? undefined,
       storage: storageLocationFromEnv(env),
+      // The dl Worker's download URL, minted beside each account-folder key
+      // when the deployment has a dl host and its grant secret (drive#517).
+      download: downloadFromEnv(env),
       teams: createD1TeamStore(env.DRIVE_DB, {
         resolveAccountByEmail: accountByEmail(env.DRIVE_DB),
       }),
@@ -514,7 +521,7 @@ export default {
       db: env.DRIVE_DB,
       store,
       // The same sign-in gate the site Worker's account routes resolve
-      // (src/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
+      // (core/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
       // is one account in both Workers and the approval page needs no second
       // session system of its own. No database, secret or address is the closed
       // door `authFor` already documents: null, and every account route 401s.
