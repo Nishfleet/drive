@@ -17,8 +17,8 @@ write the same folder.
   can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
   storage limits a key to the whole Drive. `drive init` mounts `~/Drive-agents/<tool>`
   for each tool on its own key, and the MCP server and the tool's allowed folders
-  point there, not at your Drive. On Windows the tool still works inside your own
-  Drive, because the agent mount is not proven there.
+  point there, not at your Drive. Windows is not in version 1, and the tool there
+  still works inside your own Drive, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.

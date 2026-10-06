@@ -24,8 +24,8 @@ files are not in the way.
 
 `drive agents revoke <tool>` unmounts that folder and revokes the key behind it.
 
-On Windows the agent mount is not proven, so the tool writes inside your own
-Drive there. Linux and macOS get the folder.
+Windows is not in version 1, and the agent mount is not proven there, so the
+tool writes inside your own Drive. Linux and macOS get the folder.
 
 
 ```sh

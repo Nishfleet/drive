@@ -38,7 +38,7 @@ a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
 
 On Linux and macOS, `drive init` mounts `~/Drive-agents/<tool>` for each tool
 on that tool's own key. The MCP server and the tool's allowed folders point at
-that folder, not at the folder you use. On Windows the tool still works inside
+that folder, not at the folder you use. Windows is not in version 1, and the tool there still works inside
 your Drive, because the agent mount is not proven there.
 
 ## The spending cap
