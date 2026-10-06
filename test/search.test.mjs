@@ -1027,6 +1027,23 @@ test("the worker serves /api/search behind the account gate and file writes keep
   assert.equal(body.results[0].path, "/warren-buffet.txt");
 });
 
+test("the cached app still reads each fetch's own env", async () => {
+  // createApp is built once per isolate. Env is passed into app.fetch, so a
+  // second fetch with a different ASSETS binding must not see the first's.
+  const first = await workerFetch(
+    new Request("https://drive.test/not-an-api"),
+    { ASSETS: { fetch: () => new Response("first-isolate-env") } },
+    ctx,
+  );
+  const second = await workerFetch(
+    new Request("https://drive.test/not-an-api"),
+    { ASSETS: { fetch: () => new Response("second-isolate-env") } },
+    ctx,
+  );
+  assert.equal(await first.text(), "first-isolate-env");
+  assert.equal(await second.text(), "second-isolate-env");
+});
+
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
   const sql = readFileSync(
