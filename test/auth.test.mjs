@@ -378,6 +378,22 @@ test("signinDeviceName names only the browsers and platforms the tables carry", 
       "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Chrome on ChromeOS",
     ],
+    [
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.6099.119 Mobile/15E148 Safari/604.1",
+      "Chrome on iPhone",
+    ],
+    [
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/121.0 Mobile/15E148 Safari/605.1.15",
+      "Firefox on iPhone",
+    ],
+    [
+      "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/23.0 Chrome/115.0.0.0 Mobile Safari/537.36",
+      "Samsung Internet on Android",
+    ],
+    [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.102 Safari/537.36 Edge/18.19041",
+      "Edge on Windows",
+    ],
     // No platform the table names, but a browser it does: half a name is
     // still a name, and it is still the table's word.
     ["Chrome/120.0.0.0", "Chrome"],

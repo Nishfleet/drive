@@ -322,9 +322,10 @@ export const IGNORING_SENTENCE = "If you did not ask for this, ignore it.";
 export const UNKNOWN_DEVICE_NAME = "an unknown device";
 
 /**
- * Product names this repo spells out, in the order they win: Edge, Opera and
- * Chromium all carry "Chrome" and "Safari" in their own user-agent, so the
- * browser run has to be found before the one it borrows the string from.
+ * Product names this repo spells out, in the order they win: Edge, Opera,
+ * Samsung Internet and Chromium all carry "Chrome" and "Safari" in their own
+ * user-agent, and Chrome and Firefox on iOS (CriOS, FxiOS) carry "Safari", so
+ * the browser run has to be found before the one it borrows the string from.
  * The order is the whole rule the tables hold, which is why the last Opera
  * row is where the plain "opera" name lands: the modern token comes first
  * and the older one answers when the new one is not there.
@@ -332,7 +333,13 @@ export const UNKNOWN_DEVICE_NAME = "an unknown device";
  */
 const BROWSER_NAMES = Object.freeze([
   ["edg", "Edge"],
+  ["edga", "Edge"],
+  ["edgios", "Edge"],
+  ["edge", "Edge"],
   ["opr", "Opera"],
+  ["samsungbrowser", "Samsung Internet"],
+  ["crios", "Chrome"],
+  ["fxios", "Firefox"],
   ["chromium", "Chromium"],
   ["firefox", "Firefox"],
   ["chrome", "Chrome"],
