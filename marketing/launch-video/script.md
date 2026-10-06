@@ -44,3 +44,16 @@ The five woff2 files under `assets/fonts/` are the same ones the pages ship
 (`public/fonts/`). They are SIL Open Font License 1.1, and each family's OFL text
 is copied in beside it: `big-shoulders-display-OFL.txt`, `instrument-sans-OFL.txt`
 and `jetbrains-mono-OFL.txt`.
+
+## References
+
+Three HyperFrames renders by the HeyGen team, used for look and pacing only. They
+were downloaded to the VPS for study and are not in git. YouTube refused the VPS
+("Sign in to confirm you're not a bot"), so the references come from the
+HyperFrames repository (Apache-2.0) instead.
+
+| reference | what we took |
+| --- | --- |
+| [HyperFrames README demo](https://github.com/user-attachments/assets/f6ff9fae-f33d-4f68-bd54-f3ed4ba6473b) (5 s) | a real product screen, typed into on a dark field: show the product, not a mock-up |
+| [`style-4-prod` render](https://github.com/heygen-com/hyperframes/blob/main/packages/producer/tests/style-4-prod/output/output.mp4) (17 s, 1920x1080) | the main frame beside a short labelled callout that slides in |
+| [`style-5-prod` render](https://github.com/heygen-com/hyperframes/blob/main/packages/producer/tests/style-5-prod/output/output.mp4) (19 s, 1920x1080) | a typed mono intro line, then one large caption per beat |
