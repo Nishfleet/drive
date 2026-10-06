@@ -462,6 +462,88 @@ test("approve of 1,000 changes issues one LIST per parent folder", async () => {
   assert.ok(parents.length < 1000, `must not LIST once per file, listed ${parents.length} times`);
 });
 
+test("an approve reads the slice it applies, batch after batch", async () => {
+  // The issue's second bullet, measured the same way the fifth: a plan that
+  // is bigger than one batch is read in slices, one slice per batch, and no
+  // batch reads the whole plan and no batch rewrites it (drive#766).
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < 1000; index += 1) {
+    pending.push(scoped.write(`/Photos/${index}.txt`, new Blob(["a"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending);
+      pending.length = 0;
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const kv = countingKv();
+  const snapshots = createKvSnapshotStore(kv);
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "sliced" });
+  const edits = [];
+  for (let index = 0; index < 1000; index += 1) {
+    edits.push(
+      scoped.write(`/.branches/sliced/${index}.txt`, new Blob(["b"]).stream(), "text/plain"),
+    );
+    if (edits.length === 200) {
+      await Promise.all(edits);
+      edits.length = 0;
+    }
+  }
+  await Promise.all(edits);
+  const queue = fakeQueue();
+  const started = await approveBranch(db, snapshots, scoped, ACCOUNT, "sliced", queue);
+  assert.equal(started.state, "approving");
+  const row = await getBranch(db, snapshots, ACCOUNT, "sliced");
+  assert.ok(row);
+  const perBatch = [];
+  let finished = false;
+  /** @type {{applied?: {added: string[], changed: string[], removed: string[]}}} */
+  const final = {};
+  for (;;) {
+    kv.reset();
+    const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    if (result.done) {
+      Object.assign(final, result);
+      finished = true;
+      break;
+    }
+    perBatch.push(kv.total);
+  }
+  assert.equal(finished, true, "the approve closed the branch");
+  assert.equal(final.applied?.changed.length, 1000, "every change was applied");
+  // 1,000 paths at 80 a batch is 13 batches. The first one writes the plan as
+  // parts and is not a slice read, so it is measured apart, the way the
+  // create's assembling batch is (drive#766).
+  const slices = perBatch.slice(1);
+  assert.ok(slices.length >= 10, `the plan took ${slices.length} slice batches`);
+  const first = slices[0];
+  const last = slices[slices.length - 1];
+  assert.ok(
+    Math.abs(last - first) <= 2,
+    `a batch cost ${first} KV calls on the first slice and ${last} on the last; ` +
+      "the cost must not grow with the plan (drive#766)",
+  );
+  // A slice batch pays one read for the line it applies and one write for the
+  // path it applied: both are per path in this batch, and neither is per path
+  // in the plan. What is left is one list, the branch snapshot it checks
+  // against, and the manifest `saveSnapshot` rewrites for this batch's change
+  // (drive#766).
+  assert.ok(
+    first <= 2 * BRANCH_JOB_BATCH_FILES + 32,
+    `a slice batch spent ${first} KV calls to read ${BRANCH_JOB_BATCH_FILES} lines`,
+  );
+  // And the plan was never written back as one value: the whole-plan key is
+  // absent, so a batch that records its progress moves the cursor only.
+  assert.equal(
+    await snapshots.get(`${snapshotKey(ACCOUNT, "sliced")}/approve-plan`),
+    null,
+    "the whole plan is never written as one value again",
+  );
+});
+
 test("approve-then-rewind on the same branch leaves the original applied and the row approved", async () => {
   const { scoped, db, snapshots } = await driven();
   await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
