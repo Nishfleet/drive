@@ -74,7 +74,7 @@ function makeD1() {
   for (const name of [
     "waitlist/0001_waitlist.sql",
     "drive/0002_file_index.sql",
-    "drive/0031_file_index_fts.sql",
+    "drive/0032_file_index_fts.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }

@@ -2,7 +2,7 @@
 // build-spec.md "Against Space"). One D1 table (`file_index`, migration
 // 0002) holds one row per file the drive knows about, and the search reads
 // only that table and the trigram index beside it (`file_index_fts`,
-// migration 0031) — it never lists the bucket. The two feeds the spec names
+// migration 0032) — it never lists the bucket. The two feeds the spec names
 // are here too:
 //
 //   * the write path — `withIndex(store, db, account)` wraps a FileStore so

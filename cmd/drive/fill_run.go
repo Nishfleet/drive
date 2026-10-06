@@ -117,15 +117,37 @@ func (c *rcClient) call(ctx context.Context, method string, params map[string]st
 	// method name and the loop's own constants.
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, c.binary, args...)
-	cmd.Stderr = nil
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	b, err := cmd.Output()
 	if err != nil {
+		if msg := rcErrorCause(stderr.String()); msg != "" {
+			return fmt.Errorf("rclone rc %s: %s: %w", method, msg, err)
+		}
 		return fmt.Errorf("rclone rc %s: %w", method, err)
 	}
 	if err := json.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("rclone rc %s: decode %s: %w", method, strings.TrimSpace(string(b)), err)
 	}
 	return nil
+}
+
+// rcErrorCause is one short line of rclone's stderr, so a listing of a
+// prefix that is not there yet can be told from a dead remote control
+// without printing a backend dump.
+func rcErrorCause(stderr string) string {
+	msg := strings.TrimSpace(stderr)
+	if msg == "" {
+		return ""
+	}
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	const max = 200
+	if len(msg) > max {
+		return msg[:max]
+	}
+	return msg
 }
 
 // stats reads the cache's live state from the running mount.

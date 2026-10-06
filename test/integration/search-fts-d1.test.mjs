@@ -1,4 +1,4 @@
-// 0031 adds the FTS5 trigram table `file_index_fts` so a search reads only
+// 0032 adds the FTS5 trigram table `file_index_fts` so a search reads only
 // the rows it matches instead of scanning the whole account (drive issue
 // #571). This file applies the real migration files in order against
 // node:sqlite — the same engine D1 runs — and asserts the new READ path
@@ -16,19 +16,19 @@ import { createTestD1, DRIVE_MIGRATIONS } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 
-/** Every default-schema migration except 0031, so a test can put one drive
- * into the state production is in the moment 0031 lands and then run the real
+/** Every default-schema migration except 0032, so a test can put one drive
+ * into the state production is in the moment 0032 lands and then run the real
  * file over it. Filtered by name, not by position, so a later file appended
  * to DRIVE_MIGRATIONS does not silently change what this builds.
  * @returns {readonly string[]} */
-const migrationsBefore0031 = () =>
-  DRIVE_MIGRATIONS.filter((name) => !name.endsWith("0031_file_index_fts.sql"));
+const migrationsBefore0032 = () =>
+  DRIVE_MIGRATIONS.filter((name) => !name.endsWith("0032_file_index_fts.sql"));
 
 /** The real migration file, read from disk rather than copied into the test.
  * A test that re-typed its SQL would pass even if the file it ships had lost
  * or broken the backfill, so the file itself is what runs here. */
-const migration0031 = () =>
-  readFileSync(new URL("../../migrations/drive/0031_file_index_fts.sql", import.meta.url), "utf8");
+const migration0032 = () =>
+  readFileSync(new URL("../../migrations/drive/0032_file_index_fts.sql", import.meta.url), "utf8");
 
 /** The names the trigram table holds for one account.
  * @param {ReturnType<typeof createTestD1>} db
@@ -40,11 +40,11 @@ const ftsNames = (db, accountId) =>
     .all(accountId)
     .map((row) => String(row.name));
 
-test("0031 backfills the trigram table from the rows the index already had", async () => {
-  // The drive as production is in the moment 0031 lands: every migration up to
-  // 0024 applied, rows written the way the pre-0031 code wrote them, into
+test("0032 backfills the trigram table from the rows the index already had", async () => {
+  // The drive as production is in the moment 0032 lands: every migration up to
+  // 0024 applied, rows written the way the pre-0032 code wrote them, into
   // file_index alone.
-  const db = createTestD1({ migrations: migrationsBefore0031() });
+  const db = createTestD1({ migrations: migrationsBefore0032() });
   const insert = db.prepare(
     "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
       "VALUES ('acct-1', ?, ?, '/', 12, '2026-09-30T00:00:00.000Z', '2026-09-30T00:00:00.000Z')",
@@ -52,7 +52,7 @@ test("0031 backfills the trigram table from the rows the index already had", asy
   await db.batch([insert.bind("/Q4-report.pdf", "Q4-report.pdf")]);
 
   // Now the real migration file runs, exactly as D1 runs it.
-  db.sqlite.exec(migration0031());
+  db.sqlite.exec(migration0032());
   assert.deepEqual(
     ftsNames(db, ACCOUNT.id),
     ["Q4-report.pdf"],
@@ -68,8 +68,8 @@ test("0031 backfills the trigram table from the rows the index already had", asy
   assert.equal(found.results[0].modifiedAt, "2026-09-30T00:00:00.000Z");
 });
 
-test("0031 can be applied twice without failing or duplicating rows", async () => {
-  const db = createTestD1({ migrations: migrationsBefore0031() });
+test("0032 can be applied twice without failing or duplicating rows", async () => {
+  const db = createTestD1({ migrations: migrationsBefore0032() });
   await db.batch([
     db
       .prepare(
@@ -78,16 +78,16 @@ test("0031 can be applied twice without failing or duplicating rows", async () =
       )
       .bind(),
   ]);
-  db.sqlite.exec(migration0031());
-  db.sqlite.exec(migration0031());
+  db.sqlite.exec(migration0032());
+  db.sqlite.exec(migration0032());
   assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get()?.c, 1);
   assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index_fts").get()?.c, 1);
   const found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 1);
 });
 
-test("0031 is additive: it creates the trigram table without touching file_index", async () => {
-  const db = createTestD1({ migrations: migrationsBefore0031() });
+test("0032 is additive: it creates the trigram table without touching file_index", async () => {
+  const db = createTestD1({ migrations: migrationsBefore0032() });
   await db.batch([
     db
       .prepare(
@@ -96,26 +96,26 @@ test("0031 is additive: it creates the trigram table without touching file_index
       )
       .bind(),
   ]);
-  // The columns file_index had before 0031, read after it: the migration must
+  // The columns file_index had before 0032, read after it: the migration must
   // leave the previous version of the code able to run (the fleet D1
   // expand/contract rule), so no column is dropped, renamed or made NOT NULL.
   const columns = db.sqlite
     .prepare("PRAGMA table_info(file_index)")
     .all()
     .map((row) => row.name);
-  db.sqlite.exec(migration0031());
+  db.sqlite.exec(migration0032());
   assert.deepEqual(
     db.sqlite
       .prepare("PRAGMA table_info(file_index)")
       .all()
       .map((row) => row.name),
     columns,
-    "0031 changed nothing about file_index",
+    "0032 changed nothing about file_index",
   );
   assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get()?.c, 1);
 });
 
-test("0031's search is driven by the trigram index and never scans the index table", async () => {
+test("0032's search is driven by the trigram index and never scans the index table", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/fin/Q4-report.pdf", new Blob(["x"]).stream(), "text/plain");
@@ -137,7 +137,7 @@ test("0031's search is driven by the trigram index and never scans the index tab
   assert.doesNotMatch(plan, /SCAN file_index\b/, `plan: ${plan}`);
 });
 
-test("0031's write path keeps the trigram table in step: upload, overwrite and delete", async () => {
+test("0032's write path keeps the trigram table in step: upload, overwrite and delete", async () => {
   const db = createTestD1();
   // The composition src/index.js uses: withIndex sits OUTSIDE the account
   // scope, because the index stores the drive path the page prints and the
@@ -172,7 +172,7 @@ test("0031's write path keeps the trigram table in step: upload, overwrite and d
   assert.equal(afterDelete.count, 0);
 });
 
-test("0031's rebuild re-creates the trigram rows, so a removed file stops matching", async () => {
+test("0032's rebuild re-creates the trigram rows, so a removed file stops matching", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/keep.pdf", new Blob(["x"]).stream(), "text/plain");
@@ -194,7 +194,7 @@ test("0031's rebuild re-creates the trigram rows, so a removed file stops matchi
   assert.equal(indexCount, ftsCount, "a rebuild leaves the two tables the same size");
 });
 
-test("0031 keeps one account's names away from another's, on the trigram path", async () => {
+test("0032 keeps one account's names away from another's, on the trigram path", async () => {
   const db = createTestD1();
   const other = { id: "acct-2", name: "Someone else's drive" };
   const a = scopeStore(createMemoryStore(), ACCOUNT);
@@ -216,7 +216,7 @@ test("0031 keeps one account's names away from another's, on the trigram path", 
   );
 });
 
-test("0031 still finds a two-character name, on the LIKE path trigram cannot hold", async () => {
+test("0032 still finds a two-character name, on the LIKE path trigram cannot hold", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   // A trigram tokenizer indexes three-character windows, so "a b" cannot be
@@ -236,7 +236,7 @@ test("0031 still finds a two-character name, on the LIKE path trigram cannot hol
   );
 });
 
-test("0031's rowid lookup stays inside D1's 100 bound parameters", async () => {
+test("0032's rowid lookup stays inside D1's 100 bound parameters", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   // D1 refuses a statement with more than 100 bound parameters, and the
@@ -320,7 +320,7 @@ test("a name with a quote, a percent or an underscore is matched literally (driv
   assert.equal(percentAlone.count, 1, "only the name holding the word matches");
 });
 
-test("0031's FTS path returns the same names a LIKE over file_index would", async () => {
+test("0032's FTS path returns the same names a LIKE over file_index would", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/fin/Q4-report.pdf", new Blob(["x"]).stream(), "text/plain");
@@ -347,7 +347,7 @@ test("0031's FTS path returns the same names a LIKE over file_index would", asyn
   );
 });
 
-test("0031 matches mixed case and non-ASCII on both paths", async () => {
+test("0032 matches mixed case and non-ASCII on both paths", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/fin/Q4-Report.pdf", new Blob(["x"]).stream(), "text/plain");

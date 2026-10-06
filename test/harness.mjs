@@ -96,14 +96,17 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0031_signin_return.sql",
   // The trigram table `src/search.js` now answers a search from (drive issue
   // #571): the search reads this table on every query, so it belongs in the
   // default list or the default schema is one the Worker cannot run against.
-  // Numbered 0031 because 0025 is already two files on main (link_caps,
-  // meter_scale), 0026 and 0027 exist, 0028 is unused, 0029 (welcome) is not
-  // in this short list, and 0030_branch_jobs is listed above with the other
-  // branch tables. A new duplicate prefix fails test/migrations.test.mjs.
-  "drive/0031_file_index_fts.sql",
+  // Numbered 0032 because 0025 is already two files on main (link_caps,
+  // meter_scale), 0026 through 0031 are all taken, and a new duplicate prefix
+  // fails test/migrations.test.mjs.
+  "drive/0032_file_index_fts.sql",
 ]);
 
 /**
@@ -317,8 +320,9 @@ export function createTestD1(options = {}) {
  * point of the flow.
  *
  * (drive#550): `userAgent` is the requesting request's own header, null when
- * there was none, so a test can read what the mail would name.
- * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
