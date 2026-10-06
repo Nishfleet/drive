@@ -790,8 +790,8 @@ export function createApp() {
       capUsd = await store.getCapUsd(account.id);
       // The card on file is the accounts row's own stamp, read the same way as
       // the cap (drive#417). Until it is really on file the usage page says no
-      // charge has been made and shows no bill, instead of the $10 membership
-      // line a card-less account would look like it had been charged. It is
+      // charge has been made and shows no bill, instead of a balance line a
+      // card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
       usage = /** @type {Record<string, unknown>} */ (
