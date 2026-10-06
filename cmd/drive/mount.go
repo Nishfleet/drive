@@ -410,6 +410,15 @@ func LaunchdPlist(p MountPlan) string {
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
 	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(LaunchdLabel))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
+	// launchd has no ExecStartPre. A KeepAlive restart runs this argv
+	// directly, so the first step has to clear a dead NFS entry before rclone
+	// tries to mount again. $1 is the mount dir; shift leaves rclone's own
+	// argv for exec, so paths with spaces stay one argument.
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("/bin/sh"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("-c"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/umount -f "$1" 2>/dev/null; shift; exec "$@"`))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("drive-mount"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(p.MountDir))
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))
 	}
@@ -445,6 +454,7 @@ func LaunchdPlist(p MountPlan) string {
 // SIGTERM is exactly what systemd sends a stopping unit by default, so an
 // rclone command that does not exist would only break the stop.
 func SystemdUnit(p MountPlan) string {
+	mountDir := systemdEscapeArg(p.MountDir)
 	return fmt.Sprintf(`[Unit]
 Description=drive: %s mounted with stock rclone
 After=network-online.target
@@ -453,13 +463,15 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%s
+ExecStartPre=-/usr/bin/fusermount3 -uz %s
+ExecStartPre=-/usr/bin/fusermount -uz %s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), mountDir, mountDir, systemdCommandLine(p))
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads
@@ -598,8 +610,11 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	item := []byte(LoginItem(goos, p))
+	if err := clearStaleMountDir(goos, p.MountDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
-		return failDetail("drive-folder", err, p.MountDir)
+		return driveFolderCreateError(err, p.MountDir)
 	}
 	// A folder that is already a mount holds the drive itself, not stray
 	// local files, so nothing is moved out of it.
@@ -1022,26 +1037,78 @@ func Unmount(goos, home string) error {
 		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
+	var disableErr error
 	if _, err := os.Stat(itemPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+		if !errors.Is(err, fs.ErrNotExist) {
+			return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
 		}
-		return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
+	} else if goos == "darwin" {
+		disableErr = bootoutLaunchd(itemPath)
+	} else if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
+		disableErr = fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
 	}
-	if goos == "darwin" {
-		return bootoutLaunchd(itemPath)
-	}
-	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
-		if stopErr := stopMount(goos, home); stopErr != nil {
-			return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr))
+	if stopErr := stopMount(goos, home); stopErr != nil {
+		if disableErr != nil {
+			return failDetail("unexpected", fmt.Errorf("%v; fusermount: %w", disableErr, stopErr))
 		}
-		// The mount is down but the login item could not be disabled, and only
-		// uninstall and logout delete its file afterwards: a bare `drive
-		// unmount` would otherwise report success while the unit starts again
-		// at the next login. The error names the disable that failed.
-		return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err))
+		return failDetail("unmount-failed", stopErr, DefaultMountDir(home))
+	}
+	if disableErr != nil {
+		return failDetail("unexpected", disableErr)
 	}
 	return nil
+}
+
+// clearStaleMountDir lazy-unmounts a dead FUSE or NFS entry at mountDir so
+// MkdirAll and rclone can use the folder again. findmnt (and BSD mount) still
+// list that entry after rclone is gone; a leftover ENOTCONN is the other
+// signal. Either one is enough to try the unmount.
+func clearStaleMountDir(goos, mountDir string) error {
+	on, err := MountedDir(goos, mountDir)
+	stale := mountDirNotConnected(mountDir)
+	if err != nil {
+		stale = true
+	}
+	if !on && !stale {
+		return nil
+	}
+	if uerr := lazyUnmount(goos, mountDir); uerr != nil {
+		return failDetail("stale-mount", uerr, mountDir)
+	}
+	return nil
+}
+
+func lazyUnmount(goos, mountDir string) error {
+	var err error
+	if goos == "darwin" {
+		err = runUmount(mountDir)
+	} else {
+		err = runFusermount(mountDir)
+	}
+	if err == nil {
+		return nil
+	}
+	on, merr := MountedDir(goos, mountDir)
+	if merr == nil && !on && !mountDirNotConnected(mountDir) {
+		return nil
+	}
+	return err
+}
+
+func mountDirNotConnected(dir string) bool {
+	_, err := os.Lstat(dir)
+	return isNotConnected(err)
+}
+
+func isNotConnected(err error) bool {
+	return err != nil && (errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.ENXIO))
+}
+
+func driveFolderCreateError(err error, mountDir string) error {
+	if isNotConnected(err) {
+		return failDetail("stale-mount", err, mountDir)
+	}
+	return failDetail("drive-folder", err, mountDir)
 }
 
 // Mounted reports whether MountDir has a live mount. Linux asks the kernel

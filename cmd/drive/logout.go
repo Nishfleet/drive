@@ -402,10 +402,10 @@ func stopMount(goos, home string) error {
 	if err != nil {
 		return err
 	}
-	if !on {
+	mountDir := DefaultMountDir(home)
+	if !on && !mountDirNotConnected(mountDir) {
 		return nil
 	}
-	mountDir := DefaultMountDir(home)
 	// fusermount3 ships with current FUSE; fusermount is the older name. Every
 	// call site runs a literal binary name, never a variable, and the only
 	// argument is the mount dir (the caller's --home); exec.Command takes an
@@ -424,21 +424,22 @@ func stopMount(goos, home string) error {
 
 // runUmount unmounts with the stock macOS umount.
 func runUmount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("umount", mountDir).CombinedOutput()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount" and literal flag -f; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("umount", "-f", mountDir).CombinedOutput()
 	return unmountError("umount", err, out)
 }
 
 // runFusermount unmounts with the stock Linux FUSE tool: fusermount3 where it
-// exists, fusermount otherwise. Each is a literal binary and the only argument
-// is the mount dir.
+// exists, fusermount otherwise. -uz is lazy so a dead FUSE entry (ENOTCONN)
+// comes down even when a plain -u would block. Each call is a literal binary
+// name and a literal flag; the only path argument is the mount dir.
 func runFusermount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	if _, err := exec.Command("fusermount3", "-u", mountDir).CombinedOutput(); err == nil {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3" and literal flag -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", "-uz", mountDir).CombinedOutput(); err == nil {
 		return nil
 	}
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("fusermount", "-u", mountDir).CombinedOutput()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount" and literal flag -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("fusermount", "-uz", mountDir).CombinedOutput()
 	return unmountError("fusermount", err, out)
 }
 

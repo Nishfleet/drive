@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -241,8 +242,32 @@ func TestRenderMountState(t *testing.T) {
 	b.Reset()
 	renderMountState(&b, true, fmt.Errorf("timed out after 2s"), "/tmp/Drive", "linux", "/tmp")
 	got = b.String()
-	if !strings.Contains(got, "not responding") || !strings.Contains(got, "next:") {
-		t.Errorf("silent mount = %q, want what happened and the next step", got)
+	if !strings.Contains(got, "stale") || !strings.Contains(got, "drive unmount") {
+		t.Errorf("silent mount = %q, want a stale mount and the one command that clears it", got)
+	}
+	if strings.Contains(got, "drive mount") {
+		t.Errorf("silent mount = %q, want only drive unmount as the next command", got)
+	}
+	b.Reset()
+	renderMountState(&b, true, &os.PathError{Op: "stat", Path: "/tmp/Drive", Err: syscall.ENOTCONN}, "/tmp/Drive", "linux", "/tmp")
+	got = b.String()
+	if !strings.Contains(got, "stale") || !strings.Contains(got, "drive unmount") {
+		t.Errorf("ENOTCONN mount = %q, want a stale mount and drive unmount", got)
+	}
+}
+
+func TestDriveFolderMessageDoesNotBlameDiskSpace(t *testing.T) {
+	next := messageTable["drive-folder"][1]
+	if strings.Contains(next, "disk has room") {
+		t.Errorf("drive-folder next still blames disk space: %q", next)
+	}
+	err := driveFolderCreateError(&os.PathError{Op: "mkdir", Path: "/tmp/Drive", Err: syscall.ENOTCONN}, "/tmp/Drive")
+	var f *failure
+	if !errors.As(err, &f) || f.Kind != "stale-mount" {
+		t.Errorf("ENOTCONN mkdir = %v, want stale-mount", err)
+	}
+	if !strings.Contains(f.Next, "drive unmount") {
+		t.Errorf("stale-mount next = %q, want drive unmount", f.Next)
 	}
 }
 
