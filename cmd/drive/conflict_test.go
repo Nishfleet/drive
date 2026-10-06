@@ -954,9 +954,14 @@ func TestConflictGuardKeepsASaveOverwrittenByARetriedUpload(t *testing.T) {
 	}
 	f.pending = nil
 	f.objects["offline.txt"] = md5Hex("B-landed-first\n")
-	// The other device's first retry fires 10s after its failed try; one
-	// pass per conflictInterval, plus a few for the upload itself.
-	retry := int(2*5*time.Second/conflictInterval) + 4
+	// The other device's first retry fires twice the mount's write-back
+	// delay after its failed try; one pass per conflictInterval, plus a few
+	// for the upload itself.
+	writeBack, err := time.ParseDuration(vfsWriteBackValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := int(2*writeBack/conflictInterval) + 4
 	for i := range retry {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("pass %d while the other upload waits to retry: %v", i, err)
