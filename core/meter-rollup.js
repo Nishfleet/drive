@@ -1,15 +1,6 @@
 // Hour and month rollup into usage_minutes. Extracted from core/meter.js (drive#617).
 
-import {
-  BYTES_PER_GB,
-  gbMinutesInHour,
-  hourStart,
-  HOUR_MS,
-  isTrashPath,
-  NOT_TRASH_SQL,
-  toMillis,
-  toVersion,
-} from "./meter-math.js";
+import { HOUR_MS, hourStart, NOT_TRASH_SQL, toMillis } from "./meter-math.js";
 
 /**
  * @param {string} hiddenFrom
@@ -693,4 +684,3 @@ export const REROLL_QUEUE_SQL = `INSERT INTO meter_account_rerolls (account_id, 
     from_hour = MIN(from_hour, excluded.from_hour),
     through_hour = MAX(through_hour, excluded.through_hour),
     updated_at = excluded.updated_at`;
-

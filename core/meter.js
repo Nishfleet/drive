@@ -3,18 +3,38 @@
 // and the hourly cron and re-exports every moved name.
 
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
-import { MAX_EVENT_BODY_BYTES, looksLikeNotificationRecord, notificationRecord, notificationRecords, recordEvents, validateEvent } from "./meter-events.js";
-import { hourStart, HOUR_MS, stampMillis, toMillis } from "./meter-math.js";
-import { listMeteredAccounts, ROLLED_THROUGH_READ_SQL, rollupAccountHour, rollupHour } from "./meter-rollup.js";
+import {
+  looksLikeNotificationRecord,
+  MAX_EVENT_BODY_BYTES,
+  notificationRecord,
+  notificationRecords,
+  recordEvents,
+  validateEvent,
+} from "./meter-events.js";
+import { HOUR_MS, hourStart, stampMillis, toMillis } from "./meter-math.js";
+import { ROLLED_THROUGH_READ_SQL, rollupAccountHour, rollupHour } from "./meter-rollup.js";
 
+export {
+  EVENT_ACTIONS,
+  EVENTS_PER_BATCH,
+  folderAccount,
+  looksLikeNotificationRecord,
+  MAX_EVENT_BODY_BYTES,
+  notificationRecord,
+  notificationRecords,
+  recordEvent,
+  recordEvents,
+  validateEvent,
+} from "./meter-events.js";
 export {
   BYTES_PER_GB,
   gbMinutesInHour,
-  hourStart,
   HOUR_MS,
+  hourStart,
   isTrashPath,
-  MINUTE_MS,
   MINIMUM_MINUTES_PER_VERSION,
+  MINUTE_MS,
+  stampMillis,
   toMillis,
   toVersion,
   versionBookedByteMinutes,
@@ -23,8 +43,15 @@ export {
   versionLifetimeMinutes,
   versionOverlapGbMinutes,
   wholeBytes,
-  stampMillis,
 } from "./meter-math.js";
+export {
+  METER_RECONCILE_SCHEDULE,
+  pruneHiddenVersions,
+  reconcileAccount,
+  reconcileMeter,
+  recordNightlySizes,
+  VERSION_RETENTION_DAYS,
+} from "./meter-reconcile.js";
 export {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
@@ -43,26 +70,6 @@ export {
   rollupAccountHour,
   rollupHour,
 } from "./meter-rollup.js";
-export {
-  EVENT_ACTIONS,
-  EVENTS_PER_BATCH,
-  folderAccount,
-  looksLikeNotificationRecord,
-  MAX_EVENT_BODY_BYTES,
-  notificationRecord,
-  notificationRecords,
-  recordEvent,
-  recordEvents,
-  validateEvent,
-} from "./meter-events.js";
-export {
-  METER_RECONCILE_SCHEDULE,
-  pruneHiddenVersions,
-  reconcileAccount,
-  reconcileMeter,
-  recordNightlySizes,
-  VERSION_RETENTION_DAYS,
-} from "./meter-reconcile.js";
 
 // storage.
 export const EVENT_TOKEN_HEADER = "x-drive-event-token";
@@ -409,7 +416,6 @@ const REROLL_DONE_SQL = `DELETE FROM meter_account_rerolls
   WHERE account_id = ?1 AND from_hour = ?2 AND through_hour = ?3`;
 const REROLL_ADVANCE_SQL = `UPDATE meter_account_rerolls SET from_hour = ?4, updated_at = ?5
   WHERE account_id = ?1 AND from_hour = ?2 AND through_hour = ?3`;
-
 
 /**
  * Re-roll the queued one-account ranges, oldest first, at most

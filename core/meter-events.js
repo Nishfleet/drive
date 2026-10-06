@@ -1,7 +1,6 @@
 // Storage-event intake: validate, decode, write file_versions. Extracted from core/meter.js (drive#617).
 
 import { decodeNotificationKey } from "./event-routes.js";
-import { accountPrefix } from "./files.js";
 import { toMillis, wholeBytes } from "./meter-math.js";
 
 // --- Event intake -------------------------------------------------------

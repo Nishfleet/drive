@@ -131,7 +131,7 @@ test("captureError reports the error with the job that failed, for the fingerpri
 // a duplicate slug would fold two schedules into one monitor and a missed
 // run of one could pass as the other's.
 test("every scheduled branch runs in its own check-in with a unique slug", () => {
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/index-scheduled.js", import.meta.url), "utf8");
   const branches = [
     ["METER_CRON", "meter-hourly-rollup"],
     ["METER_RECONCILE_SCHEDULE", "meter-nightly-reconcile"],
@@ -144,7 +144,7 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
     assert.ok(start !== -1, `a scheduled branch reads ${constant}`);
     const next = branches
       .map(([c]) => c)
-      .map((c) => src.indexOf(`\n    if (event.cron === ${c})`, start + 1))
+      .map((c) => src.indexOf(`\n  if (event.cron === ${c})`, start + 1))
       .filter((i) => i !== -1)
       .sort((a, b) => a - b)[0];
     const body = src.slice(start, next ?? src.length);
@@ -197,10 +197,10 @@ test("the nightly close cron reports its resolved purge failures, not only rejec
   // check-in, so a rejection fails the trigger and marks the monitor `error`.
   // A resolved purge-failure count is the half that would stay silent, so the
   // branch hands it to reportPurgeFailures.
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/index-scheduled.js", import.meta.url), "utf8");
   const start = src.indexOf("if (event.cron === CLOSE_SCHEDULE)");
   assert.ok(start !== -1, "the close cron has its own branch");
-  const block = src.slice(start, src.indexOf("\n    }\n", start));
+  const block = src.slice(start, src.indexOf("\n  }\n", start));
   assert.match(block, /withCronCheckIn\(event, "nightly-account-close"/);
   assert.match(block, /await runAccountCloseCron\(\{/);
   assert.match(block, /reportPurgeFailures\(close\.purgeFailures, close\.purged\)/);
