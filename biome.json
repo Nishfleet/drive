@@ -13,7 +13,8 @@
       "!docs-site/.rendered",
       "!.cloudflare",
       "!node_modules",
-      "!.lighthouseci"
+      "!.lighthouseci",
+      "!marketing/launch-video/assets"
     ]
   },
   "formatter": {
