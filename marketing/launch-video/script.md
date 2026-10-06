@@ -10,7 +10,7 @@ Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-
 | 6–17 | hero | THE DRIVE · "Plain files, opened by the apps you already use." | `public/index.html` hero |
 | 17–28 | huge files | HUGE FILES · "A 5 GB video starts without a 5 GB download." | `public/index.html` finder section |
 | 28–40 | agents | EVERY AGENT · "Agent keys can list, read and write. They can never delete." | `public/index.html` agents section |
-| 40–52 | price | ONE PRICE · "2¢ per GB. Never more than $10 per TB." | `public/index.html` calculator |
+| 40–52 | price | ONE PRICE · "2¢ per GB a month. Never more than $10 per TB." | `public/index.html` calculator |
 | 52–64 | cap | THE CAP · "At the cap, writes stop. Every file stays." | `public/index.html` cap section |
 | 64–75 | cta | drive · "Get drive." · "The drive is not open yet. Sign-ups go to the waitlist." · `drive-pricing.nishant345.workers.dev` | — |
 
@@ -22,7 +22,7 @@ Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-
 | "Plain files in object storage, opened by the apps you already use." | `public/index.html` hero subhead |
 | "A 5 GB video starts without a 5 GB download." | `public/index.html` finder section ("A 5 GB video starts without a 5 GB download.") — measured on the page |
 | "Agent keys can list, read and write. They can never delete." | `public/index.html` agents section; `README.md` ("an agent key can list, read and write, but it can never delete") |
-| "2¢ per GB. Never more than $10 per TB." | `public/index.html` calculator; `README.md` pricing line |
+| "2¢ per GB a month. Never more than $10 per TB." | `public/index.html` calculator subhead ("2 cents per GB until the bill reaches $10, at 500 GB") and its metered note ("You pay 2 cents per GB a month…"); `README.md` pricing line; the rule is min(2¢ × GB-months, $10 × max(1, TB)) in `src/billing.js` |
 | "At the cap, writes stop. Every file stays." | `public/index.html` cap section ("A cap that stops writes, not files.") |
 | "The drive is not open yet. Sign-ups go to the waitlist." | `public/index.html` waitlist copy |
 | `drive-pricing.nishant345.workers.dev` | the live site host (README / `wrangler.jsonc` route) |
@@ -37,3 +37,10 @@ The five product frames are real screenshots of the Drive web pages, captured fr
 `public/index.html` served locally (the production site is behind Cloudflare
 Access). Captures are 1920x1080 with the page ticker hidden so no frozen
 animation appears in the stills.
+
+## Fonts
+
+The five woff2 files under `assets/fonts/` are the same ones the pages ship
+(`public/fonts/`). They are SIL Open Font License 1.1, and each family's OFL text
+is copied in beside it: `big-shoulders-display-OFL.txt`, `instrument-sans-OFL.txt`
+and `jetbrains-mono-OFL.txt`.

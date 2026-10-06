@@ -365,7 +365,7 @@
       <div id="rule-s4" class="clip band-rule" data-start="40" data-duration="12" data-track-index="52"></div>
       <div id="kick-s4" class="clip kick" data-start="40" data-duration="12" data-track-index="53">ONE PRICE</div>
       <div id="head-s4" class="clip head" data-start="40" data-duration="12" data-track-index="54">
-        2&cent; per GB. Never more than $10 per TB.
+        2&cent; per GB a month. Never more than $10 per TB.
       </div>
 
       <!-- scene 5: cap -->
@@ -402,11 +402,12 @@
       </div>
     </div>
 
-    <script
-      src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"
-      integrity="sha384-sG0Hv1tP1lZCk9KQmrIbY/XNwi+OY84GQqhMscbnsoBFqAz8KNCil1kvfL3Hbbk2"
-      crossorigin="anonymous"
-    ></script>
+    <!-- GSAP 3.14.2, vendored under assets/ so the render needs no network and
+         no CDN. The bytes are the ones jsdelivr served for
+         `gsap@3.14.2/dist/gsap.min.js`; sha256
+         c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280,
+         sha384 sG0Hv1tP1lZCk9KQmrIbY/XNwi+OY84GQqhMscbnsoBFqAz8KNCil1kvfL3Hbbk2. -->
+    <script src="assets/gsap-3.14.2.min.js"></script>
     <script>
       const tl = gsap.timeline({ paused: true });
 
