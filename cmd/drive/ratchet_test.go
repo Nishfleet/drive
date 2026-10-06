@@ -465,7 +465,7 @@ func timeRatchetMountReady(t *testing.T, h *benchStandin) ratchetRow {
 		_ = exec.Command("fusermount3", "-u", mountDir).Run()
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 		if !ok {
-			t.Skip("this host does not permit another unprivileged FUSE mount")
+			skipNoMount(t, "this host does not permit another unprivileged FUSE mount")
 		}
 	}
 	mean, stddev := meanSampleStd(xs)
