@@ -1,12 +1,8 @@
-// The meter's arithmetic (drive issue #6, build step 5): the shapes a
-// timestamp arrives in, the version rows the event intake writes, and the
-// GB-minutes an hour books, as pure functions with no imports at all - the
-// differential test in test/meter.test.mjs runs this file beside the SQL in
-// src/meter-rollup.js and the two must never disagree about a minute.
+// The meter's arithmetic (drive issue #6, build step 5): timestamps,
+// version rows, GB-minutes, the trash path rule, and the byte-count reader.
 // Extracted from src/meter.js (drive issue #617) with no behaviour change;
 // src/meter.js re-exports every name here, so no importer moved.
 
-//
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
 // (Date.parse), so a webhook holding an ISO timestamp needs no conversion, and
@@ -268,7 +264,9 @@ export function versionGbMinutesInHour(version, hour, now = Date.now(), continue
 /**
  * GB-minutes for a list of versions over one hour: the exact integer
  * byte-minute sum scaled once, the same total rollupHour's SQL stores.
- * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}[]} versions
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null,
+ *   path?: unknown}[]} versions a version row carries its storage path, so
+ *   the trash billing rule (drive issue #521) can leave it out here too
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
  */
@@ -295,7 +293,14 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   // reference identity: a duplicated list entry cannot waive its own
   // minimum, and the set build is one seek per candidate, not one seek per
   // pair.
-  const entries = versions.map((version, versionIndex) => ({
+  // The trash billing rule (drive issue #521), on the JS side: a version
+  // parked in the account's trash folder is not billed, the same versions the
+  // SQL statements exclude with NOT_TRASH_SQL. Without the same filter here
+  // the reference and the statement would answer differently the moment a
+  // trash row joined the shapes below, and the differential test exists to
+  // catch exactly that drift.
+  const billed = versions.filter((version) => !isTrashPath(version?.path));
+  const entries = billed.map((version, versionIndex) => ({
     version,
     versionIndex,
     // Both sides are numbers by the time they get here: toVersion turns a
@@ -317,13 +322,41 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
       .map((entry) => entry.version),
   );
   let units = 0;
-  for (const version of versions) {
+  for (const version of billed) {
     units += versionBookedByteMinutes(version, hour, now, continued.has(version));
   }
   return units / BYTES_PER_GB;
 }
+// --- The trash billing rule (drive issue #521) -----------------------
 
-/** @param {unknown} value */
+/**
+ * Whether a version path is inside the account-scoped trash folder a web
+ * delete parks a file in: `u/<account>/.trash/<timestamp>__<name>`.
+ *
+ * The segment test is exact on purpose: the trash folder is the SECOND path
+ * segment, immediately under the account. A person's own folder named
+ * `.trash` deeper in the tree — `u/acct/photos/.trash/...` — is an ordinary
+ * folder of theirs and keeps billing. A plain `LIKE '%/.trash/%'` would read
+ * that folder as trash too, because `%` crosses `/`.
+ * @param {unknown} path the version path as file_versions stores it
+ * @returns {path is string}
+ */
+export function isTrashPath(path) {
+  return typeof path === "string" && /^\/?u\/[^/]+\/\.trash\//.test(path);
+}
+
+/**
+ * A byte count the meter will bill from, or null when the value is not one.
+ * A provider sends JSON, so the size arrives as a number, but a webhook that
+ * stringifies its numbers is a shape the intake should still take rather than
+ * reject a real event over. Everything else is null: a boolean, an array, an
+ * object, null, a blank string, a float, a negative, and a run of digits too
+ * large to be an exact byte count. No coercion beyond the decimal string,
+ * because a coercion is how a missing size becomes a 0-byte version and a
+ * bill of nothing.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
 export function wholeBytes(value) {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -333,4 +366,24 @@ export function wholeBytes(value) {
     return Number.isSafeInteger(bytes) ? bytes : null;
   }
   return null;
+}
+
+/**
+ * A stored instant as a finite number of milliseconds, or null when the
+ * column holds nothing usable. `rolled_through` and `MIN(created_at)` are both
+ * nullable to SQL - the mark is absent on a deployment that has never rolled,
+ * and MIN over an empty table IS NULL - and `Number(null)` is 0, which is a
+ * perfectly finite epoch. Reading either through `Number.isFinite(Number(x))`
+ * therefore turns "nothing stored" into 1970, and on a watermark that is a
+ * silent year of unbilled hours. null and undefined and "" are refused here,
+ * before any coercion happens.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function stampMillis(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const millis = Number(value);
+  return Number.isFinite(millis) ? millis : null;
 }

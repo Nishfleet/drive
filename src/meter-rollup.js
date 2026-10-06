@@ -1,11 +1,7 @@
-// The meter's SQL and the writers that run it (drive issue #6, build step
-// 5): one closed UTC hour's GB-minutes and stored-bytes marks grouped by
-// account IN SQL, the monthly peak read the same way, and the download
-// writer the dl Worker shares the table with. The arithmetic the statements
-// transcribe lives in src/meter-math.js, and the differential test pins the
-// two together. Extracted from src/meter.js (drive issue #617) with no
-// behaviour change; src/meter.js re-exports every name here, so no importer
-// moved.
+// The meter's SQL and the writers that run it (drive issue #6, build
+// step 5). Extracted from src/meter.js (drive issue #617) with no
+// behaviour change; src/meter.js re-exports every name here, so no
+// importer moved.
 
 import { BYTES_PER_GB, HOUR_MS, hourStart, toMillis } from "./meter-math.js";
 
@@ -91,15 +87,61 @@ import { BYTES_PER_GB, HOUR_MS, hourStart, toMillis } from "./meter-math.js";
 // hour, per account - one statement, one row per account, however many
 // versions exist, which is the property the GB-minutes statement above was
 // built for.
-export const HOUR_STORED_BYTES_SQL = `SELECT account_id,
+// The same rule as SQL, for the statements that compute the money: a version
+// parked in the account's trash folder is not billed. The page's promise
+// ("stop paying for what you delete", DELETE_COPY in src/files.js) says the
+// deletion stops the charge, so the rule lives here, where every stored-byte
+// and GB-minute figure is computed, and nowhere else.
+//
+// The SQL needs the same one-exact-segment shape as isTrashPath, and GLOB
+// cannot express it: a bracket class matches one character, so
+// `[^/]*`-plus-`*` is still "any run", and `*` crosses `/`. The exact test is
+// a positive LIKE against the shape, cancelled by a negative LIKE that
+// requires TWO segments before `/.trash/`: only the account's own trash
+// folder survives both.
+const NOT_TRASH_SQL = `NOT (
+    (path LIKE 'u/%/.trash/%' AND path NOT LIKE 'u/%/%/.trash/%') OR
+    (path LIKE '/u/%/.trash/%' AND path NOT LIKE '/u/%/%/.trash/%')
+  )`;
+
+// The rows an hour reads (drive#519): live versions created before the hour
+// ends, from the partial `file_versions_live` index, and versions hidden at or
+// after `hiddenFrom` and created before the hour ends, from the partial
+// `file_versions_hidden_at` index (migrations/drive/0025_meter_scale.sql and
+// 0023). The two halves cannot overlap (a row is either live or hidden), so
+// UNION ALL is the same row set the old `hidden_at IS NULL OR hidden_at >= ?1`
+// read, and neither half walks the hidden history. That OR left SQLite no
+// index to plan with: with no statistics it walked the whole table in
+// account order three times an hour. test/meter-scale.test.mjs pins the plan.
+//
+// `scoped` adds `account_id = ?3` to both halves: the one-account re-roll a
+// back-dated correction queues (rollupAccountHour).
+/**
+ * @param {string} hiddenFrom the comparison a hidden row's `hidden_at` must pass
+ * @param {boolean} scoped
+ */
+function hourRows(hiddenFrom, scoped) {
+  const account = scoped ? "account_id = ?3 AND " : "";
+  return `(SELECT account_id, b2_file_id, size_bytes, created_at, hidden_at FROM file_versions
+      WHERE ${account}hidden_at IS NULL AND created_at < ?2 AND ${NOT_TRASH_SQL}
+    UNION ALL
+    SELECT account_id, b2_file_id, size_bytes, created_at, hidden_at FROM file_versions
+      WHERE ${account}hidden_at ${hiddenFrom} AND created_at < ?2 AND ${NOT_TRASH_SQL})`;
+}
+
+/** @param {boolean} scoped */
+function hourStoredBytesSql(scoped) {
+  return `SELECT account_id,
     SUM(size_bytes) AS stored_bytes,
     COUNT(*) AS versions
-  FROM file_versions
-  WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at > ?1)
+  FROM ${hourRows("> ?1", scoped)} AS v
   GROUP BY account_id
   ORDER BY account_id`;
+}
 
-export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
+/** @param {boolean} scoped */
+function hourGbMinutesSql(scoped) {
+  return `SELECT account_id,
     CAST(SUM(
       (
         (CASE
@@ -112,10 +154,10 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
             AND CAST((hidden_at - created_at) / 60000 AS INTEGER) < 60
             AND NOT EXISTS (
               SELECT 1 FROM file_versions s
-              WHERE s.account_id = file_versions.account_id
-                AND s.size_bytes = file_versions.size_bytes
-                AND s.created_at = file_versions.hidden_at
-                AND s.b2_file_id <> file_versions.b2_file_id
+              WHERE s.account_id = v.account_id
+                AND s.size_bytes = v.size_bytes
+                AND s.created_at = v.hidden_at
+                AND s.b2_file_id <> v.b2_file_id
             )
             THEN 60 - CAST((hidden_at - created_at) / 60000 AS INTEGER)
             ELSE 0
@@ -123,10 +165,14 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
       ) * size_bytes
     ) AS REAL) / 1e9 AS gb_minutes,
     COUNT(*) AS versions
-  FROM file_versions
-  WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?1)
+  FROM ${hourRows(">= ?1", scoped)} AS v
   GROUP BY account_id
   ORDER BY account_id`;
+}
+
+export const HOUR_STORED_BYTES_SQL = hourStoredBytesSql(false);
+
+export const HOUR_GB_MINUTES_SQL = hourGbMinutesSql(false);
 
 // One statement for both of an hour's numbers, so the two can never describe
 // different states of the database: a version written between two separate
@@ -142,27 +188,41 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
 // gets the row the bytes statement cannot give it, which is a 0-byte mark: the
 // drive really did hold nothing in that hour, and the month's peak is a MAX
 // over the marks that one zero does not disturb.
-export const HOUR_USAGE_SQL = `SELECT minutes.account_id,
+/** @param {boolean} scoped */
+function hourUsageSql(scoped) {
+  return `SELECT minutes.account_id,
     minutes.gb_minutes,
     COALESCE(bytes.stored_bytes, 0) AS stored_bytes,
     minutes.versions
   FROM (
-    ${HOUR_GB_MINUTES_SQL}
+    ${hourGbMinutesSql(scoped)}
   ) AS minutes
   LEFT JOIN (
-    ${HOUR_STORED_BYTES_SQL}
+    ${hourStoredBytesSql(scoped)}
   ) AS bytes ON bytes.account_id = minutes.account_id
   ORDER BY minutes.account_id`;
+}
+
+export const HOUR_USAGE_SQL = hourUsageSql(false);
+
+// The same hour for one account (?3), for the re-roll a back-dated correction
+// queues (drive#519): the same statement, so a one-account re-roll books the
+// number the all-accounts roll would.
+export const ACCOUNT_HOUR_USAGE_SQL = hourUsageSql(true);
 
 // An hour's rows for accounts nothing was live for in it: the rollup is the
 // authority on the hour, so a row an earlier run wrote (before the versions
 // were hidden by a late event, say) is removed rather than left saying the
 // account stored something it did not. One statement for the whole hour,
-// beside the upserts in the same batch.
-const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
+// beside the upserts in the same batch. The NOT IN reads the same two index
+// halves as the hour's rows (drive#519).
+export const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
   WHERE hour = ?1 AND account_id NOT IN (
     SELECT account_id FROM file_versions
-    WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?3)
+      WHERE hidden_at IS NULL AND created_at < ?2 AND ${NOT_TRASH_SQL}
+    UNION ALL
+    SELECT account_id FROM file_versions
+      WHERE hidden_at >= ?3 AND created_at < ?2 AND ${NOT_TRASH_SQL}
   )`;
 
 /**
@@ -233,6 +293,49 @@ export async function rollupHour(db, hourStartMs, nowMs) {
   statements.push(db.prepare(CLEAR_EMPTY_ACCOUNTS_SQL).bind(hour, hourEnd, hour));
   await db.batch(statements);
   return { hour, gbMinutes, accounts: result.results?.length ?? 0, versions };
+}
+
+/**
+ * One closed hour for ONE account (drive#519): the same statement as
+ * rollupHour scoped to `accountId`, written the same overwrite-not-add way.
+ * A back-dated correction re-rolls that account's hours with this, so one
+ * account's late fix never re-rolls every other account's hours. An account
+ * with nothing live in the hour has its row removed, as the all-accounts
+ * roll does.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} hourStartMs
+ * @param {number} nowMs
+ * @returns {Promise<{hour: number, gbMinutes: number}>}
+ */
+export async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`rollupAccountHour needs an account id, got ${String(accountId)}`);
+  }
+  const hour = hourStart(hourStartMs);
+  const hourEnd = hour + HOUR_MS;
+  const at = toMillis(nowMs, "nowMs");
+  if (hourEnd > at) {
+    throw new RangeError(`hour ${hour} is not closed yet`);
+  }
+  const row = await db.prepare(ACCOUNT_HOUR_USAGE_SQL).bind(hour, hourEnd, accountId).first();
+  if (!row) {
+    await db
+      .prepare("DELETE FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
+      .bind(accountId, hour)
+      .run();
+    return { hour, gbMinutes: 0 };
+  }
+  const total = Number(row.gb_minutes);
+  if (!Number.isFinite(total) || total < 0) {
+    throw new TypeError(`gbMinutes must be 0 or more, got ${total}`);
+  }
+  const storedBytes = Number(row.stored_bytes);
+  if (!Number.isSafeInteger(storedBytes) || storedBytes < 0) {
+    throw new TypeError(`stored_bytes must be 0 or more whole bytes, got ${row.stored_bytes}`);
+  }
+  await usageStatement(db, accountId, hour, total, storedBytes, at).run();
+  return { hour, gbMinutes: total };
 }
 
 /**
@@ -309,6 +412,7 @@ const MONTH_HAS_VERSIONS_SQL = `SELECT EXISTS(
       AND created_at < strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000
       AND (hidden_at IS NULL
            OR hidden_at > strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000)
+      AND ${NOT_TRASH_SQL}
   ) AS has_versions`;
 
 /**
@@ -571,29 +675,34 @@ export async function recordDownloadBytes(db, accountId, bytes, now) {
 }
 
 /**
- * Every account that has a stored version. Not on the rollup's path any more
- * - the rollup groups its own per-hour read by account - so this is a
- * read-only helper the nightly reconciler (#59) and operator tooling can use
- * to enumerate who the meter is billing. It is deliberately NOT bounded by
- * the hours being rolled: a version created long ago and still live
- * (hidden_at NULL) has minutes in every hour, so an account filter keyed on
- * recent created_at would drop exactly the accounts with standing storage.
- * The (account_id, created_at) index makes this an index-only DISTINCT.
+ * Every account, read straight off the `accounts` table - the one list of who
+ * the drive serves, maintained by sign-up and the closed-account purge. The
+ * nightly reconciler (#59) and operator tooling enumerate through it instead
+ * of a DISTINCT scan over `file_versions`: the scan read every version row
+ * ever stored on every nightly run, which is the meter's own share of the
+ * growth problem this drive has (drive issue #564), and it listed an account
+ * only once a version existed, which the reconciler never needed - an account
+ * with no versions reconciles to nothing in one empty provider listing. An
+ * account row with no versions is now walked once a night and costs one
+ * listing that comes back empty.
+ *
+ * It is deliberately NOT bounded by recent activity: a version created long
+ * ago and still live (hidden_at NULL) has minutes in every hour, so an
+ * account filter keyed on recent sign-up dates would drop exactly the
+ * accounts with standing storage.
  * @param {D1Database} db
  * @returns {Promise<string[]>}
  */
 export async function listMeteredAccounts(db) {
-  const result = await db
-    .prepare("SELECT DISTINCT account_id FROM file_versions ORDER BY account_id")
-    .all();
+  const result = await db.prepare("SELECT id FROM accounts ORDER BY id").all();
   return (result.results || []).map((row) => {
-    // Not a skipped row and not a silent filter: a version with no account
+    // Not a skipped row and not a silent filter: an account row with no id
     // cannot be billed to anyone, and quietly rolling past it would leave
     // storage that no rollup ever accounts for. The trigger fails, the
     // operator sees why, and the row is fixed at the source.
-    if (typeof row.account_id !== "string" || row.account_id === "") {
-      throw new TypeError("file_versions has a row with no account_id");
+    if (typeof row.id !== "string" || row.id === "") {
+      throw new TypeError("accounts has a row with no id");
     }
-    return row.account_id;
+    return row.id;
   });
 }

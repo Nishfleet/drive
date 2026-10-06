@@ -1,13 +1,11 @@
-// Event intake (drive issue #6, build step 5): a provider's storage
-// notification, in whatever words it uses, becomes one version row in
-// `file_versions` - de-duplicated, validated, and billed from the events' own
-// times rather than arrival order. The HTTP endpoint that calls these is in
-// src/meter.js; the arithmetic the rows feed is in src/meter-math.js.
-// Extracted from src/meter.js (drive issue #617) with no behaviour change;
-// src/meter.js re-exports every name here, so no importer moved.
+// Event intake (drive issue #6, build step 5). Extracted from src/meter.js
+// (drive issue #617) with no behaviour change; src/meter.js re-exports
+// every name here, so no importer moved.
 
 import { decodeNotificationKey } from "../workers/api/src/event-routes.js";
 import { toMillis, wholeBytes } from "./meter-math.js";
+
+// --- Event intake -------------------------------------------------------
 
 /**
  * The account id in a key or path under `/u/<id>/`. That prefix is what
@@ -52,15 +50,10 @@ export const EVENT_ACTIONS = Object.freeze({
 
 // A batch of 1000 events at a realistic size sits well under this, and a
 // request over it is refused without being read, the same two layers
-// src/waitlist.js uses (declared length first, counted stream second).
+// src/waitlist.js uses (declared length first, counted stream second); the
+// reader itself lives in workers/api/src/http.js next to the other request
+// readers (drive#618).
 export const MAX_EVENT_BODY_BYTES = 256 * 1024;
-
-export class EventBodyTooLargeError extends Error {
-  constructor() {
-    super("event body too large");
-    this.name = "EventBodyTooLargeError";
-  }
-}
 
 /**
  * The fields a storage notification record is recognised by. Holding one of
@@ -192,19 +185,6 @@ export function notificationRecords(parsed) {
   }
   return [parsed];
 }
-
-/**
- * A byte count the meter will bill from, or null when the value is not one.
- * A provider sends JSON, so the size arrives as a number, but a webhook that
- * stringifies its numbers is a shape the intake should still take rather than
- * reject a real event over. Everything else is null: a boolean, an array, an
- * object, null, a blank string, a float, a negative, and a run of digits too
- * large to be an exact byte count. No coercion beyond the decimal string,
- * because a coercion is how a missing size becomes a 0-byte version and a
- * bill of nothing.
- * @param {unknown} value
- * @returns {number|null}
- */
 
 /**
  * One storage event as the meter stores it. Every field is checked, because
@@ -481,3 +461,9 @@ export async function recordEvents(db, events, now = Date.now()) {
   }
   return { stored, deduped: events.length - stored };
 }
+
+// The header the storage provider's event rule sends. The value is a Worker
+// secret binding, never a value in this repo (AGENTS.md: secrets live in the
+// VPS credential store). A request without it, or with the wrong one, is
+// refused before the body is read: this endpoint writes the numbers a bill is
+// worked out from, so an open one would let anyone inflate an account's
