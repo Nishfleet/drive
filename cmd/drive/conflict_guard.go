@@ -590,11 +590,6 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 // could not protect.
 func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name string, save *pendingSave) (drop bool, skip *ConflictSkip, copy *ConflictCopy, err error) {
 	save.polls++
-	// Drop this path from rclone's VFS cache before hashing, so
-	// operations/hashsum reads storage rather than this device's bytes
-	// (TestTwoDevicesKeepBothSaves). A forget error leaves the stale
-	// path below, which the size check still covers.
-	_ = b.forget(ctx, name)
 	landed, err := b.remoteHash(ctx, name)
 	if err != nil {
 		return g.hashFailed(name, save, "the remote hash for this file could not be read")
@@ -635,14 +630,32 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// moment it sees its own bytes: it watches for conflictWinPolls
 		// polls and only then drops the entry.
 		//
-		// forget ran at the start of this decide, but a backend whose
-		// hashsum still names the VFS cache is caught by the object's
-		// size: a different length is the retried overwrite.
+		// operations/hashsum on the mount's remote control can still
+		// name this device's VFS cache after the other PUT has landed,
+		// so the object's size is the check that cannot be fooled by
+		// that cache: a different length is the retried overwrite.
 		if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
 			if h, herr := b.remoteHash(ctx, name); herr == nil && h != "" && h != save.hash {
 				landed = h
 			}
 			return g.keepLosingSave(ctx, b, name, save, landed)
+		}
+		// When hashsum and stat both still name the VFS cache, forget
+		// the path so the next read is storage (TestTwoDevicesKeepBothSaves).
+		// A cheaper HEAD-only read after forget still missed the offline
+		// arm; forgetting before the first hashsum dropped a just-landed
+		// save onto the "not yet landed" path. This second hashsum is the
+		// measured reveal.
+		if ferr := b.forget(ctx, name); ferr == nil {
+			if h, herr := b.remoteHash(ctx, name); herr == nil && h != "" && h != save.hash && h != save.previous {
+				return g.keepLosingSave(ctx, b, name, save, h)
+			}
+			if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
+				if h, herr := b.remoteHash(ctx, name); herr == nil && h != "" && h != save.hash {
+					landed = h
+				}
+				return g.keepLosingSave(ctx, b, name, save, landed)
+			}
 		}
 		save.winPolls++
 		if save.winPolls >= conflictWinPolls {

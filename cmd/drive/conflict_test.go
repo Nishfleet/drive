@@ -501,17 +501,21 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("polling pass: %v", err)
 	}
-	if f.hashCalls != conflictPollMax {
-		t.Fatalf("the pass polled %d paths, want the bound %d", f.hashCalls, conflictPollMax)
+	// A win poll hashes once, then vfs/forget and hashes again so a stale
+	// VFS cache cannot hide an overwrite. The bound is still conflictPollMax
+	// paths; each path costs two hashsum calls.
+	const hashesPerWinPoll = 2
+	if f.hashCalls != hashesPerWinPoll*conflictPollMax {
+		t.Fatalf("the pass hashed %d times, want %d (%d paths × %d hashes)", f.hashCalls, hashesPerWinPoll*conflictPollMax, conflictPollMax, hashesPerWinPoll)
 	}
 	// The first hundred in first-sight order were polled; the tail was not.
 	for i, name := range g.order {
-		want := 1
+		want := hashesPerWinPoll
 		if i >= conflictPollMax {
 			want = 0
 		}
 		if got := f.pollCounts[name]; got != want {
-			t.Fatalf("save %d was polled %d times after one pass, want %d", i, got, want)
+			t.Fatalf("save %d was hashed %d times after one pass, want %d", i, got, want)
 		}
 	}
 	// The second pass resumes from where the first stopped: the tail gets
@@ -520,8 +524,8 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("second polling pass: %v", err)
 	}
-	if f.hashCalls != 2*conflictPollMax {
-		t.Fatalf("two passes polled %d paths, want %d", f.hashCalls, 2*conflictPollMax)
+	if f.hashCalls != 2*hashesPerWinPoll*conflictPollMax {
+		t.Fatalf("two passes hashed %d times, want %d", f.hashCalls, 2*hashesPerWinPoll*conflictPollMax)
 	}
 	// Every path has now been polled, each as often as its window says,
 	// and no path has been polled twice while another waited: the head's
@@ -531,11 +535,11 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 		if save == nil {
 			t.Fatalf("%s dropped early", name)
 		}
-		if save.winPolls != f.pollCounts[name] {
+		if save.winPolls*hashesPerWinPoll != f.pollCounts[name] {
 			t.Fatalf("save %d: %d win polls against %d remote hashes", i, save.winPolls, f.pollCounts[name])
 		}
-		if i >= conflictPollMax && f.pollCounts[name] != 1 {
-			t.Fatalf("save %d in the tail was polled %d times, want 1: the second pass resumed past the head instead of repeating it", i, f.pollCounts[name])
+		if i >= conflictPollMax && f.pollCounts[name] != hashesPerWinPoll {
+			t.Fatalf("save %d in the tail was hashed %d times, want %d: the second pass resumed past the head instead of repeating it", i, f.pollCounts[name], hashesPerWinPoll)
 		}
 	}
 }
