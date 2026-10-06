@@ -14,13 +14,13 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { monthlyBillForStoredTb } from "../src/billing.js";
+import { monthlyBillForStoredTb } from "../core/billing.js";
 // The figures the money graders must follow (drive#526): the cap default,
 // the per-TB ceiling sentence, and the one bill function the worked table
 // is built from. The pages are rendered from these, so the gates below pin
 // grader -> page -> module instead of typing the figures a third time.
-import { DEFAULT_CAP_USD } from "../src/cap-default.js";
-import { PRICE } from "../src/pricing.js";
+import { DEFAULT_CAP_USD } from "../core/cap-default.js";
+import { PRICE } from "../core/pricing.js";
 // The eval's CLI help text is cmd/drive/main.go's `usage` const, so the gate
 // asks the same function `npm run eval:sync-help` writes the committed snapshot
 // with. The snapshot stays committed and the docs build never writes it:

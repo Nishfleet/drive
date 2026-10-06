@@ -102,16 +102,16 @@ const CHROME_OVERRIDES = new Map([
   ["public/starter.html", new Map([[".wordmark", new Set(["font-size"])]])],
   ["public/signin.html", new Map([[".masthead", new Set(["padding"])]])],
   // The home page (drive#152) lays its header over the orange hero in the
-  // display face, so it restates these on purpose. Every other header
-  // property still comes from the shared file. The tagline's color is
-  // restated because the shared --ink-soft is 2.4:1 on the orange and only
-  // the home page paints over it (drive#546).
+  // display face, so it restates these on purpose. The tagline takes the
+  // dark ink because the shared --ink-soft is 2.4:1 on orange and fails the
+  // accessibility budget (drive#546), and only the home page paints over it.
+  // Every other header property still comes from the shared file.
   [
     "public/index.html",
     new Map([
       [".masthead", new Set(["display", "margin", "padding"])],
       [".masthead a", new Set(["color"])],
-      [".tagline", new Set(["font-size", "color"])],
+      [".tagline", new Set(["color", "font-size"])],
     ]),
   ],
 ]);

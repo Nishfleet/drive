@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DataPlaneTimeout, fetchWithTimeoutAndRetry } from "../src/fetch-retry.js";
+import { DataPlaneTimeout, fetchWithTimeoutAndRetry } from "../core/fetch-retry.js";
 
 /** A fetch that never answers: the stall the deadline exists for. */
 const stall =

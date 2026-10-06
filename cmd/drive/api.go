@@ -64,6 +64,10 @@ type MintedKey struct {
 	Endpoint     string   `json:"endpoint,omitempty"`
 	Bucket       string   `json:"bucket,omitempty"`
 	Region       string   `json:"region,omitempty"`
+	// DownloadURL is the dl Worker base URL with this key's download grant
+	// (drive#517), or empty when the deployment has no dl host. The mount
+	// reads through it so reads are checked and counted.
+	DownloadURL string `json:"downloadUrl,omitempty"`
 }
 
 // Account is the account a device token belongs to.
@@ -360,6 +364,12 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive init` again in a moment")
 	}
 	return renewed, nil
+}
+
+// ClearQueueReport drops this device's live upload-queue row so a 15-minute
+// freshness window cannot show a ghost queue after logout.
+func (c *APIClient) ClearQueueReport() error {
+	return c.do(http.MethodDelete, queueReportPath, nil, nil)
 }
 
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE
