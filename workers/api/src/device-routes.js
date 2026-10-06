@@ -11,7 +11,7 @@
 // Approving requires a signed-in account (drive#136 finding 2): the approve
 // POST is an account route (routes.js), so the dispatcher resolves the
 // sign-in session cookie through the same gate every site account route uses
-// (src/status.js `signedInAccount` over the Better Auth instance src/auth.js
+// (core/status.js `signedInAccount` over the Better Auth instance core/auth.js
 // `authFor` builds, drive#109) and answers 401 to an anonymous request before
 // this handler runs. The account is the sign-in flow's (drive#130), copied onto
 // the code row by the store; approving no longer makes an account, it attaches
@@ -24,7 +24,7 @@
 // code's device and time, so an unlimited page is an existence oracle for
 // codes a phishing site is cycling (drive#518 review). Each limit runs before
 // the body is read, so a refused call costs no parse and, on the code route,
-// no row. The limiter is the one edge limiter (src/rate-limit.js
+// no row. The limiter is the one edge limiter (core/rate-limit.js
 // `enforceEdgeLimits`), the same guard the waitlist and the sign-in route run
 // behind, so the fail-closed posture and the 429 answer are written once.
 // The DELETE below is the fourth device route and is the only one that is
@@ -32,17 +32,17 @@
 // caller's own token from its own bearer header, so there is nothing for a
 // stranger to spend.
 
-import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
-import { isSameOriginRequest, sendEmail } from "../../../src/email-send.js";
-import { escapeHtml } from "../../../src/escape-html.js";
-import { failureMessage } from "../../../src/messages.js";
-import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
-import { signedInAccount } from "../../../src/status.js";
-import { bearerToken, errorResponse, json } from "./http.js";
+import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../core/auth.js";
+import { isSameOriginRequest, sendEmail } from "../../../core/email-send.js";
+import { escapeHtml } from "../../../core/escape-html.js";
+import { bearerToken, errorResponse, json } from "../../../core/http.js";
+import { failureMessage } from "../../../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
+import { signedInAccount } from "../../../core/status.js";
 
-/** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
+/** The stand-in key store (core/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
-/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+/** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
 /**
  * The per-request context these handlers read. `store` and `url` are set by the
@@ -66,7 +66,7 @@ import { bearerToken, errorResponse, json } from "./http.js";
 // (drive#168), and test/deploy-api-worker.test.mjs gates that both names are
 // declared there, each on its own namespace, with the per-IP ceiling above the
 // CLI's own poll rate — a device code is polled every
-// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/device-signin.js), i.e. 12
+// DEVICE_CODE_INTERVAL_SECONDS (5s, core/device-signin.js), i.e. 12
 // requests a minute from one well-behaved CLI, which the sign-in binding's
 // 10/min would lock out of the flow it is already in. With no binding on env
 // these two routes fail closed: an unrate-limited public route is the case the
@@ -89,7 +89,7 @@ export const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
 /**
  * The limiter refusal a device route answers with, or null when the request is
  * allowed through. The 429's and the 503's words are the message table's
- * (through src/rate-limit.js), so the api Worker and the site Worker cannot
+ * (through core/rate-limit.js), so the api Worker and the site Worker cannot
  * state two different rate-limit answers.
  * @param {Request} request
  * @param {{env?: Record<string, any>}} ctx
@@ -118,7 +118,7 @@ const APPROVE_INTRO =
 const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
 
 // The characters an HTML text or attribute value must not contain, and what
-// they become, live in src/escape-html.js now: the transactional emails put
+// they become, live in core/escape-html.js now: the transactional emails put
 // store-provided text into HTML too, and one escaper cannot drift from the
 // other (drive#518 review).
 
@@ -186,7 +186,7 @@ function approvePageError(notice, deviceName = "", requestedAt = "") {
 }
 
 /**
- * @param {import("./device-signin.js").PendingDeviceApproval|null} pending
+ * @param {import("../../../core/device-signin.js").PendingDeviceApproval|null} pending
  * @returns {{deviceName: string, requestedAt: string}}
  */
 function pendingPageFields(pending) {
@@ -205,7 +205,7 @@ function pendingPageFields(pending) {
  * approval still finishes; a bound mailer that refuses is not swallowed.
  * @param {DeviceCtx} ctx
  * @param {{id: string, name?: string, email?: string}} account
- * @param {import("./device-signin.js").PendingDeviceApproval|null} pending
+ * @param {import("../../../core/device-signin.js").PendingDeviceApproval|null} pending
  */
 async function sendApproveNotice(ctx, account, pending) {
   const binding = ctx.env.EMAIL;

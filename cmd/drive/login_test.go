@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +63,11 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
 		t.Fatalf("credentials missing storage location: %+v", creds)
 	}
+	// drive#517: the mint's download URL is saved, so the mount reads through
+	// the dl Worker instead of straight from storage.
+	if !strings.HasPrefix(creds.DownloadURL, "https://dl.example.test/k/grant_") {
+		t.Fatalf("credentials download URL = %q, want the mint's", creds.DownloadURL)
+	}
 
 	cfg, err := ParseRcloneConfig(RcloneConfigPath(home))
 	if err != nil {
@@ -94,6 +98,16 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	}
 	if loaded.Endpoint != creds.Endpoint || loaded.Bucket != creds.Bucket {
 		t.Fatalf("loaded location %+v, want credentials %+v", loaded, creds)
+	}
+	if loaded.DownloadURL != creds.DownloadURL {
+		t.Fatalf("mount config download URL = %q, want the saved %q", loaded.DownloadURL, creds.DownloadURL)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), rcloneDownloadURLEnv+"=") {
+		t.Fatalf("login did not put the download URL in rclone.env:\n%s", env)
 	}
 }
 
@@ -165,13 +179,63 @@ func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
 	}
 }
 
+// The one site address (drive#527). The CLI embeds cmd/drive/site.json, and
+// core/seo.js imports the same file, so this test reads that file rather than
+// searching a source file for a literal that no longer lives there.
 func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "src", "seo.js"))
+	src, err := os.ReadFile("site.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(src), defaultAPIBase) {
-		t.Fatalf("defaultAPIBase %q is not the origin src/seo.js ships", defaultAPIBase)
+		t.Fatalf("defaultAPIBase %q is not the origin cmd/drive/site.json holds", defaultAPIBase)
+	}
+	if !strings.HasPrefix(defaultAPIBase, "https://") {
+		t.Fatalf("defaultAPIBase %q must be an https address", defaultAPIBase)
+	}
+}
+
+func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.KeyID == "" {
+		t.Fatal("the first login wrote no key id")
+	}
+	// The real Worker issues a new device token per login; the stand-in
+	// issues one, so the first login's file is given its own.
+	const oldToken = "dtok_from_the_first_login"
+	first.DeviceToken = oldToken
+	if err := SaveCredentials(home, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.queueClears) != 1 || api.queueClears[0] != "Bearer "+oldToken {
+		t.Fatalf("queue clears %v, want one with the previous login's token", api.queueClears)
+	}
+	if len(api.revokedIDs) != 1 || api.revokedIDs[0] != first.KeyID {
+		t.Fatalf("revoked %v, want the previous key %q", api.revokedIDs, first.KeyID)
+	}
+	second, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.KeyID == "" || second.KeyID == first.KeyID {
+		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
 	}
 }
 

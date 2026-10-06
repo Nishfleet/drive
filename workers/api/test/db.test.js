@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { all, first, newId, nowSeconds, run, sha256Hex } from "../src/db.js";
+import { all, first, newId, nowSeconds, run, sha256Hex } from "../../../core/db.js";
 
 // drive#77 finding 5: db.js had no test at all. These pin the binding rule
 // (every value is bound, never interpolated into SQL) and the two hash/id
