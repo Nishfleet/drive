@@ -25,6 +25,7 @@ import {
   gbMonths,
   handleUsageRequest,
   meteredMonthlyBillUsd,
+  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
@@ -61,6 +62,20 @@ const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 /** The same dollars the module formats, for a label assertion. */
 /** @param {number} cents */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+test("the divisor is the calendar month's own minutes, whatever the month", () => {
+  // drive#531: each month divides by its own length, so 1 TB held all month
+  // is $10.00 in a 30-day month and in a 31-day one alike. The literals are
+  // the gate: monthBillCents divides by monthMinutes directly, so a wrong
+  // bill needs no comparison to ship, and every caller reads the month through
+  // this one function (src/billing.js minutesInMonth reads UTC). Only a
+  // literal catches it. Chosen mid-month and mid-day: a local-time read would
+  // name the adjacent month on the other side of the world.
+  assert.equal(minutesInMonth("2026-09-16T12:00:00.000Z"), 43_200, "September (30 days)");
+  assert.equal(minutesInMonth("2026-10-16T12:00:00.000Z"), 44_640, "October (31 days)");
+  assert.equal(minutesInMonth("2027-02-16T12:00:00.000Z"), 40_320, "February (28 days)");
+  assert.equal(minutesInMonth("2028-02-16T12:00:00.000Z"), 41_760, "February (leap, 29 days)");
+});
 
 test("the formula edges, held all month", () => {
   // [GB, cents].
