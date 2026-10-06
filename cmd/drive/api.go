@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -99,10 +100,22 @@ func NewAPIClient(apiBase, token string) (*APIClient, error) {
 	return &APIClient{Base: base, Token: token, HTTP: &http.Client{Timeout: apiTimeout}}, nil
 }
 
-// post sends a JSON body and decodes a JSON answer. An api Worker error is
-// {error: <sentence>} (docs/api.md), so that sentence is kept in the detail
-// (DRIVE_DEBUG); the person sees the message table's words for the failure
-// class instead of raw text from the service (drive#117).
+// userAgent is what every drive request to the api names itself with:
+// drive/<version> (<os>/<arch>). The api Worker reads the version out
+// of it and answers 426 with the update sentence when the version is
+// below the deployment's configured minimum (drive#560), so an api
+// shape change under an old CLI names the fix instead of surfacing as
+// an unreadable answer. Go's own default ("Go-http-client/1.1")
+// carries no version, which is why the header is set by hand on every
+// request this client sends.
+func userAgent() string {
+	return fmt.Sprintf("drive/%s (%s/%s)", versionText(), runtime.GOOS, runtime.GOARCH)
+}
+
+// post sends a JSON body and decodes a JSON answer. An api Worker error
+// is {error: <sentence>} (docs/api.md), so that sentence is kept in the
+// detail (DRIVE_DEBUG); the person sees the message table's words for
+// the failure class instead of raw text from the service (drive#117).
 func (c *APIClient) post(path string, body, out any) error {
 	return c.do(http.MethodPost, path, body, out)
 }
@@ -128,6 +141,7 @@ func (c *APIClient) do(method, path string, body, out any) error {
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: apiTimeout}
@@ -454,6 +468,7 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: apiTimeout}
