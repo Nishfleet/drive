@@ -22,10 +22,6 @@ key. The MCP server and the tool's allowed folders point at that folder, not at
 the folder you use, so the agent works through its own credential and your own
 files are not in the way.
 
-```sh
-ls ~/Drive-agents
-```
-
 `drive agents revoke <tool>` unmounts that folder and revokes the key behind it.
 
 On Windows the agent mount is not proven, so the tool writes inside your own
