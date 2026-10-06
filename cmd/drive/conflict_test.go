@@ -635,16 +635,67 @@ func TestConflictGuardComparesALargeFileByFingerprint(t *testing.T) {
 		t.Fatal("the large save is not watched")
 	}
 	f.pending = nil
-	f.objects["movie.mov"] = "someone-elses-save"
+	f.objects["movie.mov"] = "this-device-etag"
 	res, err = g.pass(context.Background(), f)
 	if err != nil {
 		t.Fatalf("pass: %v", err)
 	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want no skip when this device's large upload lands", res.Skipped)
+	}
+}
+
+func TestConflictGuardOwnLargeUploadIsNotASkip(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["movie.mov"] = "etag-of-this-upload"
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want none for this device's own large upload", res.Skipped)
+	}
 	if len(f.copied) != 0 {
 		t.Errorf("claimed a conflict copy with no staged bytes: %v", f.copied)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
-		t.Errorf("Skipped = %+v, want the large save named after it changed", res.Skipped)
+}
+
+func TestConflictGuardNamesAPersistentHashError(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"ok.txt": "ok\n"})
+	f.pending = []queueEntry{{Name: "ok.txt", Size: 3}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.hashErr["ok.txt"] = errors.New("empty md5")
+	var res ConflictResult
+	var err error
+	for i := 0; i < conflictHashFailPolls; i++ {
+		res, err = g.pass(context.Background(), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "ok.txt" {
+		t.Errorf("Skipped = %+v, want the hash error named after %d fails", res.Skipped, conflictHashFailPolls)
 	}
 }
 

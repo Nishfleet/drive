@@ -27,8 +27,8 @@ const queueReportPath = "/v1/queue"
 const queueReportInterval = 10 * time.Second
 
 // queueReportHeartbeat is the longest a mount may stay silent when the queue
-// has not changed. Together with "send on change", this is about 12 writes a
-// day at idle instead of one every 10 seconds.
+// has not changed. Together with "send on change", this is 288 writes a day
+// at idle (one every five minutes) instead of one every 10 seconds.
 const queueReportHeartbeat = 5 * time.Minute
 
 // queueReportTimeout bounds one HTTP call so a slow Worker does not hold the

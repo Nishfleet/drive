@@ -236,5 +236,29 @@ export function createD1QueueStore(db, options = {}) {
         Number(/** @type {{meta?: {changes?: number}}} */ (prev)?.meta?.changes ?? 0)
       );
     },
+
+    /**
+     * Drop this device's live report so logout does not leave a ghost queue
+     * for the freshness window.
+     * @param {string} accountId
+     * @param {string} deviceId
+     * @returns {Promise<void>}
+     */
+    async remove(accountId, deviceId) {
+      await run(
+        db,
+        "DELETE FROM device_queue_reports WHERE account_id = ?1 AND device_id = ?2",
+        accountId,
+        deviceId,
+      );
+      const leftover = await first(
+        db,
+        "SELECT account_id FROM device_queue_reports WHERE account_id = ?1 LIMIT 1",
+        accountId,
+      );
+      if (leftover === null || leftover === undefined) {
+        await run(db, "DELETE FROM device_queues WHERE account_id = ?1", accountId);
+      }
+    },
   };
 }

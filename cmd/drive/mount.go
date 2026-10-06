@@ -680,17 +680,27 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	return nil
 }
 
-// strayHoldingDir is the sibling folder a non-empty mount directory's local
+// renameFile is os.Rename, swapped in tests so a mid-park failure can be
+// proven without a second filesystem.
+var renameFile = os.Rename
+
+// strayHoldingDir is the sibling prefix a non-empty mount directory's local
 // files move into so rclone can mount. rclone refuses a non-empty folder; the
 // files are not deleted, and restoreStrayMountFiles copies them into the drive
-// once the mount is up so they upload.
+// once the mount is up so they upload. Each park uses a unique suffix so a
+// leftover holding folder cannot overwrite an earlier one.
 func strayHoldingDir(mountDir string) string {
 	return mountDir + ".drive-local"
 }
 
 // parkStrayMountFiles moves every entry out of mountDir into a sibling folder
-// and returns that folder and the names moved. An empty directory is a no-op.
+// and returns that folder and the names moved. An empty directory is a no-op
+// unless a leftover holding folder still has files: those come back first so
+// a later mount cannot strand them.
 func parkStrayMountFiles(mountDir string) (holding string, names []string, err error) {
+	if err := reclaimStrayHoldings(mountDir); err != nil {
+		return "", nil, err
+	}
 	entries, err := os.ReadDir(mountDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -701,19 +711,43 @@ func parkStrayMountFiles(mountDir string) (holding string, names []string, err e
 	if len(entries) == 0 {
 		return "", nil, nil
 	}
-	holding = strayHoldingDir(mountDir)
-	if err := os.MkdirAll(holding, 0o755); err != nil {
+	holding, err = os.MkdirTemp(filepath.Dir(mountDir), filepath.Base(mountDir)+".drive-local-*")
+	if err != nil {
 		return "", nil, fmt.Errorf("create a folder for the local files in %s: %w", mountDir, err)
 	}
 	for _, e := range entries {
 		from := filepath.Join(mountDir, e.Name())
 		to := filepath.Join(holding, e.Name())
-		if err := os.Rename(from, to); err != nil {
-			return holding, names, fmt.Errorf("move %s out of the way so the drive can mount: %w", from, err)
+		if err := renameFile(from, to); err != nil {
+			for _, name := range names {
+				_ = renameFile(filepath.Join(holding, name), filepath.Join(mountDir, name))
+			}
+			_ = os.Remove(holding)
+			return "", nil, fmt.Errorf("move %s out of the way so the drive can mount: %w", from, err)
 		}
 		names = append(names, e.Name())
 	}
 	return holding, names, nil
+}
+
+// reclaimStrayHoldings copies leftover .drive-local* folders back into
+// mountDir so a park that failed last time cannot hide files beside an empty
+// mount folder.
+func reclaimStrayHoldings(mountDir string) error {
+	matches, err := filepath.Glob(strayHoldingDir(mountDir) + "*")
+	if err != nil {
+		return err
+	}
+	for _, dir := range matches {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if err := restoreStrayMountFiles(dir, mountDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // restoreStrayMountFiles copies parked local files into the (now mounted)

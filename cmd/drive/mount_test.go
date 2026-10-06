@@ -964,3 +964,72 @@ func TestParkStrayMountFilesMovesLocalFiles(t *testing.T) {
 		t.Errorf("restored %q, want the original bytes", got)
 	}
 }
+
+func TestParkStrayMountFilesRestoresOnPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	orig := renameFile
+	renameFile = func(from, to string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected rename failure")
+		}
+		return orig(from, to)
+	}
+	t.Cleanup(func() { renameFile = orig })
+	_, _, err := parkStrayMountFiles(mount)
+	if err == nil {
+		t.Fatal("a mid-park failure returned no error")
+	}
+	if _, err := os.Stat(filepath.Join(mount, "a.txt")); err != nil {
+		t.Errorf("a.txt was not restored after a partial park: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "b.txt")); err != nil {
+		t.Errorf("b.txt was not left in the mount folder: %v", err)
+	}
+}
+
+func TestParkStrayMountFilesReclaimsALeftoverHolding(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holding := strayHoldingDir(mount) + "-old"
+	if err := os.MkdirAll(holding, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gotHolding, names, err := parkStrayMountFiles(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.txt" {
+		t.Fatalf("names = %v, want notes.txt reclaimed then parked", names)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "notes.txt")); !os.IsNotExist(err) {
+		t.Fatal("the reclaimed file is still in the mount folder")
+	}
+	if err := restoreStrayMountFiles(gotHolding, mount); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(mount, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored %q, want the leftover bytes", got)
+	}
+}

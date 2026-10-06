@@ -142,3 +142,29 @@ export async function reportUploadQueueRoute(request, ctx) {
   }
   return json({ reported: true, reportedAt: answer.reportedAt });
 }
+
+/**
+ * DELETE /v1/queue — drop this device's live report.
+ * @param {Request} request
+ * @param {{account?: {id: string, name?: string}|null, queues?: {remove?: (accountId: string, deviceId: string) => Promise<void>}|null}} ctx
+ * @returns {Promise<Response>}
+ */
+export async function clearUploadQueueRoute(request, ctx) {
+  if (request.method !== "DELETE") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "DELETE, POST" });
+  }
+  const account = ctx.account ?? null;
+  if (account === null) {
+    return errorResponse(401, failureMessage("unauthorized"), {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+  const queues = ctx.queues ?? null;
+  if (queues === null || typeof queues.remove !== "function") {
+    return errorResponse(503, "This deployment cannot hold a queue report.");
+  }
+  const token = bearerToken(request);
+  const deviceId = token ? await sha256Hex(token) : account.id;
+  await queues.remove(account.id, deviceId);
+  return json({ cleared: true });
+}

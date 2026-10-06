@@ -92,6 +92,7 @@ func LogoutEveryDevice(goos, home string, force bool, revoker TokenRevoker, revo
 		return err
 	}
 	if err := pendingUploadsRefusal(force, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the drive is unmounted; waiting files stay in the cache\n")
 		return err
 	}
 	if err := account.RevokeAllKeys(); err != nil {
@@ -158,7 +159,13 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	// cannot drift. A refusal here keeps the cache: the files are still queued
 	// and the key is still live, so the person can mount again and let them up.
 	if err := pendingUploadsRefusal(force, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the drive is unmounted; waiting files stay in the cache\n")
 		return err
+	}
+	if clearer, ok := revoker.(interface{ ClearQueueReport() error }); ok {
+		if err := clearer.ClearQueueReport(); err != nil {
+			fmt.Fprintf(os.Stderr, "note: the live queue report could not be cleared: %v\n", err)
+		}
 	}
 	// The server is asked while the config still holds the key. A missing
 	// config is no key at all, and a receipt from an earlier run that could

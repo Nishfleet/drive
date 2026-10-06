@@ -80,6 +80,11 @@ const conflictClaimPolls = 20
 // margin for rclone's own scheduling.
 const conflictWinPolls = 20
 
+// conflictHashFailPolls is how many remote-hash failures one path may
+// take after it leaves the queue before the skip is named. Holding
+// forever with no line would hide a save that never decides.
+const conflictHashFailPolls = 10
+
 // conflictReportEvery is the least time between two reports of the
 // same cause, so a persistent failure keeps a named heartbeat on the
 // mount's log rather than one line and then silence.
@@ -133,6 +138,14 @@ type pendingSave struct {
 	// version than the one that gets overwritten.
 	stagedMtime time.Time
 	stagedSize  int64
+	// byFingerprint is a save too large to stage: it is compared by
+	// ETag or version, not by a local md5, so a new remote is this
+	// device's landing rather than a skip that would alarm on every
+	// ordinary large upload.
+	byFingerprint bool
+	// hashFails is how many remote-hash errors this path has seen
+	// since its upload left the queue.
+	hashFails int
 }
 
 // conflictBackend is what one guard pass needs from a running mount.
@@ -259,6 +272,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 					info := g.mountStat(name)
 					save.staged, save.hash = staged, hash
 					save.stagedMtime, save.stagedSize = info.modTime, info.size
+					save.byFingerprint = staged == "" && hash != ""
 				} else {
 					// The save can no longer be staged (it grew past
 					// the cap, or it stopped being a regular file), so
@@ -296,21 +310,23 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 				// pass still runs, and the next pass retries this path.
 				info := g.mountStat(name)
 				g.seen[name] = &pendingSave{
-					hash:        hash,
-					staged:      staged,
-					stagedMtime: info.modTime,
-					stagedSize:  info.size,
+					hash:          hash,
+					staged:        staged,
+					stagedMtime:   info.modTime,
+					stagedSize:    info.size,
+					byFingerprint: staged == "" && hash != "",
 				}
 				continue
 			}
 		}
 		info := g.mountStat(name)
 		g.seen[name] = &pendingSave{
-			hash:        hash,
-			previous:    previous,
-			staged:      staged,
-			stagedMtime: info.modTime,
-			stagedSize:  info.size,
+			hash:          hash,
+			previous:      previous,
+			staged:        staged,
+			stagedMtime:   info.modTime,
+			stagedSize:    info.size,
+			byFingerprint: staged == "" && hash != "",
 		}
 	}
 
@@ -329,13 +345,31 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			g.drop(name, save)
 			continue
 		}
-		save.polls++
 		landed, err := b.remoteHash(ctx, name)
 		if err != nil {
-			// Hold this entry only; other paths in the same pass still decide.
+			save.hashFails++
+			if save.hashFails >= conflictHashFailPolls && !save.reported {
+				res.Skipped = append(res.Skipped, ConflictSkip{
+					Remote: name,
+					Reason: "the remote hash for this file could not be read",
+				})
+				save.reason = "the remote hash for this file could not be read"
+				save.reported = true
+			}
 			continue
 		}
+		save.polls++
 		switch {
+		case save.byFingerprint && landed != "" && landed != save.previous:
+			// A fingerprint-watched save has no local md5 that could
+			// equal the remote ETag, so a new object is this device's
+			// landing (or a change we could not keep a copy of). Naming
+			// a skip here alarms on a normal large upload.
+			save.winPolls++
+			if save.winPolls >= conflictWinPolls {
+				g.synced[name] = landed
+				g.drop(name, save)
+			}
 		case landed == save.hash:
 			// This device's save is the one that landed. An overwrite can
 			// still land on top of it for the whole sync window after it,

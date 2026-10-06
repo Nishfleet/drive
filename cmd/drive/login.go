@@ -53,18 +53,15 @@ func Login(home, apiBase string, out io.Writer) error {
 		return err
 	}
 	client.Token = token
-	previous, err := LoadCredentials(home)
-	if err != nil {
-		return err
+	previous, loadErr := LoadCredentials(home)
+	if loadErr != nil {
+		// An unreadable credentials file is not a previous key we can
+		// revoke. Login still mints; the new file replaces the broken one.
+		previous = Credentials{}
 	}
 	key, err := client.MintKey("device", deviceName())
 	if err != nil {
 		return err
-	}
-	if previous.KeyID != "" && previous.KeyID != key.KeyID {
-		if err := client.RevokeKey(previous.KeyID); err != nil && !isAPIStatus(err, "404") {
-			return fmt.Errorf("revoke the previous device key: %w", err)
-		}
 	}
 	cfg := StorageConfig{
 		Endpoint:     key.Endpoint,
@@ -112,6 +109,11 @@ func Login(home, apiBase string, out io.Writer) error {
 	}
 	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
 		return err
+	}
+	if previous.KeyID != "" && previous.KeyID != key.KeyID {
+		if err := client.RevokeKey(previous.KeyID); err != nil && !isAPIStatus(err, "404") {
+			fmt.Fprintf(out, "note: the previous device key could not be revoked (%v); it is still live\n", err)
+		}
 	}
 	who := accountLabel(account)
 	if who == "" {

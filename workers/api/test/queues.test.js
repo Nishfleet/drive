@@ -231,3 +231,22 @@ test("two devices on one account each store a report", async () => {
   assert.equal(latest?.files, 4);
   assert.equal(latest?.paused, true);
 });
+
+test("remove drops one device's report and leaves the other", async () => {
+  const clock = fixedClock();
+  const store = createD1QueueStore(createTestD1(), { now: clock.now });
+  assert.equal((await store.record("acct_1", QUEUE, "device-a")).stored, true);
+  assert.equal(
+    (
+      await store.record(
+        "acct_1",
+        { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: false },
+        "device-b",
+      )
+    ).stored,
+    true,
+  );
+  await store.remove("acct_1", "device-a");
+  const latest = await store.latest("acct_1");
+  assert.equal(latest?.files, 1);
+});
