@@ -30,6 +30,11 @@ import (
 	"strings"
 )
 
+// signInCommand is the one command that signs this machine in. The web
+// table's same string is core/messages.js SIGN_IN_COMMAND. The two cannot
+// import each other. drive#557: drive init does not sign anyone in.
+const signInCommand = "drive login"
+
 // failure is one entry of the message table, bound to a failure site. detail
 // is the underlying error, kept for DRIVE_DEBUG and for errors.As callers;
 // it is never printed by default (north star "Safe": no raw error text).
@@ -80,7 +85,7 @@ var messageTable = map[string][2]string{
 	},
 	"key-revoked": {
 		"This device's key was revoked, so it can't reach the drive.",
-		"Run `drive init` to sign in again to get a new key; your files are untouched.",
+		"Run `" + signInCommand + "` to get a new key; your files are untouched.",
 	},
 	"storage-down": {
 		"We can't reach storage right now.",
@@ -208,7 +213,7 @@ var messageTable = map[string][2]string{
 	},
 	"key-still-live": {
 		"signed out here; the key is still live, run drive logout again when online",
-		"Run `drive logout` again when you are online, with `--api <url>` or DRIVE_API_URL set.",
+		"Run `" + signInCommand + "`, then `drive logout` again, to turn it off.",
 	},
 	"key-still-live-elsewhere": {
 		"signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app, then run drive logout --forget-pending",
@@ -264,7 +269,7 @@ var messageTable = map[string][2]string{
 	},
 	"signout-everywhere-no-account": {
 		"There is no signed-in account on this device to sign out everywhere.",
-		"Run `drive init` to sign in, then run `drive logout --all --yes`.",
+		"Run `" + signInCommand + "`, then run `drive logout --all --yes`.",
 	},
 	"import-source": {
 		"That is not an rclone remote this command can import from.",
@@ -285,6 +290,18 @@ var messageTable = map[string][2]string{
 	"import-cache-unknown": {
 		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
 		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
+	},
+	"agent-key-missing": {
+		"{1}'s agent key is missing the settings its own mount needs.",
+		"Run `drive agents revoke {1}`, then `drive agents connect {1}`, to mint a full agent key.",
+	},
+	"agent-path-windows": {
+		"The agent path is not available on Windows yet, so {1} would work straight in your drive.",
+		"Use {1} inside your own drive folder for now, and watch the changelog for the agent path on Windows.",
+	},
+	"agent-path-timeout": {
+		"{1}'s agent path did not come up within {2} seconds.",
+		"Read {3}, then run `drive agents connect {1}` again.",
 	},
 }
 
