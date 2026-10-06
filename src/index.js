@@ -43,8 +43,8 @@ import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import {
-  HOUR_MS,
   handleStorageEventRequest,
+  listMeteredAccounts,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
   pruneHiddenVersions,
@@ -53,10 +53,17 @@ import {
   runMeterCron,
   toMillis,
 } from "./meter.js";
+import {
+  handleMeterJobs,
+  METER_JOB_KINDS,
+  meterJobHandlers,
+  meterJobsQueue,
+  sendMeterJobs,
+} from "./meter-jobs.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import {
   AUTO_TOPUP_ENDPOINT,
-  drawUsageHours,
+  drawPendingHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalances,
@@ -76,6 +83,7 @@ import {
   handleRequestUploadRequest,
   handleShareFileRequest,
   handleShareRequest,
+  purgeStaleLinks,
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
@@ -567,7 +575,8 @@ export function createApp() {
   // account gate so an anonymous request is its 401, not a 403: the gate is
   // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
   // Go CLI) is not a browser, so it passes this check and the account gate
-  // is what holds it.
+  // is what holds it. /api/starter is a write route under this one rule
+  // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
@@ -823,7 +832,11 @@ export function createApp() {
     handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549). The per-account
+      // open-link cap lives in the handler; this is the edge limit.
+      limiter: c.env.SHARE_MINT_RATE_LIMITER,
+    }),
   );
   // DELETE revokes a link (`drive share --revoke`); the handler answers it,
   // but a route that is not registered is a 405 before the handler runs.
@@ -834,7 +847,10 @@ export function createApp() {
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549).
+      limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+    }),
   );
   app.delete(REQUEST_ENDPOINT, (c) =>
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
@@ -986,6 +1002,24 @@ export default {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
       const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
+      // scheduledTime through toMillis, and the steps below take only a
+      // number, so they read the same normalised instant.
+      const now = toMillis(event.scheduledTime, "scheduledTime");
+      // With the meter's queue bound (drive#519), the per-account steps below
+      // (cap, draw, settle) run as one message per account instead of one
+      // loop in this invocation (src/meter-jobs.js).
+      const jobs = meterJobsQueue(env);
+      if (jobs) {
+        const sent = await sendMeterJobs(
+          jobs,
+          METER_JOB_KINDS.hourly,
+          await listMeteredAccounts(env.METER_DB),
+          { at: now, through: rolled.through },
+        );
+        console.log(`meter: queued ${sent} hourly account job(s)`);
+        return;
+      }
       // The cap walk, right after the rollup and before the push (drive#496).
       // The order is the whole point: the rollup is what makes the current
       // hour count, so a walk that ran before it would enforce the previous
@@ -1018,22 +1052,17 @@ export default {
         }
         capFailures = cap.failures;
       }
-      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
-      // scheduledTime through toMillis, and the draw and settle steps below
-      // take only a number, so they read the same normalised instant.
-      const now = toMillis(event.scheduledTime, "scheduledTime");
-      const hours = [];
-      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
-        hours.push(hour);
-      }
-      // The prepaid draw (drive#586): each account's usage for the hours this
-      // run rolled is drawn from its balance, at most once per account per
-      // hour (src/prepaid.js). This replaces the old after-the-fact usage push
-      // to the provider (#51, #334), whose billing_pushes table is retired by
-      // migration 0021. Awaited and not caught: a failed D1 write fails the
-      // trigger, Cloudflare retries it, and the idempotency key makes the
-      // retry draw nothing twice.
-      const drawn = await drawUsageHours(env.METER_DB, hours, { now });
+      // The prepaid draw (drive#586): each account's usage is drawn from its
+      // balance, at most once per account per hour (src/prepaid.js). It works
+      // from each account's own draw mark through the newest rolled hour
+      // (drive#519), not from the hours this run rolled, so a run that failed
+      // here - for an hour or for days, across a month end or not - is caught
+      // up by the next one. A failed D1 write fails the trigger, and the
+      // idempotency key makes the retry draw nothing twice.
+      const drawn = await drawPendingHours(env.METER_DB, await listMeteredAccounts(env.METER_DB), {
+        through: rolled.through,
+        now,
+      });
       if (drawn.drawn > 0) {
         console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
       }
@@ -1105,7 +1134,21 @@ export default {
       // other. Its own per-account catches mean only a whole-cron failure
       // (D1 down) rejects here, and a failed trigger is the honest signal
       // for that: the next night retries everything it did not finish.
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // With the meter's queue bound (drive#519), one message per account
+      // does the reconcile (src/meter-jobs.js); without it, the same
+      // per-account step runs here, each account's failure kept and raised.
+      const jobs = meterJobsQueue(env);
+      if (jobs) {
+        const sent = await sendMeterJobs(
+          jobs,
+          METER_JOB_KINDS.reconcile,
+          await listMeteredAccounts(env.METER_DB),
+          { at: toMillis(event.scheduledTime, "scheduledTime") },
+        );
+        console.log(`meter: queued ${sent} reconcile account job(s)`);
+      } else {
+        await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      }
       // Retention (drive issue #564): the reconciler has finished its
       // repairs, so the prune sees the row set the provider listings have
       // already agreed with, and a version the provider still lists is never
@@ -1124,6 +1167,19 @@ export default {
         );
       }
       if (env.DRIVE_DB) {
+        // Link retention (drive issue #549): expired and revoked rows older
+        // than 90 days are pruned nightly. A still-open row is never touched,
+        // so this cannot close a link a stranger is holding. Awaited, like
+        // the size row below: a purge that failed is a failed run, not a
+        // silent gap.
+        const purged = await purgeStaleLinks(
+          env.DRIVE_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
+        console.log(
+          `link retention: pruned ${purged.shares} share rows, ` +
+            `${purged.requests} upload-request rows`,
+        );
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
         context.waitUntil(
           runAccountCloseCron({
@@ -1184,6 +1240,44 @@ export default {
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);
+      }),
+    );
+  },
+
+  // The meter's queue consumer (drive#519): one message is one account's
+  // hourly step or nightly reconcile, sent by the crons above when the
+  // METER_JOBS queue is bound. A job that throws is retried by the platform,
+  // and after its retries it lands in the dead-letter queue (src/meter-jobs.js).
+  /**
+   * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+   * @param {Env} env
+   * @param {ExecutionContext} _context
+   * @param {import("./files.js").FileStore} [store] injectable like scheduled's
+   */
+  async queue(batch, env, _context, store = storeFor(env)) {
+    if (!env.METER_DB) {
+      throw new Error("meter jobs: METER_DB binding is not configured");
+    }
+    const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+    const dodo = dodoEnv(env);
+    await handleMeterJobs(
+      batch,
+      meterJobHandlers({
+        meterDb: env.METER_DB,
+        capStore: env.DRIVE_DB
+          ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
+          : undefined,
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        settle: {
+          email: env.EMAIL,
+          mailFrom: dodo.MAIL_FROM ?? "",
+          apiKey: dodo.DODO_PAYMENTS_API_KEY,
+          productId: dodo.DODO_TOPUP_PRODUCT_ID,
+          baseUrl: dodo.DODO_BASE_URL,
+          fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        },
+        store,
       }),
     );
   },

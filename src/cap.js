@@ -46,7 +46,7 @@
 // re-doing revoke-then-mint by hand.
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
-import { capLine, usageSummary } from "./billing.js";
+import { capLine, minutesInMonth, usageSummary } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
@@ -526,6 +526,22 @@ export async function runCapEnforcement(input) {
 }
 
 /**
+ * One account's step of the hourly cap walk, for the meter's queue consumer
+ * (src/meter-jobs.js, drive#519): the same decision runCapEnforcement makes
+ * for each account in its loop, for the one account a message names. Throws
+ * on failure, so the message is retried.
+ * @param {{store: any, now?: number, email?: {send: Function}, mailFrom?: string}} input
+ * @param {string} id
+ */
+export async function enforceAccountCap(input, id) {
+  if (typeof input?.store !== "object" || input.store === null) {
+    throw new TypeError(`enforceAccountCap needs a device store, got ${String(input?.store)}`);
+  }
+  const now = typeof input.now === "number" && Number.isFinite(input.now) ? input.now : Date.now();
+  return enforceOneAccount(input.store, id, input, Math.floor(now / 1000));
+}
+
+/**
  * The walk's decision for one account: the state, the key swap, the saved
  * state and the notice. Null for a closed account, which the walk leaves alone.
  * @param {any} store
@@ -839,6 +855,7 @@ export async function handleCapRequest(request, account, capStore) {
       ? await capStore.monthUsage(account.id, { capUsd: usd })
       : {
           gbMinutes: 0,
+          monthMinutes: minutesInMonth(Date.now()),
           storedGb: 0,
           storedDaily: [],
           downloadBytes: 0,
