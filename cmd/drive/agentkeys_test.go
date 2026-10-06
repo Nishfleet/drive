@@ -332,6 +332,75 @@ func TestA401TriggersOneReSignInAndTheCallThenSucceeds(t *testing.T) {
 	}
 }
 
+// The share and request commands send their own requests, so they reach the
+// re-sign-in through withFreshDeviceToken rather than APIClient.do. Same rule:
+// a 401 runs the device flow once and the call is retried once with the new
+// token; any other failure is returned untouched (drive#557).
+func TestShareLinksReSignInOnceOnA401(t *testing.T) {
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	const dead = "dtok_expired"
+	const fresh = "dtok_fresh"
+	var codeCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == deviceCodePath && r.Method == http.MethodPost:
+			codeCalls++
+			writeTestJSON(w, 200, DeviceCode{
+				DeviceCode: "dev_secret", UserCode: "BCDF-GHJK",
+				VerificationURI: "https://api.test/v1/device/approve",
+				ExpiresIn:       600, Interval: 1,
+			})
+		case r.URL.Path == deviceTokenPath && r.Method == http.MethodPost:
+			writeTestJSON(w, 200, map[string]any{
+				"status":      "approved",
+				"deviceToken": fresh,
+				"expiresAt":   testDeviceTokenExpiry,
+				"account":     map[string]string{"id": "acct_1", "name": "Nish", "email": "nish@example.com"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: dead}); err != nil {
+		t.Fatal(err)
+	}
+
+	var tokens []string
+	var out strings.Builder
+	err := withFreshDeviceToken(home, "", &out, func(token string) error {
+		tokens = append(tokens, token)
+		if token == dead {
+			return &APIError{Method: http.MethodPost, Path: "/api/links", Status: "401 Unauthorized"}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 2 || tokens[0] != dead || tokens[1] != fresh {
+		t.Fatalf("calls ran with %v, want the dead token then the fresh one", tokens)
+	}
+	if codeCalls != 1 {
+		t.Fatalf("device flow ran %d times, want 1", codeCalls)
+	}
+
+	// A refusal that is not a 401 is the Worker's answer, not a dead sign-in:
+	// no device flow, no retry.
+	tokens = nil
+	err = withFreshDeviceToken(home, "", &out, func(token string) error {
+		tokens = append(tokens, token)
+		return &APIError{Method: http.MethodPost, Path: "/api/links", Status: "403 Forbidden"}
+	})
+	if err == nil || len(tokens) != 1 || codeCalls != 1 {
+		t.Fatalf("a 403 retried or re-signed in: err=%v calls=%v deviceFlows=%d", err, tokens, codeCalls)
+	}
+}
+
 func TestMintAndRevokeUseTheWorkersRoutesAndTheBearerToken(t *testing.T) {
 	api := newFakeAPI()
 	server := httptest.NewServer(api)

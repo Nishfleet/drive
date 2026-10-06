@@ -807,6 +807,12 @@ export function createD1DeviceSigninStore(db, options = {}) {
       if (!row || typeof row !== "object") {
         return null;
       }
+      const r = /** @type {Record<string, unknown>} */ (row);
+      // A closed account is refused before the renewal, so its token row is
+      // never given a longer window than the one it already had.
+      if (r.account_state === "closed") {
+        return null;
+      }
       // A row that got here is live, so this is where its window is renewed
       // (drive#557): the same drive reached every day should not be signed out
       // on a fixed calendar. The rule is the one exported above, and it runs
@@ -814,7 +820,7 @@ export function createD1DeviceSigninStore(db, options = {}) {
       // write here can revive one. A row with room left on its window is not
       // written at all, which is what keeps a loop of account calls to one
       // write a day.
-      const held = Number(/** @type {Record<string, unknown>} */ (row).expires_at);
+      const held = Number(r.expires_at);
       const renewed = renewDeviceTokenWindow(held, at);
       if (renewed !== held) {
         // `MAX` keeps the later of the two expiries, so two requests that read
@@ -828,10 +834,6 @@ export function createD1DeviceSigninStore(db, options = {}) {
           renewed,
           hash,
         );
-      }
-      const r = /** @type {Record<string, unknown>} */ (row);
-      if (r.account_state === "closed") {
-        return null;
       }
       return {
         id: String(r.account_id ?? ""),
