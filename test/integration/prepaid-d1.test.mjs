@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { monthBillCents } from "../../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../../src/billing.js";
 import { createMemoryStore, handleFilesRequest } from "../../src/files.js";
 import {
   appendLedgerEntry,
@@ -89,6 +89,7 @@ async function billThrough(db, hour) {
   const usage = await monthUsageThrough(db, ACCOUNT, hour);
   return monthBillCents({
     gbMinutes: usage.gbMinutes,
+    monthMinutes: minutesInMonth(hour),
     downloadBytes: usage.downloadBytes,
     averageStoredGb: usage.averageStoredGb,
   }).totalCents;
@@ -544,9 +545,10 @@ test("auto top-up is turned on only after a first top-up, and off again", async 
     const refused = await handleAutoTopUpRequest(post({ amount_usd: bad }), me, db);
     assert.equal(refused.status, 400, String(bad));
   }
-  const crossSite = post({ amount_usd: 25 }, { origin: "https://evil.example" });
-  assert.equal((await handleAutoTopUpRequest(crossSite, me, db)).status, 403);
-
+  // The cross-site refusal lives in the Worker's one CSRF middleware
+  // (src/index.js csrfWhenBrowser), not in this handler; the walk in
+  // test/account-gate.test.mjs drives it through the real route table and
+  // names this endpoint in its paths list.
   const on = await handleAutoTopUpRequest(post({ amount_usd: 25 }), me, db);
   assert.equal(on.status, 200);
   assert.equal((await on.json()).auto_topup_usd, 25);

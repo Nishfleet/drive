@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { billingConfigFor, monthlyBillForStoredTb } from "../src/billing.js";
+import { markerValues } from "../src/docs.js";
 import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
 import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
 
@@ -107,6 +108,31 @@ test("the card line says the first top-up opens storage, with no old minimum", (
   assert.ok(PRICE.needCard.includes(`Your first $${PREPAID.minTopUpUsd} top-up opens storage.`));
   assert.doesNotMatch(PRICE.needCard, /no minimum/i);
   assert.match(PRICE.needCard, /no free tier/);
+});
+
+test("the trash billing rule is stated on the landing page and the pricing doc (drive#521)", () => {
+  // The sentence is a decision ("stop paying for what you delete" is THIS),
+  // so it is pinned here word for word, and both surfaces must carry it.
+  assert.equal(
+    PRICE.trashLine,
+    "A deleted file stops counting as soon as it lands in Recently deleted. After 30 days it is removed for good.",
+  );
+  assert.ok(
+    words.includes(PRICE.trashLine),
+    "public/index.html must carry the trash billing line verbatim",
+  );
+  // The doc carries it through the {{TRASH_BILLING}} marker, so the marker's
+  // presence is the assertion: the rendered page builds it from PRICE.
+  assert.ok(
+    readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8").includes(
+      "{{TRASH_BILLING}}",
+    ),
+    "docs-site/pricing.md must place the {{TRASH_BILLING}} marker",
+  );
+  // The marker must actually resolve, or the built page would print the
+  // marker's name instead of the rule.
+  const values = markerValues();
+  assert.equal(values.TRASH_BILLING, PRICE.trashLine);
 });
 
 test("the formula edges, as the bill computes them", () => {

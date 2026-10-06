@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
@@ -232,7 +232,10 @@ test("the event id is the account and hour, so a retry is the same id", () => {
 test("a day of stored GB pushes the bill, with storage and downloads as dollar lines", async () => {
   const day = await storedHours(400, 24);
   const recorder = recordingFetch();
-  const bill = monthBillCents({ gbMinutes: 400 * 60 * 24 });
+  const bill = monthBillCents({
+    gbMinutes: 400 * 60 * 24,
+    monthMinutes: minutesInMonth(day.from),
+  });
   const result = await pushBillingHours(day.db, day.hours, {
     apiKey: KEY,
     fetch: recorder.fetch,
@@ -314,7 +317,10 @@ test("an October hour does not count September's GB-minutes", async () => {
     now: october + HOUR_MS,
   });
   const metadata = recorder.calls[0].payload.events[0].metadata;
-  const octoberBill = monthBillCents({ gbMinutes: 10 * 60 });
+  const octoberBill = monthBillCents({
+    gbMinutes: 10 * 60,
+    monthMinutes: minutesInMonth(october),
+  });
   assert.equal(metadata.storage_cents, octoberBill.storageCents);
   assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
 });
@@ -327,9 +333,24 @@ test("a push that spans the month boundary bills each month on its own", async (
   // September's hour has a real bill; if the October event ever measures
   // itself against September's pushed total, it undercharges by that much.
   await recordUsage(db, ACCOUNT, september, 2000 * 60 * 24, 2000 * BYTES_PER_GB, october);
-  await recordUsage(db, ACCOUNT, october, 2000 * 43800, 2000 * BYTES_PER_GB, october + HOUR_MS);
-  const septemberBill = monthBillCents({ gbMinutes: 2000 * 60 * 24 });
-  const octoberBill = monthBillCents({ gbMinutes: 2000 * 43800 });
+  // 2 TB for all of October's own 44,640 minutes (drive#531).
+  const octoberMinutes = minutesInMonth(october);
+  await recordUsage(
+    db,
+    ACCOUNT,
+    october,
+    2000 * octoberMinutes,
+    2000 * BYTES_PER_GB,
+    october + HOUR_MS,
+  );
+  const septemberBill = monthBillCents({
+    gbMinutes: 2000 * 60 * 24,
+    monthMinutes: minutesInMonth(september),
+  });
+  const octoberBill = monthBillCents({
+    gbMinutes: 2000 * octoberMinutes,
+    monthMinutes: octoberMinutes,
+  });
   assert.ok(septemberBill.totalCents > 0, "September needs a bill to subtract by mistake");
   assert.ok(octoberBill.totalCents > septemberBill.totalCents, "October must exceed September");
   const recorder = recordingFetch();
@@ -359,7 +380,8 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
   await putCustomer(db, ACCOUNT, CUSTOMER);
   const hour0 = midnight();
   const hour1 = hour0 + HOUR_MS;
-  await recordUsage(db, ACCOUNT, hour0, 2000 * 43800, 2000 * BYTES_PER_GB, hour1);
+  // 2 TB for the whole of the hour's calendar month (drive#531): $20.00.
+  await recordUsage(db, ACCOUNT, hour0, 2000 * minutesInMonth(hour0), 2000 * BYTES_PER_GB, hour1);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour0], {
     apiKey: KEY,
@@ -382,14 +404,15 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
 });
 
 test("Dodo receives the bill held to the maximum, never the uncapped meter", async () => {
-  // 2 TB held a whole average month: $40 metered, held to the $20 maximum
-  // ($10 per TB, drive#463).
+  // 2 TB held a whole calendar month: $40 metered, held to the $20 maximum
+  // ($10 per TB, drive#463), over the month's own minutes (drive#531).
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   const hour = midnight();
-  const gbMinutes = 2000 * 43800;
+  const monthMinutes = minutesInMonth(hour);
+  const gbMinutes = 2000 * monthMinutes;
   await recordUsage(db, ACCOUNT, hour, gbMinutes, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  const bill = monthBillCents({ gbMinutes });
+  const bill = monthBillCents({ gbMinutes, monthMinutes });
   assert.equal(bill.storageCents, 2000);
   assert.equal(bill.totalCents, 2000);
   const recorder = recordingFetch();
@@ -418,8 +441,9 @@ test("the Dodo push bills every account at the one rate, on the real schema", as
     .bind(otherAccount, "other@example.com", midnight(), otherCustomer)
     .run();
   const hour = midnight();
-  await recordUsage(db, ACCOUNT, hour, 2000 * 43800, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  await recordUsage(db, otherAccount, hour, 2000 * 43800, 2000 * BYTES_PER_GB, hour + HOUR_MS);
+  const wholeMonth = 2000 * minutesInMonth(hour);
+  await recordUsage(db, ACCOUNT, hour, wholeMonth, 2000 * BYTES_PER_GB, hour + HOUR_MS);
+  await recordUsage(db, otherAccount, hour, wholeMonth, 2000 * BYTES_PER_GB, hour + HOUR_MS);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
   const events = recorder.calls[0].payload.events;
@@ -536,7 +560,15 @@ test("the hourly cron draws the hour it just rolled from the balance, and pushes
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
+    {
+      // The deploy binds the one database under both names
+      // (cloudflare.config.ts), and the same trip runs the pre-charge sweep
+      // off DRIVE_DB (drive#536), so the trip's env carries both.
+      METER_DB: db,
+      DRIVE_DB: db,
+      DODO_PAYMENTS_API_KEY: KEY,
+      DODO_FETCH: recorder.fetch,
+    },
   );
   assert.equal(recorder.calls.length, 0, "no usage event reaches Dodo: the balance pays");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
@@ -556,7 +588,7 @@ test("with no Dodo key the cron still draws, does not throw, and logs no retired
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db }, // no DODO_PAYMENTS_API_KEY
+    { METER_DB: db, DRIVE_DB: db }, // no DODO_PAYMENTS_API_KEY
   );
   assert.equal(usageDraws(sqlite).length, 1, "the hour is drawn without a provider key");
   const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
@@ -599,7 +631,12 @@ test("the cron never runs the retired push-gap report, so a failing one cannot t
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: failingDetectorDb, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
+    {
+      METER_DB: failingDetectorDb,
+      DRIVE_DB: failingDetectorDb,
+      DODO_PAYMENTS_API_KEY: KEY,
+      DODO_FETCH: recorder.fetch,
+    },
   );
   assert.deepEqual(detectorCalls, [], "the cron does not read the push-gap report");
   assert.equal(errorMock.mock.calls.length, 0, "and logs no failure");

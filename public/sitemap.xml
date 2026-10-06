@@ -2,7 +2,9 @@
 <!-- drive issue #37: one public page, so one URL. Mirrors SITE in src/seo.js;
      test/seo.test.mjs fails CI when this file and that config disagree.
      drive issue #98 adds the docs section: the pages are read from DOC_PAGES
-     in src/seo.js, and each one ships an HTML page at its own path. -->
+     in src/seo.js, and each one ships an HTML page at its own path.
+     drive#523 adds the legal and trust pages, listed in src/legal.js.
+     drive#584 adds the accessibility and status pages to that same list. -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://drive-pricing.nishant345.workers.dev/</loc>
@@ -13,6 +15,41 @@
     <loc>https://drive-pricing.nishant345.workers.dev/starter.html</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/terms</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/privacy</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/refunds</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/acceptable-use</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/support</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/accessibility</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/status</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.3</priority>
   </url>
   <url>
     <loc>https://drive-pricing.nishant345.workers.dev/docs/quickstart</loc>

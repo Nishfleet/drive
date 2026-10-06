@@ -164,6 +164,26 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Set a whole number of bytes for this page's cap.",
     next: "Pick a whole number of at least 1.",
   }),
+  // The owner's drive holds as many open links as one account may keep (drive
+  // issue #549): 50 share links or 50 upload pages. The cap is by count, not
+  // bytes, so the next step is to revoke one rather than to wait.
+  "too-many-links": Object.freeze({
+    what: "You have as many open links as one account can keep.",
+    next: "Revoke a link you no longer need, then make this one.",
+  }),
+  // A share link has served its per-link byte cap (drive issue #549): the
+  // file's own size times 30. The owner sets no cap on a public link, so the
+  // one next step is to ask for a fresh one.
+  "download-link-cap": Object.freeze({
+    what: "This link has handed out as much of the file as it can.",
+    next: "Ask the person who shared it for a new link.",
+  }),
+  // An upload-request drop named a file longer than the 255-character cap
+  // (drive issue #549). Nothing was stored; the next step is a shorter name.
+  "upload-name-too-long": Object.freeze({
+    what: "That file name is too long for this drive.",
+    next: "Rename the file to 255 characters or fewer and drop it again.",
+  }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
   // src/email-send.js is the pattern this words.
@@ -201,6 +221,31 @@ export const FAILURE_MESSAGES = Object.freeze({
   "file-not-found": Object.freeze({
     what: "That file is not here.",
     next: "Open the folder again to see what is in it.",
+  }),
+  // The storage key this path lives at is longer than the store can hold, so the
+  // file cannot be written, parked or put back. `validatePath` counts
+  // characters and a key is counted in bytes, and the trash name percent-encodes
+  // every non-ASCII byte into three characters, so a long path that is not ASCII
+  // becomes a key the storage refuses (drive issue #567). It is the file's own
+  // name that has to change, not the drive.
+  "path-too-long": Object.freeze({
+    what: "That path is too long for this drive to store.",
+    next: "Shorten the name or move the file to a shorter folder.",
+  }),
+  // The bytes at this path changed while a delete was moving them, so the
+  // original was left alone rather than removed: the newer bytes are a save
+  // that landed while the delete ran (drive issue #567). Nothing was lost, and
+  // the delete is safe to ask for again.
+  "delete-file-changed": Object.freeze({
+    what: "That file changed while it was being deleted, so it was left alone.",
+    next: "Try the delete again.",
+  }),
+  // The same refusal on the restore half: the copy in Recently deleted
+  // changed under the restore, so it is still parked rather than removed, and
+  // the copy that ran first is what the drive holds (drive issue #567).
+  "restore-file-changed": Object.freeze({
+    what: "That file in Recently deleted changed while it was being put back.",
+    next: "Try the restore again.",
   }),
   // The branch was already approved or discarded, so there is nothing left to
   // apply or throw away.

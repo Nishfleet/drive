@@ -306,7 +306,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // cannot prove an account is a 401 rather than an empty month.
   assert.match(
     srcFile("billing.js"),
-    /export function handleUsageRequest\(request, account, upload = null, balanceLine = null\)/,
+    /export function handleUsageRequest\(\s*request,\s*account,\s*upload = null,\s*balanceLine = null,\s*monthIso = "",?\s*\)/,
   );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);
   assert.equal(usage.status, 401, "the usage read is behind the account gate");
@@ -745,7 +745,10 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
   const download = await call(
     new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fpage.html`),
   );
-  assert.equal(download.headers.get("content-disposition"), 'attachment; filename="page.html"');
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"page.html\"; filename*=UTF-8''page.html",
+  );
   const preview = await call(
     new Request(`https://drive.test${FILES_ENDPOINT}/preview?path=%2Fpage.html`),
   );
@@ -812,38 +815,36 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   const billing = srcFile("billing.js");
   assert.match(billing, /export function monthBillCents\(/, "the one billing function");
   // The storage bill is read out of it rather than worked out a second time.
-  assert.match(billing, /function monthlyStorageBillUsd[\s\S]{0,400}return monthBillCents\(/);
+  assert.match(billing, /function monthlyStorageBillUsd[\s\S]{0,400}return \(?\s*monthBillCents\(/);
   // Three months worked out by hand from the spec's numbers (drive#463:
-  // 2¢/GB-month on 43,800 minutes, never more than $10 per TB of the month's
+  // 2¢/GB-month on the calendar month's minutes, never more than $10 per TB of the month's
   // average with at least one TB's worth, no minimum, downloads free to 3x the
   // average then 1¢/GB) and checked against the one function:
-  //   400 GB all month: 400 × 43800 GB-min → 800¢ metered, under the 1000¢
+  //   400 GB all of a 30-day month: 400 × 43,200 GB-min → 800¢ metered, under the 1000¢
   //   maximum → 800¢
   //   the same month plus 400 GB downloaded on a 100 GB average: 300 GB free,
   //   100 GB billable → +100¢ → $9.00
   //   2 TB all month: 4000¢ metered, held to $10 × 2 TB = $20 → 2000¢
-  const MINUTES_PER_MONTH = 43800;
+  // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
+  const MONTH_MINUTES = 30 * 1440;
   /** @type {Array<[{gbMinutes: number, downloadBytes?: number, averageStoredGb?: number}, {storageCents: number, downloadCents: number, totalCents: number}]>} */
   const cases = [
-    [
-      { gbMinutes: 400 * MINUTES_PER_MONTH },
-      { storageCents: 800, downloadCents: 0, totalCents: 800 },
-    ],
+    [{ gbMinutes: 400 * MONTH_MINUTES }, { storageCents: 800, downloadCents: 0, totalCents: 800 }],
     [
       {
-        gbMinutes: 400 * MINUTES_PER_MONTH,
+        gbMinutes: 400 * MONTH_MINUTES,
         downloadBytes: 400e9,
         averageStoredGb: 100,
       },
       { storageCents: 800, downloadCents: 100, totalCents: 900 },
     ],
     [
-      { gbMinutes: 2000 * MINUTES_PER_MONTH },
+      { gbMinutes: 2000 * MONTH_MINUTES },
       { storageCents: 2000, downloadCents: 0, totalCents: 2000 },
     ],
   ];
   for (const [input, expected] of cases) {
-    const bill = monthBillCents(input);
+    const bill = monthBillCents({ ...input, monthMinutes: MONTH_MINUTES });
     for (const [field, cents] of Object.entries(expected)) {
       const value = /** @type {Record<string, number>} */ (/** @type {unknown} */ (bill))[field];
       assert.equal(value, cents, `${field} for ${JSON.stringify(input)}`);

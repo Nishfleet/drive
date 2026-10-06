@@ -350,3 +350,110 @@ main {
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* The legal links every page footer carries (drive#523). */
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+
+.legal-links a {
+  color: inherit;
+}
+
+/* The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
+   use and support (src/legal.js). They share one reading column, declared
+   here once so the five pages cannot drift. */
+
+body.policy .masthead,
+body.policy main,
+body.policy .footer {
+  max-width: 720px;
+}
+
+body.policy h1 {
+  font-family: var(--serif);
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 900;
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin: 32px 0 12px;
+}
+
+body.policy main a {
+  color: var(--accent);
+}
+
+body.policy h2 {
+  font-size: 20px;
+  margin: 32px 0 8px;
+}
+
+body.policy .lede {
+  color: var(--ink-soft);
+  margin: 0 0 4px;
+}
+
+body.policy .updated {
+  color: var(--ink-faint);
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+body.policy table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+body.policy th,
+body.policy td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 8px 8px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* At phone width the processor table stacks, one company per block, and
+   each cell names its column, so the page never scrolls sideways. */
+@media (max-width: 600px) {
+  body.policy thead {
+    position: absolute;
+    left: -9999px;
+  }
+
+  body.policy tr {
+    display: block;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  body.policy td {
+    display: block;
+    border: 0;
+    padding: 2px 0;
+  }
+
+  body.policy td::before {
+    content: attr(data-label) ": ";
+    font-weight: 600;
+  }
+}
+
+body.policy .footer {
+  margin: 40px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+/* A fact the owner still has to fill in (src/legal.js LEGAL_PLACEHOLDERS).
+   Loud on purpose, so an unfilled one cannot pass for real words. */
+mark.to-fill {
+  background: var(--drive-orange-wash);
+  color: var(--ink);
+  outline: 2px dashed var(--drive-orange-ink);
+  padding: 0 4px;
+}

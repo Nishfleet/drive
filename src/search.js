@@ -449,8 +449,9 @@ export function withIndex(store, db, account, now = () => Date.now()) {
     ...store,
     /** @param {string} key
      * @param {BodyInit|null|undefined} body
-     * @param {string} contentType */
-    async write(key, body, contentType) {
+     * @param {string} contentType
+     * @param {{contentLength?: number}} [options] */
+    async write(key, body, contentType, options) {
       // The row the search reads is written after the store has read the body,
       // and the body is counted on the way through (a stream carries no length
       // a store would answer back), so a file is searchable with the size and
@@ -460,7 +461,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       // that set carries no length, and it is refused by name rather than
       // indexed as a size of 0.
       const counted = countedBody(body);
-      await write(key, counted.body, contentType);
+      await write(key, counted.body, contentType, options);
       const path = drivePathFromKey(key, account);
       if (locate(path).trashed) {
         return;
@@ -486,12 +487,15 @@ export function withIndex(store, db, account, now = () => Date.now()) {
 // --------------------------------------------------------------- the accounts
 
 /**
- * The accounts the index has rows for — the accounts a nightly rebuild is
- * even meaningful for. A scheduled run has no request and therefore no
- * signed-in account, and this repo has no accounts table until the device
- * sign-in store lands (#5), so the index's own rows are the only honest list:
- * an account the drive has never served has nothing to rebuild, and inventing
- * one would index a drive nobody has.
+ * The accounts the index rebuilds - every row of the `accounts` table, the
+ * one list of who the drive serves. The nightly rebuild once listed the
+ * index's own DISTINCT account ids instead, because there was no accounts
+ * table to ask (#5); there is now, and a DISTINCT scan over every indexed
+ * row is the reindex's share of the metered database's growth problem (drive
+ * issue #564): slower with every file ever indexed, and blind to an account
+ * whose files are all deleted. An account with no index rows reconciles in
+ * one empty per-account listing, so listing it costs almost nothing and
+ * can never miss one.
  * @param {D1Database} db
  * @returns {Promise<Array<{id: string}>>}
  */
@@ -499,12 +503,9 @@ export async function indexAccounts(db) {
   if (!db) {
     throw new Error("indexAccounts needs the file index database");
   }
-  const result = await db
-    .prepare("SELECT DISTINCT account_id FROM file_index WHERE account_id <> ?1")
-    .bind("")
-    .all();
-  const rows = /** @type {Array<{account_id: string}>} */ (result?.results ?? []);
-  return rows.map((row) => ({ id: row.account_id }));
+  const result = await db.prepare("SELECT id FROM accounts ORDER BY id").all();
+  const rows = /** @type {Array<{id: string}>} */ (result?.results ?? []);
+  return rows.map((row) => ({ id: row.id }));
 }
 
 // ---------------------------------------------------------------- the route

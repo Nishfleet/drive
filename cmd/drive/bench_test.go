@@ -192,14 +192,9 @@ func benchStart(tb testing.TB) *benchStandin {
 	if !h.real {
 		port := freePort(tb)
 		h.cfg.Endpoint = "http://127.0.0.1:" + port
-		h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+		h.serve = startRcloneServe(tb, filepath.Join(root, "data"), port,
 			"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
-			"--addr", "127.0.0.1:"+port, "--log-level", "INFO")
-		h.serve.Stdout, h.serve.Stderr = os.Stdout, os.Stderr
-		if err := h.serve.Start(); err != nil {
-			tb.Fatal(err)
-		}
-		waitForPort(tb, port)
+			"--log-level", "INFO")
 	}
 	// The config is written after the stand-in port is known, so direct rclone
 	// calls (seed, objectSize, --bwlimit) hit the same endpoint as the mount.

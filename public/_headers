@@ -1,0 +1,11 @@
+# Workers Static Assets header rules. This file is not served as a page;
+# Cloudflare applies it to static-asset responses (files, usage, sign-in,
+# upload, and the rest of public/). Worker-generated /api/* and /s/* answers
+# still take their headers from the Worker (Hono secureHeaders, src/index.js).
+# https://developers.cloudflare.com/workers/static-assets/headers/
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cloudflareinsights.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
