@@ -1,11 +1,20 @@
 // Drive paths and the drive's own folders (.trash, .branches), with the
-// one validator the browser's path passes through, the words for every
-// answer and the trash and restore helpers the Recently deleted screen
-// uses. Extracted from src/files.js (drive issue #617) with no
-// behaviour change; src/files.js re-exports every name here, so no
-// importer moved.
+// one validator the browser's path passes through, the trash helpers, and
+// the one name cleaner. Extracted from src/files.js (drive issue #617)
+// with no behaviour change; src/files.js re-exports every name here, so
+// no importer moved.
 
 /** @typedef {import("./file-store.js").FileEntry} FileEntry */
+
+/**
+ * The characters a path may not carry: the ASCII control range and DEL plus a
+ * backslash, spelled with String.fromCharCode rather than a `` escape in a
+ * literal, because a control range in a regex literal is exactly the thing
+ * that is unreadable in review and easy to typo into the wrong range (drive
+ * issue #92). The Web Files page cannot import this module and builds the same
+ * class from the same call; test/files.test.mjs reads the shipped page and
+ * fails when the two drift apart.
+ */
 export const CONTROL_OR_BACKSLASH = new RegExp(
   `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}\\\\]`,
 );
@@ -32,6 +41,7 @@ export const BRANCHES_FOLDER = ".branches";
 export const BRANCHES_PATH = `/${BRANCHES_FOLDER}`;
 /** How long a deleted file stays restorable (build-spec.md "Old versions"). */
 export const RECENTLY_DELETED_DAYS = 30;
+// ---------------------------------------------------------------- pure logic
 
 /**
  * A drive path is absolute, uses "/" between segments, and never climbs out of
@@ -196,7 +206,7 @@ export function parseTrashName(name) {
  * @param {string} name
  * @returns {{path: string, deletedAt: number}|null|undefined}
  */
-export function parseFlatTrashName(name) {
+function parseFlatTrashName(name) {
   const cut = name.indexOf("__");
   if (cut <= 0) {
     return undefined;
@@ -230,7 +240,7 @@ export function trashStorePath(name) {
 /**
  * The parked name for a drive path, newest first, or null when that path is
  * not in Recently deleted.
- * @param {Array<{name: string}>} entries the trash listing
+ * @param {Array<{name: string, size?: number, etag?: string|null}>} entries the trash listing
  * @param {string} path the drive path to find
  */
 export function findTrashName(entries, path) {
@@ -238,7 +248,11 @@ export function findTrashName(entries, path) {
   for (const entry of entries) {
     const parsed = parseTrashName(entry.name);
     if (parsed && parsed.path === path && (!found || parsed.deletedAt > found.deletedAt)) {
-      found = { name: entry.name, ...parsed };
+      // The row's own size and ETag travel with the name. The move back a
+      // restore makes is a copy the storage does for itself, and it needs the
+      // size to pick the copy; the remove after it is conditional, and it needs
+      // the fingerprint the trash listing carried (drive issue #567).
+      found = { name: entry.name, size: entry.size, etag: entry.etag, ...parsed };
     }
   }
   return found;
@@ -253,49 +267,30 @@ export function isRestorable(deletedAt, now = Date.now()) {
   const age = now - deletedAt;
   return age >= 0 && age <= RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
 }
-
 /**
- * A time as a person reads it: today shows the clock, this year shows the day
- * and month, older shows the year too. `now` is injected so the tests pin one.
- * @param {string|number|Date} value
- * @param {number} now
+ * @param {string} name
+ * @returns {string} the name as a single safe path segment
  */
-export function formatWhen(value, now = Date.now()) {
-  // A Date's own epoch value; a number is already epoch milliseconds. Date.parse
-  // takes the string, so the union is narrowed to the form it can parse.
-  const time =
-    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
-  if (!Number.isFinite(time)) {
-    throw new TypeError(`formatWhen needs a date, got ${String(value)}`);
-  }
-  const date = new Date(time);
-  const today = new Date(now);
-  const sameDay =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate();
-  if (sameDay) {
-    return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  }
-  if (date.getFullYear() === today.getFullYear()) {
-    return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  }
-  return date.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+// Exported for the parity gate in test/files.test.mjs, which runs the Web
+// Files page's own copy of CONTROL_OR_SLASH beside this one and fails when the
+// two would store a name differently (drive#92). Also for src/share.js: an
+// upload request takes a dropped file's name exactly the way the Files page
+// does, so there is one name cleaner rather than two that can drift.
+export function safeFileName(name) {
+  const cleaned = String(name || "")
+    .trim()
+    .replace(CONTROL_OR_SLASH, "-");
+  return cleaned.length > 0 && cleaned !== "." && cleaned !== ".." ? cleaned : "upload";
 }
 
 /**
- * The day a deleted file leaves Recently deleted, in words.
- * @param {number} deletedAt epoch milliseconds
+ * @param {string} folder
+ * @param {string} name
  * @returns {string}
  */
-export function restorableUntil(deletedAt) {
-  const until = deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
-  return `Restorable until ${new Date(until).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}.`;
+// Exported for src/share.js, for the same one-place reason: an upload request
+// writes into one folder the way the Files page does, not a second way.
+export function joinPath(folder, name) {
+  const base = folder === "/" ? "" : folder;
+  return `${base}/${safeFileName(name)}`;
 }

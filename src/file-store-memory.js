@@ -1,7 +1,12 @@
+// The in-memory FileStore stand-in. Extracted from src/files.js (drive
+// issue #617) with no behaviour change; src/files.js re-exports
+// createMemoryStore, so no importer moved.
+
 import { fileKind } from "./file-kinds.js";
+import { etagMatches, parseByteRange } from "./file-rows.js";
+import { ChangedUnderUsError } from "./file-store.js";
 
 /** @typedef {import("./file-store.js").FileStore} FileStore */
-import { etagMatches, parseByteRange } from "./file-rows.js";
 
 /**
  * A content fingerprint for an in-memory object: SHA-256 as hex. The S3
@@ -13,6 +18,26 @@ import { etagMatches, parseByteRange } from "./file-rows.js";
 async function memoryEtag(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Whether a stored ETag is not the one a conditional remove was given. An
+ * absent ETag on either side is no comparison to make: the caller had nothing
+ * to hold the file to, so there is nothing for the bytes to have changed from,
+ * and a store that answers no ETag for a version it keeps keeps removing as it
+ * always did (drive issue #567).
+ * @param {string|null|undefined} stored
+ * @param {string|null|undefined} expected
+ * @returns {boolean}
+ */
+function etagMismatch(stored, expected) {
+  if (typeof expected !== "string" || expected === "") {
+    return false;
+  }
+  if (typeof stored !== "string" || stored === "") {
+    return false;
+  }
+  return stored !== expected;
 }
 
 /**
@@ -205,7 +230,39 @@ export function createMemoryStore() {
         etag: await memoryEtag(bytes),
       });
     },
-    async remove(path) {
+    async writeIfAbsent(path, body, contentType) {
+      // The bytes are read first, then two exists-checks bracket the etag:
+      // the first short-circuits an ordinary duplicate before any fingerprint
+      // is worth computing, and the second is the atomic one — it runs with
+      // nothing awaited between it and the set below, so inside one JS event
+      // loop two concurrent creates on one key cannot both see the key as
+      // absent and both land (drive#644). The winner starts a version exactly
+      // like `write`; the loser answers false without touching the live
+      // object or its versions.
+      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      if (objects.has(path)) {
+        return false;
+      }
+      const etag = await memoryEtag(bytes);
+      if (objects.has(path)) {
+        return false;
+      }
+      const now = Date.now();
+      startVersion(path, bytes.byteLength, now);
+      objects.set(path, { body: bytes, contentType, modified: now, etag });
+      return true;
+    },
+    async remove(path, { ifMatch } = {}) {
+      // The conditional half: a caller that read this key's ETag before it
+      // decided to remove it (a delete that parks the file first, drive issue
+      // #567) hands it back, and a key whose bytes changed under it is left
+      // alone rather than removed. A key with no ETag to compare against is
+      // removed as it always was, so a store that answers no ETag for a version
+      // it keeps never turns every delete into a refusal.
+      const value = objects.get(path);
+      if (value !== undefined && etagMismatch(value.etag, ifMatch)) {
+        throw new ChangedUnderUsError(path);
+      }
       // A delete hides the live version rather than forgetting it, exactly as
       // the drive's storage lifecycle does (build-spec.md "Old versions"), so
       // the bytes stay readable until the provider's own retention ends them.

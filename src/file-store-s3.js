@@ -1,96 +1,36 @@
+// The S3 FileStore adapter. Extracted from src/files.js (drive issue
+// #617) with no behaviour change; src/files.js re-exports createS3Store,
+// so no importer moved.
+
 import { AwsClient } from "aws4fetch";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { contentMd5 } from "../workers/api/src/s3.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
+import { ChangedUnderUsError } from "./file-store.js";
+import { escapeXmlText, parseListObjects } from "./file-store-xml.js";
 import {
-  escapeXmlText,
+  computeHiddenAt,
+  decodeEntities,
   nextContinuationToken,
-  parseListObjects,
+  nextVersionMarkers,
   parseListVersions,
   tagValue,
-  unescapeXmlText,
-} from "./file-store-xml.js";
+  versionMarkers,
+} from "./s3-listing.js";
 
 /** @typedef {import("./file-store.js").StorageVersion} StorageVersion */
 /** @typedef {import("./file-store.js").FileStore} FileStore */
 
 /**
- * The bytes of a request body a signer can hash, read from the four shapes
- * `write` is called with (`ReadableStream` from an upload, a `Blob` from the
- * starter template, a `Uint8Array` or a string from the CLI and the tests).
- * SigV4 signs the payload hash, so a stream must be in hand before the request
- * goes out; a body that is already bytes is passed through untouched.
- *
- * A signed write therefore reads the whole body. There is no size check here:
- * the FileStore interface has no multipart PUT, and the callers already hold
- * or bound those bytes (the upload handler from the incoming request, the
- * proof from an empty object). Inventing a second cap would be a second
- * number for the same body. Only a signed store reads a body this way: the
- * unsigned stand-in sends the stream as it is, which is what `rclone serve s3`
- * expects and what keeps the no-credential path free of a buffer it does not
- * need.
- * @param {BodyInit} body
- * @returns {Promise<Uint8Array>}
- */
-async function signableBody(body) {
-  if (typeof body === "string") {
-    return new TextEncoder().encode(body);
-  }
-  if (body instanceof Uint8Array) {
-    return body;
-  }
-  if (typeof Blob !== "undefined" && body instanceof Blob) {
-    return new Uint8Array(await body.arrayBuffer());
-  }
-  if (typeof ReadableStream === "undefined" || !(body instanceof ReadableStream)) {
-    throw new TypeError(
-      `cannot send a body of type ${Object.prototype.toString.call(body)}: a signed write hashes the payload, and only a stream, bytes, a Blob or a string can be read as one`,
-    );
-  }
-  /** @type {ReadableStream<Uint8Array>} */
-  const stream = /** @type {any} */ (body);
-  const chunks = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-  }
-  let total = 0;
-  for (const chunk of chunks) {
-    total += chunk.byteLength;
-  }
-  const bytes = new Uint8Array(total);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
-}
-
-/**
- * The bucket a storage key lives in: the same `drv-<accountId>` the key
- * provider mints into (drive#371, drive#460). The object layout is still
- * `u/<id>/...`; only the bucket name moved, so Finder writes and the Files
- * page read the same place. A key that is not an account prefix is a wiring
- * bug, not a fall-back onto the old shared store.
- * @param {string} key a storage key, `u/<accountId>/...`
+ * An ETag as S3 spells it in a header. A listing answers one in quotes and
+ * `parseListObjects` strips them so two stores' values compare in one form, so
+ * they are put back before an `If-Match` header is signed: a quote-free ETag
+ * in a conditional header is not the entity tag the vendor asked for.
+ * @param {string} etag
  * @returns {string}
  */
-export function storageBucketForKey(key) {
-  if (typeof key !== "string") {
-    throw new TypeError(`a storage key must be a string, got ${String(key)}`);
-  }
-  const match = /^u\/([^/]+)/.exec(key);
-  if (match === null) {
-    throw new TypeError(`a storage key must start with u/<accountId>/, got ${JSON.stringify(key)}`);
-  }
-  return bucketForAccount(match[1]);
+function quotedEntityTag(etag) {
+  return etag.startsWith('"') ? etag : `"${etag}"`;
 }
-
 /**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
@@ -160,17 +100,20 @@ export function createS3Store(config) {
   const urlFor = (path) => `${baseFor(path)}/${path.split("/").map(encodeURIComponent).join("/")}`;
   /**
    * The one request path every method below uses, so a store is either fully
-   * signed or fully unsigned. A body is read into bytes first, because SigV4
-   * signs the payload hash and a stream cannot be hashed after it is sent.
-   * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
-   * uses, so a test can still inject fetch and a credentialed store never
-   * bypasses it through `aws.fetch`. Every caller below passes a string URL.
-   * The send carries the store's one timeout and one retry (src/fetch-retry.js):
-   * a stalled socket answers named after 15 s, and a 5xx gets exactly one
-   * retried call. The signing is inside the retry's per-attempt send, because
-   * a second attempt must sign again — the first attempt's signed Request has
-   * a body stream already consumed and its own x-amz-date, and replaying it
-   * is a SignatureDoesNotMatch, not a retry.
+   * signed or fully unsigned. A write body is sent as it is: aws4fetch signs
+   * S3 with `X-Amz-Content-Sha256: UNSIGNED-PAYLOAD` (it sets that header
+   * itself), so a stream is never read into isolate memory to hash it
+   * (drive#539). Fetch-retry already skips the 5xx retry on a stream, because
+   * the first attempt spends it. Signing is `aws.sign` then `fetchImpl`, the
+   * same path `createS3Client` uses, so a test can still inject fetch and a
+   * credentialed store never bypasses it through `aws.fetch`. Every caller
+   * below passes a string URL. The send carries the store's one timeout and
+   * one retry (src/fetch-retry.js): a stalled socket answers named after 15 s,
+   * and a 5xx on a replayable body gets exactly one retried call. The signing
+   * is inside the retry's per-attempt send, because a second attempt must sign
+   * again - the first attempt's signed Request has a body stream already
+   * consumed and its own x-amz-date, and replaying it is a SignatureDoesNotMatch,
+   * not a retry.
    *
    * @type {(input: string | URL | Request, init?: RequestInit) => Promise<Response>}
    */
@@ -183,18 +126,8 @@ export function createS3Store(config) {
           })
       : async (input, init = {}) => {
           const opts = /** @type {any} */ ({ ...init });
-          if (opts.body === undefined) {
-            // GET, DELETE and CopyObject send no payload to hash.
-          } else if (opts.body === null) {
+          if (opts.body === null) {
             delete opts.body;
-          } else {
-            const bytes = await signableBody(opts.body);
-            // The body is sent exactly as it was signed: a Uint8Array is copied
-            // into a plain view, the same copy createS3Client makes, because
-            // sending anything other than the signed bytes is SignatureDoesNotMatch.
-            const body = new Uint8Array(bytes.byteLength);
-            body.set(bytes);
-            opts.body = body;
           }
           const url =
             typeof input === "string"
@@ -236,6 +169,16 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // A bucket that is not there yet is an empty drive, not a failure
+          // (drive#540): a brand-new account's `drv-<id>` is created at its
+          // sign-in verify (provisionAccountBucket), and an account from before
+          // that existed — or on a deployment whose site Worker carries no
+          // storage master credential — has no bucket until a key mint creates
+          // one. S3 answers a missing bucket 404 and a missing folder 200 with
+          // no keys, so a 404 here is always the bucket.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -271,6 +214,11 @@ export function createS3Store(config) {
         `&max-keys=${limit}` +
         (options.cursor ? `&continuation-token=${encodeURIComponent(options.cursor)}` : "");
       const response = await request(`${baseFor(prefix)}${query}`);
+      if (response.status === 404) {
+        // The missing bucket is an empty page, not a 500 (drive#540); the
+        // long form is in `list` above.
+        return { entries: [], nextCursor: null };
+      }
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
@@ -295,6 +243,11 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // The missing bucket is an empty walk, not a 500 (drive#540); the
+          // long form is in `list` above.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -370,18 +323,84 @@ export function createS3Store(config) {
         ...(status !== 200 ? { contentLength } : {}),
       };
     },
-    async write(path, body, contentType) {
+    async write(path, body, contentType, options = {}) {
+      /** @type {Record<string, string>} */
+      const headers = { "content-type": contentType };
+      if (typeof options.contentLength === "number" && Number.isFinite(options.contentLength)) {
+        // The caller knows the size (the owner upload carries the browser's
+        // Content-Length), so the body is sent as the stream it is and the
+        // header rides along: the bytes are never read into isolate memory
+        // (drive#539).
+        headers["content-length"] = String(options.contentLength);
+      } else if (aws !== null && body instanceof ReadableStream) {
+        // A signed S3 PUT cannot carry a stream with no declared size: an
+        // UNSIGNED-PAYLOAD upload with no aws-chunked framing has no length to
+        // send, and an endpoint answers 411 Length Required (the MinIO stand-in
+        // does, measured 2026-10-05). Buffering it here would put an unbounded
+        // body into isolate memory, the exact failure drive#539 exists to
+        // remove, so a caller that cannot declare a size is refused with a
+        // clear error. The owner upload reads a length-less body under its own
+        // ceiling and always passes a length.
+        throw new TypeError("a signed stream write needs a contentLength");
+      }
       const response = await request(urlFor(path), {
         method: "PUT",
-        headers: { "content-type": contentType },
+        headers,
         body,
       });
       if (!response.ok) {
         throw new Error(`storage write failed with ${response.status}`);
       }
     },
-    async remove(path) {
-      const response = await request(urlFor(path), { method: "DELETE" });
+    async writeIfAbsent(path, body, contentType) {
+      // The stock S3 create-only request: one PUT carrying If-None-Match: *,
+      // which a compliant endpoint refuses with 412 Precondition Failed when
+      // the key is already there. What THIS endpoint can honestly offer is
+      // narrower than the contract's words, and it is measured, not assumed:
+      //
+      //   - `rclone serve s3` (v1.75.1, the stand-in on the build host)
+      //     answered 200 to both the absent and the already-present PUT on
+      //     2026-10-05 — it ignores If-None-Match on a PUT — so a `true`
+      //     from that server is not a proof of create-only;
+      //   - iDrive e2, the primary vendor, was never asked: its keys are
+      //     Nish's alone, and the standing direction is to build without
+      //     them. Its answer to the header is unverified.
+      //
+      // The header still rides every call, so on any endpoint that enforces
+      // the conditional the race closes at the storage itself; where one does
+      // not, this degrades to the overwrite `write` always was, and the
+      // provider's hide-not-delete versioning stays the backstop that makes
+      // an overwrite recoverable. A caller on such an endpoint pairs a
+      // pre-check `stat` (the stranger-upload route does) so an ordinary
+      // duplicate is still refused there; only a true mid-race pair is left to
+      // this endpoint's own answer. A 412 is the only answer that proves the
+      // key was already there, so it is the only false.
+      const response = await request(urlFor(path), {
+        method: "PUT",
+        headers: { "content-type": contentType, "if-none-match": "*" },
+        body,
+      });
+      if (response.status === 412) {
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`storage write failed with ${response.status}`);
+      }
+      return true;
+    },
+    async remove(path, { ifMatch } = {}) {
+      // A conditional remove is the guard a delete needs. The ETag is what the
+      // bytes were when the delete listed them, and a key whose bytes changed
+      // since (a mount save that landed while the trash copy ran, drive issue
+      // #567) is answered 412 rather than removed.
+      const headers = {};
+      if (typeof ifMatch === "string" && ifMatch !== "") {
+        headers["if-match"] = quotedEntityTag(ifMatch);
+      }
+      const response = await request(urlFor(path), { method: "DELETE", headers });
+      if (response.status === 412) {
+        throw new ChangedUnderUsError(path);
+      }
       if (!response.ok && response.status !== 404) {
         throw new Error(`storage delete failed with ${response.status}`);
       }
@@ -411,7 +430,7 @@ export function createS3Store(config) {
         }
         const xml = await response.text();
         for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
-          const key = unescapeXmlText(tagValue(match[1], "Key"));
+          const key = decodeEntities(tagValue(match[1], "Key"));
           if (key !== "") {
             keys.push(key);
           }
@@ -476,7 +495,7 @@ export function createS3Store(config) {
       }
       const xml = await response.text();
       for (const match of xml.matchAll(/<Error>([\s\S]*?)<\/Error>/g)) {
-        const key = unescapeXmlText(tagValue(match[1], "Key"));
+        const key = decodeEntities(tagValue(match[1], "Key"));
         const code = tagValue(match[1], "Code");
         throw new Error(`storage batch delete refused "${key}" with ${code || "an error"}`);
       }
@@ -551,11 +570,13 @@ export function createS3Store(config) {
      * returns the same facts under its own tags; the real provider's field
      * names are #60's to confirm (build-spec.md, open questions).
      * @param {string} path
-     * @returns {Promise<import("./file-store.js").StorageVersion[]>}
+     * @returns {Promise<import("./files.js").StorageVersion[]>}
      */
     async listVersions(path) {
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const versions = [];
+      /** @type {Array<{path: string, at: number}>} */
+      const markers = [];
       let keyMarker = null;
       let versionMarker = null;
       let seen = null;
@@ -572,11 +593,20 @@ export function createS3Store(config) {
           throw new Error(`storage version list failed with ${response.status}`);
         }
         const xml = await response.text();
+        // Rows and delete markers are collected from every page and the stops
+        // are computed once, here, over the whole list: a version's stop is the
+        // next version of its own key, and that pair can sit on two different
+        // pages, so a per-page pass would bill an old version as still live
+        // (drive issue #504). The markers are decoded with the rows, so a key
+        // that pages on through an escaped character comes back the way the
+        // account wrote it.
         versions.push(...parseListVersions(xml));
-        keyMarker = tagValue(xml, "NextKeyMarker");
-        versionMarker = tagValue(xml, "NextVersionIdMarker");
+        markers.push(...versionMarkers(xml));
+        const next = nextVersionMarkers(xml);
+        keyMarker = next.keyMarker;
+        versionMarker = next.versionMarker;
         if (keyMarker === "" || versionMarker === "") {
-          return versions;
+          return computeHiddenAt(versions, markers);
         }
         if (`${keyMarker}\u0000${versionMarker}` === seen) {
           throw new Error(

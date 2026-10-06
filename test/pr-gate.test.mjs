@@ -207,10 +207,10 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   /** @type {Array<[string, RegExp]>} */
   const required = [
     ["src/status.js", /export async function signedInAccount\(request, store\)/],
-    ["src/files.js", /export function createS3Store\(config\)/],
+    ["src/file-store-s3.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
-    ["src/files.js", /const toKey = \(path\) => \{/],
+    ["src/file-store.js", /const toKey = \(path\) => \{/],
     ["src/billing.js", /export function monthBillCents\(/],
     ["src/messages.js", /export function failureMessage\(key\)/],
   ];

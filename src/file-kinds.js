@@ -1,15 +1,10 @@
-// The FileStore interface, the one account scope every drive path and
-// storage key goes through, and the plain words for every trigger. It is
-// the Web Files page's module (drive issue #31); it answers /api/files
-// through handleFilesRequest below, beneath the storage adapters the
-// store interface describes. Extracted from src/files.js so that module
-// stays readable: drive issue #617, "Every source file under 800 lines"
-// — no behaviour change, existing functions moved verbatim. The public
-// imports of src/files.js keep working through its re-export block.
-// The extensions a browser can preview without downloading: images, video,
-// audio and PDF in the browser's own viewer, text as the page renders it. A
-// file whose type is unknown is still downloadable, and the page says so
-// rather than offering a broken preview.
+// The extensions a browser can preview, the kind table, the preview type
+// and disposition, and the page's copy. Extracted from src/files.js
+// (drive issue #617) with no behaviour change; src/files.js re-exports
+// every name here, so no importer moved.
+
+import { safeFileName } from "./file-paths.js";
+
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico"];
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "m4v", "ogv"];
 const AUDIO_EXTENSIONS = ["mp3", "m4a", "aac", "ogg", "oga", "wav", "flac"];
@@ -110,17 +105,59 @@ export function isPreviewable(kind) {
 }
 
 // What an inline preview may be served as. A file the customer uploaded is
-// never a page on our origin, so the served type follows the file's kind
-// rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
-// and media keeps its own type only when it matches its kind. Anything else is
-// octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
-// uploaded .svg is still an image in the page's <img>, but opening the preview
-// URL directly gets it a sandboxed document instead of our origin.
+// never a page on our origin, so the served type is an allowlist rather than a
+// decision: image/*, video/*, audio/*, application/pdf and text/plain are the
+// only types a preview may open with, and a type is one of those when the
+// file's kind says so, not when the upload claimed it. Every other type — the
+// XML family an XHTML, XSLT, RDF, MathML or multipart/related upload carries,
+// and every "file" kind that would otherwise pass its claimed type through —
+// is served as `application/octet-stream`, previewContentType()'s one value
+// that is not an inline type, which previewDisposition() turns into a
+// download (issue #548). The header pair in readRequest() (nosniff, and a
+// sandboxed preview) covers the rest, and previewDisposition() also takes the
+// one allowlisted type that can still act as a document — an .svg, whose
+// links navigate — out of the direct-open preview and a share link, while the
+// page's <img> reads it inline from the embed URL (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
 });
+
+/** The one served type that is not an inline type, so it never opens in a tab. */
+const PREVIEW_OCTET_STREAM = "application/octet-stream";
+
+/**
+ * The disposition an attachment leaves with: an ASCII `filename=` fallback
+ * plus the RFC 5987 `filename*` the real name rides on, so a name outside
+ * ASCII is a legal ByteString header in Node and the name the browser shows
+ * (drive#539). The name's quotes and backslashes are stripped, and
+ * safeFileName() strips a control character and a stray slash, so the
+ * filename cannot end the quoted-string early (drive#657); validatePath()
+ * already refuses those characters on the way in, and this keeps the function
+ * safe on its own.
+ * @param {string} name
+ * @returns {string}
+ */
+export function attachmentDisposition(name) {
+  // An empty (or all-control-character) name still needs a legal disposition,
+  // and both halves must share it or a browser that reads `filename*` shows an
+  // empty name (drive#539).
+  const cleaned = safeFileName(String(name || "")) || "download";
+  // toWellFormed() repairs a lone surrogate before encodeURIComponent() sees
+  // it: half a surrogate pair would otherwise throw URIError and turn a
+  // download into a 500 (drive#539).
+  const wellFormed = cleaned.toWellFormed();
+  // A header value is a ByteString: a name outside ASCII is not a legal
+  // `filename=` value and Node's Response throws on it, so the fallback maps
+  // such a character to `_` and the real name rides on `filename*`, which
+  // browsers read.
+  const ascii = wellFormed.replace(/["\\]/g, "").replace(/[^\u0020-\u007E]/g, "_") || "download";
+  const encoded = encodeURIComponent(wellFormed).replace(
+    /[!'()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
 
 /**
  * The content type an inline preview is served as, never a document type.
@@ -138,16 +175,44 @@ export function previewContentType(name, storedContentType = "") {
   if (pinned) {
     return pinned;
   }
-  if (kind === "image" && !stored.startsWith("image/")) {
-    return "application/octet-stream";
+  if (kind === "image" && stored.startsWith("image/")) {
+    return stored;
   }
-  if (kind === "video" && !stored.startsWith("video/")) {
-    return "application/octet-stream";
+  if (kind === "video" && stored.startsWith("video/")) {
+    return stored;
   }
-  if (kind === "audio" && !stored.startsWith("audio/")) {
-    return "application/octet-stream";
+  if (kind === "audio" && stored.startsWith("audio/")) {
+    return stored;
   }
-  return stored || "application/octet-stream";
+  // An allowlist, not a pass-through: a type the file's kind did not claim as
+  // media, a PDF or text is octet-stream, and the disposition below makes it
+  // a download. This is what an XHTML, XSLT, RDF, MathML or multipart/related
+  // upload hits, because the kind is "file" and its claimed type is not in the
+  // allowlist (issue #548).
+  return PREVIEW_OCTET_STREAM;
+}
+
+/**
+ * How a preview response leaves: inline for every allowlisted type a browser
+ * draws as a picture, a player, a PDF or plain text, and an attachment with
+ * the file's name for two cases. The first is octet-stream, every type that
+ * missed the allowlist (the XML document family, issue #548), because a
+ * browser downloads an attachment instead of rendering it as a page. The
+ * second is the one allowlisted type that can still act as a document — an
+ * SVG, which a browser renders as a styled document whose links navigate — so
+ * a direct-open preview URL or a share link can never hand a stranger a
+ * rendered document on our address to phish a password from; the page's own
+ * <img> reads the same bytes inline from the embed URL (drive#657).
+ * @param {string} name the file's own name, as the attachment's filename
+ * @param {string} [storedContentType]
+ * @returns {string}
+ */
+export function previewDisposition(name, storedContentType = "") {
+  const type = previewContentType(name, storedContentType);
+  if (type !== PREVIEW_OCTET_STREAM && type !== "image/svg+xml") {
+    return "inline";
+  }
+  return attachmentDisposition(name);
 }
 
 // ---------------------------------------------------------------- the words
@@ -223,5 +288,3 @@ export const RESTORE_COPY = Object.freeze({
   button: "Restore",
   done: "Put back.",
 });
-
-// ---------------------------------------------------------------- pure logic

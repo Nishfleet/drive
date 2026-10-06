@@ -1,42 +1,63 @@
-// The rows the two file lists render (the file list and Recently
-// deleted) plus the two byte-range and etag answers a read shares with
-// the share link's preview. Extracted from src/files.js (drive issue
-// #617) with no behaviour change; src/files.js re-exports every name
-// here, so no importer moved.
+// The rows the two file lists render (the file list and Recently deleted)
+// plus the two byte-range and etag answers a read shares with the share
+// link's preview. Extracted from src/files.js (drive issue #617) with no
+// behaviour change; src/files.js re-exports every name here, so no
+// importer moved.
+
 import { fileKind } from "./file-kinds.js";
-import {
-  formatWhen,
-  isRestorable,
-  parseTrashName,
-  restorableUntil,
-  splitEntries,
-} from "./file-paths.js";
+import { isRestorable, parseTrashName, RECENTLY_DELETED_DAYS, splitEntries } from "./file-paths.js";
 import { formatBytes } from "./status.js";
 
 /** @typedef {import("./file-store.js").FileEntry} FileEntry */
 
 /**
- * The rows the file list renders: folders first, then files, each with the
- * words already formatted so the static page never repeats the arithmetic.
- * @param {FileEntry[]} entries
- * @param {number} now
+ * The instant a row stamps, as the browser reads it (drive#559). The Worker
+ * sends the instant and never words for it: a timestamp rendered here is a UTC
+ * timestamp, so a customer east of Greenwich reads the wrong clock and the
+ * wrong day, and a customer west of the line reads the wrong day too. The page
+ * formats it in the browser's own zone and locale instead.
+ * @param {number} at epoch milliseconds, from the entry or the storage listing
+ * @param {string} what names the entry in the failure, for the reader
+ * @returns {string} an ISO instant
  */
-export function fileRows(entries, now = Date.now()) {
+function isoStamp(at, what) {
+  if (typeof at !== "number" || !Number.isFinite(at)) {
+    throw new TypeError(`${what} needs a date, got ${String(at)}`);
+  }
+  return new Date(at).toISOString();
+}
+/**
+ * The rows the file list renders: folders first, then files. A row carries
+ * only the instant an entry was written and no clock of its own: the browser
+ * writes the words, because a UTC row follows every customer west of
+ * Greenwich around the map (drive#559).
+ * @param {FileEntry[]} entries
+ */
+export function fileRows(entries) {
   const { folders, files } = splitEntries(entries);
   /** @param {{name: string, path?: string, kind?: string, size?: number, modified?: number|null, contentType?: string}} entry */
-  const row = (entry) => ({
-    name: entry.name,
-    path: entry.path || "",
-    kind:
-      entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
-    sizeLabel: entry.kind === "folder" ? "" : formatBytes(entry.size || 0),
-    whenLabel: entry.modified ? formatWhen(entry.modified, now) : "",
-  });
+  const row = (entry) => {
+    const folder = entry.kind === "folder";
+    return {
+      name: entry.name,
+      path: entry.path || "",
+      kind: folder ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
+      sizeLabel: folder ? "" : formatBytes(entry.size || 0),
+      // A folder has no write time, so it has no instant either. A file's
+      // `modified` is optional in S3's own listing, so a server that reports
+      // none is answering the spec and the row keeps its empty stamp; a
+      // `modified` that is there but is not a date is a bug, and isoStamp
+      // says so rather than rendering "Invalid Date" (drive#559).
+      modifiedIso: entry.modified ? isoStamp(entry.modified, `the file ${entry.name}`) : "",
+    };
+  };
   return [...folders.map(row), ...files.map(row)];
 }
 
 /**
- * The rows Recently deleted renders, newest first.
+ * The rows Recently deleted renders, newest first. The two dates are instants
+ * for the browser to write in its own zone: the delete time and the day the
+ * window closes are both UTC words if this Worker writes them (drive#559).
  * @param {FileEntry[]} entries
  * @param {number} [now]
  */
@@ -56,8 +77,11 @@ export function trashRows(entries, now = Date.now()) {
         path: parsed.path,
         deletedAt: parsed.deletedAt,
         sizeLabel: formatBytes(entry.size || 0),
-        deletedLabel: `Deleted ${formatWhen(parsed.deletedAt, now)}`,
-        untilLabel: restorableUntil(parsed.deletedAt),
+        deletedIso: isoStamp(parsed.deletedAt, `the file ${parsed.path}`),
+        untilIso: isoStamp(
+          parsed.deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000,
+          `the file ${parsed.path}`,
+        ),
         restorable,
         // Past the window the button is gone, and the one line says why.
         restoreLabel: restorable ? "Restore" : "Past the 30 days",

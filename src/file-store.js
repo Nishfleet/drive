@@ -1,10 +1,12 @@
 // The FileStore interface, the one account scope every drive path and
-// storage key goes through, and the memory stand-in the page renders on
-// with no bucket configured. Extracted from src/files.js (drive issue
-// #617) with no behaviour change; src/files.js re-exports every name
-// here, so no importer moved.
+// storage key goes through, and the storage settings a deployment carries.
+// Extracted from src/files.js (drive issue #617) with no behaviour change;
+// src/files.js re-exports every name here, so no importer moved.
 
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import { validatePath, withoutTrash } from "./file-paths.js";
+import { failureMessage } from "./messages.js";
 
 /**
  * What the handlers need from storage, and nothing more. Every method works in
@@ -22,8 +24,7 @@ import { validatePath, withoutTrash } from "./file-paths.js";
  * @typedef {{body: ReadableStream|null, contentType: string, size: number,
  *   etag?: string|null, status?: number, contentRange?: string,
  *   contentLength?: number}|null} FileRead
- * @typedef {{b2FileId: string, path: string, sizeBytes: number,
- *   createdAt: number, hiddenAt: number|null, deletedAt: number|null}} StorageVersion
+ * @typedef {import("./s3-listing.js").S3VersionRow} StorageVersion
  * One version of one stored file, in the provider's own listing: the version
  * id the meter keys `file_versions` on, the key it lives at, its size in
  * bytes, and the instants its life begins and stops. The meter's reconciler
@@ -53,8 +54,34 @@ import { validatePath, withoutTrash } from "./file-paths.js";
  *   One object's headers without its bytes — what a HEAD answer needs, so a
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
- * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
- * @property {(path: string) => Promise<void>} remove
+ * @property {(path: string, body: BodyInit, contentType: string, options?: {contentLength?: number}) => Promise<void>} write
+ *   `contentLength` is the size the caller already knows (an upload's
+ *   Content-Length): a stream PUT to S3 needs it or the endpoint answers 411.
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<boolean>} writeIfAbsent
+ *   The create-only write: it stores the bytes only when the key is not there
+ *   yet, and answers `true` when this call is the one that put them there and
+ *   `false` when something was already stored under that path. It is the
+ *   authority on which of two concurrent creates wins, because the decision
+ *   happens in one store call: a `stat` followed by a `write` is two storage
+ *   round-trips, and between them a second request can create the same key,
+ *   so both writes land and the loser silently overwrites the winner
+ *   (drive#644). A create site that must not overwrite calls this instead of
+ *   writing blind; pairing it with a pre-check `stat` is fine, and is how an
+ *   ordinary duplicate gets its 409 on backends whose PUT cannot be made
+ *   conditional — but the pre-check alone is never the answer to a race.
+ *   A store whose provider cannot make the write conditional does not pretend
+ *   to: see `createS3Store`'s `writeIfAbsent` for what the S3 path can
+ *   honestly offer, and its `write` for the overwrite that remains its
+ *   backstop.
+ * @property {(path: string, options?: {ifMatch?: string|null}) => Promise<void>} remove
+ *   A delete the store makes, and optionally a conditional one. `ifMatch` is
+ *   the ETag the caller read from the listing before it decided to remove:
+ *   a key whose bytes are no longer that ETag is left alone and the store
+ *   throws `ChangedUnderUsError`, so a save that landed while a delete was
+ *   running survives instead of being removed (drive issue #567). A caller
+ *   that hands over no ETag asks for the delete it always got, and a store
+ *   whose provider answers no ETag removes as it always did: the option is
+ *   the tightening, not a new requirement every caller must meet.
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
  *   folders included, in the provider's own key order, at most `limit` keys
@@ -129,6 +156,62 @@ export function drivePathFromKey(key, account) {
     );
   }
   return `/${key.slice(prefix.length + 1)}`;
+}
+
+/**
+ * The refusal that means "the bytes changed under you": a move that read a
+ * file's ETag, asked the storage to copy it, and then found the key holding
+ * different bytes when it went to remove the original. A save that landed
+ * while the move ran is the case that produces it (drive issue #567), and the
+ * move stops rather than removing the newer bytes: a delete that loses the
+ * save the person made while it ran is the failure this exists to prevent.
+ * The route catches it and answers with the one sentence the page shows.
+ */
+export class ChangedUnderUsError extends Error {
+  /** @param {string} path the drive path, or the storage key in a store, whose bytes changed */
+  constructor(path) {
+    super(`${path} changed while it was being moved`);
+    this.name = "ChangedUnderUsError";
+    /** @type {string} the path whose bytes changed, as the caller knows it */
+    this.path = path;
+  }
+}
+
+/**
+ * The longest storage key this drive can hold, and the key is counted as bytes
+ * because every S3-shaped provider counts it that way and caps it at 1,024
+ * (Amazon S3, "Object key naming guidelines"): a longer one is answered with
+ * `400 KeyTooLong`, which is a storage error a person cannot act on. Bytes,
+ * not characters, because the two counts agree for ASCII and diverge as soon as
+ * a name is not ASCII.
+ */
+export const MAX_STORAGE_KEY_BYTES = 1024;
+
+/**
+ * The storage key one drive path lives at under an account's own prefix, and
+ * the sentence to show when that key is longer than the store can hold.
+ *
+ * `validatePath` above counts characters, and the trash name percent-encodes
+ * every byte of a path that is not ASCII into three characters. So a
+ * 400-character path in Japanese is a 1,200-byte path and a 2,400-character
+ * trash name, which is a key the store refuses: the file uploaded, the person
+ * could read it, and then the delete failed with a storage error (drive issue
+ * #567). Measuring the key here, in bytes, once, is what turns that into a
+ * 400 with a sentence the person can act on.
+ *
+ * The three routes that write a key for a person's file ask before they write
+ * it: an upload, a delete (which builds the trash key it will park under) and a
+ * restore (which builds the key it puts the file back at).
+ * @param {{id: string}} account the signed-in account
+ * @param {string} path a validated drive path, or the drive path a parked file has
+ * @returns {{key: string, error?: undefined}|{key: "", error: string}}
+ */
+export function accountStorageKey(account, path) {
+  const key = `${accountPrefix(account)}${path}`;
+  if (new TextEncoder().encode(key).byteLength > MAX_STORAGE_KEY_BYTES) {
+    return { key: "", error: failureMessage("path-too-long") };
+  }
+  return { key };
 }
 
 /**
@@ -228,11 +311,20 @@ export function scopeStore(store, account) {
     async listAll(path) {
       return (await store.listAll(toKey(path))).map(toDriveEntry);
     },
-    async write(path, body, contentType) {
-      return store.write(toKey(path), body, contentType);
+    async write(path, body, contentType, options) {
+      return store.write(toKey(path), body, contentType, options);
     },
-    async remove(path) {
-      return store.remove(toKey(path));
+    // Scoped like every other write: the destination is rewritten to this
+    // account's own key before the store sees it, so a create-only write can
+    // no more land outside the prefix than an ordinary one.
+    async writeIfAbsent(path, body, contentType) {
+      return store.writeIfAbsent(toKey(path), body, contentType);
+    },
+    async remove(path, options) {
+      // The conditional half of the delete passes through the scope untouched:
+      // the store is the one that can compare the ETag it was given with the
+      // bytes it is holding, so scoping never drops a guard.
+      return store.remove(toKey(path), options);
     },
     async copy(from, to, size) {
       const [source, dest] = toKeys(from, to);
@@ -263,4 +355,105 @@ export function scopeStore(store, account) {
       return store.removeBatch(paths.map(toKey));
     },
   };
+}
+/**
+ * The bucket a storage key lives in: the same `drv-<accountId>` the key
+ * provider mints into (drive#371, drive#460). The object layout is still
+ * `u/<id>/...`; only the bucket name moved, so Finder writes and the Files
+ * page read the same place. A key that is not an account prefix is a wiring
+ * bug, not a fall-back onto the old shared store.
+ * @param {string} key a storage key, `u/<accountId>/...`
+ * @returns {string}
+ */
+export function storageBucketForKey(key) {
+  if (typeof key !== "string") {
+    throw new TypeError(`a storage key must be a string, got ${String(key)}`);
+  }
+  const match = /^u\/([^/]+)/.exec(key);
+  if (match === null) {
+    throw new TypeError(`a storage key must start with u/<accountId>/, got ${JSON.stringify(key)}`);
+  }
+  return bucketForAccount(match[1]);
+}
+
+/**
+ * Storage config vars. They are set per deployment, never declared as bindings
+ * in cloudflare.config.ts: a declared secret is required at deploy, and the
+ * Files page already answers from the in-memory store when they are unset. The
+ * names match the api Worker's iDrive pair so the site Worker can read the
+ * buckets a minted key writes to, plus the older FILES_S3_* stand-in pair a
+ * local `rclone serve s3` still uses. The one definition lives here so the
+ * store and the sign-in verify step's provisioning read the same shape
+ * (src/index.js's devStorage casts to it).
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
+ */
+
+/**
+ * The storage settings a deployment carries, read in one place so the Files
+ * page's store (storeFor in src/index.js) and the sign-in verify step's bucket
+ * provisioning (provisionAccountBucket below) read the same four names in the
+ * same order. A second reader of these vars is a second thing to drift, the
+ * same reason keyprovider-env.js is the api Worker's one reader of its own.
+ * @param {StorageEnv} env
+ * @returns {{endpoint: string|undefined, accessKeyId: string|undefined,
+ *   secretAccessKey: string|undefined, region: string|undefined}}
+ */
+export function storageVarsFromEnv(env) {
+  /** @param {string|undefined} value */
+  const read = (value) => (value && value !== "" ? value : undefined);
+  return {
+    endpoint: read(env.IDRIVE_S3_ENDPOINT) || read(env.FILES_S3_ENDPOINT),
+    accessKeyId: read(env.IDRIVE_S3_ACCESS_KEY_ID) || read(env.FILES_S3_ACCESS_KEY_ID),
+    secretAccessKey: read(env.IDRIVE_S3_SECRET_ACCESS_KEY) || read(env.FILES_S3_SECRET_ACCESS_KEY),
+    region: read(env.IDRIVE_S3_REGION) || read(env.FILES_S3_REGION),
+  };
+}
+
+/**
+ * The account's own bucket, provisioned through the one `provisionBucket`
+ * call the api Worker's key mint also makes (workers/api/src/s3.js): versioning
+ * on and the hidden-version rule set, idempotent, so a returning sign-in's
+ * second call is a no-op and an account from before this call existed catches
+ * up at its next sign-in (drive#540). The store reads and writes this same
+ * bucket by name (storageBucketForKey), so a customer who never runs
+ * `drive login` has a bucket from the minute the account does.
+ *
+ * A deployment with no storage master credential provisions nothing and
+ * answers false — no credential means no provisioning call, never a call with
+ * half a credential (the rule keyprovider-env.js states for the mint). The key
+ * mint keeps its own provisioning as the safety net, and the Files page
+ * answers an empty folder for a bucket that is not there yet.
+ * @param {StorageEnv} env
+ * @param {string} accountId
+ * @param {{fetchImpl?: typeof fetch}} [options]
+ * @returns {Promise<boolean>} whether the provisioning call ran
+ */
+export async function provisionAccountBucket(env, accountId, options = {}) {
+  const vars = storageVarsFromEnv(env);
+  if (
+    vars.endpoint === undefined ||
+    vars.accessKeyId === undefined ||
+    vars.secretAccessKey === undefined ||
+    vars.region === undefined
+  ) {
+    return false;
+  }
+  const client = createS3Client({
+    endpoint: vars.endpoint,
+    region: vars.region,
+    credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  });
+  await provisionBucket(client, { bucket: bucketForAccount(accountId) });
+  return true;
 }
