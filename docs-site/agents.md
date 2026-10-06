@@ -15,7 +15,18 @@ tool's own `mcp add` command. Nothing is installed beyond the server itself.
 drive init
 ```
 
-To see what is connected, or to connect or disconnect one tool on its own:
+## Each tool gets its own folder
+
+`drive init` mounts `~/Drive-agents/<tool>` for each tool on that tool's own
+key. The MCP server and the tool's allowed folders point at that folder, not at
+the folder you use, so the agent works through its own credential and your own
+files are not in the way.
+
+`drive agents revoke <tool>` unmounts that folder and revokes the key behind it.
+
+Windows is not in version 1, and the agent mount is not proven there, so the
+tool writes inside your own Drive. Linux and macOS get the folder.
+
 
 ```sh
 drive agents
