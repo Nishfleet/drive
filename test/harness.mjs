@@ -100,6 +100,8 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // token, written at the start step and consumed at the verify step, so a
   // link opened on a second device still lands on the approve page.
   "drive/0031_signin_return.sql",
+  // The prepaid-pause marker on devices (drive#789): the device store writes it.
+  "drive/0036_prepaid_paused_from.sql",
 ]);
 
 /**
