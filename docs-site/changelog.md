@@ -17,6 +17,8 @@ the live site.
   when it is done. Both read the same /api/rewind route, so the screen and the
   command cannot disagree about what a rewind undoes, and a branch stays
   rewindable for 30 days.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - A test now fails the build if a page names a command or links to a page that
   does not exist, so a page that promises `drive restore` cannot come back.
 - The conflict guard hashes a save where it already lives instead of keeping a
