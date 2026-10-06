@@ -351,11 +351,7 @@ test("POST /api/cap on a closed account leaves it closed, and cancelClose still 
   assert.equal(row.cap_cents, dollarsToCapCents(20), "the cap must not move on a closed account");
 
   await store.cancelClose(account.id);
-  const reopened = rowIn(
-    sqlite,
-    "SELECT state, closed_at FROM accounts WHERE id = ?",
-    account.id,
-  );
+  const reopened = rowIn(sqlite, "SELECT state, closed_at FROM accounts WHERE id = ?", account.id);
   assert.equal(reopened.state, "active");
   assert.equal(reopened.closed_at, null);
 });
