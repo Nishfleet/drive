@@ -50,7 +50,7 @@ func TestPrepareMountAuthWritesEnvAt0600AndOmitsTheSecretFromConf(t *testing.T) 
 }
 
 func TestSystemdUnitKeepsSecretsOutOfThe0644File(t *testing.T) {
-	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+	p := withProductBin(BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage()))
 	p.RCUser, p.RCPass, p.SecretKey = "rcuserhex", "rcpasshex", testStorage().SecretKey
 	unit := SystemdUnit(p)
 	for _, secret := range []string{"rcuserhex", "rcpasshex", testStorage().SecretKey} {
@@ -58,27 +58,24 @@ func TestSystemdUnitKeepsSecretsOutOfThe0644File(t *testing.T) {
 			t.Errorf("systemd unit (0644) carries %q:\n%s", secret, unit)
 		}
 	}
-	if strings.Contains(unit, "Environment=") {
-		t.Errorf("Environment= in a 0644 unit widens exposure:\n%s", unit)
-	}
-	if !strings.Contains(unit, "EnvironmentFile=/home/test/.config/drive/rclone.env") {
-		t.Errorf("unit missing EnvironmentFile= for rclone.env:\n%s", unit)
+	if strings.Contains(unit, "Environment=") || strings.Contains(unit, "EnvironmentFile=") {
+		t.Errorf("a 0644 unit must not carry secrets or an EnvironmentFile=:\n%s", unit)
 	}
 	if strings.Contains(unit, "--rc-user") || strings.Contains(unit, "--rc-pass") {
-		t.Errorf("ExecStart still has --rc-user/--rc-pass; rclone reads them from EnvironmentFile:\n%s", unit)
+		t.Errorf("ExecStart still has --rc-user/--rc-pass:\n%s", unit)
 	}
 	if strings.Contains(unit, "--rc-no-auth") {
 		t.Errorf("unit still disables rc auth:\n%s", unit)
 	}
 }
 
-func TestLaunchdPlistCarriesRCAuthInEnvironmentVariables(t *testing.T) {
-	p := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage())
+func TestLaunchdPlistKeepsSecretsOutOfTheItem(t *testing.T) {
+	p := withProductBin(BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage()))
 	p.RCUser, p.RCPass, p.SecretKey = "rcuserhex", "rcpasshex", testStorage().SecretKey
 	plist := LaunchdPlist(p)
-	for _, want := range []string{rcloneRCUserEnv, rcloneRCPassEnv, rcloneSecretEnv, "rcuserhex", "rcpasshex"} {
-		if !strings.Contains(plist, want) {
-			t.Errorf("launchd plist missing %q:\n%s", want, plist)
+	for _, secret := range []string{"rcuserhex", "rcpasshex", testStorage().SecretKey, rcloneRCUserEnv, rcloneRCPassEnv, rcloneSecretEnv} {
+		if strings.Contains(plist, secret) {
+			t.Errorf("launchd plist carries %q:\n%s", secret, plist)
 		}
 	}
 	if strings.Contains(plist, "--rc-no-auth") {

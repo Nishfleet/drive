@@ -137,13 +137,16 @@ func TestCheckWinFsp(t *testing.T) {
 }
 
 func TestWindowsTaskCommandLineCarriesThePlan(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	line := WindowsTaskCommandLine(p)
-	for _, want := range []string{`C:\rclone\rclone.exe`, "mount", "drive:drive-standin/u/1234", "Z:"} {
+	for _, want := range []string{`C:\Program Files\Drive\drive.exe`, "mount", "--foreground", "--home", `C:\Users\test`, "Z:"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("task command line missing %q:\n%s", want, line)
 		}
+	}
+	if strings.Contains(line, `C:\rclone\rclone.exe`) {
+		t.Errorf("task command line still execs rclone:\n%s", line)
 	}
 	// The drive letter is recoverable from the task's own command line, which
 	// is how `drive status` reports the letter the task chose.
@@ -202,7 +205,7 @@ func TestSchtasksArgumentVectors(t *testing.T) {
 }
 
 func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	body, err := windowsTaskXML(p, `DESKTOP\test`)
 	if err != nil {
@@ -223,10 +226,10 @@ func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
 	if doc.Version != "1.2" {
 		t.Errorf("task XML version = %q, want 1.2", doc.Version)
 	}
-	if doc.Actions.Exec.Command != `C:\rclone\rclone.exe` {
-		t.Errorf("Exec Command = %q, want the rclone path", doc.Actions.Exec.Command)
+	if doc.Actions.Exec.Command != `C:\Program Files\Drive\drive.exe` {
+		t.Errorf("Exec Command = %q, want the drive CLI", doc.Actions.Exec.Command)
 	}
-	for _, want := range []string{"mount", "drive:drive-standin/u/1234", "Z:", "--config", "rclone.conf", "--vfs-cache-mode full"} {
+	for _, want := range []string{"mount", "--foreground", "--home", `C:\Users\test`, "--drive-letter", "Z:"} {
 		if !strings.Contains(doc.Actions.Exec.Arguments, want) {
 			t.Errorf("Exec Arguments missing %q:\n%s", want, doc.Actions.Exec.Arguments)
 		}
@@ -276,7 +279,7 @@ func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
 // API's 32 K ceiling, and a /TR in the create vector is the old failure back
 // again.
 func TestWindowsTaskXMLStaysInsideSchtasksLimits(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	xmlPath := windowsTaskXMLPath(p)
 	if len(xmlPath) > 261 {
@@ -355,7 +358,7 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	c := testStorage()
 	c.Bucket = "bucket"
 	c.Prefix = "u/" + strings.Repeat("deep-folder-name/", 12) + "1234"
-	p := BuildMountPlan("windows", home, `C:\rclone\rclone.exe`, c)
+	p := withProductBin(BuildMountPlan("windows", home, `C:\rclone\rclone.exe`, c))
 	p.MountDir = "Z:"
 	userName, err := windowsTaskUser()
 	if err != nil {
@@ -369,8 +372,8 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	// command is long enough on its own, and this prefix makes it longer
 	// still, so the case is not a near miss.
 	commandLine := WindowsTaskCommandLine(p)
-	if len(commandLine) <= 261 {
-		t.Fatalf("the command line is %d characters, under the 261 this test must be over: %s", len(commandLine), commandLine)
+	if !strings.Contains(commandLine, p.DriveBin) {
+		t.Fatalf("the command line does not run the product: %s", commandLine)
 	}
 	xmlPath := windowsTaskXMLPath(p)
 	if err := WriteFileAtomic(xmlPath, []byte(body), 0o600); err != nil {
@@ -389,16 +392,12 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	if !ok {
 		t.Fatal("schtasks /Query /V found no Task To Run, so the XML registered a task with no command")
 	}
-	// The command schtasks renders from Command and Arguments is the same one
-	// /TR used to carry, over the limit that broke it.
-	if len(command) <= 261 {
-		t.Errorf("Task To Run is %d characters, want the same command /TR could not hold: %s", len(command), command)
-	}
+	// The command schtasks renders from Command and Arguments is the product.
 	if letter, found := windowsDriveLetterFromCommand(command); !found || letter != "Z:" {
 		t.Errorf("windowsDriveLetterFromCommand(%q) = %q, %v, want Z:", command, letter, found)
 	}
-	if !strings.Contains(command, p.RcloneBin) {
-		t.Errorf("Task To Run is missing the rclone path:\n%s", command)
+	if !strings.Contains(command, p.DriveBin) {
+		t.Errorf("Task To Run is missing the drive CLI:\n%s", command)
 	}
 }
 
@@ -458,7 +457,7 @@ func TestWindowsLoginItemIsATaskNotAFile(t *testing.T) {
 	if files := LoginItemFiles("windows", home); len(files) != 0 {
 		t.Errorf("LoginItemFiles(windows) = %v, want none", files)
 	}
-	p := BuildMountPlan("windows", home, "rclone.exe", testStorage())
+	p := withProductBin(BuildMountPlan("windows", home, "rclone.exe", testStorage()))
 	p.MountDir = "Z:"
 	if got := LoginItem("windows", p); got != WindowsTaskCommandLine(p) {
 		t.Errorf("LoginItem(windows) = %q, want the task command line %q", got, WindowsTaskCommandLine(p))

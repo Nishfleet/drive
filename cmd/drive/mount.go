@@ -29,8 +29,15 @@ type MountPlan struct {
 	// err carries a failure that must stop the mount (issue #112): a
 	// cache-max file the machine cannot read. Mount() returns it rather than
 	// starting a mount whose limit nobody can state.
-	err        error
-	GOOS       string
+	err  error
+	GOOS string
+	// Home is the device home the login item hands back to `drive mount
+	// --foreground`, so the installed unit runs the product rather than
+	// a bare rclone (drive#515).
+	Home string
+	// DriveBin is this CLI's own path. The login item execs it, not rclone,
+	// so the three loops inside mountForeground start at login.
+	DriveBin   string
 	RcloneBin  string
 	Subcommand string // "nfsmount" on macOS, "mount" on Linux
 	Remote     string // drive:<bucket>/<prefix>
@@ -181,6 +188,7 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	}
 	return MountPlan{
 		GOOS:        goos,
+		Home:        home,
 		RcloneBin:   rcloneBin,
 		Subcommand:  sub,
 		Remote:      RemoteFor(c),
@@ -354,6 +362,45 @@ func (p MountPlan) loginItemArgs() []string {
 	return p.args(false)
 }
 
+// productArgs is the argument vector the login item execs: this CLI, in the
+// foreground, against the home the item was installed for. rclone, the
+// conflict guard, the fill loop and the queue report all start inside that
+// process. Windows keeps the chosen letter on the vector so status can still
+// read it off the task command line.
+func (p MountPlan) productArgs() []string {
+	args := []string{"mount", "--foreground", "--home", p.Home}
+	if p.Device != "" {
+		args = append(args, "--device", p.Device)
+	}
+	if p.RCAddr != "" {
+		args = append(args, "--rc-addr", p.RCAddr)
+	}
+	if p.GOOS == "windows" && p.MountDir != "" {
+		args = append(args, "--drive-letter", p.MountDir)
+	}
+	return args
+}
+
+func (p MountPlan) productArgv() []string {
+	return append([]string{p.DriveBin}, p.productArgs()...)
+}
+
+// lookupDriveBin is this process's own path. Tests replace it so a proof can
+// point the login item at the built CLI rather than the test binary.
+var lookupDriveBin = os.Executable
+
+func attachDriveBin(p *MountPlan) error {
+	if p.DriveBin != "" {
+		return nil
+	}
+	exe, err := lookupDriveBin()
+	if err != nil {
+		return fmt.Errorf("resolve drive binary: %w", err)
+	}
+	p.DriveBin = exe
+	return nil
+}
+
 func (p MountPlan) args(includeRCAuth bool) []string {
 	args := []string{
 		p.Subcommand,
@@ -413,9 +460,9 @@ func (p MountPlan) CommandLine() string {
 	return strings.Join(parts, " ")
 }
 
-// LaunchdPlist renders the macOS login item that keeps the mount running. The
-// label and program arguments are exactly the rclone plan, so what launchd runs
-// is what `drive mount` would run in the foreground.
+// LaunchdPlist renders the macOS login item that keeps the mount running. What
+// launchd execs is this CLI in the foreground, so the conflict guard, the
+// fill loop and the queue report start at login (drive#515).
 func LaunchdPlist(p MountPlan) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -423,7 +470,7 @@ func LaunchdPlist(p MountPlan) string {
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
 	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(LaunchdLabel))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
-	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
+	for _, a := range p.productArgv() {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))
 	}
 	b.WriteString("\t</array>\n")
@@ -431,54 +478,39 @@ func LaunchdPlist(p MountPlan) string {
 	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
 	fmt.Fprintf(&b, "\t<key>StandardOutPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
 	fmt.Fprintf(&b, "\t<key>StandardErrorPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
-	if p.RCUser != "" || p.SecretKey != "" {
-		// The plist is written 0600 (the launchd equivalent of systemd's
-		// EnvironmentFile): EnvironmentVariables carry the rc password and
-		// the storage secret, so they never sit in a 0644 file (drive#498).
-		b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
-		if p.RCUser != "" {
-			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneRCUserEnv, html.EscapeString(p.RCUser))
-			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneRCPassEnv, html.EscapeString(p.RCPass))
-		}
-		if p.SecretKey != "" {
-			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneSecretEnv, html.EscapeString(p.SecretKey))
-		}
-		b.WriteString("\t</dict>\n")
-	}
 	b.WriteString("</dict>\n</plist>\n")
 	return b.String()
 }
 
-// SystemdUnit renders the Linux login item (step 3). It is generated here so
-// the same plan drives both platforms and `drive mount` is one code path.
-// There is no ExecStop line: rclone unmounts on SIGTERM (its own docs), and
-// SIGTERM is exactly what systemd sends a stopping unit by default, so an
-// rclone command that does not exist would only break the stop.
+// SystemdUnit renders the Linux login item (step 3). ExecStart is this CLI in
+// the foreground, so the three loops inside mountForeground start at login
+// (drive#515). There is no ExecStop line: the product forwards SIGTERM to
+// rclone, which unmounts (its own docs), and SIGTERM is what systemd sends a
+// stopping unit by default.
 func SystemdUnit(p MountPlan) string {
 	return fmt.Sprintf(`[Unit]
-Description=drive: %s mounted with stock rclone
+Description=drive: mount the drive and run the product loops
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=%s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), systemdCommandLine(p))
+`, systemdCommandLine(p))
 }
 
-// systemdCommandLine renders the rclone argument vector the way systemd reads
+// systemdCommandLine renders the product argument vector the way systemd reads
 // it, not the way a shell would: systemd has its own quoting rules for
 // ExecStart (double quotes with backslash and quote escaped, and every percent
 // doubled for its %-specifier expansion). CommandLine stays shell-shaped for
 // human display only.
 func systemdCommandLine(p MountPlan) string {
-	parts := append([]string{p.RcloneBin}, p.loginItemArgs()...)
+	parts := p.productArgv()
 	for i, a := range parts {
 		parts[i] = systemdEscapeArg(a)
 	}
@@ -561,6 +593,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if p.err != nil {
 		return p.err
 	}
+	if err := attachDriveBin(&p); err != nil {
+		return err
+	}
 	// Windows is its own path: a drive letter, a WinFsp check and a Task
 	// Scheduler login task, and no prefetch sidecar (there is no Windows
 	// directory watcher). The letter is resolved here, where an error can be
@@ -580,11 +615,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	}
 	// The mount dir is created only once the plan is real: --dry-run writes
 	// nothing at all, and prints the config with both keys redacted.
-	driveBin, exeErr := os.Executable()
-	if exeErr != nil {
-		return fmt.Errorf("resolve drive binary: %w", exeErr)
-	}
-	prefetchItem := []byte(PrefetchLoginItem(goos, driveBin, home))
+	prefetchItem := []byte(PrefetchLoginItem(goos, p.DriveBin, home))
 	prefetchPath := PrefetchLoginItemPath(goos, home)
 	if dryRun {
 		p.RCUser, p.RCPass = "<redacted>", "<redacted>"
@@ -669,25 +700,8 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		restore()
 		return err
 	}
-	if goos == "darwin" {
-		if err := bootstrapLaunchd(itemPath); err != nil {
-			return failDetail("login-item", err)
-		}
-	} else if err := startLinuxLoginItem(); err != nil {
-		// A clean container and a first-run sandbox often have no systemd user
-		// bus (drive#105): systemctl is missing, or it cannot reach the user
-		// manager. Only that falls back to a detached rclone, because there is
-		// no systemd to start the unit at login. A systemd host whose unit
-		// fails to start (a bad unit, a full disk) is a named error, not a
-		// fallback: a detached rclone there plus the unit still enabled would
-		// mount a second rclone at the next login.
-		if !systemdUserSessionAbsent(err) {
-			return failDetail("login-item", err)
-		}
-		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, itemPath)
-		if err := startLinuxMountDetached(p); err != nil {
-			return failDetail("mount-failed", err)
-		}
+	if err := startInstalledMount(goos, p); err != nil {
+		return failDetail("login-item", err)
 	}
 	// Starting the login item is a request, not a promise: say the mount is up
 	// only once the kernel says so, so a first run that silently failed is not
@@ -703,6 +717,37 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
 	printMountedLine(p.MountDir)
+	return nil
+}
+
+// startInstalledMount starts the login item that was just written. Tests
+// replace it so a proof can start the unit's own command without touching
+// the host's user session (drive#515).
+var startInstalledMount = startInstalledMountDefault
+
+func startInstalledMountDefault(goos string, p MountPlan) error {
+	if goos == "darwin" {
+		if err := bootstrapLaunchd(LoginItemPath(goos, p.Home)); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := startLinuxLoginItem(); err != nil {
+		// A clean container and a first-run sandbox often have no systemd user
+		// bus (drive#105): systemctl is missing, or it cannot reach the user
+		// manager. Only that falls back to a detached product process, because
+		// there is no systemd to start the unit at login. A systemd host whose
+		// unit fails to start (a bad unit, a full disk) is a named error, not a
+		// fallback: a detached mount there plus the unit still enabled would
+		// start a second mount at the next login.
+		if !systemdUserSessionAbsent(err) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, LoginItemPath(goos, p.Home))
+		if err := startLinuxMountDetached(p); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -745,14 +790,12 @@ func systemdUserSessionAbsent(err error) bool {
 	return false
 }
 
-// startLinuxMountDetached starts rclone in its own session so `drive init` can
-// finish and exit while the mount stays up. rclone's own --log-file is already
-// on the plan; stdout and stderr go there too so a container without journald
-// still has the log.
+// startLinuxMountDetached starts the product in its own session so `drive init`
+// can finish and exit while the mount stays up. The child is `drive mount
+// --foreground`, which owns rclone and the three loops (drive#515).
 func startLinuxMountDetached(p MountPlan) error {
-	rclonePath, err := exec.LookPath(p.RcloneBin)
-	if err != nil {
-		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
+	if p.DriveBin == "" {
+		return fmt.Errorf("drive binary is empty")
 	}
 	if err := os.MkdirAll(filepath.Dir(p.LogPath), 0o755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
@@ -763,13 +806,12 @@ func startLinuxMountDetached(p MountPlan) error {
 	}
 	defer log.Close()
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	cmd := exec.Command(rclonePath, p.Args()...)
+	cmd := exec.Command(p.DriveBin, p.productArgs()...)
 	cmd.Stdout = log
 	cmd.Stderr = log
-	cmd.Env = rcloneProcessEnv(p)
 	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("rclone mount: %w", err)
+		return fmt.Errorf("drive mount: %w", err)
 	}
 	return nil
 }

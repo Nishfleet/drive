@@ -141,10 +141,10 @@ func RcloneConfigPath(home string) string {
 	return filepath.Join(DefaultConfigDir(home), "rclone.conf")
 }
 
-// RcloneEnvPath is the 0600 EnvironmentFile the mount writes for rclone:
-// the remote-control user/password and the storage secret as rclone's own
-// RCLONE_CONFIG_<REMOTE>_* variables. systemd reads it with EnvironmentFile=;
-// launchd gets the same values as EnvironmentVariables in a 0600 plist. The
+// RcloneEnvPath is the 0600 file the mount writes for rclone: the
+// remote-control user/password and the storage secret as rclone's own
+// RCLONE_CONFIG_<REMOTE>_* variables. The login item runs this CLI, which
+// reads the file and hands the values to the rclone child (drive#515). The
 // secret does not sit in rclone.conf (drive#498).
 func RcloneEnvPath(home string) string {
 	return filepath.Join(DefaultConfigDir(home), "rclone.env")
@@ -166,8 +166,8 @@ const (
 	// LaunchdLabel is the launchd login-item label on macOS.
 	LaunchdLabel = "com.nishfleet.drive"
 	// PrefetchLaunchdLabel is the second login item that warms the next folder
-	// after a listing (issue #227). The mount item stays rclone: a login item
-	// has no DRIVE_S3_* environment, and the storage secret lives in rclone.env.
+	// after a listing (issue #227). The mount item runs `drive mount
+	// --foreground` (drive#515); this sidecar runs `drive prefetch`.
 	PrefetchLaunchdLabel = "com.nishfleet.drive.prefetch"
 	// SystemdUnitName is the systemd user unit on Linux (step 3).
 	SystemdUnitName = "drive-mount.service"
