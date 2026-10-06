@@ -379,9 +379,16 @@ function builtDocsFiles() {
         continue;
       }
       const raw = readFileSync(full, "utf8");
-      // The built HTML carries VitePress comments; the customer copy is what
-      // renders, so comments are stripped the same way scanTree strips them.
-      const text = extname(ent.name) === ".html" ? stripMarkupComments(raw) : raw;
+      // The built HTML carries VitePress comments and inline theme script;
+      // the customer copy is what renders, so comments and script/style
+      // blocks are stripped the same way scanTree strips comments. A
+      // minified theme word is not authored copy.
+      const text =
+        extname(ent.name) === ".html"
+          ? stripMarkupComments(raw)
+              .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+              .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+          : raw;
       files.push({ rel: relative(root, full), text });
     }
   };

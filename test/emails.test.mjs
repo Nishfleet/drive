@@ -500,6 +500,9 @@ test("the receipt explains the bill in the customer's words", () => {
     html,
     /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
   );
+  const { saved } = monthlyReceiptTemplate(receiptData());
+  assert.equal(saved, "Our price cap saved you $4.00");
+  assert.doesNotMatch(saved, /min\(|metered, ceiling|\bceiling\b/);
 });
 
 test("the receipt never shows a per-minute price", () => {

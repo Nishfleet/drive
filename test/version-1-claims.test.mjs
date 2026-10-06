@@ -356,8 +356,8 @@ test("customer docs do not point at repository files or issue numbers", () => {
 test("the security page's key-storage claim matches the CLI", () => {
   // drive#545: the page used to name workers/api paths. The customer claim
   // is that secrets stay on the machine as files only that user can read.
-  // cmd/drive/config.go's checkSecretFileMode is the 0600 gate that makes
-  // that true for the config file the CLI writes.
+  // login.go writes rclone.conf 0600; checkSecretFileMode refuses a looser
+  // mode before ParseRcloneConfig or parseRcloneEnvFile reads the secret.
   assert.match(
     read("docs-site/security.md"),
     /The CLI keeps them on this machine as files\s+only your user can read, never inside the Drive\s+folder/,
@@ -365,6 +365,12 @@ test("the security page's key-storage claim matches the CLI", () => {
   const config = read("cmd/drive/config.go");
   assert.match(config, /func checkSecretFileMode/);
   assert.match(config, /perm&0o077 != 0/);
+  assert.match(config, /ParseRcloneConfig[\s\S]*?checkSecretFileMode\(path\)/);
+  assert.match(config, /parseRcloneEnvFile[\s\S]*?checkSecretFileMode\(path\)/);
+  assert.match(
+    read("cmd/drive/login.go"),
+    /WriteFileAtomic\(RcloneConfigPath\(home\), \[\]byte\(RcloneConfig\(cfg\)\), 0o600\)/,
+  );
 });
 
 test("the spec's Platforms row is still the list this file holds", () => {
