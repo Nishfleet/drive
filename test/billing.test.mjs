@@ -51,6 +51,9 @@ const workerFetch =
 // The minutes in a 30-day calendar month, the divisor for a month like April
 // (drive#531). Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
 const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
@@ -364,7 +367,13 @@ test("the usage summary is the empty month before the meter lands", () => {
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
   const account = { id: "1", name: "Your drive" };
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -381,9 +390,36 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     account,
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
   assert.equal(posted.headers.get("allow"), "GET");
+});
+
+test("the usage endpoint refuses a month that is not an instant, and one it was not given", () => {
+  // drive#559: the month is the caller's (src/index.js owns the one boundary)
+  // and the answer names it, so a caller that hands over nothing, or a day
+  // that is not an instant, is a caller bug the read refuses by name rather
+  // than shipping a heading nobody can check a statement against. The gate is
+  // first (account-gate.test.mjs pins the 401 below it), so the account here
+  // is signed in and only the month is wrong.
+  const account = { id: "1", name: "Your drive" };
+  const withNone = () =>
+    handleUsageRequest(new Request("https://drive.test/api/usage"), account, null, null, "");
+  assert.throws(withNone, /handleUsageRequest needs the month's first instant/);
+  assert.throws(
+    () =>
+      handleUsageRequest(
+        new Request("https://drive.test/api/usage"),
+        account,
+        null,
+        null,
+        "next month",
+      ),
+    /handleUsageRequest needs the month's first instant/,
+  );
 });
 
 test("the Worker routes the usage read to the handler", async () => {

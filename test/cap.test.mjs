@@ -51,6 +51,9 @@ const workerFetch =
 
 // Minutes in an average month, so a test can say "2 TB held all month" and
 // mean the metered bill and the peak are the same number.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
 const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
@@ -795,10 +798,16 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   // travel in the response for the CLI to print the same words. The handler is
   // behind the account gate (issue #73), so the line is proven by calling it
   // as a signed-in request until the sign-in flow lands (build step 4, #5).
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), {
-    id: "1",
-    name: "Your drive",
-  });
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      id: "1",
+      name: "Your drive",
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
@@ -812,6 +821,9 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     { id: "1", name: "Your drive" },
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
 });

@@ -8,8 +8,20 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-06
+
+- A public status page that reads the Worker's own health route, an
+  accessibility statement, and the site's own 5xx page (a browser that hits an
+  error now sees the site instead of a JSON body). The security page states
+  where files are stored and what each key can do.
+
 ## 2026-10-05
 
+- The last-sync time on the Get started page is written in the time zone your
+  own computer is in, with the day first and the month short, the order the
+  site's other dates use.
+- The day a closing account's files are deleted now says which time zone that
+  day is in.
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
   from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
   balance never expires. Nothing is charged to your card after use. The

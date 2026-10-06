@@ -57,6 +57,9 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
 // shaped (`u/<id>/...`) and deliberately different lengths, so a prefix that
 // is not cut at a segment boundary would show up.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 /** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
@@ -1023,7 +1026,13 @@ test("one CSRF middleware refuses a cross-site write on every account POST", asy
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
-  const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
+  const signedIn = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    ACCOUNT_A,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0, "an empty month bills $0: no minimum");
 });

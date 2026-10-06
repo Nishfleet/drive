@@ -33,8 +33,11 @@ import (
 // in the customer's words: every line says what happened and the one thing to
 // do next.
 const (
-	pausedLabel  = "Paused"
-	pausedNote   = "Uploads are stopped. Run drive resume to start them again."
+	pausedLabel = "Paused"
+	// pausedNote says "slowed" because the in-flight chunk can still
+	// finish (rclone has no zero rate). The label stays "Paused", the
+	// same word the pages print (UPLOAD_LABEL.paused).
+	pausedNote   = "Uploads are slowed. Run drive resume to start them again."
 	resumedLabel = "Resumed"
 	resumedNote  = "Uploads are moving again."
 )
