@@ -162,7 +162,9 @@ func (r deviceReSigner) ReSignIn() (string, int64, error) {
 		out = io.Discard
 	}
 	fmt.Fprintln(out, reSignInLine)
-	signed, err := SignIn(client, deviceName(), out)
+	// The same device name every other route uses, so a re-sign-in does not
+	// register a second, differently named device for this machine.
+	signed, err := SignIn(client, envDeviceName(), out)
 	if err != nil {
 		return "", 0, err
 	}

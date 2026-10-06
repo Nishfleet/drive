@@ -114,7 +114,7 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err != nil {
 			return env, err
 		}
-		signed, err := SignIn(client, deviceName(), os.Stdout)
+		signed, err := SignIn(client, envDeviceName(), os.Stdout)
 		if err != nil {
 			return env, err
 		}

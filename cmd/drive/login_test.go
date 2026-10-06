@@ -27,7 +27,7 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	api.approved["dev_secret"] = true
 
 	var out strings.Builder
-	if err := Login(home, server.URL, &out); err != nil {
+	if err := Login(home, server.URL, "", &out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,7 +131,7 @@ func TestLoginNamesMissingStorageInsteadOfLooping(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 
-	err := Login(t.TempDir(), server.URL, io.Discard)
+	err := Login(t.TempDir(), server.URL, "", io.Discard)
 	if err == nil {
 		t.Fatal("expected login to refuse a mint with no storage location")
 	}
@@ -207,7 +207,7 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 	api.approved["dev_secret"] = true
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	first, err := LoadCredentials(home)
@@ -224,7 +224,7 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	if err := SaveCredentials(home, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.queueClears) != 1 || api.queueClears[0] != "Bearer "+oldToken {
@@ -239,5 +239,44 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	}
 	if second.KeyID == "" || second.KeyID == first.KeyID {
 		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
+	}
+}
+
+// The device-name flag (drive issue #561): `drive login
+// --device studio` names this device at sign-in, both on the
+// approval page (the device-code request) and on the device
+// key, so the account and the drive agree on what the machine
+// is called.
+func TestEnvDeviceNameReadsDriveDevice(t *testing.T) {
+	// --device flows into DRIVE_DEVICE (main.go), and sign-in must
+	// answer to the same name the mount carries.
+	t.Setenv(deviceEnvName, "studio")
+	if got := envDeviceName(); got != "studio" {
+		t.Fatalf("envDeviceName() = %q, want the DRIVE_DEVICE value", got)
+	}
+	t.Setenv(deviceEnvName, "")
+	if got := envDeviceName(); strings.TrimSpace(got) == "" {
+		t.Fatal("envDeviceName() with DRIVE_DEVICE unset = \"\", want the hostname fallback")
+	}
+}
+
+func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	var out strings.Builder
+	if err := Login(t.TempDir(), server.URL, "studio", &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("the device-code request named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("the device key was minted as %v, want [studio]", api.mintedNames)
 	}
 }

@@ -155,6 +155,10 @@ var messageTable = map[string][2]string{
 		"rclone is not installed; the drive mounts with rclone.",
 		"Install it (macOS: `brew install rclone`; Linux: `sudo apt install rclone`) or point `--rclone` at the binary, then run `drive mount` again.",
 	},
+	"no-node": {
+		"Node.js is not installed; every drive agent tool runs its server through npx.",
+		"Install Node.js (which brings npx), then run the command again.",
+	},
 	"missing-config": {
 		"The drive is missing its storage settings: {1}.",
 		"Run `drive login` so this device gets its storage settings, then run the command again.",
@@ -174,6 +178,10 @@ var messageTable = map[string][2]string{
 	"drive-folder": {
 		"The drive folder {1} could not be created.",
 		"Check that the disk has room and that {1} is writable, then run the command again.",
+	},
+	"cache-tag": {
+		"The drive's cache folder {1} could not be marked as a cache.",
+		"Check that {1} is writable, then run the command again.",
 	},
 	"cache-clear-mounted": {
 		"The cache cannot be cleared while the drive is mounted.",
