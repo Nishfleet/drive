@@ -88,7 +88,7 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
   const closed = renderEmail("account-closed", {
     graceDays: CLOSE_GRACE_DAYS,
     reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: "3 Nov",
+    purgeOn: "3 Nov (UTC)",
   });
   assert.match(closed.subject, /closed/i);
   assert.match(closed.text, /30 days/);
@@ -98,7 +98,7 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
   const reminder = renderEmail("account-close-reminder", {
     graceDays: CLOSE_GRACE_DAYS,
     reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: "3 Nov",
+    purgeOn: "3 Nov (UTC)",
   });
   assert.match(reminder.subject, /5 days/);
   assert.match(reminder.text, /5 days/);
@@ -138,43 +138,142 @@ test("the shipped usage page states the 30-day grace period in the module's word
   assert.ok(page.includes(`const CLOSE_CANCEL_ENDPOINT = "${CLOSE_CANCEL_ENDPOINT}";`));
 });
 
-test("the purge date reads like 3 Nov, a day number and the month's short name", () => {
+test("the purge date reads like 3 Nov (UTC): a day, a short month, and the zone it is in", () => {
   // drive#422: the walkthrough found the account-close box showing
   // "2026-11-03", which is correct but unreadable to a person. The window is
   // 30 days, so a year in the sentence adds nothing and only confuses.
-  assert.equal(purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000), "3 Nov");
-  assert.equal(purgeOnDate(Date.parse("2026-10-31T23:59:59.000Z") / 1000), "30 Nov");
-  assert.equal(purgeOnDate(Date.parse("2026-11-30T00:00:00.000Z") / 1000), "30 Dec");
+  assert.equal(purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000), "3 Nov (UTC)");
+  assert.equal(purgeOnDate(Date.parse("2026-10-31T23:59:59.000Z") / 1000), "30 Nov (UTC)");
+  assert.equal(purgeOnDate(Date.parse("2026-11-30T00:00:00.000Z") / 1000), "30 Dec (UTC)");
   // A year boundary does not leave a year on the sentence.
-  assert.equal(purgeOnDate(Date.parse("2026-12-31T00:00:00.000Z") / 1000), "30 Jan");
+  assert.equal(purgeOnDate(Date.parse("2026-12-31T00:00:00.000Z") / 1000), "30 Jan (UTC)");
   assert.throws(() => purgeOnDate(Number.NaN), /unix seconds/);
   // @ts-expect-error the guard is under test — the function expects a number
   assert.throws(() => purgeOnDate("yesterday"), /unix seconds/);
+
+  // drive#689: the day is a UTC day and has to stay one, because the cron
+  // picks the account to purge against the Worker's own UTC clock. What was
+  // wrong was the silence about it, so the sentence names the zone.
+  for (const closedAt of [
+    Date.parse("2026-10-04T12:00:00.000Z") / 1000,
+    Date.parse("2026-12-31T00:00:00.000Z") / 1000,
+  ]) {
+    assert.match(purgeOnDate(closedAt), / \(UTC\)$/, "the sentence states which zone the day is");
+  }
+  // The day itself is still worked out in UTC: an account closed at 23:30 UTC
+  // on 3 November purges on the UTC 3 December, not on the 2nd a reader west
+  // of Greenwich would count to.
+  assert.equal(purgeOnDate(Date.parse("2026-11-03T23:30:00.000Z") / 1000), "3 Dec (UTC)");
 });
 
-test("the close emails carry the short date and refuse an ISO one", () => {
+test("every surface that shows the purge day states the zone with it", async () => {
+  // drive#689 makes the zone part of the value rather than of each sentence,
+  // so this reads the places the date reaches a person and requires the zone
+  // beside it. The zone is not typed into any of them, so this is a real run
+  // over the close path rather than a copy of the expected words: closing a
+  // real account writes the real row, the real mail goes out through the real
+  // sender, and purgeOnDate() is the only thing that put the date in it.
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_zone", email: "nish@example.com", name: "Nish" };
+  await world.keys.mintKey(account, { kind: "device", name: "mac" });
+  const closedAt = clock.now();
+  const closesOn = purgeOnDate(closedAt / 1000);
+
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "nish@example.com",
+    now: closedAt,
+  });
+
+  assert.equal(world.email.sent.length, 1, "the day-0 mail went out through the real sender");
+  const mailed = /** @type {{subject: string, text: string}} */ (world.email.sent[0]);
+  assert.match(mailed.subject, /closed/i);
+  // Every day the close text writes has the zone beside it. The predicate is
+  // the day itself, not a word like "30 days": "You have 30 days to cancel"
+  // is a sentence with no day in it, and a gate keyed on the window word
+  // would demand a zone of a sentence that has none to name. So the day is
+  // the shape to find, and a day without its zone is what fails.
+  const month = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+  // The two shapes this gates on: a day with its zone beside it, and a day
+  // written bare. Neither is typed out as words, so the mail's own sentences
+  // are what is measured.
+  assert.match(mailed.text, new RegExp(`\\d{1,2} ${month} \\(UTC\\)`), "the day carries its zone");
+  assert.doesNotMatch(
+    mailed.text,
+    new RegExp(`\\d{1,2} ${month}(?! \\()`),
+    "no day is written without its zone beside it",
+  );
+  // The sentence that carries the date never carries the ISO form either:
+  // the unreadable shape this is all about.
+  assert.doesNotMatch(mailed.text, /\d{4}-\d{2}-\d{2}/);
+
+  // The five close kinds are asserted through the template the same way, so a
+  // kind whose sentence does not carry the zone fails here rather than only in
+  // the email a customer reads.
+  for (const kind of ["account-closed", "account-close-reminder"]) {
+    const mail = renderEmail(kind, {
+      graceDays: CLOSE_GRACE_DAYS,
+      reminderDays: CLOSE_REMINDER_DAYS,
+      purgeOn: closesOn,
+    });
+    assert.match(mail.text, / \(UTC\)/, `${kind} states the zone its day is in`);
+    assert.doesNotMatch(mail.text, /2026-11-03/);
+  }
+
+  // The banner's sentence is one shared placeholder: the zone arrives inside
+  // the value it fills, so the page needs no second copy of the words. Pinned
+  // as source for the same reason the banner test above pins it — the page's
+  // script is the only half of the close flow that has no node entry point.
+  const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+  // The sentence the value lands in, taken from the copy itself rather than
+  // typed out again, so the page's words and the banner's words cannot differ.
+  const sentence = `${CLOSE_COPY.pendingWhat.split(".")[0]}.`;
+  assert.match(page, /Files are deleted on \$\{status\.purgeOn\}\./);
+  // The sentence itself holds no zone: if it ever grows one, the four places
+  // drift again and this fails.
+  assert.doesNotMatch(sentence, /\(UTC\)/);
+  assert.equal(sentence, "This account closes on {purgeOn}.");
+});
+
+test("the close emails carry the short date with its zone and refuse a bare one", () => {
   // The template's own guard: the day arrives from purgeOnDate(), so a value
-  // that is not "3 Nov" is a payload the sender did not build.
+  // that is not "3 Nov (UTC)" is a payload the sender did not build.
   for (const kind of ["account-closed", "account-close-reminder"]) {
     assert.throws(
       () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "2026-11-03" }),
-      /must be a short date \(3 Nov\)/,
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
     );
     assert.throws(
       () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 November" }),
-      /must be a short date \(3 Nov\)/,
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
       "the short month name, not the long one",
     );
     assert.throws(
       () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "03 Nov" }),
-      /must be a short date \(3 Nov\)/,
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
+      "en-GB's numeric day never pads",
+    );
+    // drive#689: a bare day is refused too, so the silence cannot come back.
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" }),
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
+      "the zone is required",
+    );
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (EST)" }),
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
+      "the one zone the day is worked out in",
     );
     const mailed = renderEmail(kind, {
       graceDays: 30,
       reminderDays: 25,
-      purgeOn: "3 Nov",
+      purgeOn: "3 Nov (UTC)",
     });
-    assert.match(mailed.text, /3 Nov/);
+    assert.match(mailed.text, /3 Nov \(UTC\)/);
     assert.doesNotMatch(mailed.text, /2026-11-03/);
   }
 });

@@ -87,6 +87,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The per-link caps and retention (drive#549): upload_requests.max_files
   // and shares.max_download_bytes. Expand only.
   "drive/0025_link_caps.sql",
+  // Per-address send counters (drive#550): 5 links an hour, 20 a day
+  // per inbox; the guard spends a slot only when both windows have room.
+  "drive/0026_signin_address_sends.sql",
 ]);
 
 /**
@@ -299,7 +302,9 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
+ * (drive#550): `userAgent` is the requesting request's own header, null when
+ * there was none, so a test can read what the mail would name.
+ * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
