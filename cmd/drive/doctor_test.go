@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,15 +122,158 @@ func TestDoctorAPINotSignedIn(t *testing.T) {
 	}
 }
 
-// TestDoctorAPIRefusedToken checks the 401 branch: the address is printed
-// beside the answer, because "the api refused the token" is only actionable
-// together with which address refused it.
-func TestDoctorAPIRefusedToken(t *testing.T) {
+// TestDoctorAPIUnreachableNamesTheAddress is the branch a host with no network
+// takes: the read fails before a status code exists, so the answer is the
+// offline one and the address that was tried, side by side. It used to be
+// called TestDoctorAPIRefusedToken, which named the branch it does not reach:
+// a loopback port that refuses is not a Worker that refused a token.
+func TestDoctorAPIUnreachableNamesTheAddress(t *testing.T) {
 	var b strings.Builder
-	printDoctorAPI(&b, t.TempDir(), "https://127.0.0.1:1")
-	got := b.String()
-	if !strings.Contains(got, "127.0.0.1:1") {
-		t.Errorf("unreachable api = %q, want the address it tried", got)
+	// Port 1 on loopback refuses; the read never gets a status code.
+	const tried = "https://127.0.0.1:1"
+	printDoctorAPI(&b, t.TempDir(), tried)
+	got := doctorAPILine(b.String())
+	if !strings.HasSuffix(got, "("+tried+")") {
+		t.Errorf("unreachable api = %q, want the address it tried in brackets at the end", got)
+	}
+	if !strings.Contains(got, "offline") {
+		t.Errorf("unreachable api = %q, want the offline answer, not a timeout or a blank", got)
+	}
+}
+
+// TestDoctorAPIRefusesADeadToken covers the answer a support message cannot
+// work without: a device whose stored token the Worker refuses. "The api
+// refused the token" is only actionable together with the address that
+// refused it and the command that fixes it, and it is the one branch nothing
+// reached before, because the loopback-refused test above stops at the
+// connection. A stub server over httptest is the only way to get the status
+// code, and the repo already runs the CLI against exactly this shape
+// (agentkeys_test.go).
+// The refusal sentence is a primary support answer, so it is pinned whole:
+// a substring check passed while the answer read "refused", and a person has
+// to guess what refused.
+const refusedTokenAnswer = "refused the device token; run `drive login` on this device again"
+
+func TestDoctorAPIRefusesADeadToken(t *testing.T) {
+	// The 401 and the 403 answers are one decision: this device's key is no
+	// good, so re-sign in. A table keeps the two status codes the same one
+	// assertion instead of two tests that can disagree.
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			t.Cleanup(server.Close)
+			home := t.TempDir()
+			if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok_dead"}); err != nil {
+				t.Fatal(err)
+			}
+			var b strings.Builder
+			printDoctorAPI(&b, home, "")
+			if got := doctorAPILine(b.String()); got != refusedTokenAnswer+" ("+server.URL+")" {
+				t.Errorf("refused token = %q, want %q (address in brackets)", got, refusedTokenAnswer)
+			}
+			if strings.Contains(b.String(), "dtok_dead") {
+				t.Error("the api line prints the device token, which must never reach a pasted block")
+			}
+		})
+	}
+}
+
+// TestDoctorAPIReachableNamesTheAddress is the healthy branch: the Worker
+// answered 200 on the same read `drive status` makes. It must say so and name
+// the address, because a person deciding whether to write in reads this line
+// and "reachable" alone does not tell them which side they are on.
+//
+// The assertion is the answer itself, not a word inside it: "still reachable"
+// also contains "reachable", so a substring check would pass while the answer
+// got worse. doctorAPILine hands back the labelled line's answer, which the
+// mutation tests proved is what actually holds this branch still.
+func TestDoctorAPIReachableNamesTheAddress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != USAGE_PATH {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok_live"}); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	printDoctorAPI(&b, home, "")
+	if want := "reachable (" + server.URL + ")"; doctorAPILine(b.String()) != want {
+		t.Errorf("reachable api = %q, want %q", doctorAPILine(b.String()), want)
+	}
+}
+
+// doctorAPILine is the answer on the block's api line, without the label or
+// its padding: the text a person actually reads. Every api-branch test pins
+// this, so an answer that merely contains the right word still fails.
+func doctorAPILine(block string) string {
+	for _, line := range strings.Split(block, "\n") {
+		answer, ok := strings.CutPrefix(strings.TrimSpace(line), "api:")
+		if ok {
+			return strings.TrimSpace(answer)
+		}
+	}
+	return ""
+}
+
+// TestDoctorAnswersAnyOtherStatus covers the Worker-side answers that are
+// neither a refusal nor a success: the block names the status code, because
+// "the api answered 503" is a different support conversation from "the api
+// refused the token" and a person reading the block must be able to tell
+// them apart.
+func TestDoctorAnswersAnyOtherStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok_live"}); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	printDoctorAPI(&b, home, "")
+	if got, want := doctorAPILine(b.String()), "answered 503 ("+server.URL+")"; got != want {
+		t.Errorf("other status = %q, want %q", got, want)
+	}
+}
+
+// TestDoctorRejectsBadArguments pins the entry contract: the command takes no
+// command of its own and --logs counts lines, so it cannot be below zero.
+// Both are decisions about what a person can pass, and an untested entry is
+// how `drive doctor status` or `drive doctor --logs -1` quietly prints the
+// block anyway and wastes the run.
+func TestDoctorRejectsBadArguments(t *testing.T) {
+	t.Setenv("DRIVE_API_URL", "")
+	home := t.TempDir()
+	if err := runDoctor([]string{"--home", home, "status"}); err == nil {
+		t.Error("drive doctor took a subcommand; it prints the block and takes no command of its own")
+	}
+	if err := runDoctor([]string{"--home", home, "--logs", "-1"}); err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Errorf("--logs -1 = %v, want a refusal that says the count cannot be below zero", err)
+	}
+	if err := runDoctor([]string{"--home", home, "--no-such-flag"}); err != errFlagParse {
+		t.Errorf("an unknown flag = %v, want the flag-parse failure the other commands return", err)
+	}
+}
+
+// TestDoctorDeclinedAPartIsNotAFailure checks the run stays at exit zero when
+// a part cannot read its answer. The command exists to be pasted into a
+// ticket: a half-answered block beats none, and a non-zero exit code tells the
+// person who pastes it that the command itself broke.
+func TestDoctorDeclinedAPartIsNotAFailure(t *testing.T) {
+	// Hermetic on purpose: a real device's credentials or a real Worker
+	// address in the environment would turn this into a live read, so the
+	// home and the api address are both pointed at a scratch directory.
+	home := t.TempDir()
+	t.Setenv("DRIVE_API_URL", "")
+	if err := runDoctor([]string{"--home", home, "--logs", "0"}); err != nil {
+		t.Errorf("drive doctor on a host with no log and no api = %v, want exit 0", err)
 	}
 }
 
