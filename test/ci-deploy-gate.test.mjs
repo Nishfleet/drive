@@ -120,6 +120,40 @@ test("ci.yml skips by job-level if, fails open, and pins paths-filter by SHA", (
   for (const ref of uses) assert.match(ref, /^[0-9a-f]{40}$/, "pinned by commit SHA");
 });
 
+// drive#759: `npm run check` (tsc --noEmit through the generated Workers
+// types, then `biome check`) is a named step of its own in the verify job, so a
+// red run says which tool turned it red instead of burying it in pretest's
+// output above `npm test`.
+test("ci.yml runs npm run check as its own step, and never fixes the diff", () => {
+  // The whole verify job, steps included: the header-only slice the test above
+  // takes stops at `steps:`, which is before any step lives.
+  const start = CI.search(/^ {2}verify:\n/m);
+  const rest = CI.slice(start);
+  const next = /^ {2}\w+:/m.exec(rest.slice(1));
+  const body = next ? rest.slice(0, 1 + next.index) : rest;
+  const step = /- name: Typecheck and Biome\n {8}run: npm run check\n/.exec(body)?.[0];
+  assert.ok(step, "the verify job runs npm run check as a named step");
+  // It must sit beside `npm test`, not be folded into it, and it must come
+  // first: the point of the step is that the cheap gate fails before the
+  // expensive suite runs.
+  assert.ok(
+    CI.indexOf("- name: Typecheck and Biome") < CI.indexOf("- run: npm test"),
+    "check runs before npm test",
+  );
+  // The step is a report, never a rewrite: a CI run that fixes the diff and
+  // passes would hide the error from the merge it was supposed to stop. The
+  // flags are read off the run commands, not the whole job, so a comment may
+  // still name the rule.
+  const commands = [...body.matchAll(/^ {8}run: (.*)$/gm)].map((m) => m[1]);
+  assert.ok(commands.includes("npm run check"), "the step runs npm run check");
+  for (const command of commands) {
+    assert.doesNotMatch(command, /--(write|fix)\b/, `ci.yml never runs \`${command}\``);
+  }
+  // Same gate as `npm test`: the step carries no `if:`, so it runs whenever
+  // the job runs, and the job-level `if:` is the paths filter above it.
+  assert.doesNotMatch(step, /if:/, "the check step has no gate of its own");
+});
+
 // drive#520: a migration is one-way (D1 has no down-migrations and the
 // databases sit outside the Worker version a rollback restores), so the
 // deploy records each database's Time Travel bookmark before the first
