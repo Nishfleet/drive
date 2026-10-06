@@ -85,7 +85,7 @@ function makeD1() {
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
     "drive/0030_branch_jobs.sql",
-    "drive/0031_branch_job_generation.sql",
+    "drive/0032_branch_job_generation.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
