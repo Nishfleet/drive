@@ -32,6 +32,7 @@ import {
 export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-listing.js";
 
 import {
+  accountBranchBytes,
   accountFirstChargedAt,
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
@@ -501,9 +502,15 @@ export function withoutTrash(entries, path) {
  *
  * The recursive `listAll` walk is the store's own answer about its own
  * objects, so it counts a copy whatever wrote it; folders are skipped,
- * because a folder is a key prefix rather than an object holding bytes.
- * An empty (or absent) folder sums to 0, so a drive with no branch adds
- * nothing.
+ * because a folder is a key prefix rather than an object holding bytes, and
+ * a file row without a size reads as 0 (this read IS the guard's size, and
+ * 0 fails toward refusing). An empty (or absent) folder sums to 0.
+ *
+ * A listing the store refuses is a rejected promise, never an empty list, so
+ * a walk that cannot finish throws instead of answering 0: the direction an
+ * unreadable `.branches` pushes is decided by the caller
+ * (preChargeStoredBytes), which refuses toward the limit rather than reading
+ * a failed listing as a drive with no branch (drive#800).
  * @param {FileStore} store a store already scoped to one account
  * @param {string} path a validated drive path, e.g. BRANCHES_PATH
  * @returns {Promise<number>} bytes stored under `path`
@@ -530,6 +537,18 @@ async function storedBytesUnder(store, path) {
  * is lifted, so its branch copies are not walked; an unpaid walk is one Store
  * listing per upload door, which is what counting what the store holds costs
  * on the two paths that add bytes to somebody else's limit.
+ *
+ * Each branch copy is counted once, whichever window the account is in, so
+ * the number never leans toward a bypass and never double-counts a
+ * reconciled copy (in-run review, prune review #9): the row sum here already
+ * holds every branch the nightly reconcile has folded into `file_versions`
+ * (core/meter.js reconcileAccount lists the whole account, system folders
+ * included), and the store holds every branch whether that walk has run or
+ * not. So the reconciled branch bytes are subtracted from the rows
+ * (accountBranchBytes) and the store's own current branch bytes are added
+ * back, which collapses that overlap to one copy in both windows. A branch
+ * key the match failed to recognise would simply stay in the rows and be
+ * counted again from the store - an over-count, never a leak.
  * @param {D1Database} db
  * @param {FileStore} store a store already scoped to one account
  * @param {string} accountId
@@ -541,7 +560,42 @@ export async function preChargeStoredBytes(db, store, accountId, firstChargedAt)
   if (firstChargedAt !== null) {
     return stored;
   }
-  return stored + (await storedBytesUnder(store, BRANCHES_PATH));
+  // In-run review (prune review #9): when the live rows alone already fill the
+  // limit, the walk cannot change the answer, so an upload at or past the
+  // limit is refused on one statement with no listing. `stored` is every live
+  // row the reconcile has folded in, so this short-circuit is an
+  // over-approximation: it can only refuse, never allow.
+  if (stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
+    return stored;
+  }
+  // The reconciled branch bytes in the row sum, removed before the walk adds
+  // the store's own branch bytes back (see above). Read outside the try: a
+  // corrupt non-finite size here is the same genuine failure
+  // accountStoredBytes already raises, not a branch listing that failed.
+  const branchRowBytes = await accountBranchBytes(
+    db,
+    accountId,
+    `${accountPrefix({ id: accountId })}${BRANCHES_PATH}/`,
+  );
+  let branchWalkBytes;
+  try {
+    branchWalkBytes = await storedBytesUnder(store, BRANCHES_PATH);
+  } catch (error) {
+    // drive#800 exists because this store read answers for bytes the rows do
+    // not, so an answer that cannot be read is a refusal, never an allowance:
+    // report the whole limit so preChargeUploadBlocked answers with the
+    // message-table sentence at both upload doors (not a raw 500), and keep
+    // the store's own error in the log. Reading a failed listing as zero
+    // would reopen the exact bypass this closes. Fails toward refusal.
+    console.error(
+      "preChargeStoredBytes: the branch-byte listing for an account failed, " +
+        "refusing the upload toward the pre-charge limit (drive#800):",
+      accountId,
+      error instanceof Error ? error.message : String(error),
+    );
+    return PRE_CHARGE_STORAGE_LIMIT_BYTES;
+  }
+  return stored - branchRowBytes + branchWalkBytes;
 }
 
 /**

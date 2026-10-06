@@ -27,6 +27,7 @@ import {
   createMemoryStore,
   FILES_ENDPOINT,
   handleFilesRequest,
+  preChargeStoredBytes,
   scopeStore,
 } from "../core/files.js";
 import { failureMessage } from "../core/messages.js";
@@ -514,17 +515,14 @@ function passLimiter() {
 }
 
 /**
- * The share link store. Its reservations answer through `UPDATE … RETURNING`,
- * which is a read, so the adapter must hand rows back — a write-only adapter
- * would read as a full link (the comment on the harness's runOne names exactly
- * this trap). `createTestD1()` is the adapter the rest of the share tests use;
- * the links table lives only on the request store, while the guard reads the
- * drive's own `made.db`, so the two databases are free to be separate, the
- * way a real request store and a real database would be.
- * @param {unknown} made the drive's makeMeteredDB() answer, unused
+ * The share link store the two share-path tests read. `createTestD1()` is the
+ * adapter the rest of the share tests use; the links table lives only on the
+ * request store, while the guard reads the drive's own db, so the two
+ * databases are free to be separate, the way a real request store and a real
+ * drive database would be.
+ * @returns {ReturnType<createD1LinkStore>}
  */
-function makeShareLinks(made) {
-  void made;
+function makeShareLinks() {
   return createD1LinkStore(createTestD1());
 }
 
@@ -569,7 +567,7 @@ test("branch copies hold an unpaid account at 1 TB on the share upload path", as
   // has to be scoped to that owner and not to the link.
   const made = makeMeteredDB();
   const drive = await branchedDrive(made, "branched");
-  const links = makeShareLinks(made);
+  const links = makeShareLinks();
   const token = "AAAAAAAAAAAAAAAAAAAAAA";
   await links.requests.create(
     newRequestRecord({ accountId: "branched", folder: "/", now: NOW, token }),
@@ -595,6 +593,204 @@ test("branch copies hold an unpaid account at 1 TB on the share upload path", as
   // above proves); nothing was written on the way.
   const stat = await scopeStore(drive.store, { id: "branched" }).stat("/over.bin");
   assert.equal(stat, null, "the refused drop left a file behind");
+});
+
+/**
+ * A memory store whose `.branches` listing is instrumented (drive#800, in-run
+ * review): every other operation runs untouched, the count of branch listings
+ * is recorded so a test can prove the guard did or did not walk, and `fail`
+ * refuses the listing the way a failing provider would. The store's methods
+ * hold their state in a closure, not through `this`, so the proxy delegate is
+ * safe and `this` is preserved by binding.
+ * @param {import("../core/files.js").FileStore} base
+ * @param {{fail?: boolean}} [options]
+ * @returns {{store: import("../core/files.js").FileStore, state: {branchListings: number}}}
+ */
+function instrumentBranchStore(base, options = {}) {
+  const state = { branchListings: 0 };
+  const store = new Proxy(base, {
+    get(target, prop, receiver) {
+      if (prop === "listAll") {
+        return async (/** @type {string} */ path) => {
+          if (path.includes(".branches")) {
+            state.branchListings += 1;
+            if (options.fail) {
+              throw new Error("the object store refused the branch listing");
+            }
+          }
+          return target.listAll(path);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { store, state };
+}
+
+test("preChargeStoredBytes refuses toward the limit when the branch store cannot be read", async () => {
+  // drive#800, in-run review (Critical): this guard answers for bytes no table
+  // knows, so a listing that cannot finish is a refusal, never an allowance.
+  // The bytes come back as the whole limit, which is the number that makes
+  // preChargeUploadBlocked refuse rather than under-count toward an allow.
+  const { db } = makeMeteredDB();
+  await insertAccount(db, "unpaid");
+  db.insertVersion({
+    accountId: "unpaid",
+    fileId: "file-unpaid",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
+  const stored = await preChargeStoredBytes(
+    db,
+    scopeStore(probe.store, { id: "unpaid" }),
+    "unpaid",
+    null,
+  );
+  assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES);
+  assert.equal(
+    preChargeUploadBlocked({ firstChargedAt: null, storedBytes: stored, incomingBytes: 8 }),
+    failureMessage("pre-charge-storage-limit"),
+  );
+});
+
+test("a reconciled branch copy is counted once, not twice (drive#800, in-run review)", async () => {
+  // core/meter.js reconcileAccount folds the branch copy into file_versions
+  // AND the store still holds it, so without dedup the number would charge the
+  // copy twice and wrongly refuse an honest account. The rows are 300 under
+  // the limit, the reconciled branch is 200 in the rows and 200 in the store:
+  // the honest total is 100 under and is allowed, where a double count (100
+  // over) would have refused it.
+  const { db } = makeMeteredDB();
+  const accountId = "branched";
+  await insertAccount(db, accountId);
+  db.insertVersion({
+    accountId,
+    fileId: "file-reg",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 300,
+    createdAt: NOW,
+  });
+  const store = createMemoryStore();
+  const scoped = scopeStore(store, { id: accountId });
+  await scoped.write("/work/x.bin", "x".repeat(200));
+  await scoped.copy("/work/x.bin", `${BRANCHES_PATH}/b/x.bin`);
+  // The nightly reconcile's row for that same copy: the path shape is the
+  // account prefix with no leading slash, matching core/meter.js.
+  db.insertVersion({
+    accountId,
+    fileId: "br-x",
+    path: `u/${accountId}${BRANCHES_PATH}/b/x.bin`,
+    sizeBytes: 200,
+    createdAt: NOW,
+  });
+  const stored = await preChargeStoredBytes(db, scoped, accountId, null);
+  assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES - 100, "one copy counted once");
+  assert.notEqual(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES + 100, "not the double count");
+  assert.equal(
+    preChargeUploadBlocked({ firstChargedAt: null, storedBytes: stored, incomingBytes: 8 }),
+    null,
+    "the honest account at the limit minus 100 is allowed",
+  );
+});
+
+test("a folder-only .branches and a size-less branch row add no branch bytes", async () => {
+  // drive#800, in-run review: the walk's own rules. A folder is a key prefix,
+  // not bytes; a file row without a size reads as zero. Both add 0, so the
+  // walk cannot inflate the number past what the store actually holds.
+  const { db } = makeMeteredDB();
+  const read = (/** @type {unknown[]} */ entries) =>
+    preChargeStoredBytes(db, /** @type {any} */ ({ listAll: async () => entries }), "unpaid", null);
+  assert.equal(await read([{ kind: "folder", size: 9999, name: "work" }]), 0);
+  assert.equal(await read([{ kind: "file", name: "x" }]), 0);
+  assert.equal(await read([]), 0);
+});
+
+test("the upload route refuses toward the limit when the branch store cannot be read", async () => {
+  // drive#800, in-run review (Critical + Warning 3): a provider failure reading
+  // .branches is a refusal, closed toward the limit and spoken from
+  // core/messages.js - not a raw 500 and not an allowance. A 500 is a
+  // refusal but the impolite one, and a client retries past it instead of
+  // being told the drive is full.
+  const made = makeMeteredDB();
+  const accountId = "unread";
+  await insertAccount(made.db, accountId);
+  made.db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
+  const held = await handleFilesRequest(
+    new Request(`https://drive.example/api/files/upload?path=%2F&name=over.bin`, {
+      method: "POST",
+      body: new Uint8Array(8),
+    }),
+    probe.store,
+    { id: accountId, name: accountId },
+    NOW,
+    { db: made.db },
+  );
+  assert.equal(held.status, 403, "a store that cannot be read still refuses the upload");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+});
+
+test("the share upload route refuses toward the limit when the branch store cannot be read", async () => {
+  // The same closed-toward-refusal refusal at the other upload door, driven
+  // as src/share.js reads it: the branch walk is scoped to the request row's
+  // owner, and a read that fails there is still the message-table sentence.
+  const made = makeMeteredDB();
+  const accountId = "unread";
+  await insertAccount(made.db, accountId);
+  made.db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
+  const links = makeShareLinks();
+  const token = "BBBBBBBBBBBBBBBBBBBBBB";
+  await links.requests.create(newRequestRecord({ accountId, folder: "/", now: NOW, token }));
+  const held = await handleRequestUploadRequest(
+    new Request(`https://drive.test${REQUEST_ENDPOINT}/upload?k=${token}&name=over.bin`, {
+      method: "POST",
+      body: "the bytes a stranger drops",
+    }),
+    probe.store,
+    links,
+    () => "active",
+    { now: NOW, ipLimiter: passLimiter(), linkLimiter: passLimiter(), db: made.db },
+  );
+  assert.equal(held.status, 403, "a store that cannot be read still refuses the share drop");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+  assert.equal(probe.state.branchListings, 1, "the share door did try to read the branch store");
+});
+
+test("the rows already over the limit refuse an upload without walking the store", async () => {
+  // drive#800, in-run review (Warning): the walk is one listing per unpaid
+  // upload, so an account already at the limit on the rows alone is refused
+  // without it. The probe records branch listings; with the fast path, none
+  // happened - and the store was armed to throw if it had been walked.
+  const made = makeMeteredDB();
+  const accountId = "over";
+  await insertAccount(made.db, accountId);
+  made.db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
+  const stored = await preChargeStoredBytes(
+    made.db,
+    scopeStore(probe.store, { id: accountId }),
+    accountId,
+    null,
+  );
+  assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES);
+  assert.equal(probe.state.branchListings, 0, "no branch listing ran past the limit");
 });
 
 test("the upload route holds a pre-charge account at 1 TB even with no length header", async () => {
