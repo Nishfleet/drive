@@ -535,11 +535,11 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
 });
 
 // The docs count public/llms.txt states (drive#814). The links above are gated
-// but the sentence that tells an answer engine how many pages there are prose,
-// so drive#562 could add a page, add its link, and leave the sentence counting
-// the old nine with nothing failing. The count is read out of the file and
-// compared with DOC_PAGES, the list core/seo.js holds and the link gate walks,
-// so the sentence and the page list cannot disagree.
+// but the sentence that tells an answer engine how many pages there are is
+// prose, so drive#562 could add a page, add its link, and leave the sentence
+// counting the old nine with nothing failing. The count is read out of the file
+// and compared with DOC_PAGES, the list core/seo.js holds and the link gate
+// walks, so the sentence and the page list cannot disagree.
 //
 // It is stated once: the sentence is found by shape and never by a typed figure,
 // and the two other files that advertise the docs list state no count, so a
