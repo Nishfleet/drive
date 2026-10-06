@@ -185,11 +185,25 @@ func TestImportIntoWindowsTargetsTheVolumeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := windowsVolumeRoot(letter); plan.Dest != want {
+	// The literal, not windowsVolumeRoot(letter) on both sides: a stand-in
+	// that returned the bare letter would satisfy a self-referential check
+	// and reproduce the drive-relative bug this test exists to pin.
+	if want := `D:\`; plan.Dest != want {
 		t.Errorf("dest = %q, want the volume root %q", plan.Dest, want)
 	}
-	if got := strings.Join(plan.Args(), " "); got != "copy photos:Movies "+windowsVolumeRoot(letter) {
-		t.Errorf("args = %q, want rclone copy into the volume root", got)
+	if got, want := strings.Join(plan.Args(), " "), `copy photos:Movies D:\`; got != want {
+		t.Errorf("args = %q, want rclone copy into the volume root %q", got, want)
+	}
+	// The production helper itself, with no stand-in installed: `D:` becomes
+	// the volume root `D:\`, and a path that is already rooted is left alone.
+	for _, tc := range []struct{ letter, want string }{
+		{"D:", `D:\`},
+		{`D:\`, `D:\`},
+		{"E:", `E:\`},
+	} {
+		if got := windowsVolumeRoot(tc.letter); got != tc.want {
+			t.Errorf("windowsVolumeRoot(%q) = %q, want %q", tc.letter, got, tc.want)
+		}
 	}
 }
 

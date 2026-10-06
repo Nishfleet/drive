@@ -189,16 +189,24 @@ test("the kind's hour is the ceiling: a shorter provider session wins, a longer 
   assert.equal(mintTtlSeconds("device", 43200), 43200);
   // Nothing named a session, so the kind's own answer stands.
   assert.equal(mintTtlSeconds("device", null), null);
-  // No provider session named, or a nonsense one, falls back to the kind's own
-  // answer, which for a device key is the null it always had.
-  assert.equal(mintTtlSeconds("device", 0), null);
+  // A provider that named a lifetime which cannot be true is refused, not
+  // rounded up: for a device key the kind's own answer IS "never expires", so
+  // folding a broken number into the ceiling would put the one claim this row
+  // must never make straight onto it (drive#544).
+  for (const nonsense of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => mintTtlSeconds("device", nonsense),
+      /positive number or null/,
+      `mintTtlSeconds("device", ${String(nonsense)}) must be refused`,
+    );
+  }
   // No provider session named, or a nonsense one, falls back to the hour.
   assert.equal(mintTtlSeconds("agent", null), 3600);
   assert.equal(mintTtlSeconds("agent", undefined), 3600);
-  assert.equal(mintTtlSeconds("agent", 0), 3600);
-  assert.equal(mintTtlSeconds("agent", -1), 3600);
-  assert.equal(mintTtlSeconds("agent", Number.NaN), 3600);
-  assert.equal(mintTtlSeconds("agent", Number.POSITIVE_INFINITY), 3600);
+  assert.throws(() => mintTtlSeconds("agent", 0), /positive number or null/);
+  assert.throws(() => mintTtlSeconds("agent", -1), /positive number or null/);
+  assert.throws(() => mintTtlSeconds("agent", Number.NaN), /positive number or null/);
+  assert.throws(() => mintTtlSeconds("agent", Number.POSITIVE_INFINITY), /positive number or null/);
 });
 
 test("every machine kind is capped at the hour, so no config widens it", () => {

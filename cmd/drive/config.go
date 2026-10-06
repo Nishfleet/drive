@@ -148,7 +148,14 @@ var userHomeDir = os.UserHomeDir
 // other platform, so one call is the answer on all of them, and the flag
 // default below cannot be dragged back to a relative path by a platform that
 // never sets HOME. An answer the OS cannot give stays empty, which is what
-// the environment read did when nothing was set.
+// the environment read did when nothing was set: the path builders then
+// resolve relative to whatever folder the command ran from, the same as
+// before this change. That fallback is reached only on a platform where the
+// OS reports no home at all, not on the Windows case this fixes (there
+// USERPROFILE is set for every interactive login). Turning it into a hard
+// error would change every string-returning path builder and all of their
+// callers, which is wider than this fix; a caller on such a platform passes
+// --home to name an absolute root explicitly.
 func DefaultHome() string {
 	home, err := userHomeDir()
 	if err != nil {
@@ -755,7 +762,9 @@ func unquoteEnvValue(v string) string {
 		b.WriteByte('\\')
 	}
 	return b.String()
-} // syncFile puts the bytes on the disk before the file is renamed into
+}
+
+// syncFile puts the bytes on the disk before the file is renamed into
 // place. It is a variable so a test can observe the call that a power-cut
 // proof rests on: the rename is a directory operation, so without this the
 // machine can lose a write the file system already answered "done" to, and
