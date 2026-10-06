@@ -96,18 +96,21 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0031_signin_return.sql",
   // The reason marker on the devices row (drive#661): the one word naming
   // which cap took a key down, so a give-back pass (drive#656) can prove it.
   // Expand only, one nullable column on `devices`. `put()` writes the column
   // on every row, so any test that writes a device row needs the migration
   // applied -- the harness runs the real migrations, so this is the whole fix.
-  // Numbered 0031, not the 0022 the issue proposed: 0026_signin_address_sends
-  // owns 0026, 0027_device_queue_reports owns 0027, and 0029_welcome_sent_at
-  // plus 0030_branch_jobs (already in this list, above) are on disk. 0028 is a
-  // gap. A new 0028 would sort before already-applied 0029/0030 and refuse the
-  // deploy. 0029 is not in this short list because put() and the cap path do
+  // Numbered 0032, not the 0022 the issue proposed: 0026_signin_address_sends
+  // owns 0026, 0027_device_queue_reports owns 0027, and 0029_welcome_sent_at,
+  // 0030_branch_jobs and 0031_signin_return are on disk. 0028 is a gap. A new 0028 would sort
+  // before already-applied 0029/0030 and refuse the deploy. 0029 is not in this short list because put() and the cap path do
   // not write welcome_sent_at. drive#619's gate fails a new shared prefix.
-  "drive/0031_capped_reason.sql",
+  "drive/0032_capped_reason.sql",
 ]);
 
 /**
@@ -321,8 +324,9 @@ export function createTestD1(options = {}) {
  * point of the flow.
  *
  * (drive#550): `userAgent` is the requesting request's own header, null when
- * there was none, so a test can read what the mail would name.
- * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */

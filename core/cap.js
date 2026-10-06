@@ -76,7 +76,7 @@ export const READ_ONLY_CAPABILITIES = Object.freeze(
 export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
 
 // The one reason this phase writes on a devices row's `capped_reason`
-// (migrations/drive/0031_capped_reason.sql): this module's freeze took the key
+// (migrations/drive/0032_capped_reason.sql): this module's freeze took the key
 // down because the account's spending cap was reached (drive#661). It is
 // exported so the store, the tests and the give-back pass that reads it back
 // (drive#656) name the same word instead of three literals that can drift. The
