@@ -125,8 +125,6 @@ export default defineConfig({
       // file_versions, usage_minutes, events_seen and meter_rollup_state
       // (migrations/drive/0005_meter.sql) are created and read beside the file
       // index, and giving them a database of their own is this line alone.
-      // test/binding-parity.test.mjs fails the suite if this id ever differs
-      // from DRIVE_DB's, so the split is a red test and not just this comment.
       METER_DB: bindings.d1({
         name: "drive-data",
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
