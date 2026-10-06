@@ -121,6 +121,7 @@ test("three drops through a real link queue three arrivals on the real columns",
   const row = await reader.requests.get(REQUEST_TOKEN);
   assert.ok(row);
   assert.equal(row.digestAt, null, "no digest has gone out yet");
+  /** @type {Array<{name: string, bytes: number}>} */
   const arrivals = JSON.parse(row.pendingUploads);
   assert.deepEqual(
     arrivals.map((a) => a.name),
@@ -169,6 +170,7 @@ test("the nightly digest mails each link once, lists every file, then mails noth
       return { messageId: `msg-${sent.length}` };
     },
   };
+  /** @param {string} accountId */
   /** @param {string} accountId */
   const owner = async (accountId) =>
     accountId === "acct-digest" ? { id: accountId, name: "Nish", email: "nish@example.com" } : null;
@@ -259,6 +261,7 @@ test("one link's send failure does not stop the other link's digest", async () =
   await links.requests.recordArrival(REQUEST_TOKEN, "boom.txt", 4);
   await links.requests.recordArrival(OTHER_TOKEN, "fine.txt", 5);
 
+  /** @type {Array<{to: string}>} */
   const delivered = [];
   const email = {
     /** @param {unknown} message */
@@ -271,6 +274,7 @@ test("one link's send failure does not stop the other link's digest", async () =
       return { messageId: "msg-fine" };
     },
   };
+  /** @param {string} accountId */
   const owner = async (accountId) => ({
     id: accountId,
     name: accountId === "acct-boom" ? "Boom" : "Fine",
@@ -293,7 +297,7 @@ test("one link's send failure does not stop the other link's digest", async () =
   assert.ok(boom);
   assert.equal(boom.digestAt, null, "a failed send is not stamped");
   assert.deepEqual(
-    JSON.parse(boom.pendingUploads).map((a) => a.name),
+    /** @type {Array<{name: string}>} */ (JSON.parse(boom.pendingUploads)).map((a) => a.name),
     ["boom.txt"],
     "the failed link keeps its arrivals for the next nightly run",
   );
@@ -332,6 +336,7 @@ test("an arrival accepted during the send stays queued for the next digest", asy
       return { messageId: `msg-${sent.length}` };
     },
   };
+  /** @param {string} accountId */
   const owner = async (accountId) => ({
     id: accountId,
     name: "Nish",
@@ -353,7 +358,7 @@ test("an arrival accepted during the send stays queued for the next digest", asy
   assert.ok(row);
   assert.equal(row.digestAt, NOW, "the sent digest is still stamped");
   assert.deepEqual(
-    JSON.parse(row.pendingUploads).map((a) => a.name),
+    /** @type {Array<{name: string}>} */ (JSON.parse(row.pendingUploads)).map((a) => a.name),
     ["raced.txt"],
     "the arrival accepted during the send survives for the next run",
   );

@@ -566,6 +566,7 @@ test("an account with no display name is left unseen, never its address", async 
   // no name must not have its email published to anyone holding the link.
   const { links, request } = drive();
   await request("/", { token: TOKEN });
+  /** @param {string} accountId */
   const owner = async (accountId) => ({ id: accountId, name: "", email: "name@example.com" });
   const response = await handleRequestInfoRequest(
     new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
@@ -629,7 +630,12 @@ test("an upload through a link queues an arrival for the nightly digest", async 
   // the file is stored, so the 201 stands.
   const noQueue = {
     ...links,
-    requests: { ...links.requests, recordArrival: undefined },
+    requests: {
+      ...links.requests,
+      recordArrival: async () => {
+        throw new Error("this store has no arrival queue");
+      },
+    },
   };
   const stored = await handleRequestUploadRequest(
     new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=second.pdf`, {
