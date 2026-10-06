@@ -2,21 +2,22 @@
 //
 // #20 built the team routes on the api Worker and closed with the API only.
 // The company screens that invite a member, set read-only or read-write, and
-// remove a member are not built, so every surface that talks about a company
-// drive has to say so and has to name the teams API as version 1's only path.
-// This file pins that on the Talk-to-us box on the pricing page and on the two
-// spec rows, and pins the price the surface carries to core/pricing.js
-// (PRICE), so a later run cannot reintroduce #20's retired $15 per TB ceiling
-// or a screen the API does not back.
+// remove a member are not built, so these three surfaces that talk about a
+// company drive have to say so and have to name the teams API as version 1's
+// only path: the Talk-to-us box on the pricing page, the Business tier row in
+// docs/spec.md, and the Company tier row in docs/build-spec.md.
 //
-// The gate reads the same two spec files the product spec does, and the api
-// reference the copy points at, so "the API is the path" is a pointer to real
-// routes rather than a sentence with nothing behind it.
+// This file pins that, and pins the price those surfaces carry to
+// core/pricing.js (PRICE), so a later run cannot reintroduce #20's retired
+// $15 per TB ceiling or a screen the API does not back. The route test reads
+// the api Worker's own route registry, not just the reference, so "the API is
+// the path" points at routes the Worker registers.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { PRICE } from "../core/pricing.js";
+import { routes } from "../workers/api/src/routes.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/spec.md", import.meta.url), "utf8");
@@ -47,47 +48,58 @@ function specRow(text, label) {
 const businessSpecRow = specRow(spec, "| Business tier");
 const companySpecRow = specRow(buildSpec, "| Company tier");
 
+// Every team operation #20 shipped and docs/api.md documents: the method and
+// path as the api Worker registers them.
+const TEAM_OPERATIONS = Object.freeze([
+  Object.freeze({ method: "POST", path: "/v1/teams" }),
+  Object.freeze({ method: "GET", path: "/v1/teams" }),
+  Object.freeze({ method: "POST", path: "/v1/teams/:teamId/members" }),
+  Object.freeze({ method: "GET", path: "/v1/teams/:teamId/members" }),
+  Object.freeze({ method: "DELETE", path: "/v1/teams/:teamId/members/:memberId" }),
+  Object.freeze({ method: "POST", path: "/v1/teams/:teamId/key" }),
+]);
+
 // #20's ceiling ("$15/TB") is retired in favour of PRICE.maxUsdPerTb ($10);
-// the surface must name a per-TB amount only if it is the shipped one. The
+// these surfaces must name a per-TB amount only if it is the shipped one. The
 // matcher matches "$10 per TB", "$10/TB" and "$10 a TB".
 const PER_TB = /\$\s?(\d+(?:\.\d+)?)\s*(?:\/|per\s*|a\s*)\s*TB\b/gi;
 /** @param {string} text @returns {number[]} */
 const perTbAmounts = (text) => [...text.matchAll(PER_TB)].map((match) => Number(match[1]));
 
-test("the Talk-to-us box says the company screens come later and the API is the path", () => {
+test("the Talk-to-us box says the company screens come later and the API is the only v1 way in", () => {
   assert.match(businessBox, /teams API/i);
-  assert.match(businessBox, /only company path in version 1/i);
+  assert.match(businessBox, /in version 1 only through the teams API/i);
   assert.match(businessBox, /company screens come later/i);
 });
 
-test("both spec rows say the company UI is later and name the API as the v1 path", () => {
+test("both spec rows say the company UI is later and name the API as the only v1 path", () => {
   for (const [name, row] of [
     ["docs/spec.md Business tier", businessSpecRow],
     ["docs/build-spec.md Company tier", companySpecRow],
   ]) {
     assert.match(row, /company UI is later/i, `${name} must say the company UI is later`);
     assert.match(row, /teams API/i, `${name} must name the teams API`);
-    assert.match(
-      row,
-      /only (v1|version 1)?\s*path|only path/i,
-      `${name} must name the API the path`,
-    );
+    assert.match(row, /v1|version 1/i, `${name} must say which version the API is the path in`);
+    assert.match(row, /only (v1 |version 1 )?path/i, `${name} must name the API the only path`);
     assert.match(row, /read_only/, `${name} must name the read-only role`);
     assert.match(row, /read_write/, `${name} must name the read-write role`);
     assert.match(row, /revokes? .*key/i, `${name} must say removal revokes the key`);
   }
 });
 
-test("the API the copy points at documents the four team routes", () => {
-  for (const route of [
-    "POST /v1/teams",
-    "POST /v1/teams/:teamId/members",
-    "GET /v1/teams/:teamId/members",
-    "DELETE /v1/teams/:teamId/members/:memberId",
-    "POST /v1/teams/:teamId/key",
-  ]) {
-    assert.ok(apiDoc.includes(route), `docs/api.md must document ${route}`);
+test("the api Worker registers every team operation the copy points at", () => {
+  const registered = routes.filter((route) => route.path.startsWith("/v1/teams"));
+  for (const { method, path } of TEAM_OPERATIONS) {
+    const found = registered.find((route) => route.method === method && route.path === path);
+    assert.ok(found, `the api Worker must register ${method} ${path}`);
+    assert.equal(found.auth, "account", `${method} ${path} must sit behind the account gate`);
+    assert.ok(apiDoc.includes(`${method} ${path}`), `docs/api.md must document ${method} ${path}`);
   }
+  assert.equal(
+    registered.length,
+    TEAM_OPERATIONS.length,
+    "a team route outside this list needs its place in the reference and this gate",
+  );
 });
 
 test("no teams surface carries a per-TB price but the shipped one", () => {
@@ -120,5 +132,8 @@ test("the price gate has teeth: it catches the retired ceiling on a surface", ()
   assert.deepEqual(perTbAmounts(`never more than $${PRICE.maxUsdPerTb} per TB`), [
     PRICE.maxUsdPerTb,
   ]);
-  assert.equal(perTbAmounts("The teams API is the only company path in version 1.").length, 0);
+  assert.equal(
+    perTbAmounts("A company drive is set up in version 1 only through the teams API.").length,
+    0,
+  );
 });
