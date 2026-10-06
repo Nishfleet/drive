@@ -1311,7 +1311,7 @@ test("the usage page shows the queue a device reported, through the Worker's own
 
   // drive#417: the account the Worker signs in has no accounts row yet, so no
   // card is on file and the read says no charge has been made rather than
-  // showing the membership bill as if it had been taken.
+  // showing a bill as if it had been taken.
   const cardless = await (await read()).json();
   assert.equal(cardless.cardOnFile, false);
   assert.equal(cardless.labels.cost, PRICE.noChargeYet);
