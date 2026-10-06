@@ -35,6 +35,7 @@ import { STATUS_ENDPOINT } from "../core/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
+import { DEVICES_ENDPOINT } from "../src/devices-page.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
@@ -164,6 +165,9 @@ const ACCOUNT_ROUTES = [
   // requires the same 401 for a stranger.
   `${PORTAL_ENDPOINT}`,
   `${PORTAL_ENDPOINT}/`,
+  // drive#525: the devices page lists keys and revokes one at the provider.
+  `${DEVICES_ENDPOINT}`,
+  `${DEVICES_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -241,6 +245,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         path.startsWith(SEARCH_ENDPOINT) ||
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
+        path.startsWith(DEVICES_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
         path.startsWith(STARTER_ENDPOINT) ||
@@ -282,6 +287,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(DEVICES_ENDPOINT) ||
         route.startsWith(STARTER_ENDPOINT) ||
         route.startsWith(CLOSE_ENDPOINT) ||
         route.startsWith(CLOSE_CANCEL_ENDPOINT) ||

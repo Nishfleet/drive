@@ -293,7 +293,7 @@ test("the Worker's gate reads Better Auth's session, not a cookie the browser ch
     [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "gated@example.com");
-  for (const path of ["/api/files", "/api/usage", "/api/first-run-status"]) {
+  for (const path of ["/api/files", "/api/usage", "/api/first-run-status", "/api/devices"]) {
     const allowed = await workerFetch(
       new Request(`${TEST_BASE_URL}${path}`, { headers: { cookie } }),
       env,

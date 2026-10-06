@@ -209,6 +209,11 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
   }),
+  // A devices-page revoke named a key this account does not hold (drive#525).
+  "key-not-found": Object.freeze({
+    what: "That key is not on this account.",
+    next: "Reload the devices page and pick a key that is still listed.",
+  }),
   // A URL with more segments than /api/branches/<name>/<action>.
   "branch-path-unknown": Object.freeze({
     what: "That is not a branch path.",
