@@ -1082,3 +1082,71 @@ func TestMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
 		t.Fatalf("a stopped drive with unchanged files took %d start actions in total, want 2", *starts)
 	}
 }
+
+// The backup exclusion (drive issue #561): macOS's own backup tool walks the
+// home folder, so the mount's transient bytes — the cache chunks and the
+// in-flight conflict copies — are excluded on the first mount and on every
+// one after it. The exclusion is a note when it fails: the drive works without
+// it, and the CACHEDIR.TAG marker still tells a tool that reads it.
+func TestExcludeTransientFromBackupAsksTmutilForBothDirs(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\nprintf '%s\n' \"$*\" >> " + log + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmutil"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cache := t.TempDir()
+	staging := t.TempDir()
+	excludeTransientFromBackup("darwin", MountPlan{CacheDir: cache, StagingDir: staging})
+
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("tmutil was not called: %v", err)
+	}
+	// tmutil is called once per dir, as "addexclusion <dir>" on its own line.
+	calls := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	for _, dir := range []string{cache, staging} {
+		want := "addexclusion " + dir
+		found := false
+		for _, call := range calls {
+			if call == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("no %q call; tmutil was asked:\n%s", want, data)
+		}
+	}
+}
+
+// A `tmutil` that is not installed, or that refuses the exclusion, is a note
+// on stderr and nothing else: the drive mounts and runs either way. The
+// function must return, not fail the mount that called it.
+func TestExcludeTransientFromBackupWithoutTmutilIsNotAMountFailure(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin) // an empty PATH: no tmutil anywhere
+
+	excludeTransientFromBackup("darwin", MountPlan{CacheDir: t.TempDir(), StagingDir: t.TempDir()})
+}
+
+// Everywhere but macOS there is no command to call, so the marker is the whole
+// of the exclusion and the call must be a no-op rather than a failed command.
+func TestExcludeTransientFromBackupIsANoOpOffMacOS(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\nprintf '%s\n' \"$@\" >> " + log + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmutil"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	excludeTransientFromBackup("linux", MountPlan{CacheDir: t.TempDir(), StagingDir: t.TempDir()})
+
+	if _, err := os.ReadFile(log); err == nil {
+		data, _ := os.ReadFile(log)
+		t.Fatalf("tmutil was called on a non-macOS mount:\n%s", data)
+	}
+}
