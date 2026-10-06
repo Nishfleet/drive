@@ -14,9 +14,10 @@ import {
   handleFilesRequest,
   scopeStore,
   TRASH_PURGE_SCHEDULE,
-} from "../src/files.js";
+} from "../core/files.js";
+import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
-import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../src/meter.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -33,7 +34,7 @@ import {
 } from "../src/search.js";
 import { sqlitePlaceholders } from "./harness.mjs";
 
-/** @typedef {import("../src/files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 
 // The ExportedHandler type makes fetch optional and declares the runtime's
 // three arguments. The tests drive the Worker directly, so one wrapper
@@ -966,7 +967,13 @@ test("the deployed cron schedule is the one the module names", () => {
   // branch is a nightly failure, not a silent no-op. Set equality in both
   // directions, so a trigger the handler dropped or a branch nothing fires
   // are both caught.
-  const handled = [METER_CRON, METER_RECONCILE_SCHEDULE, TRASH_PURGE_SCHEDULE, REINDEX_SCHEDULE];
+  const handled = [
+    METER_CRON,
+    METER_RECONCILE_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    REINDEX_SCHEDULE,
+    CLOSE_SCHEDULE,
+  ];
   assert.deepEqual(
     [...declared].sort(),
     [...handled].sort(),

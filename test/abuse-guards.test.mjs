@@ -19,14 +19,14 @@ import {
   preChargeUploadBlocked,
   runPreChargeLimitCron,
   signupCardFingerprint,
-} from "../src/abuse-guards.js";
-import { BILLING_CONFIG, GB_PER_TB } from "../src/billing.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
-import workerModule from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
-import { BYTES_PER_GB, METER_CRON } from "../src/meter.js";
+} from "../core/abuse-guards.js";
+import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
+import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
+import workerModule, { TEST_FILES_STORE } from "../src/index.js";
 import { hasSignupCard } from "../src/signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
@@ -558,6 +558,9 @@ test("the same refusal holds on the schema the sign-in tests build", async () =>
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: TEST_SECRET,
     BETTER_AUTH_URL: TEST_BASE_URL,
+    // Tests inject the in-memory files store. Production never builds it
+    // (src/index.js storeFor, drive#505).
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const workerFetch =
