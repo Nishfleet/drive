@@ -94,8 +94,9 @@ const BRANCHES_PATH = "/api/branches"
 const branchJobPollInterval = 500 * time.Millisecond
 
 // branchJobPollLimit caps the wait: 100,000 files at 80 a batch is 1,250
-// batches, and a 500ms tick for 20 minutes is well above that.
-const branchJobPollLimit = 2400
+// batches. A queue batch pays delivery plus processing, so 500ms ticks for
+// two hours stay above that even when each batch takes a couple of seconds.
+const branchJobPollLimit = 14400
 
 // sleepBranchJob is time.Sleep except in tests that replace it so a poll
 // finishes without waiting on the clock.

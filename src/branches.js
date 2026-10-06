@@ -148,6 +148,21 @@ function approvePlanKey(key) {
   return `${key}/approve-plan`;
 }
 
+/** KV key for the create walk's pending folder list. The list of a wide tree
+ * does not fit in `job_cursor` (D1's 1 MiB row, drive#563 in-run review).
+ * @param {string} key the branch's snapshot key
+ */
+function createWalkKey(key) {
+  return `${key}/create-walk`;
+}
+
+/** KV key for the approve listing walk, same reason as `createWalkKey`.
+ * @param {string} key the branch's snapshot key
+ */
+function approveWalkKey(key) {
+  return `${key}/approve-walk`;
+}
+
 /**
  * The size cap one Workers KV namespace puts on one value: 25 MiB. One
  * snapshot entry measured ~117 bytes (test/branches-snapshot.test.mjs), so
@@ -651,28 +666,72 @@ function parseSnapshotObject(json) {
  * @returns {Promise<Map<string, Fingerprint>>}
  */
 async function listFiles(store, root) {
+  const page = await listFilesPage(store, root, { limit: Number.POSITIVE_INFINITY });
+  return page.files;
+}
+
+/**
+ * Lists up to `limit` folders under `root`, resuming from `pending`. Approve's
+ * first batches use this so a folder-heavy tree cannot spend the subrequest
+ * ceiling on one whole-tree walk (drive#563 in-run review).
+ * @param {FileStore} store
+ * @param {string} root
+ * @param {{limit?: number, pending?: string[], files?: Map<string, Fingerprint>}} [options]
+ * @returns {Promise<{files: Map<string, Fingerprint>, pending: string[], done: boolean, listed: number}>}
+ */
+async function listFilesPage(store, root, options = {}) {
+  const limit = options.limit ?? Number.POSITIVE_INFINITY;
   /** @type {Map<string, Fingerprint>} */
-  const files = new Map();
-  const queue = [root];
-  const seen = new Set();
-  while (queue.length > 0) {
-    const folder = queue.shift();
+  const files = options.files ?? new Map();
+  /** @type {string[]} */
+  const pending = [...(options.pending ?? [root])];
+  let listed = 0;
+  while (pending.length > 0 && listed < limit) {
+    const folder = pending.shift();
     if (folder === undefined) {
       continue;
     }
-    if (seen.has(folder)) {
-      continue;
-    }
-    seen.add(folder);
+    listed += 1;
     for (const entry of await store.list(folder)) {
       if (entry.kind === "folder") {
-        queue.push(entry.path);
+        pending.push(entry.path);
         continue;
       }
       const rel = relativePath(root, entry.path);
       if (rel !== null) {
         files.set(rel, fingerprint(entry));
       }
+    }
+  }
+  return { files, pending, done: pending.length === 0, listed };
+}
+
+/**
+ * @param {Map<string, Fingerprint>} files
+ * @returns {Record<string, Fingerprint>}
+ */
+function fingerprintMapToObject(files) {
+  /** @type {Record<string, Fingerprint>} */
+  const object = {};
+  for (const [rel, fp] of files) {
+    object[rel] = fp;
+  }
+  return object;
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Map<string, Fingerprint>}
+ */
+function fingerprintMapFromObject(raw) {
+  /** @type {Map<string, Fingerprint>} */
+  const files = new Map();
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return files;
+  }
+  for (const [rel, value] of Object.entries(raw)) {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      files.set(rel, /** @type {Fingerprint} */ (value));
     }
   }
   return files;
@@ -806,6 +865,15 @@ export async function diffBranch(store, branch) {
   const snapshot = branch.snapshot;
   const current = await listFiles(store, branch.branchPrefix);
   const source = await listFiles(store, branch.sourcePrefix);
+  return diffFromListings(snapshot, current, source);
+}
+
+/**
+ * @param {Record<string, Fingerprint>} snapshot
+ * @param {Map<string, Fingerprint>} current
+ * @param {Map<string, Fingerprint>} source
+ */
+function diffFromListings(snapshot, current, source) {
   const added = [];
   const changed = [];
   const removed = [];
@@ -1081,6 +1149,9 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   const stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
   const doneSoFar = Number(raw?.job_done ?? 0) || 0;
   const phase = typeof stored.phase === "string" ? stored.phase : "clear";
+  const walkKey = createWalkKey(
+    branch.snapshotKey !== "" ? branch.snapshotKey : snapshotKey(account, branch.name),
+  );
   if (phase === "clear") {
     const startAfter = typeof stored.startAfter === "string" ? stored.startAfter : undefined;
     const paths = await store.listKeys(branch.branchPrefix, {
@@ -1099,14 +1170,25 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     await writeJobProgress(db, branch.id, { cursor: { phase: "copy" }, done: 0, total: 0 });
     return { done: false };
   }
+  /** @type {string[]} */
+  let pending = [];
+  const walkJson = await snapshots.get(walkKey);
+  if (typeof walkJson === "string" && walkJson !== "") {
+    try {
+      const parsed = JSON.parse(walkJson);
+      if (parsed !== null && typeof parsed === "object" && Array.isArray(parsed.pending)) {
+        pending = parsed.pending.filter((item) => typeof item === "string");
+      }
+    } catch (error) {
+      console.error?.(`create walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
+    }
+  }
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
       current: typeof stored.current === "string" ? stored.current : branch.sourcePrefix,
       skip: Number(stored.skip ?? 0) || 0,
-      pending: Array.isArray(stored.pending)
-        ? stored.pending.filter((item) => typeof item === "string")
-        : [],
+      pending,
     },
     snapshot: branch.snapshot,
   });
@@ -1123,6 +1205,11 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     return { error: failureMessage("unexpected"), status: 500, done: true };
   }
   if (copied.done) {
+    try {
+      await snapshots.put(walkKey, "{}");
+    } catch (error) {
+      console.error?.(`create walk cleanup failed for ${branch.id}: ${errorText(error)}`);
+    }
     await writeJobProgress(db, branch.id, {
       cursor: {},
       done: files,
@@ -1144,8 +1231,13 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       progress: { kind: "create", done: files, total: files },
     };
   }
+  await snapshots.put(walkKey, JSON.stringify({ pending: copied.cursor.pending }));
   await writeJobProgress(db, branch.id, {
-    cursor: { phase: "copy", ...copied.cursor },
+    cursor: {
+      phase: "copy",
+      current: copied.cursor.current,
+      skip: copied.cursor.skip,
+    },
     done: files,
     total: Math.max(files, doneSoFar),
   });
@@ -1191,7 +1283,83 @@ async function processApproveBatch(db, snapshots, store, branch) {
       await failJob(db, branch.id, "open", error);
       return { error, status: 500, done: true };
     }
-    const diff = await diffBranch(store, branch);
+    const walkKey = approveWalkKey(branch.snapshotKey);
+    /** @type {{side: string, branchFiles: Record<string, Fingerprint>, sourceFiles: Record<string, Fingerprint>, branchPending: string[], sourcePending: string[]}} */
+    let walk = {
+      side: "branch",
+      branchFiles: {},
+      sourceFiles: {},
+      branchPending: [branch.branchPrefix],
+      sourcePending: [branch.sourcePrefix],
+    };
+    const walkJson = await snapshots.get(walkKey);
+    if (typeof walkJson === "string" && walkJson !== "" && walkJson !== "{}") {
+      try {
+        const parsed = JSON.parse(walkJson);
+        if (parsed !== null && typeof parsed === "object") {
+          walk = {
+            side: typeof parsed.side === "string" ? parsed.side : "branch",
+            branchFiles:
+              parsed.branchFiles !== null && typeof parsed.branchFiles === "object"
+                ? /** @type {Record<string, Fingerprint>} */ (parsed.branchFiles)
+                : {},
+            sourceFiles:
+              parsed.sourceFiles !== null && typeof parsed.sourceFiles === "object"
+                ? /** @type {Record<string, Fingerprint>} */ (parsed.sourceFiles)
+                : {},
+            branchPending: Array.isArray(parsed.branchPending)
+              ? parsed.branchPending.filter((item) => typeof item === "string")
+              : [branch.branchPrefix],
+            sourcePending: Array.isArray(parsed.sourcePending)
+              ? parsed.sourcePending.filter((item) => typeof item === "string")
+              : [branch.sourcePrefix],
+          };
+        }
+      } catch (error) {
+        console.error?.(`approve walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
+      }
+    }
+    let remaining = BRANCH_JOB_BATCH_FILES;
+    if (walk.side === "branch" && remaining > 0) {
+      const page = await listFilesPage(store, branch.branchPrefix, {
+        limit: remaining,
+        pending: walk.branchPending,
+        files: fingerprintMapFromObject(walk.branchFiles),
+      });
+      walk.branchFiles = fingerprintMapToObject(page.files);
+      walk.branchPending = page.pending;
+      remaining -= page.listed;
+      if (page.done) {
+        walk.side = "source";
+      }
+    }
+    if (walk.side === "source" && remaining > 0) {
+      const page = await listFilesPage(store, branch.sourcePrefix, {
+        limit: remaining,
+        pending: walk.sourcePending,
+        files: fingerprintMapFromObject(walk.sourceFiles),
+      });
+      walk.sourceFiles = fingerprintMapToObject(page.files);
+      walk.sourcePending = page.pending;
+      if (page.done) {
+        walk.side = "compute";
+      }
+    }
+    if (walk.side !== "compute") {
+      await snapshots.put(walkKey, JSON.stringify(walk));
+      await writeJobProgress(db, branch.id, { cursor: { ready: false } });
+      return { done: false };
+    }
+    const diff = diffFromListings(
+      branch.snapshot,
+      fingerprintMapFromObject(walk.branchFiles),
+      fingerprintMapFromObject(walk.sourceFiles),
+    );
+    try {
+      await snapshots.put(walkKey, "{}");
+    } catch (error) {
+      console.error?.(`approve walk cleanup failed for ${branch.id}: ${errorText(error)}`);
+    }
     const touched = new Set([...diff.added, ...diff.changed, ...diff.removed]);
     const clashes = diff.sourceChanged.filter((rel) => touched.has(rel));
     if (clashes.length > 0) {
@@ -1612,13 +1780,14 @@ export async function createBranch(
   // takes its own `DEFAULT '{}'`.
   let claimId;
   try {
+    const snapKey = snapshotKey(account, name);
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
           "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind) " +
-          "VALUES (?1,?2,?3,?4,'',0,'creating',?5,?6,'create')",
+          "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,?7,'create')",
       )
-      .bind(account.id, name, folderPath, branchPrefix, createdAt, changedBy)
+      .bind(account.id, name, folderPath, branchPrefix, snapKey, createdAt, changedBy)
       .run();
     if (!claimed.success) {
       return { error: failureMessage("unexpected"), status: 500 };
@@ -1882,15 +2051,16 @@ export async function discardBranch(db, snapshots, store, account, name, options
   if (branch.state === jobState && branch.jobKind === jobKind) {
     return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
   }
-  if (branch.state !== "open") {
+  const fromState = jobKind === "discard" && branch.state === "creating" ? "creating" : "open";
+  if (branch.state !== fromState) {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
   const claimed = await db
     .prepare(
       "UPDATE branches SET state = ?2, job_kind = ?3, job_cursor = '', job_done = 0, job_total = 0, " +
-        "job_error = '' WHERE id = ?1 AND state = 'open'",
+        "job_error = '' WHERE id = ?1 AND state = ?4",
     )
-    .bind(branch.id, jobState, jobKind)
+    .bind(branch.id, jobState, jobKind, fromState)
     .run();
   if (!claimed.success || typeof claimed.meta.changes !== "number") {
     return { error: failureMessage("unexpected"), status: 500 };
@@ -2155,7 +2325,9 @@ export async function handleBranchesRequest(
     if (branch.state === "open") {
       const changed = diff.added.length + diff.changed.length + diff.removed.length;
       await database
-        .prepare("UPDATE branches SET changed_count = ?2, source_changed_count = ?3 WHERE id = ?1")
+        .prepare(
+          "UPDATE branches SET changed_count = ?2, source_changed_count = ?3 WHERE id = ?1 AND state = 'open'",
+        )
         .bind(branch.id, changed, diff.sourceChanged.length)
         .run();
     }

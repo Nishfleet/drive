@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../core/files.js";
 import {
+  BRANCH_JOBS_DEAD_LETTER_QUEUE,
   BRANCH_JOBS_MAX_RETRIES,
+  BRANCH_JOBS_QUEUE,
   BRANCH_QUEUE_KINDS,
   branchJobsQueue,
   handleBranchJobs,
@@ -312,6 +314,67 @@ test("discard refuses an approving branch", async () => {
   assert.equal(row?.state, "approving");
 });
 
+test("discard of a creating branch cancels the copy and frees the name", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  const discarded = await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in discarded));
+  assert.equal(discarded.state, "discarded");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+});
+
+test("create walk pending lives in KV, not in the D1 job_cursor", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < 81; index += 1) {
+    pending.push(scoped.write(`/wide/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+  }
+  pending.push(scoped.write("/wide/sub/z.txt", new Blob(["z"]).stream(), "text/plain"));
+  await Promise.all(pending);
+  const db = createTestD1();
+  const snapshots = createKvSnapshotStore(createTestKv());
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/wide", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+  await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  const copy = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  assert.equal(copy.done, false);
+  const stored = await db
+    .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
+    .bind(row.id)
+    .first();
+  const cursor = JSON.parse(String(stored?.job_cursor ?? "{}"));
+  assert.equal(cursor.pending, undefined);
+  assert.ok(JSON.stringify(cursor).length < 200, JSON.stringify(cursor));
+  const walkJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/create-walk`);
+  assert.ok(walkJson);
+  const walk = JSON.parse(walkJson);
+  assert.ok(Array.isArray(walk.pending));
+  assert.ok(walk.pending.some((path) => String(path).endsWith("/sub")));
+});
+
 test("approve plan lives in KV, not in the D1 job_cursor", async () => {
   const { scoped, db, snapshots } = await driven();
   await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
@@ -415,6 +478,8 @@ test("branchJobsQueue reads BRANCH_JOBS", () => {
   const queue = fakeQueue();
   assert.equal(branchJobsQueue({ BRANCH_JOBS: queue }), queue);
   assert.equal(branchJobsQueue({}), null);
+  assert.equal(BRANCH_JOBS_QUEUE, "drive-branch-jobs");
+  assert.equal(BRANCH_JOBS_DEAD_LETTER_QUEUE, "drive-branch-jobs-dlq");
 });
 
 test("the Worker queue consumer runs a branch.create batch", async () => {
