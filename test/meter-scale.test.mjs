@@ -307,8 +307,9 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   const down = { on: false };
   // The hourly trip's env carries both bindings: the same cron runs the
   // pre-charge sweep off DRIVE_DB (drive#536), and the deploy binds the one
-  // database under both names (cloudflare.config.ts). The sweep gets the raw
-  // db, not the outage proxy: it reads no ledger rows.
+  // database under both names (cloudflare.config.ts). The sweep takes the
+  // raw db: the outage proxy stands in for the draw's ledger failure, and
+  // the sweep is not part of this outage scenario.
   const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>

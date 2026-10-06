@@ -25,6 +25,7 @@ import {
   gbMonths,
   handleUsageRequest,
   meteredMonthlyBillUsd,
+  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
@@ -58,6 +59,18 @@ const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 /** The same dollars the module formats, for a label assertion. */
 /** @param {number} cents */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+test("the divisor is the calendar month's own minutes, whatever the month", () => {
+  // drive#531: each month divides by its own length, so 1 TB held all month
+  // is $10.00 in a 30-day month and in a 31-day one alike. The literals are
+  // the gate: every caller of monthBillCents computes its own monthMinutes
+  // through this one function, so a broken minutesInMonth would cancel out
+  // on both sides of a relational check and only a literal catches it.
+  assert.equal(minutesInMonth("2026-09-16T12:00:00.000Z"), 43_200, "September (30 days)");
+  assert.equal(minutesInMonth("2026-10-16T12:00:00.000Z"), 44_640, "October (31 days)");
+  assert.equal(minutesInMonth("2027-02-16T12:00:00.000Z"), 40_320, "February (28 days)");
+  assert.equal(minutesInMonth("2028-02-16T12:00:00.000Z"), 41_760, "February (leap, 29 days)");
+});
 
 test("the formula edges, held all month", () => {
   // [GB, cents].
