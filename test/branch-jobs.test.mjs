@@ -7,10 +7,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../core/files.js";
 import {
+  BRANCH_JOB_CURSOR_UNSET,
   BRANCH_JOBS_DEAD_LETTER_QUEUE,
   BRANCH_JOBS_MAX_RETRIES,
   BRANCH_JOBS_QUEUE,
   BRANCH_QUEUE_KINDS,
+  branchJobIsCurrent,
   branchJobsQueue,
   handleBranchJobs,
 } from "../src/branch-jobs.js";
@@ -40,6 +42,72 @@ const workerQueue =
   /** @type {(batch: {messages: readonly {body: unknown, ack(): void, retry(): void}[]}, env?: unknown, ctx?: {waitUntil(): void}) => Promise<unknown>} */ (
     /** @type {unknown} */ (worker.queue)
   );
+
+/**
+ * A KV namespace that counts the operations the snapshot store makes, so a
+ * test can say what one batch of a create costs in reads and writes (drive#766).
+ *
+ * A `get` of a key that is not there counts as a read: it is a call the Worker
+ * made and KV answered. A `list` counts once whatever it returns, and its key
+ * count is recorded separately, because "one list of 250 names" and "250 reads"
+ * are different costs.
+ */
+function countingKv() {
+  const inner = createTestKv();
+  const counts = { reads: 0, writes: 0, lists: 0, listedKeys: 0 };
+  return /** @type {KVNamespace & {inner: ReturnType<typeof createTestKv>, reads: number, writes: number, lists: number, listedKeys: number, reset(): void, total: number}} */ (
+    /** @type {unknown} */ ({
+      values: inner.values,
+      inner,
+      /** @param {string} key */
+      async get(key) {
+        counts.reads += 1;
+        return inner.get(key);
+      },
+      /**
+       * @param {string} key
+       * @param {string} value
+       */
+      async put(key, value) {
+        counts.writes += 1;
+        return inner.put(key, value);
+      },
+      /** @param {string} key */
+      async delete(key) {
+        counts.writes += 1;
+        return inner.delete(key);
+      },
+      /** @param {{prefix?: string}} [options] */
+      async list(options = {}) {
+        counts.lists += 1;
+        const listed = await inner.list(options);
+        counts.listedKeys += listed.keys.length;
+        return listed;
+      },
+      get reads() {
+        return counts.reads;
+      },
+      get writes() {
+        return counts.writes;
+      },
+      get lists() {
+        return counts.lists;
+      },
+      get listedKeys() {
+        return counts.listedKeys;
+      },
+      reset() {
+        counts.reads = 0;
+        counts.writes = 0;
+        counts.lists = 0;
+        counts.listedKeys = 0;
+      },
+      get total() {
+        return counts.reads + counts.writes + counts.lists;
+      },
+    })
+  );
+}
 
 /**
  * @param {import("../core/files.js").FileStore} inner
@@ -76,11 +144,11 @@ function countingStore(inner) {
 }
 
 function fakeQueue() {
-  /** @type {Array<{body: unknown}>} */
+  /** @type {Array<{body: any}>} */
   const sent = [];
   return {
     sent,
-    /** @param {unknown} body */
+    /** @param {any} body */
     async send(body) {
       sent.push({ body });
     },
@@ -243,6 +311,117 @@ test("a 20,000-file branch completes with under 100 subrequests per batch", {
   assert.equal(done?.jobDone, 20_000);
 });
 
+test("a 20,000-file create spends the same KV reads and writes on every batch", {
+  timeout: 180_000,
+}, async () => {
+  // The issue's fifth bullet, measured on the namespace rather than on the
+  // file store: a batch that rewrote the whole snapshot paid a read and a write
+  // that grew with every file copied so far, so batch 250 cost 250x what batch
+  // 1 cost. Here every batch but the last, which assembles the snapshot, pays
+  // the same few calls, so the cost per batch does not move with the size of
+  // the branch (drive#766).
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < 20_000; index += 1) {
+    pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+    if (pending.length === 500) {
+      await Promise.all(pending);
+      pending.length = 0;
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const kv = countingKv();
+  const snapshots = createKvSnapshotStore(kv);
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/big", name: "walked" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  const row = await getBranch(db, snapshots, ACCOUNT, "walked");
+  assert.ok(row);
+  const copyCosts = [];
+  let totalReads = 0;
+  let assemblyReads = 0;
+  let assembled = false;
+  for (;;) {
+    kv.reset();
+    const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    // The batch that finishes the copy is the one that assembles the snapshot,
+    // so it is the one batch that reads every part back. It is measured on its
+    // own below and left out of the per-batch cost, because it is the
+    // assembly, not a copy batch (drive#766).
+    if (result.done) {
+      assert.equal(result.error, undefined, JSON.stringify(result));
+      assembled = true;
+      assemblyReads = kv.reads;
+      assert.ok(
+        assemblyReads >= 20_000,
+        `the assembling batch read ${assemblyReads} parts, so it read the whole snapshot once`,
+      );
+      kv.reset();
+      const again = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+      assert.equal(again.error, undefined);
+      assert.equal(kv.total, 0, "a finished branch runs no KV work when the message comes back");
+      break;
+    }
+    copyCosts.push(kv.total);
+    totalReads += kv.reads;
+  }
+  assert.equal(assembled, true, "the create finished");
+  const steady = copyCosts.slice(2);
+  assert.ok(steady.length > 200, `the branch took ${steady.length + 2} copy batches`);
+  const first = steady[0];
+  const last = steady[steady.length - 1];
+  assert.ok(
+    Math.abs(last - first) <= 2,
+    `a batch cost ${first} KV calls at 80 files and ${last} at 19,920; ` +
+      "the cost must not grow with the branch (drive#766)",
+  );
+  // A copy batch writes one part per file it copied, so its cost is the batch
+  // size plus a small fixed overhead for the walk blob and the cursor. That is
+  // the constant this bullet asks for: set by the batch, not by the branch.
+  assert.ok(
+    first <= BRANCH_JOB_BATCH_FILES + 16,
+    `a copy batch spent ${first} KV calls for ${BRANCH_JOB_BATCH_FILES} files`,
+  );
+  // Every copy batch reads the same three things: the create-walk blob it
+  // resumes from (its manifest and its parts, because a wide tree's pending
+  // folder list outgrows one value) and nothing of the snapshot. A batch that
+  // rewrote or re-read the snapshot would add a read that grows with the
+  // branch, which is what this bound rules out (drive#766).
+  assert.ok(
+    totalReads <= steady.length * 4,
+    `the ${steady.length} copy batches read the namespace ${totalReads} times, more than once each`,
+  );
+  console.log(
+    `drive#766: 20,000 files, ${steady.length + 2} batches, ` +
+      `${first} KV calls at 80 files and ${last} at 19,920; ` +
+      `${totalReads} reads over the copy batches, ` +
+      `${assemblyReads} in the one assembling batch`,
+  );
+  const done = await getBranch(db, snapshots, ACCOUNT, "walked");
+  assert.equal(done?.state, "open");
+  assert.equal(done?.jobDone, 20_000);
+  // The value, read back through the store the same reader uses: 20,000
+  // entries, in the one key every other reader resolves.
+  const stored = JSON.parse(/** @type {string} */ (await snapshots.get(row.snapshotKey)));
+  assert.equal(Object.keys(stored).length, 20_000, "the assembled snapshot holds every file");
+  // The append-only parts the walk wrote are swept once they are folded in, so
+  // the namespace is not holding the branch twice (drive#766).
+  const leftover = [...kv.inner.values.keys()].filter((key) =>
+    key.startsWith(`${row.snapshotKey}.a`),
+  );
+  assert.deepEqual(leftover, [], "no create part is left beside the assembled snapshot");
+});
+
 test("approve of 1,000 changes issues one LIST per parent folder", async () => {
   const raw = createMemoryStore();
   const scoped = scopeStore(raw, ACCOUNT);
@@ -342,6 +521,258 @@ test("discard of a creating branch cancels the copy and frees the name", async (
   assert.equal(discarded.state, "discarded");
   const row = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(row?.state, "discarded");
+});
+
+test("a stuck creating row is cancelled through the API and its copy is removed", async () => {
+  // The third bullet, on the creating half. A create whose queue message was
+  // lost leaves the row `creating` forever, and the name stays claimed. The
+  // route answers the cancel, the copy under the prefix is removed before the
+  // row is freed, and the generation moves so the lost message, if it ever
+  // arrives, is a no-op rather than a second copy (drive#766).
+  const { scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "stuck" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  assert.equal(queue.sent.length, 1, "the create enqueued its first batch");
+  const row = await getBranch(db, snapshots, ACCOUNT, "stuck");
+  assert.ok(row);
+  // The first batch clears the prefix and the second copies, so run the two
+  // that leave a copy on disk and the row genuinely part-way.
+  await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  const copied = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  assert.equal(copied.error, undefined);
+  assert.deepEqual(
+    (await scoped.list("/.branches/stuck")).map((entry) => entry.path).sort(),
+    ["/.branches/stuck/a.txt", "/.branches/stuck/sub"],
+    "a copy is on disk under the branch prefix",
+  );
+  assert.equal(
+    await readText(scoped, "/.branches/stuck/sub/b.txt"),
+    "b",
+    "including the file in the sub-folder",
+  );
+  // The route, not the internals: the same call the Worker makes.
+  const cancelled = await discardBranch(db, snapshots, scoped, ACCOUNT, "stuck");
+  assert.ok(!("error" in cancelled), JSON.stringify(cancelled));
+  assert.equal(cancelled.state, "discarded");
+  assert.deepEqual(
+    await scoped.list("/.branches/stuck"),
+    [],
+    "the copy is removed before the name is freed, so a retry finds no stale branch",
+  );
+  const after = await getBranch(db, snapshots, ACCOUNT, "stuck");
+  assert.equal(after?.state, "discarded");
+  // The lost message now names a generation the row has moved past.
+  const stale = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id, 1);
+  assert.equal(stale.done, true);
+  assert.equal(stale.error, undefined, "the redelivered message is a no-op, not a failure");
+  assert.deepEqual(await scoped.list("/.branches/stuck"), [], "and it copied nothing");
+  // The name is free for the next create.
+  const again = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "stuck" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(again.state, "creating", "the name is free again");
+});
+
+test("a stuck rewinding row is resumed by rewind instead of refused as closed", async () => {
+  // The third bullet, on the rewind half. `rewindBranch` used to run its
+  // "is this branch open" preview before anything else, so a rewind that was
+  // already running answered "that branch is not open" for as long as it was
+  // stuck. It now resumes from the row's own cursor (drive#766).
+  const { scoped, db, snapshots } = await driven();
+  const created = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(created.state, "open");
+  // Take the branch one step into the rewind and stop, which is what a lost
+  // queue message leaves behind.
+  await db
+    .prepare(
+      "UPDATE branches SET state = 'rewinding', job_kind = 'rewind', job_cursor = ?, job_done = 0, " +
+        "job_total = 2 WHERE name = ?1 AND account_id = ?2",
+    )
+    .bind(JSON.stringify({ phase: "clear", startAfter: undefined }), "work", ACCOUNT.id)
+    .run();
+  const queue = fakeQueue();
+  const resumed = await rewindBranch(db, snapshots, scoped, ACCOUNT, "work", Date.now(), queue);
+  assert.ok(!("error" in resumed), JSON.stringify(resumed));
+  // Resuming enqueues rather than reporting the row's old error, so the work
+  // has somewhere to go.
+  assert.equal(queue.sent.length, 1, "the resume enqueued the rewind's next batch");
+  const sent = /** @type {{kind: string, cursor: number, branchId: number}} */ (queue.sent[0].body);
+  assert.equal(sent.kind, "branch.rewind");
+  assert.ok(
+    Number.isSafeInteger(sent.cursor) && sent.cursor > 0,
+    "the message carries the generation",
+  );
+  // Run it to the end through the normal job path: no bypass, no separate code.
+  let steps = 0;
+  for (;;) {
+    const current = await getBranch(db, snapshots, ACCOUNT, "work");
+    if (current?.state !== "rewinding") {
+      break;
+    }
+    const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, current.id);
+    steps += 1;
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    if (result.done || steps > 20) {
+      break;
+    }
+  }
+  const finished = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(
+    finished?.state,
+    "discarded",
+    "the resumed rewind ran to the end through the job path",
+  );
+  assert.deepEqual(
+    (await scoped.list("/Photos")).map((entry) => entry.path).sort(),
+    ["/Photos/a.txt", "/Photos/sub"],
+    "rewind leaves the original folder exactly as it was",
+  );
+  assert.equal(
+    await readText(scoped, "/Photos/sub/b.txt"),
+    "b",
+    "including the file in the sub-folder",
+  );
+});
+
+test("a redelivered message whose cursor already moved is a no-op", async () => {
+  // The fourth bullet. A queue redelivers a message after the row moved on, so
+  // the same batch can arrive twice. The message carries the row's generation
+  // when it was sent; a message whose generation is behind the row's is acked
+  // and nothing else happens (drive#766).
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  const db = createTestD1();
+  const kv = countingKv();
+  const snapshots = createKvSnapshotStore(kv);
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "again" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  const sent = /** @type {{branchId: number, cursor: number}} */ (queue.sent[0].body);
+  assert.equal(sent.cursor, 1, "the first create message carries generation 1");
+
+  // Move the row on, as a cancel does.
+  await db
+    .prepare("UPDATE branches SET job_generation = job_generation + 1 WHERE id = ?1")
+    .bind(sent.branchId)
+    .run();
+
+  kv.reset();
+  const stale = await processBranchJob(db, snapshots, scoped, ACCOUNT, sent.branchId, sent.cursor);
+  assert.deepEqual(stale, { done: true }, "the stale message returns done and nothing else");
+  assert.equal(kv.total, 0, "and it touched no key at all");
+  const row = /** @type {{job_generation: number, state: string} | null} */ (
+    await db
+      .prepare("SELECT job_generation, state FROM branches WHERE id = ?1")
+      .bind(sent.branchId)
+      .first()
+  );
+  assert.ok(row, "the row is still there");
+  assert.equal(row.job_generation, 2, "the row's generation did not move");
+  assert.equal(row.state, "creating", "and the stale message did not move the row either");
+
+  // The same message with no cursor runs, because a message from before the
+  // field existed cannot be checked and running it is the safe side.
+  const old = await processBranchJob(db, snapshots, scoped, ACCOUNT, sent.branchId);
+  assert.equal(old.error, undefined, "a message with no cursor still runs");
+  assert.notEqual(old.done, true, "and it does real work");
+
+  // A missing row is acknowledged too, so a redelivery after a delete does not
+  // retry forever.
+  await db.prepare("DELETE FROM branches WHERE id = ?1").bind(sent.branchId).run();
+  const gone = await processBranchJob(db, snapshots, scoped, ACCOUNT, sent.branchId, sent.cursor);
+  assert.deepEqual(gone, { done: true }, "a message for a row that is gone is acked");
+});
+
+test("a cancel that cannot remove the copy keeps the name claimed", async () => {
+  // The other side of the cancel's order. If the copy cannot be removed the
+  // row keeps its claim and says `storage-down`, so the next create of that name
+  // is still refused and the second cancel tries again. Freeing the name over a
+  // copy that is still on disk would let the next create's `clear` batch find
+  // it and hide the leftover (drive#766).
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  const db = createTestD1();
+  const snapshots = createKvSnapshotStore(createTestKv());
+  // A `creating` row with a copy already under its prefix, which is what a lost
+  // queue message leaves behind.
+  await scoped.write("/.branches/wedged/a.txt", new Blob(["a"]).stream(), "text/plain");
+  await db
+    .prepare(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot_key, " +
+        "snapshot_bytes, state, created_at, changed_by_key_id, job_kind, job_generation) " +
+        "VALUES (?1,'wedged','/Photos','/.branches/wedged','u/acct-1/branch/wedged',0," +
+        "'creating','2026-01-01T00:00:00.000Z','','create',1)",
+    )
+    .bind(ACCOUNT.id)
+    .run();
+  const row = await getBranch(db, snapshots, ACCOUNT, "wedged");
+  assert.ok(row);
+  // A store whose remove refuses: the copy is on disk and cannot be taken out.
+  const broken = new Proxy(scoped, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop !== "removeBatch" && typeof value === "function") {
+        return value.bind(target);
+      }
+      return async () => {
+        throw new Error("the object store refused the delete");
+      };
+    },
+  });
+  // `drive branch <folder> --cancel` is the route onto a `creating` row: a
+  // second create of the name either resumes the copy or, asked to cancel,
+  // takes it away (drive#766).
+  const failed = await createBranch(
+    db,
+    snapshots,
+    /** @type {import("../core/files.js").FileStore} */ (broken),
+    ACCOUNT,
+    { folder: "/Photos", name: "wedged", cancel: true },
+  );
+  assert.equal(failed.status, 500, "a copy that cannot be removed is storage-down");
+  const still = await getBranch(db, snapshots, ACCOUNT, "wedged");
+  assert.equal(still?.state, "creating", "the row keeps its claim, so a retry can try again");
+  assert.equal(
+    await readText(scoped, "/.branches/wedged/a.txt"),
+    "a",
+    "and the copy it could not remove is still there",
+  );
+  // A clean store frees it on the second attempt.
+  const retried = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "wedged",
+    cancel: true,
+  });
+  assert.ok(!("error" in retried), JSON.stringify(retried));
+  assert.deepEqual(await scoped.list("/.branches/wedged"), [], "the retry removed the copy");
 });
 
 test("create walk pending lives in KV, not in the D1 job_cursor", async () => {
@@ -514,6 +945,31 @@ test("handleBranchJobs acks a finished batch, retries a throw, and continues", a
   assert.equal(bad.retried, true);
   assert.equal(next.acked, true);
   assert.equal(queue.sent.length, 1);
+});
+
+test("branchJobIsCurrent answers the four cursor cases without guessing", () => {
+  // The rule itself, so the three "cannot check" cases are pinned rather than
+  // left to each caller's idea of a missing value (drive#766).
+  const job = (/** @type {number} */ cursor) =>
+    /** @type {import("../src/branch-jobs.js").BranchJob} */ ({
+      kind: "branch.create",
+      accountId: "acct-1",
+      branchId: 7,
+      name: "work",
+      cursor,
+    });
+  // Behind the row: the row moved on, so the message is stale.
+  assert.equal(branchJobIsCurrent(job(2), 5), false);
+  // On the row, or ahead of it (a message sent before a rollback): not stale.
+  assert.equal(branchJobIsCurrent(job(5), 5), true);
+  assert.equal(branchJobIsCurrent(job(9), 5), true);
+  // Cannot check, so it runs: an old message with no cursor...
+  assert.equal(branchJobIsCurrent(job(BRANCH_JOB_CURSOR_UNSET), 5), true);
+  // ...and a row the previous Worker wrote with no generation.
+  assert.equal(branchJobIsCurrent(job(3), 0), true);
+  assert.equal(branchJobIsCurrent(job(3), null), true);
+  assert.equal(branchJobIsCurrent(job(3), undefined), true);
+  assert.equal(branchJobIsCurrent(job(3), Number.NaN), true);
 });
 
 test("branchJobsQueue reads BRANCH_JOBS", () => {

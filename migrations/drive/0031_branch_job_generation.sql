@@ -3,17 +3,21 @@
 -- the row has moved on is recognised and dropped instead of running a batch of
 -- work the row already did.
 --
--- Expand only, phase one. One nullable column with a DEFAULT, so the previous
--- Worker's INSERT (which omits this column) and its SELECT (which omits it)
--- both still work against this table. Nothing is dropped and nothing is
--- renamed. D1 has no down-migration: this file is one-way.
+-- Expand only, phase one. One column with a DEFAULT and no other change, so
+-- the previous Worker's INSERT (which omits this column) and its SELECT (which
+-- omits it) both still work against this table. Nothing is dropped and nothing
+-- is renamed. D1 has no down-migration: this file is one-way.
 --
 --   job_generation  bumped by every claim that starts a job on the row. 0 means
 --                   "no generation", which is how a row written before this
 --                   file and a queue message sent before this change read, and
 --                   both run as before.
 --
--- The read path treats a NULL and 0 the same way, so a row claimed by the
--- previous Worker is not treated as stale by a newer one.
+-- The column is NOT NULL with DEFAULT 0 rather than nullable, so every row is
+-- readable as a number. A row claimed by the previous Worker reads 0, and the
+-- message it was sent carries no cursor, so a newer Worker treats the pair as
+-- "cannot be checked" and runs it: the safe side of a redelivery is to do the
+-- work twice (the batch is idempotent) rather than to drop a message that was
+-- never stale (drive#766).
 
 ALTER TABLE branches ADD COLUMN job_generation INTEGER NOT NULL DEFAULT 0;

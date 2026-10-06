@@ -1632,7 +1632,7 @@ async function enqueueJob(queue, job, db) {
   if (!queue) {
     return false;
   }
-  const body = job.cursor === undefined && db ? await withCursor(db, job) : job;
+  const body = job.cursor === undefined && db ? { ...job, ...(await withCursor(db, job)) } : job;
   try {
     if (typeof queue.send === "function") {
       await queue.send(body);
@@ -2593,6 +2593,10 @@ export async function runBranchJobToEnd(db, snapshots, store, account, branchId)
  * @returns {Promise<BranchJobResult>}
  */
 export async function resumeBranchJob(db, snapshots, store, account, branch, queue, kind) {
+  // `enqueueJob` fills the message's cursor from the row, so the resumed
+  // message carries the row's current generation. A delivery of an older
+  // message for the same row is then a no-op rather than a second pass over
+  // files this resume is already copying (drive#766).
   if (
     await enqueueJob(
       queue,
@@ -2760,12 +2764,16 @@ export async function createBranch(
     // A create that is already running resumes from its own cursor instead of
     // answering "that name is taken" (drive#766). The row's cursor is where the
     // last batch stopped, so the resumed job copies the files that are left and
-    // writes nothing twice.
-    if (existing.state === "creating" && existing.jobKind === "create") {
+    // writes nothing twice. A row whose own cancel failed keeps `state` as
+    // `creating` and clears `job_kind`, so the check is on the state alone: a
+    // `creating` row is a create, whichever job its last batch recorded.
+    if (existing.state === "creating") {
       if (request.cancel === true) {
         return cancelCreatingBranch(db, snapshots, store, existing);
       }
-      return resumeBranchJob(db, snapshots, store, account, existing, queue, "create");
+      if (existing.jobKind === "create") {
+        return resumeBranchJob(db, snapshots, store, account, existing, queue, "create");
+      }
     }
     return { error: failureMessage("branch-exists"), status: 409 };
   }
