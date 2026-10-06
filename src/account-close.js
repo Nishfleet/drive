@@ -7,15 +7,15 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
-import { json } from "../workers/api/src/http.js";
-import { DAY_MS } from "./auth.js";
-import { sendEmail } from "./email-send.js";
-import { scopeStore } from "./files.js";
-import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
+import { DAY_MS } from "../core/auth.js";
+import { sendEmail } from "../core/email-send.js";
+import { scopeStore } from "../core/files.js";
+import { json } from "../core/http.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 
-/** @typedef {import("./files.js").FileStore} FileStore */
-/** @typedef {ReturnType<typeof import("../workers/api/src/devices.js").createD1DeviceStore>} DeviceStore */
-/** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
+/** @typedef {ReturnType<typeof import("../core/devices.js").createD1DeviceStore>} DeviceStore */
+/** @typedef {import("../core/email-send.js").EmailBinding} EmailBinding */
 
 export const CLOSE_ENDPOINT = "/api/account/close";
 export const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
@@ -25,6 +25,17 @@ export const CLOSE_REMINDER_DAYS = 25;
 // One day in seconds, from src/auth.js's own day, so the grace window and every
 // other expiry in the repo cannot disagree about what a day is (issue #583).
 const DAY_SECONDS = DAY_MS / 1000;
+
+// The account close cron runs on its own schedule, not inside the meter's
+// reconcile trip (drive#522). Sharing the reconcile's trigger meant the two
+// had one blast radius: a reconcileMeter throw, or the cron simply running
+// late behind it, delayed every close receipt, reminder and purge on the same
+// night. 06:00 UTC is two hours after the reconcile (src/meter.js
+// METER_RECONCILE_SCHEDULE) and an hour after the nightly trash purge
+// (src/files.js TRASH_PURGE_SCHEDULE) so the three never contend, and
+// cloudflare.config.ts declares this same string as the Worker's fifth cron
+// trigger, which test/meter.test.mjs pins the way it pins the others.
+export const CLOSE_SCHEDULE = "0 6 * * *";
 
 export const CLOSE_COPY = Object.freeze({
   heading: "Close your account",
@@ -65,9 +76,11 @@ function normalizeEmail(value) {
  * (drive#422). The ISO stamp the Worker used to send was correct but
  * unreadable to a person, and the walkthrough named it.
  *
- * `en-GB` with a numeric day and a short month is the same pair
- * src/files.js formatWhen uses for the same-year dates in the file list, so
- * every customer-facing day drive shows reads one way.
+ * The words are written here on the Worker because this day is fixed by the
+ * clock the account closed on and is stated inside an email and the close
+ * banner, not rendered by a page (drive#559 moved every page's date to the
+ * browser). `en-GB` with a numeric day and a short month, namespaced to UTC
+ * so the day is the same one for every reader.
  *
  * The zone rides in the value, and this is the one place the reason is
  * written (drive#689). The day is a UTC day and it has to stay one: the
@@ -91,10 +104,48 @@ export function purgeOnDate(closedAtSeconds) {
       `purgeOnDate needs closed_at in unix seconds, got ${String(closedAtSeconds)}`,
     );
   }
-  const day = new Date(
-    (closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000,
-  ).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  return utcDay(closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS);
+}
+
+/**
+ * One instant in unix seconds as the UTC day, in the words both close dates
+ * use: "3 Nov (UTC)".
+ * @param {number} seconds
+ * @returns {string}
+ */
+function utcDay(seconds) {
+  const day = new Date(seconds * 1000).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
   return `${day} (UTC)`;
+}
+
+/**
+ * The day an account's files were deleted, from the instant the purge ran, in
+ * the same "3 Nov (UTC)" words purgeOnDate uses for the day they will be (drive#522).
+ * One formatter for both, so the receipt's "your files go on X" and the purge
+ * notice's "deleted on X" never read as two different calendars.
+ *
+ * Not the close date plus the window: the notice says the files are gone, and
+ * they are gone as of the moment this was called. Naming the window's end
+ * would have the mail disagree with the row's own `purged_at` whenever the
+ * cron ran late, which on a retrying purge it does.
+ *
+ * @param {number} atSeconds
+ * @returns {string}
+ */
+export function purgedOnDate(atSeconds) {
+  if (typeof atSeconds !== "number" || !Number.isFinite(atSeconds)) {
+    throw new TypeError(
+      `purgedOnDate needs the purge instant in unix seconds, got ${String(atSeconds)}`,
+    );
+  }
+  // The instant itself, not plus the grace window: purgeOnDate adds the 30
+  // days because it names a future day, and reusing it here made the notice
+  // say the files were deleted 30 days after they were.
+  return utcDay(atSeconds);
 }
 
 /**
@@ -125,35 +176,77 @@ function requireMatchingEmail(expected, typed) {
  */
 
 /**
- * Close the signed-in account: stamp `closed`, revoke every key, send the
- * day-0 receipt. Files stay until the nightly cron reaches day 30.
+ * Close the signed-in account: stamp `closed`, revoke every key, then send
+ * the day-0 receipt. Files stay until the nightly cron reaches day 30.
+ *
+ * The close lands first and the mail second (drive#522). Before this, an
+ * unset MAIL_FROM or a failing mailer threw *before* the account was closed,
+ * so a mail outage left every customer unable to close and the production
+ * deployment — which has no MAIL_FROM yet — unable to close at all. Now the
+ * revocation is unconditional: `closed_at` is stamped and every key dies
+ * whatever the mailer does. A mail that fails is logged and swallowed, and
+ * `close_mail_sent_at` stays null, which is what makes the receipt retryable:
+ * listDueCloseMail still returns the row on the next pass.
  * @param {CloseInput} input
  */
 export async function closeAccount(input) {
   const expected = input.account.email ?? "";
   requireMatchingEmail(expected, input.typedEmail);
-  if (typeof input.mailFrom !== "string" || input.mailFrom.trim().length === 0) {
-    throw new Error("MAIL_FROM is not set on this deployment");
-  }
   const at = Math.floor(input.now / 1000);
   const closed = await input.devices.closeAccount({ id: input.account.id, email: expected }, at);
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
   if (closed.closeMailSentAt === null) {
-    await sendEmail(input.email, {
-      to: expected,
-      from: input.mailFrom,
-      kind: "account-closed",
-      data: {
-        graceDays: CLOSE_GRACE_DAYS,
-        reminderDays: CLOSE_REMINDER_DAYS,
-        purgeOn: purgeOnDate(closed.closedAt),
-      },
+    // The one place a failed send is deliberately not an error: the account
+    // is already closed and the receipt is already queued. Throwing here
+    // would tell the customer the close failed when it did not, and would
+    // leave them unable to tell it from a close that never happened.
+    const sent = await sendCloseMail(input.email, input.mailFrom, expected, "account-closed", {
+      graceDays: CLOSE_GRACE_DAYS,
+      reminderDays: CLOSE_REMINDER_DAYS,
+      purgeOn: purgeOnDate(closed.closedAt),
     });
-    await input.devices.markCloseMailSent(closed.id, at);
+    if (sent) {
+      await input.devices.markCloseMailSent(closed.id, at);
+    }
   }
   return closed;
+}
+
+/**
+ * Sends one close-lane email and reports whether it landed. A falsy `from` is
+ * a deployment with no sending address: that is a skip, not a crash, for the
+ * same reason a failing mailer is (the close stands either way). `alert` is
+ * what makes the skip visible: the person is logged at error level with the
+ * account id, because "nothing happened" is the one outcome nobody reads a
+ * cron log for.
+ * @param {unknown} email the EMAIL binding
+ * @param {string} mailFrom
+ * @param {string} to
+ * @param {"account-closed"|"account-close-reminder"|"files-deleted"} kind
+ * @param {Record<string, unknown>} data
+ * @returns {Promise<boolean>} true when the send landed
+ */
+async function sendCloseMail(email, mailFrom, to, kind, data) {
+  if (typeof mailFrom !== "string" || mailFrom.trim().length === 0) {
+    console.error(
+      `account close: the ${kind} email for ${to} was not sent because this deployment has no MAIL_FROM`,
+    );
+    return false;
+  }
+  try {
+    await sendEmail(email, { to, from: mailFrom, kind, data });
+    return true;
+  } catch (error) {
+    console.error(
+      "account close: the %s email for %s failed and stays queued for the next pass",
+      kind,
+      to,
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
+  }
 }
 
 /**
@@ -163,7 +256,8 @@ export async function cancelClose(input) {
   const expected = input.account.email ?? "";
   requireMatchingEmail(expected, input.typedEmail);
   try {
-    return await input.devices.cancelClose(input.account.id);
+    const purgeDueAt = Math.floor(input.now / 1000) - CLOSE_GRACE_DAYS * DAY_SECONDS;
+    return await input.devices.cancelClose(input.account.id, purgeDueAt);
   } catch (error) {
     if (error instanceof TypeError && typeof error.message === "string") {
       const key = error.message;
@@ -225,11 +319,20 @@ async function purgeAccountRecords(db, accountId) {
 }
 
 /**
- * Nightly pass: day-25 reminder, then day-30 file delete. Only rows whose
- * person asked to close are touched. One account's purge failure is logged
- * and the pass moves on (drive#565): the next account still purges and the
- * mails still go out, and the failed account resumes from the cursor its
- * last completed batch saved.
+ * Nightly pass: day-25 reminder, then day-30 file delete, and the receipt
+ * retry for any close whose mail failed the first time. Only rows whose
+ * person asked to close are touched.
+ *
+ * Every account is isolated (drive#522). One account's failing mailer used to
+ * throw out of the loop and abort the whole pass, so a single bad address
+ * left every later customer's receipt, reminder and purge undone until the
+ * next run. Each account is now its own try/catch and the pass always
+ * finishes, so one broken row cannot delay anyone else by a night.
+ *
+ * The purge only runs for accounts whose day-0 receipt and day-25 reminder
+ * both landed (listDuePurge), and the ones it skipped for want of either
+ * notice are named at error level: deleting a person's files without ever
+ * having warned them is the one outcome this pass must not produce quietly.
  * @param {{
  *   db: D1Database,
  *   devices: DeviceStore,
@@ -245,51 +348,116 @@ export async function runAccountCloseCron(input) {
   }
   const at = Math.floor(input.now / 1000);
   const dueReceipt = await input.devices.listDueCloseMail();
-  const duePurge = await input.devices.listDuePurge(at - CLOSE_GRACE_DAYS * DAY_SECONDS);
   const dueReminder = await input.devices.listDueReminder(at - CLOSE_REMINDER_DAYS * DAY_SECONDS);
+  const purgeBefore = at - CLOSE_GRACE_DAYS * DAY_SECONDS;
   let mailed = 0;
+  let mailFailures = 0;
   for (const row of dueReceipt) {
-    if (row.email.trim().length === 0) {
-      console.error(`account ${row.id} is due a close receipt but has no email`);
-      continue;
-    }
-    if (row.closedAt === null) {
-      throw new Error(`account ${row.id} is due a close receipt but has no closed_at`);
-    }
-    await sendEmail(input.email, {
-      to: row.email,
-      from: input.mailFrom,
-      kind: "account-closed",
-      data: {
+    // One account's failure is that account's business (drive#522). Every
+    // receipt, reminder and purge below sits in its own boundary, so one bad
+    // address or one failing D1 write cannot cost the other accounts their
+    // notice the way a throw out of this loop used to.
+    try {
+      if (row.email.trim().length === 0) {
+        console.error(`account ${row.id} is due a close receipt but has no email`);
+        mailFailures += 1;
+        continue;
+      }
+      if (row.closedAt === null) {
+        console.error(`account ${row.id} is due a close receipt but has no closed_at`);
+        mailFailures += 1;
+        continue;
+      }
+      const sent = await sendCloseMail(input.email, input.mailFrom, row.email, "account-closed", {
         graceDays: CLOSE_GRACE_DAYS,
         reminderDays: CLOSE_REMINDER_DAYS,
         purgeOn: purgeOnDate(row.closedAt),
-      },
-    });
-    await input.devices.markCloseMailSent(row.id, at);
-    mailed += 1;
+      });
+      if (!sent) {
+        mailFailures += 1;
+        continue;
+      }
+      await input.devices.markCloseMailSent(row.id, at);
+      mailed += 1;
+    } catch (error) {
+      mailFailures += 1;
+      console.error(
+        "account close: the close receipt for account %s failed and stays queued",
+        row.id,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
   let reminded = 0;
   for (const row of dueReminder) {
-    if (row.email.trim().length === 0) {
-      console.error(`account ${row.id} is due a close reminder but has no email`);
-      continue;
+    try {
+      if (row.email.trim().length === 0) {
+        console.error(`account ${row.id} is due a close reminder but has no email`);
+        continue;
+      }
+      if (row.closedAt === null) {
+        console.error(`account ${row.id} is due a close reminder but has no closed_at`);
+        continue;
+      }
+      // A reminder the mailer dropped past day 25 lands here as a retry, and
+      // by day 30 the window is already over. The copy then has to say the
+      // files are due, not "in 5 days on <a date already past>": the purge
+      // runs later this same pass, and a reminder that misstates the date is
+      // worse than none (drive#522). The ordinary case, day 25 to 29, keeps
+      // the "in N days" copy.
+      const dueNow = row.closedAt + CLOSE_GRACE_DAYS * DAY_SECONDS <= at;
+      const sent = await sendCloseMail(
+        input.email,
+        input.mailFrom,
+        row.email,
+        "account-close-reminder",
+        {
+          graceDays: CLOSE_GRACE_DAYS,
+          reminderDays: CLOSE_REMINDER_DAYS,
+          purgeOn: purgeOnDate(row.closedAt),
+          due: dueNow,
+        },
+      );
+      if (!sent) {
+        continue;
+      }
+      await input.devices.markReminderSent(row.id, at);
+      reminded += 1;
+    } catch (error) {
+      console.error(
+        "account close: the reminder for account %s failed and stays queued",
+        row.id,
+        error instanceof Error ? error.message : String(error),
+      );
     }
-    if (row.closedAt === null) {
-      throw new Error(`account ${row.id} is due a close reminder but has no closed_at`);
-    }
-    await sendEmail(input.email, {
-      to: row.email,
-      from: input.mailFrom,
-      kind: "account-close-reminder",
-      data: {
-        graceDays: CLOSE_GRACE_DAYS,
-        reminderDays: CLOSE_REMINDER_DAYS,
-        purgeOn: purgeOnDate(row.closedAt),
-      },
-    });
-    await input.devices.markReminderSent(row.id, at);
-    reminded += 1;
+  }
+  // The accounts past the window whose day-0 receipt still has not landed
+  // after this pass's mail work. They are not purged, and they are named here
+  // rather than passed over in silence: this is the list a person has to work
+  // through when a mail outage turned into data that outlived its own notice
+  // (drive#522). Listed after the receipt pass, not before it, so a receipt
+  // that landed a moment ago clears the account from the report it caused.
+  // Read the purge list after the notice passes, not before them. A purge is
+  // only allowed once both notices are recorded, and on a first pass at day 30
+  // the reminder is sent by this very pass. Reading the list first would skip
+  // that account for a whole day on the strength of a notice it had not been
+  // sent yet, which is the delay the "purge only accounts whose notices were
+  // sent" rule is meant to prevent, not create.
+  const duePurge = await input.devices.listDuePurge(purgeBefore);
+  const blockedPurge = await input.devices.listBlockedPurge(purgeBefore);
+  for (const row of blockedPurge) {
+    const missing = [
+      row.closeMailSentAt === null || row.closeMailSentAt === undefined ? "close receipt" : null,
+      row.reminderSentAt === null || row.reminderSentAt === undefined ? "reminder" : null,
+    ]
+      .filter((name) => name !== null)
+      .join(" and ");
+    console.error(
+      "account close: account %s is past its %s-day window but its %s never landed, so its files were NOT deleted; the notice retries on the next pass",
+      row.id,
+      CLOSE_GRACE_DAYS,
+      missing,
+    );
   }
   let purged = 0;
   let purgeFailures = 0;
@@ -306,6 +474,21 @@ export async function runAccountCloseCron(input) {
       await purgeAccountRecords(input.db, row.id);
       await input.devices.markPurged(row.id, at);
       purged += 1;
+      // The last thing a closing account hears, sent only after the objects
+      // are actually gone (drive#522). Not before: the copy says the files
+      // have been deleted, and saying so a moment before the delete that
+      // failed would be a lie with a timestamp on it. A failure here does not
+      // reopen the purge — the files are already gone and the account is
+      // already stamped purged — so it is logged and counted, not retried.
+      // `at` is the purge instant, so the date on the notice is the date the
+      // row's own purged_at carries.
+      const deleted = await sendCloseMail(input.email, input.mailFrom, row.email, "files-deleted", {
+        purgedOn: purgedOnDate(at),
+        graceDays: CLOSE_GRACE_DAYS,
+      });
+      if (!deleted) {
+        mailFailures += 1;
+      }
     } catch (error) {
       purgeFailures += 1;
       console.error(
@@ -314,7 +497,14 @@ export async function runAccountCloseCron(input) {
       );
     }
   }
-  return { mailed, reminded, purged, purgeFailures };
+  return {
+    mailed,
+    mailFailures,
+    reminded,
+    purged,
+    purgeFailures,
+    purgeSkipped: blockedPurge.length,
+  };
 }
 
 /**

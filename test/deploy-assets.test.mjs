@@ -24,12 +24,12 @@ import { createServer } from "node:http";
 import { extname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createMemoryStore } from "../core/keystore.js";
+import { failureMessage } from "../core/messages.js";
+import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../core/seo.js";
 import worker from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
 import { DOC_PAGES } from "../src/render-docs.js";
-import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../src/seo.js";
-import apiWorker, { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
+import { dispatch } from "../workers/api/src/index.js";
 import { API_PREFIX } from "../workers/api/src/routes.js";
 
 /** @param {string} path @returns {string} */
@@ -135,7 +135,7 @@ test("the root llms.txt advertises only URLs the site ships", () => {
 
 test("every docs page in the sitemap ships as an HTML page and a .md copy", () => {
   // The two halves a reader can arrive by: a person follows the HTML, an agent
-  // follows the Markdown. src/seo.js is the one list both the sitemap and
+  // follows the Markdown. core/seo.js is the one list both the sitemap and
   // src/render-docs.js read, so a page cannot be built without being listed,
   // nor listed without being built.
   assert.ok(docsBuilt, "run `npm run docs:build`: public/docs/ was not built");
@@ -163,14 +163,14 @@ test("every docs page in the sitemap ships as an HTML page and a .md copy", () =
 });
 
 test("the docs build is not a second hand-kept copy of the page list", () => {
-  // src/render-docs.js derives the built files from src/seo.js, so the list
+  // src/render-docs.js derives the built files from core/seo.js, so the list
   // has one home. This asserts the derivation rather than the contents: a page
   // added to the sitemap by hand, with nothing behind it, fails the test above;
-  // a page listed in src/seo.js with no Markdown behind it fails here.
+  // a page listed in core/seo.js with no Markdown behind it fails here.
   assert.deepEqual(
     DOC_PAGES.map((page) => page.url),
     SEO_DOC_PAGES.map((page) => page.path),
-    "the docs build and the sitemap must read the same page list (src/seo.js)",
+    "the docs build and the sitemap must read the same page list (core/seo.js)",
   );
   const built = readdirSync(new URL("../docs-site/", import.meta.url)).filter((name) =>
     name.endsWith(".md"),
@@ -190,7 +190,7 @@ test("the site's own asset files ship, and the API is left to the Worker", () =>
   for (const path of [SITE.homePath, SITE.robotsPath, SITE.sitemapPath, SITE.llmsPath]) {
     assert.ok(
       shipsAsset(path),
-      `${absoluteUrl(path)} is a path src/seo.js declares and public/ does not carry (${assetFileFor(path)})`,
+      `${absoluteUrl(path)} is a path core/seo.js declares and public/ does not carry (${assetFileFor(path)})`,
     );
   }
   // The asset layer's own contract (cloudflare.config.ts): /api/*, /s/* and
@@ -383,13 +383,6 @@ function siteRequest(request, env = {}) {
   );
 }
 
-/** The api Worker's own fetch, driven with the bindings its routes read.
- * @type {(request: Request, env: unknown) => Promise<Response>}
- */
-const apiFetch = /** @type {(request: Request, env: unknown) => Promise<Response>} */ (
-  /** @type {unknown} */ (apiWorker.fetch)
-);
-
 test("the site Worker mounts the api registry's own family", async () => {
   // The prefix is the api registry's (workers/api/src/routes.js API_PREFIX,
   // the value every path in that registry starts with), so the site Worker's
@@ -458,7 +451,7 @@ test("a deployment with no api binding is a closed door, not an open one", async
   assert.deepEqual(
     await response.json(),
     { error: failureMessage("unexpected") },
-    "the closed door speaks the one failure table's words (src/messages.js)",
+    "the closed door speaks the one failure table's words (core/messages.js)",
   );
 });
 
@@ -599,17 +592,25 @@ test("an /api/* caller that sent a browser Accept header still gets JSON", async
 test("one host answers both families: the api Worker behind the binding", async () => {
   // The proof this issue asks for, at the level a worker can prove it: the
   // site's own route table, a service binding, and the api Worker's own
-  // dispatcher behind it. The binding is injected, because no deployment has
-  // produced one — drive-api is not deployed, and a real binding fails this
-  // Worker's own deploy until it is — so what this proves is that the two
-  // Workers compose through this route table, not that the live host answers.
+  // dispatcher behind it. dispatch is driven with the stand-in store tests
+  // import, because production fetch refuses a missing DRIVE_DB (drive#505)
+  // and this test is about routing, not storeFor. The binding is injected,
+  // because no deployment has produced one — drive-api is not deployed, and a
+  // real binding fails this Worker's own deploy until it is.
+  const store = createMemoryStore({ now: () => 0 });
   const env = {
     API: {
       fetch: (/** @type {Request} */ request) =>
-        apiFetch(request, {
-          DRIVE_DB: null,
-          DEVICE_RATE_LIMITER: allowAll(),
-          DEVICE_GLOBAL_RATE_LIMITER: allowAll(),
+        dispatch(request, {
+          env: {
+            DEVICE_RATE_LIMITER: allowAll(),
+            DEVICE_GLOBAL_RATE_LIMITER: allowAll(),
+          },
+          db: null,
+          store,
+          accounts: null,
+          account: null,
+          now: () => 0,
         }),
     },
   };
@@ -712,7 +713,7 @@ test("POST /api/keys/revoke reaches the api Worker through the one host (drive#3
   assert.deepEqual(
     await closed.json(),
     { error: failureMessage("unexpected") },
-    "the closed door speaks the one failure table's words (src/messages.js)",
+    "the closed door speaks the one failure table's words (core/messages.js)",
   );
 
   // A throwing binding is the message table's one sentence, the same property

@@ -116,10 +116,24 @@ func setCacheMax(home, maxSize, rclone string) error {
 	return nil
 }
 
+// mountOn is the kernel's answer to "is this drive mounted?". Tests replace
+// it so a refusal while mounted does not need a real FUSE mount.
+var mountOn = Mounted
+
 // clearCache empties the cache while leaving the uploads still waiting and the
 // files this computer keeps offline. Dirty metadata is rclone's own queue; the
 // offline list is `drive offline`'s promise. Everything else goes.
+//
+// A live mount is refused: deleting vfs/ bytes under rclone leaves a window
+// where a read returns NUL and a save between the two walks is lost.
 func clearCache(home, rclone string) error {
+	on, err := mountOn(CurrentGOOS(), home)
+	if err != nil {
+		return err
+	}
+	if on {
+		return fail("cache-clear-mounted")
+	}
 	idx, err := LoadOffline(home)
 	if err != nil {
 		return err

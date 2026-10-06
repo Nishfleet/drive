@@ -20,7 +20,7 @@
 //                  folder. It expires on the same 7-day window and can be
 //                  revoked, and it refuses uploads while the owner's drive is
 //                  read-only at its spending cap — the cap is read from
-//                  src/billing.js's capStatus(), never re-decided here, so a
+//                  core/billing.js's capStatus(), never re-decided here, so a
 //                  capped drive cannot take a new file through a request page.
 //                  A stranger is also bounded by a per-file size, a per-link
 //                  total the owner sets (low default), and the two stock
@@ -39,24 +39,22 @@
 // It was a pair of in-memory Maps once, which made a link work on exactly the
 // Worker instance that minted it and lose it on every deploy (issue #207).
 // Nothing here invents a second path to storage: bytes go through the FileStore
-// interface (src/files.js) and the link records go through the same D1
+// interface (core/files.js) and the link records go through the same D1
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
-import { json, readJsonObject } from "../workers/api/src/http.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
-} from "./abuse-guards.js";
-import { DAY_MS } from "./auth.js";
-import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
+} from "../core/abuse-guards.js";
+import { DAY_MS } from "../core/auth.js";
+import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 // The decimal GB and the day are imported rather than restated: the storage
 // limit, the per-link upload total and the meter all divide by the same GB, and
 // every expiry in the repo is measured in the same day. The GB is
-// src/billing.js's own, beside GB_PER_TB; the day is src/auth.js's own, declared
-// there because src/auth.js depends on nothing but the email sender
+// core/billing.js's own, beside GB_PER_TB; the day is core/auth.js's own
 // (issue #583).
 import {
   etagMatches,
@@ -67,11 +65,12 @@ import {
   scopeStore,
   TRASH_PATH,
   validatePath,
-} from "./files.js";
-import { balanceCents } from "./ledger.js";
-import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
-import { formatBytes, unauthorizedResponse } from "./status.js";
+} from "../core/files.js";
+import { json, readJsonObject } from "../core/http.js";
+import { balanceCents } from "../core/ledger.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
+import { formatBytes, unauthorizedResponse } from "../core/status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
 export const SHARE_LINK_PREFIX = "/s";
@@ -84,7 +83,7 @@ export const REQUEST_PAGE = "/upload.html";
 /** How long a link lasts, in days, when the caller does not choose. */
 export const DEFAULT_LINK_DAYS = 7;
 /** One day in milliseconds, the unit the expiry is measured in. Re-exported
- * from src/auth.js for the callers that import the day from here. */
+ * from core/auth.js for the callers that import the day from here. */
 export { DAY_MS };
 // Per-file ceiling on a public upload request (drive issue #208, from the
 // 00:35 review of #87). 32 MB stays inside a Workers isolate (128 MB) even
@@ -355,18 +354,19 @@ export function linkStateLabel(state) {
   return label;
 }
 
-/** The day a link stops working, in words, for the owner's list.
- *
+/**
+ * The instant a link stops working (drive#559). The Worker sends the instant
+ * and never words for it: a UTC timestamp reads the wrong day at both ends of
+ * the month for a customer in another zone. The upload page writes it in the
+ * browser's own zone, and `drive` writes it in the machine's.
  * @param {number} expiresAt
+ * @returns {string} an ISO instant
  */
-export function expiresLabel(expiresAt) {
+export function expiresAtIso(expiresAt) {
   if (!Number.isFinite(expiresAt)) {
-    throw new TypeError(`expiresLabel needs an expiry time, got ${String(expiresAt)}`);
+    throw new TypeError(`expiresAtIso needs an expiry time, got ${String(expiresAt)}`);
   }
-  return `Until ${new Date(expiresAt).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}`;
+  return new Date(expiresAt).toISOString();
 }
 
 /**
@@ -388,7 +388,7 @@ export function shareRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     downloads: count,
     downloadsLabel:
       count === 0
@@ -416,7 +416,7 @@ function requestRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     uploads: count,
     uploadBytes: bytes,
     maxBytes: max,
@@ -432,7 +432,7 @@ function requestRow(record, now, base) {
 // The upload page's copy. public/upload.html is a static asset and cannot
 // import this module, so test/share.test.mjs reads the shipped page and fails
 // when its words drift from here — the same gate test/files.test.mjs runs for
-// src/files.js and public/files.html.
+// core/files.js and public/files.html.
 export const UPLOAD_PAGE_COPY = Object.freeze({
   title: "Drop files here",
   lede: "Files you drop land in the folder below. The owner sees them on their drive.",
@@ -884,7 +884,7 @@ function methodNotAllowed(allowed, action) {
 // stranger holding one token, so an internal message (a binding name, a path,
 // a query error) is never a thing to hand back; the caller gets the message
 // table's generic words, which is the same answer any unexpected failure in
-// the Worker gets (src/messages.js `unexpected`).
+// the Worker gets (core/messages.js `unexpected`).
 /**
  * @param {string} where
  */
@@ -927,7 +927,7 @@ function baseFromRequest(request) {
  * answer comes from the same interface every other read uses. The root always
  * exists. This is the paved path: the Files page asks the same listing the
  * same way, so there is no second way to know a folder is there.
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {string} path a validated folder path
  */
 export async function folderExists(files, path) {
@@ -958,7 +958,7 @@ export function folderDisplayName(folder) {
  *
  * The account comes from the caller and is required, never defaulted: a
  * request that cannot prove an account is answered with the shared 401
- * (unauthorizedResponse, src/status.js) before any link, file or list is
+ * (unauthorizedResponse, core/status.js) before any link, file or list is
  * touched, exactly the way /api/files is (drive issue #73, north star: Safe).
  * Every read and write goes through scopeStore(files, account), the one place
  * the account prefix is applied, so a share can only ever name a path inside
@@ -968,7 +968,7 @@ export function folderDisplayName(folder) {
  * middleware (src/index.js csrfWhenBrowser), not a second copy of the
  * same-origin rule here.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
@@ -1085,13 +1085,15 @@ export async function handleShareRequest(request, files, links, account, options
  * The type is the file's kind, never the claim the uploader made of it, and a
  * type that can carry script by its own name or by the file's extension is
  * served as an octet-stream attachment instead of rendering from our origin
- * (the same rule /api/files/download applies — src/files.js). A shared file
+ * (the same rule /api/files/download applies — core/files.js). A shared file
  * still opens in the tab for a picture or a PDF, which is what "a link that
  * opens the file" means; what it cannot do is run as a page on our domain.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
+ *   `recordDownload` adds the served bytes to the link owner's download total
+ *   (drive#517), so a share download is billed to the account that shared it.
  */
 export async function handleShareFileRequest(request, files, links, options = {}) {
   const now = options.now ?? Date.now();
@@ -1187,6 +1189,11 @@ export async function handleShareFileRequest(request, files, links, options = {}
     // full link refuses here instead of serving more bytes it cannot count.
     return plain(failureMessage("download-link-cap"), 429);
   }
+  // The bytes leave our storage on the owner's behalf, so they go on the
+  // owner's month (drive#517), the same total the dl Worker adds to.
+  if (options.recordDownload) {
+    await options.recordDownload(record.accountId, served);
+  }
   return new Response(object.body, {
     status,
     headers: shareHeaders(record.path, object.contentType, {
@@ -1264,7 +1271,7 @@ function shareHeaders(path, contentType, extra = {}) {
  * folder is looked at through scopeStore(files, account), so a request can
  * only ever open an upload page for a folder inside the signed-in account.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
@@ -1405,7 +1412,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
   return json({
     open: true,
     folder: folderDisplayName(record.folder),
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
   });
 }
 
@@ -1425,7 +1432,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * request row and against the owner's spending cap — the same capStatus()
  * resolver the owner's own uploads use.
  * @param {Request} request
- * @param {import("./files.js").FileStore} files a FileStore
+ * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
  * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
@@ -1505,7 +1512,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (options.db) {
     // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
     // not on the length header a stranger's client sent. An empty body counts
-    // as 1 byte once the drive is at 1 TB, the same edge src/files.js holds.
+    // as 1 byte once the drive is at 1 TB, the same edge core/files.js holds.
     const stored = await accountStoredBytes(options.db, record.accountId);
     const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
     const blocked = preChargeUploadBlocked({

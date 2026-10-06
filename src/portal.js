@@ -3,7 +3,7 @@
 // account and 302-redirects to it. An account with no saved customer has no
 // Dodo customer yet, so the portal has nothing to open: the route answers a
 // plain message instead of a redirect. The same words are carried in the
-// payment-failed email via absoluteUrl(PORTAL_ENDPOINT) (src/seo.js), so the
+// payment-failed email via absoluteUrl(PORTAL_ENDPOINT) (core/seo.js), so the
 // link in the mail is the one this route serves.
 //
 // Dodo's customer-portal session endpoint is documented at
@@ -11,9 +11,9 @@
 // POST /customers/{customer_id}/customer-portal/session, bearer auth, optional
 // `return_url` query parameter, and a 200 body of { "link": string }.
 
-import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
-import { failureMessage } from "./messages.js";
-import { unauthorizedResponse } from "./status.js";
+import { isDodoUrl, resolveDodoUrl } from "../core/dodo.js";
+import { failureMessage } from "../core/messages.js";
+import { unauthorizedResponse } from "../core/status.js";
 
 export const PORTAL_ENDPOINT = "/api/billing/portal";
 
@@ -23,7 +23,7 @@ export const PORTAL_ENDPOINT = "/api/billing/portal";
 const DODO_PORTAL_TIMEOUT_MS = 10_000;
 
 /**
- * A plain-text answer, the same shape the read paths use (src/files.js). The
+ * A plain-text answer, the same shape the read paths use (core/files.js). The
  * portal's non-redirect answers are prose a person reads, not a JSON body a
  * script reads, so every one of them is this.
  * @param {string} body

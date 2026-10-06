@@ -8,7 +8,7 @@
     "test/integration/*.test.mjs",
     "workers/*/test/*.test.js"
   ],
-  "project": ["src/**/*.js", "workers/**/*.js"],
+  "project": ["core/**/*.js", "src/**/*.js", "workers/**/*.js"],
   "ignoreBinaries": ["unshare", "ffmpeg", "ffprobe", "mount", "findmnt"],
   "rules": {
     "files": "error",

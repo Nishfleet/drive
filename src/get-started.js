@@ -1,5 +1,5 @@
 // The first-run page's renderer (drive issue #70). The copy and the arithmetic
-// come from src/status.js and src/messages.js — the same source the CLI, the
+// come from core/status.js and core/messages.js — the same source the CLI, the
 // api Worker and the tests read — so this page holds no second copy of a
 // sentence, a window or a label for anything to drift from.
 //
@@ -26,7 +26,7 @@ import {
   syncStatus,
   UPLOAD_LABEL,
   uploadProgress,
-} from "./status.js";
+} from "../core/status.js";
 // The pending-close banner is one shared file. The other signed-in pages load
 // it with <script type="module" src="/close-banner.js">. This page already
 // loads one module, and lighthouserc.json allows only one script resource, so
@@ -101,7 +101,7 @@ export function connectionLine(state) {
       : undefined;
   if (!entry) {
     throw new TypeError(
-      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in src/status.js`,
+      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in core/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -145,7 +145,7 @@ export function emptyState(screen) {
       : undefined;
   if (!entry) {
     throw new TypeError(
-      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in src/status.js`,
+      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in core/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -291,14 +291,14 @@ export function lastSyncText(device) {
  * cell sits beside the code a person has to paste, so the words a synced Mac
  * reads are the words on its own clock, not a second one.
  *
- * `en-GB` with a numeric day and a short month is the pair the rest of the
- * site writes its days in (src/files.js formatWhen, src/account-close.js
- * purgeOnDate), so a device's last sync reads the same way as every other day
- * drive shows. The time zone is injected rather than read from the runtime so
- * a test can pin one; `undefined` is the zone the browser is in, which is
- * what the page passes.
+ * The locale is the reader's too (drive#559): a numeric day, a short month,
+ * the year and the clock, in the order and the 12- or 24-hour form the
+ * browser's own locale uses, the same choice the file rows make
+ * (public/files.html whenLabel). The zone and the locale are injected rather
+ * than read from the runtime so a test can pin them; `undefined` is the
+ * browser's own, which is what the page passes.
  * @param {string} instant an ISO-8601 stamp
- * @param {{timeZone?: string}} [options]
+ * @param {{timeZone?: string, locale?: string}} [options]
  * @returns {string}
  */
 export function syncInstantText(instant, options = {}) {
@@ -312,13 +312,12 @@ export function syncInstantText(instant, options = {}) {
   if (Number.isNaN(time.getTime())) {
     throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
   }
-  return time.toLocaleString("en-GB", {
+  return time.toLocaleString(options.locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
     timeZone: options.timeZone,
   });
 }
@@ -401,7 +400,7 @@ function element(tag, className, text) {
 
 // The shell ships the three steps' list empty and the two empty states and the
 // live line with no text: the words arrive from the module here, so the HTML
-// carries structure and src/status.js carries copy and there is no third copy
+// carries structure and core/status.js carries copy and there is no third copy
 // to keep in step with either.
 function renderSteps() {
   const list = required("steps");

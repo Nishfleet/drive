@@ -19,7 +19,7 @@
 //   2. The 30-day window, and it is enforced on the server rather than by
 //      hiding a button: a branch older than the window answers that it cannot
 //      be rewound, so a caller who ignores the page cannot rewind it either.
-//      The window is the drive's own (src/files.js RECENTLY_DELETED_DAYS, the
+//      The window is the drive's own (core/files.js RECENTLY_DELETED_DAYS, the
 //      same 30 days the 30-day undo promises), read from there so the two
 //      cannot disagree about how long a rewind lasts.
 //   3. Who changed what, from the same row the rewind reads: the key on the
@@ -33,8 +33,11 @@
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
 
-import { json } from "../workers/api/src/http.js";
-import { DAY_MS } from "./auth.js";
+import { DAY_MS } from "../core/auth.js";
+import { RECENTLY_DELETED_DAYS } from "../core/files.js";
+import { json } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
+import { unauthorizedResponse } from "../core/status.js";
 import {
   diffBranch,
   discardBranch,
@@ -42,15 +45,12 @@ import {
   readSnapshot,
   readSnapshotObject,
 } from "./branches.js";
-import { RECENTLY_DELETED_DAYS } from "./files.js";
-import { failureMessage } from "./messages.js";
-import { unauthorizedResponse } from "./status.js";
 
 /** The route family the rewind screen and the CLI read. */
 export const REWIND_ENDPOINT = "/api/rewind";
 
 /** How long a rewind stays available, in days. Read from the drive's own
- * 30-day undo window (src/files.js) rather than declared here, so the screen's
+ * 30-day undo window (core/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 
@@ -96,7 +96,8 @@ function plain(message, status, headers = {}) {
  *   string, createdAt: string, ageDays: number, windowDays: number,
  *   restorableUntil: string, canRewind: boolean,
  *   unavailableReason: "window-closed"|"already-closed"|null,
- *   files: {added: string[], changed: string[], removed: string[], count: number}}} RewindPreview
+ *   files: {added: string[], changed: string[], removed: string[], count: number},
+ *   progress: {kind: string, done: number, total: number}}} RewindPreview
  *
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
@@ -163,6 +164,11 @@ export async function rewindPreview(store, branch, now, snapshots) {
     canRewind: open && withinWindow,
     unavailableReason: open ? (withinWindow ? null : "window-closed") : "already-closed",
     files,
+    progress: {
+      kind: branch.jobKind ?? "",
+      done: branch.jobDone ?? 0,
+      total: branch.jobTotal ?? 0,
+    },
   });
 }
 
@@ -202,10 +208,11 @@ async function rewindBranchRow(db, snapshots, store, account, name) {
  * @param {{id: string}} account
  * @param {string} name
  * @param {number} now epoch milliseconds
+ * @param {{send?: Function, sendBatch?: Function}|null} [queue]
  * @returns {Promise<{error: string, status: number, rewind?: RewindPreview}
- *   |{name: string, state: string, rewound: number, changedBy: string}>}
+ *   |{name: string, state: string, rewound: number, changedBy: string, progress?: {kind: string, done: number, total: number}}>}
  */
-export async function rewindBranch(db, snapshots, store, account, name, now) {
+export async function rewindBranch(db, snapshots, store, account, name, now, queue = null) {
   const branch = await rewindBranchRow(db, snapshots, store, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
@@ -220,7 +227,10 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
       preview.unavailableReason === "window-closed" ? "rewind-window-closed" : "branch-not-open";
     return { error: failureMessage(key), status: 409, name, rewind: preview };
   }
-  const result = await discardBranch(db, snapshots, store, account, name);
+  const result = await discardBranch(db, snapshots, store, account, name, {
+    kind: "rewind",
+    queue,
+  });
   // `result` is a union; the failure arm is the one carrying a status, and
   // `"error" in result` is its discriminator and narrows the success arm.
   if ("error" in result) {
@@ -231,6 +241,7 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
     state: result.state,
     rewound: preview.files.count,
     changedBy: preview.changedBy,
+    progress: result.progress,
   };
 }
 
@@ -251,6 +262,7 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
  * @param {import("./branches.js").FileStore|null} store a scoped store
  * @param {{id: string}|null} account
  * @param {() => number} now
+ * @param {{send?: Function, sendBatch?: Function}|null} [queue]
  */
 export async function handleRewindRequest(
   request,
@@ -259,6 +271,7 @@ export async function handleRewindRequest(
   store,
   account,
   now = () => Date.now(),
+  queue = null,
 ) {
   if (!account) {
     return unauthorizedResponse();
@@ -309,11 +322,11 @@ export async function handleRewindRequest(
     return json({ rewind: await rewindPreview(store, branch, at, snapshots) });
   }
   if (request.method === "POST") {
-    const result = await rewindBranch(db, snapshots, store, account, name, at);
+    const result = await rewindBranch(db, snapshots, store, account, name, at, queue);
     if ("error" in result) {
       return json(result, result.status);
     }
-    return json(result);
+    return json(result, 202);
   }
   return plain("Method not allowed. GET the rewind, or POST it.", 405, { allow: "GET, POST" });
 }
