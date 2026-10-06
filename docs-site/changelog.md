@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-06
 
+- An upload link now says who it belongs to. The page a stranger opens shows
+  the owner's name above the folder, and once a day the owner gets one email
+  listing the files that arrived through that link since the last one, rather
+  than one email per file.
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states

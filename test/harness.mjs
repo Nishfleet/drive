@@ -93,6 +93,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // The per-link arrival digest (drive#684): upload_requests.digest_at and
+  // pending_uploads. Expand only; the upload path and the info route read the
+  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
+  // Numbered 0028 because 0022–0026 are already taken.
+  "drive/0028_request_digest.sql",
 ]);
 
 /**

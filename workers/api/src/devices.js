@@ -1171,6 +1171,37 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * The Better Auth `user` row behind an account id (drive issue #684), for
+     * the display name an upload page and its digest show. The `user` table is
+     * Better Auth's own (migrations/drive/0005_better_auth.sql) and `id` is
+     * its primary key, so the upload link row's `account_id` is the id here;
+     * the read matches src/auth.js's own columns rather than the `accounts`
+     * billing row. `name` is the row's own value and may be blank: a caller
+     * that shows a name to a stranger must not fall back to the address, and
+     * the digest caller that may use the address already has `email`. A blank
+     * address (an account that cannot be mailed) reads null, so the caller
+     * reports it instead of mailing nobody.
+     * @param {string} accountId
+     * @returns {Promise<{id: string, name: string, email: string}|null>}
+     */
+    async accountById(accountId) {
+      const row = /** @type {{id?: unknown, name?: unknown, email?: unknown}|null|undefined} */ (
+        await first(db, 'SELECT id, name, email FROM "user" WHERE id = ?1', accountId)
+      );
+      if (row === null || row === undefined || typeof row.id !== "string" || row.id === "") {
+        return null;
+      }
+      if (typeof row.email !== "string" || row.email === "") {
+        return null;
+      }
+      return {
+        id: row.id,
+        name: typeof row.name === "string" ? row.name : "",
+        email: row.email,
+      };
+    },
+
+    /**
      * @param {{id: string, email?: string}} account
      * @param {number} capCents
      */

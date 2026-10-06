@@ -69,6 +69,14 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "upload-arrivals") {
+    return {
+      ownerName: "Nish",
+      folder: "Your drive",
+      arrivals: [{ name: "contract.pdf", sizeLabel: "1.2 MB" }],
+      replyTo: REPLY_TO,
+    };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 

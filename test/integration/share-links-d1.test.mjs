@@ -327,6 +327,9 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
   assert.deepEqual(await info.json(), {
     open: true,
     folder: "inbox",
+    // No owner resolver on this call: the name is the empty string, and the
+    // page hides its "Shared by" line rather than showing a blank (drive#684).
+    owner: "",
     expiresAtIso: expiresAtIso(now + 7 * DAY_MS),
   });
 

@@ -98,6 +98,7 @@ import {
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
+  sendArrivalDigests,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { purgeExpiredSigninSends } from "./signin-send-limit.js";
@@ -459,6 +460,20 @@ async function liveDevicesFor(env, account) {
  */
 function capStateFor(env) {
   return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
+}
+
+/**
+ * The resolver the public upload page asks for a link owner's display name
+ * (drive issue #684): the Better Auth `user` row for the account that minted
+ * the link, so a stranger opening the link sees whose drive it is. It is the
+ * same per-call device store `capStateFor` uses, and the same resolver feeds
+ * the nightly arrival digest (`sendArrivalDigests`), so the name on the page
+ * and the name in the mail come from one read.
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<{id: string, name: string, email: string}|null>}
+ */
+function ownerFor(env) {
+  return (accountId) => createD1DeviceStore(env.DRIVE_DB).accountById(accountId);
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
@@ -913,7 +928,9 @@ export function createApp() {
     }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env), {
+      owner: ownerFor(c.env),
+    }),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
     handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor(c.env), {
@@ -1280,6 +1297,36 @@ const handler = {
             `link retention: pruned ${purged.shares} share rows, ` +
               `${purged.requests} upload-request rows`,
           );
+          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+          // The arrival digest (drive issue #684): one mail a day to a link's
+          // owner, listing what arrived through that link since the last one.
+          // It shares the close cron's settings and its fire-and-forget shape:
+          // the reconcile trip should not wait on a mail send, and an idle
+          // deployment with no MAIL_FROM queues nothing rather than failing
+          // every night. The no-sender case is logged once a night, so a
+          // deployment that lost its MAIL_FROM says so here instead of keeping
+          // every arrival queued with nothing in the log.
+          if (secrets.MAIL_FROM) {
+            context.waitUntil(
+              sendArrivalDigests(env.DRIVE_DB, {
+                email: env.EMAIL,
+                mailFrom: secrets.MAIL_FROM,
+                owner: ownerFor(env),
+                now: toMillis(event.scheduledTime, "scheduledTime"),
+              })
+                .then((result) => {
+                  console.log(`upload digests: sent=${result.sent} skipped=${result.skipped}`);
+                })
+                .catch((error) => {
+                  // Log and resolve: a rejected waitUntil is reported by the
+                  // runtime, but the reconcile trip's own work above has already
+                  // finished and must not appear to have failed with it.
+                  console.error(`upload arrival digest failed: ${String(error)}`);
+                }),
+            );
+          } else {
+            console.warn("upload arrival digest skipped: this deployment has no MAIL_FROM");
+          }
           // Sign-in counter retention (drive#725): a row whose day window
           // ended more than a day ago is deleted, so the public sign-in route
           // cannot make this table keep every address anybody typed. It deletes
