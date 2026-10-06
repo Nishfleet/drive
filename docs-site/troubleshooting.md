@@ -14,17 +14,20 @@ to reach a person.
 
 ## The three commands
 
-Run them in this order and read what each prints.
+Run them in this order and read what each prints. The third pair is for a
+mount that will not come up.
 
 ```sh
 drive status
 drive doctor
+drive unmount
+drive mount
 ```
 
 1. `drive status` says whether the drive is mounted, what is waiting to
-   upload, and what this month costs so far. Its last line names this page,
-   so the way in is one `drive status` away whether the drive is broken or
-   not.
+   upload, and what this month costs so far. Near the end it names this
+   page, so the way in is one `drive status` away whether the drive is
+   broken or not.
 2. `drive doctor` prints one block: the drive and rclone versions, whether the
    mount is up, the last lines of the log, and whether the account side
    answers. If you write to support, paste that block. It is the whole first

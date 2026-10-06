@@ -226,7 +226,15 @@ func journaldHasNoEntries(text string) bool {
 // tailFile reads the last n lines of a text file. A file that cannot be opened
 // is an error the caller names, because an absent log is a real answer to
 // "what did the mount last say" and must never read as an empty one.
+//
+// A count of zero or less returns nothing rather than reaching the ring
+// buffer's modulo, which divides by zero on the first line: the one caller
+// (printDoctorLogs) guards the flag, so this is the second line of that same
+// guard.
 func tailFile(path string, n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

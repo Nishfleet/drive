@@ -95,6 +95,20 @@ func TestHelpNamesNoTrackerReference(t *testing.T) {
 // to pass by rewriting a size.
 var trackerRefRe = regexp.MustCompile(`(#|[A-Za-z][A-Za-z0-9_-]*#)\d+`)
 
+// TestHelpNamesTheDocsPageTheStatusLineNames refuses a second address for the
+// troubleshooting page. `drive --help`'s usage text is a const string, so it
+// prints the page's address as literal words, while status.go and doctor.go
+// build the same address from defaultAPIBase at run time. The day the origin
+// moves, the const cannot follow on its own, so this gate holds the two copies
+// together: a help text that points somewhere else than the CLI does fails
+// here rather than sending a reader to a dead address.
+func TestHelpNamesTheDocsPageTheStatusLineNames(t *testing.T) {
+	want := defaultAPIBase + "/docs/troubleshooting"
+	if !strings.Contains(usage, want) {
+		t.Errorf("`drive --help` must name the troubleshooting page at %s, the address docsTroubleshootingURL() builds, so the two cannot drift", want)
+	}
+}
+
 // TestNotesNameOnlyRealCommands holds both agent notes to the command
 // table: the in-folder note (CLAUDE.md / AGENTS.md, noteBody) and the skill
 // note (SKILL.md / steering, skillBody) may name only commands main runs, in

@@ -147,7 +147,10 @@ func TestLogoutRevokesTheKeyOnTheServerBeforeDeletingIt(t *testing.T) {
 // caller reads carries it behind the table's "Next: " prefix and the built
 // binary prints it behind printFailure's lowercase "next: ", so the call
 // sites keep their own prefixes and share the sentence.
-const liveKeyRetry = "Run `drive logout` again when you are online, with `--api <url>` or DRIVE_API_URL set."
+//
+// It reads the table entry, the same way revokeWarning does, so a wording
+// change in one place cannot leave the test asserting a sentence nobody sees.
+var liveKeyRetry = messageTable["key-still-live"][1]
 
 func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	home := configOnlyHome(t)

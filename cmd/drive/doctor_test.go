@@ -26,12 +26,33 @@ func TestDoctorBlockHasEveryLabel(t *testing.T) {
 	printDoctorLogs(&b, "plan9", home, 20)
 	printDoctorAPI(&b, home, "")
 	got := b.String()
-	if lines := countNonBlankLines(got); lines < 7 {
-		t.Fatalf("doctor block has %d lines, want at least the four answers and two of their paths:\n%s", lines, got)
+	want := []string{"drive:", "rclone:", "os:", "mount:", "log:", "api:"}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("doctor block is missing its %q line:\n%s", w, got)
+		}
 	}
-	for _, want := range []string{"drive:", "rclone:", "os:", "mount:", "log:", "api:"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("doctor block is missing its %q line:\n%s", want, got)
+	// Every part prints at least one line, so no answer can come back blank: a
+	// part that could not read its answer still prints the named reason on its
+	// own line. The floor is the label count itself, which the block can only
+	// meet by answering every part. It deliberately does not count the path and
+	// next-step lines beside them, whose number depends on the host's own mount
+	// state and on whether findmnt is installed at all.
+	if lines := countNonBlankLines(got); lines < len(want) {
+		t.Fatalf("doctor block has %d non-blank lines, want at least one per label (%d):\n%s", lines, len(want), got)
+	}
+	// A labelled line carries its answer on the same line: "mount:" with
+	// nothing after it is the blank this issue is about.
+	for _, label := range want {
+		for _, line := range strings.Split(got, "\n") {
+			rest, ok := strings.CutPrefix(strings.TrimSpace(line), label)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(rest) == "" {
+				t.Errorf("doctor block's %q line says nothing:\n%s", label, got)
+			}
+			break
 		}
 	}
 }
