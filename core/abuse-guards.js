@@ -362,6 +362,70 @@ export async function accountStoredBytes(db, accountId) {
 }
 
 /**
+ * The live `file_versions` bytes stored under one account's `.branches`
+ * folder - the reconciled half of drive#800. A branch copy lands in
+ * `file_versions` only after the nightly reconcile walks it (core/meter.js
+ * `reconcileAccount` lists the whole account, system folders included), so
+ * between the copy and that walk the SAME branch bytes are in the store but
+ * not here. The upload guard (core/files.js `preChargeStoredBytes`) subtracts
+ * this number from the row sum it already holds and adds the store's own
+ * current branch bytes back, so one copy is counted once whether the nightly
+ * walk has run yet or not.
+ *
+ * The branch key prefix is built and passed by the caller, which already owns
+ * drive paths (core/files.js accountPrefix + BRANCHES_PATH): this share of
+ * the guard stays plain SQL over file_versions and knows nothing about paths,
+ * and importing files.js back would close an import cycle (files.js already
+ * imports this module for accountStoredBytes).
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {string} branchKeyPrefix the account's `.branches` storage key prefix
+ * @returns {Promise<number>}
+ */
+export async function accountBranchBytes(db, accountId, branchKeyPrefix) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`accountBranchBytes needs an account id, got ${String(accountId)}`);
+  }
+  if (typeof branchKeyPrefix !== "string" || branchKeyPrefix === "") {
+    throw new TypeError(
+      `accountBranchBytes needs a branch key prefix, got ${String(branchKeyPrefix)}`,
+    );
+  }
+  // The match is anchored to the branch folder and nothing else: the prefix is
+  // escaped so a `%`, `_` or backslash in an account id cannot widen it, and
+  // the single trailing `%` is the only wildcard, so a person's `x.branches`
+  // folder (or a `.branches-sub` one) is never counted as a branch. ESCAPE
+  // keeps the backslash one character rather than the start of a SQL escape.
+  const row = await db
+    .prepare(
+      `SELECT ${LIVE_STORED_BYTES} AS stored
+         FROM ${LIVE_VERSIONS}
+        WHERE ${LIVE_VERSION_ROWS}
+          AND v.account_id = ?1
+          AND v.path LIKE ?2 ESCAPE '\\'`,
+    )
+    .bind(accountId, `${escapeLike(branchKeyPrefix)}%`)
+    .first();
+  const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
+  if (!Number.isFinite(stored) || stored < 0) {
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${stored}`);
+  }
+  return stored;
+}
+
+/**
+ * Escape a literal for a SQL LIKE pattern whose ESCAPE is a backslash, so a
+ * `%`, `_` or backslash in the value matches itself instead of standing for a
+ * character class. The wildcard the caller appends is added after this and so
+ * stays a wildcard.
+ * @param {string} value
+ * @returns {string}
+ */
+function escapeLike(value) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/**
  * The unpaid accounts whose live stored bytes pass the 1 TB pre-charge limit
  * (drive#536): one grouped read over `file_versions` joined to the `accounts`
  * rows, so however many accounts hold bytes this costs one statement and
