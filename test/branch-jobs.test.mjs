@@ -273,8 +273,12 @@ test("a folder that grows after the claim copies the claimed listing only", asyn
   await scoped.write("/Photos/c.txt", new Blob(["c"]).stream(), "text/plain");
   await scoped.write("/Photos/sub/d.txt", new Blob(["d"]).stream(), "text/plain");
 
+  // One batch at a time until the copy reports done. The accumulator is typed
+  // as the job's own return type so it keeps that shape instead of narrowing
+  // to the `{done: boolean}` seed (tsc rejects the assignment otherwise).
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
   let copied = { done: false };
-  for (let steps = 0; steps < 8 && !copied.done; steps += 1) {
+  for (let steps = 0; steps < 8 && copied.done !== true; steps += 1) {
     copied = await processBranchJob(db, snapshots, scoped, ACCOUNT, claimed.id);
   }
   assert.ok(!("error" in copied) && copied.done, JSON.stringify(copied));
