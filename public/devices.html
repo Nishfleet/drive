@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en" class="drive">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — devices</title>
+  <meta name="description" content="The keys on your account: each device or agent, when it was last used, and a button that revokes it.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+body {
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+}
+
+.skip-link:focus {
+  z-index: 10;
+}
+
+.masthead {
+  max-width: 940px;
+}
+
+.wordmark {
+  font-size: 28px;
+}
+
+main {
+  max-width: 940px;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+section {
+  padding: clamp(28px, 5vh, 48px) 0 0;
+}
+
+.status {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.status .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+th {
+  font-weight: 600;
+}
+
+.empty .what {
+  margin: 0;
+}
+
+.empty .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+.footer {
+  max-width: 940px;
+  margin: 48px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#keys-heading">Skip to your keys</a>
+  <header class="masthead">
+    <span class="wordmark"><i aria-hidden="true"></i>drive</span>
+    <span class="tagline">A Finder drive for people and their agents.</span>
+    <a href="/files">Your files</a>
+    <a href="/">Pricing</a>
+    <a href="/get-started">Get started</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices" aria-current="page">Devices</a>
+    <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+  </header>
+
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </aside>
+  <main>
+    <section aria-labelledby="devices-heading">
+      <h1 id="devices-heading">Devices</h1>
+      <p class="lede">
+        Every key on this account: the device or agent that holds it, when it
+        was last used, and a button that turns it off at the storage provider.
+      </p>
+    </section>
+
+    <section aria-labelledby="keys-heading">
+      <h2 id="keys-heading" tabindex="-1">Keys</h2>
+      <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
+        <p class="what"></p>
+        <p class="next"></p>
+      </div>
+      <div class="empty" id="devices-empty" hidden>
+        <p class="what">No live keys on this account.</p>
+        <p class="next">Run drive login on a machine to mint one.</p>
+      </div>
+      <table id="keys" hidden>
+        <caption>Live keys</caption>
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Last used</th>
+            <th scope="col">Revoke</th>
+          </tr>
+        </thead>
+        <tbody id="keys-body"></tbody>
+      </table>
+    </section>
+  </main>
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+  </footer>
+  <script>
+const DEVICES_ENDPOINT = "/api/devices";
+const SIGNIN_ENDPOINT = "/api/signin";
+const NEVER = "Never";
+const REVOKE_LABEL = "Revoke";
+const REVOKE_CONFIRM = "Revoke this key? It will stop working at once.";
+
+const statusEl = document.getElementById("devices-status");
+const emptyEl = document.getElementById("devices-empty");
+const tableEl = document.getElementById("keys");
+const bodyEl = document.getElementById("keys-body");
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+function sayStatus(text) {
+  const parts = String(text).split(". ");
+  statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
+  statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  statusEl.hidden = false;
+  emptyEl.hidden = true;
+  tableEl.hidden = true;
+}
+
+function lastUsedText(ms) {
+  if (ms === null) return NEVER;
+  return new Date(ms).toLocaleString();
+}
+
+function keyRow(key) {
+  const tr = document.createElement("tr");
+  const name = document.createElement("td");
+  name.textContent = key.name || key.keyId;
+  const kind = document.createElement("td");
+  kind.textContent = key.kind;
+  const used = document.createElement("td");
+  used.textContent = lastUsedText(key.lastSeenAt);
+  const action = document.createElement("td");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = REVOKE_LABEL;
+  button.addEventListener("click", () => revokeKey(key.keyId, button));
+  action.appendChild(button);
+  tr.replaceChildren(name, kind, used, action);
+  return tr;
+}
+
+function render(keys) {
+  statusEl.hidden = true;
+  bodyEl.replaceChildren(...keys.map(keyRow));
+  tableEl.hidden = keys.length === 0;
+  emptyEl.hidden = keys.length > 0;
+}
+
+async function readKeys() {
+  let response;
+  try {
+    response = await fetch(DEVICES_ENDPOINT, { headers: { accept: "application/json" } });
+  } catch (_error) {
+    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    showSessionNav(false);
+    return;
+  }
+  if (response.status === 401) {
+    const payload = await response.json().catch(() => null);
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Sign in to see your devices.");
+    showSessionNav(false);
+    return;
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || !Array.isArray(payload.keys)) {
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
+    return;
+  }
+  showSessionNav(true);
+  render(payload.keys);
+}
+
+async function revokeKey(keyId, button) {
+  if (!window.confirm(REVOKE_CONFIRM)) {
+    return;
+  }
+  button.disabled = true;
+  let response;
+  try {
+    response = await fetch(`${DEVICES_ENDPOINT}/${encodeURIComponent(keyId)}`, {
+      method: "DELETE",
+      headers: { accept: "application/json" },
+    });
+  } catch (_error) {
+    button.disabled = false;
+    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    return;
+  }
+  if (response.status === 401) {
+    const payload = await response.json().catch(() => null);
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Sign in to see your devices.");
+    showSessionNav(false);
+    return;
+  }
+  if (response.status === 204) {
+    await readKeys();
+    return;
+  }
+  button.disabled = false;
+  const payload = await response.json().catch(() => null);
+  sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
+readKeys();
+  </script>
+  <script type="module" src="/close-banner.js"></script>
+</body>
+</html>

@@ -852,7 +852,7 @@ async function readPreviousCap(capStore, account) {
  *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
- * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, getCapUsd?: (accountId: string) => Promise<number>, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
+ * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, getCapUsd?: (accountId: string) => Promise<number>, accountState: (accountId: string) => Promise<"active"|"read_only"|"closed">, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
  * @param {{email?: unknown, mailFrom?: string, deviceName?: string}|null} [mail]
  */
 export async function handleCapRequest(request, account, capStore, mail = null) {
@@ -892,6 +892,19 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
     // The one message table's words, with the one next step the table names: the
     // cap did not move, and waiting will not fix a deployment that has no store.
     return jsonCapError(failureMessage("cap-store-missing"), 503);
+  }
+  // A closed account's keys are already revoked and its files are on their way
+  // out (drive#537). The accounts row has three states: active, read_only,
+  // closed (core/devices.js accountState). read_only must still take a cap
+  // write: raising the cap is how a stopped drive starts writing again. closed
+  // is the only terminal state. Writing the cap, swapping keys, or saving
+  // active would un-stick the close: purge needs state=closed, and cancelClose
+  // throws close-not-closed once the row looks open. setAccountState itself
+  // will not overwrite closed (WHERE state <> 'closed' in core/devices.js);
+  // this 409 is the route's refusal before any of those writes.
+  const saved = await capStore.accountState(account.id);
+  if (saved === "closed") {
+    return jsonCapError(failureMessage("cap-account-closed"), 409);
   }
   // The cap as it stood before this write: the store's own row when it can
   // answer, else the account object the caller passed. The authenticated

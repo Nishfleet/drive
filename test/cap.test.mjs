@@ -902,6 +902,9 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
       return recordingProvider();
     },
     async setAccountState() {},
+    async accountState() {
+      return /** @type {"active"} */ ("active");
+    },
   };
   const ok = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -968,6 +971,49 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.deepEqual(await unwired.json(), { error: tableMessage("cap-store-missing") });
 });
 
+test("POST /api/cap answers 409 on a closed account and does not write", async () => {
+  /** @type {number[]} */
+  const stored = [];
+  const capStore = {
+    /**
+     * @param {{id: string}} _account
+     * @param {number} cents
+     */
+    async setCapCents(_account, cents) {
+      stored.push(cents);
+    },
+    async listCapKeys() {
+      return [];
+    },
+    keyProviderFor() {
+      return recordingProvider();
+    },
+    async setAccountState() {
+      throw new Error("a closed account must not reach setAccountState");
+    },
+    async accountState() {
+      return /** @type {"closed"} */ ("closed");
+    },
+  };
+  const refused = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-closed", name: "You", email: "you@example.com" },
+    capStore,
+  );
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: tableMessage("cap-account-closed") });
+  assert.notEqual(
+    tableMessage("cap-account-closed"),
+    tableMessage("account-closed"),
+    "the cap refusal is not the key-mint refusal",
+  );
+  assert.deepEqual(stored, [], "the cap row must not move on a closed account");
+});
+
 test("the swap's own credential is in the answer, so the mount can sign with it", async () => {
   // The finish line of drive issue #241 is a real mount going read-only, and
   // nothing can go read-only on a mount that still holds the pre-cap key.
@@ -1013,6 +1059,9 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
       };
     },
     async setAccountState() {},
+    async accountState() {
+      return /** @type {"active"} */ ("active");
+    },
   };
   const swapped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
