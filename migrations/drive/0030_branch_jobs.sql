@@ -14,6 +14,7 @@
 --   job_kind                 create / approve / discard / rewind, or ''
 --   job_cursor               JSON the next batch resumes from
 --   job_done / job_total     progress the UI and CLI poll
+--   job_error                the sentence a 202 job failed with, so poll sees it
 --   changed_count            files the branch changed, stored, not a live diff
 --   source_changed_count     files the original moved, stored the same way
 --
@@ -25,11 +26,12 @@ ALTER TABLE branches ADD COLUMN job_kind TEXT NOT NULL DEFAULT '';
 ALTER TABLE branches ADD COLUMN job_cursor TEXT NOT NULL DEFAULT '';
 ALTER TABLE branches ADD COLUMN job_done INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE branches ADD COLUMN job_total INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE branches ADD COLUMN job_error TEXT NOT NULL DEFAULT '';
 ALTER TABLE branches ADD COLUMN changed_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE branches ADD COLUMN source_changed_count INTEGER NOT NULL DEFAULT 0;
-
-DROP INDEX IF EXISTS branches_one_open_name_idx;
 
 CREATE UNIQUE INDEX IF NOT EXISTS branches_one_active_name_idx
   ON branches (account_id, name)
   WHERE state IN ('open', 'creating', 'approving', 'discarding', 'rewinding');
+
+DROP INDEX IF EXISTS branches_one_open_name_idx;

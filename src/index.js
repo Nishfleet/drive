@@ -84,10 +84,11 @@ import {
   handleCloseStatusRequest,
   runAccountCloseCron,
 } from "./account-close.js";
-import { branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
+import { BRANCH_QUEUE_KINDS, branchJob, branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
 import {
   BRANCHES_ENDPOINT,
   createKvSnapshotStore,
+  failJob,
   handleBranchesRequest,
   processBranchJob,
 } from "./branches.js";
@@ -1443,7 +1444,10 @@ const handler = {
       await handleBranchJobs(
         { messages: branchMessages },
         async (job) => {
-          const scoped = store ? scopeStore(store, { id: job.accountId }) : store;
+          if (!store) {
+            throw new Error("branch jobs: file store is not configured");
+          }
+          const scoped = scopeStore(store, { id: job.accountId });
           const result = await processBranchJob(
             env.DRIVE_DB,
             snapshots,
@@ -1454,6 +1458,13 @@ const handler = {
           return { continue: result?.done === false };
         },
         branchJobsQueue(env),
+        async (body, error) => {
+          const job = branchJob(body);
+          const nextState = job.kind === BRANCH_QUEUE_KINDS.approve ? "open" : "discarded";
+          const sentence =
+            error instanceof Error && error.message ? error.message : failureMessage("unexpected");
+          await failJob(env.DRIVE_DB, job.branchId, nextState, sentence);
+        },
       );
     }
     if (meterMessages.length === 0) {

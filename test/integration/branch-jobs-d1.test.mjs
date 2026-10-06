@@ -16,6 +16,7 @@ test("the real migration adds job columns and the active-name unique index", () 
     "job_cursor",
     "job_done",
     "job_total",
+    "job_error",
     "changed_count",
     "source_changed_count",
   ]) {

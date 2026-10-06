@@ -112,13 +112,16 @@ export async function sendBranchJob(queue, job) {
  * asks for a retry when it threw. A batch that is not the last one sends the
  * next message itself (the processor returns `{continue: true}`), so one
  * HTTP request never fans the whole folder out in one go.
- * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+ * @param {{messages: readonly {body: unknown, ack(): void, retry(): void, attempts?: number}[]}} batch
  * @param {(job: BranchJob) => Promise<{continue?: boolean}>} process
  * @param {BranchJobsQueue|null} [queue] the producer, so a batch that has more
  *   work can enqueue the next one
+ * @param {(body: unknown, error: unknown) => Promise<unknown>} [onExhausted]
+ *   runs when retries are used up, so a stuck creating/approving row does not
+ *   occupy the name forever
  * @returns {Promise<{acked: number, retried: number}>}
  */
-export async function handleBranchJobs(batch, process, queue = null) {
+export async function handleBranchJobs(batch, process, queue = null, onExhausted = undefined) {
   let acked = 0;
   let retried = 0;
   for (const message of batch.messages) {
@@ -134,13 +137,28 @@ export async function handleBranchJobs(batch, process, queue = null) {
       const body = /** @type {{kind?: unknown, accountId?: unknown, name?: unknown}|null} */ (
         message.body
       );
+      const attempts = Number(message.attempts) || 1;
       console.error(
         "branch job failed, retrying",
         `kind=${String(body?.kind)}`,
         `account=${String(body?.accountId)}`,
         `name=${String(body?.name)}`,
+        `attempts=${attempts}`,
         error instanceof Error ? error.message : String(error),
       );
+      if (attempts >= BRANCH_JOBS_MAX_RETRIES && typeof onExhausted === "function") {
+        try {
+          await onExhausted(message.body, error);
+          message.ack();
+          acked += 1;
+          continue;
+        } catch (cleanupError) {
+          console.error(
+            "branch job exhausted cleanup failed",
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          );
+        }
+      }
       message.retry();
       retried += 1;
     }

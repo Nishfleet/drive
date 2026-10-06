@@ -64,7 +64,7 @@ import { unauthorizedResponse } from "../core/status.js";
  *   state: string, createdAt: string, changedBy: string,
  *   snapshot: Record<string, Fingerprint>,
  *   snapshotKey: string, snapshotBytes: number,
- *   jobKind: string, jobDone: number, jobTotal: number,
+ *   jobKind: string, jobDone: number, jobTotal: number, jobError: string,
  *   changed: number, sourceChanged: number}} Branch
  */
 
@@ -137,6 +137,15 @@ export function snapshotKey(account, name) {
     throw new TypeError(`an account id is one path segment, got "${account.id}"`);
   }
   return `u/${account.id}/branch/${name}`;
+}
+
+/** KV key for the approve plan (path lists). The lists of a large branch do
+ * not fit in `job_cursor` (D1's 1 MiB row limit, the same reason snapshots
+ * moved to KV in drive#252). The D1 cursor only stores `{ready, addedI, …}`.
+ * @param {string} key the branch's snapshot key
+ */
+function approvePlanKey(key) {
+  return `${key}/approve-plan`;
 }
 
 /**
@@ -669,6 +678,30 @@ async function listFiles(store, root) {
   return files;
 }
 
+/** The fingerprint of one file, or null when it is not there. One listing of
+ * its parent, so reading a fingerprint never downloads the bytes. When
+ * `listings` is handed in, each parent is listed once and later lookups read
+ * the Map (drive#563: approve of 1,000 changes issues one LIST per parent).
+ * @param {FileStore} store a scoped store
+ * @param {string} path
+ * @param {Map<string, Map<string, Fingerprint>>} [listings]
+ * @returns {Promise<Fingerprint|null>} */
+async function fileFingerprint(store, path, listings) {
+  const cut = path.lastIndexOf("/");
+  const parent = cut <= 0 ? "/" : path.slice(0, cut);
+  let listed = listings?.get(parent);
+  if (!listed) {
+    listed = new Map();
+    for (const entry of await store.list(parent)) {
+      if (entry.kind !== "folder") {
+        listed.set(entry.path, fingerprint(entry));
+      }
+    }
+    listings?.set(parent, listed);
+  }
+  return listed.get(path) ?? null;
+}
+
 /**
  * Copies every file under `source` into `dest` with one server-side copy each,
  * returning the snapshot of the original: the files' `{size, etag, modified}`
@@ -843,6 +876,7 @@ function toBranch(row, snapshot) {
     jobKind: typeof row.job_kind === "string" ? row.job_kind : "",
     jobDone: typeof row.job_done === "number" ? row.job_done : Number(row.job_done ?? 0) || 0,
     jobTotal: typeof row.job_total === "number" ? row.job_total : Number(row.job_total ?? 0) || 0,
+    jobError: typeof row.job_error === "string" ? row.job_error : "",
     changed:
       typeof row.changed_count === "number"
         ? row.changed_count
@@ -860,7 +894,7 @@ function toBranch(row, snapshot) {
  */
 const BRANCH_COLUMNS =
   "id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, " +
-  "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, " +
+  "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, job_error, " +
   "changed_count, source_changed_count";
 
 const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
@@ -930,7 +964,7 @@ function parseJobCursor(raw) {
 /**
  * @param {D1Database} db
  * @param {number} id
- * @param {{cursor?: unknown, done?: number, total?: number, kind?: string, state?: string, changed?: number, sourceChanged?: number}} fields
+ * @param {{cursor?: unknown, done?: number, total?: number, kind?: string, state?: string, changed?: number, sourceChanged?: number, error?: string}} fields
  */
 async function writeJobProgress(db, id, fields) {
   const cursor = fields.cursor === undefined ? undefined : JSON.stringify(fields.cursor ?? {});
@@ -972,6 +1006,11 @@ async function writeJobProgress(db, id, fields) {
     values.push(fields.sourceChanged);
     index += 1;
   }
+  if (fields.error !== undefined) {
+    sets.push(`job_error = ?${index}`);
+    values.push(fields.error);
+    index += 1;
+  }
   if (sets.length === 0) {
     return;
   }
@@ -990,13 +1029,18 @@ async function enqueueJob(queue, job) {
   if (!queue) {
     return false;
   }
-  if (typeof queue.send === "function") {
-    await queue.send(job);
-    return true;
-  }
-  if (typeof queue.sendBatch === "function") {
-    await queue.sendBatch([{ body: job }]);
-    return true;
+  try {
+    if (typeof queue.send === "function") {
+      await queue.send(job);
+      return true;
+    }
+    if (typeof queue.sendBatch === "function") {
+      await queue.sendBatch([{ body: job }]);
+      return true;
+    }
+  } catch (error) {
+    console.error?.(`branch job enqueue failed: ${errorText(error)}`);
+    return false;
   }
   return false;
 }
@@ -1068,14 +1112,9 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   const files = Object.keys(copied.snapshot).length;
   if (files > BRANCH_FILE_LIMIT) {
     await removePrefixFiles(store, branch.branchPrefix);
-    await db
-      .prepare(
-        "UPDATE branches SET state = 'discarded', job_kind = '', job_cursor = '' " +
-          "WHERE id = ?1 AND state = 'creating'",
-      )
-      .bind(branch.id)
-      .run();
-    return { error: failureMessage("branch-too-large"), status: 400, done: true };
+    const error = failureMessage("branch-too-large");
+    await failJob(db, branch.id, "discarded", error);
+    return { error, status: 400, done: true };
   }
   const key = snapshotKey(account, branch.name);
   const saved = await saveSnapshot(db, branch.id, copied.snapshot, snapshots, key);
@@ -1113,8 +1152,25 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
 }
 
 /**
- * One approve batch: the first call diffs once and stores the path lists;
- * later calls apply the next files using those lists and one LIST per parent.
+ * @param {D1Database} db
+ * @param {number} id
+ * @param {string} state
+ * @param {string} error
+ */
+export async function failJob(db, id, state, error) {
+  await db
+    .prepare(
+      "UPDATE branches SET state = ?2, job_kind = '', job_cursor = '', job_error = ?3 WHERE id = ?1",
+    )
+    .bind(id, state, error)
+    .run();
+}
+
+/**
+ * One approve batch: the first call diffs once and stores the path lists in
+ * KV (not D1 `job_cursor`); later calls apply the next files using those
+ * lists and one LIST per parent. Clash checks use a live fingerprint, not
+ * the first-batch snapshot, so a source write between batches still fails.
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots
  * @param {FileStore} store
@@ -1127,128 +1183,137 @@ async function processApproveBatch(db, snapshots, store, branch) {
     .bind(branch.id)
     .first();
   const stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
-  /** @type {string[]} */
-  let added = Array.isArray(stored.added)
-    ? stored.added.filter((item) => typeof item === "string")
-    : [];
-  /** @type {string[]} */
-  let changed = Array.isArray(stored.changed)
-    ? stored.changed.filter((item) => typeof item === "string")
-    : [];
-  /** @type {string[]} */
-  let removed = Array.isArray(stored.removed)
-    ? stored.removed.filter((item) => typeof item === "string")
-    : [];
-  /** @type {{added: string[], changed: string[], removed: string[]}} */
-  const applied = {
-    added: Array.isArray(stored.appliedAdded)
-      ? stored.appliedAdded.filter((item) => typeof item === "string")
-      : [],
-    changed: Array.isArray(stored.appliedChanged)
-      ? stored.appliedChanged.filter((item) => typeof item === "string")
-      : [],
-    removed: Array.isArray(stored.appliedRemoved)
-      ? stored.appliedRemoved.filter((item) => typeof item === "string")
-      : [],
-  };
+  const planKey = approvePlanKey(branch.snapshotKey);
   if (!stored.ready) {
     if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
-      await db
-        .prepare("UPDATE branches SET state = 'open', job_kind = '', job_cursor = '' WHERE id = ?1")
-        .bind(branch.id)
-        .run();
-      return { error: failureMessage("unexpected"), status: 500, done: true };
+      const error = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", error);
+      return { error, status: 500, done: true };
     }
     const diff = await diffBranch(store, branch);
     const touched = new Set([...diff.added, ...diff.changed, ...diff.removed]);
     const clashes = diff.sourceChanged.filter((rel) => touched.has(rel));
     if (clashes.length > 0) {
-      await db
-        .prepare("UPDATE branches SET state = 'open', job_kind = '', job_cursor = '' WHERE id = ?1")
-        .bind(branch.id)
-        .run();
-      return { ...sourceMoved(clashes, clashes.length), done: true };
+      const result = sourceMoved(clashes, clashes.length);
+      await failJob(db, branch.id, "open", result.error);
+      return { ...result, done: true };
     }
-    added = diff.added;
-    changed = diff.changed;
-    removed = diff.removed;
-    const total = added.length + changed.length + removed.length;
-    await writeJobProgress(db, branch.id, {
-      cursor: {
-        ready: true,
-        added,
-        changed,
-        removed,
+    const total = diff.added.length + diff.changed.length + diff.removed.length;
+    await snapshots.put(
+      planKey,
+      JSON.stringify({
+        added: diff.added,
+        changed: diff.changed,
+        removed: diff.removed,
         appliedAdded: [],
         appliedChanged: [],
         appliedRemoved: [],
-        branchFp: Object.fromEntries(diff.current),
-        sourceFp: Object.fromEntries(diff.source),
-      },
+      }),
+    );
+    await writeJobProgress(db, branch.id, {
+      cursor: { ready: true, addedI: 0, changedI: 0, removedI: 0 },
       done: 0,
       total,
     });
     if (total === 0) {
-      return await finishApprove(db, store, branch, applied);
+      return await finishApprove(db, store, snapshots, branch, {
+        added: [],
+        changed: [],
+        removed: [],
+      });
     }
     return { done: false };
   }
+  const planJson = await snapshots.get(planKey);
+  if (!planJson) {
+    const error = failureMessage("unexpected");
+    await failJob(db, branch.id, "open", error);
+    return { error, status: 500, done: true };
+  }
+  /** @type {{added?: unknown, changed?: unknown, removed?: unknown, appliedAdded?: unknown, appliedChanged?: unknown, appliedRemoved?: unknown}} */
+  let plan = {};
+  try {
+    plan = JSON.parse(planJson);
+  } catch {
+    const error = failureMessage("unexpected");
+    await failJob(db, branch.id, "open", error);
+    return { error, status: 500, done: true };
+  }
+  /** @type {string[]} */
+  const added = Array.isArray(plan.added)
+    ? plan.added.filter((item) => typeof item === "string")
+    : [];
+  /** @type {string[]} */
+  const changed = Array.isArray(plan.changed)
+    ? plan.changed.filter((item) => typeof item === "string")
+    : [];
+  /** @type {string[]} */
+  const removed = Array.isArray(plan.removed)
+    ? plan.removed.filter((item) => typeof item === "string")
+    : [];
+  /** @type {{added: string[], changed: string[], removed: string[]}} */
+  const applied = {
+    added: Array.isArray(plan.appliedAdded)
+      ? plan.appliedAdded.filter((item) => typeof item === "string")
+      : [],
+    changed: Array.isArray(plan.appliedChanged)
+      ? plan.appliedChanged.filter((item) => typeof item === "string")
+      : [],
+    removed: Array.isArray(plan.appliedRemoved)
+      ? plan.appliedRemoved.filter((item) => typeof item === "string")
+      : [],
+  };
+  let addedI = typeof stored.addedI === "number" ? stored.addedI : 0;
+  let changedI = typeof stored.changedI === "number" ? stored.changedI : 0;
+  let removedI = typeof stored.removedI === "number" ? stored.removedI : 0;
   const snapshot = { ...branch.snapshot };
-  /** @type {Record<string, Fingerprint>} */
-  const branchFp =
-    stored.branchFp !== null &&
-    typeof stored.branchFp === "object" &&
-    !Array.isArray(stored.branchFp)
-      ? /** @type {Record<string, Fingerprint>} */ (stored.branchFp)
-      : {};
-  /** @type {Record<string, Fingerprint>} */
-  const sourceFp =
-    stored.sourceFp !== null &&
-    typeof stored.sourceFp === "object" &&
-    !Array.isArray(stored.sourceFp)
-      ? /** @type {Record<string, Fingerprint>} */ (stored.sourceFp)
-      : {};
+  const listings = new Map();
   let remaining = BRANCH_JOB_BATCH_FILES;
   let failure = null;
   try {
-    while (added.length > 0 && remaining > 0 && failure === null) {
-      const rel = /** @type {string} */ (added.shift());
-      if (sourceFp[rel]) {
+    while (addedI < added.length && remaining > 0 && failure === null) {
+      const rel = added[addedI];
+      const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
+      if (sourceNow !== null) {
         failure = sourceMoved([rel], 1);
-        added.unshift(rel);
         break;
       }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
-      if (branchFp[rel]) {
-        snapshot[rel] = branchFp[rel];
+      const branchNow = await fileFingerprint(store, `${branch.branchPrefix}/${rel}`, listings);
+      if (branchNow !== null) {
+        snapshot[rel] = branchNow;
       }
       applied.added.push(rel);
+      addedI += 1;
       remaining -= 1;
     }
-    while (changed.length > 0 && remaining > 0 && failure === null) {
-      const rel = /** @type {string} */ (changed.shift());
-      if (!sameFile(sourceFp[rel] ?? null, snapshot[rel])) {
+    while (changedI < changed.length && remaining > 0 && failure === null) {
+      const rel = changed[changedI];
+      const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
+      if (!sameFile(sourceNow, snapshot[rel])) {
         failure = sourceMoved([rel], 1);
-        changed.unshift(rel);
         break;
       }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
-      if (branchFp[rel]) {
-        snapshot[rel] = branchFp[rel];
+      const branchNow = await fileFingerprint(store, `${branch.branchPrefix}/${rel}`, listings);
+      if (branchNow !== null) {
+        snapshot[rel] = branchNow;
       }
       applied.changed.push(rel);
+      changedI += 1;
       remaining -= 1;
     }
-    while (removed.length > 0 && remaining > 0 && failure === null) {
-      const rel = /** @type {string} */ (removed.shift());
-      if (!sameFile(sourceFp[rel] ?? null, snapshot[rel])) {
+    while (removedI < removed.length && remaining > 0 && failure === null) {
+      const rel = removed[removedI];
+      const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
+      if (!sameFile(sourceNow, snapshot[rel])) {
         failure = sourceMoved([rel], 1);
-        removed.unshift(rel);
         break;
       }
       await store.remove(`${branch.sourcePrefix}/${rel}`);
       delete snapshot[rel];
       applied.removed.push(rel);
+      removedI += 1;
       remaining -= 1;
     }
   } catch (error) {
@@ -1257,29 +1322,27 @@ async function processApproveBatch(db, snapshots, store, branch) {
   }
   await saveSnapshot(db, branch.id, snapshot, snapshots);
   const appliedCount = applied.added.length + applied.changed.length + applied.removed.length;
-  const total = appliedCount + added.length + changed.length + removed.length;
+  const total = added.length + changed.length + removed.length;
   if (failure !== null) {
-    await db
-      .prepare("UPDATE branches SET state = 'open', job_kind = '', job_cursor = '' WHERE id = ?1")
-      .bind(branch.id)
-      .run();
+    await failJob(db, branch.id, "open", failure.error);
     return { ...failure, done: true };
   }
-  if (added.length === 0 && changed.length === 0 && removed.length === 0) {
-    return await finishApprove(db, store, branch, applied);
-  }
-  await writeJobProgress(db, branch.id, {
-    cursor: {
-      ready: true,
+  await snapshots.put(
+    planKey,
+    JSON.stringify({
       added,
       changed,
       removed,
       appliedAdded: applied.added,
       appliedChanged: applied.changed,
       appliedRemoved: applied.removed,
-      branchFp,
-      sourceFp,
-    },
+    }),
+  );
+  if (addedI >= added.length && changedI >= changed.length && removedI >= removed.length) {
+    return await finishApprove(db, store, snapshots, branch, applied);
+  }
+  await writeJobProgress(db, branch.id, {
+    cursor: { ready: true, addedI, changedI, removedI },
     done: appliedCount,
     total,
   });
@@ -1289,13 +1352,19 @@ async function processApproveBatch(db, snapshots, store, branch) {
 /**
  * @param {D1Database} db
  * @param {FileStore} store
+ * @param {SnapshotStore} snapshots
  * @param {Branch} branch
  * @param {{added: string[], changed: string[], removed: string[]}} applied
  */
-async function finishApprove(db, store, branch, applied) {
+async function finishApprove(db, store, snapshots, branch, applied) {
+  try {
+    await snapshots.put(approvePlanKey(branch.snapshotKey), "{}");
+  } catch (error) {
+    console.error?.(`approve plan cleanup failed for ${branch.id}: ${errorText(error)}`);
+  }
   const result = await db
     .prepare(
-      "UPDATE branches SET state = 'approved', job_kind = '', job_cursor = '', " +
+      "UPDATE branches SET state = 'approved', job_kind = '', job_cursor = '', job_error = '', " +
         "changed_count = 0, source_changed_count = 0 WHERE id = ?1 AND state = 'approving'",
     )
     .bind(branch.id)
@@ -1359,7 +1428,7 @@ async function processDiscardBatch(db, store, branch) {
     });
     return { done: false, progress: { kind: branch.jobKind, done, total: done } };
   }
-  const closed = branch.jobKind === "rewind" ? "discarded" : "discarded";
+  const closed = "discarded";
   await db
     .prepare(
       "UPDATE branches SET state = ?2, job_kind = '', job_cursor = '', job_done = ?3, " +
@@ -1390,6 +1459,12 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
   const branch = await loadJobRow(db, snapshots, account, branchId);
   if (!branch) {
     return { done: true };
+  }
+  if (!store) {
+    const error = failureMessage("storage-down");
+    const next = branch.state === "approving" ? "open" : "discarded";
+    await failJob(db, branch.id, next, error);
+    return { error, status: 500, done: true };
   }
   if (branch.jobKind === "create" && branch.state === "creating") {
     return processCreateBatch(db, snapshots, store, account, branch);
@@ -1751,7 +1826,7 @@ export async function approveBranch(db, snapshots, store, account, name, queue =
   const claimed = await db
     .prepare(
       "UPDATE branches SET state = 'approving', job_kind = 'approve', job_cursor = '', " +
-        "job_done = 0, job_total = 0 WHERE id = ?1 AND state = 'open'",
+        "job_done = 0, job_total = 0, job_error = '' WHERE id = ?1 AND state = 'open'",
     )
     .bind(branch.id)
     .run();
@@ -1810,8 +1885,8 @@ export async function discardBranch(db, snapshots, store, account, name, options
   }
   const claimed = await db
     .prepare(
-      "UPDATE branches SET state = ?2, job_kind = ?3, job_cursor = '', job_done = 0, job_total = 0 " +
-        "WHERE id = ?1 AND state = 'open'",
+      "UPDATE branches SET state = ?2, job_kind = ?3, job_cursor = '', job_done = 0, job_total = 0, " +
+        "job_error = '' WHERE id = ?1 AND state = 'open'",
     )
     .bind(branch.id, jobState, jobKind)
     .run();
@@ -2092,6 +2167,7 @@ export async function handleBranchesRequest(
         snapshotBytes: branch.snapshotBytes,
         progress: { kind: branch.jobKind, done: branch.jobDone, total: branch.jobTotal },
         files: Object.keys(branch.snapshot).length || branch.jobDone,
+        error: branch.jobError,
       },
       diff: {
         added: diff.added,

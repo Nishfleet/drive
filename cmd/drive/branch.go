@@ -41,6 +41,7 @@ type BranchSummary struct {
 	Changed       int
 	SourceChanged int
 	Progress      *BranchProgress
+	Error         string
 }
 
 // BranchProgress is the job row the UI and CLI poll (drive#563).
@@ -120,6 +121,9 @@ func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
 			return BranchSummary{}, err
 		}
 		last = answer.Branch
+		if last.Error != "" {
+			return last, errors.New(last.Error)
+		}
 		if !isBranchJobState(last.State) {
 			return last, nil
 		}

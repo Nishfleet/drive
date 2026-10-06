@@ -7,6 +7,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../core/files.js";
 import {
+  BRANCH_JOBS_MAX_RETRIES,
+  BRANCH_QUEUE_KINDS,
+  handleBranchJobs,
+} from "../src/branch-jobs.js";
+import {
   approveBranch,
   BRANCH_JOB_BATCH_FILES,
   createBranch,
@@ -15,6 +20,7 @@ import {
   getBranch,
   handleBranchesRequest,
   processBranchJob,
+  snapshotKey,
 } from "../src/branches.js";
 import { handleRewindRequest, rewindBranch } from "../src/rewind.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
@@ -255,8 +261,12 @@ test("approve of 1,000 changes issues one LIST per parent folder", async () => {
   assert.equal(result.state, "approved");
   const lists = counted.calls.filter((call) => call.name === "list");
   const parents = lists.map((call) => String(call.args[0]));
-  assert.deepEqual([...new Set(parents)].sort(), [...parents].sort(), "each parent listed once");
-  assert.equal(parents.length, 2, `listed ${JSON.stringify(parents)}`);
+  assert.deepEqual(
+    [...new Set(parents)].sort(),
+    ["/.branches/work", "/Photos"],
+    "only the two parent folders are listed",
+  );
+  assert.ok(parents.length < 1000, `must not LIST once per file, listed ${parents.length} times`);
 });
 
 test("approve-then-rewind on the same branch leaves the original applied and the row approved", async () => {
@@ -298,4 +308,140 @@ test("discard refuses an approving branch", async () => {
   assert.equal(/** @type {{status?: number}} */ (discarded).status, 409);
   const row = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(row?.state, "approving");
+});
+
+test("approve plan lives in KV, not in the D1 job_cursor", async () => {
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await scoped.write("/.branches/work/a.txt", new Blob(["edited"]).stream(), "text/plain");
+  const queue = fakeQueue();
+  const started = await approveBranch(db, snapshots, scoped, ACCOUNT, "work", queue);
+  assert.equal(started.state, "approving");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+  const first = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  assert.equal(first.done, false);
+  const stored = await db
+    .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
+    .bind(row.id)
+    .first();
+  const cursor = JSON.parse(String(stored?.job_cursor ?? "{}"));
+  assert.equal(cursor.ready, true);
+  assert.equal(cursor.added, undefined);
+  assert.equal(cursor.branchFp, undefined);
+  assert.equal(cursor.sourceFp, undefined);
+  assert.ok(JSON.stringify(cursor).length < 200, JSON.stringify(cursor));
+  const planJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
+  assert.ok(planJson);
+  const plan = JSON.parse(planJson);
+  assert.ok(Array.isArray(plan.changed) && plan.changed.includes("a.txt"));
+});
+
+test("approve clash persists job_error on the row the poll reads", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await scoped.write("/Photos/a.txt", new Blob(["source-moved"]).stream(), "text/plain");
+  await scoped.write("/.branches/work/a.txt", new Blob(["branch-edit"]).stream(), "text/plain");
+  const result = await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
+  assert.equal(/** @type {{status?: number}} */ (result).status, 409);
+  assert.ok(result.error);
+  const detail = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches/work"),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  const body = await detail.json();
+  assert.equal(body.branch.state, "open");
+  assert.equal(body.branch.error, result.error);
+});
+
+test("handleBranchJobs acks a finished batch, retries a throw, and continues", async () => {
+  /** @type {Array<{body: unknown, ack: () => void, retry: () => void, attempts?: number, acked?: boolean, retried?: boolean}>} */
+  const messages = [];
+  const job = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-1",
+    branchId: 1,
+    name: "work",
+  };
+  /** @param {unknown} body @param {number} [attempts] */
+  const make = (body, attempts = 1) => {
+    /** @type {{body: unknown, ack: () => void, retry: () => void, attempts?: number, acked?: boolean, retried?: boolean}} */
+    const message = {
+      body,
+      attempts,
+      ack() {
+        message.acked = true;
+      },
+      retry() {
+        message.retried = true;
+      },
+    };
+    messages.push(message);
+    return message;
+  };
+  const good = make(job);
+  const bad = make(job);
+  const next = make(job);
+  const queue = fakeQueue();
+  let calls = 0;
+  const stats = await handleBranchJobs(
+    { messages: [good, bad, next] },
+    async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { continue: true };
+      }
+      if (calls === 2) {
+        throw new Error("boom");
+      }
+      return {};
+    },
+    queue,
+  );
+  assert.equal(stats.acked, 2);
+  assert.equal(stats.retried, 1);
+  assert.equal(good.acked, true);
+  assert.equal(bad.retried, true);
+  assert.equal(next.acked, true);
+  assert.equal(queue.sent.length, 1);
+});
+
+test("handleBranchJobs acks and runs onExhausted after max retries", async () => {
+  const job = {
+    kind: BRANCH_QUEUE_KINDS.approve,
+    accountId: "acct-1",
+    branchId: 9,
+    name: "work",
+  };
+  /** @type {{body: unknown, ack: () => void, retry: () => void, attempts: number, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body: job,
+    attempts: BRANCH_JOBS_MAX_RETRIES,
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  /** @type {unknown[]} */
+  const exhausted = [];
+  const stats = await handleBranchJobs(
+    { messages: [message] },
+    async () => {
+      throw new Error("still failing");
+    },
+    null,
+    async (body, error) => {
+      exhausted.push({ body, error });
+    },
+  );
+  assert.equal(stats.acked, 1);
+  assert.equal(stats.retried, 0);
+  assert.equal(message.acked, true);
+  assert.equal(message.retried, undefined);
+  assert.equal(exhausted.length, 1);
 });
