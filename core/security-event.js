@@ -12,6 +12,34 @@ import { SECURITY_EVENT_COPY } from "./emails.js";
 
 export { SECURITY_EVENT_COPY };
 
+/** How long a send may block the action before it is treated as a failure. */
+export const SEND_DEADLINE_MS = 8_000;
+
+/**
+ * Races `work` against a clock. A vendor that never answers must not hold
+ * the mint, link, logout or cap write that already committed.
+ * @param {Promise<unknown>} work
+ * @param {number} ms
+ * @returns {Promise<unknown>}
+ */
+function withDeadline(work, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${ms}ms`));
+    }, ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * The EMAIL binding and MAIL_FROM off a Worker env, or empty when either is
  * missing. A deployment with no mailer still completes the action.
@@ -30,6 +58,24 @@ export function mailFromEnv(env) {
 }
 
 /**
+ * A label for a site-Worker session. Device tokens do not store the name
+ * typed at `drive login`, so the share, upload-request and cap routes name
+ * the surface instead: a browser sends Origin, the CLI does not.
+ * @param {unknown} request
+ * @returns {string}
+ */
+export function sessionLabel(request) {
+  if (!(request instanceof Request)) {
+    return "a signed-in session";
+  }
+  const origin = request.headers.get("origin");
+  if (typeof origin === "string" && origin.trim() !== "") {
+    return "the web app";
+  }
+  return "the drive CLI";
+}
+
+/**
  * Sends the security-event mail, or skips loudly. Never throws: a missing
  * binding, a missing address, or a mailer that refuses is a log line, and the
  * caller still returns the action's own success.
@@ -42,6 +88,7 @@ export function mailFromEnv(env) {
  * @param {unknown} [input.deviceName]
  * @param {unknown} [input.happenedAt]
  * @param {unknown} [input.detail]
+ * @param {number} [input.deadlineMs]
  * @param {(message: string, ...rest: unknown[]) => void} [input.log]
  * @returns {Promise<{sent: boolean, reason: string}>}
  */
@@ -76,18 +123,27 @@ export async function notifySecurityEvent(input) {
     typeof input.happenedAt === "string" && input.happenedAt.trim() !== ""
       ? input.happenedAt.trim()
       : new Date().toISOString();
+  const deadlineMs =
+    typeof input.deadlineMs === "number" &&
+    Number.isFinite(input.deadlineMs) &&
+    input.deadlineMs > 0
+      ? input.deadlineMs
+      : SEND_DEADLINE_MS;
   try {
-    await sendEmail(binding, {
-      to,
-      from: mailFrom,
-      kind: "security-event",
-      data: {
-        event,
-        deviceName,
-        happenedAt,
-        detail: input.detail,
-      },
-    });
+    await withDeadline(
+      sendEmail(binding, {
+        to,
+        from: mailFrom,
+        kind: "security-event",
+        data: {
+          event,
+          deviceName,
+          happenedAt,
+          detail: input.detail,
+        },
+      }),
+      deadlineMs,
+    );
   } catch (error) {
     log(
       "security-event: the %s email failed and the action still stands",

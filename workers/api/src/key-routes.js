@@ -180,7 +180,7 @@ export async function revokeAllKeysRoute(request, ctx) {
   // credential that opens the storage API, so if the call fails only partway
   // the keys are already dead and nothing is left holding a way in.
   await ctx.store.revokeAllKeys(ctx.account);
-  await notifyFromCtx(ctx, "signed-out-everywhere", "a signed-in device");
+  await notifyFromCtx(ctx, "signed-out-everywhere", "this device");
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
 

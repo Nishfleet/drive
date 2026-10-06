@@ -517,7 +517,9 @@ export async function revokeDeviceTokenRoute(request, ctx) {
         ? ctx.account.email
         : "",
     event: "device-logged-out",
-    deviceName: "a signed-in device",
+    // Tokens do not store the name typed at `drive login`. This mail is
+    // about the token that just died, so "this device" is the honest label.
+    deviceName: "this device",
     happenedAt: new Date().toISOString(),
   });
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });

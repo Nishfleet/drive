@@ -59,7 +59,7 @@ import {
   settleBalances,
 } from "../core/prepaid.js";
 import { createD1QueueStore } from "../core/queues.js";
-import { mailFromEnv } from "../core/security-event.js";
+import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -884,7 +884,10 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store, mailFromEnv(c.env));
+    return handleCapRequest(c.req.raw, c.get("account"), store, {
+      ...mailFromEnv(c.env),
+      deviceName: sessionLabel(c.req.raw),
+    });
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -927,6 +930,7 @@ export function createApp() {
         // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
         ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -948,6 +952,7 @@ export function createApp() {
         // The mint route's own bound (drive issue #549).
         limiter: c.env.REQUEST_MINT_RATE_LIMITER,
         ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );

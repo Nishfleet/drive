@@ -867,16 +867,22 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
+  const previousCap =
+    typeof account.capUsd === "number" && Number.isFinite(account.capUsd) ? account.capUsd : null;
   const mailer = mail !== null && typeof mail === "object" ? mail : {};
-  await notifySecurityEvent({
-    email: mailer.email,
-    mailFrom: mailer.mailFrom,
-    to: typeof account.email === "string" ? account.email : "",
-    event: "cap-changed",
-    deviceName: mailer.deviceName,
-    happenedAt: new Date().toISOString(),
-    detail: `The new cap is $${usd.toFixed(2)}.`,
-  });
+  // A POST that writes the same amount is not a change. The write still
+  // runs (enforcement is idempotent); the inbox does not get a false alarm.
+  if (previousCap !== usd) {
+    await notifySecurityEvent({
+      email: mailer.email,
+      mailFrom: mailer.mailFrom,
+      to: typeof account.email === "string" ? account.email : "",
+      event: "cap-changed",
+      deviceName: mailer.deviceName,
+      happenedAt: new Date().toISOString(),
+      detail: `The new cap is $${usd.toFixed(2)}.`,
+    });
+  }
   return new Response(
     JSON.stringify({
       ...summary,

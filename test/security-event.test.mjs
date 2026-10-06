@@ -13,7 +13,7 @@ import {
   handleFilesRequest,
 } from "../core/files.js";
 import { createMemoryStore } from "../core/keystore.js";
-import { mailFromEnv, notifySecurityEvent } from "../core/security-event.js";
+import { mailFromEnv, notifySecurityEvent, sessionLabel } from "../core/security-event.js";
 import { createD1LinkStore, handleRequestRequest, handleShareRequest } from "../src/share.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { mintTeamKeyRoute } from "../workers/api/src/team-routes.js";
@@ -112,6 +112,62 @@ test("notifySecurityEvent sends exactly one mail, and a failure does not throw",
   assert.deepEqual(skipped, { sent: false, reason: "no-email-binding" });
 });
 
+test("a missing device name falls back to a signed-in device", async () => {
+  const ok = fakeEmail();
+  await notifySecurityEvent({
+    email: ok,
+    mailFrom: MAIL_FROM,
+    to: "you@example.com",
+    event: "device-logged-out",
+    happenedAt: HAPPENED_AT,
+  });
+  assert.match(String(/** @type {{text: string}} */ (ok.sent[0]).text), /a signed-in device/);
+});
+
+test("a hanging mailer does not hold the action past the deadline", async () => {
+  /** @type {(value: {messageId: string}) => void} */
+  let release = () => {};
+  const hanging = {
+    /**
+     * @param {unknown} _message
+     * @returns {Promise<{messageId: string}>}
+     */
+    send(_message) {
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  };
+  const started = Date.now();
+  const result = await notifySecurityEvent({
+    email: hanging,
+    mailFrom: MAIL_FROM,
+    to: "you@example.com",
+    event: "agent-key-minted",
+    deadlineMs: 40,
+  });
+  const elapsed = Date.now() - started;
+  release({ messageId: "late" });
+  assert.deepEqual(result, { sent: false, reason: "send-failed" });
+  assert.ok(elapsed < 1000, `hung ${elapsed}ms`);
+});
+
+test("sessionLabel names the web app or the CLI from the Origin header", () => {
+  assert.equal(
+    sessionLabel(
+      new Request("https://drive.test/api/share", {
+        method: "POST",
+        headers: { origin: "https://drive.test" },
+      }),
+    ),
+    "the web app",
+  );
+  assert.equal(
+    sessionLabel(new Request("https://drive.test/api/share", { method: "POST" })),
+    "the drive CLI",
+  );
+});
+
 test("mailFromEnv reads EMAIL and MAIL_FROM off a Worker env", () => {
   assert.deepEqual(mailFromEnv(null), { email: undefined, mailFrom: "" });
   const email = fakeEmail();
@@ -161,6 +217,30 @@ test("minting a share or upload-request link sends one mail, and a failure still
   assert.equal(shareMail.sent.length, 1);
   assert.match(String(/** @type {{text: string}} */ (shareMail.sent[0]).text), /share link/);
   assert.match(String(/** @type {{text: string}} */ (shareMail.sent[0]).text), /office laptop/);
+
+  const browserReq = new Request("https://drive.test/api/share", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://drive.test",
+    },
+    body: JSON.stringify({ path: "/holiday.jpg" }),
+  });
+  const browserMail = fakeEmail();
+  const fromBrowser = await handleShareRequest(browserReq, files, links, account, {
+    now,
+    token: "CCCCCCCCCCCCCCCCCCCCCC",
+    limiter: {
+      async limit() {
+        return { success: true };
+      },
+    },
+    email: browserMail,
+    mailFrom: MAIL_FROM,
+    deviceName: sessionLabel(browserReq),
+  });
+  assert.equal(fromBrowser.status, 201);
+  assert.match(String(/** @type {{text: string}} */ (browserMail.sent[0]).text), /the web app/);
 
   const requestMail = fakeEmail(new Error("vendor down"));
   const requested = await handleRequestRequest(
@@ -232,6 +312,20 @@ test("changing the cap sends one mail, and a failure still saves the cap", async
   assert.equal(down.sent.length, 1);
   assert.match(String(/** @type {{text: string}} */ (down.sent[0]).text), /spending cap/);
   assert.match(String(/** @type {{text: string}} */ (down.sent[0]).text), /\$20\.00/);
+
+  const same = fakeEmail();
+  const again = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-1", name: "You", email: "you@example.com", capUsd: 20 },
+    capStore,
+    { email: same, mailFrom: MAIL_FROM, deviceName: "office laptop" },
+  );
+  assert.equal(again.status, 200);
+  assert.equal(same.sent.length, 0, "a no-op cap write does not mail");
 });
 
 test("the usage answer carries the open public link count", async () => {
@@ -445,6 +539,7 @@ test("sign-out-everywhere and device logout each send one mail", async () => {
     String(/** @type {{text: string}} */ (mail.sent[0]).text),
     /Every device was signed out/,
   );
+  assert.match(String(/** @type {{text: string}} */ (mail.sent[0]).text), /this device/);
 
   const store2 = createMemoryStore({ now: () => Date.parse(HAPPENED_AT) });
   const working = fakeEmail();
@@ -464,6 +559,7 @@ test("sign-out-everywhere and device logout each send one mail", async () => {
     String(/** @type {{text: string}} */ (mail2.sent[0]).text),
     /A device was signed out/,
   );
+  assert.match(String(/** @type {{text: string}} */ (mail2.sent[0]).text), /this device/);
 });
 
 test("minting a team key sends one mail", async () => {

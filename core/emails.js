@@ -518,7 +518,7 @@ function requireReplyTo(value) {
 // every send reads.
 //
 // The link and the reply address are here rather than in each template
-// (drive#522): twelve templates each spelling its own footer is twelve places
+// (drive#522): every kind in EMAIL_KINDS spelling its own footer is that many places
 // for a template to ship with a dead end, and the two facts — where a person
 // goes next, and where a reply lands — are the same for all of them. `finish`
 // is the only way a template returns, so this cannot be forgotten. The link
@@ -658,7 +658,7 @@ export function deviceApproveNoticeTemplate(data = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 11) Security event -- one template for keys, links, logout and cap
+// 12) Security event -- one template for keys, links, logout and cap
 //     (drive#551). { event, deviceName, happenedAt, detail? }
 // ---------------------------------------------------------------------------
 /** The event names the template accepts. One sentence each, so a caller cannot
@@ -674,6 +674,8 @@ export const SECURITY_EVENT_COPY = Object.freeze({
   "cap-changed": "The spending cap was changed",
 });
 
+// USAGE_URL is the same absolute /usage.html the close-lane templates pass
+// to finish (defined at the top of this file). The revoke CTA is that page.
 const SECURITY_LINK = Object.freeze({
   label: "Revoke access on the usage page",
   url: USAGE_URL,
