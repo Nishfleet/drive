@@ -346,18 +346,19 @@ export function linkStateLabel(state) {
   return label;
 }
 
-/** The day a link stops working, in words, for the owner's list.
- *
+/**
+ * The instant a link stops working (drive#559). The Worker sends the instant
+ * and never words for it: a UTC timestamp reads the wrong day at both ends of
+ * the month for a customer in another zone. The upload page writes it in the
+ * browser's own zone, and `drive` writes it in the machine's.
  * @param {number} expiresAt
+ * @returns {string} an ISO instant
  */
-export function expiresLabel(expiresAt) {
+export function expiresAtIso(expiresAt) {
   if (!Number.isFinite(expiresAt)) {
-    throw new TypeError(`expiresLabel needs an expiry time, got ${String(expiresAt)}`);
+    throw new TypeError(`expiresAtIso needs an expiry time, got ${String(expiresAt)}`);
   }
-  return `Until ${new Date(expiresAt).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}`;
+  return new Date(expiresAt).toISOString();
 }
 
 /**
@@ -379,7 +380,7 @@ export function shareRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     downloads: count,
     downloadsLabel:
       count === 0
@@ -407,7 +408,7 @@ export function requestRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     uploads: count,
     uploadBytes: bytes,
     maxBytes: max,
@@ -1610,6 +1611,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
     folder: folderDisplayName(record.folder),
     owner,
     expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
   });
 }
 

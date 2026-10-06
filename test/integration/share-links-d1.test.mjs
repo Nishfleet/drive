@@ -29,7 +29,7 @@ import { failureMessage } from "../../src/messages.js";
 import {
   createD1LinkStore,
   DAY_MS,
-  expiresLabel,
+  expiresAtIso,
   handleRequestInfoRequest,
   handleRequestRequest,
   handleRequestUploadRequest,
@@ -331,6 +331,7 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
     // page hides its "Shared by" line rather than showing a blank (drive#684).
     owner: "",
     expiresLabel: expiresLabel(now + 7 * DAY_MS),
+    expiresAtIso: expiresAtIso(now + 7 * DAY_MS),
   });
 
   // The upload itself, through a fresh store, lands in the owner's folder.

@@ -347,7 +347,12 @@ test("POST /api/share mints a link for a file that is there, and 404s one that i
   assert.equal(body.share.stateLabel, "Open");
   assert.equal(body.share.url, `https://drive.test/s/${TOKEN}`);
   assert.equal(body.share.downloadsLabel, "No downloads yet");
-  assert.match(body.share.expiresLabel, /^Until \d/);
+  // The instant, not a UTC sentence (drive#559): "Until 8 Oct" is written in
+  // the Worker's own zone, which is the wrong day for the browser that has to
+  // read it. public/upload.html writes it in the reader's zone instead, and
+  // `drive` writes it in the machine's.
+  assert.equal(body.share.expiresAtIso, new Date(linkExpiry(now)).toISOString());
+  assert.match(body.share.expiresAtIso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
   const missing = await share("/not-here.jpg", { token: TOKEN });
   assert.equal(missing.status, 404);
@@ -1210,7 +1215,8 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   const infoBody = await info.json();
   assert.equal(infoBody.open, true);
   assert.equal(infoBody.folder, "Your drive");
-  assert.match(infoBody.expiresLabel, /^Until \d/);
+  assert.equal(infoBody.expiresAtIso, new Date(linkExpiry(now)).toISOString());
+  assert.match(infoBody.expiresAtIso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
   // The drop itself: the request body is the file, exactly as the page sends it.
   const dropped = await handleRequestUploadRequest(

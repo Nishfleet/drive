@@ -156,6 +156,10 @@ var messageTable = map[string][2]string{
 		"The drive folder {1} could not be created.",
 		"Check that the disk has room and that {1} is writable, then run the command again.",
 	},
+	"cache-clear-mounted": {
+		"The cache cannot be cleared while the drive is mounted.",
+		"Run `drive unmount`, then `drive cache --clear`, then `drive mount`.",
+	},
 	"mount-failed": {
 		"rclone exited before the drive mounted.",
 		"Read {1} for the exact cause, fix it, then run `drive mount` again.",

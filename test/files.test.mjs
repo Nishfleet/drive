@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import vm from "node:vm";
 import {
   accountStorageKey,
   ChangedUnderUsError,
@@ -28,7 +29,6 @@ import {
   fileKind,
   fileRows,
   findTrashName,
-  formatWhen,
   handleFilesRequest,
   isPreviewable,
   isRestorable,
@@ -44,7 +44,6 @@ import {
   purgeExpiredTrash,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
-  restorableUntil,
   safeFileName,
   scopeStore,
   sortEntries,
@@ -173,22 +172,26 @@ test("a listing splits into the two groups the page renders", () => {
 });
 
 test("a file row carries the size and the time a person reads", () => {
-  const rows = fileRows(
-    [
-      { name: "notes.md", path: "/notes.md", kind: "text", size: 2400, modified: now - 3600_000 },
-      { name: "Photos", path: "/Photos", kind: "folder" },
-    ],
-    now,
-  );
+  const rows = fileRows([
+    { name: "notes.md", path: "/notes.md", kind: "text", size: 2400, modified: now - 3600_000 },
+    { name: "Photos", path: "/Photos", kind: "folder" },
+  ]);
   assert.deepEqual(rows[0], {
     name: "Photos",
     path: "/Photos",
     kind: "folder",
     sizeLabel: "",
-    whenLabel: "",
+    // A folder has no write time, so it sends no instant: the page writes
+    // "Folder" and nothing else, rather than a moment that is not its own
+    // (drive#559).
+    modifiedIso: "",
   });
   assert.equal(rows[1].sizeLabel, "2.4 KB");
-  assert.match(rows[1].whenLabel, /^\d{2}:\d{2}$/);
+  // The instant, not words. "11:00" written here is a UTC clock, which is the
+  // wrong clock for every customer who is not at Greenwich — the hour a file
+  // was written is exactly what a browser has to say in its own zone
+  // (drive#559; the page's whenLabel writes it below).
+  assert.equal(rows[1].modifiedIso, iso(3600_000));
 });
 
 // ---------------------------------------------------------------- paths
@@ -378,19 +381,216 @@ test("Recently deleted says when a file was deleted and until when", () => {
   assert.ok(rows[0]);
   assert.equal(rows[0].name, "a.txt");
   assert.equal(rows[0].sizeLabel, "1.2 KB");
-  assert.equal(rows[0].deletedLabel, `Deleted ${formatWhen(now - 60_000, now)}`);
-  assert.equal(rows[0].untilLabel, restorableUntil(now - 60_000));
+  assert.equal(rows[0].deletedIso, iso(60_000));
+  assert.equal(rows[0].untilIso, iso(60_000 - RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000));
   assert.equal(rows[0].restorable, true);
 });
 
 // ---------------------------------------------------------------- times
 
-test("a time reads as a clock today, a day this year, a year beyond that", () => {
-  assert.equal(formatWhen(now - 5 * 60_000, now), formatWhen(now - 5 * 60_000, now));
-  assert.match(formatWhen(iso(40 * 24 * 60 * 60 * 1000), now), /\d{1,2} \w{3}$/);
-  const old = formatWhen("2024-03-04T10:00:00.000Z", now);
-  assert.match(old, /2024/);
-  assert.throws(() => formatWhen("not a date", now), TypeError);
+test("a row sends the instant, not a sentence, and an entry with no date sends none", () => {
+  // drive#559: "Deleted 11:59" is a UTC clock for every customer east of
+  // Greenwich and the wrong clock for every customer west of it, so the Worker
+  // sends the instant and the page writes the words (public/files.html
+  // whenLabel/dayLabel). What moves here is not a label but the shape.
+  assert.equal(
+    fileRows([{ name: "a.txt", path: "/a.txt", kind: "text", size: 1, modified: 0 }])[0]
+      .modifiedIso,
+    "",
+  );
+  // S3's LastModified is optional in a listing, so a server that reports none
+  // is answering the spec: the row ships no instant, and the page writes
+  // nothing rather than a moment that is not the file's.
+  assert.equal(
+    fileRows([{ name: "a.txt", path: "/a.txt", kind: "text", size: 1 }])[0].modifiedIso,
+    "",
+  );
+  // A value that is not a date at all is a bug, not a spec-legal answer: it is
+  // named rather than turned into "Invalid Date".
+  assert.throws(
+    () =>
+      fileRows(
+        /** @type {import("../src/files.js").FileEntry[]} */ (
+          /** @type {unknown} */ ([
+            { name: "a.txt", kind: "text", size: 1, modified: "2026-10-08" },
+          ])
+        ),
+      ),
+    TypeError,
+  );
+});
+
+// ---------------------------------------------------------------- times
+
+/**
+ * @typedef {object} StubElement
+ * @property {string} tag
+ * @property {string} className
+ * @property {string} href
+ * @property {string} text
+ * @property {string} textContent
+ * @property {Record<string, string>} dataset
+ * @property {Record<string, string>} attributes
+ * @property {boolean} disabled
+ * @property {Record<string, (event: any) => any>} listeners
+ * @property {{add(): void, toggle(): void, contains: () => boolean}} classList
+ * @property {StubElement[]} appended
+ * @property {(child: StubElement) => StubElement} append
+ * @property {(key: string, value: string) => void} setAttribute
+ * @property {(name: string, handler: (event: any) => any) => void} addEventListener
+ */
+
+/**
+ * A stub element, the same one test/account-balance.test.mjs uses: it records
+ * what the page writes into it and what gets appended, so a row the page
+ * rendered can be read back.
+ * @param {string} tag
+ * @returns {StubElement}
+ */
+function stubTag(tag) {
+  /** @type {StubElement[]} */
+  const appended = [];
+  /** @type {Record<string, string>} */
+  const attributes = {};
+  /** @type {Record<string, string>} */
+  const dataset = {};
+  /** @type {Record<string, (event: any) => any>} */
+  const listeners = {};
+  // The one string both words hold, so the two accessors are not each other's
+  // return type: the page writes `text` and reads `textContent` back, and the
+  // test reads `textContent` off the row it rendered.
+  /** @type {string} */
+  let written = "";
+  const el = {
+    tag,
+    className: "",
+    href: "",
+    attributes,
+    dataset,
+    listeners,
+    disabled: false,
+    classList: { add() {}, toggle() {}, contains: () => false },
+    appended,
+    append: /** @param {StubElement} child */ (child) => {
+      el.appended.push(child);
+      return child;
+    },
+    get text() {
+      return written;
+    },
+    set text(value) {
+      written = value;
+    },
+    get textContent() {
+      return written;
+    },
+    set textContent(value) {
+      written = value;
+      // Setting the text is how the page empties a node before it fills it
+      // again, so a cleared list is an empty list of rows.
+      if (value === "") el.appended.length = 0;
+    },
+    setAttribute: /** @param {string} key, @param {string} value */ (key, value) => {
+      el.attributes[key] = value;
+    },
+    addEventListener: /** @param {string} name, @param {any} handler */ (name, handler) => {
+      el.listeners[name] = handler;
+    },
+  };
+  return el;
+}
+
+/** The page's own script, loaded with enough browser stubbed to run. */
+/** @returns {{sandbox: Record<string, any>, listed: StubElement}} */
+function loadFilesPage() {
+  const listed = stubTag("ul");
+  /** @type {Map<string, StubElement>} */
+  const elements = new Map();
+  /**
+   * @param {string} id
+   * @returns {StubElement}
+   */
+  const stub = (id) => {
+    const el = stubTag(id);
+    elements.set(id, el);
+    return el;
+  };
+  /** @type {Record<string, any>} */
+  const sandbox = {
+    console,
+    document: {
+      getElementById: (/** @type {string} */ id) => elements.get(id) ?? stub(id),
+      createElement: (/** @type {string} */ tag) => stubTag(tag),
+    },
+    location: { search: "" },
+    navigator: { onLine: true },
+    sessionStorage: { getItem: () => null, setItem() {} },
+    // The session nav and the session list read their own routes at load; both
+    // answer with the words the page's own copy of the gate's table names, so
+    // the read lands rather than leaving the page in its signed-out state.
+    fetch: async (/** @type {string} */ url) => {
+      const where = String(url);
+      if (where.includes("view=deleted")) {
+        return { ok: true, status: 200, json: async () => ({ rows: [], nextCursor: null }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ rows: [], nextCursor: null, empty: {}, line: "", signedIn: true }),
+      };
+    },
+  };
+  elements.set("file-list", listed);
+  const from = page.indexOf("<script>") + "<script>".length;
+  vm.runInNewContext(page.slice(from, page.indexOf("</script>", from)), sandbox);
+  return { sandbox, listed };
+}
+
+test("a row rendered in the browser's own zone shows the local day", () => {
+  // drive#559, acceptance 1 and 3. The Worker's row carries the instant and the
+  // page writes the words, so one file saved just after midnight UTC is the
+  // previous day in New York and that day in London: the hour and the day a
+  // person reads are the ones their own clock shows.
+  const { sandbox, listed } = loadFilesPage();
+  // 01:30 UTC on the 9th of this year: New York is still on the 8th and London
+  // is on the 9th, whatever the daylight saving season, and both are this
+  // year, which is the day-and-month shape the page writes.
+  const instant = Date.UTC(new Date().getFullYear(), 9, 9, 1, 30);
+  const row = fileRows([
+    { name: "note.txt", path: "/note.txt", kind: "text", size: 5, modified: instant },
+  ])[0];
+  /** @param {string} zone */
+  const dayIn = (zone) => new Intl.DateTimeFormat(undefined, { timeZone: zone, day: "numeric" });
+  /** @param {string} zone */
+  const shortIn = (zone) =>
+    new Intl.DateTimeFormat(undefined, { timeZone: zone, day: "numeric", month: "short" });
+  /** @returns {StubElement} */
+  const sub = () => {
+    const found = listed.appended
+      .flatMap((li) => li.appended)
+      .flatMap((node) => node.appended)
+      .find((node) => node.className === "sub");
+    assert.ok(found, "the page rendered a row whose meta line can be read back");
+    return found;
+  };
+
+  process.env.TZ = "America/New_York";
+  try {
+    sandbox.renderRows([row]);
+    assert.equal(sub().textContent, `Text · 5 B · ${shortIn("America/New_York").format(instant)}`);
+    assert.equal(dayIn("America/New_York").format(instant), "8", "New York is still on the 8th");
+    process.env.TZ = "Europe/London";
+    sandbox.renderRows([row]);
+    assert.equal(sub().textContent, `Text · 5 B · ${shortIn("Europe/London").format(instant)}`);
+    assert.equal(dayIn("Europe/London").format(instant), "9", "London is on the 9th: a day over");
+    // A row with no instant sent writes no date at all, rather than a moment
+    // that is not the folder's.
+    const folder = fileRows([{ name: "Photos", path: "/Photos", kind: "folder" }])[0];
+    sandbox.renderRows([folder]);
+    assert.equal(sub().textContent, "Folder");
+  } finally {
+    process.env.TZ = "UTC";
+  }
 });
 
 // ---------------------------------------------------------------- the routes
