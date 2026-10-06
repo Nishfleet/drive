@@ -77,6 +77,7 @@ import {
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
+  CLOSE_SCHEDULE,
   handleCloseCancelRequest,
   handleCloseRequest,
   handleCloseStatusRequest,
@@ -1232,13 +1233,12 @@ const handler = {
       // The whole branch shares one Sentry Crons check-in (issue #520): a
       // failure in any of its trips marks the nightly monitor `error`.
       return withCronCheckIn(event, "meter-nightly-reconcile", async () => {
-        // The account close cron is its own waitUntil (drive#565), registered
-        // before the reconcile runs: a reconcileMeter throw used to leave every
-        // close receipt, reminder and purge undone for that night, and the
-        // purge is resumable now, so the two trips have nothing to say to each
-        // other. Its own per-account catches mean only a whole-cron failure
-        // (D1 down) rejects here, and a failed trigger is the honest signal
-        // for that: the next night retries everything it did not finish.
+        // The account close cron no longer rides this trip (drive#522): it has
+        // its own schedule, its own branch and its own check-in below, so a
+        // reconcileMeter, prune or size-record failure here cannot leave every
+        // close receipt, reminder and purge undone for that night. The purge is
+        // resumable, so the next night finishes whatever did not.
+        //
         // With the meter's queue bound (drive#519), one message per account
         // does the reconcile (src/meter-jobs.js); without it, the same
         // per-account step runs here, each account's failure kept and raised.
@@ -1285,32 +1285,6 @@ const handler = {
             `link retention: pruned ${purged.shares} share rows, ` +
               `${purged.requests} upload-request rows`,
           );
-          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-          context.waitUntil(
-            runAccountCloseCron({
-              db: env.DRIVE_DB,
-              devices: createD1DeviceStore(env.DRIVE_DB),
-              store,
-              email: env.EMAIL,
-              mailFrom: secrets.MAIL_FROM ?? "",
-              now: event.scheduledTime,
-            }).then(
-              // A purge that fails is caught inside the close cron so one
-              // account's failure never blocks the others; the resolved
-              // count is the only way that failure leaves the function, and
-              // without this branch the nightly check-in read success over
-              // it (issue #520 review). The failed purges resume next night.
-              (result) => reportPurgeFailures(result.purgeFailures, result.purged),
-              // A waitUntil rejection never reaches the caller, so without
-              // this the close cron's failures were invisible outside the
-              // platform logs (issue #520).
-              (error) => {
-                const failure = new Error(`the account close cron failed: ${error.message}`);
-                captureError(failure, "account close cron");
-                throw failure;
-              },
-            ),
-          );
           // Sign-in counter retention (drive#725): a row whose day window
           // ended more than a day ago is deleted, so the public sign-in route
           // cannot make this table keep every address anybody typed. It deletes
@@ -1333,6 +1307,49 @@ const handler = {
             `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
             `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
         );
+      });
+    }
+    // The account close cron, on its own trip and its own Sentry Crons
+    // check-in (drive#522, CLOSE_SCHEDULE; issue #520). Awaited, not a
+    // waitUntil: this trip exists to run this job and nothing else, so a
+    // whole-cron failure (D1 down) fails the trigger for Cloudflare to retry
+    // and marks the monitor `error`, rather than disappearing into a
+    // background promise.
+    if (event.cron === CLOSE_SCHEDULE) {
+      return withCronCheckIn(event, "nightly-account-close", async () => {
+        if (!env.DRIVE_DB) {
+          throw new Error("the account close cron needs the drive database");
+        }
+        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const close = await runAccountCloseCron({
+          db: env.DRIVE_DB,
+          devices: createD1DeviceStore(env.DRIVE_DB),
+          store,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          now: event.scheduledTime,
+        });
+        // A purge that fails is caught inside the close cron so one account's
+        // failure never blocks the others; the resolved count is the only way
+        // that failure leaves the function, so it reaches Sentry here (issue
+        // #520 review). The failed purges resume next night.
+        reportPurgeFailures(close.purgeFailures, close.purged);
+        // The counters the pass already returns are the operator's one line
+        // for it (drive#522). A mail outage means a receipt or a deletion
+        // notice did not go out and a purge may have been skipped; those must
+        // be visible in the cron log, not inferable only from the per-send
+        // lines.
+        if (close.mailFailures > 0 || close.purgeFailures > 0 || close.purgeSkipped > 0) {
+          console.error(
+            `account close: mailed=${close.mailed} mailFailures=${close.mailFailures} ` +
+              `reminded=${close.reminded} purged=${close.purged} ` +
+              `purgeFailures=${close.purgeFailures} purgeSkipped=${close.purgeSkipped}`,
+          );
+        } else {
+          console.log(
+            `account close: mailed=${close.mailed} reminded=${close.reminded} purged=${close.purged}`,
+          );
+        }
       });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

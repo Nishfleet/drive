@@ -19,14 +19,14 @@
 // every branch without a Worker runtime, like src/waitlist.js and
 // core/status.js.
 
-import { EMAIL_KINDS, FROM_NAME, renderEmail } from "./emails.js";
+import { EMAIL_KINDS, FROM_NAME, REPLY_TO_LOCAL, renderEmail } from "./emails.js";
 import { json } from "./http.js";
 
 /**
  * The Email Sending binding as this module uses it: `send()` and nothing
  * else. The message shape is the binding's own; this module fills every field
  * it sends.
- * @typedef {{send: (message: {to: string, from: {email: string, name: string}, subject: string, text: string, html: string}) => Promise<{messageId: string}>}} EmailBinding
+ * @typedef {{send: (message: {to: string, from: {email: string, name: string}, replyTo?: string, subject: string, text: string, html: string}) => Promise<{messageId: string}>}} EmailBinding
  */
 
 /**
@@ -113,6 +113,28 @@ export function isSameOriginRequest(request) {
 }
 
 /**
+ * The address a reply to this message lands in (drive#522): support@ on the
+ * sending domain the deployment already sends from. Derived rather than a
+ * constant, because the sending domain is per deployment (drive has none yet,
+ * #199) and an address on a domain this deployment cannot receive mail on is
+ * a dead end. One function so the Reply-To header and the footer line the
+ * template prints can never disagree.
+ * @param {string} from the deployment's MAIL_FROM address
+ * @returns {string}
+ */
+export function replyToFor(from) {
+  const at = from.lastIndexOf("@");
+  if (at <= 0 || at === from.length - 1) {
+    throw new TypeError(`MAIL_FROM needs a local part and a domain, got ${from}`);
+  }
+  const domain = from.slice(at + 1);
+  if (!domain.includes(".") || domain.includes("@")) {
+    throw new TypeError(`MAIL_FROM needs a domain with a dot, got ${from}`);
+  }
+  return `${REPLY_TO_LOCAL}@${domain}`;
+}
+
+/**
  * Sends one rendered email. Resolves with {messageId}, or throws with the
  * binding's own error: a failed send is never reported as sent, because the
  * caller decides whether to retry and a false "sent" would silently drop a
@@ -144,12 +166,17 @@ export async function sendEmail(emailBinding, request) {
   // 202 with an empty body. The route renders first (so a bad body is a 400
   // rather than a 502) and passes the result in.
   const senderName = typeof fromName === "string" ? fromName : FROM_NAME;
-  const { subject, text, html } = rendered ?? renderEmail(kind, data);
+  // Derived from the deployment's own sending address and passed into the
+  // renderer, so the Reply-To header and the footer line the template prints
+  // are the same address by construction (drive#522).
+  const replyTo = replyToFor(from.trim());
+  const { subject, text, html } = rendered ?? renderEmail(kind, { ...data, replyTo });
   // Both parts: some clients show only the text part, and a text part is a
   // large part of the spam score.
   const message = await binding.send({
     to: to.trim(),
     from: { email: from.trim(), name: senderName },
+    replyTo,
     subject,
     text,
     html,
@@ -174,9 +201,12 @@ export async function sendEmail(emailBinding, request) {
 // provider failure (502) the caller would retry forever.
 /**
  * @param {unknown} body
+ * @param {string} replyTo the deployment's own reply address, derived from
+ *   its MAIL_FROM and handed to the renderer so the footer and the header are
+ *   one address (drive#522)
  * @returns {{ok: true, kind: string, to: string, data: unknown, rendered: {subject: string, text: string, html: string, saved: string|null}}|{ok: false, error: string}}
  */
-function readRequest(body) {
+function readRequest(body, replyTo) {
   if (typeof body !== "object" || body === null) {
     return { ok: false, error: "Send a JSON object with an email kind, an address and its data." };
   }
@@ -196,8 +226,8 @@ function readRequest(body) {
     const rendered = renderEmail(
       kind,
       typeof data === "object" && data !== null
-        ? /** @type {Record<string, unknown>} */ (data)
-        : {},
+        ? { .../** @type {Record<string, unknown>} */ (data), replyTo }
+        : { replyTo },
     );
     return { ok: true, kind, to: to.trim(), data, rendered };
   } catch (error) {
@@ -239,13 +269,6 @@ export async function handleSendEmailRequest(request, env) {
   } catch (error) {
     return json({ error: `The request body is not valid JSON: ${String(error)}` }, 400);
   }
-  const read = readRequest(body);
-  if (!read.ok) {
-    return json({ error: read.error }, 400);
-  }
-  // Bound once: the `ok` discriminant narrows the result, and a union property
-  // is not narrowed across the awaits below.
-  const wanted = read;
   if (!env?.EMAIL) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
   }
@@ -255,8 +278,25 @@ export async function handleSendEmailRequest(request, env) {
     return json({ error: "MAIL_FROM is not set on this deployment." }, 503);
   }
   // Bound once: the check above narrows the field, and a property of a
-  // mutable object is not narrowed across the await below.
+  // mutable object is not narrowed across the awaits below. The reply address
+  // is derived from this same setting, so a body with bad data is still a 400
+  // rather than a send failure (drive#522).
   const mailFrom = env.MAIL_FROM;
+  let read;
+  try {
+    read = readRequest(body, replyToFor(mailFrom.trim()));
+  } catch (error) {
+    // A MAIL_FROM that is set but is not an address cannot render a reply
+    // address, so it is named as the missing setting it is rather than
+    // swallowed into a 400 about the body's data.
+    return json({ error: `MAIL_FROM is not a usable sending address: ${String(error)}` }, 503);
+  }
+  if (!read.ok) {
+    return json({ error: read.error }, 400);
+  }
+  // Bound once: the `ok` discriminant narrows the result, and a union property
+  // is not narrowed across the awaits below.
+  const wanted = read;
   try {
     const sent = await sendEmail(env.EMAIL, {
       to: wanted.to,

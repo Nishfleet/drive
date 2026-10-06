@@ -87,8 +87,21 @@ import { meterFreshness } from "../core/meter.js";
 //     about what "no endpoint" means. In local dev without storage vars this
 //     check is red by design; the runbook says so.
 //
+// Reported, but NOT a 503 (drive#522): the sender address. Every customer
+// email (close receipts, reminders, the welcome, sign-in links) is sent from
+// MAIL_FROM, and with it unset or unusable each one fails at the customer's
+// click while the site serves. Until launch the deploy only warns about it
+// (drive#752 turns that back into a block), so this endpoint is where the
+// gap stays visible: `"email":"not-ready"` rides on the answer, ok or not.
+// It is not a failing dependency, because the deploy smoke rolls back on any
+// answer that is not ok, and a pre-launch drive with no sending domain yet
+// (#199) would then never ship. The check reads the address through
+// src/email-send.js replyToFor, the same reader every send uses, so this and
+// the mail path cannot disagree, and the answer is one word: never the
+// address itself.
+//
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
-//   - Secrets. Their presence is a deployment shape, not a reachability
+//   - Other secrets. Their presence is a deployment shape, not a reachability
 //     question, and a value cannot be probed without risking disclosure.
 //     A missing secret makes the one route that needs it answer 403/503 by
 //     name already (core/email-send.js, src/waitlist.js).
@@ -108,6 +121,7 @@ import { meterFreshness } from "../core/meter.js";
 // A dependency that does not answer in its share reports itself by name, so
 // the alert says which dependency rather than "unhealthy".
 
+import { replyToFor } from "../core/email-send.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
 /** The path the outside monitor (#36) polls. Public, and reads no account. */
@@ -389,6 +403,26 @@ async function checkKv(kv, timeoutMs, name) {
 }
 
 /**
+ * Whether this deployment can send customer email at all (drive#522): a
+ * MAIL_FROM that replyToFor, the reader every send goes through, accepts.
+ * Unset, empty or malformed is "not-ready". The address never leaves here.
+ * @param {Record<string, unknown>} env
+ * @returns {"ready" | "not-ready"}
+ */
+export function emailReadiness(env) {
+  const from = env?.MAIL_FROM;
+  if (typeof from !== "string" || from.trim() === "") {
+    return "not-ready";
+  }
+  try {
+    replyToFor(from);
+    return "ready";
+  } catch {
+    return "not-ready";
+  }
+}
+
+/**
  * Runs every dependency check and reports the outcome as data, so a test can
  * read it and the fetch handler can render it without the two disagreeing.
  *
@@ -574,7 +608,8 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
  * getting a 200 that means nothing.
  *
  * The body carries no secret, no query text, no stack and no account data:
- * `{"ok":true}` or `{"ok":false,"failing":"<binding name>"}`. A binding name
+ * `{"ok":true}` or `{"ok":false,"failing":"<binding name>"}`, plus
+ * `"email":"not-ready"` when the deployment cannot send mail. A binding name
  * is configuration the operator already has, and it is the one thing that
  * tells them where to look.
  *
@@ -610,13 +645,17 @@ export async function handleHealthRequest(request, env) {
     return limited;
   }
   const result = await checkHealth(env);
+  // The email part (drive#522) is reported beside the verdict, never as it:
+  // only when it is not ready, so a deployment that can send answers exactly
+  // as before, and one that cannot says so on every poll.
+  const email = emailReadiness(env) === "ready" ? {} : { email: "not-ready" };
   if (result.ok) {
-    return new Response(JSON.stringify({ ok: true }), {
+    return new Response(JSON.stringify({ ok: true, ...email }), {
       status: 200,
       headers: JSON_HEADERS,
     });
   }
-  return new Response(JSON.stringify({ ok: false, failing: result.failing }), {
+  return new Response(JSON.stringify({ ok: false, failing: result.failing, ...email }), {
     status: 503,
     headers: JSON_HEADERS,
   });
