@@ -59,11 +59,11 @@ function makeD1() {
     "drive/0015_branch_row_id.sql",
     // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
     // for the job columns and in-flight unique index it inserts through
-    // (drive#563), 0031 for the reserved_bytes it claims with and sums.
+    // (drive#563), 0032 for the reserved_bytes it claims with and sums.
     "drive/0016_founding.sql",
     "drive/0019_abuse_guards.sql",
     "drive/0030_branch_jobs.sql",
-    "drive/0031_branch_reserved_bytes.sql",
+    "drive/0032_branch_reserved_bytes.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }

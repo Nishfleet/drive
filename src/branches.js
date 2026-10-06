@@ -871,7 +871,7 @@ async function countOpenBranches(db, accountId) {
  * batch the branch's bytes are in neither the file index nor the store: ten
  * queued creates of a 100 GB folder would each measure only its own folder and
  * each walk past a limit that would have refused the ninth. The claim writes
- * what it measured into `reserved_bytes` (migrations/drive/0031), and this
+ * what it measured into `reserved_bytes` (migrations/drive/0032), and this
  * sums those rows.
  *
  * Only 'creating' rows are summed, and that is the whole of the release: a row
@@ -1990,7 +1990,7 @@ export async function createBranch(
   // count 9 and both insert. The one that inserts no rows is refused below,
   // still before the copy is made.
   //
-  // The claim carries `reserved_bytes` (migrations/drive/0031): the copy's own
+  // The claim carries `reserved_bytes` (migrations/drive/0032): the copy's own
   // size as the guard measured it, so a create queued behind this one is
   // refused for the bytes this one is about to write rather than allowed to
   // queue behind a limit it will pass together. A charged account reserves 0,

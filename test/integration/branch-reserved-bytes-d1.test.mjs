@@ -21,7 +21,7 @@ import { GB, MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 const ACCOUNT = { id: "acct-reserve" };
 
 test("the real migration adds one nullable reserved_bytes column", () => {
-  assert.ok(MIGRATION_FILES.includes("0031_branch_reserved_bytes.sql"), "0031 is missing");
+  assert.ok(MIGRATION_FILES.includes("0032_branch_reserved_bytes.sql"), "0032 is missing");
   const { sqlite } = makeMeteredDB();
   const row = sqlite
     .prepare("SELECT * FROM pragma_table_info('branches') WHERE name = ?1")
@@ -30,7 +30,7 @@ test("the real migration adds one nullable reserved_bytes column", () => {
   assert.equal(row.notnull, 0, "it must stay nullable so rows written before it keep serving");
   assert.equal(row.dflt_value, null, "it has no default");
   const sql = readFileSync(
-    new URL("../../migrations/drive/0031_branch_reserved_bytes.sql", import.meta.url),
+    new URL("../../migrations/drive/0032_branch_reserved_bytes.sql", import.meta.url),
     "utf8",
   ).replace(/--[^\n]*/g, "");
   assert.match(sql, /ALTER TABLE branches ADD COLUMN reserved_bytes INTEGER/i);
