@@ -10,6 +10,15 @@ the live site.
 
 ## 2026-10-06
 
+- A Rewind tab in the web app lists the branches an agent worked in, names the
+  files each one changed, and puts your files back in one tap. The new
+  `drive undo` command does the same thing from the command line: it rewinds
+  the last branch an agent worked in, prints what it removes first, and says
+  when it is done. Both read the same /api/rewind route, so the screen and the
+  command cannot disagree about what a rewind undoes, and a branch stays
+  rewindable for 30 days.
+- A test now fails the build if a page names a command or links to a page that
+  does not exist, so a page that promises `drive restore` cannot come back.
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states

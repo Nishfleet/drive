@@ -25,6 +25,7 @@ Usage:
   drive diff <branch> [flags]           files added, changed or removed in a branch
   drive approve <branch> [flags]        copy a branch's changes back into the original
   drive discard <branch> [flags]        throw a branch away; the original is untouched
+  drive undo [branch] [flags]           rewind the last branch an agent worked in
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
@@ -155,6 +156,7 @@ var commands = map[string]func([]string) error{
 	"diff":      runDiff,
 	"approve":   runApprove,
 	"discard":   runDiscard,
+	"undo":      runUndo,
 	"mount":     runMount,
 	"unmount":   runUnmount,
 	"offline":   runOffline,

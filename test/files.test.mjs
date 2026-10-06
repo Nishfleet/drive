@@ -68,6 +68,7 @@ import {
   versionMarkers,
 } from "../core/s3-listing.js";
 import worker from "../src/index.js";
+import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
@@ -432,7 +433,7 @@ test("a row sends the instant, not a sentence, and an entry with no date sends n
  * @property {Record<string, string>} dataset
  * @property {Record<string, string>} attributes
  * @property {boolean} disabled
- * @property {Record<string, (event: any) => any>} listeners
+ * @property {Record<string, (event?: any) => any>} listeners
  * @property {{add(): void, toggle(): void, contains: () => boolean}} classList
  * @property {StubElement[]} appended
  * @property {(child: StubElement) => StubElement} append
@@ -533,6 +534,9 @@ function loadFilesPage() {
       if (where.includes("view=deleted")) {
         return { ok: true, status: 200, json: async () => ({ rows: [], nextCursor: null }) };
       }
+      if (where.includes("/api/rewind")) {
+        return { ok: true, status: 200, json: async () => ({ rewinds: [] }) };
+      }
       return {
         ok: true,
         status: 200,
@@ -591,6 +595,172 @@ test("a row rendered in the browser's own zone shows the local day", () => {
   } finally {
     process.env.TZ = "UTC";
   }
+});
+
+// ---------------------------------------------------------------- the rewind tab
+
+/** One turn of the event loop, so a page handler that awaited a fetch finishes. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// The rewind screen's own words (drive#774). The screen is a static asset and
+// no module owns these sentences, so the page is where they live and this test
+// file is what pins them: a rewording has to be a deliberate edit in both
+// places.
+const REWIND_PAGE_LINE =
+  "Every branch an agent worked in, with the files it changed. Rewind puts your files back exactly as they were.";
+const REWIND_DONE_COPY = "Rewound. Your files are back as they were.";
+const REWIND_EMPTY_COPY = Object.freeze({
+  what: "Nothing to rewind.",
+  next: "A branch an agent works in shows up here, ready to put back.",
+});
+
+/**
+ * A preview as src/rewind.js sends it: the branch row with its file counts and
+ * the two flags the screen renders. Only the fields the page reads are here.
+ * @param {object} over
+ * @returns {Record<string, any>}
+ */
+const rewindPreview = (over) =>
+  Object.assign(
+    {
+      name: "agent-1",
+      sourcePrefix: "/Photos",
+      state: "open",
+      changedBy: "claude",
+      createdAt: new Date(now - 60_000).toISOString(),
+      ageDays: 0,
+      windowDays: 30,
+      restorableUntil: new Date(now + 30 * 86_400_000).toISOString(),
+      canRewind: true,
+      unavailableReason: null,
+      files: { added: ["/Photos/new.jpg"], changed: [], removed: ["/Photos/old.jpg"], count: 2 },
+      progress: { kind: "", done: 0, total: 0 },
+    },
+    over,
+  );
+
+test("rewind: the tab lists an agent's work and sends the branch back in one tap", async () => {
+  // drive#774, the screen the /api/rewind route needed. The route was live and
+  // tested with no caller, so this is the missing caller: the third tab reads
+  // it, the row names the agent and what a rewind would undo, and the one
+  // button POSTs that branch's name to the route src/rewind.js owns.
+  const { sandbox, listed } = loadFilesPage();
+  await settled();
+  /** @type {Array<[string, string]>} */
+  const sent = [];
+  // The page's one confirm is the rewind's; the stub stands for the person
+  // who clicked OK.
+  sandbox.window = { confirm: () => true };
+  sandbox.fetch = async (/** @type {string} */ url, /** @type {any} */ options) => {
+    sent.push([String(url), options?.method ?? "GET"]);
+    if (String(url) === REWIND_ENDPOINT) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          rewinds: [
+            rewindPreview({}),
+            rewindPreview({
+              name: "agent-2",
+              changedBy: "codex",
+              state: "discarded",
+              canRewind: false,
+              unavailableReason: "already-closed",
+              files: { added: [], changed: [], removed: [], count: 3 },
+            }),
+            rewindPreview({
+              name: "agent-3",
+              state: "open",
+              canRewind: false,
+              unavailableReason: "window-closed",
+            }),
+          ],
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ rewinds: [] }) };
+  };
+
+  // The tab is the door: it flips the pressed state, sets its own page line,
+  // and reads the route the page's constant names.
+  sandbox.document.getElementById("tab-rewind").listeners.click();
+  await settled();
+  assert.deepEqual(sent[0], [REWIND_ENDPOINT, "GET"], "the tab reads /api/rewind");
+  assert.equal(
+    sandbox.document.getElementById("tab-rewind").attributes["aria-pressed"],
+    "true",
+    "the tab a person is looking at is the pressed one",
+  );
+  assert.equal(sandbox.document.getElementById("page-line").textContent, REWIND_PAGE_LINE);
+
+  // Three rows, read back out of the page the way a browser would show them.
+  /** @type {StubElement[]} */
+  const rows = listed.appended;
+  assert.equal(rows.length, 3, "one row per branch the route listed");
+  /** @param {StubElement} row @returns {StubElement} */
+  const nameOf = (row) => {
+    const node = row.appended[1].appended.find(
+      (/** @type {StubElement} */ node) => node.className === "name",
+    );
+    assert.ok(node, "every row names what its button rewinds");
+    return node;
+  };
+  /** @param {StubElement} row @returns {StubElement[]} */
+  const subsOf = (row) =>
+    row.appended[1].appended.filter((/** @type {StubElement} */ node) => node.className === "sub");
+  assert.equal(nameOf(rows[0]).textContent, "Rewind claude's work", "the row names the agent");
+  assert.match(
+    subsOf(rows[0])[0].textContent,
+    /^2 files · 1 added, 1 removed · \/Photos · /,
+    "the row says how many files a rewind would undo, and what happened to them",
+  );
+  assert.equal(
+    subsOf(rows[0])[1].textContent,
+    "/Photos/new.jpg, /Photos/old.jpg",
+    "the files are named, not only counted",
+  );
+  // A branch that cannot be rewound answers with the reason, and no button:
+  // the reason comes off the row src/rewind.js sent, not from a rule the page
+  // holds a second copy of.
+  assert.equal(
+    subsOf(rows[1])[subsOf(rows[1]).length - 1].textContent,
+    "Already approved or thrown away.",
+  );
+  assert.match(
+    subsOf(rows[2])[subsOf(rows[2]).length - 1].textContent,
+    /^The 30-day window closed on /,
+    "a window that closed says which day it closed, off the row's own windowDays",
+  );
+  // Only the branch that can still be rewound offers the button; the other two
+  // answer with the sentence instead of a button that would do nothing.
+  /** @param {StubElement} row @returns {StubElement} */
+  const actions = (row) => row.appended[2];
+  assert.equal(actions(rows[1]).appended.length, 0, "a closed branch offers no button");
+  assert.equal(actions(rows[2]).appended.length, 0, "a closed window offers no button");
+  assert.equal(actions(rows[0]).appended[0].textContent, "Rewind");
+
+  // One tap: the branch goes to the route by name, and the page says what
+  // happened.
+  actions(rows[0]).appended[0].listeners.click();
+  await settled();
+  assert.deepEqual(sent[1], [`${REWIND_ENDPOINT}/agent-1`, "POST"]);
+  assert.equal(sandbox.document.getElementById("status").textContent, REWIND_DONE_COPY);
+});
+
+test("rewind: nothing to rewind is a sentence, not an empty screen", async () => {
+  const { sandbox, listed } = loadFilesPage();
+  await settled();
+  sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => ({ rewinds: [] }) });
+  sandbox.document.getElementById("tab-rewind").listeners.click();
+  await settled();
+  assert.equal(listed.appended.length, 0, "no rows to show");
+  assert.equal(
+    sandbox.document.getElementById("empty").hidden,
+    false,
+    "the empty state is shown, rather than a list with nothing in it",
+  );
+  assert.equal(sandbox.document.getElementById("empty-what").textContent, REWIND_EMPTY_COPY.what);
+  assert.equal(sandbox.document.getElementById("empty-next").textContent, REWIND_EMPTY_COPY.next);
 });
 
 // ---------------------------------------------------------------- the routes
@@ -2554,9 +2724,23 @@ test("the page's script reads the same endpoints and the same window", () => {
     ["UPLOAD_ENDPOINT", `${FILES_ENDPOINT}/upload`],
     ["DELETE_ENDPOINT", `${FILES_ENDPOINT}/delete`],
     ["RESTORE_ENDPOINT", `${FILES_ENDPOINT}/restore`],
+    // The rewind tab's route (drive#774) is src/rewind.js's constant, so the
+    // page names the one path the Worker serves and never a path of its own.
+    ["REWIND_ENDPOINT", REWIND_ENDPOINT],
   ]) {
     assert.ok(page.includes(`const ${name} = "${endpoint}";`), `the page must call ${endpoint}`);
   }
+  // The screen needs its door: the tab the click handler listens on.
+  assert.ok(page.includes('id="tab-rewind"'), "the page needs the rewind tab");
+  // The one sentence that names the trade a rewind makes. It is the page's own
+  // copy (no module owns it), so this file's rewind block pins it in the
+  // browser and this line keeps the page carrying it at all.
+  assert.ok(
+    page.includes(
+      "Rewind this branch? The agent's work is thrown away, and your files go back to what they were.",
+    ),
+    "the page must say what a rewind costs before it does it",
+  );
   // The 30-day window is core/files.js's number, and the page carries it only so
   // this gate can read it back: nothing in the page's own script touches it, so
   // a linter reads the line as dead and renames it. The underscore is the
@@ -2612,8 +2796,8 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   assert.ok(script.includes("if (!keepStatus)"));
   assert.equal(
     (script.match(/refresh\(true\);/g) || []).length,
-    3,
-    "delete, restore and upload all reload under their own result line",
+    4,
+    "delete, restore, upload and rewind all reload under their own result line",
   );
   // An upload failure says what happened; it never reads as done.
   assert.ok(script.includes("The upload did not finish. Try again."));
