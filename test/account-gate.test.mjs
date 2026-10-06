@@ -294,7 +294,12 @@ test("a public route answers with no account", async () => {
   const health = await anonymous(new Request(`https://drive.test${HEALTH_PATH}`));
   assert.notEqual(health.status, 401, "the health probe must answer without an account");
   assert.equal(health.status, 503, "no bindings here is the honest unhealthy answer");
-  assert.deepEqual(await health.json(), { ok: false, failing: "WAITLIST_DB" });
+  // No sender either, so the email part says so beside the verdict (drive#522).
+  assert.deepEqual(await health.json(), {
+    ok: false,
+    failing: "WAITLIST_DB",
+    email: "not-ready",
+  });
 });
 
 test("an anonymous request to every account route is 401 and no data", async () => {

@@ -60,10 +60,11 @@ export default defineConfig({
       runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
-    // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // Five Cron Triggers: the meter's hourly rollup (drive issue #6), the
     // meter's nightly reconciler (drive issue #59), the file index's
-    // nightly reconciler (drive issue #18), and the nightly trash purge
-    // (drive issue #521). `scheduled` in src/index.js tells
+    // nightly reconciler (drive issue #18), the nightly trash purge
+    // (drive issue #521), and the account close cron (drive issue #522).
+    // `scheduled` in src/index.js tells
     // them apart by the cron string the platform hands it, so no trigger
     // spends another's work. The reindex schedule is the only way a rebuild
     // starts, so no web request can spend the walk (the safety review: reindex
@@ -71,12 +72,15 @@ export default defineConfig({
     // meter's first hourly run; the meter's reconciler runs at 04:00 UTC, an
     // hour later, so the two nightly walks do not share a trip; the trash
     // purge runs at 05:00 UTC, after the reconciler, so a parked file's last
-    // hour is re-rolled before its bytes leave the bucket.
+    // hour is re-rolled before its bytes leave the bucket; the account close
+    // cron runs at 06:00 UTC, after the purge, on the same blast-radius rule
+    // that keeps it off the 04:00 reconcile's trip.
     //
     // Each schedule is the string the module that owns it exports:
     // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
-    // src/search.js's REINDEX_SCHEDULE, and src/files.js's
-    // TRASH_PURGE_SCHEDULE. test/meter.test.mjs reads these four
+    // src/search.js's REINDEX_SCHEDULE, src/files.js's
+    // TRASH_PURGE_SCHEDULE, and src/account-close.js's CLOSE_SCHEDULE.
+    // test/meter.test.mjs reads these five
     // out of this file and asserts they equal those exports, so a changed
     // schedule cannot drift from the trigger that runs it. They are not
     // imported from those modules - see the note at the top of this file for
@@ -86,6 +90,13 @@ export default defineConfig({
       triggers.scheduled({ schedule: "0 4 * * *" }),
       triggers.scheduled({ schedule: "0 3 * * *" }),
       triggers.scheduled({ schedule: "0 5 * * *" }),
+      // The account close cron, on its own trip (drive#522, CLOSE_SCHEDULE
+      // in src/account-close.js). It used to share the 04:00 reconcile's
+      // trigger, which gave a metering failure one blast radius big enough to
+      // delay every close receipt, reminder and purge behind it; the nightly
+      // trash purge (drive#521) took 05:00 in the same window, so the close
+      // cron runs after it, at 06:00 UTC.
+      triggers.scheduled({ schedule: "0 6 * * *" }),
     ],
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron

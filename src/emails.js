@@ -25,12 +25,35 @@ export { DEFAULT_CAP_USD };
 // drift: test/portal.test.mjs pins this exact URL against PORTAL_ENDPOINT.
 const PORTAL_URL = absoluteUrl("/api/billing/portal");
 
+// The one absolute link every template carries in its footer (drive#522): a
+// template with no link is a dead end in an inbox, and the site is the only
+// place a person can act. Same origin the rest of the product links through
+// absoluteUrl, so a change of SITE.origin moves every email with it.
+const HOME_URL = absoluteUrl("/");
+// The usage page is where a person cancels a close, so the close-lane emails
+// link there instead of opening a drive that is closed or already gone.
+const USAGE_URL = absoluteUrl("/usage.html");
+// The default footer link every kind gets unless it names its own.
+const HOME_LINK = Object.freeze({ label: "Open your drive", url: HOME_URL });
+const USAGE_LINK = Object.freeze({
+  label: "Manage your account or cancel closing",
+  url: USAGE_URL,
+});
+
 // The sender name every drive email carries. The address itself is a
 // deployment setting (env.MAIL_FROM), because drive has no sending domain of
 // its own yet: a placeholder domain in this file would make every send fail
 // while looking configured, and the domain is a deployment decision, not a
 // code one.
 export const FROM_NAME = "Drive";
+
+// The local part of the reply address every drive email carries
+// (drive#522). The full address is support@<the sending domain>, so a reply
+// lands on whatever domain the deployment actually sends from and cannot be a
+// no-reply address or a mailbox nobody reads (sendEmail derives the domain
+// from the deployment's MAIL_FROM and passes the full address into the
+// renderer). Every template footer names it, so no inbox is a dead end.
+export const REPLY_TO_LOCAL = "support";
 
 // The one rate the receipt's "you saved" line is measured against, from
 // docs/build-spec.md ("How the money is worked out"). Kept here rather than
@@ -119,14 +142,15 @@ function requireMoney(value, name) {
 }
 
 // ---------------------------------------------------------------------------
-// 1) Welcome -- sent after sign-up. No per-account data is needed.
+// 1) Welcome -- sent after sign-up. The footer carries the link and the reply
+//    address every template has, so no per-account numbers are needed here.
 // ---------------------------------------------------------------------------
 /**
- * @param {Record<string, unknown>} [_data] unused: the welcome email has no
- *   numbers, and the uniform call shape is what lets renderEmail dispatch
- *   without a per-kind branch.
+ * @param {Record<string, unknown>} [data] the shared footer data
+ *   (`replyTo`); the welcome itself has no numbers, and the uniform call shape
+ *   is what lets renderEmail dispatch without a per-kind branch.
  */
-export function welcomeTemplate(_data) {
+export function welcomeTemplate(data = {}) {
   const subject = "Your drive is ready";
   const lines = [
     "Welcome to Drive.",
@@ -149,7 +173,7 @@ export function welcomeTemplate(_data) {
     "<p>It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again.</p>",
     "<p>Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +200,7 @@ export function capWarningTemplate(data = {}) {
     `<p>At ${usd(cap)} the drive goes read-only. Nothing is deleted, and uploads waiting on your machines stay on disk.</p>`,
     "<p>Raise the cap to keep writing. If you leave it, nothing changes until you do.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +226,7 @@ export function readOnlyTemplate(data = {}) {
     "<p>Nothing is deleted. Your files are safe and still readable, and uploads waiting on your machines stay on disk.</p>",
     "<p>Raise or remove the cap in the billing portal, or run `drive cap <dollars>` in a terminal, to start writing again.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +255,7 @@ export function paymentFailedTemplate(data = {}) {
     `<p>Update your card: <a href="${PORTAL_URL}">${PORTAL_URL}</a></p>`,
     "<p>If the card is not fixed, the drive will go read-only at your spending cap. Nothing is deleted.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +343,7 @@ export function monthlyReceiptTemplate(data = {}) {
     lines.push("", saved);
     html_lines.push(`<p>${saved}</p>`);
   }
-  return finish({ subject, lines, html_lines, saved });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, saved });
 }
 
 /**
@@ -385,7 +409,7 @@ export function accountClosedTemplate(data = {}) {
     `<p>They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.</p>`,
     "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
 
 // ---------------------------------------------------------------------------
@@ -398,37 +422,142 @@ export function accountCloseReminderTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
+  // `due` is the late retry: a reminder the mailer dropped between day 25 and
+  // day 29 is re-sent on day 30 or later, when the old "in 5 days, on <date>"
+  // copy would name a date already gone and the purge runs in the same pass.
+  // The caller sets it from the real remaining window (src/account-close.js).
+  const due = data.due === true;
   const left = graceDays - reminderDays;
-  const subject = `Your Drive files will be deleted in ${left} days`;
+  const subject = due
+    ? "Your Drive files are due to be deleted"
+    : `Your Drive files will be deleted in ${left} days`;
+  const first = due
+    ? `Your Drive files are due to be deleted: the ${graceDays}-day window has passed.`
+    : `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`;
   const lines = [
-    `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`,
+    first,
     "",
     "Your account is closed and every key is already revoked.",
     "",
     "You can still cancel: open the usage page, type your email, and choose Cancel closing.",
   ];
   const html_lines = [
-    `<p>Your Drive files will be deleted in ${left} days, on ${purgeOn}.</p>`,
+    `<p>${first}</p>`,
     "<p>Your account is closed and every key is already revoked.</p>",
     "<p>You can still cancel: open the usage page, type your email, and choose Cancel closing.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
 
 // ---------------------------------------------------------------------------
-// Shared tail: sign-off, text/HTML assembly, and the shape every send reads.
+// 8) Files deleted -- the day-30 purge ran (drive#522). { purgedOn, graceDays }
 // ---------------------------------------------------------------------------
 /**
- * @param {{subject: string, lines: string[], html_lines: string[], saved?: string|null}} parts
+ * The last email a closing account receives, sent the moment the purge
+ * deletes its objects: it says the files are gone, so a person who never
+ * cancelled is not left wondering whether the 30 days passed in silence.
+ * There is no link to cancel — the window has closed — so the copy says what
+ * is left (the account stays closed) and that the deletion cannot be undone.
+ * The footer link is the site, not the drive, because there is no drive to
+ * open; the reply address still reaches a person.
+ * `graceDays` is the window the close module actually applied (the same
+ * CLOSE_GRACE_DAYS it stamps into `closed_at`), so the email and the delete
+ * cannot disagree about how long the files were kept.
+ * @param {Record<string, unknown>} [data]
+ */
+export function filesDeletedTemplate(data = {}) {
+  const purgedOn = requireDay(data.purgedOn, "purgedOn");
+  const graceDays = requireDays(data.graceDays, "graceDays");
+  const subject = "Your Drive files have been deleted";
+  const lines = [
+    "Your Drive files have been deleted.",
+    "",
+    `We deleted them on ${purgedOn}, ${graceDays} days after you closed the account. This account stays closed.`,
+    "",
+    "Nothing else was deleted. This deletion cannot be undone.",
+  ];
+  const html_lines = [
+    "<p>Your Drive files have been deleted.</p>",
+    `<p>We deleted them on ${purgedOn}, ${graceDays} days after you closed the account. This account stays closed.</p>`,
+    "<p>Nothing else was deleted. This deletion cannot be undone.</p>",
+  ];
+  return finish({
+    subject,
+    lines,
+    html_lines,
+    replyTo: data.replyTo,
+    link: { label: "Visit Drive", url: HOME_URL },
+  });
+}
+
+/**
+ * The address a reply to this email lands in. Validated, not trusted: it
+ * goes into both parts of a message as prose and into the Reply-To header, so
+ * it has to look like an address and carry no angle bracket or quote that
+ * could close an HTML tag or forge a header. sendEmail builds it from the
+ * deployment's own MAIL_FROM (see replyToFor), so a value that came from a
+ * request body cannot reach here in production.
+ * @param {unknown} value
+ * @returns {string}
+ */
+function requireReplyTo(value) {
+  if (
+    typeof value !== "string" ||
+    // local@domain, no whitespace, no <>, no quotes, a dot in the domain.
+    !/^[^\s<>@"']+@[^\s<>@"'*]+\.[^\s<>@"'*]+$/.test(value)
+  ) {
+    throw new TypeError(
+      `replyTo must be an email address (support@drive.example), got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+// ---------------------------------------------------------------------------
+// Shared tail: sign-off, link, reply address, text/HTML assembly, and the shape
+// every send reads.
+//
+// The link and the reply address are here rather than in each template
+// (drive#522): eleven templates each spelling its own footer is eleven places
+// for a template to ship with a dead end, and the two facts — where a person
+// goes next, and where a reply lands — are the same for all of them. `finish`
+// is the only way a template returns, so this cannot be forgotten. The link
+// defaults to the home page and the close-lane templates pass the usage page
+// instead, because a closed account has no drive to open. `replyTo` is
+// supplied by sendEmail from the deployment's own sending domain.
+// ---------------------------------------------------------------------------
+/**
+ * @param {{subject: string, lines: string[], html_lines: string[], replyTo: unknown, saved?: string|null, link?: {label: string, url: string}}} parts
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-function finish({ subject, lines, html_lines, saved = null }) {
-  const text = [...lines, "", SIGN_OFF, ""].join("\n");
+function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME_LINK }) {
+  if (typeof replyTo !== "string" || replyTo === "") {
+    throw new TypeError(`the ${subject} email needs a reply address`);
+  }
+  // Validated here, once, so the templates that pass it straight through
+  // cannot print an unvalidated value into a header or a tag.
+  const address = requireReplyTo(replyTo);
+  const text = [
+    ...lines,
+    "",
+    `${link.label}: ${link.url}`,
+    "",
+    SIGN_OFF,
+    "",
+    `Reply to this email and it reaches us: ${address}`,
+    "",
+  ].join("\n");
   const htmlLines = ["<!doctype html>", '<html lang="en">', "<body>"];
   for (const line of html_lines) {
     htmlLines.push(line);
   }
-  htmlLines.push(`<p>${SIGN_OFF}</p>`, "</body>", "</html>");
+  htmlLines.push(
+    `<p>${link.label}: <a href="${link.url}">${link.url}</a></p>`,
+    `<p>${SIGN_OFF}</p>`,
+    `<p>Reply to this email and it reaches us: ${address}</p>`,
+    "</body>",
+    "</html>",
+  );
   return { subject, text, html: htmlLines.join("\n"), saved };
 }
 
@@ -462,7 +591,7 @@ export function topUpReceiptTemplate(data = {}) {
     `<p>Your balance is now ${usd(balance)}. It never expires.</p>`,
     "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +614,7 @@ export function lowBalanceTemplate(data = {}) {
       : `Auto top-up is on, so ${usd(auto)} will be added from your saved card.`;
   const lines = [`Your Drive balance is ${usd(balance)}.`, "", next];
   const html_lines = [`<p>Your Drive balance is ${usd(balance)}.</p>`, `<p>${next}</p>`];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +654,7 @@ export function deviceApproveNoticeTemplate(data = {}) {
     `<p>It asked at ${safeAt}.</p>`,
     "<p>If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.</p>",
   ];
-  return finish({ subject, lines, html_lines });
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
 // The kind names every caller and the test suite use. Order is the spec's.
@@ -537,6 +666,7 @@ export const EMAIL_KINDS = Object.freeze([
   "monthly-receipt",
   "account-closed",
   "account-close-reminder",
+  "files-deleted",
   "top-up-receipt",
   "low-balance",
   "device-approve-notice",
@@ -553,6 +683,7 @@ const TEMPLATES = Object.freeze({
   "monthly-receipt": monthlyReceiptTemplate,
   "account-closed": accountClosedTemplate,
   "account-close-reminder": accountCloseReminderTemplate,
+  "files-deleted": filesDeletedTemplate,
   "top-up-receipt": topUpReceiptTemplate,
   "low-balance": lowBalanceTemplate,
   "device-approve-notice": deviceApproveNoticeTemplate,
@@ -563,12 +694,22 @@ const TEMPLATES = Object.freeze({
  * silently sending the wrong message. Object.hasOwn, not a plain lookup: an
  * inherited name such as "constructor" must stay unknown, or it renders
  * nothing and the send goes out with empty parts.
+ *
+ * `data.replyTo` is required (drive#522): it is the address a reply lands in,
+ * sentEmail derives it from the deployment's own sending domain, and the
+ * shared footer prints it. A template rendered without one is a send with no
+ * way to reply, so it throws here rather than mailing a dead end.
  * @param {unknown} kind
  * @param {Record<string, unknown>} [data]
  */
 export function renderEmail(kind, data = {}) {
   if (typeof kind !== "string" || !Object.hasOwn(TEMPLATES, kind)) {
     throw new Error(`Unknown email kind "${String(kind)}"`);
+  }
+  if (typeof data.replyTo !== "string" || data.replyTo === "") {
+    throw new Error(
+      `The ${String(kind)} email needs a replyTo address; sendEmail derives one from the deployment's MAIL_FROM`,
+    );
   }
   // Object.hasOwn just proved the key is a template name, so the index is one
   // of TEMPLATES' own keys rather than an arbitrary string.

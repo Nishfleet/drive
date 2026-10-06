@@ -72,6 +72,7 @@ import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
 import { signinSendOutcome } from "./signin-send-limit.js";
+import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 
 /** @typedef {import("./auth.js").Auth} Auth */
 
@@ -700,6 +701,28 @@ export async function handleSigninLinkVerify(request, env) {
           `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,
         );
       }
+      // The welcome email, once (drive#522). Four customer templates had no
+      // caller at all, so somebody could sign up, be charged, hit their cap
+      // and never hear from us. This is the seam that is guaranteed to run for
+      // a real account, and it is once-only because the claim lives on the
+      // account row (src/welcome.js), not in this isolate.
+      //
+      // A welcome is the one of those four that does not wait on a billing
+      // decision, so it ships here; the other three are still waiting on
+      // #496, and test/email-callers.test.mjs names them so they cannot go
+      // missing again quietly.
+      //
+      // Never throws: sendWelcomeOnce reports instead, because a failed
+      // welcome must never cost somebody their sign-in.
+      const secrets = /** @type {{MAIL_FROM?: string}} */ (env);
+      await sendWelcomeOnce({
+        db: /** @type {D1Database} */ (driveDb),
+        devices: createWelcomeStore(/** @type {D1Database} */ (driveDb)),
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        account,
+        now: Date.now(),
+      });
     }
   }
   // The one thing this route does is take the cookie Better Auth set onto a

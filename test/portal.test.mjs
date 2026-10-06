@@ -187,7 +187,10 @@ test("the portal is a closed door on a method the route does not serve", async (
 });
 
 test("the payment-failed email carries the portal link this route serves", () => {
-  const { text, html } = paymentFailedTemplate({ amountUsd: 23.5 });
+  const { text, html } = paymentFailedTemplate({
+    amountUsd: 23.5,
+    replyTo: "support@drive.example",
+  });
   const url = absoluteUrl(PORTAL_ENDPOINT);
   // The path in src/emails.js is spelled rather than imported (that module is
   // pure renderers); this assertion is what keeps it the same path as the

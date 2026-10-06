@@ -18,6 +18,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../src/billing.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../src/files.js";
 import worker from "../src/index.js";
@@ -2516,7 +2517,19 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.equal(METER_RECONCILE_SCHEDULE, "0 4 * * *");
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *");
   assert.equal(TRASH_PURGE_SCHEDULE, "0 5 * * *");
-  const schedules = [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE];
+  // The account close cron runs on its own trip (drive#522). It used to share
+  // the reconciler's trigger, so one metering failure could leave every close
+  // receipt, reminder and purge undone behind it; the trash purge (drive#521)
+  // took 05:00 in the same nightly window, so the close cron runs at 06:00,
+  // after the purge.
+  assert.equal(CLOSE_SCHEDULE, "0 6 * * *");
+  const schedules = [
+    METER_CRON,
+    METER_RECONCILE_SCHEDULE,
+    REINDEX_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    CLOSE_SCHEDULE,
+  ];
   assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
   assert.notEqual(
@@ -2532,9 +2545,13 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.notEqual(TRASH_PURGE_SCHEDULE, REINDEX_SCHEDULE, "the trash purge is not the reindex");
   assert.notEqual(TRASH_PURGE_SCHEDULE, METER_CRON, "the trash purge is not the hourly rollup");
-  // The config spells the same four strings the modules export, so a changed
+  assert.notEqual(CLOSE_SCHEDULE, METER_RECONCILE_SCHEDULE, "the close cron is not the reconciler");
+  assert.notEqual(CLOSE_SCHEDULE, TRASH_PURGE_SCHEDULE, "the close cron is not the trash purge");
+  assert.notEqual(CLOSE_SCHEDULE, REINDEX_SCHEDULE, "the close cron is not the reindex");
+  assert.notEqual(CLOSE_SCHEDULE, METER_CRON, "the close cron is not the hourly rollup");
+  // The config spells the same five strings the modules export, so a changed
   // schedule cannot drift from the trigger that runs it: src/index.js tells
-  // the four trips apart by the cron string the platform hands it.
+  // the five trips apart by the cron string the platform hands it.
   //
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
@@ -2548,8 +2565,8 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.deepEqual(
     declared,
-    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE],
-    "cloudflare.config.ts declares the schedules the meter and the index export",
+    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE, CLOSE_SCHEDULE],
+    "cloudflare.config.ts declares the schedules the meter, the index, the purge and the close cron export",
   );
 
   // The gate that stops drive#432 coming back: an import of the Worker's own

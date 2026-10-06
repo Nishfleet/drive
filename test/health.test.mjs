@@ -22,6 +22,7 @@ import { test } from "node:test";
 import {
   checkHealth,
   d1Bindings,
+  emailReadiness,
   HEALTH_PATH,
   HEALTH_TIMEOUT_MS,
   handleHealthRequest,
@@ -54,6 +55,9 @@ const freshWatermark = () => Math.floor(Date.now() / HOUR_MS) * HOUR_MS - HOUR_M
 
 /** The storage endpoint a healthy deployment carries (issue #520). */
 const STORAGE_ENDPOINT = "https://s3.eu-central-3.idrivee2.com";
+
+/** The sender a deployment that can send mail carries (drive#522). */
+const SENDER = "drive@example.com";
 
 /**
  * A D1Database stub answering only what the check uses. `mode` decides how
@@ -241,6 +245,8 @@ const HEALTHY_ENV = () => ({
   // endpoint the Files handlers answer from the in-memory store, and the
   // health answer names that instead of saying ok.
   IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+  // A sender (drive#522): without one the answer carries "email":"not-ready".
+  MAIL_FROM: SENDER,
 });
 
 const GET = (path = HEALTH_PATH) => new Request(`https://drive.test${path}`, { method: "GET" });
@@ -282,6 +288,7 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -307,6 +314,7 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -329,6 +337,7 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
+    MAIL_FROM: SENDER,
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
@@ -351,6 +360,7 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -379,6 +389,7 @@ test("every bound D1 database is checked, not just the first", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -452,6 +463,7 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -480,6 +492,7 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
   assert.equal(assets.requests.length, 1, "the asset layer is checked once");
@@ -550,6 +563,7 @@ test("the failing body is the name and nothing else", async () => {
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
+    MAIL_FROM: SENDER,
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -607,6 +621,7 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
@@ -651,6 +666,7 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -758,6 +774,7 @@ test("the health check never spends a real caller's rate limit quota", async () 
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -794,6 +811,7 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
@@ -877,6 +895,7 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -911,6 +930,7 @@ test("a limiter that denies the probe is still healthy", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -942,6 +962,7 @@ test("a branch snapshot namespace that cannot be read is a 503 naming it", async
       get: () => Promise.reject(new Error("kv backend exploded: token=sk-secret")),
     },
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -972,6 +993,7 @@ test("a namespace that answers null for the probe key is healthy", async () => {
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   assert.equal((await handleHealthRequest(GET(), env)).status, 200);
 });
@@ -1006,6 +1028,7 @@ test("the probe never reads a customer snapshot key", async () => {
       },
     },
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
+    MAIL_FROM: SENDER,
   };
   await handleHealthRequest(GET(), env);
   assert.deepEqual(reads, ["health-probe-branch-snapshots"], "one read, of the probe key only");
@@ -1188,4 +1211,41 @@ test("the storage check answers without a network call", async () => {
   const response = await handleHealthRequest(GET(), env);
   assert.ok(Date.now() - start < 500, "the answer is immediate");
   assert.deepEqual(await response.json(), { ok: false, failing: "storage" });
+});
+
+// --- the email part (drive#522) --------------------------------------------
+//
+// Until launch a missing sender only warns on the deploy (drive#752), so the
+// health answer is where it stays visible. It rides beside the verdict and
+// never turns it: the deploy smoke rolls back on any answer that is not ok.
+
+test("no sender is ok, with the email part reported not-ready", async () => {
+  for (const sender of [undefined, "", "   ", "drive", "drive@localhost", "@example.com"]) {
+    const env = HEALTHY_ENV();
+    if (sender === undefined) {
+      delete env.MAIL_FROM;
+    } else {
+      env.MAIL_FROM = sender;
+    }
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 200, `sender ${JSON.stringify(sender)} is not an outage`);
+    assert.deepEqual(await response.json(), { ok: true, email: "not-ready" });
+  }
+});
+
+test("a usable sender adds nothing to the answer", async () => {
+  const response = await handleHealthRequest(GET(), HEALTHY_ENV());
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(emailReadiness({ MAIL_FROM: SENDER }), "ready");
+});
+
+test("a failing answer still reports the email part, and never the address", async () => {
+  const env = HEALTHY_ENV();
+  env.MAIL_FROM = "not-an-address";
+  delete env.WAITLIST_DB;
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), { ok: false, failing: "WAITLIST_DB", email: "not-ready" });
+  assert.ok(!body.includes("not-an-address"), "the address never leaves the Worker");
 });
