@@ -792,39 +792,19 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   One delete call for up to 1,000 paths. More is refused: 1,000 is the
  *   provider's own per-call ceiling, and a caller that chunks by it stays
  *   inside the run's subrequest budget (drive#565).
- * @property {(from: string, to: string, size?: number, options?: {ifMatch?: string|null|undefined, ifAbsent?: boolean}) => Promise<void>} copy
+ * @property {(from: string, to: string, size?: number, options?: {ifAbsent?: boolean}) => Promise<void>} copy
  *   A copy the storage itself makes, no bytes through this Worker: `drive
  *   branch` (build step 7) is a folder copy, and a copy that streamed every
  *   byte through us would make a 10 GB branch a 10 GB download and upload.
  *   `size` is the source's byte length when the caller already knows it (the
  *   listing it is copying from carries it), so a store can pick the copy S3
  *   needs for that many bytes without asking for the size again.
- *   `options` is the destination guard, and it is asked for in one of two
- *   shapes, never in a half-answered one:
- *   - `ifMatch` is the ETag the destination carried when the caller listed it:
- *     a destination holding other bytes is left alone and the store throws
- *     `ChangedUnderUsError`, so a restore cannot put a parked file over a save
- *     that landed at that path while it was running (drive issue #605). A
- *     store that cannot report the destination's ETag refuses, because an
- *     unanswerable comparison is not a comparison it passed.
- *   - `ifAbsent` asks for the destination to be empty, which is what a caller
- *     restoring onto a path it listed as empty holds to: a destination that now
- *     holds anything is refused the same way, so a save that created the path
- *     while the copy ran is kept.
- *   A caller that asks for neither gets the copy it always got, so
- *   `drive branch` is unchanged. A guard that cannot be answered — an empty
- *   ETag, both shapes at once, or a destination the storage holds but reports
- *   no ETag for — throws rather than falling through to an unguarded copy,
- *   because "the comparison failed" and "no comparison was asked for" are
- *   different answers and only one of them is a safe default.
- *
- *   What a guard cannot do is join the check to the copy. CopyObject carries no
- *   precondition on its destination, a conditional Put cannot move bytes the
- *   Worker does not hold, and version 1 of the drive has no version history to
- *   recover from (docs/build-spec.md, "Old versions"), so the read narrows the
- *   window to the round-trip between the HEAD and the copy without closing it.
- *   A store whose provider can join them should, and drop this note with the
- *   gap it describes.
+ *   `options.ifAbsent` asks for an empty destination: a destination that holds
+ *   anything is left alone and the store throws `ChangedUnderUsError`, so a
+ *   restore cannot overwrite a save that landed at the path (drive issue #605).
+ *   The store reads the destination just before it writes, which narrows the
+ *   window but is not a lock: CopyObject has no destination precondition.
+ *   No options means the plain copy `drive branch` makes.
  * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
@@ -1052,9 +1032,6 @@ export function scopeStore(store, account) {
       // bytes it is holding, so scoping never drops a guard.
       return store.remove(toKey(path), options);
     },
-    // Scoped on both ends like every other write, and the destination guard
-    // rides through untouched: the ETag the caller listed is the one the store
-    // compares with the bytes it holds, so scoping never drops it.
     async copy(from, to, size, options) {
       const [source, dest] = toKeys(from, to);
       return store.copy(source, dest, size, options);
@@ -1415,33 +1392,11 @@ export function createMemoryStore() {
       }
       return found.sort((a, b) => a.path.localeCompare(b.path) || a.createdAt - b.createdAt);
     },
-    /**
-     * @param {string} from
-     * @param {string} to
-     * @param {number} [_size] the caller's byte count, unused here: the bytes are
-     *   already in memory, so there is no size to pick a copy strategy with.
-     * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
-     */
     async copy(from, to, _size, options = {}) {
-      const guard = copyGuard(to, options);
-      // The destination is read once, before the source: the guard is about
-      // what is at `to`, and the source is never allowed to answer for it.
-      const held = objects.get(to);
-      if (guard.ifAbsent && held !== undefined) {
-        // Asked for an empty destination and something is there now, so the
-        // copy is refused before a byte is written (drive issue #605).
+      // Nothing is awaited between this check and the write below, so in this
+      // stand-in no save can land between them (drive issue #605).
+      if (options.ifAbsent && objects.has(to)) {
         throw new ChangedUnderUsError(to);
-      }
-      // `etagMismatch` reads a missing ETag on either side as "no comparison to
-      // make", which is the right answer for a delete that was never given an
-      // ETag and the wrong one here, where the caller did give one and expects
-      // it held. So an object this store kept no ETag for refuses the copy
-      // instead of quietly overwriting (drive issue #605).
-      if (guard.ifMatch) {
-        const heldEtag = typeof held?.etag === "string" ? held.etag : "";
-        if (heldEtag === "" || etagMismatch(heldEtag, guard.ifMatch)) {
-          throw new ChangedUnderUsError(to);
-        }
       }
       const value = objects.get(from);
       if (!value) {
@@ -1450,10 +1405,6 @@ export function createMemoryStore() {
         // for a folder it did not copy.
         throw new Error(`cannot copy ${from}: that file is not in the drive`);
       }
-      // Nothing is awaited between the comparison above and the `objects.set`
-      // below, so inside one JS event loop no save can land between the check
-      // and the write: this stand-in's guard is exact where a storage's own
-      // request round-trip is not (drive issue #605).
       // The bytes and their fingerprint move together; only the modified time
       // is the copy's own, exactly as S3's CopyObject behaves.
       const now = Date.now();
@@ -2046,29 +1997,17 @@ export function createS3Store(config) {
      * the refusal S3 answers instead of the copy. `size` is the byte length
      * the caller's listing already carried, so the copy S3 needs for those
      * bytes is chosen without a second request per file.
-     *
-     * `options` is the destination guard, and it has to be answered or the copy
-     * is refused. CopyObject cannot carry a precondition on the destination, so
-     * the guard is the read: the destination is HEADed immediately before the
-     * copy and its answer is compared with what the caller listed (`ifMatch`),
-     * or required to be absent (`ifAbsent`). A destination that is no longer
-     * what the caller listed is left exactly as it is and the store throws
-     * `ChangedUnderUsError`, which is what keeps a restore from putting a
-     * parked file over a save that landed at that path while it ran (drive
-     * issue #605). The guard's own limit is in the `FileStore` contract above,
-     * not restated here.
+     * `options.ifAbsent` HEADs the destination first and throws
+     * `ChangedUnderUsError` when anything is there (drive issue #605).
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
-     * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
+     * @param {{ifAbsent?: boolean}} [options]
      */
     async copy(from, to, size, options = {}) {
-      // The guard, before the copy: one HEAD, then the copy the guard allowed.
-      await assertCopyDestinationUnchanged(request, urlFor, to, options);
+      if (options.ifAbsent) await assertDestinationEmpty(request, urlFor, to);
       const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
-        // The same guard rides with it, and the multipart copy reads it again
-        // before the completion, because that copy is many requests wide.
         await multipartCopy(request, urlFor, source, to, size, options);
         return;
       }
@@ -2217,14 +2156,8 @@ const COPY_MAX_PARTS = 10000;
  * @param {string} source the `x-amz-copy-source` header value, `/<bucket>/<key>`
  * @param {string} to the destination storage key
  * @param {number} size the source's byte length, from the listing or a HEAD
- * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
- *   The same destination guard `copy` takes, re-checked here immediately before
- *   the completion because a multipart copy is many requests wide: the guard the
- *   caller ran before the first part would otherwise be many round-trips stale by
- *   the time the object exists. It narrows the window to the one request the
- *   completion itself takes, which is as narrow as this API allows — the
- *   completion carries no destination precondition of its own, the same limit
- *   the single-call copy has (drive issue #605).
+ * @param {{ifAbsent?: boolean}} [options] `copy`'s guard, read again before the
+ *   completion because a multipart copy is many requests wide (issue #605)
  * @returns {Promise<void>}
  */
 async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) {
@@ -2271,11 +2204,7 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) 
       }
       parts.push(`<Part><PartNumber>${number}</PartNumber><ETag>${etag}</ETag></Part>`);
     }
-    // The guard again, now. The parts above took one request each and a large
-    // file takes many, so what was true of the destination before the first part
-    // may not be true of it now; re-reading here is what keeps the check next to
-    // the write rather than at the start of a long copy (drive issue #605).
-    await assertCopyDestinationUnchanged(fetchImpl, urlFor, to, options);
+    if (options.ifAbsent) await assertDestinationEmpty(fetchImpl, urlFor, to);
     const completed = await fetchImpl(`${target}?${upload}`, {
       method: "POST",
       headers: { "content-type": "application/xml" },
@@ -2356,123 +2285,24 @@ async function sourceSize(fetchImpl, urlFor, from) {
 }
 
 /**
- * What guard a copy was asked to hold to, decided once and the same way in
- * every store, so a route cannot get a guard from one adapter and not the
- * other.
- *
- * A guard is one of exactly three things, and anything else is a programming
- * error thrown rather than ignored, because the worst reading of a malformed
- * guard is the one that leaves the destination unguarded: `{ifMatch: ""}` is
- * indistinguishable from `{ifMatch: undefined}` if emptiness means "skip", so
- * emptiness is not allowed to mean that here.
- * @param {string} to the storage key the copy would write, for the message
- * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
- * @returns {{ifMatch?: string|undefined, ifAbsent?: boolean|undefined}} the
- *   guard to run: one of `ifMatch`, `ifAbsent`, or neither
- */
-function copyGuard(to, { ifMatch, ifAbsent } = {}) {
-  if (ifAbsent !== undefined && typeof ifAbsent !== "boolean") {
-    throw new TypeError(`copy of ${to}: ifAbsent must be true or false`);
-  }
-  if (ifMatch !== undefined && ifMatch !== null && typeof ifMatch !== "string") {
-    throw new TypeError(`copy of ${to}: ifMatch must be an ETag string`);
-  }
-  if (ifAbsent === true && ifMatch !== undefined && ifMatch !== null) {
-    throw new TypeError(`copy of ${to}: asks for an empty destination and an exact one at once`);
-  }
-  if (ifAbsent === true) {
-    return { ifAbsent: true };
-  }
-  // `null` and `undefined` are one answer, and it is the unguarded copy
-  // `drive branch` asks for. An empty string is not that answer: a caller that
-  // hands over an ETag has asked to be held to it, and an empty ETag is held to
-  // nothing.
-  if (ifMatch === undefined || ifMatch === null) {
-    return {};
-  }
-  if (ifMatch === "") {
-    throw new TypeError(`copy of ${to}: ifMatch was given but holds no ETag`);
-  }
-  return { ifMatch };
-}
-
-/**
- * Check that a copy's destination is still what the caller decided it was safe
- * to write over, and throw `ChangedUnderUsError` when it is not. One HEAD, the
- * same call `stat` makes, so the guard reads the destination the way a preview
- * does and invents no new request shape for it.
- *
- * `options` is what the caller listed, and only a caller that listed something
- * pays for this call: `drive branch` asks for no guard and its copy is one
- * request, the way it always was.
+ * Throw `ChangedUnderUsError` when the copy's destination holds an object. One
+ * HEAD. A 404 is empty. Any other failure is thrown, not read as empty, so a
+ * permission error never turns into a copy over bytes the store could not read
+ * (drive issue #605).
  * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl
  * @param {(path: string) => string} urlFor
- * @param {string} to the storage key the copy would write
- * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
+ * @param {string} to
  * @returns {Promise<void>}
  */
-async function assertCopyDestinationUnchanged(fetchImpl, urlFor, to, options = {}) {
-  const guard = copyGuard(to, options);
-  if (!guard.ifAbsent && !guard.ifMatch) {
-    return;
-  }
-  const held = await copyDestinationEtag(fetchImpl, urlFor, to);
-  if (guard.ifAbsent) {
-    // Asked for an empty destination. Something is at the key, whether it names
-    // an ETag or not: there is no way to tell a save from a folder marker by
-    // their bytes here, so any object is refused.
-    if (held !== null) {
-      throw new ChangedUnderUsError(to);
-    }
-    return;
-  }
-  // `null` is the destination gone, which is not the bytes the caller listed,
-  // and `""` is a destination this storage reports no ETag for, which is no
-  // comparison at all. Both refuse: a guard with no answer to give is not a
-  // guard that passed (drive issue #605).
-  if (held === null || held === "" || etagMismatch(held, guard.ifMatch)) {
-    throw new ChangedUnderUsError(to);
-  }
-}
-
-/**
- * The ETag a copy's destination holds right now, from the one call a HEAD
- * answers it with — the same call `stat` makes, so the guard on a copy reads
- * the destination exactly as a preview does, inventing no new request shape
- * for it.
- * The answer has to keep three cases apart, because a guard that confuses two
- * of them is a guard that quietly passes. `null` is "there is no object at
- * that key", which is what a restore copying onto an empty path expects. `""`
- * is "there is an object and this storage reports no ETag for it", and no
- * comparison against it is possible. A HEAD that fails is a real failure and
- * is thrown, not read as "no object": answering "nothing is there" to a
- * storage that could not say would turn a permission error into a copy over
- * the bytes it could not read (drive issue #605).
- * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl
- * @param {(path: string) => string} urlFor
- * @param {string} to the storage key the copy would write
- * @returns {Promise<string|null>} the ETag, `""` when the storage reports none
- *   for an object that is there, `null` when the key is empty
- */
-async function copyDestinationEtag(fetchImpl, urlFor, to) {
+async function assertDestinationEmpty(fetchImpl, urlFor, to) {
   const response = await fetchImpl(urlFor(to), { method: "HEAD" });
-  if (response.status === 404) {
-    return null;
-  }
+  if (response.status === 404) return;
   if (!response.ok) {
     throw new Error(
       `storage could not read ${to} before the copy (HEAD answered ${response.status})`,
     );
   }
-  const etag = response.headers.get("etag");
-  // S3 spells an ETag in quotes (and a weak one as `W/"..."`), and
-  // `parseListObjects` strips both, so the caller's ETag and this one are
-  // compared in the one form both have. No ETag header at all is `""`, which
-  // is not the same answer as `null` and must not be returned as one.
-  if (typeof etag !== "string" || etag === "") {
-    return "";
-  }
-  return etag.replace(/^W\//, "").replace(/^"|"$/g, "");
+  throw new ChangedUnderUsError(to);
 }
 
 /**
@@ -3376,37 +3206,26 @@ async function restoreRequest(request, store, account, now) {
     const parkedAt = trashStorePath(
       found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
     );
-    // A file already at the live path is a save that landed after the delete.
-    // Copying over it would throw those bytes away, so the restore stops here
-    // and leaves both copies where they are (drive issue #605).
-    const destination = await listingEntry(store, checked.path);
-    if (destination) {
+    // A file at the live path is a save that landed after the delete. Stop and
+    // leave both copies where they are (drive issue #605).
+    if (await listingEntry(store, checked.path)) {
       return json({ error: failureMessage("restore-file-changed") }, 409);
     }
-    // The destination listed empty. The copy is the storage's own, so the bytes
-    // never come through the Worker, and it is held to that emptiness: a save
-    // that creates the path before the write is refused the same way. CopyObject
-    // cannot carry that precondition itself, so the store reads the destination
-    // immediately before it writes (drive issue #605).
+    // The store re-reads the destination just before it writes and refuses if a
+    // save created the path meanwhile.
     await store.copy(parkedAt, checked.path, found.size, { ifAbsent: true });
-    // Re-list right after the copy. A save that lands during the copy can still
-    // win the live path, because the guard is a read and not a lock. If the
-    // bytes there are no longer the parked ones, the save stays at the path,
-    // the parked copy stays in Recently deleted, and the person is told
-    // (drive issue #605). A listing that reports no ETag cannot make that
-    // comparison, so it is not treated as a change: refusing here would turn
-    // every restore on a store that lists without ETags into a 409.
+    // Re-list: a save that lands after the copy wins the live path, and the
+    // parked copy stays in Recently deleted. A listing with no ETag cannot be
+    // compared, so it does not count as a change.
     const after = await listingEntry(store, checked.path);
     const parkedEtag = typeof found.etag === "string" ? found.etag : "";
-    if (!after) {
-      return json({ error: failureMessage("restore-file-changed") }, 409);
-    }
-    if (
-      typeof after.etag === "string" &&
-      after.etag !== "" &&
-      parkedEtag !== "" &&
-      etagMismatch(after.etag, parkedEtag)
-    ) {
+    const changed =
+      !after ||
+      (typeof after.etag === "string" &&
+        after.etag !== "" &&
+        parkedEtag !== "" &&
+        etagMismatch(after.etag, parkedEtag));
+    if (changed) {
       return json({ error: failureMessage("restore-file-changed") }, 409);
     }
     // A copy that lands while this one runs changes the parked key, and the
