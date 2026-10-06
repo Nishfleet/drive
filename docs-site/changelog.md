@@ -8,6 +8,13 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-06
+
+- An account holds at most 20 live keys, and a mint past that is refused with
+  the words to fix it. The storage vendor sets no limit of its own, and a
+  nightly sweep removes the vendor keys of expired or revoked entries and
+  records how many keys the vendor holds.
+
 ## 2026-10-05
 
 - Abuse guards: one active account per card, 1 TB storage until the first

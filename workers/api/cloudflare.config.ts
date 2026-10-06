@@ -88,6 +88,22 @@ export default defineWorker({
       namespace: "1007",
       simple: { limit: 600, period: 60 },
     }),
+    // drive issue #552: the per-account limit the key mint runs behind, ahead
+    // of the live-key count cap the store enforces. The count caps what an
+    // account may hold (20 live keys, keyprovider.js KEY_COUNT_CAP); this one
+    // caps how fast mints are tried — 10 a minute per account, far above a
+    // person's pace (one key per device or tool, a handful in a sitting) and
+    // far below what a looping script needs to matter before the next
+    // nightly sweep. Keyed on the account id, not the client IP: the caller
+    // is signed in, and one account's loop must not spend another account's
+    // quota. Unlike the device pair it does not fail closed at the route on a
+    // missing binding (the account gate and the count cap bind the route
+    // anyway), but the deploy config gate refuses to ship without it, which
+    // is what makes the name load-bearing.
+    KEYS_RATE_LIMITER: bindings.rateLimit({
+      namespace: "1008",
+      simple: { limit: 10, period: 60 },
+    }),
     // drive issue #386: the same founding-member offer switch the site Worker
     // holds. This Worker owns the accounts row (workers/api/src/devices.js),
     // so the write that sets the flag has to see the same var. Default open.

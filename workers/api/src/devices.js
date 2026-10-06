@@ -608,6 +608,80 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * How many of the account's keys are live: not revoked, and not past
+     * their own hour. This is the count the mint cap (drive#552) is measured
+     * on — an hourly key that expired can no longer authenticate, and the
+     * nightly sweep removes its vendor key, so it is no longer one of the
+     * credentials the account holds.
+     * @param {string} accountId
+     * @param {number} atSeconds the read's now, in epoch seconds
+     * @returns {Promise<number>}
+     */
+    async countLiveKeys(accountId, atSeconds) {
+      const row = await first(
+        db,
+        `SELECT COUNT(*) AS n FROM devices
+          WHERE account_id = ?1
+            AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?2)`,
+        accountId,
+        atSeconds,
+      );
+      return typeof row?.n === "number" ? row.n : 0;
+    },
+
+    /**
+     * The rows whose vendor key may still exist while the row itself is
+     * dead: revoked rows, and rows whose hour has passed (the vendor's key
+     * has no hour of its own — 0012 put the hour on our row only). A row the
+     * sweep has already stamped (0020 `vendor_key_removed_at`) is left out,
+     * so one vendor key is removed at most once and the sweep's work cannot
+     * grow with every key the account ever held. Rows with no vendor key id
+     * (the stand-in credential, which never reached the vendor) are left out
+     * too: there is nothing there to remove.
+     * @param {number} atSeconds the sweep's now, in epoch seconds
+     * @param {number} limit the most rows one sweep takes
+     * @returns {Promise<Array<{keyId: string, vendorKeyId: string, name: string, kind: string}>>}
+     */
+    async listSweepableKeys(atSeconds, limit) {
+      const result = await db
+        .prepare(
+          `SELECT id, b2_key_id, name, kind FROM devices
+           WHERE vendor_key_removed_at IS NULL
+             AND b2_key_id IS NOT NULL AND b2_key_id != ''
+             AND (revoked_at IS NOT NULL
+                  OR (expires_at IS NOT NULL AND expires_at < ?1))
+           ORDER BY created_at
+           LIMIT ?2`,
+        )
+        .bind(atSeconds, limit)
+        .all();
+      return (result.results ?? [])
+        .filter((row) => typeof row?.id === "string" && typeof row?.b2_key_id === "string")
+        .map((row) => ({
+          keyId: /** @type {string} */ (row.id),
+          vendorKeyId: /** @type {string} */ (row.b2_key_id),
+          name: typeof row.name === "string" ? row.name : "",
+          kind: typeof row.kind === "string" ? row.kind : "",
+        }));
+    },
+
+    /**
+     * Stamp one row's vendor key as accounted for. Written once by the sweep
+     * after the vendor stopped holding the key; read by nothing else.
+     * @param {string} keyId
+     * @param {number} atSeconds
+     */
+    async markVendorKeyRemoved(keyId, atSeconds) {
+      await run(
+        db,
+        "UPDATE devices SET vendor_key_removed_at = ?1 WHERE id = ?2",
+        atSeconds,
+        keyId,
+      );
+    },
+
+    /**
      * The row a storage key authenticates, or null. A revoked key, a wrong
      * secret and a credential past its hour are all null: the caller learns
      * only that the key does not work, never which half was wrong.

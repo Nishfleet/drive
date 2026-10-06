@@ -32,6 +32,7 @@ import {
 import {
   AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
+  KEY_COUNT_CAP,
   KEY_KINDS,
   keyTtlSeconds,
   mintTtlSeconds,
@@ -74,6 +75,46 @@ function digestsEqual(left, right) {
 }
 
 /**
+ * The refusal to mint because the account already holds the most live keys it
+ * may hold (drive issue #552, `KEY_COUNT_CAP` in keyprovider.js). The mint
+ * path throws it before the vendor call, so a capped account makes no vendor
+ * request at all; the key route maps it to the message table's
+ * "key-count-cap" answer. `live` is the count the check measured, for the
+ * log — the customer's message is the table's, not this one.
+ */
+export class KeyCountCapError extends Error {
+  /** @param {string} accountId @param {number} live */
+  constructor(accountId, live) {
+    super(`Account ${accountId} holds ${live} live keys, which is the cap of ${KEY_COUNT_CAP}.`);
+    this.name = "KeyCountCapError";
+    this.accountId = accountId;
+    this.live = live;
+  }
+}
+
+/**
+ * How many of the account's keys this isolate's map holds live: not revoked
+ * and not past their hour — the same two predicates the D1 store's
+ * `countLiveKeys` applies (devices.js), so the count is the same whichever
+ * backend the factory was built with. Only used when no device store is
+ * bound: the tests and a database-less deployment. The live Worker counts in
+ * D1, where keys minted by other isolates are visible.
+ * @param {Map<string, Device>} devices
+ * @param {string} accountId
+ * @param {number} atSeconds
+ * @returns {number}
+ */
+function liveKeyCountInMap(devices, accountId, atSeconds) {
+  let live = 0;
+  for (const device of devices.values()) {
+    if (device.accountId !== accountId || device.revokedAt !== null) continue;
+    if (device.expiresAt !== null && device.expiresAt <= atSeconds) continue;
+    live += 1;
+  }
+  return live;
+}
+
+/**
  * The stand-in key and object store. One instance per Worker isolate
  * (src/index.js), the same choice the Web Files page made for its bytes
  * (src/files.js) until the real store lands.
@@ -89,7 +130,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -307,6 +348,20 @@ export function createMemoryStore(options = {}) {
       const kind = request.kind ?? "agent";
       if (!KEY_KINDS.includes(/** @type {any} */ (kind))) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
+      }
+      // The per-account live-key cap (drive issue #552), before the vendor
+      // call: a mint past the cap makes no vendor request, so a looping
+      // script cannot turn the account's quota into vendor access keys. An
+      // expired hourly key does not count — it can no longer authenticate and
+      // the nightly sweep removes its vendor key, so the account is free to
+      // mint again. The team mint (`mintTeamKey`) is deliberately not capped:
+      // the issue names the key mint this route serves, and a team key is
+      // each a deliberate act behind the team gate.
+      const live = deviceStore?.countLiveKeys
+        ? await deviceStore.countLiveKeys(account.id, nowSeconds(now()))
+        : liveKeyCountInMap(devices, account.id, nowSeconds(now()));
+      if (live >= KEY_COUNT_CAP) {
+        throw new KeyCountCapError(account.id, live);
       }
       const scope =
         request.scope ??
