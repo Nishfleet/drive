@@ -10,6 +10,8 @@ the live site.
 
 ## 2026-10-06
 
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".
@@ -20,6 +22,11 @@ the live site.
 
 ## 2026-10-05
 
+- Your account can carry a second factor: a rotating six-digit code from an
+  authentication app. Approving a new device asks for that code after the code
+  from the terminal, and ten one-time recovery codes are shown once when you
+  turn it on. You can also add a passkey, which is a way to sign in and is not
+  asked for when you approve a device. The security page has the recovery rule.
 - The home page, the upload page and the docs pages pass the accessibility
   engine's checks, on a desktop and on a phone. The home page's tagline is
   dark enough to read on the orange, a wide docs table now scrolls sideways

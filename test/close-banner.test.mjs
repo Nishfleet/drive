@@ -59,6 +59,7 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 const SIGNED_IN_PAGES = [
   { name: "files.html", url: new URL("files.html", PUBLIC_DIR) },
   { name: "usage.html", url: new URL("usage.html", PUBLIC_DIR) },
+  { name: "devices.html", url: new URL("devices.html", PUBLIC_DIR) },
   { name: "starter.html", url: new URL("starter.html", PUBLIC_DIR) },
   { name: "get-started.html", url: new URL("../get-started.html", import.meta.url) },
 ];

@@ -12,7 +12,7 @@ Revisit when both are true:
 
 ## Pressure test (2026-09-29)
 
-These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bill ceiling, and are kept as the record. The current price is 2¢/GB billed by the minute, with the monthly bill capped at max($12, $8 × peak TB) (see Pricing).
+These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bill ceiling, and are kept as the record. The current price is 2¢ per GB billed by the minute. Never more than $10 per TB (see Pricing; the numbers live in `core/pricing.js`).
 
 | Question | Finding |
 |---|---|
@@ -37,31 +37,32 @@ The first says don't build. The second says if you build, sell to people first. 
 
 ## What to build if greenlit
 
-**A drive for people and their agents: a Finder folder that streams plain files from Backblaze B2, set up with one command that also connects Claude Code, Codex, Cursor, Gemini and Kiro. Billed only for what is stored, 2¢/GB/month billed by the minute, and the monthly bill never passes max($12, $8 × peak TB) — never more than $12 a TB, then $8.**
+**A drive for people and their agents: a Finder folder that streams plain files from iDrive e2, set up with one command that also connects Claude Code, Codex, Cursor, Gemini and Kiro. Billed only for what is stored, 2¢ per GB billed by the minute. Never more than $10 per TB.**
 
 - **Who it's for:** people first (solo creators with libraries bigger than their laptop disk). Agents are a free extra, not the product.
-- **Why it could win:** no plan floor, pay only for the GB-hours you use, and the bill never passes max($12, $8 × peak TB). Honest limit: it costs more than iCloud/Google for files kept all month.
+- **Why it could win:** no plan floor, pay only for the GB-hours you use, and the bill never passes $10 per TB. Honest limit: it costs more than iCloud/Google for files kept all month.
 - **What it is not:** not a video-team product (LucidLink), not a Windows product, not an app-hosting cloud (InstaCloud), not open source or self-hostable.
-- **No owned servers.** Storage on B2, with a backup copy on a Hetzner Storage Box. The drive runs on the user's Mac.
+- **No owned servers.** Storage on iDrive e2, with a backup copy on a Hetzner Storage Box. The drive runs on the user's Mac.
 
 ### Pricing
 
-**Recommendation (updated 2026-09-30, Nish): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store. The monthly bill is min(metered, max($12, $8 × peak TB)), TB measured to the GB; on the B2 fallback the ceiling rate is $10/TB (so max($12, $10 × peak TB)) — the page's "$8" holds only while iDrive is primary.** 1.5¢ is the hard floor for the metered rate (Nish); the ceiling deliberately prices below it ($12 for 1 TB is 1.2¢/GB, $8 a TB above 1.5 TB is 0.8¢/GB). Keep 1.5¢ in reserve for a yearly prepaid plan, the way the competitor discounts yearly billing by 25%. The full test is below.
+**Recommendation (updated 2026-10-04, Nish via drive#463 / #586): 2¢ per GB billed by the minute, prepaid. Add $10 or more. No plans. Your balance never expires. Never more than $10 per TB.** 1.5¢ is the hard floor for the metered rate (Nish). The older min(metered, max($12, $8 × peak TB)) ceiling is retired; the numbers live in `core/pricing.js`.
 
 | Item | Choice |
 |---|---|
-| Price | 2¢/GB-month, billed by the minute, shown as a monthly total |
-| Bill ceiling | min(metered, max($12, $8 × peak TB)), TB measured to the GB; B2 fallback $10/TB (Nish, 2026-09-30) |
-| Minimum per file | 1 hour of storage (B2 bills us by the byte-hour; proposed 2026-09-29, not yet confirmed by Nish) |
-| Downloads | Free up to 3x your average stored data each month, then 1¢/GB (the same rule B2 applies to us) |
-| Billing | Dodo usage billing on what is stored; no fixed monthly minimum |
-| Free credit | $1 of storage free every month (about 50 GB), no card needed to start; a card only to go past it. Shown in dollars, never as credit units or expiring balances (Nish, 2026-09-29, from the Higgsfield research) |
-| Headline | "Never more than $12 a TB, then $8" as the ceiling line under the rate; never an "unlimited" plan (Nish, 2026-09-30) |
+| Price | 2¢ per GB billed by the minute, shown as a monthly total |
+| Bill ceiling | Never more than $10 per TB, counted to the GB (`PRICE.maxUsdPerTb`) |
+| Minimum per file | 1 hour of storage |
+| Downloads | Free up to 3x your average stored data each month, then 1¢/GB |
+| Billing | Prepaid balance (Dodo checkout); no membership, no fixed monthly minimum |
+| Prepaid | Add $10 or more. The balance never expires. A card is needed at sign-up because there is no free tier. |
+| Headline | "Never more than $10 per TB" as the ceiling line under the rate; never an "unlimited" plan |
 | Spending cap | Each account sets one, default $20; storage goes read-only on exceeding the cap, nothing is deleted. Email at 80%. The cap counts min(metered so far, ceiling) (Nish via #464, 2026-10-04) |
 | "You saved" line | Copy varies by month type (Nish via #39, 2026-09-30): capped month (metered > ceiling) "Our price cap saved you $X", X = metered − bill; uncapped month "You paid $X less than a flat plan", X = ceiling − bill. Hidden when X ≤ 0, or when the month's bill is $0 |
 | Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum. The company UI is later: in version 1 the teams API is the only path to a company drive (`docs/api.md`), where a team is created, a member is invited by email as `read_only` or `read_write`, and removing a member revokes that member's key (drive#20, drive#518) |
 | Snapshots | Paid add-on only |
 | Storage | iDrive e2 as primary — one bucket per customer, each key limited to that bucket (drive#371) — plus a backup copy on a Hetzner Storage Box. Backblaze B2 stays the standby |
+| Platforms | macOS and Linux. No Windows in v1 |
 
 #### Pricing pressure test (1.5¢ to 2¢, prices checked 2026-09-29)
 
