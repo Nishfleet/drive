@@ -196,6 +196,30 @@ jobs:
           -v "$PWD:/w" -w /w
           patrickhulce/lhci-client:0.15.1@sha256:558210c5e422a7babaaa09c285b7469da3f00fac1a9880c37883c65d666a7fc9
           lhci autorun --collect.settings.chromeFlags="--no-sandbox --headless=new"
+      # drive#759: the typecheck and the Biome check are a named step of
+      # their own, beside `npm test` and not inside it.
+      #
+      # What this adds is the fail-fast, not the coverage. `pretest` is
+      # `npm run check`, so `npm test` below already runs `tsc --noEmit`
+      # (through `pretypecheck`, which regenerates `.cloudflare/types` from
+      # cloudflare.config.ts) and then `biome check`, and both have gated
+      # every merge since "Pro standards: type-check all JavaScript in CI"
+      # (#125) landed pretest. What that wiring cannot give a reader of a
+      # red run is which of the two turned it red: the pretest output sits
+      # above the step it belongs to, so a Biome warning count reads as a
+      # failing test run. One extra step costs about three seconds and names
+      # both tools in the run log, where a type error is read as a type
+      # error.
+      #
+      # No `if:` here, which is the same gate `npm test` below runs under:
+      # the job-level `if:` on this `verify` job is the paths filter, so this
+      # runs whenever the tests run.
+      #
+      # No `--write` and no `--fix`, ever: `biome check` reports and exits
+      # non-zero, and the job must fail on the diff it was given rather than
+      # fix it and push on.
+      - name: Typecheck and Biome
+        run: npm run check
       - run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
