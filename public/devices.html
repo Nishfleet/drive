@@ -242,7 +242,7 @@ async function readKeys() {
   }
   if (response.status === 401) {
     const payload = await response.json().catch(() => null);
-    sayStatus(payload && typeof payload.error === "string" ? payload.error : "You are not signed in to your drive.");
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Your session ended. Sign in, then reload this page.");
     showSessionNav(false);
     return;
   }
@@ -273,7 +273,7 @@ async function revokeKey(keyId, button) {
   }
   if (response.status === 401) {
     const payload = await response.json().catch(() => null);
-    sayStatus(payload && typeof payload.error === "string" ? payload.error : "You are not signed in to your drive.");
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Your session ended. Sign in, then reload this page.");
     showSessionNav(false);
     return;
   }
