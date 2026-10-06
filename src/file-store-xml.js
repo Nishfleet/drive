@@ -66,5 +66,6 @@ export function parseListObjects(xml, prefix, path, options = {}) {
  * @returns {string}
  */
 export function escapeXmlText(text) {
+  // nosemgrep: javascript.audit.detect-replaceall-sanitization.detect-replaceall-sanitization -- XML entity escape for S3 object keys, not HTML sanitization
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
