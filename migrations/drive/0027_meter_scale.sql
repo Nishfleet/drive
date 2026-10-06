@@ -4,10 +4,14 @@
 -- rolling the code back, and the old code reads none of these.
 --
 -- This file landed as 0025_meter_scale.sql, the prefix drive#682's
--- 0025_link_caps.sql already held, and moved here in drive#698: deploy orders
--- migrations by full filename and two files on one prefix is a collision
--- (test/migrations.test.mjs). 0025_link_caps.sql stays on 0025 because it was
--- applied to production first, and a rename re-runs the SQL in D1.
+-- 0025_link_caps.sql already held, and moved to 0026 in drive#698: deploy
+-- orders migrations by full filename and two files on one prefix is a
+-- collision (test/migrations.test.mjs). 0025_link_caps.sql stays on 0025
+-- because it was applied to production first, and a rename re-runs the SQL in
+-- D1. drive#726's 0026_signin_address_sends.sql then took 0026 while this was
+-- in flight, so this file is 0027. Nothing below depends on either neighbour:
+-- the index reads file_versions (0005) and the two tables are new, so the
+-- apply order of the three files is free.
 --
 -- Every statement below is `IF NOT EXISTS`, so the rename re-runs nothing even
 -- on a database whose applied-migrations table already records the old name:

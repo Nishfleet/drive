@@ -720,7 +720,7 @@ test("0006 adds the peak's column and takes nothing away", () => {
   );
 });
 
-// drive#698 renamed 0025_meter_scale.sql to 0026_meter_scale.sql, because
+// drive#698 renamed 0025_meter_scale.sql to 0027_meter_scale.sql, because
 // drive#682's 0025_link_caps.sql already held that prefix. D1 records an
 // applied migration by its filename, so the rename re-applies this file on
 // every database that already ran it - production's included, and which
@@ -743,7 +743,7 @@ test("the renumbered meter migration is a no-op the second time", () => {
   );
 
   sqlite.exec(
-    readFileSync(new URL("../../migrations/drive/0026_meter_scale.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../../migrations/drive/0027_meter_scale.sql", import.meta.url), "utf8"),
   );
 
   assert.deepEqual(objects(), before, "the second apply creates, alters and drops no object");
