@@ -418,7 +418,7 @@ function accountClosedTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-function accountCloseReminderTemplate(data = {}) {
+export function accountCloseReminderTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");

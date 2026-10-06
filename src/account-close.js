@@ -270,7 +270,7 @@ export async function cancelClose(input) {
 }
 
 /** How many keys one purge batch deletes: the provider's own per-call ceiling. */
-const PURGE_BATCH = 1000;
+export const PURGE_BATCH = 1000;
 
 /**
  * Delete every object under one account's storage prefix, in batches of

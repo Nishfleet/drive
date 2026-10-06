@@ -2432,7 +2432,7 @@ export function etagMatches(ifNoneMatch, etag) {
  * @param {number} total
  * @returns {{start: number, end: number}|null|"unsatisfiable"}
  */
-function parseByteRange(header, total) {
+export function parseByteRange(header, total) {
   const match = /^bytes=([0-9]+)?-([0-9]*)$/.exec(header.trim());
   if (!match) {
     return null;
@@ -2578,7 +2578,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
  * @param {((accountId: string, bytes: number) => Promise<void>)|undefined} recordDownload
  * @returns {FileStore}
  */
-export function meterReads(store, accountId, recordDownload) {
+function meterReads(store, accountId, recordDownload) {
   if (!recordDownload) {
     return store;
   }

@@ -14,12 +14,6 @@ import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
 import { MINUTE_MS } from "../core/meter.js";
 
 /**
- * The usage page itself, served from public/usage.html by the asset layer.
- * Linked from the first-run page so the page is reachable.
- */
-export const USAGE_PATH = "/usage";
-
-/**
  * How often the page re-reads the month while it is open and visible. The
  * month moves slowly, so a minute is fresh enough and quiet enough for a tab
  * left open; a hidden tab stops asking entirely.

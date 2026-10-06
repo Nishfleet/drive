@@ -76,14 +76,14 @@ export const BRANCH_JOB_BATCH_FILES = 80;
 /** The remaining branch size cap once jobs run in batches (drive#563). The
  * snapshot for 100,000 files is ~11 MiB of JSON in memory, and the documented
  * plan in cloudflare.config.ts is this number. A larger folder is refused. */
-export const BRANCH_FILE_LIMIT = 100_000;
+const BRANCH_FILE_LIMIT = 100_000;
 
 /** Keys per DeleteObjects call, the provider's own ceiling (core/files.js
  * removeBatch, drive#565). */
-export const BRANCH_DELETE_BATCH = 1000;
+const BRANCH_DELETE_BATCH = 1000;
 
 /** States that occupy the one-active-name unique index (migration 0030). */
-export const BRANCH_ACTIVE_STATES = Object.freeze([
+const BRANCH_ACTIVE_STATES = Object.freeze([
   "open",
   "creating",
   "approving",
@@ -1715,7 +1715,7 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
  * @param {number} branchId
  * @returns {Promise<BranchJobResult>}
  */
-export async function runBranchJobToEnd(db, snapshots, store, account, branchId) {
+async function runBranchJobToEnd(db, snapshots, store, account, branchId) {
   // Every batch moves at least one file or one folder, and a branch holds at
   // most BRANCH_FILE_LIMIT of each, so a folder-heavy tree still finishes.
   const cap = 2 * BRANCH_FILE_LIMIT + 200;
