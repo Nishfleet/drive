@@ -341,6 +341,7 @@ test("one device's report is never read as another's", async () => {
 test("DELETE /v1/queue drops this device's report", async () => {
   const clock = fixedClock();
   const { ctx, token, queues } = await signedIn({ clock });
+  assert.ok(queues, "the test needs the queue store");
   assert.equal((await dispatch(postQueue(QUEUE, token), ctx)).status, 200);
   assert.deepEqual(await queues.latest("acct_1"), QUEUE);
   const cleared = await dispatch(

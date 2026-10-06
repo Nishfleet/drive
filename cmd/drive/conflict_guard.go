@@ -162,6 +162,12 @@ type conflictBackend interface {
 	// an error: a save that lands where nothing was is exactly the
 	// case the rule has to name.
 	remoteHash(ctx context.Context, name string) (string, error)
+	// remoteVersion is the size and modification time of the object at
+	// the plain path, and ok is false when there is no object there. A
+	// save too large to stage has no local md5 to set against the
+	// remote ETag, so its version is what tells this device's landing
+	// from another device's.
+	remoteVersion(ctx context.Context, name string) (size int64, modTime time.Time, ok bool, err error)
 	// copyLocalToRemote uploads one staged file into the mount's
 	// own remote, under dstRemote, with rclone's own copy operation.
 	copyLocalToRemote(ctx context.Context, stagingRoot, srcRemote, dstRemote string) error
@@ -362,14 +368,29 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		switch {
 		case save.byFingerprint && landed != "" && landed != save.previous:
 			// A fingerprint-watched save has no local md5 that could
-			// equal the remote ETag, so a new object is this device's
-			// landing (or a change we could not keep a copy of). Naming
-			// a skip here alarms on a normal large upload.
-			save.winPolls++
-			if save.winPolls >= conflictWinPolls {
-				g.synced[name] = landed
-				g.drop(name, save)
+			// equal the remote ETag, so the object's size and mtime say
+			// whose version it is: rclone carries the file's mtime to
+			// storage, so this device's landing matches what it staged
+			// and another device's save does not.
+			size, modTime, ok, err := b.remoteVersion(ctx, name)
+			if err != nil {
+				save.hashFails++
+				continue
 			}
+			if ok && sameVersion(size, modTime, save.stagedSize, save.stagedMtime) {
+				save.winPolls++
+				if save.winPolls >= conflictWinPolls {
+					g.synced[name] = landed
+					g.drop(name, save)
+				}
+				continue
+			}
+			res.Skipped = append(res.Skipped, ConflictSkip{
+				Remote: name,
+				Reason: "another version landed on a file too large to keep a copy of",
+			})
+			g.synced[name] = landed
+			g.drop(name, save)
 		case landed == save.hash:
 			// This device's save is the one that landed. An overwrite can
 			// still land on top of it for the whole sync window after it,
@@ -729,6 +750,35 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 		return "", fpErr
 	}
 	return fp, nil
+}
+
+// remoteVersion is the object's size and mtime from operations/stat, and
+// ok is false when there is no object at the plain path.
+func (c *rcClient) remoteVersion(ctx context.Context, name string) (int64, time.Time, bool, error) {
+	var reply struct {
+		Item *struct {
+			Size    int64     `json:"Size"`
+			ModTime time.Time `json:"ModTime"`
+		} `json:"item"`
+	}
+	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
+		return 0, time.Time{}, false, err
+	}
+	if reply.Item == nil {
+		return 0, time.Time{}, false, nil
+	}
+	return reply.Item.Size, reply.Item.ModTime, true, nil
+}
+
+// sameVersion reports whether an object is the file this device staged.
+// The mtime is compared to the second because a backend may keep less
+// precision than the local filesystem does.
+func sameVersion(size int64, modTime time.Time, stagedSize int64, stagedMtime time.Time) bool {
+	if size != stagedSize || stagedMtime.IsZero() {
+		return false
+	}
+	d := modTime.Sub(stagedMtime)
+	return d < time.Second && d > -time.Second
 }
 
 // remoteFingerprint is the object's ETag or version when MD5 is missing

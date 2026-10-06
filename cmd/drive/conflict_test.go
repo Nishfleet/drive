@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The conflict rule (drive issue #30). Each test drives the real code
@@ -129,14 +130,45 @@ type fakeConflictBackend struct {
 	// guard must give up rather than claim another writer's save.
 	alwaysClobber bool
 	hashErr       map[string]error
+	// versions is the size and mtime operations/stat reports per object.
+	versions map[string]objectVersion
+}
+
+type objectVersion struct {
+	size    int64
+	modTime time.Time
 }
 
 func newFakeBackend() *fakeConflictBackend {
 	return &fakeConflictBackend{
-		objects: map[string]string{},
-		exports: map[string]string{},
-		hashErr: map[string]error{},
+		objects:  map[string]string{},
+		exports:  map[string]string{},
+		hashErr:  map[string]error{},
+		versions: map[string]objectVersion{},
 	}
+}
+
+func (f *fakeConflictBackend) remoteVersion(_ context.Context, name string) (int64, time.Time, bool, error) {
+	if f.failWith != nil {
+		return 0, time.Time{}, false, f.failWith
+	}
+	if _, ok := f.objects[name]; !ok {
+		return 0, time.Time{}, false, nil
+	}
+	v := f.versions[name]
+	return v.size, v.modTime, true, nil
+}
+
+// landAs records the object at name as the version of the local file p,
+// which is what rclone's upload of this device's save leaves in storage.
+func (f *fakeConflictBackend) landAs(t *testing.T, name, etag, p string) {
+	t.Helper()
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.objects[name] = etag
+	f.versions[name] = objectVersion{size: info.Size(), modTime: info.ModTime()}
 }
 
 func (f *fakeConflictBackend) queue(context.Context) ([]queueEntry, error) {
@@ -635,7 +667,7 @@ func TestConflictGuardComparesALargeFileByFingerprint(t *testing.T) {
 		t.Fatal("the large save is not watched")
 	}
 	f.pending = nil
-	f.objects["movie.mov"] = "this-device-etag"
+	f.landAs(t, "movie.mov", "this-device-etag", big)
 	res, err = g.pass(context.Background(), f)
 	if err != nil {
 		t.Fatalf("pass: %v", err)
@@ -665,7 +697,7 @@ func TestConflictGuardOwnLargeUploadIsNotASkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.pending = nil
-	f.objects["movie.mov"] = "etag-of-this-upload"
+	f.landAs(t, "movie.mov", "etag-of-this-upload", big)
 	res, err := g.pass(context.Background(), f)
 	if err != nil {
 		t.Fatal(err)
@@ -675,6 +707,44 @@ func TestConflictGuardOwnLargeUploadIsNotASkip(t *testing.T) {
 	}
 	if len(f.copied) != 0 {
 		t.Errorf("claimed a conflict copy with no staged bytes: %v", f.copied)
+	}
+}
+
+// TestConflictGuardNamesALargeOverwrite proves the late overwrite the
+// fingerprint watch exists for: another device's version of a file too large
+// to stage lands, its size and mtime are not this device's, and the guard
+// names it rather than reading it as this device's own upload.
+func TestConflictGuardNamesALargeOverwrite(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["movie.mov"] = "etag:other-device"
+	f.versions["movie.mov"] = objectVersion{size: conflictStageMax + 2, modTime: time.Now().Add(time.Minute)}
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
+		t.Errorf("Skipped = %+v, want the overwritten large save named", res.Skipped)
+	}
+	if len(g.seen) != 0 {
+		t.Errorf("still watches %v", g.seen)
 	}
 }
 
