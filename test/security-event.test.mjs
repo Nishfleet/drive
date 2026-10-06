@@ -274,6 +274,14 @@ test("changing the cap sends one mail, and a failure still saves the cap", async
   const stored = [];
   const capStore = {
     /**
+     * The store, not the authenticated account, knows the cap: the account
+     * the route passes carries none.
+     * @param {string} _accountId
+     */
+    async getCapUsd(_accountId) {
+      return stored.length === 0 ? 10 : stored[stored.length - 1] / 100;
+    },
+    /**
      * @param {unknown} _account
      * @param {number} cents
      */
@@ -320,7 +328,7 @@ test("changing the cap sends one mail, and a failure still saves the cap", async
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: "20" }),
     }),
-    { id: "acct-1", name: "You", email: "you@example.com", capUsd: 20 },
+    { id: "acct-1", name: "You", email: "you@example.com" },
     capStore,
     { email: same, mailFrom: MAIL_FROM, deviceName: "office laptop" },
   );
