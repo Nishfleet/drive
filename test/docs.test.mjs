@@ -144,10 +144,8 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
     PRICE.headline,
     PRICE.rule,
     PRICE.noPlansLine,
-    // The per-save hour, drive#535 finish line 2: the page that says billing
-    // is "counted by the minute" has to say the smallest unit that minute
-    // counting bills, or a file saved six times in an hour reads as an hour's
-    // worth of storage when the meter billed six.
+    // drive#642: the page that used to say billing is counted by the minute
+    // now says the bill follows size30, not how often you save.
     PRICE.versionMinimumLine,
   ]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);

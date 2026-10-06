@@ -59,6 +59,8 @@ const PUBLIC_FILES = [
   "docs-site/limits.md",
   "docs-site/quickstart.md",
   "docs-site/index.md",
+  "docs-site/faq.md",
+  "docs-site/.vitepress/config.mts",
 ];
 /** @type {Array<[string, string]>} */
 const publicTexts = PUBLIC_FILES.map((file) => [
@@ -272,17 +274,25 @@ test("the retired price words are gone from every public surface", () => {
     // Never a per-minute price.
     assert.doesNotMatch(text, /[$¢]\s?[\d.,]*\s*(\/|per\s|a\s)\s*min/i, `${file} per-minute price`);
     assert.doesNotMatch(text, /\d\s*¢\s*(\/|per\s|a\s)\s*min/i, `${file} per-minute price`);
+    // drive#642: the bill is size30, not a per-minute average. These three
+    // phrases are the old rule's customer copy and must not ship.
+    for (const stale of [
+      /by the minute/i,
+      /counted by the minute/i,
+      /stop paying for what you delete/i,
+      /per-minute/i,
+    ]) {
+      assert.doesNotMatch(text, stale, `${file} must not carry ${stale}`);
+    }
   }
 });
 
 test("the per-save hour the copy states is the meter's own floor", () => {
-  // drive#535, finish line 2. The pricing pages say billing is "counted by the
-  // minute", and a customer who reads that and saves a file five times inside
-  // one hour is billed five hours: every saved version is booked for at least
-  // the meter's MINIMUM_MINUTES_PER_VERSION. The sentence is the promise that
-  // makes the minute-counting copy honest, so its hour and the meter's floor
-  // are pinned together here - if the floor ever moves, this fails rather than
-  // shipping a page that promises an hour and bills two.
+  // drive#642 replaced per-minute billing. The pages now say the bill follows
+  // the biggest size in 30 days, not how often you save. The meter's hour
+  // floor still exists for the stored-bytes mark; it does not set the money.
+  // This pins that sentence to the meter's floor so a later rewrite cannot
+  // put the old per-save hour back on the bill.
   const meter = readFileSync(new URL("../core/meter.js", import.meta.url), "utf8");
   const floor = meter.match(/MINIMUM_MINUTES_PER_VERSION\s*=\s*(\d+)/);
   assert.ok(floor, "src/meter.js must state its per-version floor as a number");

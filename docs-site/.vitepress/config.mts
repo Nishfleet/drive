@@ -38,7 +38,7 @@ export default defineConfig({
   ignoreDeadLinks: [`${SITE_ORIGIN}/`],
   title: "Drive docs",
   description:
-    "A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.",
+    "A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month for the biggest size in the last 30 days.",
   lang: "en",
   // The rest of the site is light-only. A docs appearance toggle would be a
   // second look, and the inline dark-mode check shifts the first paint.
