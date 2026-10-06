@@ -305,9 +305,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  // DRIVE_DB became a required scheduled() binding when the pre-charge limit
-  // sweep joined the hourly trip (drive#536, src/index.js): its absence fails
-  // the trigger before the meter roll, so the outage drive needs it bound.
+  // The hourly trip's env carries both bindings: the same cron runs the
+  // pre-charge sweep off DRIVE_DB (drive#536), and the deploy binds the one
+  // database under both names (cloudflare.config.ts). The sweep takes the
+  // raw db: the outage proxy stands in for the draw's ledger failure, and
+  // the sweep is not part of this outage scenario.
   const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
@@ -330,8 +332,9 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
-    // #678: the bill divides by the calendar month's own minutes, and the
-    // month here is the one `hour` falls in.
+    // The same shape the draw itself bills with (src/prepaid.js drawFor):
+    // each month divides by its own minutes (drive#531), so a September
+    // figure and an October figure are never divided alike.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
       monthMinutes: minutesInMonth(hour),
