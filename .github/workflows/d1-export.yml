@@ -41,7 +41,7 @@ permissions:
 jobs:
   export:
     name: export
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    runs-on: ubuntu-latest
     environment:
       name: production
     timeout-minutes: 20

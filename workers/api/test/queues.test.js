@@ -7,13 +7,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createTestD1, DRIVE_MIGRATIONS } from "../../../test/harness.mjs";
 import {
   createD1QueueStore,
   QUEUE_FRESHNESS_SECONDS,
   QUEUE_REPORT_INTERVAL_SECONDS,
   uploadQueueFromRow,
-} from "../src/queues.js";
+} from "../../../core/queues.js";
+import { createTestD1, DRIVE_MIGRATIONS } from "../../../test/harness.mjs";
 
 // A clock the test owns, so the interval and the freshness window can be
 // crossed without sleeping. It is the same shape the other api stores' tests
@@ -154,7 +154,7 @@ test("one account's report is never another's", async () => {
 
 test("a paused queue round-trips as paused", async () => {
   // `drive pause` holds rclone's own queue, and the pages read the hold as a
-  // state rather than as a stalled number (src/status.js UPLOAD_LABEL.paused).
+  // state rather than as a stalled number (core/status.js UPLOAD_LABEL.paused).
   const clock = fixedClock();
   const store = createD1QueueStore(createTestD1(), { now: clock.now });
   await store.record("acct_1", { files: 2, uploadedBytes: 100, totalBytes: 200, paused: true });

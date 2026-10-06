@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
+import { createMemoryStore } from "../../../core/keystore.js";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 
 // The edge limits the device flow answers behind (drive issue #147). The
 // binding's whole contract is `limit({ key }) -> { success }`; a fake that

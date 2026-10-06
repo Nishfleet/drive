@@ -33,9 +33,9 @@ import {
   savedLine,
   storedGb,
   usageSummary,
-} from "../src/billing.js";
+} from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { PRICE } from "../src/pricing.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies

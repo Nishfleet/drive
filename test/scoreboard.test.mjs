@@ -7,7 +7,7 @@
 //      ships, so deleting one, or adding one that nobody owns, fails.
 //   2. It can drift from the code. The five price rows are computed, not typed:
 //      each us cell is parsed for its single customer-price figure and compared
-//      with monthBillCents() in src/billing.js, so a stale or contradictory
+//      with monthBillCents() in core/billing.js, so a stale or contradictory
 //      number fails rather than passing on a substring match.
 //   3. It can leave a losing or unmeasured row unowned. Every losing or
 //      unmeasured row must name #NN, or be listed under "Rows with no issue yet".
@@ -17,15 +17,15 @@
 //      out from.
 //
 // The money the price rows are compared against is the month's bill for that
-// size held all month, after the membership floor monthBillCents() already
-// applies: what the customer actually pays. The issue named src/pricing.js; that
+// size held all month, as monthBillCents() works it out: what the customer
+// actually pays. The issue named core/pricing.js; that
 // module still holds the superseded per-TB caps and is issue #23's to fix, so
 // the scoreboard reads the one billing function AGENTS.md's money gate names.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { monthBillCents } from "../core/billing.js";
 
 // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
 const MONTH_MINUTES = 30 * 1440;

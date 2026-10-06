@@ -48,7 +48,7 @@ jobs:
       github.event.pull_request.draft == false &&
       !contains(github.event.pull_request.title, '[no-merge]') &&
       !contains(join(github.event.pull_request.labels.*.name, ','), 'no-auto-merge')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       # Graceful skip when the App secrets are not yet configured on this repo.

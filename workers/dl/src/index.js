@@ -1,87 +1,90 @@
-// The dl Worker (drive issue #58, build step 5 piece 4): the download
-// hostname. It sits in front of storage, streams a read straight through to
-// the caller, and adds the bytes it served to that account's download counter.
+// The dl Worker (drive issue #58, build step 5 piece 4; hardened by #517): the
+// download hostname. It sits in front of storage, streams a read straight
+// through to the caller, and adds the bytes it served to that account's
+// download counter.
 //
-// Three rules decide everything here, and all three are the spec's
-// (docs/build-spec.md "The pieces" item 4 and the Cloudflare terms answer
-// under "Open questions"):
+// Five rules decide everything here:
 //
-//   1. **Stream, never buffer.** The body goes to the caller as
-//      `response.body`, the upstream stream itself. The Workers Free plan
-//      allows 10 ms of CPU per request and a 100 MB file read into memory
-//      first is both CPU and memory the plan does not give us; waiting on
-//      storage is not CPU, so the pass-through is what fits the ceiling. The
-//      byte count comes from storage's own `content-length`, which
-//      `FileStore.read` already carries, so nothing has to measure the
-//      stream to bill it.
+//   1. **No read without proof of access (#517).** A request path is
+//      `/k/<grant>/u/<id>/<file>`: the base URL the api mints beside a storage
+//      key (grant.js), with the in-bucket path rclone appends to it. The grant
+//      must carry the signing secret's HMAC, and the key it names must be a
+//      live row in `devices` for that same account, with `read`, whose prefix
+//      covers the file. Anything else is the one 404, before storage is
+//      touched, so a stranger can learn nothing about which accounts exist.
 //
-//   2. **The account comes from the path, and only from the path.** A key is
-//      minted into `u/<id>/` (docs/build-spec.md "Keys and safety"), so
-//      `/u/<id>/…` *is* the storage key and the account is its first segment.
-//      `folderAccount` (src/meter.js) is the same function the meter's event
-//      intake reads the account out of a key with, so the two can never
-//      disagree about which folder a key belongs to. Because the key is
-//      rebuilt from the account segment rather than taken from the rest of
-//      the path, a request cannot name another account's folder: `/u/alice/
-//      ../bob/secret` and `/u/alice/u/bob/secret` both resolve to a key under
-//      `u/alice/`, which does not exist, and answer 404 with no storage read
-//      of `u/bob/`.
+//   2. **Stream, never buffer.** The body goes to the caller as the upstream
+//      stream itself. The Workers Free plan allows 10 ms of CPU per request,
+//      and waiting on storage is not CPU, so the pass-through is what fits.
 //
-//   3. **An unknown account is a 404 before storage is touched.** `accountExists`
-//      is the one check that stands between a stranger's path and a read: the
-//      storage key alone says which folder to read, so without it a path
-//      naming an account that does not exist would still cost a storage
-//      round trip. It is checked first, and its failure answers the same 404
-//      as a file that is not there, so the two cannot be told apart.
+//   3. **One range, the right bytes, and only those billed.** A single
+//      `Range` is forwarded to storage: a satisfiable one answers 206 with
+//      `Content-Range`, an unsatisfiable one answers 416, and the counter adds
+//      the slice's length, never the whole object's. rclone reads a mounted
+//      file in ranged chunks, so billing `size` per GET would bill the whole
+//      file on every chunk.
+//
+//   4. **The account comes from the path, and the bucket from the account.**
+//      `u/<id>/…` is the storage key, the account is its first segment
+//      (`folderAccount`, core/meter.js), and the bucket is that account's own
+//      `drv-<id>` (`storageBucketForKey`, core/files.js; drive#371). A path
+//      cannot climb into another account's folder: `..` is refused and a
+//      second `u/<id>/` is part of the file's own name.
+//
+//   5. **The deployed Worker is the tested Worker.** The default export builds
+//      the same context the tests build, from the Worker's bindings
+//      (`contextFromEnv`), so a deploy cannot answer 404 to everything while
+//      the tests pass.
 //
 // The counter is `usage_minutes.download_bytes` for the current UTC hour
 // (migrations/drive/0005_meter.sql), written by `recordDownloadBytes`
-// (src/meter.js) — the same table the hourly rollup writes `gb_minutes_live`
-// into, and the two columns are disjoint, so neither zeroes the other. The
-// write happens after the response is handed back: it is a `waitUntil` promise,
-// because the bytes are served whether or not the counter write finished, and
-// the request must not wait on D1 to start streaming.
+// (core/meter.js) in a `waitUntil`, after the response is handed back.
 
 import { Hono } from "hono";
 
-import { failureMessage } from "../../../src/messages.js";
-import { folderAccount, recordDownloadBytes } from "../../../src/meter.js";
+import { createS3Store, storageBucketForKey, storageVarsFromEnv } from "../../../core/files.js";
+import { GRANT_SEGMENT, readGrant } from "../../../core/grant.js";
+import { failureMessage } from "../../../core/messages.js";
+import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
 
 /**
- * The storage the Worker streams from: the same `FileStore` the pricing
- * Worker uses (src/files.js), handed in unscoped. The keys it is called with
- * are full storage keys (`u/<id>/…`), not drive paths, so the scoping that
- * `scopeStore` does is not applied here — the account prefix in the key *is*
- * the scoping, and it is the one the spec mints every key into.
- * @typedef {import("../../../src/files.js").FileStore} FileStore
+ * The storage the Worker streams from: the same `FileStore` the site Worker
+ * uses (core/files.js), unscoped. The keys it is called with are full storage
+ * keys (`u/<id>/…`), so the account prefix in the key is the scoping.
+ * @typedef {import("../../../core/files.js").FileStore} FileStore
  */
 
 /**
  * What a dispatch carries. `store` is the storage, `db` the meter's D1
- * binding, `accounts` the check that an account exists, `now` the clock
- * (injected so a test can pin an hour) and `waitUntil` the platform's
- * background slot. All three collaborators are required: the Worker answers a
- * closed 503 rather than serving bytes it cannot count or reading storage it
- * cannot check an account against.
+ * binding, `authorize` the proof-of-access check (rule 1), `now` the clock in
+ * milliseconds and `waitUntil` the platform's background slot. A context
+ * without storage, a counter or an access check serves nothing.
  * @typedef {object} DlContext
  * @property {FileStore|null} store
  * @property {D1Database|null} db
- * @property {(accountId: string) => boolean|Promise<boolean>} accounts
+ * @property {((grant: string, named: {accountId: string, key: string}) => Promise<boolean>)|null} authorize
  * @property {() => number} now
  * @property {(promise: Promise<unknown>) => void} waitUntil
- * @property {ExecutionContext} [platform] the runtime's own context, the
- *   `waitUntil` a deployed Worker actually has
+ */
+
+/**
+ * The bindings the deployed Worker reads. `DRIVE_DB` is the customer database
+ * (`devices` for the access check, `usage_minutes` for the counter), the
+ * `IDRIVE_S3_*` (or `FILES_S3_*`) four are the storage master credential the
+ * site Worker reads too, and `DL_SIGNING_SECRET` is the grant secret the api
+ * Worker signs with.
+ * @typedef {import("../../../core/files.js").StorageEnv & {DRIVE_DB?: D1Database, DL_SIGNING_SECRET?: string}} DlEnv
  */
 
 /** How a download is served: an attachment, with the file's own bytes. */
 const DOWNLOAD_HEADERS = Object.freeze({
   "content-disposition": "attachment",
-  // A download is never a document on our origin and never a guessable
-  // content type: the bytes are whatever the customer uploaded, so they go
-  // out as octet-stream with nosniff beside them. The preview route in
-  // src/files.js serves a browser-renderable type for a named kind; there is
-  // no name here beyond the key, and octet-stream is the honest one for it.
+  // The bytes are whatever the customer uploaded, so they go out as
+  // octet-stream with nosniff beside them: never a document on our origin.
+  "content-type": "application/octet-stream",
   "x-content-type-options": "nosniff",
+  "accept-ranges": "bytes",
+  "cache-control": "private, no-store",
 });
 
 /**
@@ -90,12 +93,9 @@ const DOWNLOAD_HEADERS = Object.freeze({
  *
  * `folderAccount` anchors the account at the start of the key, so a "/u/"
  * deeper in the path is part of the file's own name and never a second
- * account. The key handed back is the path's own segments after the account,
- * re-prefixed onto `u/<id>/`: a path that tries to climb (`..`) or smuggles
- * a second `u/<id>/` therefore resolves to a key that cannot name another
- * account's bytes, because the only prefix the key is built with is the one
- * the first segment named.
- * @param {string} pathname the request path, decoded
+ * account. The key is the path's own segments after the account, re-prefixed
+ * onto `u/<id>/`, and a `.` or `..` segment is refused.
+ * @param {string} pathname the in-bucket path, decoded, e.g. `/u/alice/a.txt`
  * @returns {{accountId: string, key: string}|null}
  */
 export function downloadKey(pathname) {
@@ -103,23 +103,14 @@ export function downloadKey(pathname) {
     return null;
   }
   const segments = pathname.split("/").filter((segment) => segment !== "");
-  // The first segment is the spec's own `u` folder, the second is the account
-  // the key was minted for; anything after that is the file's own path.
   const [root, accountSegment, ...rest] = segments;
   if (root !== "u" || accountSegment === undefined || rest.length === 0) {
-    // No account folder, or an account folder with no file under it: there is
-    // no key to read, so there is nothing to bill either.
     return null;
   }
-  // The account is read by the meter's own function, through the same
-  // `u/<id>/` prefix it mints keys into, so the dl Worker and the event
-  // intake cannot end up with different ideas of an account.
   const accountId = folderAccount(`/${segments.join("/")}`);
   if (accountId === null || accountId !== accountSegment) {
     return null;
   }
-  // A segment that is `.` or `..` is not a name; refusing it here means the
-  // key is never built from one, and a refused path costs no storage read.
   if (rest.some((segment) => segment === "." || segment === "..")) {
     return null;
   }
@@ -127,108 +118,217 @@ export function downloadKey(pathname) {
 }
 
 /**
- * The dl Worker's fetch. Streams the named object and counts the bytes.
- *
- * The order is the point and is deliberate: the account exists, then the
- * object is read, then the response is returned with the body already
- * streaming. Nothing about the counter can change what the caller receives —
- * a read that fails is a 500 before a byte leaves, and a read that succeeds
- * serves the bytes whatever the counter write does afterwards.
+ * A request path split into its grant and the key it names:
+ * `/k/<grant>/u/<id>/<file>`. Null for any other shape, including a bare
+ * `/u/<id>/<file>` with no grant at all.
+ * @param {string} pathname the request path, decoded
+ * @returns {{grant: string, accountId: string, key: string}|null}
+ */
+export function parseDownloadPath(pathname) {
+  if (typeof pathname !== "string") {
+    return null;
+  }
+  const match = /^\/([^/]+)\/([^/]+)(\/.*)$/.exec(pathname);
+  if (match === null || match[1] !== GRANT_SEGMENT) {
+    return null;
+  }
+  const named = downloadKey(match[3]);
+  if (named === null) {
+    return null;
+  }
+  return { grant: match[2], ...named };
+}
+
+/**
+ * The proof-of-access check over the customer database (rule 1). The grant's
+ * signature is checked first, with no database read for a forged one; then
+ * the one key row it names. The row must be the same account's, unrevoked,
+ * unexpired, carry `read`, and its prefix must cover the key asked for, so a
+ * branch key cannot read outside its branch.
+ * @param {D1Database} db
+ * @param {string} secret the grant signing secret
+ * @param {() => number} now milliseconds
+ * @returns {(grant: string, named: {accountId: string, key: string}) => Promise<boolean>}
+ */
+export function keyAccessCheck(db, secret, now) {
+  return async (grant, named) => {
+    const subject = await readGrant(secret, grant);
+    if (subject === null || subject.accountId !== named.accountId) {
+      return false;
+    }
+    const row = await db
+      .prepare(
+        "SELECT account_id, prefix, capabilities, expires_at FROM devices WHERE id = ?1 AND revoked_at IS NULL",
+      )
+      .bind(subject.keyId)
+      .first();
+    if (row === null || typeof row !== "object") {
+      return false;
+    }
+    const r = /** @type {Record<string, unknown>} */ (row);
+    if (r.account_id !== named.accountId) {
+      return false;
+    }
+    const prefix = typeof r.prefix === "string" ? r.prefix : "";
+    // A prefix is always a folder (`u/<id>/`, `u/<id>/.branches/<name>/`); an
+    // empty or slash-less one covers nothing rather than everything.
+    if (!prefix.endsWith("/") || !named.key.startsWith(prefix)) {
+      return false;
+    }
+    let capabilities = [];
+    try {
+      capabilities = JSON.parse(String(r.capabilities ?? "[]"));
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(capabilities) || !capabilities.includes("read")) {
+      return false;
+    }
+    if (r.expires_at !== null && r.expires_at !== undefined) {
+      if (Math.floor(now() / 1000) >= Number(r.expires_at)) {
+        return false;
+      }
+    }
+    return true;
+  };
+}
+
+/**
+ * The length of the span a `Content-Range: bytes a-b/total` names, or
+ * undefined when there is none to read.
+ * @param {string|undefined} contentRange
+ * @returns {number|undefined}
+ */
+export function rangeLength(contentRange) {
+  const match = /^bytes (\d+)-(\d+)\//.exec(contentRange ?? "");
+  if (!match) {
+    return undefined;
+  }
+  const length = Number(match[2]) - Number(match[1]) + 1;
+  return length > 0 ? length : undefined;
+}
+
+/**
+ * The dl Worker's fetch. Checks the grant, streams the named object (or the
+ * one slice asked for), and counts the bytes this response carries.
  * @param {Request} request
  * @param {DlContext} ctx
- * @param {ExecutionContext} [platform] the runtime's context, used for
- *   `waitUntil` when the caller's own context has none
  * @returns {Promise<Response>}
  */
-export async function handleDownload(request, ctx, platform) {
+export async function handleDownload(request, ctx) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method not allowed. GET a file.", {
       status: 405,
       headers: {
         "content-type": "text/plain; charset=utf-8",
-        allow: "GET",
+        allow: "GET, HEAD",
         "cache-control": "no-store",
       },
     });
   }
-  if (!ctx.store || !ctx.db || typeof ctx.accounts !== "function") {
-    // A deployment with no storage, no counter or no account list cannot keep
-    // the promise this Worker makes (every byte that leaves is counted), so
-    // it serves nothing at all rather than serving bytes nobody bills.
+  if (!ctx.store || !ctx.db || typeof ctx.authorize !== "function") {
+    // A deployment that cannot check access or count bytes serves nothing.
     return notFound();
   }
   let pathname;
   try {
     pathname = decodeURIComponent(new URL(request.url).pathname);
   } catch {
-    // A path whose percent-escape cannot be decoded names no key; it is the
-    // same refusal as a path that names no account, not a server fault.
     return notFound();
   }
-  const named = downloadKey(pathname);
+  const named = parseDownloadPath(pathname);
   if (named === null) {
     return notFound();
   }
-  if (!(await ctx.accounts(named.accountId))) {
-    // Unknown account: 404 with no storage read, and with the same body as a
-    // file that is not there, so a walk of account ids cannot tell which ids
-    // exist.
+  if (!(await ctx.authorize(named.grant, { accountId: named.accountId, key: named.key }))) {
+    // No grant, a forged one, another account's, or a dead key: the one 404,
+    // with no storage read.
     return notFound();
   }
-  /** @type {import("../../../src/files.js").FileRead} */
+
+  if (request.method === "HEAD") {
+    // A HEAD transfers no body, so it is answered from a storage HEAD and
+    // counts nothing.
+    let stat;
+    try {
+      stat = await ctx.store.stat(named.key);
+    } catch (error) {
+      return storageDown(error);
+    }
+    if (!stat) {
+      return notFound();
+    }
+    return new Response(null, {
+      status: 200,
+      headers: { ...DOWNLOAD_HEADERS, "content-length": String(stat.size) },
+    });
+  }
+
+  const range = request.headers.get("range");
+  /** @type {import("../../../core/files.js").FileRead} */
   let object;
   try {
-    object = await ctx.store.read(named.key);
+    object = await ctx.store.read(named.key, range ? { range } : {});
   } catch (error) {
-    return new Response(`We could not read that file: ${String(error)}`, {
-      status: 500,
-      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
-    });
+    return storageDown(error);
   }
   if (!object) {
     return notFound();
   }
-  // The byte count is storage's own: the key is the file's, and
-  // `content-length` on a stored object is its exact size, which is what the
-  // done-when compares against the analytics. A read that reported no length
-  // counts zero rather than guessing, so the counter can never overstate.
-  const bytes = Number.isSafeInteger(object.size) && object.size > 0 ? object.size : 0;
-  if (bytes > 0 && request.method !== "HEAD") {
-    // After the response is built, never before: the count is a `waitUntil`,
-    // so the stream starts immediately (the 10 ms CPU ceiling) and the D1
-    // write rides the request's spare time. A write that fails throws into
-    // Cloudflare's log, which is where a counter that stopped is found.
-    //
-    // A HEAD counts nothing even though it names the same object: rclone sends
-    // one HEAD before each GET it serves, so counting both would bill every
-    // read twice while the analytics counted it once. A HEAD transfers no
-    // body, so there are no bytes served to add.
-    const counted = recordDownloadBytes(ctx.db, named.accountId, bytes, ctx.now()).then(
-      (result) => {
-        return result;
-      },
-      (error) => {
-        throw new Error(`the download bytes were not recorded: ${error.message}`);
-      },
-    );
-    const background = platform?.waitUntil;
-    if (typeof background === "function") {
-      background(counted);
-    } else {
-      ctx.waitUntil(counted);
+  const status = object.status ?? 200;
+  if (status === 416) {
+    // No byte of the range exists. Nothing is served, so nothing is counted,
+    // and the answer names the size a client can pick a range inside.
+    let total = object.contentRange?.split("/")[1];
+    if (total === undefined) {
+      try {
+        const stat = await ctx.store.stat(named.key);
+        total = stat ? String(stat.size) : "*";
+      } catch {
+        total = "*";
+      }
     }
+    return new Response(null, {
+      status: 416,
+      headers: { ...DOWNLOAD_HEADERS, "content-range": `bytes */${total}` },
+    });
   }
-  const headers = /** @type {Record<string, string>} */ ({ ...DOWNLOAD_HEADERS });
-  headers["content-type"] = "application/octet-stream";
-  headers["content-length"] = String(object.size);
-  // A HEAD is what rclone sends before it opens a stream; it gets the headers
-  // and no body, and it is counted nothing, because nothing was served.
-  return new Response(request.method === "HEAD" ? null : object.body, { status: 200, headers });
+  if (status !== 200 && status !== 206) {
+    return storageDown(new Error(`storage answered ${status}`));
+  }
+  // The bytes this response carries: the slice on a 206 (its length, or the
+  // span its Content-Range names), the whole object on a 200. A length
+  // storage did not report bills nothing and sends no content-length, rather
+  // than a guess.
+  const served =
+    status === 206 ? (object.contentLength ?? rangeLength(object.contentRange)) : object.size;
+  const known = Number.isSafeInteger(served) && /** @type {number} */ (served) >= 0;
+  const bytes = known ? /** @type {number} */ (served) : 0;
+  if (bytes > 0) {
+    ctx.waitUntil(
+      recordDownloadBytes(ctx.db, named.accountId, bytes, ctx.now()).catch((error) => {
+        // A failed meter write is logged, not rethrown: the bytes are already
+        // on their way, and a rejection in the background slot helps no one.
+        console.error("dl: could not record download bytes", error);
+      }),
+    );
+  }
+  /** @type {Record<string, string>} */
+  const headers = { ...DOWNLOAD_HEADERS };
+  if (known) {
+    headers["content-length"] = String(bytes);
+  }
+  if (status === 206 && object.contentRange) {
+    headers["content-range"] = object.contentRange;
+  }
+  if (object.etag) {
+    headers.etag = object.etag;
+  }
+  return new Response(object.body, { status, headers });
 }
 
 /**
- * The one 404: no key, no account, or no object, all one answer with the one
- * sentence the message table holds for a file that is not there.
+ * The one 404: no grant, no key, no account, or no object, all one answer.
  * @returns {Response}
  */
 function notFound() {
@@ -243,29 +343,95 @@ function notFound() {
 }
 
 /**
- * The Hono app. The router is the library's for the same reason the api
- * Worker uses it (drive#94, PR #146): matching and the 404 come from hono,
- * and this Worker has exactly one route.
+ * Storage failed. The cause goes to the Worker's log, never to the caller:
+ * the caller is anyone holding a URL, and a storage error can name a bucket or
+ * an endpoint.
+ * @param {unknown} error
+ * @returns {Response}
  */
-export function createApp() {
-  /** @type {Hono<{Bindings: DlContext}>} */
-  const app = new Hono({ strict: false });
-  // The key is a whole path, not a named param: `*` is what keeps a file
-  // name containing dots, spaces or percent-escapes whole through the router,
-  // and the account segment is read from it by downloadKey above rather than
-  // by a pattern, so the routing cannot be the thing that decides an account.
-  app.on(["GET", "HEAD"], "/*", (c) =>
-    handleDownload(c.req.raw, c.env, /** @type {ExecutionContext|undefined} */ (c.env.platform)),
-  );
-  return app;
+function storageDown(error) {
+  console.error("dl: storage read failed", error);
+  return new Response(failureMessage("storage-down"), {
+    status: 503,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "retry-after": "60",
+    },
+  });
+}
+
+/** @type {FileStore|null|undefined} */
+let isolateStore;
+/** @type {DlEnv|undefined} */
+let isolateStoreEnv;
+
+/**
+ * The storage the bindings name, built once per isolate: the S3 store over
+ * each account's own bucket, signed with the master credential. Null when the
+ * deployment carries no complete credential.
+ * @param {DlEnv} env
+ * @returns {FileStore|null}
+ */
+function storeFromEnv(env) {
+  if (isolateStore !== undefined && isolateStoreEnv === env) {
+    return isolateStore;
+  }
+  const vars = storageVarsFromEnv(env);
+  isolateStore =
+    vars.endpoint && vars.accessKeyId && vars.secretAccessKey && vars.region
+      ? createS3Store({
+          endpoint: vars.endpoint,
+          bucketFor: storageBucketForKey,
+          region: vars.region,
+          credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
+        })
+      : null;
+  isolateStoreEnv = env;
+  return isolateStore;
 }
 
 /**
- * The Worker entry. One app per isolate, the same shape the api Worker uses
- * (workers/api/src/index.js appFor): the router is compiled once and every
- * request is dispatched onto it.
- * @type {ExportedHandler<DlContext & {platform?: ExecutionContext}>}
+ * The context a deployed request runs with, built from the Worker's bindings
+ * and the runtime's own execution context (rule 5).
+ * @param {DlEnv} env
+ * @param {{waitUntil(promise: Promise<unknown>): void}} platform
+ * @returns {DlContext}
+ */
+export function contextFromEnv(env, platform) {
+  const db = env.DRIVE_DB ?? null;
+  const secret =
+    typeof env.DL_SIGNING_SECRET === "string" && env.DL_SIGNING_SECRET !== ""
+      ? env.DL_SIGNING_SECRET
+      : null;
+  return {
+    store: storeFromEnv(env),
+    db,
+    authorize: db && secret ? keyAccessCheck(db, secret, Date.now) : null,
+    now: Date.now,
+    waitUntil: (promise) => platform.waitUntil(promise),
+  };
+}
+
+/**
+ * The Hono app. Matching and the 404 come from hono; the account is read by
+ * downloadKey, never by a route pattern.
+ * @param {(c: import("hono").Context) => DlContext} contextFor
+ */
+export function createApp(contextFor) {
+  const app = new Hono({ strict: false });
+  // Every method reaches the handler, which answers the 405 itself.
+  app.all("/*", (c) => handleDownload(c.req.raw, contextFor(c)));
+  return app;
+}
+
+const app = createApp((c) => contextFromEnv(/** @type {DlEnv} */ (c.env), c.executionCtx));
+
+/**
+ * The Worker entry: one app per isolate, and a real context per request.
+ * @type {ExportedHandler<DlEnv>}
  */
 export default {
-  fetch: (request, env, ctx) => createApp().fetch(request, /** @type {DlContext} */ (env), ctx),
+  fetch: (request, env, ctx) => app.fetch(request, env, ctx),
 };

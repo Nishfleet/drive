@@ -136,12 +136,14 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
     ["METER_CRON", "meter-hourly-rollup"],
     ["METER_RECONCILE_SCHEDULE", "meter-nightly-reconcile"],
     ["TRASH_PURGE_SCHEDULE", "nightly-trash-purge"],
+    ["CLOSE_SCHEDULE", "nightly-account-close"],
   ];
   const slugs = [];
   for (const [constant, slug] of branches) {
     const start = src.indexOf(`if (event.cron === ${constant})`);
     assert.ok(start !== -1, `a scheduled branch reads ${constant}`);
-    const next = ["METER_CRON", "METER_RECONCILE_SCHEDULE", "TRASH_PURGE_SCHEDULE"]
+    const next = branches
+      .map(([c]) => c)
       .map((c) => src.indexOf(`\n    if (event.cron === ${c})`, start + 1))
       .filter((i) => i !== -1)
       .sort((a, b) => a - b)[0];
@@ -154,14 +156,14 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
     slugs.push(slug);
   }
   // The reindex's check-in is the fallthrough: its `context.waitUntil` runs
-  // only when no earlier branch matched, so exactly the three guards above
+  // only when no earlier branch matched, so exactly the four guards above
   // may read `event.cron` and the last waitUntil must carry the monitor.
   assert.equal(
     [...src.matchAll(/if \(event\.cron === ([A-Z_]+)\)/g)]
       .map((m) => m[1])
       .sort()
       .join(","),
-    "METER_CRON,METER_RECONCILE_SCHEDULE,TRASH_PURGE_SCHEDULE",
+    "CLOSE_SCHEDULE,METER_CRON,METER_RECONCILE_SCHEDULE,TRASH_PURGE_SCHEDULE",
   );
   const waitUntil = src.lastIndexOf("context.waitUntil(");
   assert.ok(waitUntil !== -1, "the reindex runs in the fallthrough waitUntil");
@@ -191,12 +193,20 @@ test("reportPurgeFailures raises an error naming the failed purges, and none whe
 });
 
 test("the nightly close cron reports its resolved purge failures, not only rejections", () => {
-  // The waitUntil's .then pair: the rejection half was already pinned by the
-  // captureError rethrow, the success half is the part that was silent.
+  // The close cron runs on its own trigger (drive#522), awaited inside its
+  // check-in, so a rejection fails the trigger and marks the monitor `error`.
+  // A resolved purge-failure count is the half that would stay silent, so the
+  // branch hands it to reportPurgeFailures.
   const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-  const start = src.indexOf("runAccountCloseCron({");
-  assert.ok(start !== -1, "the nightly branch runs the close cron");
-  const block = src.slice(start, src.indexOf("recordNightlySizes", start));
-  assert.match(block, /reportPurgeFailures\(/);
-  assert.match(block, /captureError\(failure, "account close cron"\)/);
+  const start = src.indexOf("if (event.cron === CLOSE_SCHEDULE)");
+  assert.ok(start !== -1, "the close cron has its own branch");
+  const block = src.slice(start, src.indexOf("\n    }\n", start));
+  assert.match(block, /withCronCheckIn\(event, "nightly-account-close"/);
+  assert.match(block, /await runAccountCloseCron\(\{/);
+  assert.match(block, /reportPurgeFailures\(close\.purgeFailures, close\.purged\)/);
+  assert.equal(
+    src.split("runAccountCloseCron({").length - 1,
+    1,
+    "the close cron runs on one trigger only, not also on the reconcile trip",
+  );
 });

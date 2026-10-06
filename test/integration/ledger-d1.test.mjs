@@ -20,14 +20,14 @@ import {
   ledgerTopUps,
   reconcileTopUps,
   usageKey,
-} from "../../src/ledger.js";
+} from "../../core/ledger.js";
 import {
   BILLING_WEBHOOK_PATH,
   balanceSummary,
   handleBillingWebhook,
   signWebhook,
   TOPUP_PURPOSE,
-} from "../../src/topup.js";
+} from "../../core/topup.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const SECRET = `whsec_${Buffer.from("drive-ledger-d1-test-key").toString("base64")}`;

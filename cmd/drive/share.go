@@ -409,6 +409,7 @@ func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 	if deviceToken != "" {
 		request.Header.Set("authorization", "Bearer "+deviceToken)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := &http.Client{Timeout: linkTimeout}
 	response, err := client.Do(request)
 	if err != nil {
@@ -458,7 +459,7 @@ func deleteJSON(endpoint, token string, body, out any) error {
 }
 
 // drivePathArg turns what a person typed into the path the api Worker expects:
-// a path inside the drive, starting with a slash (src/files.js validatePath).
+// a path inside the drive, starting with a slash (core/files.js validatePath).
 // An absolute path under the mount dir is the form a shell's ~ expansion or a
 // Finder drag produces (`/Users/nish/Drive/Photos/cat.jpg`), so it is accepted
 // and the mount dir is dropped; anything else keeps its own segments. A

@@ -520,10 +520,6 @@ func runSchtasks(args ...string) error {
 // wait for the kernel to report the drive letter. A foreground mount runs
 // rclone in this process instead, which is what the mount proof and debugging
 // use.
-func windowsMountArgs(p MountPlan) []string {
-	return p.productArgs()
-}
-
 func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun bool) error {
 	if err := CheckWinFsp(p.GOOS, fileExists); err != nil {
 		return err

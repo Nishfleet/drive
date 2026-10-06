@@ -12,18 +12,18 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
-import { BILLING_CONFIG } from "../src/billing.js";
-import { DEFAULT_CAP_USD } from "../src/cap-default.js";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { DEFAULT_CAP_USD } from "../core/cap-default.js";
 import {
   LEGAL_PAGES,
   LEGAL_PLACEHOLDERS,
   PLACEHOLDER_MARK,
   REPORT_PATH,
   SUPPORT_PATH,
-} from "../src/legal.js";
-import { PREPAID, PRICE } from "../src/pricing.js";
-import { absoluteUrl, PAGES } from "../src/seo.js";
+} from "../core/legal.js";
+import { PREPAID, PRICE } from "../core/pricing.js";
+import { absoluteUrl, PAGES } from "../core/seo.js";
+import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 /** @param {string} name */
@@ -125,7 +125,7 @@ test("the four owner facts are marked placeholders, each in one place only", () 
   for (const id of seen.keys()) {
     assert.ok(
       LEGAL_PLACEHOLDERS.some((fact) => fact.id === id),
-      `${id} is not one of the four owner facts in src/legal.js`,
+      `${id} is not one of the four owner facts in core/legal.js`,
     );
   }
   // A fact may be filled (gone), never typed twice or moved off its page.
@@ -264,10 +264,10 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
-    ["restore.md", "src/files.js", "purgeExpiredTrash"],
-    ["restore.md", "src/files.js", "TRASH_PURGE_SCHEDULE"],
-    ["secrets-rotation.md", "src/meter.js", "METER_EVENT_TOKEN"],
-    ["secrets-rotation.md", "src/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
+    ["restore.md", "core/files.js", "purgeExpiredTrash"],
+    ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
+    ["secrets-rotation.md", "core/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
     ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];
   for (const [runbook, source, ...symbols] of claims) {
