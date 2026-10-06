@@ -259,11 +259,17 @@ test("the upload page's Choose files button still opens the file picker", {
     // A good token reveals the drop zone; without one the page is the closed
     // page and the picker has nothing to open.
     await chrome.waitForSelector("#drop:not([hidden])", { visible: true });
+    // `element.hidden` alone is not enough: `[hidden]` is a UA rule, so a
+    // later author rule that gave input[type=file] a display would undo the
+    // drive#546 fix (the 1px tab stop) while this block still passed. The
+    // computed display is what actually keeps the picker out of the tree, so
+    // the gate asserts both.
     const input = await chrome.evaluate(() => {
       const element = /** @type {HTMLElement} */ (document.getElementById("file-input"));
       return { hidden: element.hidden, display: getComputedStyle(element).display };
     });
     assert.equal(input.hidden, true, "the picker input stays out of the tree");
+    assert.equal(input.display, "none", "the picker input is not laid out at all");
     const chooser = chrome
       .waitForFileChooser({ timeout: 15_000 })
       .then(() => true)
