@@ -420,8 +420,10 @@ export async function checkYesterdayDraws(db, now = Date.now()) {
       );
       const remainderPacked = prev === null ? 0 : Number(prev.remainder_millicents);
       const remainderIn = unpackDrawRemainder(remainderPacked);
-      const expected = dailyDrawMillicents(bill.totalMillicents, remainderIn.thirtyRemainder)
-        .drawMillicents;
+      const expected = dailyDrawMillicents(
+        bill.totalMillicents,
+        remainderIn.thirtyRemainder,
+      ).drawMillicents;
       const stored = /** @type {{draw_millicents?: unknown}|null} */ (
         await db
           .prepare("SELECT draw_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")

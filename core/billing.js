@@ -490,8 +490,7 @@ export function packDrawRemainder(thirtyRemainder, unpostedMillicents) {
     );
   }
   return (
-    /** @type {number} */ (unpostedMillicents) * DRAW_DAYS +
-    /** @type {number} */ (thirtyRemainder)
+    /** @type {number} */ (unpostedMillicents) * DRAW_DAYS + /** @type {number} */ (thirtyRemainder)
   );
 }
 

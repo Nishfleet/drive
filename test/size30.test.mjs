@@ -20,8 +20,8 @@ import {
   monthBillCents,
   monthlyBillForStoredTb,
   packDrawRemainder,
-  savedLine,
   SIZE30_MS,
+  savedLine,
   size30Window,
   unpackDrawRemainder,
 } from "../core/billing.js";
@@ -132,7 +132,11 @@ test("thirty daily cent draws at a constant size add up to the monthly cents exa
       thirtyRemainder = unpacked.thirtyRemainder;
       unposted = unpacked.unpostedMillicents;
     }
-    assert.equal(centSum, bill.storageCents, `${gb} GB: 30 cent draws sum to ${bill.storageCents}¢`);
+    assert.equal(
+      centSum,
+      bill.storageCents,
+      `${gb} GB: 30 cent draws sum to ${bill.storageCents}¢`,
+    );
     assert.equal(thirtyRemainder, 0, `${gb} GB: /30 remainder flushed`);
     assert.equal(
       unposted,
