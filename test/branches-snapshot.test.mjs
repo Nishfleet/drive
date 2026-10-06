@@ -54,12 +54,14 @@ import { createTestD1, createTestKv } from "./harness.mjs";
 // has (drive#579) - carries no `snapshot` column at all, and those proofs would
 // fail at prepare on a schema production does not have.
 //
-// So this is a SUBSET, named as what it is: the folder up to and not including
-// the drop, plus the one file after it that today's reader needs
-// (`0030_branch_jobs.sql`, which only ADDs columns). Both halves are read off
-// the folder, so neither can drift; a migration the reader starts to depend on
-// after the drop lands here with no hand-written copy, because this picks the
-// suffix by name rather than writing a list out.
+// So this is a SUBSET, and it says which two ends it is built from: the folder
+// up to and not including the drop, plus the files after it that today's reader
+// names a column of. Nothing here is a copy of a migration list, so the order
+// and the SQL are the folder's own and cannot drift from what the deploy
+// applies; `READER_DEPENDS_ON` is a list of NAMES, and a reader that starts to
+// need a later migration fails these proofs with `no such column` until its
+// name goes in. That failure is the point: it is the next run's edit, not a
+// silently passing proof of nothing.
 //
 // The proofs are kept because what they measure is the reader's rule (drive#329:
 // the namespace the pointer names is the only source), and that rule has to hold

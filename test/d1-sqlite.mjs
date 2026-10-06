@@ -207,6 +207,28 @@ export function d1Over(sqlite, { onQuery } = {}) {
   // would tell a caller that trusts `meta.changes` that nothing landed.
   const changesOf = sqlite.prepare("SELECT changes() AS n");
   const rowIdOf = sqlite.prepare("SELECT last_insert_rowid() AS n");
+  /**
+   * Whether the statement this call ran is the one that changed rows.
+   *
+   * `changes()` is the count from the most recent INSERT/UPDATE/DELETE, and a
+   * DDL statement does not reset it, so reading it after a CREATE answers with
+   * whatever the last write changed. D1 answers `meta.changes` for the statement
+   * that ran, and a `CREATE TABLE` changed no rows. So the count is read only
+   * for a write, and a write is one whose first keyword is a DML verb or a
+   * `WITH` clause that ends in one.
+   *
+   * @param {string} sql
+   */
+  const wroteRows = (sql) => {
+    const head = String(sql).trimStart();
+    if (/^(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(head)) {
+      return true;
+    }
+    if (/^WITH\b/i.test(head)) {
+      return /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(head);
+    }
+    return false;
+  };
 
   /**
    * @param {string} sql
@@ -230,7 +252,7 @@ export function d1Over(sqlite, { onQuery } = {}) {
         meta: { rows_written: 0, changes: 0, last_row_id: 0 },
       };
     }
-    const changes = Number(/** @type {{n: number}} */ (changesOf.get()).n);
+    const changes = wroteRows(sql) ? Number(/** @type {{n: number}} */ (changesOf.get()).n) : 0;
     return {
       results,
       success: true,

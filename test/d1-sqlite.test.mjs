@@ -38,18 +38,20 @@ test("the harness's migration list IS the folder, read from disk", () => {
     folder.map((name) => `drive/${name}`),
     "the list tests hand to createTestD1 is not the folder, prefixed",
   );
-  // The files the hand-written lists left out: the meter's tables, the device
-  // sign-in tables, the billing pushes, the cap rebuilds and the abuse guards.
-  // A test bound a column of one of these on a schema that did not have it.
+  // The files the hand-written lists left out. This is main's own
+  // DRIVE_MIGRATIONS, diffed against the folder, not a memory of it: a test
+  // bound a column of one of these on a schema that did not have it.
   for (const name of [
-    "0005_meter.sql",
     "0006_usage_stored_bytes.sql",
     "0007_device_codes.sql",
     "0013_billing_pushes.sql",
     "0017_agent_caps_drop_month_key.sql",
     "0017_drop_branches_snapshot.sql",
     "0018_agent_caps_drop_month_spend.sql",
-    "0019_abuse_guards.sql",
+    "0022_nightly_sizes.sql",
+    "0023_file_versions_hidden_at.sql",
+    "0025_meter_scale.sql",
+    "0029_welcome_sent_at.sql",
   ]) {
     assert.ok(DRIVE_MIGRATIONS.includes(`drive/${name}`), `${name} is missing from the list`);
   }
@@ -117,19 +119,23 @@ test("the harness's batch is a transaction: a failure leaves no rows behind", as
         .n,
     );
   assert.equal(rows(), 0);
-  // The second statement is not SQL. D1 sends a batch as one transaction, so
-  // the first statement's row rolls back with it. Run as two independent
-  // writes, the dedup row would survive and a test would read a half-written
-  // event as a whole one.
+  // The second statement PREPARES fine and fails when it runs - a duplicate
+  // primary key. D1 sends a batch as one transaction, so the first statement's
+  // row rolls back with it. Run as two independent writes, the dedup row would
+  // survive and a test would read a half-written event as a whole one.
+  // (A statement that fails at prepare cannot prove this: it throws while the
+  // batch is being built, so the first write never happens at all.)
   await assert.rejects(
     () =>
       db.batch([
         db
           .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
           .bind("half-written", 1_800_000_000_000),
-        db.prepare("THIS IS NOT SQL").bind(),
+        db
+          .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
+          .bind("half-written", 1_800_000_000_000),
       ]),
-    /syntax error|no such column|parse/i,
+    /UNIQUE constraint failed/i,
   );
   assert.equal(rows(), 0, "the first statement's row rolled back with the failed batch");
   // A batch that does commit commits every statement, order preserved.
@@ -230,19 +236,25 @@ test("both stand-ins bind a value the way D1's conversion table does", async () 
 });
 
 test("the harness's default schema and the meter adapter's are the same schema", () => {
-  /**
-   * @param {{prepare(sql: string): {all(): Record<string, unknown>[]}}} sqlite
-   */
-  const tablesOf = (sqlite) =>
+  // Names alone are not the schema: a column, an index or a constraint missing
+  // from one stand-in and not the other is exactly the drift this issue is
+  // about, and it is invisible to a name comparison. Every table, its columns
+  // in declared order with their types, NOT NULL and defaults, and every index
+  // and trigger, are compared here.
+  /** @param {{prepare(sql: string): {all(): Record<string, unknown>[]}}} sqlite */
+  const shapeOf = (sqlite) =>
     sqlite
       .prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        "SELECT type, name, tbl_name, COALESCE(sql, '') AS sql FROM sqlite_master " +
+          "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
       )
       .all()
-      .map((row) => String(row.name));
+      .map(
+        (row) => `${row.type} ${row.tbl_name}.${row.name}: ${String(row.sql).replace(/\s+/g, " ")}`,
+      );
   assert.deepEqual(
-    tablesOf(createTestD1().sqlite),
-    tablesOf(makeMeteredDB().sqlite),
+    shapeOf(createTestD1().sqlite),
+    shapeOf(makeMeteredDB().sqlite),
     "the two D1 stand-ins built different schemas out of one folder",
   );
 });
