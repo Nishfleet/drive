@@ -4,8 +4,9 @@
 -- rolling the code back, and the old code reads none of these.
 --
 -- This file landed as 0025_meter_scale.sql, the prefix drive#682's
--- 0025_link_caps.sql already held. Deploy orders migrations by full filename
--- and two files on one prefix is a collision (test/migrations.test.mjs).
+-- 0025_link_caps.sql already held. Wrangler applies both, ordered by the full
+-- filename. The suite's prefix gate (test/migrations.test.mjs) rejects two
+-- files on one number so the apply order is not left to a numeric tie.
 -- 0025_link_caps.sql stays on 0025 because a rename re-runs the SQL in D1 and
 -- its ALTER TABLE ADD COLUMN statements are not IF NOT EXISTS. 0026
 -- (signin_address_sends) and 0027 (device_queue_reports) were taken while this
