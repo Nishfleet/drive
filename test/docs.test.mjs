@@ -535,19 +535,16 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
 });
 
 // The docs count public/llms.txt states (drive#814). The links above are gated
-// but the sentence that tells an answer engine how many pages there are is
-// prose, so drive#562 could add a page, add its link, and leave the sentence
-// counting the old nine with nothing failing. The count is read out of the file
-// and compared with DOC_PAGES, the same list the link gate walks, so the two
-// cannot disagree.
+// but the sentence that tells an answer engine how many pages there are prose,
+// so drive#562 could add a page, add its link, and leave the sentence counting
+// the old nine with nothing failing. The count is read out of the file and
+// compared with DOC_PAGES, the list core/seo.js holds and the link gate walks,
+// so the sentence and the page list cannot disagree.
 //
-// The count is read out of the file and compared with DOC_PAGES, the same list
-// the link gate walks, so the two cannot disagree.
-//
-// The count is stated once: the sentence is found by shape and never by a typed
-// figure, and no other file states a count, so a reword that drops the count or
-// spells it differently, and a second figure written elsewhere, both fail here
-// rather than shipping a number nobody checked.
+// It is stated once: the sentence is found by shape and never by a typed figure,
+// and the two other files that advertise the docs list state no count, so a
+// reword that drops the count or a second figure written elsewhere both fail
+// here rather than shipping a number nobody checked.
 const COUNT_SENTENCE = /holds all ([\w-]+) in one file/gi;
 
 // The counts the sentence may spell, so "nine" is read as nine rather than as a
@@ -583,11 +580,18 @@ const COUNT_WORDS = Object.freeze({
  */
 const foldSentence = (text) => text.replace(/(?<!\n)\n(?!\n)/g, " ");
 
-// Any docs page count written in other words, so a figure the canonical sentence
-// does not carry is still found: "nine pages", "9 docs pages". The number words
-// are the keys of the table above, so there is one list of them.
+// The count written in other words, so a second figure is caught rather than
+// read past: "nine pages", "9 docs pages", "the docs have 12 pages". The number
+// words are the keys of the table above, so there is one list of them, and every
+// space here is a space and not a line break, so a claim cannot be assembled out
+// of two paragraphs. The number sits against "pages", so prose like "one of the
+// pages" is not read as a count of them.
+const NUMBER = `(?:\\d{1,3}|${Object.keys(COUNT_WORDS).join("|")})`;
 const PAGE_COUNT_CLAIM = new RegExp(
-  `\\b(?:\\d{1,2}|${Object.keys(COUNT_WORDS).join("|")})\\b(?:\\s+\\w+){0,2}\\s+(?:docs?\\s+)?pages?\\b`,
+  [
+    `\\b${NUMBER}\\b[^\\S\\n]+(?:docs?[^\\S\\n]+)?pages?\\b`,
+    `\\bdocs?\\b[^\\S\\n]+(?:has|have|holds?)[^\\S\\n]+${NUMBER}\\b[^\\S\\n]+pages?\\b`,
+  ].join("|"),
   "gi",
 );
 
@@ -611,16 +615,12 @@ function statedCounts(text) {
   });
 }
 
-// A docs count written in other words ("nine docs pages", "9 pages"): the shapes
-// the sentence above does not match, so a second figure in another file, or a
-// rewording of the one sentence, is caught rather than read past. The number
-// words come from the table above, so there is one list of them.
 /**
  * @param {string} text
  * @returns {string[]} the page-count phrases the text states
  */
 function pageCountClaims(text) {
-  return [...foldSentence(text).matchAll(PAGE_COUNT_CLAIM)].map((match) => match[0]);
+  return [...text.matchAll(PAGE_COUNT_CLAIM)].map((match) => match[0]);
 }
 
 /** @param {string} name */
@@ -644,10 +644,10 @@ test("public/llms.txt states the docs page count DOC_PAGES has, and states it on
     DOC_PAGES.length,
     `public/llms.txt says there are ${said} docs pages, and DOC_PAGES (core/seo.js) has ${DOC_PAGES.length}`,
   );
-  // The count is stated once in the whole tree, and nowhere but the sentence
-  // above: a second figure in this file, or a count added to the two other
-  // places that advertise the docs list, is a number that has to be kept in step
-  // by hand, which is the gap this gate closes.
+  // The count is stated once across the three files that advertise the docs
+  // list, and in public/llms.txt only in the sentence above: a second figure in
+  // this file, or a count added to the README or the docs home, is a number kept
+  // in step by hand, which is the gap this gate closes.
   assert.deepEqual(
     pageCountClaims(llms),
     [],
