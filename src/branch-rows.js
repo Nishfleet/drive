@@ -1,48 +1,26 @@
-// The `branches` table (migration 0003) as this module reads and writes it:
-// row-to-record mapping, the four lifecycle queries, and the snapshot
-// persistence behind them. The snapshot values themselves are
-// src/branch-snapshots.js and the routes are src/branches.js. Extracted from
-// src/branches.js (drive issue #617) with no behaviour change; every name is
-// re-exported from there, so no importer moved.
+// Branch table rows: create, list, approve, discard. Extracted from
+// src/branches.js (drive issue #617) with no behaviour change;
+// src/branches.js re-exports every name here, so no importer moved.
 
 import { checkedBranchName } from "../workers/api/src/keyprovider.js";
 import {
+  BRANCHES_ROOT,
   copyFolder,
   diffBranch,
+  errorText,
   fileFingerprint,
   folderState,
   listFiles,
+  NAMED_FILES_LIMIT,
   readSnapshot,
   readSnapshotObject,
   sameFile,
   snapshotKey,
 } from "./branch-snapshots.js";
-import { BRANCHES_PATH, validatePath } from "./files.js";
+import { validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
 
-/** @typedef {import("./branch-snapshots.js").FileStore} FileStore */
-/** @typedef {import("./branch-snapshots.js").Fingerprint} Fingerprint */
-/** @typedef {import("./branch-snapshots.js").Branch} Branch */
-/** @typedef {import("./branch-snapshots.js").SnapshotStore} SnapshotStore */
-
-/** The drive path branches live under, under its files.js name so there is
- * still one definition of where branches live (src/branches.js re-exports it
- * as its BRANCHES_ROOT). */
-const BRANCHES_ROOT = BRANCHES_PATH;
-
-// A failure that names a file can name up to this many; the rest are counted
-// behind an "and N more", so the message cannot balloon for a 10,000-file
-// branch.
-const NAMED_FILES_LIMIT = 20;
-
-/** The one place an unknown thrown value becomes a message: a caught value is
- * `unknown`, and only an Error has a `.message` to log.
- * @param {unknown} error
- * @returns {string}
- */
-function errorText(error) {
-  return error instanceof Error ? error.message : String(error);
-}
+// ---------------------------------------------------------------- the table
 
 /** A row as this module uses it: camelCase names, and the snapshot already
  * resolved by `readSnapshot` from the namespace. A D1 row is untyped
@@ -51,7 +29,7 @@ function errorText(error) {
  * @param {Record<string, unknown>} row
  * @param {Record<string, Fingerprint>} snapshot
  * @returns {Branch} */
-export function toBranch(row, snapshot) {
+function toBranch(row, snapshot) {
   return {
     id: Number(row.id),
     name: String(row.name),
@@ -80,7 +58,7 @@ export function toBranch(row, snapshot) {
  * fallback share this list so a generation cannot drop a column the other still
  * reads.
  */
-export const BRANCH_COLUMNS =
+const BRANCH_COLUMNS =
   "id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, " +
   "state, created_at, changed_by_key_id";
 
@@ -631,7 +609,7 @@ export async function discardBranch(db, snapshots, store, account, name) {
  * @param {string} [key] the KV key to write on first save of a claimed row
  * @returns {Promise<D1Result>}
  */
-export async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
+async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
   const json = JSON.stringify(snapshot);
   if (!snapshots) {
     throw new TypeError("saveSnapshot needs the branch snapshot store");
@@ -673,10 +651,6 @@ export async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
  * @param {string} prefix
  * @returns {Promise<number>}
  */
-
-// --- store-side cleanup, moved verbatim from src/branches.js with the
-// lifecycle calls that use it (drive issue #617).
-
 export async function removePrefixFiles(store, prefix) {
   if (
     typeof prefix !== "string" ||

@@ -1,12 +1,9 @@
-// Share links and upload requests: tokens, records and the D1 store
-// (drive issue #19, build-spec.md "Against Space"). The token and record
-// logic here has no request or response in it; the routes that use it are in
-// src/share.js. Extracted from src/share.js (drive issue #617) with no
-// behaviour change; src/share.js re-exports every name here, so no importer
-// moved.
+// Share tokens, records and the D1 link store. Extracted from src/share.js
+// (drive issue #617) with no behaviour change; src/share.js re-exports
+// every name here, so no importer moved.
 
 import { TRASH_PATH, validatePath } from "./files.js";
-import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
+import { failureMessage } from "./messages.js";
 import { formatBytes } from "./status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
@@ -34,11 +31,35 @@ export const REQUEST_FILE_MAX_BYTES = 32_000_000;
 // on top of the owner's spending cap. The owner may set a different total
 // when they mint the page (POST /api/request {folder, maxBytes}).
 export const REQUEST_TOTAL_MAX_BYTES = 1_000_000_000;
+// The most open links one account may hold (drive issue #549): 50 share links
+// and 50 upload pages. A script with one account cannot mint unbounded tokens
+// to walk, and an owner with a burst of links revokes one to make room.
+export const MAX_OPEN_LINKS = 50;
+// The per-link file-count cap (drive issue #549): a link takes 100 files by
+// default. The reservation UPDATE enforces it in the same statement that
+// counts the bytes, so a link cannot be filled by a script that drops files
+// faster than the count is written.
+export const REQUEST_MAX_FILES = 100;
+// The longest file name an upload page accepts (drive issue #549): the same
+// 255 the owner's own Files page lives with, checked before the body is read.
+export const REQUEST_NAME_MAX_LENGTH = 255;
+// A per-link total above this is a number the owner cannot mean (drive issue
+// #549): 1 TB is the pre-charge storage ceiling, so a link promising more
+// could never be honoured anyway.
+export const REQUEST_TOTAL_MAX_CEILING_BYTES = 1_000_000_000_000;
+// How many times a shared file's own size a link may serve before it stops
+// (drive issue #549): a share is for showing a file, not for hosting it as a
+// seed, and 30x a file is far above the handful of opens a person makes.
+export const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
+// A link whose row is this old and no longer open can be pruned (drive issue
+// #549): expired and revoked rows are kept 90 days so the owner's list still
+// shows what they did, then removed.
+export const LINK_RETENTION_DAYS = 90;
 // 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.
 const TOKEN_BYTES = 16;
-export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
 // The base64url alphabet. Hand-rolled rather than Buffer/btoa because the same
 // code runs in the Worker and in node --test, and a token alphabet is small
@@ -222,11 +243,23 @@ export function validateRequestMaxBytes(value) {
     typeof value !== "number" ||
     !Number.isInteger(value) ||
     value < 1 ||
-    value > Number.MAX_SAFE_INTEGER
+    value > REQUEST_TOTAL_MAX_CEILING_BYTES
   ) {
     return { maxBytes: 0, error: failureMessage("request-max-bytes") };
   }
   return { maxBytes: value };
+}
+
+/**
+ * The per-link byte cap for a shared file of `size` bytes: the file's size
+ * times SHARE_DOWNLOAD_CAP_MULTIPLIER. A zero-byte file caps at zero served
+ * bytes, which is no limit at all on a file that carries no bytes.
+ * @param {number} size
+ * @returns {number}
+ */
+export function shareDownloadCapFor(size) {
+  const bytes = Number.isFinite(size) && size > 0 ? Math.floor(size) : 0;
+  return bytes * SHARE_DOWNLOAD_CAP_MULTIPLIER;
 }
 
 /** The word the owner's list shows for each state. */
@@ -253,18 +286,19 @@ export function linkStateLabel(state) {
   return label;
 }
 
-/** The day a link stops working, in words, for the owner's list.
- *
+/**
+ * The instant a link stops working (drive#559). The Worker sends the instant
+ * and never words for it: a UTC timestamp reads the wrong day at both ends of
+ * the month for a customer in another zone. The upload page writes it in the
+ * browser's own zone, and `drive` writes it in the machine's.
  * @param {number} expiresAt
+ * @returns {string} an ISO instant
  */
-export function expiresLabel(expiresAt) {
+export function expiresAtIso(expiresAt) {
   if (!Number.isFinite(expiresAt)) {
-    throw new TypeError(`expiresLabel needs an expiry time, got ${String(expiresAt)}`);
+    throw new TypeError(`expiresAtIso needs an expiry time, got ${String(expiresAt)}`);
   }
-  return `Until ${new Date(expiresAt).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}`;
+  return new Date(expiresAt).toISOString();
 }
 
 /**
@@ -286,7 +320,7 @@ export function shareRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     downloads: count,
     downloadsLabel:
       count === 0
@@ -314,7 +348,7 @@ export function requestRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     uploads: count,
     uploadBytes: bytes,
     maxBytes: max,
@@ -325,34 +359,6 @@ export function requestRow(record, now, base) {
   });
 }
 
-// ---------------------------------------------------------------- the words
-
-// The upload page's copy. public/upload.html is a static asset and cannot
-// import this module, so test/share.test.mjs reads the shipped page and fails
-// when its words drift from here — the same gate test/files.test.mjs runs for
-// src/files.js and public/files.html.
-export const UPLOAD_PAGE_COPY = Object.freeze({
-  title: "Drop files here",
-  lede: "Files you drop land in the folder below. The owner sees them on their drive.",
-  folderLabel: "Lands in",
-  choose: "Choose files",
-  hint: "or drop them anywhere on this page",
-  uploading: "Uploading…",
-  done: "Uploaded. Drop another whenever you like.",
-  // The closed page's own two lines, and the no-token case. They are not the
-  // open page's title: a closed link that still says "Drop files here" tells a
-  // stranger to do something that cannot work. The two lines are the message
-  // table's link-not-found entry read through, not a second copy — the same
-  // words the route itself answers with (drive#193: one table, no drift).
-  closedTitle: FAILURE_MESSAGES["link-not-found"].what,
-  closedBody: FAILURE_MESSAGES["link-not-found"].next,
-  noToken: "This page needs the link it was sent with. Open the link again to drop files.",
-});
-
-/** The page's one line about the link itself. */
-export const UPLOAD_PAGE_LINE =
-  "This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.";
-
 // ---------------------------------------------------------------- the store
 
 /**
@@ -360,32 +366,35 @@ export const UPLOAD_PAGE_LINE =
  *
  * @typedef {{token: string, accountId: string, path: string, name: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
- *   downloadCount: number, downloadBytes: number}} ShareRecord
+ *   downloadCount: number, downloadBytes: number, maxDownloadBytes: number|null}} ShareRecord
  * @typedef {{token: string, accountId: string, folder: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
- *   uploadCount: number, uploadBytes: number, maxBytes: number}} RequestRecord
+ *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number}} RequestRecord
  * @typedef {object} LinkStore
  * @property {object} shares
  * @property {(record: ShareRecord) => Promise<ShareRecord>} shares.create
  * @property {(token: string) => Promise<ShareRecord|null>} shares.get
  * @property {(accountId: string) => Promise<ShareRecord[]>} shares.list
+ * @property {(accountId: string, now: number) => Promise<number>} shares.countOpen
  * @property {(token: string, accountId: string, at: number) => Promise<ShareRecord|null>} shares.revoke
- * @property {(token: string, bytes: number) => Promise<void>} shares.addDownload
+ * @property {(token: string, bytes: number) => Promise<ShareRecord|null>} shares.addDownload
  * @property {object} requests
  * @property {(record: RequestRecord) => Promise<RequestRecord>} requests.create
  * @property {(token: string) => Promise<RequestRecord|null>} requests.get
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
+ * @property {(accountId: string, now: number) => Promise<number>} requests.countOpen
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
 // a record written cannot drift: the record fields are the same words the
 // handlers already use, and the SQL spells them in snake_case.
-export const SHARE_COLUMNS =
-  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes";
-export const REQUEST_COLUMNS =
-  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes";
+const SHARE_COLUMNS =
+  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes";
+const REQUEST_COLUMNS =
+  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files";
 
 /**
  * A share row as the ShareRecord the handlers read. A column that is NULL is
@@ -407,6 +416,10 @@ function toShareRecord(row) {
       row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
     downloadCount: Number(row.download_count ?? 0),
     downloadBytes: Number(row.download_bytes ?? 0),
+    maxDownloadBytes:
+      row.max_download_bytes === null || row.max_download_bytes === undefined
+        ? null
+        : Number(row.max_download_bytes),
   };
 }
 
@@ -427,6 +440,7 @@ function toRequestRecord(row) {
     uploadCount: Number(row.upload_count ?? 0),
     uploadBytes: Number(row.upload_bytes ?? 0),
     maxBytes: Number(row.max_bytes ?? REQUEST_TOTAL_MAX_BYTES),
+    maxFiles: Number(row.max_files ?? REQUEST_MAX_FILES),
   };
 }
 
@@ -484,7 +498,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO shares (${SHARE_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
           )
           .bind(
             record.token,
@@ -496,6 +510,7 @@ export function createD1LinkStore(db) {
             record.revokedAt,
             record.downloadCount,
             record.downloadBytes,
+            record.maxDownloadBytes,
           )
           .run();
         return { ...record };
@@ -510,6 +525,14 @@ export function createD1LinkStore(db) {
           [accountId],
         );
         return rows.map(toShareRecord);
+      },
+      async countOpen(accountId, now) {
+        const row = await one(
+          "SELECT COUNT(*) AS n FROM shares " +
+            "WHERE account_id = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+          [accountId, now],
+        );
+        return Number(row?.n ?? 0);
       },
       async revoke(token, accountId, at) {
         // A second revoke is the same answer, and the first time stands: the
@@ -530,17 +553,23 @@ export function createD1LinkStore(db) {
       },
       async addDownload(token, bytes) {
         const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-        // Counted on the row the link resolves to, in one statement, so two
-        // concurrent downloads both land rather than one reading the other's
-        // count first. An unknown token writes nothing, which is the same
-        // answer the resolver's own 404 already gave the caller.
-        await db
-          .prepare(
-            "UPDATE shares SET download_count = download_count + 1, " +
-              "download_bytes = download_bytes + ?1 WHERE token = ?2",
-          )
-          .bind(size, token)
-          .run();
+        // The reservation and the per-link byte cap are the same statement
+        // (drive issue #549): two concurrent downloads that would together
+        // pass the cap cannot both succeed, because the WHERE clause sees the
+        // other's increment. A NULL cap is a link minted before the cap
+        // existed: it keeps serving. A miss is an unknown token or a full
+        // link, and the route refuses both. ?1 and ?3 are the same size, so
+        // each placeholder number appears once in textual order for the
+        // node:sqlite test adapter (the same rule the upload reservation
+        // follows).
+        const row = await one(
+          "UPDATE shares SET download_count = download_count + 1, " +
+            "download_bytes = download_bytes + ?1 " +
+            "WHERE token = ?2 AND (max_download_bytes IS NULL OR download_bytes + ?3 <= max_download_bytes) " +
+            `RETURNING ${SHARE_COLUMNS}`,
+          [size, token, size],
+        );
+        return row === null || row === undefined ? null : toShareRecord(row);
       },
     },
     requests: {
@@ -548,7 +577,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
           )
           .bind(
             record.token,
@@ -560,6 +589,7 @@ export function createD1LinkStore(db) {
             record.uploadCount,
             record.uploadBytes,
             record.maxBytes,
+            record.maxFiles,
           )
           .run();
         return { ...record };
@@ -576,6 +606,14 @@ export function createD1LinkStore(db) {
           [accountId],
         );
         return rows.map(toRequestRecord);
+      },
+      async countOpen(accountId, now) {
+        const row = await one(
+          "SELECT COUNT(*) AS n FROM upload_requests " +
+            "WHERE account_id = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+          [accountId, now],
+        );
+        return Number(row?.n ?? 0);
       },
       async revoke(token, accountId, at) {
         const row = await one(
@@ -599,13 +637,62 @@ export function createD1LinkStore(db) {
         const row = await one(
           "UPDATE upload_requests SET upload_count = upload_count + 1, " +
             "upload_bytes = upload_bytes + ?1 " +
-            "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes " +
+            "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes AND upload_count < max_files " +
             `RETURNING ${REQUEST_COLUMNS}`,
           [size, token, size],
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
+      async releaseUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = MAX(upload_count - 1, 0), " +
+            "upload_bytes = MAX(upload_bytes - ?1, 0) " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
     },
+  };
+}
+
+/**
+ * Removes link rows that can never open again and are older than the
+ * retention window (drive issue #549): expired and revoked rows are kept 90
+ * days so the owner's list still shows what they did, then pruned. A row that
+ * is still open is never touched, however old, so pruning cannot close a link
+ * a stranger is still holding — the daily job only ever deletes what
+ * linkState() already calls expired or revoked.
+ *
+ * Both tables are pruned in one call, each as one statement. A D1 statement
+ * reports the rows it changed in `meta.changes`, so the returned counts are
+ * the rows actually removed. The cutoff is computed once from `now`, so both
+ * tables and every run agree on the boundary.
+ * @param {D1Database} db
+ * @param {number} now
+ * @returns {Promise<{shares: number, requests: number}>}
+ */
+export async function purgeStaleLinks(db, now) {
+  const cutoff = now - LINK_RETENTION_DAYS * DAY_MS;
+  const shares = await db
+    .prepare(
+      "DELETE FROM shares WHERE (revoked_at IS NOT NULL OR expires_at <= ?1) " +
+        "AND COALESCE(revoked_at, expires_at) <= ?2",
+    )
+    .bind(now, cutoff)
+    .run();
+  const requests = await db
+    .prepare(
+      "DELETE FROM upload_requests WHERE (revoked_at IS NOT NULL OR expires_at <= ?1) " +
+        "AND COALESCE(revoked_at, expires_at) <= ?2",
+    )
+    .bind(now, cutoff)
+    .run();
+  return {
+    shares: Number(shares?.meta?.changes ?? 0),
+    requests: Number(requests?.meta?.changes ?? 0),
   };
 }
 
@@ -616,10 +703,17 @@ export function createD1LinkStore(db) {
  * links with a pinned token and clock, and so nothing but the store persists
  * it.
  *
- * @param {{accountId: string, path: string, now: number, token: string, days?: number}} input
+ * @param {{accountId: string, path: string, now: number, token: string, days?: number, maxDownloadBytes?: number|null}} input
  * @returns {ShareRecord}
  */
-export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LINK_DAYS }) {
+export function newShareRecord({
+  accountId,
+  path,
+  now,
+  token,
+  days = DEFAULT_LINK_DAYS,
+  maxDownloadBytes = null,
+}) {
   return {
     token,
     accountId,
@@ -630,13 +724,14 @@ export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LIN
     revokedAt: null,
     downloadCount: 0,
     downloadBytes: 0,
+    maxDownloadBytes,
   };
 }
 
 /**
  * The record for a new upload request.
  *
- * @param {{accountId: string, folder: string, now: number, token: string, days?: number, maxBytes?: number}} input
+ * @param {{accountId: string, folder: string, now: number, token: string, days?: number, maxBytes?: number, maxFiles?: number}} input
  * @returns {RequestRecord}
  */
 export function newRequestRecord({
@@ -646,6 +741,7 @@ export function newRequestRecord({
   token,
   days = DEFAULT_LINK_DAYS,
   maxBytes = REQUEST_TOTAL_MAX_BYTES,
+  maxFiles = REQUEST_MAX_FILES,
 }) {
   return {
     token,
@@ -657,10 +753,10 @@ export function newRequestRecord({
     uploadCount: 0,
     uploadBytes: 0,
     maxBytes,
+    maxFiles,
   };
 }
 
-// ---------------------------------------------------------------- handlers
 /** The one folder name a stranger is shown: the folder's own last segment.
  *
  * @param {string} folder
