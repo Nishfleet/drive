@@ -112,6 +112,12 @@ body {
 // does not run at all (JavaScript off, or a future header blocking it), that
 // default below still tells a reader where the machine-readable answer is.
 const line = document.getElementById("status-line");
+// Every answer below is shorter than the default sentence, and the answer
+// lands after first paint, so a paragraph that shrank to fit it pulled the
+// sections below it up: a layout shift that broke the CLS budget
+// (lighthouserc.json) on main. The paragraph keeps the height it painted
+// with, so nothing below it moves.
+line.style.minHeight = `${line.offsetHeight}px`;
 
 fetch("/api/health", { headers: { accept: "application/json" } })
   .then((response) => response.json().then((body) => ({ reachable: response.ok, body })))
