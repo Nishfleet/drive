@@ -86,7 +86,7 @@ export const CAPABILITIES_BY_KIND = Object.freeze({
  * key a sandbox holds — lives this long and is renewed only while what holds
  * it is still allowed (drive issue #106).
  *
- * Space hands out a one-hour scoped credential and swaps it as the agent
+ * The competitor hands out a one-hour scoped credential and swaps it as the agent
  * works; ours lived until the person revoked it, so a leaked agent key was a
  * key that worked forever. The api Worker keeps only a hash, so a leaked
  * *secret* is not what this bounds: what it bounds is the credential itself,

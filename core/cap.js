@@ -49,6 +49,7 @@ import { capLine, minutesInMonth, usageSummary } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 import { failureMessage } from "./messages.js";
+import { notifySecurityEvent } from "./security-event.js";
 import { unauthorizedResponse } from "./status.js";
 
 // The capability that makes a key able to change storage. `delete` is a write
@@ -784,6 +785,26 @@ export async function capStateForAccount(store, accountId) {
 }
 
 /**
+ * The cap an account had before a write, or null when nothing says. The
+ * store's own read wins because the authenticated account has no cap on it.
+ *
+ * @param {{getCapUsd?: (accountId: string) => Promise<number>}} capStore
+ * @param {{id: string, capUsd?: number}} account
+ * @returns {Promise<number|null>}
+ */
+async function readPreviousCap(capStore, account) {
+  if (typeof capStore.getCapUsd === "function") {
+    const stored = await capStore.getCapUsd(account.id);
+    if (typeof stored === "number" && Number.isFinite(stored)) {
+      return stored;
+    }
+  }
+  return typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
+    ? account.capUsd
+    : null;
+}
+
+/**
  * Handles POST /api/cap: parse the amount, persist `accounts.cap_cents`, and
  * run enforceCap against the account's device rows. The CLI prints the
  * parseCapUsd() TypeError message when the amount is bad, so that sentence
@@ -801,9 +822,10 @@ export async function capStateForAccount(store, accountId) {
  *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
- * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, accountState: (accountId: string) => Promise<"active"|"read_only"|"closed">, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
+ * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, getCapUsd?: (accountId: string) => Promise<number>, accountState: (accountId: string) => Promise<"active"|"read_only"|"closed">, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
+ * @param {{email?: unknown, mailFrom?: string, deviceName?: string}|null} [mail]
  */
-export async function handleCapRequest(request, account, capStore) {
+export async function handleCapRequest(request, account, capStore, mail = null) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -854,6 +876,10 @@ export async function handleCapRequest(request, account, capStore) {
   if (saved === "closed") {
     return jsonCapError(failureMessage("cap-account-closed"), 409);
   }
+  // The cap as it stood before this write: the store's own row when it can
+  // answer, else the account object the caller passed. The authenticated
+  // account carries no cap, so the store is the one that knows.
+  const previousCap = await readPreviousCap(capStore, account);
   await capStore.setCapCents(account, dollarsToCapCents(usd));
   // The swap is decided from the month the account actually counted, so
   // setting the cap below what it has already spent enforces at once (the
@@ -878,6 +904,20 @@ export async function handleCapRequest(request, account, capStore) {
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
+  const mailer = mail !== null && typeof mail === "object" ? mail : {};
+  // A POST that writes the same amount is not a change. The write still
+  // runs (enforcement is idempotent); the inbox does not get a false alarm.
+  if (previousCap !== usd) {
+    await notifySecurityEvent({
+      email: mailer.email,
+      mailFrom: mailer.mailFrom,
+      to: typeof account.email === "string" ? account.email : "",
+      event: "cap-changed",
+      deviceName: mailer.deviceName,
+      happenedAt: new Date().toISOString(),
+      detail: `The new cap is $${usd.toFixed(2)}.`,
+    });
+  }
   return new Response(
     JSON.stringify({
       ...summary,
