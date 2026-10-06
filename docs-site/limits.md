@@ -34,7 +34,8 @@ would rather you read it here than find out in week three.
   hourly key expire. The storage vendor sets no per-account limit of its
   own, so this cap is ours (and the nightly sweep removes the vendor keys of
   expired or revoked entries, so dead rows do not hold slots).
-- **Windows installs with an MSI, not a command.** Windows gets the
+- **Windows is not in version 1, and its installer is an unsigned MSI, not a
+  command.** Windows gets the
   same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,
