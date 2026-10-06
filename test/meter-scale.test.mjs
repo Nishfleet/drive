@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { monthBillCents, minutesInMonth } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -27,6 +27,7 @@ import {
 } from "../src/meter.js";
 import { METER_JOB_KINDS } from "../src/meter-jobs.js";
 import { applyMigrations, at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
+import { createTestD1 } from "./harness.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
 
@@ -305,7 +306,12 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // The pre-charge limit sweep (drive#536) runs off DRIVE_DB, and the hourly
+  // trip fails when that binding is absent (src/index.js scheduled). The
+  // customer DB is a separate store from the ledger in production, so the
+  // empty one stands in for it: the outage under test is the ledger's, and
+  // the sweep must still find nothing to cap here.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: createTestD1() };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -327,8 +333,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    // The same shape the draws write with (src/prepaid.js monthBillCents),
+    // so what this reads back is what the ledger was billed at.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes: minutesInMonth(hour),
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
     }).totalCents;
