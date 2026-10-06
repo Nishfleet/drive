@@ -1110,7 +1110,12 @@ test("the stored return path wins over a stale after-signin cookie (drive#558)",
 });
 
 test("the mail's device line and the page's device note are one sentence (drive#558)", () => {
-  const mail = signinLinkEmail("https://drive.test/api/signin/verify?token=t", null, undefined, true);
+  const mail = signinLinkEmail(
+    "https://drive.test/api/signin/verify?token=t",
+    null,
+    undefined,
+    true,
+  );
   assert.ok(
     mail.text.includes(SIGNIN_COPY.deviceNote),
     "the mail text carries the page's sentence",
