@@ -1,6 +1,6 @@
 -- Phase 1 of per-device upload-queue reports (drive issue #516). Numbered
--- 0026 because 0022_nightly_sizes.sql through 0025_meter_scale.sql already
--- sit on this database, and a shared prefix is rejected (drive#619). Additive
+-- 0027 because 0022_nightly_sizes.sql through 0026_signin_address_sends.sql
+-- already sit on this database, and a shared prefix is rejected (drive#619). Additive
 -- only: a new table keyed by account and device, no existing table is
 -- dropped or renamed, and every column carries a DEFAULT so the expansion
 -- cannot break the previous version of the code the instant it lands.
