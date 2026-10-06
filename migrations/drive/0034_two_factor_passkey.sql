@@ -4,7 +4,7 @@
 -- that reads them: the schema-mismatch check better-auth runs on first use
 -- refuses a plugin whose tables are missing, and a deployed D1 that lags the
 -- code is a sign-in that cannot start rather than one that half-works.
--- Numbered 0028 because 0026/0027/0029/0030 are already on origin/main.
+-- Numbered 0034, the next free prefix: 0031 is the highest on origin/main and 0032 and 0033 belong to other open PRs.
 --
 -- The statements below are exactly what Better Auth's own `getMigrations()`
 -- compiles for the plugin set core/auth.js carries (magic link, two-factor

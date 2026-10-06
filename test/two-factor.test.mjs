@@ -46,13 +46,13 @@ function passLimiter() {
 
 /** The migrations the api-side approve path touches: the device code rows
  * (0007), the accounts its approval posts into (0010), and the sign-in
- * family's own schema (0005, 0011, and the second-factor file 0028). */
+ * family's own schema (0005, 0011, and the second-factor file 0034). */
 const DEVICE_MIGRATIONS = [
   "drive/0007_device_codes.sql",
   "drive/0010_accounts_devices.sql",
   "drive/0005_better_auth.sql",
   "drive/0011_rate_limit.sql",
-  "drive/0028_two_factor_passkey.sql",
+  "drive/0034_two_factor_passkey.sql",
 ];
 
 /**

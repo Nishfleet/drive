@@ -62,13 +62,13 @@ function schemaPinInstance() {
   const database = createTestD1({
     // The two files that hold the sign-in flow's schema, plus the
     // second-factor file: 0005 has the core tables (already applied by every
-    // deployment, so the two-factor columns land as an ALTER in 0028), 0011
-    // the rateLimit table, and 0028 what the second-factor and passkey
+    // deployment, so the two-factor columns land as an ALTER in 0034), 0011
+    // the rateLimit table, and 0034 what the second-factor and passkey
     // plugins read.
     migrations: [
       "drive/0005_better_auth.sql",
       "drive/0011_rate_limit.sql",
-      "drive/0028_two_factor_passkey.sql",
+      "drive/0034_two_factor_passkey.sql",
     ],
   });
   const instance = betterAuth({

@@ -101,8 +101,12 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
   // plus the `user.twoFactorEnabled` flag. Additive only; the pin in
   // test/auth.test.mjs holds this file against the library's own planner.
-  // Numbered 0028 because 0026/0027/0029/0030 are already on main.
-  "drive/0028_two_factor_passkey.sql",
+  // Numbered 0034 because 0032 and 0033 belong to other open PRs and 0031 is on main.
+  "drive/0034_two_factor_passkey.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0031_signin_return.sql",
 ]);
 
 /**
@@ -316,8 +320,9 @@ export function createTestD1(options = {}) {
  * point of the flow.
  *
  * (drive#550): `userAgent` is the requesting request's own header, null when
- * there was none, so a test can read what the mail would name.
- * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
