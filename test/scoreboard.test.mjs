@@ -27,8 +27,6 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { monthBillCents } from "../core/billing.js";
 
-// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
-const MONTH_MINUTES = 30 * 1440;
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const scoreboard = read("docs/scoreboard.md");

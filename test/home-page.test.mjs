@@ -94,7 +94,14 @@ test("the main action is Get drive, to /signin, with a true pay-as-you-go line",
   assert.equal(Number(cta[1]), PREPAID.minTopUpUsd);
   assert.equal(Number(cta[2]), monthlyBillForStoredTb(0.2).billUsd);
   // No trial, no membership, no first-month discount (drive#463).
-  for (const stale of [/days free/i, /trial/i, /membership/i, /first month/i, /\$12 a TB/, /ceiling/i]) {
+  for (const stale of [
+    /days free/i,
+    /trial/i,
+    /membership/i,
+    /first month/i,
+    /\$12 a TB/,
+    /ceiling/i,
+  ]) {
     assert.doesNotMatch(html, stale);
   }
   assert.ok(html.includes(PRICE.needCard), "the footer says why a card is needed");

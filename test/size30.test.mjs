@@ -13,19 +13,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   BILLING_CONFIG,
-  dailyDrawMillicents,
   DRAW_DAYS,
+  dailyDrawMillicents,
   MILLICENTS_PER_CENT,
   monthBillCents,
   monthlyBillForStoredTb,
-  savedLine,
   SIZE30_MS,
+  savedLine,
   size30Window,
 } from "../core/billing.js";
 import { PRICE } from "../core/pricing.js";
 
 const GB = 1e9;
-const TB = 1000 * GB;
 
 /** @param {number} gb */
 function billGb(gb) {
@@ -158,10 +157,7 @@ test("monthlyBillForStoredTb is monthBillCents on that size held as size30", () 
 });
 
 test("gbMinutes is refused: the bill follows size30, not the month's average", () => {
-  assert.throws(
-    () => monthBillCents({ gbMinutes: 0, monthMinutes: 30 * 1440 }),
-    /size30Bytes/,
-  );
+  assert.throws(() => monthBillCents({ gbMinutes: 0, monthMinutes: 30 * 1440 }), /size30Bytes/);
   assert.throws(
     () => monthBillCents({ size30Bytes: 0, gbMinutes: 1, monthMinutes: 30 * 1440 }),
     /gbMinutes/,
@@ -177,12 +173,17 @@ test("the size30 window is today plus 29 UTC days, across a month end and a leap
   assert.equal(new Date(leap.from).toISOString(), "2028-01-31T00:00:00.000Z");
 });
 
-test("a peak at the window start is still in, and one minute before it is out", () => {
-  const through = Date.parse("2026-04-30T12:00:00.000Z");
+test("a peak at 29 days 23 hours is in, at 30 days is out, and 30 days 1 minute is out", () => {
+  const through = Date.parse("2026-05-01T23:59:59.999Z");
   const window = size30Window(through);
-  assert.ok(window.from >= window.from && window.from <= window.through);
-  const gone = window.from - 60_000;
-  assert.ok(gone < window.from);
+  const day = 24 * 60 * 60 * 1000;
+  const at29d23h = through - (29 * day + 23 * 60 * 60 * 1000);
+  const at30d = through - 30 * day;
+  const at30d1min = through - (30 * day + 60_000);
+  assert.ok(at29d23h >= window.from, "29d 23h before end-of-day is still inside");
+  assert.ok(at30d < window.from, "exactly 30 days before end-of-day is outside");
+  assert.ok(at30d1min < window.from, "30 days 1 minute before end-of-day is outside");
+  assert.equal(new Date(window.from).toISOString(), "2026-04-02T00:00:00.000Z");
 });
 
 test("property: a draw is never negative and never above monthly/30 plus remainder", () => {

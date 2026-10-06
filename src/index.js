@@ -1385,11 +1385,16 @@ const handler = {
         );
         // Daily draw check (drive#642): recompute yesterday's draw from the
         // meter rows and page monitoring on any difference.
-        const drawCheck = await checkYesterdayDraws(env.METER_DB, toMillis(event.scheduledTime, "scheduledTime"));
+        const drawCheck = await checkYesterdayDraws(
+          env.METER_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
         if (drawCheck.mismatches.length > 0) {
           for (const mismatch of drawCheck.mismatches) {
             captureError(
-              new Error(`draw check ${drawCheck.yesterday} ${mismatch.accountId}: ${mismatch.reason}`),
+              new Error(
+                `draw check ${drawCheck.yesterday} ${mismatch.accountId}: ${mismatch.reason}`,
+              ),
               "meter-daily-draw-check",
             );
           }

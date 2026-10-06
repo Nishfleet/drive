@@ -174,8 +174,7 @@ test("every worked example on the pricing page is the invoice's own arithmetic",
   // And the metered column is genuinely larger than the bill at the sizes the
   // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
-    meteredMonthlyBillUsd(Math.round(2 * GB_PER_TB * 1e9)) >
-      billFor(2).totalCents / 100,
+    meteredMonthlyBillUsd(Math.round(2 * GB_PER_TB * 1e9)) > billFor(2).totalCents / 100,
     "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
 });

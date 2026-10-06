@@ -6,11 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  dailyDrawMillicents,
-  monthBillCents,
-  size30Window,
-} from "../../core/billing.js";
+import { dailyDrawMillicents, monthBillCents, size30Window } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
@@ -28,6 +24,7 @@ import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
   checkYesterdayDraws,
+  drawAccountPending,
   drawUsageHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
@@ -202,6 +199,80 @@ test("a new day starts its own draw", async () => {
   const september = await dayDrawCents(db, lastOfSeptember);
   const october = await dayDrawCents(db, firstOfOctober);
   assert.equal(await balanceCents(db, ACCOUNT), -(september + october));
+});
+
+test("a leftover hourly draw on the changeover day is not charged again", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const hours = await storeHours(db, 1000, 24);
+  const dayStart = hours[0];
+  const oldAmount = 12;
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "usage",
+    amountCents: -oldAmount,
+    idempotencyKey: usageKey(ACCOUNT, dayStart),
+    windowStart: dayStart,
+    now: dayStart + HOUR_MS,
+  });
+  const result = await drawUsageHours(db, hours, { now: hours[23] + HOUR_MS });
+  assert.equal(result.cents, 0, "the changeover day keeps the hourly charge only");
+  assert.equal(await balanceCents(db, ACCOUNT), -oldAmount);
+  const keys = usageRows(sqlite).map((row) => row.idempotency_key);
+  assert.equal(keys.includes(usageKey(ACCOUNT, dayStart)), true);
+  assert.equal(keys.includes(usageDayKey(ACCOUNT, size30Window(dayStart).today)), false);
+});
+
+test("two draws at the same time charge the day once", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const hours = await storeHours(db, 1000, 24);
+  const now = hours[23] + HOUR_MS;
+  const [a, b] = await Promise.all([
+    drawUsageHours(db, hours, { now }),
+    drawUsageHours(db, hours, { now: now + 1 }),
+  ]);
+  const bill = await dayDrawCents(db, hours[23]);
+  assert.equal(a.cents + b.cents, bill, "the two runners together take one day's cents");
+  assert.equal(usageRows(sqlite).length, 1);
+  assert.equal(await balanceCents(db, ACCOUNT), -bill);
+});
+
+test("a missed day is charged once on the next run", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const day1 = Date.parse("2026-10-01T00:00:00Z");
+  const day2 = day1 + 24 * HOUR_MS;
+  const day3 = day2 + 24 * HOUR_MS;
+  await storeHours(db, 1000, 24, day1);
+  await drawAccountPending(db, ACCOUNT, { through: day1 + 23 * HOUR_MS, now: day2 });
+  const afterFirst = await balanceCents(db, ACCOUNT);
+  await storeHours(db, 1000, 24, day2);
+  await storeHours(db, 1000, 24, day3);
+  await drawAccountPending(db, ACCOUNT, {
+    through: day3 + 23 * HOUR_MS,
+    now: day3 + 24 * HOUR_MS,
+  });
+  const day1cents = await dayDrawCents(db, day1);
+  const day2cents = await dayDrawCents(db, day2);
+  const day3cents = await dayDrawCents(db, day3);
+  assert.equal(afterFirst, -day1cents);
+  assert.equal(await balanceCents(db, ACCOUNT), -(day1cents + day2cents + day3cents));
+});
+
+test("unparseable stored_bytes makes no draw", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const hour = midnight();
+  sqlite
+    .prepare(
+      `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
+       VALUES (?, ?, 0, 'nope', 0, ?)`,
+    )
+    .run(ACCOUNT, hour, hour + HOUR_MS);
+  await assert.rejects(drawUsageHours(db, [hour], { now: hour + HOUR_MS }), /does not parse/);
+  assert.equal(await balanceCents(db, ACCOUNT), 0);
+  assert.equal(usageRows(sqlite).length, 0);
 });
 
 test("uploads pause at $0 and start again once a signed top-up lands", async () => {

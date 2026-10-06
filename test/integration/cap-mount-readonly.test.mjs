@@ -89,7 +89,6 @@ const MOUNT_FLAGS = [
 // month's own minutes (drive#531). Verified against capStatus directly in
 // the first test below, so the numbers here cannot drift into a month that
 // does not straddle the cap.
-const MONTH_MINUTES = 30 * 1440;
 const STRADDLING_MONTH = Object.freeze({
   size30Bytes: 2000 * 1e9,
   storedGb: 2000,

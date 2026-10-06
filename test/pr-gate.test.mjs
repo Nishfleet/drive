@@ -845,8 +845,6 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   //   the same month plus 400 GB downloaded on a 100 GB average: 300 GB free,
   //   100 GB billable → +100¢ → $9.00
   //   2 TB all month: 4000¢ metered, held to $10 × 2 TB = $20 → 2000¢
-  // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
-  const MONTH_MINUTES = 30 * 1440;
   const cases = [
     [{ size30Bytes: 400 * 1e9 }, { storageCents: 800, downloadCents: 0, totalCents: 800 }],
     [
@@ -856,10 +854,7 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
       },
       { storageCents: 800, downloadCents: 100, totalCents: 900 },
     ],
-    [
-      { size30Bytes: 2000 * 1e9 },
-      { storageCents: 3000, downloadCents: 0, totalCents: 3000 },
-    ],
+    [{ size30Bytes: 2000 * 1e9 }, { storageCents: 3000, downloadCents: 0, totalCents: 3000 }],
   ];
   for (const [input, expected] of cases) {
     const bill = monthBillCents(input);

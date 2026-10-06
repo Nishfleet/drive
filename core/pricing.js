@@ -109,8 +109,7 @@ export function buildPrice({
   const leadLine = `Add $${PREPAID.minTopUpUsd} or more.`;
   const rateLine = `Pay ${centsWords(rateCents)} per GB from your balance.`;
   const maxLine = `Never more than $${max} per TB.`;
-  const size30Line =
-    "You pay for the biggest size your drive reached in the last 30 days.";
+  const size30Line = "You pay for the biggest size your drive reached in the last 30 days.";
   const pitchLine = "Pay only for what you use.";
   return Object.freeze({
     // The metered rate, in US dollars per GB per month, billed on size30.

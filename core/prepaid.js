@@ -32,6 +32,7 @@ import {
   MAX_TOP_UP_CENTS,
   MIN_TOP_UP_CENTS,
   usageDayKey,
+  usageKey,
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
@@ -115,11 +116,7 @@ export async function drawUsageHours(db, hours, options = {}) {
     throw new TypeError(`drawUsageHours needs an array of hours, got ${String(hours)}`);
   }
   const now = options.now ?? Date.now();
-  const days = [
-    ...new Set(
-      hours.map((hour) => size30Window(hourStart(hour)).today),
-    ),
-  ].sort();
+  const days = [...new Set(hours.map((hour) => size30Window(hourStart(hour)).today))].sort();
   let drawn = 0;
   let cents = 0;
   /** @type {Set<string>} */
@@ -277,20 +274,16 @@ async function drawForDay(db, accountId, day, now) {
     size30Bytes: size30.size30Bytes,
     downloadBytes: size30.downloadBytes,
   });
-  const previousDay = new Date(Date.parse(`${day}T00:00:00.000Z`) - 24 * HOUR_MS)
-    .toISOString()
-    .slice(0, 10);
+  const dayStart = Date.parse(`${day}T00:00:00.000Z`);
+  const previousDay = new Date(dayStart - 24 * HOUR_MS).toISOString().slice(0, 10);
   const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
     await db
       .prepare("SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
       .bind(accountId, previousDay)
       .first()
   );
-  const remainderIn = Number(prev?.remainder_millicents ?? 0);
-  const step = dailyDrawMillicents(
-    bill.totalMillicents,
-    Number.isSafeInteger(remainderIn) ? remainderIn : 0,
-  );
+  const remainderIn = prev === null ? 0 : Number(prev.remainder_millicents);
+  const step = dailyDrawMillicents(bill.totalMillicents, remainderIn);
   const reached =
     size30.reachedHour === null ? null : new Date(size30.reachedHour).toISOString().slice(0, 10);
   await db
@@ -318,12 +311,42 @@ async function drawForDay(db, accountId, day, now) {
       .bind(accountId, day)
       .first()
   );
-  const drawMillicents = Number(stored?.draw_millicents ?? step.drawMillicents);
+  if (stored === null) {
+    throw new Error(`daily_draws row missing after insert for ${accountId} ${day}`);
+  }
+  const drawMillicents = Number(stored.draw_millicents);
+  if (!Number.isSafeInteger(drawMillicents) || drawMillicents < 0) {
+    throw new TypeError(
+      `draw_millicents does not parse for ${accountId} ${day}, so no draw is made`,
+    );
+  }
   const amountCents = Math.trunc(drawMillicents / MILLICENTS_PER_CENT);
   if (amountCents === 0) {
     return 0;
   }
-  const dayStart = Date.parse(`${day}T00:00:00.000Z`);
+  const nextDayStart = dayStart + 24 * HOUR_MS;
+  const hourly = /** @type {{n?: unknown}|null} */ (
+    await db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM balance_ledger
+          WHERE account_id = ?1 AND kind = 'usage'
+            AND idempotency_key >= ?2 AND idempotency_key < ?3`,
+      )
+      .bind(accountId, usageKey(accountId, dayStart), usageKey(accountId, nextDayStart))
+      .first()
+  );
+  if (hourly === null) {
+    throw new Error(`prepaid draw: hourly-key count failed for ${accountId} ${day}`);
+  }
+  const hourlyCount = Number(hourly.n);
+  if (!Number.isSafeInteger(hourlyCount) || hourlyCount < 0) {
+    throw new TypeError(`hourly draw count does not parse for ${accountId} ${day}`);
+  }
+  if (hourlyCount > 0) {
+    // Switch-over (drive#642): this UTC day was already charged under the
+    // per-minute hourly keys. Do not add a second charge.
+    return 0;
+  }
   const { inserted } = await appendLedgerEntry(db, {
     accountId,
     kind: "usage",
@@ -378,15 +401,14 @@ export async function checkYesterdayDraws(db, now = Date.now()) {
       const previousDay = new Date(yesterdayStart - 24 * HOUR_MS).toISOString().slice(0, 10);
       const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
         await db
-          .prepare("SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
+          .prepare(
+            "SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2",
+          )
           .bind(accountId, previousDay)
           .first()
       );
-      const remainderIn = Number(prev?.remainder_millicents ?? 0);
-      const expected = dailyDrawMillicents(
-        bill.totalMillicents,
-        Number.isSafeInteger(remainderIn) ? remainderIn : 0,
-      ).drawMillicents;
+      const remainderIn = prev === null ? 0 : Number(prev.remainder_millicents);
+      const expected = dailyDrawMillicents(bill.totalMillicents, remainderIn).drawMillicents;
       const stored = /** @type {{draw_millicents?: unknown}|null} */ (
         await db
           .prepare("SELECT draw_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")

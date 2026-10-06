@@ -54,11 +54,6 @@ const workerFetch =
 // The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
 const MONTH_ISO = "2026-10-01T00:00:00.000Z";
 
-// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
-const MONTH_MINUTES = 30 * 1440;
-/** @param {number} gb */
-const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
-
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
 // past the $20 default cap (2600 GB meters $52, held to the $26 maximum) and
 // under it (1200 GB bills the $12 maximum).

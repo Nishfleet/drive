@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { gbMonths, minutesInMonth, monthBillCents } from "../core/billing.js";
+import { monthBillCents } from "../core/billing.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
@@ -332,10 +332,6 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
-    const monthMinutes = minutesInMonth(hour);
-    // The same shape the draw itself bills with (src/prepaid.js drawFor):
-    // each month divides by its own minutes (drive#531), so a September
-    // figure and an October figure are never divided alike.
     return monthBillCents({
       size30Bytes: usage.peakBytes,
       downloadBytes: usage.downloadBytes,

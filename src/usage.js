@@ -135,4 +135,3 @@ export function usageLines(summary) {
     `${USAGE_LABELS.cost}: ${labels.cost}`,
   ]);
 }
-

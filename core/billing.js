@@ -63,6 +63,7 @@ export const QUOTE_MONTH_MINUTES = 31 * 1440;
 // so a docs example and an invoice example cannot disagree about what a TB is.
 export const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
+
 export { BYTES_PER_GB };
 
 /** 1/1000 of a cent: 10 MB a month is 20 millicents ($0.0002). */
@@ -448,11 +449,7 @@ export function size30Window(throughMs) {
     throw new TypeError(`size30Window needs an instant, got ${String(throughMs)}`);
   }
   const instant = new Date(through);
-  const dayStart = Date.UTC(
-    instant.getUTCFullYear(),
-    instant.getUTCMonth(),
-    instant.getUTCDate(),
-  );
+  const dayStart = Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), instant.getUTCDate());
   const from = dayStart - (DRAW_DAYS - 1) * DAY_MS;
   const today = new Date(dayStart).toISOString().slice(0, 10);
   return Object.freeze({ from, through, today });

@@ -22,7 +22,6 @@ import {
   BILLING_CONFIG,
   capStatus,
   downloadCostUsd,
-  gbMonths,
   handleUsageRequest,
   meteredMonthlyBillUsd,
   minutesInMonth,
@@ -55,7 +54,6 @@ const workerFetch =
 // The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
 const MONTH_ISO = "2026-10-01T00:00:00.000Z";
 
-const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
 const bytes = (gb) => Math.round(gb * 1e9);
 
@@ -97,7 +95,6 @@ test("the formula edges, held all month", () => {
 });
 
 test("downloads bill at the one rate: 1 cent a GB over 3x the stored size", () => {
-  const size30Bytes = bytes(2000);
   const averageStoredGb = 2000;
   // 8 TB downloaded against 2 TB stored: 3x (6 TB) is free, 2 TB bills at 1c.
   const downloadBytes = 8000 * 1e9;
@@ -266,7 +263,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
   const busy = monthBillCents({
     ...stored,
     downloadBytes: 400e9,
-      });
+  });
   assert.equal(busy.downloadCents, 100, "the 100 GB above the free 3x");
   assert.equal(busy.storageCents, quiet.storageCents, "downloads do not move storage");
   assert.equal(busy.totalCents, 300);
@@ -274,7 +271,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
     const bill = monthBillCents({
       ...stored,
       downloadBytes: gb * 1e9,
-          });
+    });
     assert.equal(bill.downloadCents, gb - 300, `${gb} GB downloaded`);
   }
   // The maximum caps storage only. 2 TB is $30 of storage, plus 2 TB of
@@ -282,7 +279,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
   const capped = monthBillCents({
     size30Bytes: bytes(2000),
     downloadBytes: 8000e9,
-      });
+  });
   assert.equal(capped.storageCents, 3000);
   assert.equal(capped.downloadCents, 2000, "8 TB downloaded, 6 TB free, 2 TB billable");
   assert.equal(capped.totalCents, 5000);
@@ -309,7 +306,7 @@ test("a card-less account is capped at the free $1", () => {
     storedGb: 60,
     storedDaily: [],
     downloadBytes: 0,
-        capUsd: BILLING_CONFIG.defaultCapUsd,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
   };
   const withoutCard = usageSummary(usage);
   assert.equal(withoutCard.cap.capUsd, 1, "no card means a $1 cap");
@@ -325,7 +322,7 @@ test("the usage summary is the empty month before the meter lands", () => {
     storedGb: 0,
     storedDaily: [],
     downloadBytes: 0,
-        capUsd: BILLING_CONFIG.defaultCapUsd,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
   };
   const summary = usageSummary(empty);
   assert.equal(summary.meteredUsd, 0);
@@ -441,19 +438,10 @@ test("every line is integer cents, whatever the meter recorded", () => {
   }
   for (const bad of [Number.NaN, -1, "600", null]) {
     assert.throws(() => monthBillCents({ size30Bytes: bad }), TypeError);
-    assert.throws(
-      () => monthBillCents({ size30Bytes: 0, downloadBytes: bad }),
-      TypeError,
-    );
-    assert.throws(
-      () => monthBillCents({ size30Bytes: 0, averageStoredGb: bad }),
-      TypeError,
-    );
+    assert.throws(() => monthBillCents({ size30Bytes: 0, downloadBytes: bad }), TypeError);
+    assert.throws(() => monthBillCents({ size30Bytes: 0, averageStoredGb: bad }), TypeError);
   }
-  assert.throws(
-    () => monthBillCents({ size30Bytes: undefined }),
-    TypeError,
-  );
+  assert.throws(() => monthBillCents({ size30Bytes: undefined }), TypeError);
 });
 
 test("the retired inputs fail loudly: peak, first month, month number", () => {
@@ -522,7 +510,7 @@ test("a card-less month shows no charge, and the money is untouched", () => {
     storedGb: 400,
     storedDaily: [],
     downloadBytes: 0,
-        capUsd: BILLING_CONFIG.defaultCapUsd,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
   };
   const summary = usageSummary(usage);
   assert.equal(summary.cardOnFile, false, "an unset card state is not a card on file");

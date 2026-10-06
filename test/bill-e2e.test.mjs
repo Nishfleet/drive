@@ -645,8 +645,7 @@ test("a version replaced inside an hour is marked once, however many saves it to
     "the bill reads size30 (the mark), not the hour's average",
   );
   assert.throws(
-    () =>
-      monthBillCents({ size30Bytes: peak.peakBytes, peakBytes: peak.peakBytes }),
+    () => monthBillCents({ size30Bytes: peak.peakBytes, peakBytes: peak.peakBytes }),
     /peakBytes/,
     "a caller that still hands over the peak field is refused by name",
   );
@@ -692,11 +691,7 @@ test("two versions still live at the hour's end are marked together, which is wh
     36_000,
     "the hour bills both files, each for the minutes it was held",
   );
-  assert.equal(
-    bill.storageCents,
-    1500,
-    "800 GB size30 bills the $15 maximum",
-  );
+  assert.equal(bill.storageCents, 1500, "800 GB size30 bills the $15 maximum");
   assert.equal(
     monthlyMaximumUsd(storedGb(peak.peakBytes)),
     15,

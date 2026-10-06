@@ -1095,9 +1095,7 @@ export async function size30Through(db, accountId, from, through) {
   const hours = Number(row?.hours ?? 0);
   const reachedHour = row?.reached_hour == null ? null : Number(row.reached_hour);
   if (!Number.isSafeInteger(size30Bytes) || size30Bytes < 0) {
-    throw new TypeError(
-      `size30_bytes must be 0 or more whole bytes, got ${row?.size30_bytes}`,
-    );
+    throw new TypeError(`size30_bytes must be 0 or more whole bytes, got ${row?.size30_bytes}`);
   }
   if (reachedHour !== null && (!Number.isFinite(reachedHour) || reachedHour < 0)) {
     throw new TypeError(`size30 reached_hour does not parse, got ${row?.reached_hour}`);
@@ -1105,7 +1103,9 @@ export async function size30Through(db, accountId, from, through) {
   const downloads = await db.prepare(SIZE30_DOWNLOADS_SQL).bind(accountId, from, through).first();
   const downloadBytes = Number(downloads?.download_bytes ?? 0);
   if (!Number.isSafeInteger(downloadBytes) || downloadBytes < 0) {
-    throw new TypeError(`download_bytes must be 0 or more whole bytes, got ${downloads?.download_bytes}`);
+    throw new TypeError(
+      `download_bytes must be 0 or more whole bytes, got ${downloads?.download_bytes}`,
+    );
   }
   return Object.freeze({
     size30Bytes,

@@ -289,7 +289,13 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   // above promises can never happen. Each key is named when it is missing.
   for (const key of ["storedNow", "size30", "todayDraw", "downloads", "cost"]) {
     /** @type {Record<string, string>} */
-    const labels = { storedNow: "400 GB", size30: "400 GB", todayDraw: "$0.27", downloads: "0 B", cost: "$8.00" };
+    const labels = {
+      storedNow: "400 GB",
+      size30: "400 GB",
+      todayDraw: "$0.27",
+      downloads: "0 B",
+      cost: "$8.00",
+    };
     delete labels[key];
     assert.throws(
       () => usageLines({ labels }),

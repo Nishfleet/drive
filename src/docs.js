@@ -37,12 +37,10 @@ import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
 
 /**
- * The metered cost of a month, in dollars, before the maximum: the rate on the
- * month's GB-months. This is the "meter" column of the worked example, and it
- * is the same function the usage page and `drive usage` read. The worked
- * examples are held for a 31-day month (QUOTE_MONTH_MINUTES), the month the
- * old fixed divisor over-billed (drive#531).
- * @param {number} gbMinutes
+ * The metered cost of a month, in dollars, before the maximum: the rate on
+ * size30. This is the "meter" column of the worked example, and it is the
+ * same function the usage page and `drive usage` read.
+ * @param {number} size30Bytes
  */
 export function meteredUsdFor(size30Bytes) {
   return meteredMonthlyBillUsd(size30Bytes);
