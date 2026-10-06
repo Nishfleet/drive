@@ -1505,6 +1505,59 @@ test("a restore with nothing at the live path still puts the file back", async (
   );
 });
 
+test("a restore whose copy gets a new ETag still succeeds and removes the parked copy", async () => {
+  // A copy of a multipart upload does not keep the source's ETag, so the
+  // listing after the copy must be compared with the ETag the copy returned,
+  // not the parked one (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "big.iso", "the parked text", "text/plain");
+  await firstCall(moveCall("/delete", "/big.iso"));
+  const liveKey = "u/1/big.iso";
+  let landed = false;
+  const fresh = {
+    ...store,
+    async copy(
+      /** @type {string} */ from,
+      /** @type {string} */ to,
+      /** @type {number|undefined} */ size,
+      /** @type {any} */ options,
+    ) {
+      await store.copy(from, to, size, options);
+      landed = true;
+      return "abc123-7";
+    },
+    async list(/** @type {string} */ path) {
+      const rows = await store.list(path);
+      return landed
+        ? rows.map((row) => (row.path === liveKey ? { ...row, etag: "abc123-7" } : row))
+        : rows;
+    },
+  };
+
+  const response = await handleFilesRequest(moveCall("/restore", "/big.iso"), fresh, account, now);
+  assert.equal(response.status, 200);
+  const live = await scoped.read("/big.iso");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the parked text");
+  assert.equal(await scoped.read(`${TRASH_PATH}/${trashName("/big.iso", now)}`), null);
+});
+
+test("the S3 copy resolves to the ETag the storage's answer names", async () => {
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.method === "HEAD") return new Response(null, { status: 404 });
+    return new Response("<CopyObjectResult><ETag>&#34;new-9&#34;</ETag></CopyObjectResult>", {
+      status: 200,
+    });
+  };
+  const scoped = scopeStore(
+    createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  assert.equal(await scoped.copy("/parked.txt", "/notes.md", 4, { ifAbsent: true }), "new-9");
+});
+
 test("a storage that answers 412 to a conditional remove is a file left alone", async () => {
   // Every S3-shaped storage answers If-Match a key no longer satisfies with 412
   // Precondition Failed, so the conditional delete works behind the S3 adapter

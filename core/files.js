@@ -792,7 +792,7 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   One delete call for up to 1,000 paths. More is refused: 1,000 is the
  *   provider's own per-call ceiling, and a caller that chunks by it stays
  *   inside the run's subrequest budget (drive#565).
- * @property {(from: string, to: string, size?: number, options?: {ifAbsent?: boolean}) => Promise<void>} copy
+ * @property {(from: string, to: string, size?: number, options?: {ifAbsent?: boolean}) => Promise<string|void>} copy
  *   A copy the storage itself makes, no bytes through this Worker: `drive
  *   branch` (build step 7) is a folder copy, and a copy that streamed every
  *   byte through us would make a 10 GB branch a 10 GB download and upload.
@@ -804,7 +804,9 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   restore cannot overwrite a save that landed at the path (drive issue #605).
  *   The store reads the destination just before it writes, which narrows the
  *   window but is not a lock: CopyObject has no destination precondition.
- *   No options means the plain copy `drive branch` makes.
+ *   No options means the plain copy `drive branch` makes. The copy resolves to
+ *   the destination's new ETag when the store knows it (a copy of a multipart
+ *   upload does not keep the source's ETag), otherwise to nothing.
  * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
@@ -1410,6 +1412,7 @@ export function createMemoryStore() {
       const now = Date.now();
       startVersion(to, value.body.byteLength, now);
       objects.set(to, { ...value, modified: now });
+      return value.etag;
     },
   };
 }
@@ -2008,8 +2011,7 @@ export function createS3Store(config) {
       if (options.ifAbsent) await assertDestinationEmpty(request, urlFor, to);
       const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
-        await multipartCopy(request, urlFor, source, to, size, options);
-        return;
+        return multipartCopy(request, urlFor, source, to, size, options);
       }
       // S3's CopyObject can answer 200 with an <Error> body for a refused copy
       // (a multi-part copy that is still running is the other 200), so the
@@ -2023,7 +2025,7 @@ export function createS3Store(config) {
       const body = await response.text();
       const code = tagValue(body, "Code");
       if (response.ok && code === "" && body.includes("<CopyObjectResult")) {
-        return;
+        return bareEtag(body);
       }
       // A refusal that is the size limit is the one worth a second try: the
       // caller did not know the size (no listing carried it), so it asked S3
@@ -2036,8 +2038,7 @@ export function createS3Store(config) {
         (code === "InvalidRequest" &&
           /larger than the maximum|too large/i.test(tagValue(body, "Message")));
       if (oversize) {
-        await multipartCopy(request, urlFor, source, to, await sourceSize(request, urlFor, from));
-        return;
+        return multipartCopy(request, urlFor, source, to, await sourceSize(request, urlFor, from));
       }
       if (!response.ok) {
         throw new Error(`storage copy failed with ${response.status}`);
@@ -2158,7 +2159,7 @@ const COPY_MAX_PARTS = 10000;
  * @param {number} size the source's byte length, from the listing or a HEAD
  * @param {{ifAbsent?: boolean}} [options] `copy`'s guard, read again before the
  *   completion because a multipart copy is many requests wide (issue #605)
- * @returns {Promise<void>}
+ * @returns {Promise<string|undefined>} the new object's ETag
  */
 async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) {
   const partSize = Math.max(COPY_PART_SIZE, Math.ceil(size / COPY_MAX_PARTS));
@@ -2221,6 +2222,7 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) 
         "storage multipart copy did not answer with a CompleteMultipartUploadResult; the object may not be whole",
       );
     }
+    return bareEtag(completedBody);
   } catch (error) {
     // The parts uploaded so far are still stored and billed until the upload is
     // aborted, so the abort is part of failing the copy. A failed abort is
@@ -2242,6 +2244,16 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) 
     }
     throw error;
   }
+}
+
+/**
+ * The ETag in a copy answer, unquoted the way `parseListObjects` unquotes it,
+ * or `undefined` when the answer carries none.
+ * @param {string} body
+ * @returns {string|undefined}
+ */
+function bareEtag(body) {
+  return decodeEntities(tagValue(body, "ETag")).replace(/"/g, "") || undefined;
 }
 
 /**
@@ -3213,18 +3225,21 @@ async function restoreRequest(request, store, account, now) {
     }
     // The store re-reads the destination just before it writes and refuses if a
     // save created the path meanwhile.
-    await store.copy(parkedAt, checked.path, found.size, { ifAbsent: true });
+    const copiedEtag = await store.copy(parkedAt, checked.path, found.size, { ifAbsent: true });
     // Re-list: a save that lands after the copy wins the live path, and the
-    // parked copy stays in Recently deleted. A listing with no ETag cannot be
-    // compared, so it does not count as a change.
+    // parked copy stays in Recently deleted. The listing is compared with the
+    // ETag the copy made, not the parked one, because a copy of a multipart
+    // upload gets a new ETag. With no ETag on either side it cannot be compared
+    // and does not count as a change.
     const after = await listingEntry(store, checked.path);
     const parkedEtag = typeof found.etag === "string" ? found.etag : "";
     const changed =
       !after ||
       (typeof after.etag === "string" &&
         after.etag !== "" &&
-        parkedEtag !== "" &&
-        etagMismatch(after.etag, parkedEtag));
+        typeof copiedEtag === "string" &&
+        copiedEtag !== "" &&
+        etagMismatch(after.etag, copiedEtag));
     if (changed) {
       return json({ error: failureMessage("restore-file-changed") }, 409);
     }
