@@ -167,7 +167,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// rule is checked by what is kept rather than by who won.
 	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
 	kept, plain, conflict = waitForKeptSaves(t, []string{mountA, mountB}, offlineName, candidates, []string{offlineA, offlineB}, 90*time.Second)
-	t.Logf("after the reconnect: plain=%q, conflict=%q, both saves kept", plain, conflict)
+	t.Logf("after the reconnect: kept=%q, plain=%q, conflict=%q, both saves kept", kept, plain, conflict)
 }
 
 // startConflictDevice brings up one device's `drive mount` for cfg and returns
