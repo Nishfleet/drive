@@ -56,11 +56,12 @@ const headers = () => new Headers({ origin: TEST_BASE_URL });
 // --------------------------------------------------------------- the schema
 
 test("the migration file is what Better Auth's own planner generates", async () => {
-  // Better Auth's Kysely adapter compiles the tables its session query runs
+  // Better Auth's planner compiles the tables the session query runs
   // against — including the rateLimit table when storage is "database"
   // (drive issue #200). This pin makes a library upgrade that changes the
   // schema fail here, at the migration, instead of at the first sign-in or
-  // rate-limited send.
+  // rate-limited send. The planner still lives on the full `better-auth`
+  // entry; the Worker itself uses `better-auth/minimal` (drive#758).
   const instance = betterAuth({
     database: createTestD1({ migrations: [] }),
     secret: SECRET,
@@ -487,4 +488,13 @@ test("the link's own sentences do not change when the device does", () => {
   }
   assert.ok(known.includes("Firefox on macOS"), "a known device is named");
   assert.ok(unknown.includes("an unknown device"), "an unknown one is called unknown");
+});
+
+test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
+  const source = readFileSync(new URL("../core/auth.js", import.meta.url), "utf8");
+  assert.match(source, /from "better-auth\/minimal"/);
+  assert.match(source, /from "better-auth\/plugins\/magic-link"/);
+  assert.match(source, /d1Adapter/);
+  assert.doesNotMatch(source, /from "better-auth";/);
+  assert.doesNotMatch(source, /from "better-auth\/plugins";/);
 });

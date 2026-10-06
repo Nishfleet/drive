@@ -24,8 +24,9 @@
 // builds every link it mails from `baseURL`, so a deployment with neither set
 // is a deployment that is not signed in — not one with a weak session or a
 // link that points at the wrong host.
-import { betterAuth } from "better-auth";
-import { magicLink } from "better-auth/plugins";
+import { betterAuth } from "better-auth/minimal";
+import { magicLink } from "better-auth/plugins/magic-link";
+import { d1Adapter } from "./auth-d1-adapter.js";
 import { sendEmail } from "./email-send.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
@@ -116,7 +117,9 @@ export function safeAfterSigninPath(raw) {
 export function createAuth(options) {
   return betterAuth({
     appName: "drive",
-    database: options.database,
+    // Minimal Better Auth plus the D1 adapter: the full entry pulls Kysely
+    // and every unused SQL dialect into the site Worker bundle (drive#758).
+    database: d1Adapter(/** @type {D1Database} */ (options.database)),
     secret: options.secret,
     // The one address this deployment is served on. It is configuration, not
     // something read off the request, because a link mailed to a caller is

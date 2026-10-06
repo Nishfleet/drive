@@ -210,8 +210,8 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
 
 /** @returns {{kind: "missing"} | {kind: "ok", bytes: number} | {kind: "empty"}} */
 function workerBundle() {
-  // `cf build` writes the isolate script at default/bundle/index.js and the
-  // unused SQLite dialect chunks beside it under bundle/assets. Static HTML
+  // `cf build` writes the isolate script at default/bundle/index.js and any
+  // code-split Worker chunks beside it under bundle/assets. Static HTML
   // lives in default/assets and Lighthouse already budgets it.
   const dir = fileURLToPath(
     new URL("../.cloudflare/output/v0/workers/default/bundle/", import.meta.url),
@@ -253,4 +253,25 @@ test("the site Worker bundle stays within its baseline size", (t) => {
     `the site Worker bundle is ${bytes} bytes, over the ${budget.mean}-byte budget. Shrink it, or raise the row in bench/baseline.json with the number that justified it.`,
   );
   t.diagnostic(`site-bundle: ${bytes} bytes, budget ${budget.mean} bytes`);
+});
+
+test("the site Worker bundle does not ship unused SQL dialect chunks", (t) => {
+  const manifestPath = fileURLToPath(
+    new URL("../.cloudflare/output/v0/workers/default/bundle/.vite/manifest.json", import.meta.url),
+  );
+  if (!existsSync(manifestPath)) {
+    t.skip("no Worker build output; CI runs npm run build before npm test");
+    return;
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const unused = Object.values(manifest)
+    .map((entry) =>
+      typeof entry === "object" && entry !== null && "src" in entry ? entry.src : "",
+    )
+    .filter((src) => typeof src === "string" && /kysely-adapter|bun-sqlite|node-sqlite/.test(src));
+  assert.deepEqual(
+    unused,
+    [],
+    `unused SQL dialect modules came back in the site Worker bundle: ${unused.join(", ")}`,
+  );
 });
