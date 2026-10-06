@@ -47,20 +47,32 @@ import {
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 import { createTestD1, createTestKv } from "./harness.mjs";
 
-// The schema the proofs below that name `branches.snapshot` need: every
-// migration up to, and not including, the one that dropped the column.
-// `0017_drop_branches_snapshot.sql` has shipped, so the harness default - the
-// whole folder, which is what production has (drive#579) - carries no
-// `snapshot` column at all, and those proofs would fail at prepare on a schema
-// production does not have. They are kept because what they measure is the
-// reader's rule (drive#329: the namespace the pointer names is the only
-// source), and that rule has to hold for a row written before the drop. The
-// list is still read off the folder, so it cannot drift from what the deploy
-// applies up to that point.
+// The schema the proofs below that name `branches.snapshot` need: a branch
+// row that still has the column the code stopped reading, and every column the
+// current `src/branches.js` reads. `0017_drop_branches_snapshot.sql` has
+// shipped, so the harness default - the whole folder, which is what production
+// has (drive#579) - carries no `snapshot` column at all, and those proofs would
+// fail at prepare on a schema production does not have.
+//
+// So this is a SUBSET, named as what it is: the folder up to and not including
+// the drop, plus the one file after it that today's reader needs
+// (`0030_branch_jobs.sql`, which only ADDs columns). Both halves are read off
+// the folder, so neither can drift; a migration the reader starts to depend on
+// after the drop lands here with no hand-written copy, because this picks the
+// suffix by name rather than writing a list out.
+//
+// The proofs are kept because what they measure is the reader's rule (drive#329:
+// the namespace the pointer names is the only source), and that rule has to hold
+// for a row written before the drop.
+const LEFTOVER_COLUMN_DROP = "0017_drop_branches_snapshot.sql";
+const READER_DEPENDS_ON = ["0030_branch_jobs.sql"];
 const WITH_LEFTOVER_COLUMN = Object.freeze(
-  MIGRATION_FILES.slice(0, MIGRATION_FILES.indexOf("0017_drop_branches_snapshot.sql")).map(
-    (name) => `drive/${name}`,
-  ),
+  MIGRATION_FILES.filter((name) =>
+    name === LEFTOVER_COLUMN_DROP
+      ? false
+      : MIGRATION_FILES.indexOf(name) < MIGRATION_FILES.indexOf(LEFTOVER_COLUMN_DROP) ||
+        READER_DEPENDS_ON.includes(name),
+  ).map((name) => `drive/${name}`),
 );
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };

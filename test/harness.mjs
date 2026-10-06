@@ -53,6 +53,7 @@ export const DRIVE_MIGRATIONS = Object.freeze(MIGRATION_FILES.map((name) => `dri
  * #421).
  */
 export const DRIVE_SCHEMA_MIGRATIONS = DRIVE_MIGRATIONS;
+
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 /** The address every test's links are built on. */
