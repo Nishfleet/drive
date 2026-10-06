@@ -590,6 +590,11 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 // could not protect.
 func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name string, save *pendingSave) (drop bool, skip *ConflictSkip, copy *ConflictCopy, err error) {
 	save.polls++
+	// Drop this path from rclone's VFS cache before hashing, so
+	// operations/hashsum reads storage rather than this device's bytes
+	// (TestTwoDevicesKeepBothSaves). A forget error leaves the stale
+	// path below, which the size check still covers.
+	_ = b.forget(ctx, name)
 	landed, err := b.remoteHash(ctx, name)
 	if err != nil {
 		return g.hashFailed(name, save, "the remote hash for this file could not be read")
@@ -630,19 +635,13 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// moment it sees its own bytes: it watches for conflictWinPolls
 		// polls and only then drops the entry.
 		//
-		// operations/hashsum on the mount's remote control can still
-		// name this device's VFS cache after the other PUT has landed.
-		// vfs/forget drops that cache so operations/stat is storage
-		// (a HEAD, not a download). A second hashsum runs only when
-		// that HEAD already says the object is not this device's.
-		if ferr := b.forget(ctx, name); ferr == nil {
-			if size, modTime, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && !sameVersion(size, modTime, save.stat.size, save.stat.modTime) {
-				if h, herr := b.remoteHash(ctx, name); herr == nil && h != "" && h != save.hash {
-					landed = h
-				}
-				return g.keepLosingSave(ctx, b, name, save, landed)
+		// forget ran at the start of this decide, but a backend whose
+		// hashsum still names the VFS cache is caught by the object's
+		// size: a different length is the retried overwrite.
+		if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
+			if h, herr := b.remoteHash(ctx, name); herr == nil && h != "" && h != save.hash {
+				landed = h
 			}
-		} else if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
 			return g.keepLosingSave(ctx, b, name, save, landed)
 		}
 		save.winPolls++
