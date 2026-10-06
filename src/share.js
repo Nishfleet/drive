@@ -776,8 +776,12 @@ export function createD1LinkStore(db) {
         // so an upload accepted during the send window stays queued for the
         // next run instead of being wiped unseen (drive issue #684). json_remove
         // reads the column's old value, unlike a correlated subquery in SET.
+        // A count of zero is the drain for a row the digest could not read at
+        // all: parseArrivals already decided it holds no arrivals, and nothing
+        // but recordArrival writes the column back, so the only thing left to
+        // do with it is empty it rather than walk it every night.
         const paths = Array.from({ length: Math.max(0, count) }, () => "'$[0]'").join(", ");
-        const clear = paths === "" ? "pending_uploads" : `json_remove(pending_uploads, ${paths})`;
+        const clear = paths === "" ? "'[]'" : `json_remove(pending_uploads, ${paths})`;
         const row = await one(
           `UPDATE upload_requests SET digest_at = ?1, pending_uploads = ${clear} ` +
             "WHERE token = ?2 " +
@@ -903,11 +907,21 @@ export async function sendArrivalDigests(db, input) {
   let sent = 0;
   let skipped = 0;
   for (const record of pending) {
-    const arrivals = parseArrivals(record.pendingUploads);
-    if (arrivals.length === 0) {
-      continue;
-    }
     try {
+      const arrivals = parseArrivals(record.pendingUploads);
+      if (arrivals.length === 0) {
+        // A row the digest query selected (its queue is not the empty
+        // literal) but the parse found no arrivals in: malformed JSON, or an
+        // array of nulls. It is logged and drained, because nothing but
+        // recordArrival ever writes this column back, so re-listing it every
+        // night would walk a queue that can never yield a mail.
+        console.error(
+          `upload digest: the link for account ${record.accountId} has an arrival queue that parses to nothing; clearing it`,
+        );
+        await links.requests.markDigestSent(record.token, input.now, 0);
+        skipped += 1;
+        continue;
+      }
       const owner = await input.owner(record.accountId);
       if (owner === null || typeof owner.email !== "string" || owner.email.trim().length === 0) {
         console.error(

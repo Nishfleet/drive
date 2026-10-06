@@ -171,7 +171,6 @@ test("the nightly digest mails each link once, lists every file, then mails noth
     },
   };
   /** @param {string} accountId */
-  /** @param {string} accountId */
   const owner = async (accountId) =>
     accountId === "acct-digest" ? { id: accountId, name: "Nish", email: "nish@example.com" } : null;
 
@@ -239,6 +238,80 @@ test("a link with no resolvable owner address is skipped, not mailed to nobody",
   });
   assert.deepEqual(result, { sent: 0, skipped: 1 });
   assert.equal(sends, 0);
+});
+
+test("an arrival queue that parses to nothing is logged, drained and counted", async () => {
+  // drive#684: the digest query selects every row whose queue is not the
+  // empty literal, which includes a queue that is malformed JSON or an array
+  // of nulls. Walking such a row every night without clearing it would list
+  // a queue that can never yield a mail, so it is drained once and skipped.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-junk", "junk@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-junk", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  // A queue no version of this code would write, set straight in the column.
+  await db
+    .prepare("UPDATE upload_requests SET pending_uploads = ?1 WHERE token = ?2")
+    .bind("[null, 3]", REQUEST_TOKEN)
+    .run();
+
+  let sends = 0;
+  const email = {
+    send: async () => {
+      sends += 1;
+      return { messageId: "never" };
+    },
+  };
+  const result = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner: async () => ({ id: "acct-junk", name: "Junk", email: "junk@example.com" }),
+    now: NOW,
+  });
+  assert.deepEqual(result, { sent: 0, skipped: 1 }, "the row is counted, not silently dropped");
+  assert.equal(sends, 0, "nothing is mailed for an unreadable queue");
+
+  const reader = createD1LinkStore(db);
+  const drained = await reader.requests.get(REQUEST_TOKEN);
+  assert.ok(drained);
+  assert.equal(drained.pendingUploads, "[]", "the unreadable queue is emptied");
+  assert.deepEqual(
+    await reader.requests.listPendingDigests(),
+    [],
+    "the next run does not walk it again",
+  );
+});
+
+test("the digest refuses a blank sender and a missing owner resolver", async () => {
+  // drive#684: the two guards are the documented contract, and a digest from
+  // a placeholder sender or with no way to read an owner is worse than no
+  // digest, so both are refused before any link is read.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const email = {
+    send: async () => ({ messageId: "never" }),
+  };
+  const owner = async () => null;
+  await assert.rejects(
+    () => sendArrivalDigests(db, { email, mailFrom: "  ", owner, now: NOW }),
+    /MAIL_FROM/,
+    "a blank MAIL_FROM is refused",
+  );
+  await assert.rejects(
+    () =>
+      sendArrivalDigests(db, {
+        email,
+        mailFrom: "drive@example.com",
+        owner: /** @type {never} */ (undefined),
+        now: NOW,
+      }),
+    /owner resolver/,
+    "a missing owner resolver is refused",
+  );
 });
 
 test("one link's send failure does not stop the other link's digest", async () => {
