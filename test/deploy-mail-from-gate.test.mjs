@@ -1,11 +1,14 @@
-// The deploy refuses to ship when the Worker has no MAIL_FROM (drive#522).
+// The deploy is loud when the Worker has no MAIL_FROM (drive#522).
 //
 // Production sent no customer email at all (close receipts, reminders, the
 // welcome) because MAIL_FROM was never set as a secret, and every deploy
-// stayed green: nothing failed until a customer's close answered 500. This
-// file pins the workflow text that makes that impossible, so an edit that
-// drops the gate, moves it after the ship, or widens it to read a secret
-// value fails here rather than shipping.
+// stayed green and silent: nothing showed until a customer's close answered
+// 500. Until launch a missing sender is a ::warning:: on the deploy run, not
+// a block, because drive is pre-launch and a block would stop every deploy
+// until drive#667 sets the sender. drive#752 turns it back into a block
+// before the first paying customer. This file pins the workflow text, so an
+// edit that drops the check, moves it after the ship, quietens it, or widens
+// it to read a secret value fails here rather than shipping.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -16,7 +19,7 @@ const DEPLOY = readFileSync(
   new URL("../.github/workflows/deploy-production.yml", import.meta.url),
   "utf8",
 );
-const GATE = "- name: Refuse to ship without a sender (drive#522)";
+const GATE = "- name: Warn when there is no sender (drive#522)";
 
 /** The text of one step, from its `- name:` to the next. @param {string} name */
 const step = (name) => {
@@ -42,7 +45,7 @@ test("the deploy checks MAIL_FROM before it migrates or ships anything", () => {
   }
 });
 
-test("the gate reads secret names, never values, and names the fix when it fails", () => {
+test("the gate reads secret names, never values, and names the fix when it warns", () => {
   const body = step(GATE);
   assert.match(body, /cf workers secrets list --worker drive-pricing --quiet/);
   assert.match(body, /x\.name==="MAIL_FROM"/, "the gate matches the exact secret name");
@@ -51,8 +54,7 @@ test("the gate reads secret names, never values, and names the fix when it fails
     /secrets? (get|put|update|bulk|delete)/,
     "the gate never touches a value",
   );
-  assert.match(body, /drive#667/, "the failure names where the sender comes from");
-  assert.match(body, /exit 1/);
+  assert.match(body, /drive#667/, "the warning names where the sender comes from");
   assert.match(body, /could not list the secret names/, "a CLI failure names itself");
   // Token and account reach the CLI as env, like every other cf step here,
   // never as command arguments.
@@ -76,4 +78,40 @@ test("the gate's name check passes with MAIL_FROM and fails without it", () => {
   // a missing sender: the step's `case` names it separately.
   const garbage = spawnSync(process.execPath, ["-e", script], { input: "" }).status;
   assert.ok(garbage !== 0 && garbage !== 3, `unreadable output exited ${garbage}`);
+});
+
+/** The step's `case` branch for one exit code of the name check. @param {string} code */
+const branch = (code) => {
+  const line = step(GATE)
+    .split("\n")
+    .find((l) => l.trim().startsWith(`${code})`));
+  assert.ok(line, `the gate has no branch for exit ${code}`);
+  return line;
+};
+
+test("until launch, a missing sender warns on the run and the deploy goes on (drive#752)", () => {
+  const missing = branch("3");
+  assert.match(missing, /::warning\b/, "a missing sender is a run annotation, not a log line");
+  assert.match(missing, /MAIL_FROM is not set/);
+  assert.match(missing, /drive#752/, "the warning names the issue that makes it a block again");
+  assert.doesNotMatch(missing, /exit 1/, "pre-launch, a missing sender does not stop the deploy");
+  assert.doesNotMatch(missing, /::error::/);
+});
+
+test("a CLI or parse failure still stops the deploy, as itself", () => {
+  assert.match(branch("*"), /::error::.*exit 1/, "unreadable output fails the run");
+  assert.match(
+    step(GATE),
+    /\|\|\s*\{ echo "::error::could not list the secret names[^}]*exit 1; \}/,
+    "a failed secret list fails the run",
+  );
+});
+
+test("the deploy smoke warns, never rolls back, when health reports email not-ready", () => {
+  const smoke = step("- name: Check the live Worker version and health");
+  const at = smoke.indexOf('email==="not-ready"');
+  assert.ok(at !== -1, "the smoke reads the email part of /api/health");
+  const tail = smoke.slice(at, smoke.indexOf("fi", at));
+  assert.match(tail, /::warning/);
+  assert.doesNotMatch(tail, /exit 1/);
 });
