@@ -138,7 +138,7 @@ func printSearchResults(r *SearchResults) {
 	fmt.Println(headline)
 }
 
-// fileSize renders a file size the way the usage page does (src/status.js
+// fileSize renders a file size the way the usage page does (core/status.js
 // formatBytes): one decimal under 10 KB, none above.
 func fileSize(bytes int64) string {
 	units := []string{"B", "KB", "MB", "GB", "TB"}

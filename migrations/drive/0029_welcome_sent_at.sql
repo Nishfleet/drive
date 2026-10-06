@@ -1,0 +1,26 @@
+-- The once-only welcome email (drive issue #522).
+--
+-- Four customer templates had no caller at all, so a person could sign up,
+-- be charged, hit their cap, and never hear from us. The welcome is the one
+-- of those four that does not depend on a billing decision, so it ships here:
+-- the marker is what makes "exactly once" true, not the code path that sends
+-- it, because the path that sends it is a sign-in and people sign in
+-- repeatedly.
+--
+-- Expand only, and it is the first phase on its own: one nullable INTEGER
+-- column, no DEFAULT, no NOT NULL, nothing dropped or renamed. The previous
+-- Worker version neither reads nor writes it, so a revert keeps serving the
+-- same rows and the fleet's auto-revert stays possible.
+--
+--   welcome_sent_at  unix seconds when the welcome email went out
+--
+-- Rows for accounts created before this migration stay NULL, which reads as
+-- "not sent yet". That is deliberate: the next sign-in sends the welcome to
+-- an existing account once, and to every existing account in turn as people
+-- come back. Nobody is deleted for it and no account is left unable to sign
+-- in, so there is nothing to backfill here. A NULL on a brand-new account
+-- means the send failed and it retries on the next sign-in.
+--
+-- Rollback of the code leaves the column in place (D1 has no down-migration).
+
+ALTER TABLE accounts ADD COLUMN welcome_sent_at INTEGER;

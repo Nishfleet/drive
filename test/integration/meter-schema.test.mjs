@@ -33,7 +33,7 @@ import {
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../../src/meter.js";
+} from "../../core/meter.js";
 import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 // Migration files and order come from test/d1-sqlite.mjs (`MIGRATION_FILES`),
@@ -232,12 +232,18 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
       download_bytes: r.download_bytes,
       stored_bytes: r.stored_bytes,
     }));
-  // stored_bytes is the hour's mark for the month's PEAK (drive#163): the sizes
-  // the account had live at some point in the hour, read straight back out of
-  // the real column migration 0006 added. acc-other's 10 GB is hidden at 00:45,
-  // inside the hour, so it is in the mark; the peak is a MAX over these, and a
+  // stored_bytes is the hour's mark for the month's PEAK (drive#163): the size
+  // the account's drive held at the END of the hour, read straight back out of
+  // the real column migration 0006 added. drive#535 moved the mark from "live
+  // at some point in the hour" to "live at the hour's end", because the sizes
+  // a version set at some point in the hour are summed over every save the
+  // hour contained and one file overwritten six times marked 60 GB. acc-other's
+  // 10 GB was hidden at 00:45, so nothing of it was live at 01:00 and its mark
+  // is 0 - the drive did hold those bytes for three quarters of the hour, and
+  // the minutes below say so, but the mark is what was there at the end. A
   // column that were never written would read 0 for a drive that really held
-  // data.
+  // data; acc-other's row below reading 0 is the peak's truth, not a missing
+  // write.
   assert.deepEqual(rows, [
     {
       account_id: "acc-abc",
@@ -251,7 +257,7 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
       hour: midnight(),
       gb_minutes_live: 600,
       download_bytes: 0,
-      stored_bytes: 10 * GB,
+      stored_bytes: 0,
     },
   ]);
 });
@@ -720,14 +726,13 @@ test("0006 adds the peak's column and takes nothing away", () => {
   );
 });
 
-// drive#698 renamed 0025_meter_scale.sql to 0027_meter_scale.sql, because
-// drive#682's 0025_link_caps.sql already held that prefix. D1 records an
-// applied migration by its filename, so the rename re-applies this file on
-// every database that already ran it - production's included, and which
-// databases those are cannot be seen from a test. The new number is safe only
-// because this file changes nothing the second time: one index and two tables,
-// every one `IF NOT EXISTS`. That is the whole contract of the renumber, so it
-// is a test rather than a hope.
+// drive#698 renamed 0025_meter_scale.sql to 0028_meter_scale.sql, because
+// drive#682's 0025_link_caps.sql already held 0025, and 0026/0027 were taken
+// while this was in flight. D1 records an applied migration by its filename,
+// so the rename re-applies this file on every database that already ran it.
+// The new number is safe only because this file changes nothing the second
+// time: one index and two tables, every one `IF NOT EXISTS`. That is the whole
+// contract of the renumber, so it is a test rather than a hope.
 test("the renumbered meter migration is a no-op the second time", () => {
   const { sqlite } = makeMeteredDB();
   const objects = () =>
@@ -745,7 +750,7 @@ test("the renumbered meter migration is a no-op the second time", () => {
   );
 
   sqlite.exec(
-    readFileSync(new URL("../../migrations/drive/0027_meter_scale.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../../migrations/drive/0028_meter_scale.sql", import.meta.url), "utf8"),
   );
 
   assert.deepEqual(objects(), before, "the second apply creates, alters and drops no object");

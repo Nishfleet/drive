@@ -16,13 +16,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
+import { createD1DeviceStore } from "../../../core/devices.js";
+import { TEAM_ROLE_CAPABILITIES, teamScopeFor } from "../../../core/keyprovider.js";
+import { canDelete, createMemoryStore } from "../../../core/keystore.js";
+import { createD1TeamStore } from "../../../core/teams.js";
 import { createTestD1 } from "../../../test/harness.mjs";
-import { createD1DeviceStore } from "../src/devices.js";
 import { dispatch } from "../src/index.js";
-import { TEAM_ROLE_CAPABILITIES, teamScopeFor } from "../src/keyprovider.js";
-import { canDelete, createMemoryStore } from "../src/keystore.js";
-import { createD1TeamStore } from "../src/teams.js";
 
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 

@@ -15,12 +15,12 @@ deletes afterwards.
 ## What is held, and what a missing value does
 
 - `METER_EVENT_TOKEN` — the bearer token the meter's event intake requires. With
-  it unset the route answers 503 (`src/meter.js:1652`, the check that fails
+  it unset the route answers 503 (`core/meter.js:1652`, the check that fails
   closed). Declared in `cloudflare.config.ts`; a declared secret must be set
   before a deploy.
 - `EMAIL_SEND_TOKEN` and `MAIL_FROM` — the token and sender for the email send
   route. With the token wrong the route answers 403; with no `MAIL_FROM` it
-  answers 503 (`src/email-send.js:230,252`). Not declared as secrets, on
+  answers 503 (`core/email-send.js:230,252`). Not declared as secrets, on
   purpose: they are set once Drive has a sending domain (drive#584 tracks that
   DNS work).
 - `IDRIVE_E2_API_TOKEN` — the api Worker's credential for minting scoped keys.
