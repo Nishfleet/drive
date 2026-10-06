@@ -107,6 +107,9 @@ func runStatus(args []string) error {
 	} else if why := queueWhy(on, cacheIsFull(home, on), paused, queue); why != "" {
 		fmt.Println(why)
 	}
+	if line := conflictGuardLine(home, time.Now()); line != "" {
+		fmt.Println(line)
+	}
 	if lines, reason := rcProgressLines(home, on); lines != "" {
 		fmt.Print(limitStatusLines(lines, 3))
 	} else if reason != "" {
@@ -142,6 +145,11 @@ func runStatus(args []string) error {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	fmt.Println(troubleshootingDocsLine())
+	// The once-a-day update notice (drive#560): the last line `drive status`
+	// prints. It never fails the command, and it never prints more than once
+	// in 24 hours.
+	noticeUpdateOnceADay(updateNoticeOptions{home: home})
+
 	return nil
 }
 
@@ -490,6 +498,20 @@ const (
 	uploadFailingAfterTries = 3
 )
 
+// conflictGuardLine is the status line for a conflict guard that cannot
+// keep up with the saves coming in: more saves are waiting for their first
+// hash than one pass can take (conflictSightMax), so protection of the rest
+// waits for the passes that follow. An empty string is "no answer": the
+// guard is not running, or it is keeping up, and neither is a problem to
+// name.
+func conflictGuardLine(home string, now time.Time) string {
+	behind := conflictGuardBehind(ConflictGuardStatePath(home), now)
+	if behind <= conflictSightMax {
+		return ""
+	}
+	return fmt.Sprintf("conflict guard behind by %d saves", behind)
+}
+
 // queueWhy is the line after the uploads count: what is waiting and why
 // (drive issue #107). An empty queue with space left is a complete state and
 // prints nothing extra. A full cache is a failure even with nothing queued,
@@ -632,6 +654,7 @@ func readCostLine(apiBase, token string) string {
 	if token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
+	req.Header.Set("user-agent", userAgent())
 	client := &http.Client{Timeout: usageTimeout}
 	resp, err := client.Do(req)
 	if err != nil {

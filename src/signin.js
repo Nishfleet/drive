@@ -58,6 +58,7 @@ import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
   authFor,
+  consumeSigninReturn,
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
   sessionAccount,
@@ -156,6 +157,12 @@ export const SIGNIN_COPY = Object.freeze({
   emailButton: "Email me a link",
   emailNote: "We email a link that signs you in. No password to remember.",
   emailSent: "Check your email — the link signs you in.",
+  // drive#558: the line the page shows (and the approval mail carries) when
+  // the sign-in started from the device-approve page. The link's return path
+  // travels with the token, so whichever device opens the mail can approve;
+  // the person no longer has to walk the link back to the laptop the code is
+  // showing on.
+  deviceNote: "Open this link on the computer you ran drive login on, or approve from any device.",
   linkFailed: "That link did not work. Ask for a new one from the sign-in page.",
   // The line the page shows while it waits for the endpoint, and the line it
   // falls back to when the browser cannot reach the network at all. The
@@ -220,7 +227,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}
+ * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -297,7 +304,7 @@ async function emailHasUser(env, email) {
 /**
  * The start step: the method and, for the email method, the address.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -320,6 +327,12 @@ function readStart(body) {
     email,
     card: body.card,
     cardFingerprint: body.cardFingerprint,
+    // The device-approval return path (drive#558): the approve page sent the
+    // person here with ?next= its own URL. Validated here, at the read, so a
+    // hand-edited link is dropped rather than stored — the same drop
+    // safeAfterSigninPath applies to the cookie, and not a 400, which would
+    // let a crafted link break a person's sign-in.
+    next: safeAfterSigninPath(body.next),
   };
 }
 
@@ -572,7 +585,7 @@ export async function handleSigninRequest(request, env) {
     // path) from this request's headers. The route's own origin check, body
     // parse and closed-door guard have already run above; this only needs the
     // email the start step validated and the headers the limiter reads IP from.
-    const authResponse = await auth.handler(signinLinkRequest(auth, email, request));
+    const authResponse = await auth.handler(signinLinkRequest(auth, email, request, read.next));
     // Better Auth answers 429 from its rate limiter; translate that into the
     // message table's words rather than passing its body through, and carry the
     // library's own retry-after through as the `retry-after` header the edge
@@ -728,10 +741,32 @@ export async function handleSigninLinkVerify(request, env) {
   // The one thing this route does is take the cookie Better Auth set onto a
   // same-origin redirect of its own, so a person lands on the drive rather
   // than on a JSON body. When they opened the device-approve link while signed
-  // out, that page left a return cookie so they come back to the code.
+  // out, that page left a return cookie so they come back to the code — and
+  // since drive#558 the start step also stored the path with this link's
+  // token, so a link opened on a second device (the phone that signs in,
+  // while the code sits on the laptop) lands on the approve page too. The
+  // stored row wins over the cookie: the row travels with the link, the
+  // cookie only names the browser that opened the approve page.
   const extra = cookieHeaders(verified);
   const cookies = extra["set-cookie"] ?? [];
-  const returnTo = safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
+  let mailedReturn = "";
+  if (
+    driveDb !== undefined &&
+    driveDb !== null &&
+    typeof driveDb === "object" &&
+    "prepare" in driveDb
+  ) {
+    try {
+      mailedReturn = await consumeSigninReturn(/** @type {D1Database} */ (driveDb), token);
+    } catch (cause) {
+      // A lookup that cannot finish must not turn a session that was already
+      // minted into a 500: the cookie below still carries the same intent for
+      // the browser that opened the approve page, the same posture as the
+      // card-step hold above.
+      console.error(`signin return lookup did not finish: ${String(cause)}`);
+    }
+  }
+  const returnTo = mailedReturn || safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
   cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
   return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
 }
@@ -746,16 +781,19 @@ export async function handleSigninLinkVerify(request, env) {
  * checked and incremented the same way a browser hit the library route.
  *
  * The URL is the library's own endpoint under the configured auth base path;
- * the body carries only the address the start step already validated. Of the
- * caller's headers it forwards only what the callee reads — the `origin` its
- * origin check validates against and the `cf-connecting-ip` its rate limiter
- * keys on — never the whole header set (see the note in the body below).
+ * the body carries only the address the start step already validated, plus
+ * the return path when this start came from the approve page (drive#558):
+ * `metadata` is the library's own field for per-send state, and
+ * core/auth.js `sendMagicLink` stores the path with the link's token before
+ * the mail goes out, so whichever device opens the link lands on the approve
+ * page rather than on the files list.
  * @param {Auth} auth the Better Auth instance from `authFor`
  * @param {string} email the address the start step validated
  * @param {Request} request the caller's request, whose origin and client-IP headers are forwarded
+ * @param {string} [returnPath] a device-approve path safeAfterSigninPath accepted, or ""
  * @returns {Request}
  */
-function signinLinkRequest(auth, email, request) {
+function signinLinkRequest(auth, email, request, returnPath = "") {
   const basePath = auth.options.basePath;
   const base = /** @type {string} */ (auth.options.baseURL);
   // Forward only what the callee reads, not the caller's whole header set. The
@@ -785,12 +823,14 @@ function signinLinkRequest(auth, email, request) {
   if (userAgent !== null) {
     headers.set("user-agent", userAgent);
   }
-  // The body is the library's own shape, not the route's `step` wrapper.
+  // The body is the library's own shape, not the route's `step` wrapper. The
+  // metadata carries the return path only when there is one, so a plain
+  // sign-in's mail looks exactly as it did before drive#558.
   headers.set("content-type", "application/json");
   return new Request(`${base}${basePath}/sign-in/magic-link`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ email }),
+    body: JSON.stringify(returnPath === "" ? { email } : { email, metadata: { returnPath } }),
   });
 }
 

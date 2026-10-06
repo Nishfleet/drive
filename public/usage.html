@@ -639,6 +639,16 @@ h2 {
         <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
       </section>
 
+      <section aria-labelledby="links-heading">
+        <h2 id="links-heading">Public links</h2>
+        <dl class="readout">
+          <div class="pair">
+            <dt>Open public links</dt>
+            <dd id="open-public-links"></dd>
+          </div>
+        </dl>
+      </section>
+
       <!-- The upload-progress line (drive issue #308): the same live words
            `drive status` and the first-run page show, assembled by the Worker
            from the one word table in src/status.js, so this page carries no
@@ -668,6 +678,12 @@ h2 {
         <p class="hint" id="cap-saved" role="status" hidden></p>
         <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
         <p class="hint" id="card-portal-line"><a id="card-portal-link" href="/api/billing/portal">Update your card in the billing portal</a></p>
+      </section>
+
+      <section aria-labelledby="export-heading" id="export-section">
+        <h2 id="export-heading">Your data</h2>
+        <p class="lede" id="export-what">Download a JSON file of this account's records: the account, keys, file names and version history. Your files stay in the drive folder.</p>
+        <p class="hint" id="export-line"><a id="export-download" href="/api/export" download="drive-export.json">Download your data as JSON</a></p>
       </section>
 
       <section aria-labelledby="close-heading" id="close-section">
@@ -784,6 +800,7 @@ const gbMonthsEl = document.getElementById("gb-months");
 const costEl = document.getElementById("cost");
 const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
+const openPublicLinksEl = document.getElementById("open-public-links");
 const uploadLineEl = document.getElementById("upload-line");
 const capAmount = document.getElementById("cap-amount");
 const capSlider = document.getElementById("cap-slider");
@@ -1086,6 +1103,9 @@ function render(summary) {
   // looking like a bill that was taken.
   billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
+  openPublicLinksEl.textContent = Number.isFinite(summary.openPublicLinks)
+    ? String(summary.openPublicLinks)
+    : "0";
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.
   uploadLineEl.textContent = summary.uploadLine === null ? "" : summary.uploadLine;

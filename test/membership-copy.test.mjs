@@ -10,6 +10,7 @@ import { FAILURE_MESSAGES } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { FAQ } from "../src/docs.js";
 import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/signin.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const CREDIT_TEXT =
   /\$1\s+free|free\s+\$1|\$1\s+credit|free credit|no card needed|No card asked|No card to start/i;
@@ -66,6 +67,14 @@ function dataFor(kind) {
     return {
       deviceName: "office laptop",
       requestedAt: "2026-10-05T12:00:00.000Z",
+      replyTo: REPLY_TO,
+    };
+  }
+  if (kind === "security-event") {
+    return {
+      event: "agent-key-minted",
+      deviceName: "office laptop",
+      happenedAt: "2026-10-06T09:00:00.000Z",
       replyTo: REPLY_TO,
     };
   }
@@ -250,7 +259,7 @@ test("the public site never contains the founding cap or a spots count", () => {
 });
 
 test("the public site never names a rival or quotes a rival's price", () => {
-  const rival = /\bSpace\b/;
+  const rival = RIVAL_PRODUCT;
   for (const page of pages) {
     assert.doesNotMatch(page.text, rival, page.name);
   }
