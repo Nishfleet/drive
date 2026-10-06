@@ -170,9 +170,6 @@ const pausedRate = "1KiB:off"
 // "1KiB" to "1Ki" in core/bwlimit's answer. Both spellings mean the same cap.
 const rclonePausedRate = "1Ki:off"
 
-// resumeRate is rclone's own word for no limit at all.
-const resumeRate = "off"
-
 // queueHoldExpiry is a far-future vfs/queue-set-expiry (rclone.org/rc). A
 // large positive number delays the item until resume; a large negative number
 // makes it eligible immediately. An item that has already started uploading
@@ -188,12 +185,6 @@ const queueReleaseExpiry = "-1000000000"
 func PauseStatePath(home string) string {
 	return filepath.Join(login.DefaultConfigDir(home), "paused")
 }
-
-// rcTimeout bounds one rc call. `drive status` is what a person runs when
-// something is wrong, so a hung remote control must turn a status line into a
-// named failure rather than a hung terminal. It is the same order of
-// magnitude as the fill loop's own per-call bound (fillContextTimeout).
-const rcTimeout = 30 * time.Second
 
 // BwLimit is the rate rclone is running with right now: what core/bwlimit
 // answers with no argument.

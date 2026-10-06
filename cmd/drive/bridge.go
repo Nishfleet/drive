@@ -160,9 +160,6 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 func (c *rcClient) remoteVersion(ctx context.Context, name string) (int64, time.Time, bool, error) {
 	return c.RemoteVersion(ctx, name)
 }
-func (c *rcClient) remoteFingerprint(ctx context.Context, name string) (string, error) {
-	return c.RemoteFingerprint(ctx, name)
-}
 func (c *rcClient) copyLocalToRemote(ctx context.Context, stagingRoot, srcRemote, dstRemote string) error {
 	return c.CopyLocalToRemote(ctx, stagingRoot, srcRemote, dstRemote)
 }
