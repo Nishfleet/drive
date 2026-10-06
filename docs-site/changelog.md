@@ -13,6 +13,8 @@ the live site.
 - A branch holds the folder as it was when you made the branch, not as it was
   when the copy ran. A file added in between is not in the branch. The next
   branch takes it.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".

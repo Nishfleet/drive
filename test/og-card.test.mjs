@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { PRICE } from "../core/pricing.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const card = readFileSync(new URL("../public/og-card.html", import.meta.url), "utf8");
 const png = readFileSync(new URL("../public/og.png", import.meta.url));
@@ -59,7 +60,8 @@ test("the card carries no superseded figure", () => {
   // comment either.
   assert.doesNotMatch(card, /about \$20/i);
   assert.doesNotMatch(card, /\$20 (per|a) TB/i);
-  assert.doesNotMatch(card, /membership|ceiling|\bSpace(FS)?\b/i);
+  assert.doesNotMatch(card, /membership|ceiling/i);
+  assert.doesNotMatch(card, RIVAL_PRODUCT);
   assert.doesNotMatch(card, /\bunlimited\b/i);
 });
 
