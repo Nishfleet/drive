@@ -248,15 +248,15 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 // key, so the account and the drive agree on what the machine
 // is called.
 func TestEnvDeviceNameReadsDriveDevice(t *testing.T) {
-	// --device flows into DRIVE_DEVICE (main.go), and sign-in must
-	// answer to the same name the mount carries.
+	// DRIVE_DEVICE (the mount's own setting) wins, and sign-in answers
+	// to the same name the mount carries.
 	t.Setenv(deviceEnvName, "studio")
-	if got := envDeviceName(); got != "studio" {
-		t.Fatalf("envDeviceName() = %q, want the DRIVE_DEVICE value", got)
+	if got := envDeviceName(t.TempDir()); got != "studio" {
+		t.Fatalf("envDeviceName(t.TempDir()) = %q, want the DRIVE_DEVICE value", got)
 	}
 	t.Setenv(deviceEnvName, "")
-	if got := envDeviceName(); strings.TrimSpace(got) == "" {
-		t.Fatal("envDeviceName() with DRIVE_DEVICE unset = \"\", want the hostname fallback")
+	if got := envDeviceName(t.TempDir()); strings.TrimSpace(got) == "" {
+		t.Fatal("envDeviceName(t.TempDir()) with DRIVE_DEVICE unset = \"\", want the hostname fallback")
 	}
 }
 
@@ -278,5 +278,39 @@ func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
 	}
 	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
 		t.Fatalf("the device key was minted as %v, want [studio]", api.mintedNames)
+	}
+}
+
+// `drive login --device studio` is remembered in the credentials file, so a
+// later re-sign-in or `drive agents` answers to "studio" and does not
+// register a second device under the hostname.
+func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	t.Setenv(deviceEnvName, "")
+
+	home := t.TempDir()
+	if err := Login(home, server.URL, "studio", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := envDeviceName(home); got != "studio" {
+		t.Fatalf("envDeviceName after login --device studio = %q, want studio", got)
+	}
+	// A later login without the flag keeps the chosen name.
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := envDeviceName(home); got != "studio" {
+		t.Fatalf("envDeviceName after a flagless login = %q, want studio kept", got)
+	}
+	// DRIVE_DEVICE still wins.
+	t.Setenv(deviceEnvName, "laptop")
+	if got := envDeviceName(home); got != "laptop" {
+		t.Fatalf("envDeviceName with DRIVE_DEVICE = %q, want laptop", got)
 	}
 }

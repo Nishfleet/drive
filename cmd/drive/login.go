@@ -89,12 +89,18 @@ func osHostname() string {
 	return name
 }
 
-// envDeviceName is the device name this process carries: --device, which
-// `drive init` and `drive mount` put into DRIVE_DEVICE, else the
+// envDeviceName is the device name this process carries: DRIVE_DEVICE, else
+// the name `drive login --device` saved in the credentials file, else the
 // hostname with a stock-name suffix. Sign-in answers to the same name
 // the mount's conflict copies carry, so one device is one name.
-func envDeviceName() string {
-	return deviceName(os.Getenv(deviceEnvName), osHostname())
+func envDeviceName(home string) string {
+	if set := strings.TrimSpace(os.Getenv(deviceEnvName)); set != "" {
+		return deviceName(set, osHostname())
+	}
+	if creds, err := LoadCredentials(home); err == nil && creds.Device != "" {
+		return deviceName(creds.Device, osHostname())
+	}
+	return deviceName("", osHostname())
 }
 
 // Login is `drive login`: device sign-in, mint this device's key, write the
@@ -171,6 +177,9 @@ func Login(home, apiBase, device string, out io.Writer) error {
 		DownloadURL:    cfg.DownloadURL,
 		AccessKeyID:    cfg.AccessKey,
 		KeyID:          key.KeyID,
+		// --device is remembered; a login without it keeps the name an
+		// earlier login chose.
+		Device: firstNonEmpty(strings.TrimSpace(device), previous.Device),
 	}
 	if err := SaveCredentials(home, creds); err != nil {
 		return err

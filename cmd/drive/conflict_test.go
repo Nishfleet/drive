@@ -1767,6 +1767,20 @@ func TestStockHostnameWithLocalSuffixGetsASuffix(t *testing.T) {
 	}
 }
 
+// macOS hostnames are case-insensitive and mDNS can answer in any case, so
+// "macbook-air" and "MacBook-Air.LOCAL" are the stock name too.
+func TestStockHostnameMatchIgnoresCase(t *testing.T) {
+	for _, host := range []string{"macbook-air", "MACBOOK-PRO-2", "MacBook-Air.LOCAL", "imac.Local"} {
+		if !isStockHostname(host) {
+			t.Errorf("isStockHostname(%q) = false, want true", host)
+		}
+		got := stockedHostname(host)
+		if got == host || strings.Contains(strings.ToLower(got), ".local") {
+			t.Errorf("stockedHostname(%q) = %q, want the name without .local plus a suffix", host, got)
+		}
+	}
+}
+
 func TestChosenHostnameIsLeftAlone(t *testing.T) {
 	for _, host := range []string{
 		"Nish's MacBook",
@@ -1774,7 +1788,6 @@ func TestChosenHostnameIsLeftAlone(t *testing.T) {
 		"MacBook-Air-2x", // not the number macOS adds: a name a person chose
 		"MacBook-Air-",
 		"MacBookAir",
-		"macbook-air",
 	} {
 		if got := stockedHostname(host); got != host {
 			t.Errorf("stockedHostname(%q) = %q, want it untouched", host, got)

@@ -134,8 +134,9 @@ var stockHostnames = []string{
 // suffix when the resolver answers with the mDNS name, so that suffix is
 // stripped before the comparison.
 func isStockHostname(hostname string) bool {
-	base := strings.TrimSuffix(strings.TrimSpace(hostname), ".local")
+	base := strings.ToLower(trimLocal(hostname))
 	for _, model := range stockHostnames {
+		model = strings.ToLower(model)
 		if base == model {
 			return true
 		}
@@ -144,6 +145,16 @@ func isStockHostname(hostname string) bool {
 		}
 	}
 	return false
+}
+
+// trimLocal drops the mDNS ".local" suffix whatever its case: macOS
+// hostnames are case-insensitive and a resolver can answer ".LOCAL".
+func trimLocal(hostname string) string {
+	h := strings.TrimSpace(hostname)
+	if len(h) >= len(".local") && strings.EqualFold(h[len(h)-len(".local"):], ".local") {
+		return h[:len(h)-len(".local")]
+	}
+	return h
 }
 
 func isDigits(s string) bool {
@@ -164,7 +175,7 @@ func isDigits(s string) bool {
 // (issue #561). The suffix is a disambiguator, not a credential, and
 // `drive login --device` replaces it with the name the person chose.
 func stockedHostname(hostname string) string {
-	base := strings.TrimSuffix(strings.TrimSpace(hostname), ".local")
+	base := trimLocal(hostname)
 	if !isStockHostname(base) {
 		return hostname
 	}
