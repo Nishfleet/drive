@@ -24,8 +24,8 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_ENDPOINT } from "../core/files.js";
-import worker from "../src/index.js";
+import { createMemoryStore, FILES_ENDPOINT } from "../core/files.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import {
   createTestAuth,
   DRIVE_SCHEMA_MIGRATIONS,
@@ -168,6 +168,9 @@ test("the signed-in pages carry no serious axe violation", {
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: TEST_SECRET,
     BETTER_AUTH_URL: TEST_BASE_URL,
+    // The site Worker has no in-memory fallback (drive#505), so the test hands
+    // it the tests' in-memory file store.
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const workerFetch =
