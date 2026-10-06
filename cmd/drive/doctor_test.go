@@ -64,6 +64,58 @@ func TestDoctorBlockHasEveryLabel(t *testing.T) {
 // file is not there, or the file is empty. Both must print a line that names
 // the path and says what happened, because "the mount's log is missing" is the
 // answer when someone reports a mount that never started.
+// TestJournaldBannerIsNotALogLine covers the one place a journald answer can
+// read as a log line and say nothing: a unit that has never logged prints
+// journalctl's own "-- No entries --" banner. The doctor block falls back to
+// the mount log on that, because a person pasting "-- No entries --" into a
+// ticket has pasted nothing. Every banner shape is here, including the
+// "-- Logs begin" line that always heads a real journal.
+func TestJournaldBannerIsNotALogLine(t *testing.T) {
+	for _, banner := range []string{
+		"",
+		"   \n\t",
+		"-- No entries --",
+		"-- Logs begin at Mon 2026-10-07 01:29:17 IST. --\n-- No entries --",
+	} {
+		if !journaldHasNoEntries(banner) {
+			t.Errorf("journaldHasNoEntries(%q) = false, want true so the banner is not printed as a log line", banner)
+		}
+	}
+	for _, line := range []string{
+		"Oct 07 01:29:17 host drive-mount[1]: mounted",
+		"-- Logs begin at Mon 2026-10-07 01:29:17 IST. --\nOct 07 01:29:17 host drive-mount[1]: mounted",
+	} {
+		if journaldHasNoEntries(line) {
+			t.Errorf("journaldHasNoEntries(%q) = true, want false so a real log line is printed", line)
+		}
+	}
+}
+
+// TestWindowsMountLetterTokenPicksTheDriveLetter is the decision the Windows
+// mount line makes, kept pure so it can be tested on a Linux host: the login
+// task's command line carries rclone's volume as a two-letter token, and the
+// drive letter is that token upper-cased. A longer path token is not a drive
+// letter, so a config path like /etc/x must not be read as one.
+func TestWindowsMountLetterTokenPicksTheDriveLetter(t *testing.T) {
+	command := `\"C:\\rclone.exe\" --config C:\\Users\\nish\\.config\\drive\\rclone.conf mount z: /mnt`
+	letter, ok := windowsDriveLetterFromCommand(command)
+	if !ok || letter != "Z:" {
+		t.Errorf("windowsDriveLetterFromCommand(%q) = %q, %v, want \"Z:\", true", command, letter, ok)
+	}
+	if _, ok := windowsDriveLetterFromCommand("drive --mount /mnt/point"); ok {
+		t.Error("a command with no drive-letter token answered with one")
+	}
+	if got := windowsVolumeRoot("Z:"); got != `Z:\` {
+		t.Errorf("windowsVolumeRoot(\"Z:\") = %q, want %q", got, `Z:\`)
+	}
+}
+
+// TestDoctorLogLinesAreNamedNotBlank pins the per-OS log location, which
+// is the fact the docs page states in its table for all three systems: the
+// macOS and Windows reads are a file under the config dir, and Linux's is
+// journald's. The docs page and this hint are one decision written twice, so a
+// change to either one that the other does not follow is a page that sends a
+// person to a log that is not there.
 func TestDoctorLogLinesAreNamedNotBlank(t *testing.T) {
 	var b strings.Builder
 	printDoctorLogFile(&b, filepath.Join(t.TempDir(), "no", "such", "mount.log"), 20)
@@ -80,6 +132,19 @@ func TestDoctorLogLinesAreNamedNotBlank(t *testing.T) {
 	printDoctorLogFile(&b, path, 20)
 	if got := b.String(); !strings.Contains(got, "is empty") {
 		t.Errorf("empty log = %q, want the named reason", got)
+	}
+
+	// The docs page's table is the same decision, so it is tied to the code
+	// here rather than left to a reader. Linux reads journald, macOS and Windows
+	// read the file, and a page that sends one of them to the other place is
+	// wrong for the people who follow it.
+	for _, goos := range []string{"darwin", "windows"} {
+		if got := mountLogHint(goos, "/home/nish"); got != filepath.Join("/home/nish", ".config", "drive", "mount.log") {
+			t.Errorf("mountLogHint(%q) = %q, want the mount.log the docs page names", goos, got)
+		}
+	}
+	if got := mountLogHint("linux", "/home/nish"); !strings.Contains(got, "journalctl") || !strings.Contains(got, SystemdUnitName) {
+		t.Errorf("mountLogHint(\"linux\") = %q, want the journalctl command the docs page names", got)
 	}
 }
 
