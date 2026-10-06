@@ -3,19 +3,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/Nishfleet/drive/internal/api"
 )
 
 // The rest of `drive status`: the lines that say what the drive is doing, not
@@ -665,57 +664,7 @@ func parseAPIBase(raw string) (string, error) {
 	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
 		return "", err
 	}
-	u, err := url.Parse(trimmed)
-	if err != nil {
-		// url.Error's message quotes the URL it was given, and that URL may
-		// carry a credential. The inner error names the actual fault (a bad
-		// port, a bad escape) without repeating the value, so that is what is
-		// reported.
-		if inner := errors.Unwrap(err); inner != nil {
-			return "", fmt.Errorf("api Worker URL does not parse: %v", inner)
-		}
-		return "", errors.New("api Worker URL does not parse")
-	}
-	if u.User != nil {
-		return "", errors.New("api Worker URL carries credentials; the key is sent in the Authorization header, not in the URL")
-	}
-	if u.Opaque != "" {
-		return "", errors.New("api Worker URL does not name a host")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", errors.New("api Worker URL must be http or https")
-	}
-	if u.Host == "" {
-		return "", errors.New("api Worker URL has no host")
-	}
-	// A secret travels only over TLS. Plain http is accepted for the loopback
-	// hosts the stand-in server and a local dev Worker use, and nowhere else:
-	// the storage secret is in every request this CLI makes to the Worker, and
-	// cleartext to a remote host is the same exposure as a flag in ps.
-	if u.Scheme == "http" && !loopbackHost(u.Hostname()) {
-		return "", fmt.Errorf("api Worker URL must be https://%s ...; plain http carries the storage secret in the clear", u.Host)
-	}
-	return strings.TrimSuffix(trimmed, "/"), nil
-}
-
-// loopbackHost reports whether host is this machine. The stand-in server, a
-// local dev Worker and the test server all talk over loopback, where cleartext
-// never leaves the machine.
-//
-// The whole 127.0.0.0/8 block and the IPv6 loopback are this machine, not just
-// 127.0.0.1, and `localhost` is matched without regard to case the way DNS
-// resolves it. A name that is an IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)
-// is loopback too: net.IP.IsLoopback knows all of them, so the check goes
-// through it rather than a hand-written list of spellings that would silently
-// fall out of date.
-func loopbackHost(host string) bool {
-	if strings.EqualFold(strings.Trim(host, "[]"), "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
+	return api.ParseBase(raw)
 }
 
 // cacheStatusLine prints the cache line and returns the reason it could not be

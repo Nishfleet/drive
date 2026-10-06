@@ -28,6 +28,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/Nishfleet/drive/internal/api"
 )
 
 // failure is one entry of the message table, bound to a failure site. detail
@@ -344,12 +346,5 @@ func printFailure(w io.Writer, err error) int {
 // the Worker's own refusals (APIError) split by status, anything else is the
 // network. err is never nil at a call site.
 func apiFailureKind(err error) string {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
-			return "key-revoked"
-		}
-		return "api-refused"
-	}
-	return "offline"
+	return api.FailureKind(err)
 }

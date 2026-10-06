@@ -52,7 +52,7 @@ func loopbackHost(host string) bool {
 	return false
 }
 
-func failureKind(err error) string {
+func FailureKind(err error) string {
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
 		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {

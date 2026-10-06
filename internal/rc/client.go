@@ -16,7 +16,7 @@ import (
 	"github.com/Nishfleet/drive/internal/login"
 )
 
-// rcClient is rclone's remote control over its loopback address, reached
+// Client is rclone's remote control over its loopback address, reached
 // through the rclone binary itself (`rclone rc --rc-addr --user --pass ...`)
 // rather than an HTTP client, so no listener of our own is added and the rc
 // user/pass stay in rclone.env (mode 0600) the mount already wrote (drive#498).

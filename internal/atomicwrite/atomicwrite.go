@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 )
 
-// Write writes data to path via a sibling temp file and rename, with
-// 0600 for secret-bearing files.
+// Write writes data to path via a sibling temp file and rename.
+// Secret-bearing files pass mode 0600.
 func Write(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create dir for %s: %w", path, err)

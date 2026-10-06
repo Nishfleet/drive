@@ -91,15 +91,15 @@ type Account struct {
 	Email string `json:"email"`
 }
 
-// APIClient talks to one api Worker as one signed-in device.
+// Client talks to one api Worker as one signed-in device.
 type Client struct {
 	Base  string // the api Worker base URL, without a trailing slash
 	Token string // the device token from sign-in; empty before it
 	HTTP  *http.Client
 }
 
-// NewAPIClient builds a client for a base URL, reusing parseAPIBase's checks
-// (status.go) so the same value is refused here and there.
+// New builds a client for a base URL, reusing ParseBase so the same
+// value is refused here and at the CLI's parseAPIBase wrapper.
 func New(apiBase, token string) (*Client, error) {
 	if strings.TrimSpace(apiBase) == "" {
 		return nil, wrapFail("no-api", nil)
@@ -166,7 +166,7 @@ func (c *Client) do(method, path string, body, out any) error {
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		err := &Error{Method: method, Path: path, Status: response.Status, Body: string(raw)}
-		return wrapFail(failureKind(err), err)
+		return wrapFail(FailureKind(err), err)
 	}
 	if out == nil {
 		return nil
@@ -177,7 +177,7 @@ func (c *Client) do(method, path string, body, out any) error {
 	return nil
 }
 
-// APIError is a call the api Worker refused. Status is the status line and
+// Error is a call the api Worker refused. Status is the status line and
 // Body the Worker's own {error} sentence, so nothing else has to be guessed
 // at the call site.
 type Error struct {
@@ -249,7 +249,7 @@ func (c *Client) pollToken(deviceCode string) (pollResult, error) {
 	if errors.As(err, &apiErr) && strings.Contains(apiErr.Status, "400") {
 		return result, wrapFail("sign-in-expired", nil)
 	}
-	return result, wrapFail(failureKind(err), err)
+	return result, wrapFail(FailureKind(err), err)
 }
 
 // MintKey asks the api Worker for one key of a kind (POST /v1/keys). `name` is
@@ -460,16 +460,20 @@ func CredentialsPath(home string) string {
 // not signed in yet is not an error here: the caller decides what to do about
 // a missing file.
 func LoadCredentials(home string) (Credentials, error) {
-	data, err := os.ReadFile(CredentialsPath(home))
-	if errors.Is(err, os.ErrNotExist) {
-		return Credentials{}, nil
+	path := CredentialsPath(home)
+	if err := login.CheckSecretFileMode(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Credentials{}, nil
+		}
+		return Credentials{}, wrapFail("unexpected", err)
 	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return Credentials{}, wrapFail("unexpected", fmt.Errorf("read %s: %w", CredentialsPath(home), err))
+		return Credentials{}, wrapFail("unexpected", fmt.Errorf("read %s: %w", path, err))
 	}
 	var creds Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return Credentials{}, wrapFail("unexpected", fmt.Errorf("%s is not valid JSON: %w", CredentialsPath(home), err))
+		return Credentials{}, wrapFail("unexpected", fmt.Errorf("%s is not valid JSON: %w", path, err))
 	}
 	return creds, nil
 }

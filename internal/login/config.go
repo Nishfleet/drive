@@ -66,7 +66,7 @@ const (
 	RcloneRemoteName = "drive"
 )
 
-// secretEnvName is the environment variable that carries the storage secret.
+// SecretEnvName is the environment variable that carries the storage secret.
 // It is the one the mount has always read; a flag alongside it is what this
 // issue removed, because a flag is in the shell history and in ps for every
 // user on the machine for as long as the process lives.
@@ -125,7 +125,7 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 		// The reader's buffer IS the cap: ReadSlice stops at the first
 		// newline or at a full buffer, and a full buffer with no newline is
 		// the over-long line refused below — the bytes never grow past
-		// maxSecretBytes no matter how long the pipe's writer hangs on. A
+		// MaxSecretBytes no matter how long the pipe's writer hangs on. A
 		// plain ReadString would have grown the buffer without limit until it
 		// found the newline, which is exactly the disk-image read this cap
 		// exists to refuse.
@@ -195,7 +195,7 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 // secret in it is read. A 0644 rclone.conf is the storage secret in every
 // shell's reach on the machine, the same exposure as the flag this issue
 // removed, so the error names the mode and the fix.
-func checkSecretFileMode(path string) error {
+func CheckSecretFileMode(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -236,7 +236,7 @@ func checkSecretFileMode(path string) error {
 // caller knows which half it needs. Only a config with no [drive] remote is an
 // error, because that is a file this CLI did not write.
 func ParseRcloneConfig(path string) (StorageConfig, error) {
-	if err := checkSecretFileMode(path); err != nil {
+	if err := CheckSecretFileMode(path); err != nil {
 		return StorageConfig{}, err
 	}
 	raw, err := os.ReadFile(path)
@@ -337,7 +337,7 @@ func RcloneConfigRedacted(c StorageConfig) string {
 	return RcloneConfig(r)
 }
 
-// rcloneEnvPathBeside is rclone.env next to the rclone.conf path ReadSecretKey
+// EnvPathBeside is rclone.env next to the rclone.conf path ReadSecretKey
 // already holds, so the two files stay a pair without a second home argument.
 func EnvPathBeside(configPath string) string {
 	if configPath == "" {
@@ -403,7 +403,7 @@ func SecretFromEnvFile(path string) (string, error) {
 }
 
 func parseRcloneEnvFile(path string) (map[string]string, error) {
-	if err := checkSecretFileMode(path); err != nil {
+	if err := CheckSecretFileMode(path); err != nil {
 		return nil, err
 	}
 	raw, err := os.ReadFile(path)

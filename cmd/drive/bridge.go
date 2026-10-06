@@ -19,7 +19,15 @@ import (
 func init() {
 	api.OpenURL = func(s string) error { return openURL(s) }
 	api.SetFail(func(kind string, detail error, args ...string) error {
-		f := failDetail(kind, detail, args...)
+		var f *failure
+		switch {
+		case detail == nil && len(args) == 0:
+			f = fail(kind)
+		case detail == nil:
+			f = failf(kind, args...)
+		default:
+			f = failDetail(kind, detail, args...)
+		}
 		if detail != nil {
 			var apiErr *api.Error
 			if errors.As(detail, &apiErr) {
