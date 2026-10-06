@@ -305,10 +305,9 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  // DRIVE_DB is the sweep's own binding (drive#536): the hourly trip takes an
-  // over-limit unpaid account's keys read-only through the customer database,
-  // so the same one this test already drives the meter with has to be named
-  // here for the trip to run at all.
+  // DRIVE_DB became a required scheduled() binding when the pre-charge limit
+  // sweep joined the hourly trip (drive#536, src/index.js): its absence fails
+  // the trigger before the meter roll, so the outage drive needs it bound.
   const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
@@ -331,13 +330,13 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
-    // The bill is worked over the month the hour falls in (drive#531), so the
-    // divisor comes from the month, not a fixed average.
+    // #678: the bill divides by the calendar month's own minutes, and the
+    // month here is the one `hour` falls in.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes: minutesInMonth(hour),
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
-      monthMinutes: minutesInMonth(hour),
     }).totalCents;
   };
   /** @param {number} from @param {number} to */
