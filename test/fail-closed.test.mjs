@@ -24,8 +24,8 @@ const workerScheduled =
   );
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
-test("src/index.js never builds the in-memory files store", () => {
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+test("src/index-env.js never builds the in-memory files store", () => {
+  const source = readFileSync(new URL("../src/index-env.js", import.meta.url), "utf8");
   assert.doesNotMatch(
     source,
     /createMemoryStore\s*\(/,

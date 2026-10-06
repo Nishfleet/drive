@@ -137,7 +137,7 @@ test("the welcome email is sent from the sign-in, once, and not from a test fixt
   // a string search, because a send that is never reached is the same failure
   // wearing a different hat: the send has to live in a module the Worker
   // imports, and the row's once-only claim has to live beside it.
-  const signin = read("src/signin.js");
+  const signin = read("src/signin-verify.js");
   assert.match(signin, /sendWelcomeOnce\(/, "the sign-in verify step calls the welcome");
   assert.match(
     signin,

@@ -724,7 +724,7 @@ test("an anonymous files request never reaches the store", async () => {
   // (src/index.js). A store that throws if touched proves the order rather
   // than asserting it in a comment.
   const { default: isolated } = await import("../src/index.js");
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/index-env.js", import.meta.url), "utf8");
   assert.match(
     source,
     /account \? withIndex\(storeFor\(c\.env\), c\.env\.DRIVE_DB, account\) : null/,

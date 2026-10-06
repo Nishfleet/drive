@@ -49,30 +49,22 @@
 // two different limits.
 
 import {
-  attachPendingCardAccount,
   claimCardFingerprint,
   pendingCardAccountId,
   signupCardFingerprint,
 } from "../core/abuse-guards.js";
-import {
-  AFTER_SIGNIN_COOKIE,
-  AFTER_SIGNIN_PATH,
-  authFor,
-  SIGNIN_LINK_TTL_SECONDS,
-  safeAfterSigninPath,
-  sessionAccount,
-} from "../core/auth.js";
+import { authFor, SIGNIN_LINK_TTL_SECONDS, sessionAccount } from "../core/auth.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import { provisionAccountBucket } from "../core/files.js";
 import { json } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
+import { cookieHeaders, redirect, SIGNIN_PATH, signinLinkRequest } from "./signin-link.js";
 import { signinSendOutcome } from "./signin-send-limit.js";
-import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
+import { handleSigninLinkVerify } from "./signin-verify.js";
 
 /** @typedef {import("../core/auth.js").Auth} Auth */
 
@@ -88,7 +80,7 @@ import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 const BAD_ADDRESS_MESSAGE = "Enter an email address we can send the link to.";
 
 /** The page itself, served from public/signin.html by the asset layer. */
-export const SIGNIN_PATH = "/signin";
+export { SIGNIN_PATH };
 /** The one endpoint the page posts to. */
 export const SIGNIN_ENDPOINT = "/api/signin";
 
@@ -613,240 +605,4 @@ export async function handleSigninRequest(request, env) {
   );
 }
 
-/**
- * Handles GET /api/signin/verify — the link a sign-in email carries.
- *
- *   GET /api/signin/verify?token=...
- *
- * The token is the whole proof, so the link needs no session: this is how a
- * person gets one. A good token mints the session, sets its cookie and
- * redirects to the drive; a spent, expired or made-up one redirects back to
- * the sign-in screen with nothing said about which, because telling a stranger
- * which of the three they hit is telling them about a mailbox they may not
- * own. The redirect rather than a JSON body is deliberate: this is a link a
- * browser follows, and a browser following it should land on files.
- *
- * This route requires no session — it is the one that mints them — so it is on
- * the public list test/account-gate.test.mjs walks, with the reason written
- * there.
- *
- * @param {Request} request
- * @param {SigninEnv} env
- * @returns {Promise<Response>}
- */
-export async function handleSigninLinkVerify(request, env) {
-  if (request.method !== "GET") {
-    return new Response("Method not allowed. Follow the link, or post to sign in.", {
-      status: 405,
-      headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  const auth = authFor(env);
-  if (!auth) {
-    return redirect(`${SIGNIN_PATH}?error=sign-in-closed`);
-  }
-  const token = new URL(request.url).searchParams.get("token");
-  if (token === null || token === "") {
-    return redirect(`${SIGNIN_PATH}?error=no-token`);
-  }
-  let verified;
-  try {
-    verified = await auth.api.magicLinkVerify({
-      query: { token },
-      headers: request.headers,
-      asResponse: true,
-    });
-  } catch {
-    return redirect(`${SIGNIN_PATH}?error=invalid-link`);
-  }
-  if (verified.status !== 200) {
-    return redirect(`${SIGNIN_PATH}?error=invalid-link`);
-  }
-  const driveDb = env.DRIVE_DB;
-  if (
-    driveDb !== undefined &&
-    driveDb !== null &&
-    typeof driveDb === "object" &&
-    "prepare" in driveDb
-  ) {
-    const cookies = verified.headers.getSetCookie();
-    const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
-    const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
-    if (account !== null) {
-      // The person is signed in by now: Better Auth set the cookie above. A
-      // hold that cannot move (a clash with a card already on the account)
-      // is logged loudly and the hold stays where it was, rather than
-      // turning a good sign-in into a 500.
-      try {
-        await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
-          email: account.email,
-          accountId: account.id,
-        });
-      } catch (cause) {
-        console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
-      }
-      // The account's own bucket exists from the first sign-in (drive#540):
-      // the verify step provisions `drv-<id>` through the one provisionBucket
-      // call the key mint also makes, so a customer who only ever uses the
-      // website has a bucket for the Files page and web upload, with no device
-      // key minted. Idempotent, so a returning sign-in re-checks the bucket for
-      // free and an account from before this call existed catches up here. A
-      // provisioning failure is logged loudly and the sign-in lands anyway —
-      // the Files page answers an empty folder for a bucket that is not there
-      // yet, and the key mint keeps its own call as the safety net.
-      try {
-        await provisionAccountBucket(env, account.id);
-      } catch (cause) {
-        console.error(
-          `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,
-        );
-      }
-      // The welcome email, once (drive#522). Four customer templates had no
-      // caller at all, so somebody could sign up, be charged, hit their cap
-      // and never hear from us. This is the seam that is guaranteed to run for
-      // a real account, and it is once-only because the claim lives on the
-      // account row (src/welcome.js), not in this isolate.
-      //
-      // A welcome is the one of those four that does not wait on a billing
-      // decision, so it ships here; the other three are still waiting on
-      // #496, and test/email-callers.test.mjs names them so they cannot go
-      // missing again quietly.
-      //
-      // Never throws: sendWelcomeOnce reports instead, because a failed
-      // welcome must never cost somebody their sign-in.
-      const secrets = /** @type {{MAIL_FROM?: string}} */ (env);
-      await sendWelcomeOnce({
-        db: /** @type {D1Database} */ (driveDb),
-        devices: createWelcomeStore(/** @type {D1Database} */ (driveDb)),
-        email: env.EMAIL,
-        mailFrom: secrets.MAIL_FROM ?? "",
-        account,
-        now: Date.now(),
-      });
-    }
-  }
-  // The one thing this route does is take the cookie Better Auth set onto a
-  // same-origin redirect of its own, so a person lands on the drive rather
-  // than on a JSON body. When they opened the device-approve link while signed
-  // out, that page left a return cookie so they come back to the code.
-  const extra = cookieHeaders(verified);
-  const cookies = extra["set-cookie"] ?? [];
-  const returnTo = safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
-  cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
-  return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
-}
-
-/**
- * The internal Better Auth request that the start step forwards a send to.
- *
- * The route never calls `auth.api.signInMagicLink` directly because that
- * bypasses the router's onRequest hook — and with it the per-IP rate limiter
- * Better Auth stores in D1 (drive issue #200). Forwarding a real request
- * through `auth.handler` puts the call in that hook, so the counter is
- * checked and incremented the same way a browser hit the library route.
- *
- * The URL is the library's own endpoint under the configured auth base path;
- * the body carries only the address the start step already validated. Of the
- * caller's headers it forwards only what the callee reads — the `origin` its
- * origin check validates against and the `cf-connecting-ip` its rate limiter
- * keys on — never the whole header set (see the note in the body below).
- * @param {Auth} auth the Better Auth instance from `authFor`
- * @param {string} email the address the start step validated
- * @param {Request} request the caller's request, whose origin and client-IP headers are forwarded
- * @returns {Request}
- */
-function signinLinkRequest(auth, email, request) {
-  const basePath = auth.options.basePath;
-  const base = /** @type {string} */ (auth.options.baseURL);
-  // Forward only what the callee reads, not the caller's whole header set. The
-  // library validates the origin from `origin` and resolves the per-IP
-  // rate-limit key from `cf-connecting-ip` (its configured ipAddressHeaders,
-  // core/auth.js); a JSON body is all it parses. The caller's `content-length`
-  // names this route's body, not the JSON built here, so carrying it across
-  // risks a body/length mismatch, and `Cookie`/`Authorization` belong to a
-  // signed-in person a magic-link send has no need to impersonate. `accept` is
-  // not forwarded either: the library's answer is JSON and the route reads the
-  // status, never a negotiated representation.
-  const headers = new Headers();
-  const origin = request.headers.get("origin");
-  if (origin !== null) {
-    headers.set("origin", origin);
-  }
-  const clientIp = request.headers.get("cf-connecting-ip");
-  if (clientIp !== null) {
-    headers.set("cf-connecting-ip", clientIp);
-  }
-  // The user-agent travels so the mail can name the browser or device
-  // that asked (drive#550): the library's own request context carries
-  // the forwarded headers into the magic-link callback, which is where
-  // the mail is built. It is a person's own string, not a key anything
-  // is bound to.
-  const userAgent = request.headers.get("user-agent");
-  if (userAgent !== null) {
-    headers.set("user-agent", userAgent);
-  }
-  // The body is the library's own shape, not the route's `step` wrapper.
-  headers.set("content-type", "application/json");
-  return new Request(`${base}${basePath}/sign-in/magic-link`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ email }),
-  });
-}
-
-/**
- * The `Set-Cookie` headers of a library response, each as its own line, so the
- * browser sees every cookie the library set or cleared rather than one header
- * with several cookies in it. The Workers runtime gives one cookie per
- * `Set-Cookie` header, and a comma-joined pair is not what a browser reads.
- * @param {Response} response
- * @returns {Record<string, string[]>}
- */
-function cookieHeaders(response) {
-  const cookies = response.headers.getSetCookie();
-  return cookies.length === 0 ? {} : { "set-cookie": cookies };
-}
-
-/**
- * One cookie value from the request, or empty. Used only to read the
- * after-signin return path the approve page set.
- * @param {Request} request
- * @param {string} name
- */
-function cookieValue(request, name) {
-  const header = request.headers.get("cookie") ?? "";
-  for (const part of header.split(";")) {
-    const idx = part.indexOf("=");
-    if (idx === -1) {
-      continue;
-    }
-    if (part.slice(0, idx).trim() !== name) {
-      continue;
-    }
-    try {
-      return decodeURIComponent(part.slice(idx + 1).trim());
-    } catch {
-      return "";
-    }
-  }
-  return "";
-}
-
-/**
- * A redirect the browser follows, never cached: it can carry a session cookie,
- * and the same rule every other account response carries.
- * @param {string} location
- * @param {Record<string, string[]>} [extraHeaders]
- * @returns {Response}
- */
-function redirect(location, extraHeaders = {}) {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      location,
-      "content-type": "text/plain; charset=utf-8",
-      "cache-control": "no-store",
-      ...extraHeaders,
-    },
-  });
-}
+export { handleSigninLinkVerify };
