@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { createAuth } from "../core/auth.js";
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
@@ -309,7 +309,7 @@ export function createTestD1(options = {}) {
  * there was none, so a test can read what the mail would name.
  * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);

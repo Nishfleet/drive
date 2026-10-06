@@ -11,15 +11,11 @@
 // named as unrecognised rather than treated as success, because a storage
 // layer that reports success for a call it could not read is how a key ends up
 // unscoped. Listing bodies — the versions this file's restore path reads —
-// parse in src/s3-listing.js, the one S3 listing parser both Workers share
+// parse in core/s3-listing.js, the one S3 listing parser both Workers share
 // (drive issue #504), so a key's own characters survive the answer everywhere.
 
 import { AwsClient } from "aws4fetch";
-import {
-  decodeEntities,
-  parseVersionRows,
-  tagValue as scanTagValue,
-} from "../../../src/s3-listing.js";
+import { decodeEntities, parseVersionRows, tagValue as scanTagValue } from "./s3-listing.js";
 
 /**
  * An S3 answer: the status, the headers (the version id and ETag a write
@@ -56,7 +52,7 @@ export class S3Error extends Error {
  * One tag's text from an S3 XML body, or null when the tag is absent — this
  * file's readers branch on the missing case (`ok()` reports "Unrecognised",
  * key minting refuses a half-built credential). The scan is the shared one
- * (src/s3-listing.js `tagValue`, the same function the site Worker's listings
+ * (core/s3-listing.js `tagValue`, the same function the site Worker's listings
  * read), and this adapter only turns its "not found" into null.
  * @param {string} xml
  * @param {string} tag
@@ -429,7 +425,7 @@ export async function readBucketConfig(client, config) {
 /**
  * The versions of a prefix, newest first as the endpoint returned them. The
  * restore path reads this to find the version a delete marker is hiding. The
- * scan and the decode are the shared parser's (src/s3-listing.js
+ * scan and the decode are the shared parser's (core/s3-listing.js
  * `parseVersionRows`), re-exported here under the name this file has always
  * given it, so a key the provider escaped in the answer reads back the way
  * the account wrote it (drive issue #504).

@@ -6,7 +6,7 @@
 // The page is a static asset served from public/files.html, so it cannot import
 // this module; test/files.test.mjs reads the shipped page and fails CI when its
 // copy, its endpoints or its 30-day window drift from here — the same gate
-// test/status.test.mjs runs for src/status.js.
+// test/status.test.mjs runs for core/status.js.
 //
 // Storage goes through the FileStore interface below, so the page and these
 // handlers are the same whatever holds the bytes. The stand-in for build step 1
@@ -26,14 +26,11 @@ import {
   versionMarkers,
 } from "./s3-listing.js";
 
-// The listing parser itself now lives in src/s3-listing.js, which the api
+// The listing parser itself now lives in core/s3-listing.js, which the api
 // Worker reads too (drive issue #504: one parser, decoded, for both Workers).
 // These re-exports keep the names every caller already imports from here.
 export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-listing.js";
 
-import { json, readJsonObject } from "../workers/api/src/http.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { contentMd5, createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -43,8 +40,11 @@ import {
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
+import { json, readJsonObject } from "./http.js";
+import { bucketForAccount } from "./keyprovider.js";
 import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
+import { contentMd5, createS3Client, provisionBucket } from "./s3.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
@@ -348,7 +348,7 @@ export function previewCopy(kind) {
     kind
   ];
   if (!entry) {
-    throw new Error(`no preview copy for "${kind}"; add it to PREVIEW_COPY in src/files.js`);
+    throw new Error(`no preview copy for "${kind}"; add it to PREVIEW_COPY in core/files.js`);
   }
   return entry;
 }
@@ -728,7 +728,7 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  * One version of one stored file, in the provider's own listing: the version
  * id the meter keys `file_versions` on, the key it lives at, its size in
  * bytes, and the instants its life begins and stops. The meter's reconciler
- * (src/meter.js `reconcileMeter`) reads this shape, and `listVersions` below
+ * (core/meter.js `reconcileMeter`) reads this shape, and `listVersions` below
  * is the one call a store makes to answer it, so the reconciler never knows
  * which provider it is fixing.
  * @typedef {object} FileStore
@@ -1361,7 +1361,7 @@ export function createMemoryStore() {
      * Every version of every file under one drive path. The recursive walk is
      * the same prefix scan `list` does at one level, one level down, so an
      * account's whole history comes back in the shape the reconciler reads
-     * (src/meter.js StorageVersion). `includeHidden` is accepted for the
+     * (core/meter.js StorageVersion). `includeHidden` is accepted for the
      * interface's sake; the stand-in has no hard-delete step, so every version
      * it kept is returned either way.
      * @param {string} path
@@ -1527,7 +1527,7 @@ export async function provisionAccountBucket(env, accountId, options = {}) {
  *   fetchImpl?: typeof fetch, region?: string, timeoutMs?: number,
  *   credentials?: {accessKeyId: string, secretAccessKey: string, sessionToken?: string}}} config
  *   `timeoutMs` is the per-call deadline every storage request runs under
- *   (src/fetch-retry.js); the default is the module's FETCH_TIMEOUT_MS, and
+ *   (core/fetch-retry.js); the default is the module's FETCH_TIMEOUT_MS, and
  *   a test passes a small one to prove the abort in milliseconds.
  * @returns {FileStore}
  */
@@ -1559,7 +1559,7 @@ export function createS3Store(config) {
         region,
         service: "s3",
         // No retry inside the signer, the same setting the api Worker's client
-        // uses (workers/api/src/s3.js): a retry that succeeds after a real
+        // uses (core/s3.js): a retry that succeeds after a real
         // refusal hides the refusal, and every caller above has its own named
         // failure for a non-ok answer.
         retries: 0,
@@ -1582,7 +1582,7 @@ export function createS3Store(config) {
    * same path `createS3Client` uses, so a test can still inject fetch and a
    * credentialed store never bypasses it through `aws.fetch`. Every caller
    * below passes a string URL. The send carries the store's one timeout and
-   * one retry (src/fetch-retry.js): a stalled socket answers named after 15 s,
+   * one retry (core/fetch-retry.js): a stalled socket answers named after 15 s,
    * and a 5xx on a replayable body gets exactly one retried call. The signing
    * is inside the retry's per-attempt send, because a second attempt must sign
    * again - the first attempt's signed Request has a body stream already
@@ -2490,13 +2490,13 @@ function plain(message, status) {
 
 /**
  * The account the request is for, and the store scoped to it. There is
- * exactly one way in, the signedInAccount() gate in src/status.js: a request
+ * exactly one way in, the signedInAccount() gate in core/status.js: a request
  * that cannot prove an account is a 401 with the message table's words and no
  * data, before any store is touched (drive issue #73, north star: Safe). The
  * stand-in account this module used to answer for everyone is gone.
  *
  * Every method other than a read is a state change, so it also refuses a
- * cross-site request with the same rule src/email-send.js and src/waitlist.js
+ * cross-site request with the same rule core/email-send.js and src/waitlist.js
  * use. A caller with no Origin (curl, the CLI) passes that check; the gate
  * above is what actually keeps a stranger out.
  * @param {Request} request

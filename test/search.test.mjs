@@ -8,7 +8,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
 import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
@@ -26,7 +31,7 @@ import {
 } from "../src/search.js";
 import { sqlitePlaceholders } from "./harness.mjs";
 
-/** @typedef {import("../src/files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 
 // The ExportedHandler type makes fetch optional and declares the runtime's
 // three arguments. The tests drive the Worker directly, so one wrapper

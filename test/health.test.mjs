@@ -19,6 +19,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { failureMessage } from "../core/messages.js";
 import {
   checkHealth,
   d1Bindings,
@@ -29,7 +30,6 @@ import {
   REQUIRED_BINDINGS,
 } from "../src/health.js";
 import worker from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -851,7 +851,7 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // email binding can only be exercised by really sending mail (only the
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
-  // absence fails closed at the intake (src/meter.js) instead of at the probe.
+  // absence fails closed at the intake (core/meter.js) instead of at the probe.
   const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "HEALTH_RATE_LIMITER"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(

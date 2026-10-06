@@ -3,26 +3,19 @@
 // exercises every branch without a running runtime, the same split
 // src/waitlist.js uses.
 //
-// The one import is the storage boundary's prefix helpers (src/files.js),
+// The one import is the storage boundary's prefix helpers (core/files.js),
 // which are plain data too: `scopeStore` applies the account prefix to the
 // listing and refuses a version from outside it, and `accountPrefix` builds
 // the storage key the event intake stores, so a row this reconciler inserts
 // and a row an event inserted are one shape (drive issue #59). The key
 // decoder is the api Worker's one notification-key reader
-// (workers/api/src/event-routes.js): the bucket's own event and the api
+// (core/event-routes.js): the bucket's own event and the api
 // Worker's own event route are the same bytes, and reading them two ways is
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
-
-import { decodeNotificationKey } from "../workers/api/src/event-routes.js";
-import {
-  BodyTooLargeError,
-  bearerToken,
-  json,
-  readLimitedBody,
-  tokensMatch,
-} from "../workers/api/src/http.js";
+import { decodeNotificationKey } from "./event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
+import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
@@ -81,7 +74,7 @@ import { accountPrefix, scopeStore } from "./files.js";
 //     version"). Each hour counts the whole minutes the version was live in
 //     it, and the two boundary hours each give up the sub-minute remainder
 //     of their overlap, so a version's booked minutes never exceed its true
-//     ones and a re-roll repeats them exactly. src/billing.js turns the
+//     ones and a re-roll repeats them exactly. core/billing.js turns the
 //     rollup into money over the minutes in that calendar month and the same
 //     decimal GB, so the meter and the invoice cannot disagree about a unit.
 
@@ -139,7 +132,7 @@ export const MINUTE_MS = 60_000;
 
 // One GB in bytes, decimal (1e9), because the GB in this repo's prices is the
 // decimal one: docs/build-spec.md prices at 2 cents per GB-month and reads
-// the $1 free credit as "about 50 GB", src/billing.js stores
+// the $1 free credit as "about 50 GB", core/billing.js stores
 // BYTES_PER_GB = 1e9 and GB_PER_TB = 1000, and the provider-usage-report
 // comparison the done-when makes is GB-months too. `size_bytes` itself is
 // always bytes; this constant is only the divisor of the GB-minutes math.
@@ -802,7 +795,7 @@ export async function recordUsage(db, accountId, hour, gbMinutes, storedBytes, n
 //
 // The window is half-open: an hour whose `hour` is exactly the first instant
 // of the month belongs to THAT month. An hour is keyed by the instant it
-// starts (src/meter.js's hourStart), so the hour that starts 00:00:00 on the
+// starts (core/meter.js's hourStart), so the hour that starts 00:00:00 on the
 // 1st is the new month's first row and the one that ends a second earlier is
 // the old month's last - a file spanning that instant is split across the two
 // months and neither month carries both hours (drive issue #163).
@@ -1181,7 +1174,7 @@ export const EVENT_ACTIONS = Object.freeze({
 // A batch of 1000 events at a realistic size sits well under this, and a
 // request over it is refused without being read, the same two layers
 // src/waitlist.js uses (declared length first, counted stream second); the
-// reader itself lives in workers/api/src/http.js next to the other request
+// reader itself lives in core/http.js next to the other request
 // readers (drive#618).
 const MAX_EVENT_BODY_BYTES = 256 * 1024;
 
@@ -2195,7 +2188,7 @@ const RECONCILE_ROWS_SQL = `SELECT b2_file_id, path, size_bytes, created_at, hid
 /**
  * One version the storage provider still lists, in the shape the reconciler
  * compares with a `file_versions` row. A provider's own listing is what
- * `listVersions` on the FileStore (src/files.js) answers; the reconciler never
+ * `listVersions` on the FileStore (core/files.js) answers; the reconciler never
  * knows which provider it is fixing, so the real provider's field names are
  * the adapter's problem (drive issue #60).
  * @typedef {{b2FileId: string, path: string, sizeBytes: number,

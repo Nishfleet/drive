@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SESSION_TTL_SECONDS } from "../../../src/auth.js";
-import { bucketForAccount, CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
+import { SESSION_TTL_SECONDS } from "../../../core/auth.js";
+import { bucketForAccount, CAPABILITIES_BY_KIND } from "../../../core/keyprovider.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   authorizePath,
@@ -11,7 +11,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
   renewKeyWindow,
-} from "../src/keystore.js";
+} from "../../../core/keystore.js";
 
 // A clock the test owns, so a device code or token can be expired without sleeping.
 /**
@@ -139,7 +139,7 @@ test("an unknown key kind is refused before any key is made", async () => {
   await assert.rejects(
     () =>
       store.mintKey(account, {
-        kind: /** @type {import("../src/keyprovider.js").KeyKind} */ ("root"),
+        kind: /** @type {import("../../../core/keyprovider.js").KeyKind} */ ("root"),
       }),
     /Unknown key kind/,
   );
@@ -179,7 +179,7 @@ test("an account can revoke its own key but never another account's", async () =
 test("the delete capability comes from the one kind table", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  for (const kind of /** @type {Array<import("../src/keyprovider.js").KeyKind>} */ ([
+  for (const kind of /** @type {Array<import("../../../core/keyprovider.js").KeyKind>} */ ([
     "device",
     "agent",
     "s3",
@@ -216,7 +216,7 @@ test("authorizePath keeps a key inside its own prefix", () => {
 // (accountForDeviceToken) enforces both, so a dead token is a 401 before any
 // handler runs.
 
-// The token TTL is the session TTL src/auth.js chose, pinned so the two
+// The token TTL is the session TTL core/auth.js chose, pinned so the two
 // numbers cannot drift into different lifetimes.
 test("the device token TTL is the session TTL", () => {
   assert.equal(DEVICE_TOKEN_TTL_SECONDS, SESSION_TTL_SECONDS);
@@ -422,7 +422,7 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
   // The row the store holds, written out rather than minted, so the rule can
   // be handed a row in any state a migration or a race can leave it in. The
   // cast is the one place a literal stands in for a stored row.
-  const agent = /** @type {import("../src/keystore.js").Device} */ ({
+  const agent = /** @type {import("../../../core/keystore.js").Device} */ ({
     id: "key_agent",
     accountId: "a",
     name: "claude",
@@ -457,7 +457,7 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
 
 test("the renewal rule never shortens a window the row already carries", () => {
   const at = 1_000_000;
-  const agent = /** @type {import("../src/keystore.js").Device} */ ({
+  const agent = /** @type {import("../../../core/keystore.js").Device} */ ({
     id: "key_agent",
     accountId: "a",
     name: "claude",

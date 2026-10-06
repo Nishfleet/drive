@@ -1,7 +1,7 @@
 /**
  * One timeout and one retry for the outbound calls that carry customer data:
- * the S3 store's every storage request (src/files.js) and the meter's Dodo
- * ingest (src/dodo.js). Before this module a stalled connection held a request
+ * the S3 store's every storage request (core/files.js) and the meter's Dodo
+ * ingest (core/dodo.js). Before this module a stalled connection held a request
  * until the platform killed it, and one 5xx was a failed push the caller had
  * to notice and redo by hand.
  *

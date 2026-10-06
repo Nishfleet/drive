@@ -20,7 +20,7 @@ import { GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { failureMessage } from "./messages.js";
 
-/** @typedef {ReturnType<typeof import("../workers/api/src/devices.js").createD1DeviceStore>} DeviceStore */
+/** @typedef {ReturnType<typeof import("./devices.js").createD1DeviceStore>} DeviceStore */
 
 /** 1 TB in decimal bytes, the same GB the bill uses. */
 export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * 1e9;

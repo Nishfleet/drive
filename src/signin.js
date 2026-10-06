@@ -11,7 +11,7 @@
 // test/pricing-copy.test.mjs for the price.
 //
 // What the endpoint does today, and what it deliberately does not. The store
-// is Better Auth over the customer database (src/auth.js): a link that is
+// is Better Auth over the customer database (core/auth.js): a link that is
 // single-use, expiring and stored beside the account's own rows, so a session
 // survives the isolate that made it. This route owns the HTTP shape — the two
 // steps, the closed door, the words — and none of the rules behind them: who
@@ -22,7 +22,7 @@
 // The route stays a closed door (503, the message table's words) when no
 // EMAIL binding is bound to the deployment, so a deployment that could not
 // mail a link never reports one sent. That is the same posture
-// POST /api/emails/send takes with EMAIL_SEND_TOKEN unset (src/email-send.js).
+// POST /api/emails/send takes with EMAIL_SEND_TOKEN unset (core/email-send.js).
 //
 // Third-party sign-in (Google, GitHub) is read by the endpoint and answered
 // the closed way. The OAuth client ids and secrets are credentials on Nish's
@@ -44,20 +44,16 @@
 // no parse and no email; both are declared next to the waitlist's in
 // cloudflare.config.ts, and both are probed by the health endpoint
 // (src/health.js), which answers 503 naming one a deploy lost. The shared
-// module (src/rate-limit.js) owns the key, the fail-closed answer and the 429,
+// module (core/rate-limit.js) owns the key, the fail-closed answer and the 429,
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { json } from "../workers/api/src/http.js";
-import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
   pendingCardAccountId,
   signupCardFingerprint,
-} from "./abuse-guards.js";
+} from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
@@ -65,16 +61,20 @@ import {
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
   sessionAccount,
-} from "./auth.js";
-import { provisionAccountBucket } from "./files.js";
-import { failureMessage } from "./messages.js";
-import { PRICE } from "./pricing.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { provisionAccountBucket } from "../core/files.js";
+import { json } from "../core/http.js";
+import { keyProviderFor } from "../core/keyprovider-env.js";
+import { failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
 import { signinSendOutcome } from "./signin-send-limit.js";
 import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 
-/** @typedef {import("./auth.js").Auth} Auth */
+/** @typedef {import("../core/auth.js").Auth} Auth */
 
 /**
  * What a caller is told when the address is not one a link can be sent to. One
@@ -132,7 +132,7 @@ export const SIGNIN_OFFERED_METHODS = Object.freeze(["email"]);
 // Every word and every path the page shows, in one place. The page carries
 // these verbatim (test/signin.test.mjs pins each one against the shipped
 // file); nothing here is money, so no number is written twice — the one price
-// line comes from src/pricing.js, the single price source.
+// line comes from core/pricing.js, the single price source.
 export const SIGNIN_COPY = Object.freeze({
   title: "Sign in",
   // drive#180: the screen offers only what the server can complete, so the
@@ -186,7 +186,7 @@ export const SIGNIN_COPY = Object.freeze({
 
 /**
  * The route's one closed-door answer, built from the message table so the
- * words are the same ones every other surface uses (src/messages.js).
+ * words are the same ones every other surface uses (core/messages.js).
  * @returns {{error: string}}
  */
 export function signinClosedBody() {
@@ -325,7 +325,7 @@ function readStart(body) {
 
 /**
  * The environment this route needs. It is the Worker's own env plus the three
- * Better Auth settings (src/auth.js) and the test seam that stands in for the
+ * Better Auth settings (core/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
  * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
@@ -576,7 +576,7 @@ export async function handleSigninRequest(request, env) {
     // Better Auth answers 429 from its rate limiter; translate that into the
     // message table's words rather than passing its body through, and carry the
     // library's own retry-after through as the `retry-after` header the edge
-    // limiter sets (src/rate-limit.js), so a client gets one backoff signal.
+    // limiter sets (core/rate-limit.js), so a client gets one backoff signal.
     if (authResponse.status === 429) {
       const retryAfter = authResponse.headers.get("x-retry-after");
       return json(
@@ -761,7 +761,7 @@ function signinLinkRequest(auth, email, request) {
   // Forward only what the callee reads, not the caller's whole header set. The
   // library validates the origin from `origin` and resolves the per-IP
   // rate-limit key from `cf-connecting-ip` (its configured ipAddressHeaders,
-  // src/auth.js); a JSON body is all it parses. The caller's `content-length`
+  // core/auth.js); a JSON body is all it parses. The caller's `content-length`
   // names this route's body, not the JSON built here, so carrying it across
   // risks a body/length mismatch, and `Cookie`/`Authorization` belong to a
   // signed-in person a magic-link send has no need to impersonate. `accept` is

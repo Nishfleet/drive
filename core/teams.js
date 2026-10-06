@@ -47,7 +47,7 @@ import { checkedTeamRole, teamScopeFor } from "./keyprovider.js";
 
 /**
  * An account row the invite can bind to. The in-memory sign-in store's own
- * shape (workers/api/src/device-signin.js), which is why the lookup below is
+ * shape (core/device-signin.js), which is why the lookup below is
  * by value: its map is keyed by account id, and a team invite is an email.
  * @typedef {{id: string, name: string, email: string|null}} TeamAccount
  */
@@ -55,7 +55,7 @@ import { checkedTeamRole, teamScopeFor } from "./keyprovider.js";
 /**
  * A resolver a D1-backed store supplies instead of scanning a Map: the account
  * whose `user.email` is this address (Better Auth's own `user` table,
- * src/auth.js). Injected so the binding is one function, not a query written
+ * core/auth.js). Injected so the binding is one function, not a query written
  * twice.
  * @callback ResolveAccountByEmail
  * @param {string} email
@@ -370,7 +370,7 @@ export function createTeamStore(options = {}) {
  * cannot be met by a per-isolate Map.
  *
  * The account lookup is injected (`resolveAccountByEmail`) because the account
- * table is the sign-in flow's (Better Auth's `user`, src/auth.js), not one
+ * table is the sign-in flow's (Better Auth's `user`, core/auth.js), not one
  * this module owns. Without it an invite cannot bind, so every invite stays
  * `invited` and the store says so rather than inventing an account.
  * @param {D1Database} db

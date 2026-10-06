@@ -22,8 +22,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { METER_RECONCILE_SCHEDULE } from "../../core/meter.js";
 import worker from "../../src/index.js";
-import { METER_RECONCILE_SCHEDULE } from "../../src/meter.js";
 import {
   purgeExpiredSigninSends,
   SIGNIN_SEND_DAILY_MAX,

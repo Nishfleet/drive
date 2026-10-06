@@ -25,10 +25,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sha256Hex } from "../../workers/api/src/db.js";
-import { createD1DeviceStore, renewKeyRow } from "../../workers/api/src/devices.js";
-import { AGENT_KEY_TTL_SECONDS } from "../../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
+import { sha256Hex } from "../../core/db.js";
+import { createD1DeviceStore, renewKeyRow } from "../../core/devices.js";
+import { AGENT_KEY_TTL_SECONDS } from "../../core/keyprovider.js";
+import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**
@@ -361,10 +361,10 @@ test("a device row minted before the session was recorded is refused on a provid
   // table, in the shape the pre-#544 code left on every deployment running
   // this provider: a device key with no expiry value at all, over a
   // credential whose session has since died.
-  /** @type {import("../../workers/api/src/keyprovider.js").KeyProvider} */
+  /** @type {import("../../core/keyprovider.js").KeyProvider} */
   const sessionProvider = {
     namesSession: true,
-    async mint(/** @type {import("../../workers/api/src/keyprovider.js").KeyScope} */ scope) {
+    async mint(/** @type {import("../../core/keyprovider.js").KeyScope} */ scope) {
       return { accessKeyId: `ak_${scope.prefix}`, secret: "sk_sts", expiresIn: 900 };
     },
   };
@@ -445,9 +445,9 @@ test("a deliberate permanent device row stays valid on a provider that names no 
   // die on their own — `expiresIn` null, no session token — so the provider
   // carries no `namesSession` signal, and a device row with no expiry is
   // exactly the permanent key it says it is.
-  /** @type {import("../../workers/api/src/keyprovider.js").KeyProvider} */
+  /** @type {import("../../core/keyprovider.js").KeyProvider} */
   const permanentProvider = {
-    async mint(/** @type {import("../../workers/api/src/keyprovider.js").KeyScope} */ scope) {
+    async mint(/** @type {import("../../core/keyprovider.js").KeyScope} */ scope) {
       return { accessKeyId: `ak_${scope.prefix}`, secret: "sk_pair", expiresIn: null };
     },
   };
@@ -529,9 +529,7 @@ test("a provider session shorter than the hour is the lifetime every renewal mea
   const store = createMemoryStore({
     now: clock.now,
     keyProvider: {
-      mint /** @param {import("../../workers/api/src/keyprovider.js").KeyScope} scope */: async (
-        scope,
-      ) => ({
+      mint /** @param {import("../../core/keyprovider.js").KeyScope} scope */: async (scope) => ({
         accessKeyId: `ak_${scope.prefix}`,
         secret: "sk_provider",
         sessionToken: "sess_provider",

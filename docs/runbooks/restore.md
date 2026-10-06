@@ -15,15 +15,15 @@ rolling back a deploy.
 
 1. If they deleted it from the Files page, it is in `.trash/` for 30 days and
    they can restore it themselves from "Recently deleted" (`purgeExpiredTrash`,
-   `src/files.js:717`). Send them there first.
+   `core/files.js:717`). Send them there first.
 2. If they deleted it any other way (the CLI, an rclone command), the object
    storage still holds the previous version. Every stored path keeps its
    versions, and the reconciler reads them through `store.listVersions`
-   (`src/files.js:831`, the shape the reconciler and an operator both read). An
+   (`core/files.js:831`, the shape the reconciler and an operator both read). An
    operator restores the wanted version into the current key. The window is the
    provider's version window, so do this as soon as the request arrives.
 3. Do not run the nightly trash purge by hand to "tidy up" while a restore is
-   in flight. It runs at 05:00 UTC (`TRASH_PURGE_SCHEDULE`, `src/files.js:676`).
+   in flight. It runs at 05:00 UTC (`TRASH_PURGE_SCHEDULE`, `core/files.js:676`).
 
 ## A D1 row or table
 

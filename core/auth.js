@@ -18,7 +18,7 @@
 //
 // The closed door is unchanged. `authFor` returns null without the database,
 // the signing secret or the public URL, and the route that mints a link
-// answers 503 with the message table's words (src/messages.js) rather than
+// answers 503 with the message table's words (core/messages.js) rather than
 // reporting an email that could not leave. There is no default secret and no
 // default URL in this file: Better Auth signs its cookies with `secret` and
 // builds every link it mails from `baseURL`, so a deployment with neither set
@@ -50,7 +50,7 @@ export const AUTH_COOKIE_PREFIX = "drive";
 
 /**
  * How long a sign-in link is good for. Ten minutes is the same window the
- * device code has (DEVICE_CODE_TTL_SECONDS in workers/api/src/keystore.js):
+ * device code has (DEVICE_CODE_TTL_SECONDS in core/keystore.js):
  * long enough to find the email, short enough that a link left in a mailbox is
  * dead.
  */
@@ -177,7 +177,7 @@ export function createAuth(options) {
       // hold a caller-supplied chain whose first element an attacker controls, and
       // a key built from it would let one client reset its own ceiling by choosing
       // the header. This is the same header the edge per-IP limiter keys on
-      // (src/rate-limit.js), so the two layers bound the same caller.
+      // (core/rate-limit.js), so the two layers bound the same caller.
       ipAddress: {
         ipAddressHeaders: ["cf-connecting-ip"],
       },
@@ -423,7 +423,7 @@ function signinRequestedAt(when) {
 
 /**
  * The one email a sign-in link arrives in. Rendered here for the same reason
- * the code email was: it carries a secret, and src/emails.js's table holds the
+ * the code email was: it carries a secret, and core/emails.js's table holds the
  * five templates the spec names for customers. A table that also held links
  * would be a place to leak one from.
  *

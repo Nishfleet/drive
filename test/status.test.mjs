@@ -1,6 +1,6 @@
 // Tests for first-run and sync status (drive issue #32). Two halves:
 //
-// 1. The logic in src/status.js: the one install command, the connection
+// 1. The logic in core/status.js: the one install command, the connection
 //    state a device is in, its sync state, upload progress, and the words the
 //    page says for each. Every branch, including the "waiting for you" and
 //    "unreachable" ones the page must not confuse.
@@ -17,6 +17,32 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
+import {
+  CONNECTED_WINDOW_MS,
+  CONNECTION_COPY,
+  connectionStatus,
+  EMPTY_STATES,
+  FIRST_RUN_COMMAND,
+  FIRST_RUN_STEPS,
+  firstRunState,
+  formatBytes,
+  handleFirstRunStatusRequest,
+  INSTALL_COMMAND,
+  INSTALL_LINES,
+  LOGIN_COMMAND,
+  POLL_INTERVAL_MS,
+  STATUS_COMMAND,
+  STATUS_ENDPOINT,
+  SYNC_ERROR_NOTIFICATION,
+  SYNCED_WINDOW_MS,
+  signedInAccount,
+  syncStatus,
+  UPLOAD_LABEL,
+  uploadProgress,
+} from "../core/status.js";
 import {
   ageMs,
   connectionLine,
@@ -40,32 +66,6 @@ import {
   uploadLine,
 } from "../src/get-started.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import {
-  CONNECTED_WINDOW_MS,
-  CONNECTION_COPY,
-  connectionStatus,
-  EMPTY_STATES,
-  FIRST_RUN_COMMAND,
-  FIRST_RUN_STEPS,
-  firstRunState,
-  formatBytes,
-  handleFirstRunStatusRequest,
-  INSTALL_COMMAND,
-  INSTALL_LINES,
-  LOGIN_COMMAND,
-  POLL_INTERVAL_MS,
-  STATUS_COMMAND,
-  STATUS_ENDPOINT,
-  SYNC_ERROR_NOTIFICATION,
-  SYNCED_WINDOW_MS,
-  signedInAccount,
-  syncStatus,
-  UPLOAD_LABEL,
-  uploadProgress,
-} from "../src/status.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -699,7 +699,7 @@ test("the shell carries one wordless install row per system for the renderer to 
 test("the shell is structure only: the module's copy is not re-declared in it", () => {
   // The old gate policed a second copy of every sentence; this one fails if a
   // second copy is ever reintroduced. The shell carries structure and styles;
-  // every word the page shows comes from src/status.js through the renderer.
+  // every word the page shows comes from core/status.js through the renderer.
   assert.ok(
     !shell.includes(INSTALL_COMMAND),
     "the shell must not carry the install command; the renderer writes it from the module",

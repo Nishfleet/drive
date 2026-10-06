@@ -17,7 +17,7 @@
 // The failure words here are machine-facing, not the person's: the only caller
 // is the storage server, and these strings are the api Worker's own error
 // shape (the same inline sentences index.js uses for 404/405/400), so they are
-// deliberately NOT the one user-facing table in src/messages.js. The one gate
+// deliberately NOT the one user-facing table in core/messages.js. The one gate
 // that table drives, test/messages.test.mjs, covers the table and the shipped
 // page; a bucket reading an XML/`{"error"}` body is not a person.
 

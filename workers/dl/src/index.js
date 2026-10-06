@@ -18,7 +18,7 @@
 //   2. **The account comes from the path, and only from the path.** A key is
 //      minted into `u/<id>/` (docs/build-spec.md "Keys and safety"), so
 //      `/u/<id>/…` *is* the storage key and the account is its first segment.
-//      `folderAccount` (src/meter.js) is the same function the meter's event
+//      `folderAccount` (core/meter.js) is the same function the meter's event
 //      intake reads the account out of a key with, so the two can never
 //      disagree about which folder a key belongs to. Because the key is
 //      rebuilt from the account segment rather than taken from the rest of
@@ -36,7 +36,7 @@
 //
 // The counter is `usage_minutes.download_bytes` for the current UTC hour
 // (migrations/drive/0005_meter.sql), written by `recordDownloadBytes`
-// (src/meter.js) — the same table the hourly rollup writes `gb_minutes_live`
+// (core/meter.js) — the same table the hourly rollup writes `gb_minutes_live`
 // into, and the two columns are disjoint, so neither zeroes the other. The
 // write happens after the response is handed back: it is a `waitUntil` promise,
 // because the bytes are served whether or not the counter write finished, and
@@ -44,16 +44,16 @@
 
 import { Hono } from "hono";
 
-import { failureMessage } from "../../../src/messages.js";
-import { folderAccount, recordDownloadBytes } from "../../../src/meter.js";
+import { failureMessage } from "../../../core/messages.js";
+import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
 
 /**
  * The storage the Worker streams from: the same `FileStore` the pricing
- * Worker uses (src/files.js), handed in unscoped. The keys it is called with
+ * Worker uses (core/files.js), handed in unscoped. The keys it is called with
  * are full storage keys (`u/<id>/…`), not drive paths, so the scoping that
  * `scopeStore` does is not applied here — the account prefix in the key *is*
  * the scoping, and it is the one the spec mints every key into.
- * @typedef {import("../../../src/files.js").FileStore} FileStore
+ * @typedef {import("../../../core/files.js").FileStore} FileStore
  */
 
 /**
@@ -79,7 +79,7 @@ const DOWNLOAD_HEADERS = Object.freeze({
   // A download is never a document on our origin and never a guessable
   // content type: the bytes are whatever the customer uploaded, so they go
   // out as octet-stream with nosniff beside them. The preview route in
-  // src/files.js serves a browser-renderable type for a named kind; there is
+  // core/files.js serves a browser-renderable type for a named kind; there is
   // no name here beyond the key, and octet-stream is the honest one for it.
   "x-content-type-options": "nosniff",
 });
@@ -175,7 +175,7 @@ export async function handleDownload(request, ctx, platform) {
     // exist.
     return notFound();
   }
-  /** @type {import("../../../src/files.js").FileRead} */
+  /** @type {import("../../../core/files.js").FileRead} */
   let object;
   try {
     object = await ctx.store.read(named.key);

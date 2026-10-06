@@ -20,12 +20,15 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { EMAIL_KINDS } from "../src/emails.js";
+import { EMAIL_KINDS } from "../core/emails.js";
 
 /** @param {string} path @returns {string} */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 const SRC_DIR = new URL("../src/", import.meta.url);
+// The shared code both Workers import (drive#616): the sends that moved there
+// with the rest of the shared modules are still runtime callers.
+const CORE_DIR = new URL("../core/", import.meta.url);
 const WORKER_SRC_DIRS = [
   new URL("../workers/api/src/", import.meta.url),
   new URL("../workers/dl/src/", import.meta.url),
@@ -35,10 +38,15 @@ const WORKER_SRC_DIRS = [
 function runtimeSources() {
   /** @type {{path: string, text: string}[]} */
   const files = [];
-  for (const dir of [SRC_DIR, ...WORKER_SRC_DIRS]) {
+  for (const dir of [SRC_DIR, CORE_DIR, ...WORKER_SRC_DIRS]) {
     for (const name of readdirSync(dir)) {
       if (name.endsWith(".js")) {
-        const path = name === "index.js" && dir !== SRC_DIR ? `workers:${name}` : `src/${name}`;
+        const path =
+          dir === CORE_DIR
+            ? `core/${name}`
+            : name === "index.js" && dir !== SRC_DIR
+              ? `workers:${name}`
+              : `src/${name}`;
         files.push({ path, text: readFileSync(new URL(name, dir), "utf8") });
       }
     }
@@ -110,7 +118,7 @@ test("the blocked kinds are still real templates, so the gate cannot pass by del
   // The escape hatch above is "record the blocker". That is only honest while
   // the template still exists: if somebody deletes a template to make this
   // file pass, the customer stops getting an email and the gate goes quiet.
-  const emails = read("src/emails.js");
+  const emails = read("core/emails.js");
   for (const kind of BLOCKED_ON_AN_ISSUE.keys()) {
     assert.ok(
       EMAIL_KINDS.includes(kind),
@@ -119,7 +127,7 @@ test("the blocked kinds are still real templates, so the gate cannot pass by del
     assert.match(
       emails,
       new RegExp(`\\b${kind}\\b`),
-      `${kind} is recorded as blocked on an issue, so src/emails.js must still render it`,
+      `${kind} is recorded as blocked on an issue, so core/emails.js must still render it`,
     );
   }
 });

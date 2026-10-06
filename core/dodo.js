@@ -225,7 +225,7 @@ export function resolveDodoUrl(baseUrl, path) {
 /**
  * True when a URL is an https page on Dodo's own domain, with no username or
  * password in it: the shape every URL we hand a person must have before it
- * becomes a redirect. A checkout (src/topup.js) and a customer-portal session
+ * becomes a redirect. A checkout (core/topup.js) and a customer-portal session
  * link (src/portal.js) both answer a customer, so both go through this one
  * check rather than each spelling the pin out again.
  * @param {string} value

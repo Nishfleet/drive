@@ -6,7 +6,7 @@
 // shipped files are hand-written rather than generated: the site is one
 // prebuilt HTML document, not an app that renders a route per request.
 //
-// The price itself is not declared here: src/pricing.js is the one price
+// The price itself is not declared here: core/pricing.js is the one price
 // source, and BILLING below is built from PRICE so the tags, the JSON-LD and
 // llms.txt render the same numbers and sentences the page does (issue #23).
 // The rule (drive#463, Nish 2026-10-04): pay only for what you store.
@@ -79,7 +79,7 @@ export const PAGES = Object.freeze([
   // in the sitemap. Its price line is PRICE's, like every other page's.
   Object.freeze({ path: "/starter.html", indexable: true }),
   // The legal and trust pages (drive#523), at the clean URLs the footers link.
-  // src/legal.js is their one list; each is indexable and in the sitemap.
+  // core/legal.js is their one list; each is indexable and in the sitemap.
   ...LEGAL_PAGES.map((page) =>
     Object.freeze({ path: page.path, file: page.file, indexable: true }),
   ),

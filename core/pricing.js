@@ -2,7 +2,7 @@
 // pricing page, the meta tags and llms.txt must carry live here, so they
 // cannot drift. The shipped page is a hand-written static asset, so nothing
 // renders it at build time: the gate is test/pricing-copy.test.mjs, which
-// builds its expectations from this config and from src/billing.js's one bill
+// builds its expectations from this config and from core/billing.js's one bill
 // function, monthBillCents(), and fails CI when the shipped page drifts from
 // them. The meta/llms gate test/seo.test.mjs does the same.
 //
@@ -19,7 +19,7 @@
 // below is built from it, and test/pricing-copy.test.mjs proves the copy and
 // the bill both follow it when it moves.
 //
-// There is no bill arithmetic here: src/billing.js's monthBillCents() is the
+// There is no bill arithmetic here: core/billing.js's monthBillCents() is the
 // one function that turns this config into dollars. This file holds the
 // numbers and the sentences, so the copy and that function cannot disagree
 // (drive issue #23, folded #86).

@@ -17,10 +17,10 @@
 //
 // Plain logic plus the standard Request/Response, so node --test exercises
 // every branch without a Worker runtime, like src/waitlist.js and
-// src/status.js.
+// core/status.js.
 
-import { json } from "../workers/api/src/http.js";
 import { EMAIL_KINDS, FROM_NAME, REPLY_TO_LOCAL, renderEmail } from "./emails.js";
+import { json } from "./http.js";
 
 /**
  * The Email Sending binding as this module uses it: `send()` and nothing
@@ -158,7 +158,7 @@ export async function sendEmail(emailBinding, request) {
   }
   // Required, not defaulted: an unset sender is a deployment that is not
   // configured, and a placeholder domain would fail every send while looking
-  // configured. src/email-send.js turns this into a 503.
+  // configured. core/email-send.js turns this into a 503.
   if (typeof from !== "string" || from.trim().length === 0) {
     throw new TypeError("sendEmail needs a from address (the deployment's MAIL_FROM)");
   }

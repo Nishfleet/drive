@@ -4,32 +4,24 @@ import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { bearerToken, errorResponse } from "../workers/api/src/http.js";
-import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
-import { createD1QueueStore } from "../workers/api/src/queues.js";
-import { runPreChargeLimitCron } from "./abuse-guards.js";
-import {
-  CLOSE_CANCEL_ENDPOINT,
-  CLOSE_ENDPOINT,
-  CLOSE_SCHEDULE,
-  handleCloseCancelRequest,
-  handleCloseRequest,
-  handleCloseStatusRequest,
-  runAccountCloseCron,
-} from "./account-close.js";
-import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
+import { runPreChargeLimitCron } from "../core/abuse-guards.js";
+import { authFor, SIGNIN_LINK_PATH } from "../core/auth.js";
 import {
   BILLING_CONFIG,
   handleQuoteRequest,
   handleUsageRequest,
   QUOTE_ENDPOINT,
   USAGE_ENDPOINT,
-} from "./billing.js";
-import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
-import { CAP_ENDPOINT, capStateForAccount, handleCapRequest, runCapEnforcement } from "./cap.js";
-import { handleSendEmailRequest, isSameOriginRequest } from "./email-send.js";
+} from "../core/billing.js";
+import {
+  CAP_ENDPOINT,
+  capStateForAccount,
+  handleCapRequest,
+  runCapEnforcement,
+} from "../core/cap.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
 import {
   createMemoryStore,
   createS3Store,
@@ -40,10 +32,11 @@ import {
   storageBucketForKey,
   storageVarsFromEnv,
   TRASH_PURGE_SCHEDULE,
-} from "./files.js";
-import { HEALTH_PATH, handleHealthRequest } from "./health.js";
-import { balanceCents } from "./ledger.js";
-import { failureMessage } from "./messages.js";
+} from "../core/files.js";
+import { bearerToken, errorResponse } from "../core/http.js";
+import { keyProviderFor } from "../core/keyprovider-env.js";
+import { balanceCents } from "../core/ledger.js";
+import { failureMessage } from "../core/messages.js";
 import {
   HOUR_MS,
   handleStorageEventRequest,
@@ -57,7 +50,41 @@ import {
   recordNightlySizes,
   runMeterCron,
   toMillis,
-} from "./meter.js";
+} from "../core/meter.js";
+import {
+  AUTO_TOPUP_ENDPOINT,
+  drawPendingHours,
+  handleAutoTopUpRequest,
+  prepaidPauseOn,
+  settleBalances,
+} from "../core/prepaid.js";
+import { createD1QueueStore } from "../core/queues.js";
+import {
+  handleFirstRunStatusRequest,
+  STATUS_ENDPOINT,
+  signedInAccount,
+  unauthorizedResponse,
+} from "../core/status.js";
+import {
+  BALANCE_ENDPOINT,
+  BILLING_WEBHOOK_PATH,
+  balanceLine,
+  handleBalanceRequest,
+  handleBillingWebhook,
+  handleTopUpRequest,
+  TOPUP_ENDPOINT,
+} from "../core/topup.js";
+import {
+  CLOSE_CANCEL_ENDPOINT,
+  CLOSE_ENDPOINT,
+  CLOSE_SCHEDULE,
+  handleCloseCancelRequest,
+  handleCloseRequest,
+  handleCloseStatusRequest,
+  runAccountCloseCron,
+} from "./account-close.js";
+import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
+import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
   METER_JOB_KINDS,
@@ -72,13 +99,6 @@ import {
   withCronCheckIn,
 } from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
-import {
-  AUTO_TOPUP_ENDPOINT,
-  drawPendingHours,
-  handleAutoTopUpRequest,
-  prepaidPauseOn,
-  settleBalances,
-} from "./prepaid.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -102,25 +122,10 @@ import {
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
-import {
-  handleFirstRunStatusRequest,
-  STATUS_ENDPOINT,
-  signedInAccount,
-  unauthorizedResponse,
-} from "./status.js";
-import {
-  BALANCE_ENDPOINT,
-  BILLING_WEBHOOK_PATH,
-  balanceLine,
-  handleBalanceRequest,
-  handleBillingWebhook,
-  handleTopUpRequest,
-  TOPUP_ENDPOINT,
-} from "./topup.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
-// (src/email-send.js). One route, so one place knows the provider.
+// (core/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
 
 // The api Worker's family (workers/api/src/routes.js API_PREFIX), the one path
@@ -134,7 +139,7 @@ const API_PATH_PREFIX = "/v1";
  * The per-request value Hono's context carries. `account` is resolved once by
  * the gate middleware below and read from the context by every handler, so a
  * handler cannot disagree with the gate about who is calling. It is the same
- * shape src/status.js `signedInAccount` returns and every handler's own
+ * shape core/status.js `signedInAccount` returns and every handler's own
  * `account` parameter takes, so the gate's answer needs no narrowing where it
  * is handed on.
  * @typedef {{account: {id: string, name: string, email: string|null}|null}} DriveVariables
@@ -162,10 +167,10 @@ const API_PATH_PREFIX = "/v1";
 //
 //   - /api/waitlist: sign-ups, before accounts exist.
 //   - /api/storage-events: the storage provider's event rule posts here with
-//     its own shared token in a header (src/meter.js handleStorageEventRequest),
+//     its own shared token in a header (core/meter.js handleStorageEventRequest),
 //     not a session. The token is the gate.
 //   - /api/emails/send: the meter's cap emails and the billing webhook; closed
-//     with no EMAIL_SEND_TOKEN set (src/email-send.js), so its gate is a
+//     with no EMAIL_SEND_TOKEN set (core/email-send.js), so its gate is a
 //     deployment secret rather than a session.
 //   - /api/health: the outside outage monitor polls it with no session and it
 //     answers ok/failing with no account data at all (src/health.js).
@@ -179,7 +184,7 @@ const API_PATH_PREFIX = "/v1";
 //     the price for a size, not an account, so it has no session to need.
 //   - /api/billing/webhook: Dodo's signed payment webhook (drive#586). The
 //     Standard Webhooks signature over the raw body is the gate
-//     (src/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
+//     (core/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
 //     it answers 503, a closed door.
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
@@ -223,8 +228,8 @@ function isPublic(pathname) {
 // each account's objects live in that account's own bucket (`drv-<id>`,
 // storageBucketForKey / bucketForAccount), which is the same name a Finder
 // key is minted into (drive#371 / #460). The account prefix is still
-// scopeStore's job (src/files.js).
-/** @type {import("./files.js").FileStore|undefined} */
+// scopeStore's job (core/files.js).
+/** @type {import("../core/files.js").FileStore|undefined} */
 let filesStore;
 /**
  * Storage config vars. They are set per deployment, never declared as
@@ -234,7 +239,7 @@ let filesStore;
  * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
  * pair a local `rclone serve s3` still uses. The typedef's one definition is
  * src/files.js's, beside the one reader of the vars.
- * @typedef {import("./files.js").StorageEnv} StorageEnv
+ * @typedef {import("../core/files.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */
@@ -310,7 +315,7 @@ function forwardToApi(c) {
 
 /**
  * @param {Env} env
- * @returns {import("./files.js").FileStore}
+ * @returns {import("../core/files.js").FileStore}
  */
 function storeFor(env) {
   if (!filesStore) {
@@ -385,7 +390,7 @@ function snapshotsFor(env) {
 // read from the same row the api Worker's report route writes. Built per
 // request from the binding, like linksFor: a report a mount just sent is the
 // row the next poll reads, on whichever instance the poll lands. The
-// freshness window is inside the store's read (workers/api/src/queues.js
+// freshness window is inside the store's read (core/queues.js
 // `latest`), so the first-run page and the usage page cannot disagree about
 // whether a report is live, and a device that has not reported for a while
 // reads as no queue to report — the same honest null #308 answers — rather
@@ -395,7 +400,7 @@ function snapshotsFor(env) {
 /**
  * @param {Env} env
  * @param {{id: string}} account
- * @returns {Promise<import("../workers/api/src/queues.js").UploadQueue|null>}
+ * @returns {Promise<import("../core/queues.js").UploadQueue|null>}
  */
 async function liveQueueFor(env, account) {
   if (!env.DRIVE_DB) {
@@ -411,7 +416,7 @@ async function liveQueueFor(env, account) {
 // the binding like liveQueueFor, for the same reason: a machine that just
 // signed in is the row the next poll reads, on whichever instance the poll
 // lands on. Whether a device reads as connected is not decided here — the
-// window is src/status.js `connectionStatus`'s own — so this one function fills
+// window is core/status.js `connectionStatus`'s own — so this one function fills
 // the payload and the rule stays in the module the page and the CLI already
 // read. No database means no device has signed in yet: the empty list, the
 // same answer as an account whose machine has not.
@@ -428,7 +433,7 @@ async function liveDevicesFor(env, account) {
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
-// same src/billing.js summary the usage page shows, and resolved per account so
+// same core/billing.js summary the usage page shows, and resolved per account so
 // the cap answered is always the one belonging to the account that minted the
 // token (src/share.js handleRequestInfoRequest and
 // handleRequestUploadRequest both take a resolver, not a value). Until the
@@ -462,8 +467,8 @@ function capStateFor(env) {
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
-// credentials and nothing else (src/status.js signedInAccount over
-// src/auth.js authFor), and puts that account on Hono's context. Every handler
+// credentials and nothing else (core/status.js signedInAccount over
+// core/auth.js authFor), and puts that account on Hono's context. Every handler
 // below reads it from the context, so a handler cannot disagree with the gate
 // about who is calling. An anonymous request is answered 401 here, before the
 // store is built or any handler runs — the deny-by-default rule the walk in
@@ -471,7 +476,7 @@ function capStateFor(env) {
 //
 // It is registered on "/api/*" alone and its own isPublic() check skips the
 // public routes declared above, so the two public POST routes keep the repo's
-// own same-origin rule (src/waitlist.js, src/email-send.js) and the token
+// own same-origin rule (src/waitlist.js, core/email-send.js) and the token
 // lanes keep their tokens. One CSRF middleware on /api/* then covers every
 // other write: the two public POSTs keep their handler copies, and every
 // other non-GET is refused here before the handler runs.
@@ -497,7 +502,7 @@ async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hon
 }
 
 // One CSRF rule for every non-GET /api/* route. The check is the repo's
-// same-origin function (src/email-send.js): a caller with no Origin and no
+// same-origin function (core/email-send.js): a caller with no Origin and no
 // Sec-Fetch-Site (curl, the Go CLI) is not a browser, so it passes and the
 // account gate is what holds it; a browser that names another origin, or
 // Origin: null without Sec-Fetch-Site: same-origin, is refused with the
@@ -747,7 +752,7 @@ export function createApp() {
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
-    // (workers/api/src/queues.js, drive issue #318). It is null when no
+    // (core/queues.js, drive issue #318). It is null when no
     // device has reported recently, which is the honest answer for an account
     // whose no device has signed in yet or whose mount is gone (drive issue
     // #308), so the usage page hides the line rather than showing a stale
@@ -935,7 +940,7 @@ export function createApp() {
     }),
   );
 
-  // The send lane: closed with no EMAIL_SEND_TOKEN set (src/email-send.js).
+  // The send lane: closed with no EMAIL_SEND_TOKEN set (core/email-send.js).
   app.post(SEND_EMAIL_PATH, (c) => handleSendEmailRequest(c.req.raw, c.env));
 
   // The health endpoint the outside monitor polls (issues #96, #36).
@@ -1037,13 +1042,13 @@ const handler = {
   // tells them apart, so no trigger spends another's work:
   //   - The meter's hourly rollup (issue #6): roll every closed UTC hour that
   //     has not been rolled yet into usage_minutes, oldest first
-  //     (src/meter.js runMeterCron). A D1 failure throws, so Cloudflare
+  //     (core/meter.js runMeterCron). A D1 failure throws, so Cloudflare
   //     records the trigger as failed and retries, and the catch-up takes
   //     the next one over - a failed rollup must never read as a quiet zero.
   //     The schedule string lives in cloudflare.config.ts, pinned to
-  //     src/meter.js's METER_CRON by test/meter.test.mjs. The same trip
+  //     core/meter.js's METER_CRON by test/meter.test.mjs. The same trip
   //     also enforces the 1 TB pre-charge storage limit on mounts
-  //     (src/abuse-guards.js runPreChargeLimitCron, drive#536): an
+  //     (core/abuse-guards.js runPreChargeLimitCron, drive#536): an
   //     over-limit unpaid account's keys are taken read-only through the
   //     cap's own swap, the same answer the web upload path gives.
   //   - The meter's nightly reconciler (build-spec.md piece 6, drive issue
@@ -1070,7 +1075,7 @@ const handler = {
    * @param {ScheduledController} event
    * @param {Env} env
    * @param {ExecutionContext} context
-   * @param {import("./files.js").FileStore} [store] the storage store,
+   * @param {import("../core/files.js").FileStore} [store] the storage store,
    *   injectable so the reindex's own tests hand one in instead of standing
    *   in the runtime's fetch
    * @returns {Promise<void>}
@@ -1398,7 +1403,7 @@ const handler = {
    * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
    * @param {ExecutionContext} _context
-   * @param {import("./files.js").FileStore} [store] injectable like scheduled's
+   * @param {import("../core/files.js").FileStore} [store] injectable like scheduled's
    */
   async queue(batch, env, _context, store = storeFor(env)) {
     if (!env.METER_DB) {
@@ -1461,7 +1466,7 @@ export default {
    * @param {ScheduledController} event
    * @param {Env} env
    * @param {ExecutionContext} context
-   * @param {import("./files.js").FileStore} [store]
+   * @param {import("../core/files.js").FileStore} [store]
    */
   async scheduled(event, env, context, store) {
     return entrypoints(env, context).scheduled(event, env, context, store);
@@ -1470,7 +1475,7 @@ export default {
    * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
    * @param {ExecutionContext} context
-   * @param {import("./files.js").FileStore} [store]
+   * @param {import("../core/files.js").FileStore} [store]
    */
   async queue(batch, env, context, store) {
     return entrypoints(env, context).queue(batch, env, context, store);

@@ -165,12 +165,12 @@ func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
 }
 
 func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "src", "seo.js"))
+	src, err := os.ReadFile(filepath.Join("..", "..", "core", "seo.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(src), defaultAPIBase) {
-		t.Fatalf("defaultAPIBase %q is not the origin src/seo.js ships", defaultAPIBase)
+		t.Fatalf("defaultAPIBase %q is not the origin core/seo.js ships", defaultAPIBase)
 	}
 }
 

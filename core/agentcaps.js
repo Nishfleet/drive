@@ -17,9 +17,9 @@
 //
 //   - The monthly half is the money already metered for the account. An agent's
 //     ceiling is asked with the account cap's own function (`capStatus` in
-//     src/billing.js), so the number that decides "this is over" is the number
+//     core/billing.js), so the number that decides "this is over" is the number
 //     the usage page shows. No second money rule and no second ledger: the read
-//     is `monthUsageThrough` (src/meter.js), the same metered month the account
+//     is `monthUsageThrough` (core/meter.js), the same metered month the account
 //     cap and the usage page read, and `agent_caps.month_spend_cents` is left
 //     unread so there is nowhere else for a spend total to live.
 //   - The daily half is the key's own requests to the drive's API, counted on
@@ -27,12 +27,12 @@
 //     so it resets on its own with nothing running.
 //
 // What the cap does when it is reached is the account cap's own swap
-// (`capSwapPlan`, src/cap.js), so an agent key at its cap goes read-only on
+// (`capSwapPlan`, core/cap.js), so an agent key at its cap goes read-only on
 // exactly the terms a capped drive's keys do, and there is one state, one swap
 // and one message rather than a second set of them.
 //
 // This module is the decision and nothing else: no database, no clock, no
-// Worker. The caller (workers/api/src/agent-caps.js) reads the row, counts the
+// Worker. The caller (core/agent-caps.js) reads the row, counts the
 // request and hands the numbers here. That split is what lets the decision be
 // tested as plain data while the reading is tested against the real schema.
 import { BILLING_CONFIG, capStatus, minutesInMonth } from "./billing.js";

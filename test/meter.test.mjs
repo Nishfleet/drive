@@ -1,6 +1,6 @@
 // Tests for the meter (drive issue #6, build step 5). Two halves:
 //
-// 1. The arithmetic in src/meter.js: the GB-minutes a version books into
+// 1. The arithmetic in core/meter.js: the GB-minutes a version books into
 //    each hour, the 1-hour minimum, and the property the done-when
 //    measures - a full day of hourly rows has to add up to what the
 //    version actually cost, because that is the number compared with
@@ -18,10 +18,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CLOSE_SCHEDULE } from "../src/account-close.js";
-import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../src/billing.js";
-import { createS3Store, TRASH_PURGE_SCHEDULE } from "../src/files.js";
-import worker from "../src/index.js";
+import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../core/billing.js";
+import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
   EVENT_ACTIONS,
@@ -59,7 +57,9 @@ import {
   validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
+import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -147,8 +147,8 @@ test("an hour bucket is the UTC hour, and the minute inside it does not move it"
 // a price change moves the meter's month and the credit together, and a
 // mismatch between the two fails here.
 test("the meter's GB is decimal, and a month of the free credit's GB is exactly the credit's GB-minutes", () => {
-  // 2¢ per GB-month is the same rate the invoice charges (src/billing.js
-  // reads it from the same config src/pricing.js holds), and the free credit
+  // 2¢ per GB-month is the same rate the invoice charges (core/billing.js
+  // reads it from the same config core/pricing.js holds), and the free credit
   // is $1 a month. The GB that credit buys for a month is 1 / 0.02.
   const freeGb = BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth;
   assert.equal(freeGb, 50, "$1 at 2c per GB-month is 50 GB - the spec's 'about 50 GB'");
@@ -2043,8 +2043,8 @@ test("a move whose successor event arrives late is corrected, not billed twice",
 // test as in production. The real provider's field mapping is #60's to
 // confirm; this fake is the listing the reconciler is defined against.
 /**
- * @param {Record<string, import("../src/files.js").StorageVersion[]>} versionsByPrefix
- * @returns {import("../src/files.js").FileStore}
+ * @param {Record<string, import("../core/files.js").StorageVersion[]>} versionsByPrefix
+ * @returns {import("../core/files.js").FileStore}
  */
 function providerStore(versionsByPrefix) {
   return {
@@ -2322,7 +2322,7 @@ test("the reconciler fails loudly without a database or a version listing", asyn
   await assert.rejects(() => reconcileMeter(undefined, providerStore({})), /METER_DB/);
   await assert.rejects(() => reconcileMeter(db, undefined), /list versions/);
   await assert.rejects(
-    () => reconcileMeter(db, /** @type {import("../src/files.js").FileStore} */ ({})),
+    () => reconcileMeter(db, /** @type {import("../core/files.js").FileStore} */ ({})),
     /list versions/,
   );
 });
@@ -2556,7 +2556,7 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
   // entry in `cf dev`, which makes Vite refuse to read that file - so an
-  // import of src/meter.js or src/search.js pulls the whole shared Worker
+  // import of core/meter.js or src/search.js pulls the whole shared Worker
   // graph behind it and `npm run dev` dies before it prints a route
   // (drive#432). The pin below is what keeps two spellings of one schedule
   // honest.

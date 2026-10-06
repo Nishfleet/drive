@@ -9,14 +9,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG } from "../src/billing.js";
+import { BILLING_CONFIG } from "../core/billing.js";
 import {
   handleSendEmailRequest,
   isAuthorizedSend,
   isSameOriginRequest,
   replyToFor,
   sendEmail,
-} from "../src/email-send.js";
+} from "../core/email-send.js";
 import {
   accountCloseReminderTemplate,
   capWarningTemplate,
@@ -32,7 +32,7 @@ import {
   SAVED_COPY,
   savedLine,
   welcomeTemplate,
-} from "../src/emails.js";
+} from "../core/emails.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
 // a deployment decision, not a code one).

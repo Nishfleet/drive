@@ -2,7 +2,7 @@ import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // The three cron trips this Worker runs, spelled out below in `triggers` and
-// read from src/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
+// read from core/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
 // src/search.js (REINDEX_SCHEDULE) by the `scheduled` handler in src/index.js.
 //
 // They are spelled in both places on purpose, and this import list is why it
@@ -10,9 +10,9 @@ import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 // this file to read it, and every plain import it follows lands in the
 // dependency set the Cloudflare Vite plugin adds to Vite's `server.fs.deny`
 // list. Vite then refuses to read any of those files in `cf dev`, so a config
-// that imports src/meter.js or src/search.js for a cron string drags the whole
-// shared Worker graph behind it (src/files.js, src/messages.js, src/status.js,
-// src/auth.js, workers/api/src/db.js) and `npm run dev` dies with `Failed to
+// that imports core/meter.js or src/search.js for a cron string drags the whole
+// shared Worker graph behind it (core/files.js, core/messages.js, core/status.js,
+// core/auth.js, core/db.js) and `npm run dev` dies with `Failed to
 // load url /src/auth.js ... Does the file exist?` before it prints a route
 // (drive#432). test/meter.test.mjs pins the two halves together string by
 // string, so the schedule here cannot drift from the one src/index.js
@@ -77,8 +77,8 @@ export default defineConfig({
     // that keeps it off the 04:00 reconcile's trip.
     //
     // Each schedule is the string the module that owns it exports:
-    // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
-    // src/search.js's REINDEX_SCHEDULE, src/files.js's
+    // core/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
+    // src/search.js's REINDEX_SCHEDULE, core/files.js's
     // TRASH_PURGE_SCHEDULE, and src/account-close.js's CLOSE_SCHEDULE.
     // test/meter.test.mjs reads these five
     // out of this file and asserts they equal those exports, so a changed
@@ -130,7 +130,7 @@ export default defineConfig({
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
       }),
       // The meter binds the same drive database under a name of its own (drive
-      // issue #6): src/meter.js says which tables it owns and which binding
+      // issue #6): core/meter.js says which tables it owns and which binding
       // carries them, so the customer-data split is a binding line here rather
       // than a code change in the meter. Same database, so same id:
       // file_versions, usage_minutes, events_seen and meter_rollup_state
@@ -273,7 +273,7 @@ export default defineConfig({
         simple: { limit: 30, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
-      // drive email goes through, in src/email-send.js. No options: the
+      // drive email goes through, in core/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and
       // the sender address is set per deployment, so nothing here pins a
       // brand domain before drive has one.

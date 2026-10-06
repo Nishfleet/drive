@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { createD1DeviceStore } from "../core/devices.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_COPY,
@@ -35,7 +36,6 @@ import {
   handleCloseStatusRequest,
   purgeOnDate,
 } from "../src/account-close.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 // The shared banner script, served from the asset layer next to the pages that

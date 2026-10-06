@@ -3,7 +3,7 @@
 //
 // 1. The arithmetic the endpoint carries for both surfaces: stored GB now, the
 //    last-30-days series, GB-months so far, the downloads line and the two
-//    labels sets — all from usageSummary() in src/billing.js, which the page
+//    labels sets — all from usageSummary() in core/billing.js, which the page
 //    and `drive usage` both read so neither works out money itself.
 // 2. The lines `drive usage` prints, as the CLI's contract (the Go command
 //    lands with build steps 2 and 4).
@@ -25,15 +25,15 @@ import {
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
   usageSummary,
-} from "../src/billing.js";
-import { CAP_ENDPOINT } from "../src/cap.js";
+} from "../core/billing.js";
+import { CAP_ENDPOINT } from "../core/cap.js";
+import { PRICE } from "../core/pricing.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
+import { UPLOAD_LABEL, uploadProgress } from "../core/status.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
-import { PRICE } from "../src/pricing.js";
 import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
-import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
-import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -244,7 +244,7 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
   assert.throws(() => usageSummary(missing), /usage\.storedGb/);
 });
 
-test("both saved sentences come from the one table in src/billing.js", () => {
+test("both saved sentences come from the one table in core/billing.js", () => {
   // The capped month: 2 TB held all month meters $40 against a $20 maximum, so
   // the maximum saved $20, and the usual 1 TB plan ($27 at 2 TB) $7 more.
   const plan = (/** @type {string} */ amount) =>
@@ -409,7 +409,7 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
 
 test("the upload line rides the usage answer beside capLine", async () => {
   // The second surface of drive issue #308. The line is assembled once, by
-  // uploadProgress() from UPLOAD_LABEL in src/status.js, so the usage page
+  // uploadProgress() from UPLOAD_LABEL in core/status.js, so the usage page
   // renders the same words `drive status` and the first-run page print and
   // carries no second copy of a word or a byte formatter. It is null while the
   // Worker has no device store to read a queue from.
@@ -864,7 +864,7 @@ test("a new account's month says it is empty instead of showing a blank area", (
   assert.match(page, /what: "Nothing stored yet\."/);
   assert.match(page, new RegExp(`next: ${JSON.stringify(USAGE_LABELS.monthEmpty.next)}`));
   // Both sentences are complete: what says the state, next says what to do, the
-  // same shape every empty state in the product has (src/status.js, #32).
+  // same shape every empty state in the product has (core/status.js, #32).
   assert.match(USAGE_LABELS.monthEmpty.what, /\.$/);
   assert.match(USAGE_LABELS.monthEmpty.next, /\.$/);
   assert.match(USAGE_LABELS.monthEmpty.next, /drive folder/);
@@ -957,7 +957,7 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   assert.equal(CAP_ENDPOINT, "/api/cap");
   assert.ok(
     page.includes(`const CAP_ENDPOINT = "${CAP_ENDPOINT}";`),
-    "the page must write to the endpoint src/cap.js names",
+    "the page must write to the endpoint core/cap.js names",
   );
   // The slider ships usable: the signed-out state is what disables it, which
   // is the gate (drive#73) rather than a not-yet-implemented placeholder.
@@ -1173,7 +1173,7 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // Drive issue #318 on the second surface, through the route rather than the
   // handler: a device reports its queue to the api Worker, and the usage page's
   // poll reads the same row and renders it into `uploadLine`. The line is the
-  // one word table's (src/status.js UPLOAD_LABEL), so the page, the first-run
+  // one word table's (core/status.js UPLOAD_LABEL), so the page, the first-run
   // page and `drive status` all say the same sentence about the same queue.
   // The full schema: /api/usage reads the account's metered month (drive#496),
   // and that month lives in 0005_meter's usage_minutes.

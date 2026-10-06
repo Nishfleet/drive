@@ -7,14 +7,14 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
-import { json } from "../workers/api/src/http.js";
-import { sendEmail } from "./email-send.js";
-import { scopeStore } from "./files.js";
-import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
+import { sendEmail } from "../core/email-send.js";
+import { scopeStore } from "../core/files.js";
+import { json } from "../core/http.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 
-/** @typedef {import("./files.js").FileStore} FileStore */
-/** @typedef {ReturnType<typeof import("../workers/api/src/devices.js").createD1DeviceStore>} DeviceStore */
-/** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
+/** @typedef {ReturnType<typeof import("../core/devices.js").createD1DeviceStore>} DeviceStore */
+/** @typedef {import("../core/email-send.js").EmailBinding} EmailBinding */
 
 export const CLOSE_ENDPOINT = "/api/account/close";
 export const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";

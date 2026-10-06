@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { recordUsage } from "../../../src/meter.js";
+import { recordUsage } from "../../../core/meter.js";
 import { makeMeteredDB, midnight } from "../../../test/d1-sqlite.mjs";
 import { downloadKey, handleDownload } from "../src/index.js";
 

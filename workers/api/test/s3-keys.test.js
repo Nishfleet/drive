@@ -18,15 +18,19 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createIdriveKeyProvider } from "../src/idrive-keys.js";
+import { createIdriveKeyProvider } from "../../../core/idrive-keys.js";
 import {
   bucketForAccount,
   bucketForTeam,
   KEY_KINDS,
   scopeFor,
   teamScopeFor,
-} from "../src/keyprovider.js";
-import { createS3KeyProvider, policyForScope, s3KeyProviderFromEnv } from "../src/s3-keys.js";
+} from "../../../core/keyprovider.js";
+import {
+  createS3KeyProvider,
+  policyForScope,
+  s3KeyProviderFromEnv,
+} from "../../../core/s3-keys.js";
 
 /**
  * One STS `AssumeRole` call as the provider made it, read off the signed
@@ -218,7 +222,7 @@ test("a scope that names no bucket is refused, and nothing is minted", async () 
   const calls = [];
   // The shape drive#462 found: a scope built by a provider that only knows a
   // prefix, where the bucket used to come from the deployment's own setting.
-  const prefixOnly = /** @type {import("../src/keyprovider.js").KeyScope} */ (
+  const prefixOnly = /** @type {import("../../../core/keyprovider.js").KeyScope} */ (
     /** @type {unknown} */ ({ prefix: "u/acct_a1/", capabilities: ["list", "read", "write"] })
   );
   await assert.rejects(() => providerFor(stsStand(calls)).mint(prefixOnly), /names its bucket/);
@@ -249,7 +253,9 @@ test("the policy the endpoint enforces comes from the one capabilities table", (
     const policy = policyForScope(
       {
         prefix: "u/acct_a1/",
-        capabilities: [/** @type {import("../src/keyprovider.js").Capability} */ (row.capability)],
+        capabilities: [
+          /** @type {import("../../../core/keyprovider.js").Capability} */ (row.capability),
+        ],
         bucket,
       },
       bucket,
