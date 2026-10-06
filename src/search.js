@@ -64,6 +64,10 @@ export const SEARCH_ENDPOINT = "/api/search";
  */
 export const REINDEX_SCHEDULE = "0 3 * * *";
 
+/** The queue the 03:00 cron produces on and the Worker consumes
+ * (`cloudflare.config.ts` `triggers.queue` / `REINDEX_QUEUE`). */
+export const REINDEX_QUEUE_NAME = "drive-reindex";
+
 /**
  * How many messages the cron sends per `sendBatch` call. The queues API
  * accepts at most 100 per call, so a drive with more accounts than that is
@@ -266,9 +270,10 @@ function stagingStatements(db, generation, rows) {
  * before any live row can be affected.
  *
  * The first statement is a delete, not a truncate of everything: one account's
- * rows only, so an account rebuilding in parallel — the cron now does
- * `maxBatchSize: 1`, but a manual backfill may not — is never caught by a
- * sibling's swap.
+ * rows only, so a sibling account rebuilding in parallel is never caught by
+ * this swap. Two overlapping rebuilds of the *same* account each carry their
+ * own generation, so one cannot move the other's rows; last finished walk
+ * wins, and neither writes an empty live set.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {number} generation
@@ -291,32 +296,19 @@ export function swapStatements(db, accountId, generation) {
   ];
 }
 
-/** This attempt's generation number, and the leftover attempts it clears.
+/** This attempt's generation number.
  *
- * The number is `MAX(generation) + 1` rather than the clock or a counter: two
- * rebuilds for the same account cannot collide on it, so the swap below can
- * never move a sibling's rows, and it survives a redeploy that forgets nothing
- * but a timestamp. The delete goes with it, and it is what bounds the staging
- * table: the generation a crashed rebuild left behind is dropped once, not
- * re-sent to the swap and never cleaned, so staging holds at most one
- * abandoned attempt per account rather than one per night.
- * @param {D1Database} db
- * @param {string} accountId
- * @returns {Promise<number>} */
-async function openStagingGeneration(db, accountId) {
-  const latest = await db
-    .prepare(
-      "SELECT COALESCE(MAX(generation), 0) AS latest FROM file_index_staging WHERE account_id = ?1",
-    )
-    .bind(accountId)
-    .first();
-  const generation = (Number(latest?.latest) || 0) + 1;
-  await db.batch([
-    db
-      .prepare("DELETE FROM file_index_staging WHERE account_id = ?1 AND generation < ?2")
-      .bind(accountId, generation),
-  ]);
-  return generation;
+ * The number is the clock times a thousand, plus a random 0–999, so two
+ * rebuilds of the same account that overlap — a retry still running when
+ * the next night enqueues the account again — cannot share it. `MAX + 1`
+ * was the same number for both, and then one swap deleted the other's
+ * staging rows and the other's swap wrote an empty live set, which is the
+ * outage drive#566 exists to prevent. The swap reads only this attempt's
+ * rows, so a leftover crashed generation stays in staging until a later
+ * stale sweep and never becomes the live table.
+ * @returns {number} */
+function openStagingGeneration() {
+  return Date.now() * 1000 + Math.floor(Math.random() * 1000);
 }
 
 /**
@@ -379,12 +371,23 @@ export async function reconcileIndex(db, store, account, options = {}) {
   // batches keep a 100,000-file walk from building one giant batch, as
   // the feed's writes do; a chunk that fails leaves nothing live, so
   // the message is retried from the top (drive#566).
-  const generation = await openStagingGeneration(db, account.id);
+  const generation = openStagingGeneration();
   for (let start = 0; start < rows.length; start += batchSize * STAGING_ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * STAGING_ROWS_PER_STATEMENT);
     await db.batch(stagingStatements(db, generation, slice));
   }
   await db.batch(swapStatements(db, account.id, generation));
+  // Leftover rows from a crashed attempt stay until they are two days old,
+  // so a walk still running for this account (a retry overlapping the next
+  // night) is never swept out from under its own swap.
+  const staleBefore = new Date(at - 2 * 24 * 60 * 60 * 1000).toISOString();
+  await db.batch([
+    db
+      .prepare(
+        "DELETE FROM file_index_staging WHERE account_id = ?1 AND generation != ?2 AND indexed_at < ?3",
+      )
+      .bind(account.id, generation, staleBefore),
+  ]);
   return { indexed: rows.length, folders, tookMs: now() - at };
 }
 
@@ -571,8 +574,8 @@ export async function indexAccounts(db) {
     throw new Error("indexAccounts needs the file index database");
   }
   const result = await db
-    .prepare("SELECT id FROM accounts WHERE state <> ?1 AND id <> ?2 ORDER BY id")
-    .bind("closed", "")
+    .prepare("SELECT id FROM accounts WHERE state IN (?1, ?2) AND id <> ?3 ORDER BY id")
+    .bind("active", "read_only", "")
     .all();
   const rows = /** @type {Array<{id: string}>} */ (result?.results ?? []);
   return rows.map((row) => ({ id: row.id }));

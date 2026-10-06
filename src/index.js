@@ -88,6 +88,7 @@ import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
   METER_JOB_KINDS,
+  METER_JOBS_QUEUE,
   meterJobHandlers,
   meterJobsQueue,
   sendMeterJobs,
@@ -103,6 +104,7 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_QUEUE_NAME,
   REINDEX_SEND_BATCH,
   reconcileIndex,
   SEARCH_ENDPOINT,
@@ -1476,7 +1478,7 @@ const handler = {
    * @param {import("../core/files.js").FileStore} [store]
    */
   async queue(batch, env, context, store = storeFor(env) ?? undefined) {
-    if (batch.queue === "drive-reindex") {
+    if (batch.queue === REINDEX_QUEUE_NAME) {
       // One message per invocation (`maxBatchSize: 1`). The walk is the slow,
       // fallible part, and one account per invocation is what keeps a
       // 100,000-file drive inside the invocation's budget and a broken account
@@ -1531,6 +1533,9 @@ const handler = {
     // hourly step or nightly reconcile, sent by the crons above when the
     // METER_JOBS queue is bound. A job that throws is retried by the platform,
     // and after its retries it lands in the dead-letter queue (src/meter-jobs.js).
+    if (batch.queue !== METER_JOBS_QUEUE) {
+      throw new Error(`unknown queue ${String(batch.queue)}`);
+    }
     if (!env.METER_DB) {
       throw new Error("meter jobs: METER_DB binding is not configured");
     }

@@ -21,6 +21,7 @@ import {
   MAX_LIMIT,
   MAX_WORDS,
   parseQuery,
+  REINDEX_QUEUE_NAME,
   REINDEX_SCHEDULE,
   reconcileIndex,
   SEARCH_ENDPOINT,
@@ -731,7 +732,7 @@ async function deliver(message, env, store) {
     },
   };
   const batch = {
-    queue: "drive-reindex",
+    queue: REINDEX_QUEUE_NAME,
     messages: [envelope],
   };
   const delivered = /** @type {MessageBatch<{accountId: string}>} */ (
@@ -928,17 +929,27 @@ test("a swap that fails half-committed rolls back to the previous rows (drive#56
   assert.deepEqual(rows, ["/keep.txt"], "the delete was rolled back with the batch");
   assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1, "still searchable");
 
-  // The dead attempt's staged rows wait in the scratch table, and the next
-  // night's walk opens a new generation, sweeps them and finishes.
+  // The dead attempt's staged rows wait in the scratch table. The retry uses
+  // a new generation and does not sweep them (a sibling walk could still be
+  // writing), so they stay until they are two days old.
   const staged = db.sqlite
     .prepare("SELECT count(*) c FROM file_index_staging WHERE account_id = ?")
     .get(ACCOUNT.id);
-  assert.ok(Number(staged?.c) >= 2, "the failed attempt's scratch rows are what a retry sweeps");
+  assert.ok(Number(staged?.c) >= 2, "the failed attempt's scratch rows remain");
   await raw.remove("/doomed.txt");
   const again = await reconcileIndex(db, raw, ACCOUNT);
   assert.equal(again.indexed, 2);
+  const live = db.sqlite
+    .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
+    .all(ACCOUNT.id)
+    .map((row) => row.path);
+  assert.deepEqual(live, ["/fresh.txt", "/keep.txt"], "the retry swapped its own generation");
+  assert.equal((await searchDrive(db, ACCOUNT, "fresh")).count, 1);
   const left = db.sqlite.prepare("SELECT count(*) c FROM file_index_staging").get();
-  assert.equal(left?.c, 0, "the retry swept the dead attempt's rows");
+  assert.ok(
+    Number(left?.c) >= 2,
+    "the failed generation is still scratch, not mixed into the live table",
+  );
 });
 
 test("an account with no files is still walked, and its empty index is a finished message", async () => {
@@ -1025,6 +1036,22 @@ test("the queue consumer without a database refuses the walk", async () => {
   const env = { ASSETS: { fetch: () => new Response("asset") } };
   const answered = await deliver({ accountId: ACCOUNT.id }, env, raw);
   assert.equal(answered.retried, true, "a missing index is a retry, not a crash");
+});
+
+test("a message on an unknown queue is refused, not treated as a meter job", async () => {
+  const workerQueue =
+    /** @type {(batch: {queue: string, messages: unknown[]}, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.queue)
+    );
+  await assert.rejects(
+    () =>
+      workerQueue(
+        { queue: "drive-not-a-real-queue", messages: [] },
+        { METER_DB: makeD1() },
+        { waitUntil() {} },
+      ),
+    /unknown queue/,
+  );
 });
 
 test("the published worker really declares the reindex queue halves", async () => {

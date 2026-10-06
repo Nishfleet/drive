@@ -10,8 +10,7 @@
 
 import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
 
-/** One row of the file index, as it is written to D1. */
-/**
+/** One row of the file index, as it is written to D1.
  * @typedef {{account_id: string, path: string, name: string, parent: string,
  *   size_bytes: number, modified_at: string|null, indexed_at: string}} FileRow
  */
@@ -41,7 +40,7 @@ export function fileRow(account, path, entry, at) {
       ? Math.floor(entry.size)
       : 0;
   const modified =
-    typeof entry.modified === "number"
+    typeof entry.modified === "number" && Number.isFinite(entry.modified)
       ? new Date(entry.modified).toISOString()
       : typeof entry.modifiedAt === "string"
         ? entry.modifiedAt
