@@ -24,7 +24,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_ENDPOINT } from "../src/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
 import worker from "../src/index.js";
 import {
   createTestAuth,

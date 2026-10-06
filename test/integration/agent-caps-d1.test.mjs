@@ -21,14 +21,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agentCaps } from "../../src/agentcaps.js";
-import { failureMessage } from "../../src/messages.js";
-import { BYTES_PER_GB } from "../../src/meter.js";
-import { readAgentCaps, stampAgentRequest } from "../../workers/api/src/agent-caps.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { readAgentCaps, stampAgentRequest } from "../../core/agent-caps.js";
+import { agentCaps } from "../../core/agentcaps.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
+import { failureMessage } from "../../core/messages.js";
+import { BYTES_PER_GB } from "../../core/meter.js";
 import apiWorker from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 
 // Midday UTC, clear of either midnight, so a day boundary in these tests is a
@@ -150,7 +150,7 @@ test("an agent request under the cap writes, and the day it spent is stamped", a
   // A new row is written with no cap of its own (drive#534): 0004 declared
   // `monthly_cap_usd REAL NOT NULL DEFAULT 12.0`, and migration 0021 rebuilds
   // the table so the column is nullable and has no default. NULL is the whole
-  // point — the reader's own default ($20, src/cap-default.js) then applies, so
+  // point — the reader's own default ($20, core/cap-default.js) then applies, so
   // a key that has never been configured is capped at the documented $20 rather
   // than the table's old $12.
   assert.equal(stamped.monthly_cap_usd, null);

@@ -11,7 +11,7 @@
 //
 // Every read is pinned to the signed-in account, and only the signed-in
 // account: `ctx.account.id` is the one filter on every statement, the same
-// rule `src/files.js` applies to storage keys (drive#73). A route that took
+// rule `core/files.js` applies to storage keys (drive#73). A route that took
 // an account id from the request would let one account read another's rows,
 // so it takes none.
 //
@@ -21,8 +21,8 @@
 // out every device — the other two lifecycle items, both customer-data
 // deletion — are Nish-reserved and are not part of this route.
 
-import { all } from "./db.js";
-import { errorResponse, json } from "./http.js";
+import { all } from "../../../core/db.js";
+import { errorResponse, json } from "../../../core/http.js";
 
 /**
  * How many rows one export page carries. A Worker response cannot hold a

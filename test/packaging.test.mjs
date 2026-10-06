@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { INSTALL_LINES } from "../src/install-lines.js";
+import { INSTALL_LINES } from "../core/install-lines.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -97,7 +97,7 @@ test("install lines in the docs, help and page are generated from .goreleaser.ya
   assert.deepEqual(
     INSTALL_LINES.map((row) => ({ os: row.os, line: row.line })),
     derived,
-    "src/install-lines.js must match .goreleaser.yaml",
+    "core/install-lines.js must match .goreleaser.yaml",
   );
 
   const mainGo = read("cmd/drive/main.go");
