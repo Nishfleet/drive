@@ -222,6 +222,12 @@ button:disabled {
         <p class="hint">Signing up means you agree to the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
       </form>
 
+      <!-- drive#558: shown only when the sign-in started from the
+           device-approval page (?next= in the address bar). The string is
+           SIGNIN_COPY.deviceNote (src/signin.js), and the script below unhides
+           it from the URL; the approval mail carries the same sentence. -->
+      <p class="hint" id="device-note" hidden>Open this link on the computer you ran drive login on, or approve from any device.</p>
+
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
     </div>
   </main>
@@ -284,6 +290,19 @@ if (errorParam === "invalid-link" || errorParam === "no-token") {
   say(UNEXPECTED_MESSAGE, "error");
 }
 
+// drive#558: a sign-in that started on the device-approval page arrives with
+// ?next= naming that page. The start post carries it — the server keeps only
+// the approve page's path, so anything else a URL could carry is dropped
+// there — and the note says the mail can be opened on any device, because the
+// return path now travels with the link's token instead of this browser's
+// cookies.
+const DEVICE_APPROVE_PREFIX = "/v1/device/approve";
+const nextParam = new URLSearchParams(window.location.search).get("next") ?? "";
+const deviceNote = document.getElementById("device-note");
+if (nextParam.startsWith(DEVICE_APPROVE_PREFIX) && deviceNote !== null) {
+  deviceNote.hidden = false;
+}
+
 function say(message, kind) {
   status.textContent = message;
   status.classList.toggle("is-error", kind === "error");
@@ -303,7 +322,14 @@ async function start(method, email) {
       body: JSON.stringify(
         email === undefined
           ? { method }
-          : { method, email, card: cardInput !== null && cardInput.checked },
+          : {
+              method,
+              email,
+              card: cardInput !== null && cardInput.checked,
+              // undefined drops out of the JSON: a plain sign-in posts
+              // exactly what it posted before drive#558.
+              next: nextParam === "" ? undefined : nextParam,
+            },
       ),
     });
   } catch (networkError) {
