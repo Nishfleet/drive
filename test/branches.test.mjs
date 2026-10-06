@@ -1589,6 +1589,114 @@ test("a queued create reserves the bytes it is about to copy", async () => {
   assert.equal(third.state, "creating");
 });
 
+test("the claim's own WHERE is what refuses a create a racer has already used up", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // The same race the reservation closes, from the other side. The reservation
+  // sum is read a statement before the claim, so ten parallel creates of a
+  // 200 GB folder for an account holding 700 GB each read 700 GB + 0 reserved
+  // and each find room for 900 GB, and all ten copies then land at 2 TB. Only
+  // the claim's own WHERE can catch it: it re-reads the reservation sum in the
+  // statement that writes, so a racer's row is already there.
+  //
+  // This builds that state with real rows in the real database — one
+  // 'creating' row holding 200 GB of reservation — and makes the earlier read
+  // report the stale zero it saw before that row landed. Everything else is the
+  // real adapter and the real schema, so the claim INSERT runs as it ships.
+  //
+  // Delete the pre-charge `AND (... <= ?11)` from the claim and this test
+  // fails: the row lands, `changes` is 1 and the copy is queued.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 700 * GB, 1);
+  db.sqlite
+    .prepare(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, state, " +
+        "reserved_bytes) VALUES (?1,'queued-1','/Photos','/.branches/queued-1','creating',?2)",
+    )
+    .run(ACCOUNT.id, 200 * GB);
+  const folderBytes = 200 * GB;
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.name === "a.txt" && path === "/Photos" ? { ...entry, size: folderBytes } : entry,
+      );
+    },
+  };
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const copyStore = {
+    ...store,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  // Only the earlier reservation read is faked, and only down to the number it
+  // would have read one statement earlier. The claim's own WHERE is untouched.
+  const staleReservedDb = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          if (!/SELECT COALESCE\(SUM\(reserved_bytes\), 0\) AS reserved/.test(sql)) {
+            return target.prepare(sql);
+          }
+          const statement = target.prepare(sql);
+          return {
+            sql,
+            /** @param {...unknown} values */
+            bind(...values) {
+              return {
+                sql,
+                async first() {
+                  // Run the real query too, so a renamed column fails here
+                  // rather than passing dark.
+                  await statement.bind(...values).first();
+                  return { reserved: 0 };
+                },
+              };
+            },
+          };
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const loser = await createBranch(
+    staleReservedDb,
+    snapshots,
+    copyStore,
+    ACCOUNT,
+    { folder: "/Photos", name: "queued-2" },
+    () => Date.now(),
+    { async send() {} },
+  );
+  // 700 GB live + 200 GB the racer reserved + 200 GB this folder is over the
+  // 1 TB limit, so the sentence is the storage limit and not the branch cap.
+  assert.equal(loser.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(loser.status, 403);
+  assert.deepEqual(copies, [], "the loser never asked for a copy");
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "queued-2"), null);
+  // Only the racer's row exists: this create claimed nothing.
+  const rows = db.sqlite
+    .prepare("SELECT name FROM branches WHERE account_id = ? ORDER BY name")
+    .all(ACCOUNT.id);
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ["queued-1"],
+  );
+});
+
 test("the branch route limits a create and fails closed without a limiter", async () => {
   const { raw, db, snapshots } = await driven();
   const create = () =>

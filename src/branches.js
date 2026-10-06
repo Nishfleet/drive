@@ -49,6 +49,8 @@
 import {
   accountFirstChargedAt,
   accountStoredBytes,
+  accountStoredBytesSql,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
@@ -862,6 +864,45 @@ async function countOpenBranches(db, accountId) {
     throw new TypeError(`branches open count must be a whole number, got ${String(open)}`);
   }
   return open;
+}
+
+/**
+ * Which of the claim's two predicates refused it (drive#553). The claim writes
+ * one row only while the account holds fewer than MAX_OPEN_BRANCHES branches
+ * and its bytes fit under the pre-charge limit, so a claim that changed no rows
+ * was refused by one of the two, and they answer different sentences. It is
+ * read back from the same live state the claim read, in one statement, rather
+ * than guessed from the count taken before the claim (which a racer has since
+ * made stale). The cap is read first, because createBranch checks it before
+ * the bytes, so the two paths answer the same way for the same account.
+ * @param {D1Database} db
+ * @param {{accountId: string, incomingBytes: number}} input
+ * @returns {Promise<"cap"|"limit">}
+ */
+async function claimRefusal(db, { accountId, incomingBytes }) {
+  const row = await db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM branches
+                WHERE account_id = ?1 AND state IN (${CAP_STATE_LIST})) >= ?2 AS at_cap,
+              ${accountStoredBytesSql("?1")}
+                + (SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches
+                    WHERE account_id = ?1 AND state = 'creating')
+                + ?3 > ?4 AS over_limit`,
+    )
+    .bind(accountId, MAX_OPEN_BRANCHES, incomingBytes, PRE_CHARGE_STORAGE_LIMIT_BYTES)
+    .first();
+  const atCap = Number(/** @type {{at_cap?: unknown} | null | undefined} */ (row)?.at_cap ?? 0);
+  const overLimit = Number(
+    /** @type {{over_limit?: unknown} | null | undefined} */ (row)?.over_limit ?? 0,
+  );
+  if (overLimit === 1 && atCap !== 1) {
+    return "limit";
+  }
+  // At the cap, or neither predicate reads true now because a racer has moved
+  // the state on since the claim read it (a branch closed, bytes spent). Either
+  // way this create holds no row, so the cap's sentence is the one that stays
+  // true of it: it may not keep another branch, and the copy is not made.
+  return "cap";
 }
 
 /**
@@ -1955,9 +1996,13 @@ export async function createBranch(
   // store itself; a charged account is lifted (drive#464). `reservedBytes` is
   // what the claim below stores: the copy's own size, once this guard is the
   // only thing that measured it, so the next queued create counts it too.
+  // `enforcePreCharge` is what the claim's own WHERE reads: false for a
+  // charged account, so its limit does not apply there either.
   let reservedBytes = 0;
+  let enforcePreCharge = false;
   const firstChargedAt = await accountFirstChargedAt(db, account.id);
   if (firstChargedAt === null) {
+    enforcePreCharge = true;
     const stored = await accountStoredBytes(db, account.id);
     const branchBytes = await storedBytesUnder(store, BRANCHES_ROOT);
     const reserved = await pendingReservedBytes(db, account.id);
@@ -1995,6 +2040,18 @@ export async function createBranch(
   // refused for the bytes this one is about to write rather than allowed to
   // queue behind a limit it will pass together. A charged account reserves 0,
   // which sums as nothing, the same as the NULL an older row carries.
+  //
+  // The pre-charge limit rides on the same statement (drive#553), for the same
+  // reason the cap does: the reservation sum read a statement earlier is stale
+  // the moment a racer's row lands, so ten parallel creates of a 200 GB folder
+  // for an account holding 700 GB each saw 900 GB and all ten copies went on
+  // to write 2 TB. `?10 = 0` is the charged account, which the limit does not
+  // apply to; otherwise this account's live bytes, the bytes every 'creating'
+  // row has reserved (re-read inside the statement, so a racer's row counts)
+  // and this folder's own bytes must fit under the limit. The store walk above
+  // cannot ride here — D1 cannot sum object listings in a statement — so the
+  // bytes already copied stay in the check before it. Both agree, and the
+  // statement is the one that cannot be overtaken.
   let claimId;
   try {
     const snapKey = snapshotKey(account, name);
@@ -2005,7 +2062,11 @@ export async function createBranch(
           "reserved_bytes) " +
           "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',?9 " +
           "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
-          `(${CAP_STATE_LIST})) < ?8`,
+          `(${CAP_STATE_LIST})) < ?8` +
+          " AND (?10 = 0 OR (" +
+          `${accountStoredBytesSql("?1")} + ` +
+          "(SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches " +
+          "WHERE account_id = ?1 AND state = 'creating') + ?9) <= ?11)",
       )
       .bind(
         account.id,
@@ -2017,16 +2078,24 @@ export async function createBranch(
         changedBy,
         MAX_OPEN_BRANCHES,
         reservedBytes,
+        enforcePreCharge ? 1 : 0,
+        PRE_CHARGE_STORAGE_LIMIT_BYTES,
       )
       .run();
     if (!claimed.success) {
       return { error: failureMessage("unexpected"), status: 500 };
     }
-    // The WHERE clause makes the count and the claim one statement, so two
-    // concurrent creates at the cap cannot both insert: the loser changes no
-    // rows and is refused on the cap here, after the copy is not made.
+    // Neither predicate matched, so this statement wrote no row. Which one is
+    // read back from the same live state, because the two answer different
+    // sentences: too many branches, or too many bytes.
     if (Number(claimed.meta?.changes ?? 0) === 0) {
-      return { error: failureMessage("branch-limit"), status: 409 };
+      const refused = await claimRefusal(db, {
+        accountId: account.id,
+        incomingBytes: reservedBytes,
+      });
+      return refused === "cap"
+        ? { error: failureMessage("branch-limit"), status: 409 }
+        : { error: failureMessage("pre-charge-storage-limit"), status: 403 };
     }
     claimId = Number(claimed.meta.last_row_id);
     if (!Number.isInteger(claimId) || claimId < 1) {

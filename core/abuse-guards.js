@@ -337,6 +337,31 @@ export class PreChargeLimitError extends Error {
  * (`preChargeUploadBlocked`, `preChargeLimitStream`) against the same live
  * rows, through the same LIVE_VERSIONS fragment, so one number decides it
  * everywhere.
+ * The same number as SQL, for a statement that has to decide the limit in the
+ * same breath as it writes (drive#553). A branch create claims its row with one
+ * INSERT, and a check-then-act guard around it loses to a racer: ten parallel
+ * creates each read 700 GB of reservations where none has landed yet and all
+ * ten copies go on to write 2 TB. Folding the sum into the INSERT's own WHERE
+ * makes the write and the check one statement, so D1 serializes them and the
+ * racer that would cross the limit changes no rows.
+ *
+ * It is the expression `accountStoredBytes` runs, from the same fragments, so
+ * the number a statement enforces and the number a read reports cannot drift.
+ * The placeholder is passed in (`?1`, `?2`, ...) because the statement that
+ * embeds this has its own numbering.
+ * @param {string} accountPlaceholder the bind placeholder for the account id
+ * @returns {string} a SQL scalar expression
+ */
+export function accountStoredBytesSql(accountPlaceholder) {
+  return `(SELECT ${LIVE_STORED_BYTES}
+        FROM ${LIVE_VERSIONS}
+       WHERE ${LIVE_VERSION_ROWS}
+         AND v.account_id = ${accountPlaceholder})`;
+}
+
+/**
+ * Stored bytes this account's live file versions hold: `accountStoredBytesSql`
+ * as one statement, so the two cannot disagree.
  * @param {D1Database} db
  * @param {string} accountId
  * @returns {Promise<number>}
@@ -346,12 +371,7 @@ export async function accountStoredBytes(db, accountId) {
     throw new TypeError(`accountStoredBytes needs an account id, got ${String(accountId)}`);
   }
   const row = await db
-    .prepare(
-      `SELECT ${LIVE_STORED_BYTES} AS stored
-         FROM ${LIVE_VERSIONS}
-        WHERE ${LIVE_VERSION_ROWS}
-          AND v.account_id = ?1`,
-    )
+    .prepare(`SELECT ${accountStoredBytesSql("?1")} AS stored`)
     .bind(accountId)
     .first();
   const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
