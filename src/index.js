@@ -1525,7 +1525,7 @@ const handler = {
    *
    * @param {{queue?: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
-   * @param {ExecutionContext} context
+   * @param {ExecutionContext} _context
    * @param {import("../core/files.js").FileStore} [store]
    */
   async queue(batch, env, _context, store = storeFor(env) ?? undefined) {
