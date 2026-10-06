@@ -1559,9 +1559,29 @@ func TestCacheFileIsEmptyWhenTheCacheHasNotBeenCreatedYet(t *testing.T) {
 	}
 }
 
+func TestConflictGuardDoesNotFailThePassWhenTheCacheFileIsMissing(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"notes.txt": "hashed bytes\n"})
+	g.cacheDir = t.TempDir()
+	g.fs = "drive:bucket/u/me"
+	f.pending = []queueEntry{{Name: "notes.txt", Size: 13}}
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("a missing cache file failed the pass: %v", err)
+	}
+	if g.seen["notes.txt"] != nil {
+		t.Fatal("a missing cache file was recorded as sighted; the next pass must be able to hash it")
+	}
+	if len(res.Claimed) != 0 || len(res.Skipped) != 0 {
+		t.Errorf("Claimed=%v Skipped=%v, want nothing decided until the cache file exists", res.Claimed, res.Skipped)
+	}
+}
+
 func TestIsRemoteMissing(t *testing.T) {
 	if !isRemoteMissing(errors.New("rclone rc operations/list: directory not found: exit status 1")) {
 		t.Error("a listing of a prefix that is not in storage yet is missing")
+	}
+	if isRemoteMissing(errors.New("rclone rc operations/stat: object not found: exit status 1")) {
+		t.Error("an object-not-found on a conflict name is not a missing prefix")
 	}
 	if isRemoteMissing(errors.New("rclone rc operations/list: connection refused")) {
 		t.Error("a dead remote control is not a missing prefix")

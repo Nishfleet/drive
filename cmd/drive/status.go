@@ -479,12 +479,6 @@ const (
 	uploadFailingAfterTries = 3
 )
 
-// queueWhy is the line after the uploads count: what is waiting and why
-// (drive issue #107). An empty queue with space left is a complete state and
-// prints nothing extra. A full cache is a failure even with nothing queued,
-// because that is the save that just bounced. Pause is issue #100's words on
-// the transfers line, so this function stays silent while paused unless the
-// cache is also full.
 // conflictGuardLine is the status line for a conflict guard that cannot
 // keep up with the saves coming in: more saves are waiting for their first
 // hash than one pass can take (conflictSightMax), so protection of the rest
@@ -499,6 +493,12 @@ func conflictGuardLine(home string, now time.Time) string {
 	return fmt.Sprintf("conflict guard behind by %d saves", behind)
 }
 
+// queueWhy is the line after the uploads count: what is waiting and why
+// (drive issue #107). An empty queue with space left is a complete state and
+// prints nothing extra. A full cache is a failure even with nothing queued,
+// because that is the save that just bounced. Pause is issue #100's words on
+// the transfers line, so this function stays silent while paused unless the
+// cache is also full.
 func queueWhy(on, outOfSpace, paused bool, q Pending) string {
 	if outOfSpace {
 		return diskCacheFullWhat + " " + diskCacheFullNext

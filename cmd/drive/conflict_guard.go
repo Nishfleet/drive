@@ -367,6 +367,13 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 		hashes++
 		save, skip, err := g.sight(ctx, b, e.Name, listings)
+		if errors.Is(err, errNoCacheFile) {
+			// The VFS cache file is not there yet (or was evicted).
+			// Leave the save unseen so the next pass can hash it;
+			// failing this pass would skip every other save too.
+			hashes--
+			continue
+		}
 		if err != nil {
 			return res, err
 		}
@@ -665,11 +672,7 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 			return true, &ConflictSkip{Remote: name, Reason: skip}, nil, nil
 		}
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// The save's bytes are gone from this machine and the
-				// object holds another device's save: there is nothing
-				// this device can write, and the loss is named rather
-				// than retried forever.
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errNoCacheFile) {
 				skip := fmt.Sprintf("the save is no longer on this machine, so its bytes cannot be kept: %v", err)
 				return true, &ConflictSkip{Remote: name, Reason: skip}, nil, nil
 			}
@@ -947,7 +950,7 @@ func (g *conflictGuard) cacheFile(name string) string {
 func (g *conflictGuard) hashMountFile(path string) (string, error) {
 	src := g.sourceFile(path)
 	if src == "" {
-		return "", fmt.Errorf("no VFS cache file for %s", path)
+		return "", fmt.Errorf("%w for %s", errNoCacheFile, path)
 	}
 	in, err := os.Open(src)
 	if err != nil {
@@ -973,6 +976,11 @@ func (g *conflictGuard) hashMountFile(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// errNoCacheFile is a save whose bytes are not in the VFS cache yet, or
+// have been evicted. The pass leaves it unseen so the next pass can
+// hash it; it is not a failure of the other saves in the same queue.
+var errNoCacheFile = errors.New("no VFS cache file")
 
 // errProtectTooLarge is a save that grew past the protection cap while
 // it was being hashed. It is a named skip, not a failure of the pass.
@@ -1046,9 +1054,6 @@ func (c *rcClient) remoteHas(ctx context.Context, name string) (bool, error) {
 		Item json.RawMessage `json:"item"`
 	}
 	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
-		if isRemoteMissing(err) {
-			return false, nil
-		}
 		return false, err
 	}
 	return string(reply.Item) != "null", nil
@@ -1280,7 +1285,7 @@ func isRemoteMissing(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "not found") || strings.Contains(s, "notexist")
+	return strings.Contains(s, "directory not found")
 }
 
 // ConflictGuardStatePath is where the running guard reports how far
@@ -1313,11 +1318,26 @@ func writeConflictGuardState(path string, behind int, now time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "conflict-guard-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // conflictGuardBehind is how many saves the guard said it is behind,
