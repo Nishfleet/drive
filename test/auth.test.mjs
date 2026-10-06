@@ -18,7 +18,15 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
-import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
+import {
+  authFor,
+  createAuth,
+  IGNORING_SENTENCE,
+  SIGNIN_LINK_PATH,
+  sessionAccount,
+  signinDeviceName,
+  signinLinkEmail,
+} from "../src/auth.js";
 import worker from "../src/index.js";
 import {
   createTestAuth,
@@ -314,4 +322,151 @@ test("the deployment's auth comes from one binding, one secret and one address",
   // Missing the database is the closed door, not an error a request pays for.
   assert.equal(authFor({ BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: TEST_BASE_URL }), null);
   assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
+});
+
+// ------------------------------------- the mail says who asked, and when (drive#550)
+
+/**
+ * The sign-in mail as the mailer renders it, at a fixed second so the line
+ * that names the time is the same string every run. sendSigninLink renders
+ * exactly this, from the same URL and the same header it was handed, so a
+ * change here is a change the customer reads.
+ * @param {string} url
+ * @param {unknown} [userAgent]
+ * @param {Date} [when]
+ */
+function authEmails(url, userAgent = null, when = new Date("2026-10-05T09:30:00.000Z")) {
+  return signinLinkEmail(url, userAgent, when);
+}
+
+test("signinDeviceName names only the browsers and platforms the tables carry", () => {
+  // The header comes from the caller, so the mail can only ever repeat words
+  // this repo owns: the name is assembled out of two frozen tables and the
+  // header is read as letter runs matched against them whole. Anything else
+  // is not echoed, it is unknown, and the caller's own words never travel.
+  /** @type {Array<[unknown, string|null]>} */
+  const cases = [
+    [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+      "Edge on Windows",
+    ],
+    [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Chrome on Windows",
+    ],
+    [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0",
+      "Opera on Windows",
+    ],
+    [
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+      "Firefox on macOS",
+    ],
+    [
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+      "Safari on iPhone",
+    ],
+    [
+      "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+      "Safari on iPad",
+    ],
+    [
+      "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      "Chrome on Android",
+    ],
+    [
+      "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Chrome on ChromeOS",
+    ],
+    // No platform the table names, but a browser it does: half a name is
+    // still a name, and it is still the table's word.
+    ["Chrome/120.0.0.0", "Chrome"],
+    // Nothing the tables hold: unknown, never the caller's text.
+    ["curl/8.4.0", null],
+    ["", null],
+    [null, null],
+    [17, null],
+    [{}, null],
+    ['<script>alert("Chrome")</script>', "Chrome"],
+  ];
+  for (const [raw, expected] of cases) {
+    const name = signinDeviceName(raw);
+    assert.equal(name, expected, `signinDeviceName(${JSON.stringify(raw)})`);
+    if (expected === null) {
+      assert.equal(name, null, "an unrecognised header is unknown, not echoed");
+    }
+  }
+  // The one case above whose shape matters most: a header carrying script
+  // tags matched Chrome as a letter run, and the tags themselves are nowhere.
+  assert.equal(
+    signinDeviceName('<script>alert("Chrome")</script>'),
+    "Chrome",
+    "the table's word is the only word out",
+  );
+});
+
+test("a sign-in link mailed to a browser names that browser and the time in UTC", async () => {
+  const made = createTestAuth();
+  const userAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  await made.auth.api.signInMagicLink({
+    body: { email: "device@example.com" },
+    headers: new Headers({ origin: TEST_BASE_URL, "user-agent": userAgent }),
+  });
+  const sent = made.sent[0];
+  assert.equal(sent.userAgent, userAgent, "the request's own header reached the mailer");
+  // The mail is rendered from the same URL and the same header the mailer was
+  // handed, so this is the text the customer reads, not a second copy of it.
+  const email = authEmails(sent.url, sent.userAgent);
+  assert.match(email.text, /Requested from Chrome on Windows at 5 Oct 2026, 09:30 UTC\./);
+  assert.ok(
+    email.text.includes(IGNORING_SENTENCE),
+    "the mail says a request nobody made can be ignored",
+  );
+  for (const part of [email.text, email.html]) {
+    assert.ok(
+      part.includes("Requested from Chrome on Windows"),
+      "the device line is in both parts",
+    );
+    assert.ok(part.includes("5 Oct 2026, 09:30 UTC"), "the time line is in both parts");
+  }
+});
+
+test("a sign-in link asked for without a browser still names a time and the way out", async () => {
+  // A script that never sets a user-agent is the shape an attacker uses
+  // most, and it gets the same mail as anybody: an unknown device, a real
+  // time, and the sentence that says the link can be ignored.
+  const made = createTestAuth();
+  await made.auth.api.signInMagicLink({
+    body: { email: "quiet@example.com" },
+    headers: headers(),
+  });
+  const sent = made.sent[0];
+  assert.equal(sent.userAgent, null, "no header, no device");
+  const email = authEmails(sent.url);
+  assert.match(email.text, /Requested from an unknown device at /);
+  assert.ok(
+    email.text.includes(IGNORING_SENTENCE),
+    "the unknown-device mail still says the link can be ignored",
+  );
+  assert.match(email.text, /\d{1,2} \w{3} \d{4}, \d{2}:\d{2} UTC\./);
+});
+
+test("the link's own sentences do not change when the device does", () => {
+  // The two new sentences sit beside the existing promise, and the promise
+  // is the link's; a device line that quietly replaced it would be a change
+  // to how long the link lasts, which is Better Auth's own setting.
+  const url = `${TEST_BASE_URL}${SIGNIN_LINK_PATH}?token=abc`;
+  const unknown = authEmails(url).text;
+  const known = authEmails(
+    url,
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+  ).text;
+  for (const text of [unknown, known]) {
+    assert.ok(text.includes("good for 10 minutes and works once"), "the link's promise is intact");
+    assert.ok(text.includes(IGNORING_SENTENCE), "the way out is in every mail");
+    assert.match(text, /Requested from .+ at \d{1,2} \w{3} \d{4}, \d{2}:\d{2} UTC\./);
+  }
+  assert.ok(known.includes("Firefox on macOS"), "a known device is named");
+  assert.ok(unknown.includes("an unknown device"), "an unknown one is called unknown");
 });
