@@ -16,6 +16,8 @@
 // same instant are serialized by the database write itself, so the ceiling
 // cannot be outrun by a burst the way a read-then-write pair can.
 
+import { DAY_MS } from "./auth.js";
+
 /** Links one address may be sent inside one hour window. */
 export const SIGNIN_SEND_HOURLY_MAX = 5;
 
@@ -26,7 +28,7 @@ export const SIGNIN_SEND_DAILY_MAX = 20;
 export const SIGNIN_SEND_HOUR_SECONDS = 60 * 60;
 
 /** One day, in seconds — the window the daily ceiling lives in. */
-export const SIGNIN_SEND_DAY_SECONDS = 24 * 60 * 60;
+export const SIGNIN_SEND_DAY_SECONDS = DAY_MS / 1000;
 
 /**
  * The one guarded upsert. ?1 the address, ?2 the send's second, ?3 the

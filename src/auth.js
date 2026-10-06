@@ -328,7 +328,7 @@ export const IGNORING_SENTENCE = "If you did not ask for this, ignore it.";
  * every mail this code sends carries the same words in the same place.
  * @type {string}
  */
-export const UNKNOWN_DEVICE_NAME = "an unknown device";
+const UNKNOWN_DEVICE_NAME = "an unknown device";
 
 /**
  * Product names this repo spells out, in the order they win: Edge, Opera,
