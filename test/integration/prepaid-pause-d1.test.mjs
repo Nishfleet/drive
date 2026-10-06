@@ -17,8 +17,8 @@ import { test } from "node:test";
 import { READ_ONLY_CAPABILITIES } from "../../core/cap.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { creditTopUp } from "../../core/ledger.js";
-import { pauseAccountKeys } from "../../core/prepaid-pause.js";
 import { settleBalances } from "../../core/prepaid.js";
+import { pauseAccountKeys } from "../../core/prepaid-pause.js";
 import { handleBillingWebhook, signWebhook, TOPUP_PURPOSE } from "../../core/topup.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
@@ -152,7 +152,7 @@ test("settleBalances after a draw pauses the keys when PREPAID_PAUSE is on", asy
 });
 
 test("the signed top-up webhook restores the keys the pause took", async () => {
-  const { sqlite, db } = makeMeteredDB();
+  const { db } = makeMeteredDB();
   const store = createD1DeviceStore(db, { now: () => NOW });
   await putAccount(db);
   await putWriteKey(store);

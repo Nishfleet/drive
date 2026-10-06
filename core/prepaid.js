@@ -30,9 +30,9 @@ import {
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
-import { pauseAccountKeys } from "./prepaid-pause.js";
 
 /** The env value that turns the pause on. Anything else leaves it off. */
 export const PREPAID_PAUSE_ON = "on";

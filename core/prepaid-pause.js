@@ -28,6 +28,17 @@ import { balanceCents } from "./ledger.js";
 /**
  * @typedef {import("./cap.js").CapKey} CapKey
  * @typedef {import("./cap.js").CapSwapPlan} CapSwapPlan
+ * @typedef {{
+ *   keyProviderFor: (accountId: string) => {
+ *     mint: Function,
+ *     revoke?: Function,
+ *     swapToReadOnly?: Function,
+ *     swapPrepaidToReadOnly?: Function,
+ *   },
+ *   getCapUsd?: Function,
+ *   monthUsage?: Function,
+ * }} PrepaidKeyStore
+ * @typedef {PrepaidKeyStore & { listPrepaidKeys: (accountId: string) => Promise<unknown> }} PrepaidDeviceStore
  */
 
 /**
@@ -88,12 +99,7 @@ export async function applyPrepaidPause(input) {
  * alone. A provider without that method falls through to revoke-then-mint,
  * the same fallback the cap uses.
  *
- * @param {{keyProviderFor: (accountId: string) => {
- *   mint: Function,
- *   revoke: Function,
- *   swapToReadOnly?: Function,
- *   swapPrepaidToReadOnly?: Function,
- * }}} devices
+ * @param {PrepaidKeyStore} devices
  * @param {string} accountId
  */
 export function prepaidKeyProvider(devices, accountId) {
@@ -104,19 +110,22 @@ export function prepaidKeyProvider(devices, accountId) {
     );
   }
   const inner = devices.keyProviderFor(accountId);
-  if (typeof inner?.mint !== "function" || typeof inner?.revoke !== "function") {
+  const mint = inner?.mint;
+  const revoke = inner?.revoke;
+  if (typeof mint !== "function" || typeof revoke !== "function") {
     throw new TypeError(
       "prepaid pause needs mint(scope) and revoke(keyId) on the account's " +
         "key provider; a provider without them would report a swap it did not make",
     );
   }
+  const swapPrepaid = inner.swapPrepaidToReadOnly;
   /** @type {{mint: Function, revoke: Function, swapToReadOnly?: Function}} */
   const provider = {
-    mint: (...args) => inner.mint(...args),
-    revoke: (...args) => inner.revoke(...args),
+    mint: mint.bind(inner),
+    revoke: revoke.bind(inner),
   };
-  if (typeof inner.swapPrepaidToReadOnly === "function") {
-    provider.swapToReadOnly = (keyId) => inner.swapPrepaidToReadOnly(keyId);
+  if (typeof swapPrepaid === "function") {
+    provider.swapToReadOnly = (/** @type {string} */ keyId) => swapPrepaid.call(inner, keyId);
   }
   return provider;
 }
@@ -148,12 +157,7 @@ export async function accountAtCap(devices, accountId) {
  * @param {string} accountId
  * @param {{
  *   db: D1Database,
- *   devices: {
- *     listPrepaidKeys: (accountId: string) => Promise<unknown>,
- *     keyProviderFor: (accountId: string) => unknown,
- *     getCapUsd?: Function,
- *     monthUsage?: Function,
- *   },
+ *   devices: PrepaidDeviceStore,
  *   pauseOn: boolean,
  * }} deps
  */

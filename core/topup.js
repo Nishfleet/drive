@@ -39,8 +39,8 @@ import {
   TOP_UP_PAGE,
 } from "./ledger.js";
 import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
-import { PREPAID } from "./pricing.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
+import { PREPAID } from "./pricing.js";
 import { unauthorizedResponse } from "./status.js";
 
 export const TOPUP_ENDPOINT = "/api/topup";

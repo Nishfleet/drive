@@ -9,11 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { READ_ONLY_CAPABILITIES } from "../core/cap.js";
-import {
-  applyPrepaidPause,
-  prepaidKeyProvider,
-  prepaidSwapPlan,
-} from "../core/prepaid-pause.js";
+import { applyPrepaidPause, prepaidKeyProvider, prepaidSwapPlan } from "../core/prepaid-pause.js";
 
 const deviceKey = {
   keyId: "k-device",
@@ -90,10 +86,14 @@ test("at $0 every write-capable key is replaced by a read-only one on its own pr
   assert.deepEqual(plan.mount, { restart: true, reason: "prepaid-paused" });
   const byId = Object.fromEntries(plan.swaps.map((swap) => [swap.keyId, swap]));
   assert.equal(byId["k-ro"], undefined, "a key that already cannot write is not churned");
-  assert.deepEqual([...byId["k-device"].capabilities], [...READ_ONLY_CAPABILITIES]);
-  assert.deepEqual([...byId["k-device"].cappedFrom], ["list", "read", "write", "delete"]);
-  assert.deepEqual([...byId["k-agent"].cappedFrom], ["list", "read", "write"]);
-  assert.deepEqual([...byId["k-branch"].cappedFrom], ["list", "read", "write"]);
+  const deviceSwap = byId["k-device"];
+  const agentSwap = byId["k-agent"];
+  const branchSwap = byId["k-branch"];
+  assert.ok(deviceSwap && agentSwap && branchSwap);
+  assert.deepEqual([...deviceSwap.capabilities], [...READ_ONLY_CAPABILITIES]);
+  assert.deepEqual([...(deviceSwap.cappedFrom ?? [])], ["list", "read", "write", "delete"]);
+  assert.deepEqual([...(agentSwap.cappedFrom ?? [])], ["list", "read", "write"]);
+  assert.deepEqual([...(branchSwap.cappedFrom ?? [])], ["list", "read", "write"]);
 });
 
 test("a second pause at $0 is a no-op", () => {
@@ -186,11 +186,11 @@ test("prepaidKeyProvider records the pause through swapPrepaidToReadOnly, not th
           return { keyId: "n", accessKeyId: "a", secret: "s" };
         },
         async revoke() {},
-        async swapToReadOnly(keyId) {
+        async swapToReadOnly(/** @type {string} */ keyId) {
           cap.push(keyId);
           return { keyId, accessKeyId: "a", secret: "s" };
         },
-        async swapPrepaidToReadOnly(keyId) {
+        async swapPrepaidToReadOnly(/** @type {string} */ keyId) {
           prepaid.push(keyId);
           return { keyId, accessKeyId: "a", secret: "s" };
         },
