@@ -218,6 +218,35 @@ func TestReadCostLinePrintsTheWorkersBalanceLine(t *testing.T) {
 	}
 }
 
+func TestReadCostLinePrintsSize30AndTodayDraw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $12.00: $4.00 counted this month, $8.00 left."
+		u.Labels.Size30 = "1.0 TB"
+		u.Labels.Size30Reached = "2026-09-10"
+		u.Labels.Size30DropsOut = "2026-10-10"
+		u.Labels.TodayDraw = "$0.50"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, "dtok_test"); reason != "" {
+			t.Errorf("readCostLine said %q, want the size30 lines", reason)
+		}
+	})
+	for _, want := range []string{
+		"Biggest size in the last 30 days: 1.0 TB",
+		"Reached: 2026-09-10",
+		"Drops out: 2026-10-10",
+		"Today's draw: $0.50",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("got %q, want %q", out, want)
+		}
+	}
+}
+
 func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string
