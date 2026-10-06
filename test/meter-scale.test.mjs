@@ -7,8 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { minutesInMonth, monthBillCents } from "../src/billing.js";
-import worker from "../src/index.js";
+import { gbMonths, minutesInMonth, monthBillCents } from "../core/billing.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
@@ -24,10 +23,10 @@ import {
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import worker from "../src/index.js";
 import { METER_JOB_KINDS } from "../src/meter-jobs.js";
 import { applyMigrations, at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
-import { createTestD1 } from "./harness.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
 
@@ -67,7 +66,7 @@ async function storeVersion(db, accountId, overrides = {}) {
  * @param {Record<string, unknown[] | Error>} byPrefix
  */
 function providerStore(byPrefix) {
-  return /** @type {import("../src/files.js").FileStore} */ (
+  return /** @type {import("../core/files.js").FileStore} */ (
     /** @type {unknown} */ ({
       async listVersions(/** @type {string} */ prefix) {
         const listed = byPrefix[prefix];
@@ -306,12 +305,12 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  // The pre-charge limit sweep (drive#536) runs off DRIVE_DB, and the hourly
-  // trip fails when that binding is absent (src/index.js scheduled). The
-  // customer DB is a separate store from the ledger in production, so the
-  // empty one stands in for it: the outage under test is the ledger's, and
-  // the sweep must still find nothing to cap here.
-  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: createTestD1() };
+  // The hourly trip's env carries both bindings: the same cron runs the
+  // pre-charge sweep off DRIVE_DB (drive#536), and the deploy binds the one
+  // database under both names (cloudflare.config.ts). The sweep takes the
+  // raw db: the outage proxy stands in for the draw's ledger failure, and
+  // the sweep is not part of this outage scenario.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -333,13 +332,17 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
-    // The same shape the draws write with (src/prepaid.js monthBillCents),
-    // so what this reads back is what the ledger was billed at.
+    const monthMinutes = minutesInMonth(hour);
+    // The same shape the draw itself bills with (src/prepaid.js drawFor):
+    // each month divides by its own minutes (drive#531), so a September
+    // figure and an October figure are never divided alike.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
-      monthMinutes: minutesInMonth(hour),
+      monthMinutes,
       downloadBytes: usage.downloadBytes,
-      averageStoredGb: usage.averageStoredGb,
+      // The same average the draw passes (drive#535): derived from the
+      // GB-minutes, not read off the hours.
+      averageStoredGb: gbMonths(usage.gbMinutes, monthMinutes),
     }).totalCents;
   };
   /** @param {number} from @param {number} to */

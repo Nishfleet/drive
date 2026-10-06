@@ -1,6 +1,6 @@
 package main
 
-// The CLI's one message table (drive#117, the CLI side of src/messages.js
+// The CLI's one message table (drive#117, the CLI side of core/messages.js
 // FAILURE_MESSAGES). Every error a person can read comes from this table and
 // carries two things:
 //
@@ -10,7 +10,7 @@ package main
 // No raw rclone or storage error reaches the terminal: the underlying detail
 // stays in the failure's detail (shown only with DRIVE_DEBUG=1) or in the
 // mount's own log, and the next step names where to look. The words for the
-// failures the drive has on every surface are copied from src/messages.js so
+// failures the drive has on every surface are copied from core/messages.js so
 // the CLI and the pages say the same thing; test/messages.test.mjs keeps that
 // table honest on the web side, and TestSharedKindsMatchThePageTable pins the
 // join here. Everything else is a CLI-shaped failure whose next step is an
@@ -72,7 +72,7 @@ func (f *failure) Unwrap() error { return f.detail }
 // TestFailureTableIsComplete holds every entry to the two-sentence shape.
 var messageTable = map[string][2]string{
 	// The five kinds the drive shares with the web pages. Their what lines
-	// are the src/messages.js words; TestSharedKindsMatchThePageTable pins
+	// are the core/messages.js words; TestSharedKindsMatchThePageTable pins
 	// them together.
 	"offline": {
 		"You look offline.",
@@ -163,6 +163,10 @@ var messageTable = map[string][2]string{
 	"cache-tag": {
 		"The drive's cache folder {1} could not be marked as a cache.",
 		"Check that {1} is writable, then run the command again.",
+	},
+	"cache-clear-mounted": {
+		"The cache cannot be cleared while the drive is mounted.",
+		"Run `drive unmount`, then `drive cache --clear`, then `drive mount`.",
 	},
 	"mount-failed": {
 		"rclone exited before the drive mounted.",
@@ -283,7 +287,7 @@ func failDetail(kind string, detail error, args ...string) *failure {
 	entry, ok := messageTable[kind]
 	if !ok {
 		// A kind missing from the table is a programmer error, the same way
-		// failureMessage throws in src/messages.js. The CLI still has to print
+		// failureMessage throws in core/messages.js. The CLI still has to print
 		// a next step rather than crash, so it falls back to unexpected and
 		// keeps the missing kind in the detail for DRIVE_DEBUG=1.
 		missing := fmt.Errorf("no message table entry for %q", kind)

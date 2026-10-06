@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { INSTALL_LINES } from "../src/install-lines.js";
+import { INSTALL_LINES } from "../core/install-lines.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -75,6 +75,15 @@ test("the Homebrew cask depends on rclone", () => {
   );
 });
 
+test("the package homepage is the one site address", () => {
+  const origin = JSON.parse(read("cmd/drive/site.json")).origin;
+  const homepages = [...cfg.matchAll(/^\s+homepage:\s+(\S+)/gm)].map((match) => match[1]);
+  assert.ok(homepages.length >= 2, "nfpm and the Homebrew cask both name a homepage");
+  for (const url of homepages) {
+    assert.equal(url, origin, `.goreleaser.yaml homepage ${url} must be cmd/drive/site.json`);
+  }
+});
+
 test("no install script is added to the tree", () => {
   assert.doesNotMatch(
     cfg,
@@ -88,7 +97,7 @@ test("install lines in the docs, help and page are generated from .goreleaser.ya
   assert.deepEqual(
     INSTALL_LINES.map((row) => ({ os: row.os, line: row.line })),
     derived,
-    "src/install-lines.js must match .goreleaser.yaml",
+    "core/install-lines.js must match .goreleaser.yaml",
   );
 
   const mainGo = read("cmd/drive/main.go");
