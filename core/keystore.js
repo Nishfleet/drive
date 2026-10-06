@@ -70,8 +70,10 @@ export {
  * `keyProvider` is where a minted key's credential comes from (build step 1,
  * drive#2). With one, the credential is the storage endpoint's own, scoped by
  * the policy it was minted with, so the endpoint refuses what the key may not
- * do; without one (no storage configured) the credential is the stand-in the
- * api's own storage API verifies. The choice is made once, by the factory.
+ * do. Without one the credential is the stand-in the api's own storage API
+ * verifies — tests call this factory that way; production storeFor refuses to
+ * build a store without a provider (drive#505). The choice is made once, by
+ * the factory.
  * `writesPaused` is the prepaid pause (drive#586): when set, it answers
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off.
@@ -114,8 +116,9 @@ export function createMemoryStore(options = {}) {
     /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
     let credential;
     if (keyProvider === undefined) {
-      // No storage configured: the stand-in credential the api's own storage
-      // API knows, and nothing outside the Worker has ever seen.
+      // Tests: no storage configured, so the stand-in credential the api's
+      // own storage API knows. Production never reaches this branch
+      // (workers/api/src/index.js storeFor requires a key provider).
       credential = {
         accessKeyId: newId("ak"),
         secret: newId("sk"),

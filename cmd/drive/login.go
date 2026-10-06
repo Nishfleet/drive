@@ -1,6 +1,8 @@
 package main
 
 import (
+	_ "embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -10,10 +12,34 @@ import (
 	"strings"
 )
 
+// siteAddress is the one place the site's address is written (drive#527). It
+// sits in this package because Go's //go:embed cannot reach outside its own
+// directory, and core/seo.js and docs-site/.vitepress/config.mts import the
+// same file, so a domain move is one edit here and not a sweep of ten files.
+//
+//go:embed site.json
+var siteAddress []byte
+
 // defaultAPIBase is the one host that fronts both /api/* and /v1/* (drive#156).
-// It matches core/seo.js SITE_ORIGIN; TestDefaultAPIBaseMatchesTheShippedSite
-// fails if they drift. --api and DRIVE_API_URL still win.
-const defaultAPIBase = "https://drive-pricing.nishant345.workers.dev"
+// It is the embedded site address, so the CLI and the site cannot drift.
+// --api and DRIVE_API_URL still win. A site.json that does not parse is a
+// build mistake, and a binary built from one fails loudly rather than sending
+// a customer to a host nobody chose.
+var defaultAPIBase = mustSiteOrigin()
+
+/** The origin field of the embedded site address. */
+func mustSiteOrigin() string {
+	var site struct {
+		Origin string `json:"origin"`
+	}
+	if err := json.Unmarshal(siteAddress, &site); err != nil {
+		panic("drive: site.json is not valid JSON: " + err.Error())
+	}
+	if !strings.HasPrefix(site.Origin, "https://") {
+		panic("drive: site.json origin must be an https address, got " + site.Origin)
+	}
+	return site.Origin
+}
 
 // openURL opens the device-approve page. Tests replace it so the stand-in
 // never needs a display.

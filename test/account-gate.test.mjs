@@ -36,7 +36,7 @@ import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { HEALTH_PATH } from "../src/health.js";
-import worker from "../src/index.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
@@ -193,6 +193,9 @@ function anonymous(request) {
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
       HEALTH_RATE_LIMITER: makeLimiter(),
       SHARE_DOWNLOAD_RATE_LIMITER: makeLimiter(),
+      // Tests inject the in-memory files store. Production never builds it
+      // (src/index.js storeFor, drive#505).
+      [TEST_FILES_STORE]: createMemoryStore(),
     },
     ctx,
   );
@@ -555,6 +558,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
@@ -684,6 +688,7 @@ test("sign-out revokes the session the cookie names", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await workerFetch(

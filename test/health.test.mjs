@@ -852,7 +852,10 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
   // absence fails closed at the intake (core/meter.js) instead of at the probe.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "HEALTH_RATE_LIMITER"]);
+  // The meter's queue (drive#519) is optional on purpose: without it the
+  // crons run the per-account steps in-process (src/meter-jobs.js), and a
+  // producer binding cannot be probed without sending a real job.
+  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "HEALTH_RATE_LIMITER", "METER_JOBS"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,
