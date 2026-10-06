@@ -22,6 +22,7 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
   createS3Store,
   FILES_ENDPOINT,
@@ -847,6 +848,25 @@ export function createApp() {
       // would be a second answer to the same question.
       new Date(monthStart(Date.now())).toISOString(),
     );
+  });
+
+  // Own-data export (drive#547): the same handler GET /v1/export runs, served
+  // here so a signed-in browser can download it before the api Worker is bound.
+  // The account gate already answered 401 for a stranger. No DRIVE_DB means
+  // no keys and no file rows, which is a truthful empty export, not a 503.
+  app.get(EXPORT_ENDPOINT, (c) => {
+    const account = c.get("account");
+    if (!account) return unauthorizedResponse();
+    const db = c.env.DRIVE_DB;
+    return exportRoute(c.req.raw, {
+      store: {
+        listKeys: (acct) => (db ? createD1DeviceStore(db).listPublic(acct) : Promise.resolve([])),
+      },
+      db: db ?? null,
+      account,
+      now: Date.now,
+      url: new URL(c.req.url),
+    });
   });
 
   // The prepaid balance (drive#586): the balance and recent ledger lines, and
