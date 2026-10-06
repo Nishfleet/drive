@@ -639,9 +639,13 @@ export async function handleSigninLinkVerify(request, env) {
       // The person is signed in by now: Better Auth set the cookie above.
       // Drop any leftover unauthenticated hold for this address so an old
       // start cannot move a stranger's fingerprint onto the new account
-      // (drive#538), then claim `test:<email>` on the real id when the
-      // account has no card yet. A clash is logged, never a 500 for a
-      // session that already exists.
+      // (drive#538). pendingCardAccountId lowercases, so a mixed-case
+      // mailbox still matches the hold id. Then claim `test:<email>` on
+      // the real id when the account has no card yet. The start step no
+      // longer refuses a missing checkbox: that 400 was how a stranger
+      // learned whether the address already had an account. The stand-in
+      // is the proven address (Dodo is still unset, drive#417). A clash
+      // is logged, never a 500 for a session that already exists.
       try {
         await /** @type {D1Database} */ (driveDb)
           .prepare("DELETE FROM accounts WHERE id = ?1")
@@ -664,7 +668,7 @@ export async function handleSigninLinkVerify(request, env) {
         if (typeof held !== "string" || held === "") {
           const fingerprint = signupCardFingerprint({ card: true, email: account.email });
           if (fingerprint === null) {
-            throw new TypeError(`signupCardFingerprint returned no card for ${account.email}`);
+            throw new TypeError("signupCardFingerprint returned no card for a proven address");
           }
           const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
             accountId: account.id,

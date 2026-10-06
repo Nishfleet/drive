@@ -208,11 +208,7 @@ button:disabled {
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
         <label class="hint" for="card">
-          <!-- drive#538: not required. The server no longer refuses a start
-               without the box, because that 400 was how a stranger learned
-               whether an address already had an account. A returning customer
-               can sign in without ticking. The card itself is claimed after
-               the magic link is followed. -->
+          <!-- Not required: a returning customer can submit without ticking. -->
           <input id="card" name="card" type="checkbox" value="on">
           I understand a card is required
         </label>

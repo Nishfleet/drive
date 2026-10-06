@@ -320,10 +320,50 @@ test("an attacker start cannot lock the owner out (drive#538)", async () => {
     .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
     .bind(user.id)
     .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
   assert.equal(
     /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
     "test:owner@example.com",
     "the proven address owns the stand-in, not the attacker's posted fingerprint",
+  );
+});
+
+test("a leftover hold is dropped at verify and does not keep the attacker's card (drive#538)", async () => {
+  const made = dispatchEnv();
+  const now = Math.floor(Date.now() / 1000);
+  await made.db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, state, card_fingerprint, card_added_at)
+       VALUES (?1, ?2, ?3, 'active', ?4, ?3)`,
+    )
+    .bind("hold:owner@example.com", "Owner@example.com", now, "posted:attacker-card")
+    .run();
+  const start = await workerFetch(
+    post({ step: "start", method: "email", email: "Owner@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(start.status, 202);
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  const leftover = await made.db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind("hold:owner@example.com")
+    .first();
+  assert.equal(leftover, null, "the leftover hold is gone");
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind("Owner@example.com")
+    .first();
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    "test:owner@example.com",
+    "the proven address owns the stand-in, not the leftover posted fingerprint",
   );
 });
 
@@ -354,6 +394,7 @@ test("every new-account path still cannot open an account through OAuth (drive#4
     .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
     .bind(user.id)
     .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
   assert.equal(
     /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
     "test:new@example.com",
