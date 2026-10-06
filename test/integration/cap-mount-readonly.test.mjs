@@ -33,7 +33,7 @@
 // test/step1-storage.test.mjs reads its scoped-key refusals off. It is the
 // only endpoint in this repo that mints scoped read-only keys at all: B2
 // does, and iDrive e2 refuses STS AssumeRole outright (measured, drive#173,
-// recorded in workers/api/src/s3-keys.js). The cap swap's provider calls are
+// recorded in core/s3-keys.js). The cap swap's provider calls are
 // the same code either way — the endpoint is a configuration difference — so
 // this proves the swap against the one backend that can perform it.
 //
@@ -56,11 +56,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { dollarsToCapCents, enforceCap } from "../../src/cap.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
-import { bucketForAccount } from "../../workers/api/src/keyprovider.js";
-import { createS3Client, provisionBucket } from "../../workers/api/src/s3.js";
-import { createS3KeyProvider } from "../../workers/api/src/s3-keys.js";
+import { dollarsToCapCents, enforceCap } from "../../core/cap.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { bucketForAccount } from "../../core/keyprovider.js";
+import { createS3Client, provisionBucket } from "../../core/s3.js";
+import { createS3KeyProvider } from "../../core/s3-keys.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 import { startMinioStandin } from "../minio-standin.mjs";
 
@@ -85,11 +85,14 @@ const MOUNT_FLAGS = [
 
 // Usage that counts at $20 a month (2 TB on average), so a $12 cap is over it
 // and a $25 cap is under it: the same month flips the cap the way a real month does,
-// with no change to the usage itself. Verified against capStatus directly in
+// with no change to the usage itself. A 30-day month: the bill divides by the
+// month's own minutes (drive#531). Verified against capStatus directly in
 // the first test below, so the numbers here cannot drift into a month that
 // does not straddle the cap.
+const MONTH_MINUTES = 30 * 1440;
 const STRADDLING_MONTH = Object.freeze({
-  gbMinutes: 2000 * 43_800,
+  gbMinutes: 2000 * MONTH_MINUTES,
+  monthMinutes: MONTH_MINUTES,
   storedGb: 2000,
   storedDaily: [],
   downloadBytes: 0,
@@ -752,9 +755,9 @@ test("the straddling month really does straddle the cap", async () => {
   // it. If a pricing change moved the maximum, that would silently stop being
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
-  const { capStatus } = await import("../../src/billing.js");
-  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_BEFORE).state, "read_only");
-  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_AFTER).state, "active");
+  const { capStatus } = await import("../../core/billing.js");
+  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, MONTH_MINUTES, CAP_BEFORE).state, "read_only");
+  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, MONTH_MINUTES, CAP_AFTER).state, "active");
 });
 
 test("the cap swap on a real mount: read-only, no file lost, writing again after the raise", async (t) => {

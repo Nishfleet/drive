@@ -151,7 +151,11 @@ a {
   line-height: 1;
 }
 
+/* The tagline sits on the orange hero field. The shared --ink-soft from
+   site.css reads at 2.4:1 there and fails the accessibility budget, so it
+   takes the same ink as the masthead links (about 6:1). */
 .tagline {
+  color: var(--drive-ink);
   font-size: 14px;
   font-weight: 600;
 }
@@ -2228,6 +2232,8 @@ details p {
           <a href="/refunds">Refunds</a>
           <a href="/acceptable-use">Acceptable use</a>
           <a href="/support">Support</a>
+          <a href="/accessibility">Accessibility</a>
+          <a href="/status">Status</a>
         </nav>
         <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
       </div>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { failureMessage } from "../../../src/messages.js";
+import { failureMessage } from "../../../core/messages.js";
 import { createApp, dispatch } from "../src/index.js";
 import {
   floorFor,

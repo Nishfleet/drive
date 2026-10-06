@@ -28,11 +28,11 @@ import (
 //
 // Both answers come from something that already exists rather than a second
 // way to ask: rclone writes the queue as it queues it, and the api Worker
-// already computes the money in src/billing.js `usageSummary()`. This file
+// already computes the money in core/billing.js `usageSummary()`. This file
 // only renders what those two already know.
 
 // USAGE_PATH is the api Worker's monthly-usage endpoint (src/index.js routes
-// /api/usage to src/billing.js `handleUsageRequest`). The CLI reads the same
+// /api/usage to core/billing.js `handleUsageRequest`). The CLI reads the same
 // endpoint the usage page reads, so the numbers on this line and the numbers
 // on the page cannot disagree.
 const USAGE_PATH = "/api/usage"
@@ -386,8 +386,9 @@ func transfersLine(home string, on bool) string {
 // rclone is asked about nothing and no file format is invented here: the
 // queue is read where rclone itself records it.
 type VFSMeta struct {
-	Dirty bool  `json:"Dirty"`
-	Size  int64 `json:"Size"`
+	Dirty       bool   `json:"Dirty"`
+	Size        int64  `json:"Size"`
+	Fingerprint string `json:"Fingerprint"`
 }
 
 // PendingUploads counts the files rclone has in its VFS cache and has not
@@ -453,7 +454,7 @@ type Pending struct {
 }
 
 // UPLOAD_WORDS are the words `drive status` uses for the queue, kept next to
-// the words the first-run page uses for the same queue (src/status.js
+// the words the first-run page uses for the same queue (core/status.js
 // `UPLOAD_LABEL`). The page is a static asset and cannot import the module,
 // and the Go caller cannot import the page, so the two copies are the same
 // words by construction: an empty queue says "Up to date" on both, one file
@@ -579,7 +580,7 @@ func UploadLabel(q Pending) string {
 	}
 }
 
-// UsageSummary is the shape GET /api/usage returns (src/billing.js
+// UsageSummary is the shape GET /api/usage returns (core/billing.js
 // `usageSummary()`): the month's numbers and the cap. The CLI decodes the two
 // halves it prints and no more, so the money is computed once, in the Worker,
 // by the code that owns the prices.
@@ -589,7 +590,7 @@ type UsageSummary struct {
 	MaximumUsd float64 `json:"maximumUsd"`
 	CapLine    string  `json:"capLine"`
 	// BalanceLine is the prepaid balance (drive#586), written by the Worker
-	// (src/topup.js balanceLine) with the top-up prompt when it is low or $0.
+	// (core/topup.js balanceLine) with the top-up prompt when it is low or $0.
 	// Empty from a Worker that has no balance store yet.
 	BalanceLine string `json:"balanceLine"`
 	Cap         struct {
