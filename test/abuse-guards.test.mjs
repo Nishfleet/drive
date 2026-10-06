@@ -520,7 +520,7 @@ function passLimiter() {
  * request store, while the guard reads the drive's own db, so the two
  * databases are free to be separate, the way a real request store and a real
  * drive database would be.
- * @returns {ReturnType<createD1LinkStore>}
+ * @returns {ReturnType<typeof createD1LinkStore>}
  */
 function makeShareLinks() {
   return createD1LinkStore(createTestD1());
@@ -673,7 +673,7 @@ test("a reconciled branch copy is counted once, not twice (drive#800, in-run rev
   });
   const store = createMemoryStore();
   const scoped = scopeStore(store, { id: accountId });
-  await scoped.write("/work/x.bin", "x".repeat(200));
+  await scoped.write("/work/x.bin", "x".repeat(200), "text/plain");
   await scoped.copy("/work/x.bin", `${BRANCHES_PATH}/b/x.bin`);
   // The nightly reconcile's row for that same copy: the path shape is the
   // account prefix with no leading slash, matching core/meter.js.
