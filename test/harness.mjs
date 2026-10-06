@@ -291,11 +291,23 @@ export function createTestD1(options = {}) {
         sqlite.exec(sql);
         return { count: 0, duration: 0 };
       },
+      // D1 runs a batch as one transaction: a statement that fails rolls the
+      // whole batch back. test/d1-sqlite.mjs keeps the same guarantee, so code
+      // that leans on it (the arrival digest's clear and stamp, drive#684) is
+      // tested against D1's behaviour, not a run of independent writes.
       /**
        * @param {Array<{sql: string, params?: unknown[]}>} statements
        */
       async batch(statements) {
-        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+        sqlite.exec("BEGIN");
+        try {
+          const results = statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+          sqlite.exec("COMMIT");
+          return results;
+        } catch (error) {
+          sqlite.exec("ROLLBACK");
+          throw error;
+        }
       },
     })
   );

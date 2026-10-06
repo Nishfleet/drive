@@ -780,12 +780,13 @@ export function createD1LinkStore(db) {
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
       async markDigestSent(token, at, count) {
-        // The stamp and the clear are separate statements, and the clear
-        // walks the front of the array in chunks: json_remove's argument list
-        // is bounded by SQLITE_MAX_FUNCTION_ARG (127 stock), so a queue deeper
-        // than one chunk cannot be handed a single call. Each chunk removes
-        // the new front repeatedly, which is one UPDATE per chunk and leaves
-        // the stamp for the end, after the whole queue is gone.
+        // The clear walks the front of the array in chunks: json_remove's
+        // argument list is bounded by SQLITE_MAX_FUNCTION_ARG (127 stock), so
+        // a queue deeper than one chunk cannot be handed a single call. The
+        // chunks and the stamp go in one D1 batch, which is a transaction, so
+        // a failure part-way leaves the whole queue and the old stamp in
+        // place, and the next run mails the same list once instead of mailing
+        // the half a torn clear left behind.
         //
         // The clear removes only the arrivals the digest actually read,
         // from the front of the array, so an upload accepted during the send
@@ -793,24 +794,37 @@ export function createD1LinkStore(db) {
         // (drive issue #684). json_remove reads the column's old value, unlike
         // a correlated subquery in SET. A count of zero is the drain for a
         // row the digest could not read at all: parseArrivals already decided
-        // it holds no arrivals, and nothing but recordArrival writes the
-        // column back, so the only thing left to do with it is empty it
-        // rather than walk it every night.
-        const clearCount = count === 0 ? 1 : Math.max(1, Math.floor(count));
+        // it holds no arrivals, and json_remove refuses a value that is not
+        // JSON, so the drain writes the empty list outright rather than
+        // walking the row and failing on it every night.
+        const statements = [];
+        if (count === 0) {
+          statements.push(
+            db
+              .prepare("UPDATE upload_requests SET pending_uploads = '[]' WHERE token = ?1")
+              .bind(token),
+          );
+        }
+        const clearCount = count === 0 ? 0 : Math.max(1, Math.floor(count));
         for (let removed = 0; removed < clearCount; removed += REMOVE_CHUNK) {
           const take = Math.min(REMOVE_CHUNK, clearCount - removed);
           const paths = Array.from({ length: take }, () => "'$[0]'").join(", ");
-          await one(
-            `UPDATE upload_requests SET pending_uploads = ` +
-              `json_remove(pending_uploads, ${paths}) WHERE token = ?1 `,
-            [token],
+          statements.push(
+            db
+              .prepare(
+                `UPDATE upload_requests SET pending_uploads = ` +
+                  `json_remove(pending_uploads, ${paths}) WHERE token = ?1`,
+              )
+              .bind(token),
           );
         }
-        const row = await one(
-          `UPDATE upload_requests SET digest_at = ?1 WHERE token = ?2 ` +
-            `RETURNING ${REQUEST_COLUMNS}`,
-          [at, token],
+        statements.push(
+          db.prepare("UPDATE upload_requests SET digest_at = ?1 WHERE token = ?2").bind(at, token),
         );
+        await db.batch(statements);
+        const row = await one(`SELECT ${REQUEST_COLUMNS} FROM upload_requests WHERE token = ?1`, [
+          token,
+        ]);
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
       async listPendingDigests() {

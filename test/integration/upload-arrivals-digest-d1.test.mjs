@@ -287,6 +287,81 @@ test("an arrival queue that parses to nothing is logged, drained and counted", a
   );
 });
 
+test("an arrival queue that is not JSON at all is drained, not refused every night", async () => {
+  // drive#684 (orchestrator review): json_remove refuses a value that is not
+  // JSON, so a drain that walked the row would fail on it every night and the
+  // link would be listed forever. The drain writes the empty list outright.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-bad-json", "bad@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-bad-json", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  await db
+    .prepare("UPDATE upload_requests SET pending_uploads = ?1 WHERE token = ?2")
+    .bind("not json {", REQUEST_TOKEN)
+    .run();
+  const email = { send: async () => ({ messageId: "never" }) };
+  const result = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner: async () => ({ id: "acct-bad-json", name: "Bad", email: "bad@example.com" }),
+    now: NOW,
+  });
+  assert.deepEqual(result, { sent: 0, skipped: 1 });
+  const reader = createD1LinkStore(db);
+  const drained = await reader.requests.get(REQUEST_TOKEN);
+  assert.ok(drained);
+  assert.equal(drained.pendingUploads, "[]", "the non-JSON queue is emptied");
+  assert.equal(drained.digestAt, NOW);
+  assert.deepEqual(await reader.requests.listPendingDigests(), []);
+});
+
+test("a clear that fails part-way leaves the whole queue and the old stamp, so nothing is re-mailed in halves", async () => {
+  // drive#684 (orchestrator review): the clear takes more than one UPDATE for
+  // a deep queue, then the stamp. They run as one D1 batch, which is a
+  // transaction, so a failure on the last statement rolls back every chunk.
+  // The failure is injected into the real batch over the real adapter.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-torn", "torn@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-torn", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  for (let index = 0; index < 130; index += 1) {
+    await links.requests.recordArrival(REQUEST_TOKEN, `file-${index}.bin`, index + 1);
+  }
+  const failing = Object.create(db);
+  /** @param {any[]} statements */
+  failing.batch = (statements) =>
+    db.batch([...statements, db.prepare("UPDATE no_such_table SET x = 1")]);
+  let sends = 0;
+  const email = {
+    send: async () => {
+      sends += 1;
+      return { messageId: `msg-${sends}` };
+    },
+  };
+  const result = await sendArrivalDigests(failing, {
+    email,
+    mailFrom: "drive@example.com",
+    owner: async () => ({ id: "acct-torn", name: "Torn", email: "torn@example.com" }),
+    now: NOW,
+  });
+  assert.deepEqual(result, { sent: 0, skipped: 1 }, "the failed clear is counted as a skip");
+  assert.equal(sends, 1);
+  const row = await createD1LinkStore(db).requests.get(REQUEST_TOKEN);
+  assert.ok(row);
+  assert.equal(JSON.parse(row.pendingUploads).length, 130, "no chunk of the clear survived");
+  assert.equal(row.digestAt, null, "the stamp rolled back with the clear");
+});
+
 test("the digest refuses a blank sender and a missing owner resolver", async () => {
   // drive#684: the two guards are the documented contract, and a digest from
   // a placeholder sender or with no way to read an owner is worse than no
