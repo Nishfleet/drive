@@ -8,6 +8,12 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-07
+
+- When this computer's storage key is a short session, the drive renews it
+  before it ends and keeps uploads that were already waiting. `drive login`
+  accepts that kind of key because that loop is running.
+
 ## 2026-10-06
 
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on

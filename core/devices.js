@@ -1214,6 +1214,14 @@ export function createD1DeviceStore(db, options = {}) {
       // to the window move below, which is the whole renewal such a row has
       // ever needed.
       if (device.kind === "device" && providerNamesSessions) {
+        // Cap first: a mint then a capped refusal would swap the row onto a
+        // credential nobody holds. Device rows are never capped today, so
+        // this is the same read the window move makes rather than a second
+        // rule, but the order still has to refuse before it writes.
+        const capped = await enforceAgentCaps({ ...device, lastSeenAt: at });
+        if (capped.capped) {
+          return { error: "capped" };
+        }
         const credential = await mintCredential({
           prefix: device.prefix,
           capabilities: /** @type {KeyScope["capabilities"]} */ ([...device.capabilities]),
@@ -1235,13 +1243,6 @@ export function createD1DeviceStore(db, options = {}) {
         );
         if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
           return { error: "revoked" };
-        }
-        // The cap is enforced on the same rows as the window move below; a
-        // device row is never capped today, so this is the same read the
-        // window move makes rather than a second rule.
-        const capped = await enforceAgentCaps({ ...device, lastSeenAt: at, expiresAt });
-        if (capped.capped) {
-          return { error: "capped" };
         }
         return {
           renewed: true,

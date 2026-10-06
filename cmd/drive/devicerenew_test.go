@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -178,7 +179,7 @@ func TestRenewDeviceKeyOnceRewritesBeforeExpiry(t *testing.T) {
 	if err := SaveCredentials(home, creds); err != nil {
 		t.Fatal(err)
 	}
-	if err := renewDeviceKeyOnce(home, server.URL); err != nil {
+	if err := renewDeviceKeyOnce(home, server.URL, creds); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.renewedIDs) != 1 || api.renewedIDs[0] != creds.KeyID {
@@ -191,12 +192,21 @@ func TestRenewDeviceKeyOnceRewritesBeforeExpiry(t *testing.T) {
 	if !strings.HasSuffix(got.AccessKey, "_renewed") {
 		t.Fatalf("access key = %q, want the renewed credential", got.AccessKey)
 	}
+	if got.Endpoint != "http://127.0.0.1:39181" || got.Region != "us-east-1" {
+		t.Fatalf("endpoint/region = %+v, want the values login stored, not the secret", got)
+	}
+	if strings.Contains(got.Endpoint, "sk_") || strings.Contains(got.Region, "sk_") {
+		t.Fatalf("the secret landed in endpoint or region: %+v", got)
+	}
 	after, err := LoadCredentials(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if after.KeyExpiresAt <= time.Now().Unix() {
 		t.Fatalf("stored expiry %d is not in the future", after.KeyExpiresAt)
+	}
+	if after.Bucket != "drive-standin" {
+		t.Fatalf("credentials bucket = %q, want drive-standin", after.Bucket)
 	}
 }
 
@@ -214,7 +224,11 @@ func TestRenewDeviceKeyOnceRecordsANamedFailure(t *testing.T) {
 	if err := Login(home, server.URL, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	err := renewDeviceKeyOnce(home, server.URL)
+	creds, loadErr := LoadCredentials(home)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	err := renewDeviceKeyOnce(home, server.URL, creds)
 	if err == nil {
 		t.Fatal("a refused renew must fail")
 	}
@@ -231,5 +245,65 @@ func TestDeviceRenewSidecarIsNotPartOfTheMount(t *testing.T) {
 	}
 	if !strings.Contains(unit, "drive renew --home /home/test") {
 		t.Fatalf("ExecStart missing drive renew:\n%s", unit)
+	}
+}
+
+func TestApplyDeviceCredentialAllowsAnEmptySessionToken(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testStorage()
+	cfg.SessionToken = ""
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRcloneEnv(home, cfg, "rcuser", "rcpass"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{KeyID: "key_laptop", AccessKeyID: cfg.AccessKey}
+	fresh := cfg
+	fresh.AccessKey = "ak_fresh"
+	fresh.SecretKey = "sk_fresh"
+	fresh.SessionToken = ""
+	if err := applyDeviceCredential(home, creds, fresh); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateRemoteConfigPostsJSONAndKeepsSecretsOffArgv(t *testing.T) {
+	var gotPath, gotBody, gotAuth, gotCT string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		user, pass, ok := r.BasicAuth()
+		if ok {
+			gotAuth = user + ":" + pass
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newRCClient("/this-binary-must-not-run", strings.TrimPrefix(srv.URL, "http://"), "")
+	c.user, c.pass = "rcuser", "rcpass"
+	cfg := testStorage()
+	cfg.SecretKey = "sk_must_not_be_argv"
+	cfg.SessionToken = "tok_must_not_be_argv"
+	if err := c.updateRemoteConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/config/update" {
+		t.Fatalf("path = %q, want /config/update", gotPath)
+	}
+	if gotCT != "application/json" {
+		t.Fatalf("content-type = %q", gotCT)
+	}
+	if gotAuth != "rcuser:rcpass" {
+		t.Fatalf("auth = %q", gotAuth)
+	}
+	if !strings.Contains(gotBody, "sk_must_not_be_argv") || !strings.Contains(gotBody, `"name":"drive"`) {
+		t.Fatalf("body = %s", gotBody)
 	}
 }

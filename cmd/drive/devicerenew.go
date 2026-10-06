@@ -248,8 +248,10 @@ func applyDeviceCredential(home string, creds Credentials, cfg StorageConfig) er
 	if err := checkConfigValue("secret key", cfg.SecretKey); err != nil {
 		return err
 	}
-	if err := checkConfigValue("session token", cfg.SessionToken); err != nil {
-		return err
+	if cfg.SessionToken != "" {
+		if err := checkConfigValue("session token", cfg.SessionToken); err != nil {
+			return err
+		}
 	}
 	auth, err := ReadRCAuth(home)
 	if err != nil {
@@ -292,7 +294,7 @@ func reloadMountedRemote(goos, home, rcloneBin string, cfg StorageConfig) error 
 		}
 	}
 	if c, rcErr := mountRCClient(home); rcErr == nil {
-		if err := c.updateRemoteConfig(home, cfg); err == nil {
+		if err := c.updateRemoteConfig(cfg); err == nil {
 			return nil
 		}
 	}
@@ -349,7 +351,7 @@ func runDeviceRenewLoop(ctx context.Context, home, api string) error {
 			}
 			continue
 		}
-		if err := renewDeviceKeyOnce(home, api); err != nil {
+		if err := renewDeviceKeyOnce(home, api, creds); err != nil {
 			_ = recordDeviceRenewFailure(home, err)
 			select {
 			case <-ctx.Done():
@@ -364,11 +366,7 @@ func runDeviceRenewLoop(ctx context.Context, home, api string) error {
 	}
 }
 
-func renewDeviceKeyOnce(home, api string) error {
-	creds, err := LoadCredentials(home)
-	if err != nil {
-		return err
-	}
+func renewDeviceKeyOnce(home, api string, creds Credentials) error {
 	if creds.KeyID == "" {
 		return fail("not-signed-in")
 	}
@@ -385,7 +383,12 @@ func renewDeviceKeyOnce(home, api string) error {
 		return failDetail("device-key-renew-failed", err)
 	}
 	cred := renewed.Credential
-	cfg, err := LoadStorageConfig("", "", "", "", "", cred.Secret, storageFromDisk(home))
+	// LoadStorageConfig's sixth string is secretKey (config.go). Passing the
+	// disk endpoint/bucket/region in the named slots keeps those fields the
+	// values login stored, so a swapped argument would fail the bucket
+	// assertions in TestRenewDeviceKeyOnceRewritesBeforeExpiry.
+	disk := storageFromDisk(home)
+	cfg, err := LoadStorageConfig(disk.Endpoint, disk.Bucket, disk.Prefix, disk.Region, disk.DownloadURL, cred.Secret, disk)
 	if err != nil {
 		return failDetail("device-key-renew-failed", err)
 	}

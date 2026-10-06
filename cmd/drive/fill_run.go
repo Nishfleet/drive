@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,9 +153,11 @@ func rcErrorCause(stderr string) string {
 }
 
 // updateRemoteConfig reloads the live rclone remote with a fresh credential
-// (drive#749). The payload is a 0600 file, never argv, because
-// `/proc/<pid>/cmdline` is world-readable for the life of the call.
-func (c *rcClient) updateRemoteConfig(home string, cfg StorageConfig) error {
+// (drive#749). The body is a JSON POST to rclone's own rc HTTP API, never
+// argv and never `rclone rc --json`, because rclone v1.75.1 treats `--json @file`
+// as a literal blob (`invalid character '@'`) and `/proc/<pid>/cmdline` is
+// world-readable for the life of a CLI call.
+func (c *rcClient) updateRemoteConfig(cfg StorageConfig) error {
 	params := map[string]string{
 		"access_key_id":     cfg.AccessKey,
 		"secret_access_key": cfg.SecretKey,
@@ -168,35 +172,40 @@ func (c *rcClient) updateRemoteConfig(home string, cfg StorageConfig) error {
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(DefaultConfigDir(home), "rc-update.json")
-	if err := WriteFileAtomic(path, append(body, '\n'), 0o600); err != nil {
-		return err
+	base := c.addr
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
 	}
-	defer os.Remove(path)
 	ctx, cancel := context.WithTimeout(context.Background(), rcTimeout)
 	defer cancel()
-	args := []string{"rc", "--rc-addr", c.addr}
-	if c.user != "" || c.pass != "" {
-		args = append(args, "--user", c.user, "--pass", c.pass)
-	}
-	args = append(args, "--json", "@"+path, "config/update")
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	cmd := exec.CommandContext(ctx, c.binary, args...)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	b, err := cmd.Output()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/config/update", bytes.NewReader(body))
 	if err != nil {
-		if msg := rcErrorCause(stderr.String()); msg != "" {
-			return fmt.Errorf("rclone rc config/update: %s: %w", msg, err)
-		}
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.user != "" || c.pass != "" {
+		req.SetBasicAuth(c.user, c.pass)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
 		return fmt.Errorf("rclone rc config/update: %w", err)
 	}
-	if len(b) == 0 {
-		return nil
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("rclone rc config/update: %w", err)
 	}
-	var reply map[string]any
-	if err := json.Unmarshal(b, &reply); err != nil {
-		return fmt.Errorf("rclone rc config/update: decode %s: %w", strings.TrimSpace(string(b)), err)
+	if len(b) > 0 {
+		var reply map[string]any
+		if err := json.Unmarshal(b, &reply); err != nil {
+			return fmt.Errorf("rclone rc config/update: decode %s: %w", strings.TrimSpace(string(b)), err)
+		}
+		if errText, ok := reply["error"].(string); ok && errText != "" {
+			return fmt.Errorf("rclone rc config/update: %s", errText)
+		}
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("rclone rc config/update: HTTP %s", res.Status)
 	}
 	return nil
 }
