@@ -35,6 +35,7 @@ import {
   monthlyMaximumUsd,
   storedGb,
 } from "../src/billing.js";
+import { handleCapRequest } from "../src/cap.js";
 import {
   gbMinutesInHour,
   MINUTE_MS,
@@ -46,6 +47,7 @@ import {
   toVersion,
   validateEvent,
 } from "../src/meter.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
 
 const TB = 1000 * GB;
@@ -872,6 +874,31 @@ test("a month of empty files is a measured $0 month, not a missing one", async (
     0,
     "and zero bytes bill zero cents, without a minimum rising off the zero",
   );
+});
+
+test("an account of empty files gets a 200 from the cap route", async () => {
+  // drive#535, finish line 4. The same shape the month test above measures,
+  // one layer up: the route that `drive cap` and POST /api/cap both open reads
+  // the month through the store, so a month whose only versions are 0 bytes
+  // used to throw RangeError out of monthUsageRollup and answer 500 for a
+  // healthy account. The route is the real handler over the real D1 store,
+  // on a version created now with no rolled hours - the exact shape that
+  // threw - and the answer is the 200 with the account's own $0 month.
+  const meteredDb = metered();
+  await storeVersions(meteredDb, [version(0, Date.now())]);
+  const store = createD1DeviceStore(meteredDb.db);
+  const capped = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: ACCOUNT, email: "empty@drive.test" },
+    store,
+  );
+  assert.equal(capped.status, 200, "a healthy empty-file account reads its month and sets its cap");
+  const body = await capped.json();
+  assert.equal(body.cap.state, "active", "$0 of a $20 cap is active, not read-only");
 });
 
 test("a month with no hours is an empty month, not a missing one", async () => {
