@@ -1,6 +1,6 @@
 package main
 
-// The CLI's one message table (drive#117, the CLI side of src/messages.js
+// The CLI's one message table (drive#117, the CLI side of core/messages.js
 // FAILURE_MESSAGES). Every error a person can read comes from this table and
 // carries two things:
 //
@@ -10,7 +10,7 @@ package main
 // No raw rclone or storage error reaches the terminal: the underlying detail
 // stays in the failure's detail (shown only with DRIVE_DEBUG=1) or in the
 // mount's own log, and the next step names where to look. The words for the
-// failures the drive has on every surface are copied from src/messages.js so
+// failures the drive has on every surface are copied from core/messages.js so
 // the CLI and the pages say the same thing; test/messages.test.mjs keeps that
 // table honest on the web side, and TestSharedKindsMatchThePageTable pins the
 // join here. Everything else is a CLI-shaped failure whose next step is an
@@ -72,7 +72,7 @@ func (f *failure) Unwrap() error { return f.detail }
 // TestFailureTableIsComplete holds every entry to the two-sentence shape.
 var messageTable = map[string][2]string{
 	// The five kinds the drive shares with the web pages. Their what lines
-	// are the src/messages.js words; TestSharedKindsMatchThePageTable pins
+	// are the core/messages.js words; TestSharedKindsMatchThePageTable pins
 	// them together.
 	"offline": {
 		"You look offline.",
@@ -156,6 +156,10 @@ var messageTable = map[string][2]string{
 		"The drive folder {1} could not be created.",
 		"Check that the disk has room and that {1} is writable, then run the command again.",
 	},
+	"cache-clear-mounted": {
+		"The cache cannot be cleared while the drive is mounted.",
+		"Run `drive unmount`, then `drive cache --clear`, then `drive mount`.",
+	},
 	"mount-failed": {
 		"rclone exited before the drive mounted.",
 		"Read {1} for the exact cause, fix it, then run `drive mount` again.",
@@ -191,6 +195,14 @@ var messageTable = map[string][2]string{
 	"queue-unreadable": {
 		"The upload queue could not be read ({1}).",
 		"Leave the mount running so queued files keep uploading, then run `drive status` again in a moment.",
+	},
+	"upload-failing": {
+		"A save has failed to upload {1} times and is still retrying.",
+		"Read the storage error in {2}, fix it, then the save goes up on its own; nothing already saved is lost.",
+	},
+	"cache-over-cap": {
+		"Unsent saves have filled the local cache past its {1} limit, because {2}.",
+		"Let the uploads finish, or run `drive resume` if the drive is paused; nothing already saved is lost.",
 	},
 	"folder-silent": {
 		"The drive folder did not answer within {1}.",
@@ -244,6 +256,14 @@ var messageTable = map[string][2]string{
 		"rclone could not copy those files into the drive.",
 		"Run `rclone config` to check the remote, then run `drive import` again.",
 	},
+	"import-cache-full": {
+		"The import did not start: the drive's cache is full, so new saves can't upload.",
+		"Run `drive status` to see what is waiting and why, then import again once the uploads catch up.",
+	},
+	"import-cache-unknown": {
+		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
+		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.
@@ -259,7 +279,7 @@ func failDetail(kind string, detail error, args ...string) *failure {
 	entry, ok := messageTable[kind]
 	if !ok {
 		// A kind missing from the table is a programmer error, the same way
-		// failureMessage throws in src/messages.js. The CLI still has to print
+		// failureMessage throws in core/messages.js. The CLI still has to print
 		// a next step rather than crash, so it falls back to unexpected and
 		// keeps the missing kind in the detail for DRIVE_DEBUG=1.
 		missing := fmt.Errorf("no message table entry for %q", kind)

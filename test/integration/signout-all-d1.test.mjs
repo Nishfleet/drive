@@ -22,9 +22,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createD1DeviceSigninStore } from "../../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
+import { createD1DeviceSigninStore } from "../../core/device-signin.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 
 // The schema this proof needs, over the harness's default list: the device
@@ -44,11 +44,6 @@ const MIGRATIONS = [
   "drive/0007_device_codes.sql",
   "drive/0005_meter.sql",
   "drive/0006_usage_stored_bytes.sql",
-  // The founding-member flag (drive#386, drive#482). The account cap reads it
-  // from the accounts row, and authenticate of an agent key now reads it too:
-  // the agent key cap counts the account's own bill. `0016` is now in
-  // DRIVE_MIGRATIONS (drive#485 added it there), so it is not listed again
-  // here — a second application fails with `duplicate column name: founding`.
 ];
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
@@ -125,12 +120,11 @@ test("signing out every device revokes the account's keys and tokens, and no oth
     assert.equal(row.revoked_at, null, `${key.id} starts live`);
   }
 
-  // The sign-out. Keys first, tokens second: the same order the route uses, so
-  // a failure in the second half leaves the keys already dead.
+  // The sign-out: one call on the bound store revokes the account's keys AND
+  // its device tokens (drive#497 folded the token half into the same store
+  // call, so the route calls one function and the two halves cannot drift).
   const revokedKeys = await deviceStore.revokeAllKeys(mine.account);
-  const revokedTokens = await signin.revokeAllDeviceTokens(mine.account);
   assert.equal(revokedKeys.revoked, 2, "both of this account's keys went dead");
-  assert.equal(revokedTokens.revoked, 2, "both of this account's device tokens went dead");
 
   // The rows, read back off the database rather than off the store's answer.
   for (const key of myKeys) {

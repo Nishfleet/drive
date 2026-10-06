@@ -9,19 +9,19 @@
 // (build step 1, drive#2), and presents them with HTTP Basic. That route is
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
-import { failureMessage } from "../../../src/messages.js";
-import { enforceEdgeLimits } from "../../../src/rate-limit.js";
-import { errorResponse, json, readJsonObject } from "./http.js";
-import { authorizePath, KeyCountCapError } from "./keystore.js";
+import { errorResponse, json, readJsonObject } from "../../../core/http.js";
+import { authorizePath, KeyCountCapError } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
+import { enforceEdgeLimits } from "../../../core/rate-limit.js";
 
 /** The edge-limit binding the key mint runs behind (drive issue #552), read
  * off env the way the device routes read theirs; the deploy config
  * (workers/api/cloudflare.config.ts) declares it on its own namespace. */
 export const KEYS_LIMIT = "KEYS_RATE_LIMITER";
 
-/** The stand-in store: what src/keystore.js `createMemoryStore` returns and
+/** The stand-in store: what core/keystore.js `createMemoryStore` returns and
  * what D1's adapter will have to match (drive#2). */
-/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+/** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
 /**
  * GET /v1/keys — the account's keys, no secret (the store keeps only a hash).
@@ -81,13 +81,23 @@ export async function mintKeyRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
+  // A closed account is refused a new storage key. The account gate already
+  // refuses a closed account's bearer token, so the only way here is a browser
+  // session cookie, which outlives the close: without this check the closed
+  // account could mint a key a moment after close revoked them all (drive#497).
+  const closeState = ctx.store?.getCloseState
+    ? await ctx.store.getCloseState(ctx.account.id)
+    : null;
+  if (closeState?.state === "closed") {
+    return errorResponse(403, failureMessage("account-closed"));
+  }
   // A kind off the wire is not trusted to be one of the four: the store
   // refuses an unknown kind by name (keyprovider.js `keyTtlSeconds`), which is
   // the refusal the 400 below carries. The cast only says to the checker that
   // the string has been read; it does not make it valid.
   const kind =
     typeof read.body.kind === "string"
-      ? /** @type {import("./keyprovider.js").KeyKind} */ (read.body.kind)
+      ? /** @type {import("../../../core/keyprovider.js").KeyKind} */ (read.body.kind)
       : "agent";
   const name =
     typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : undefined;
@@ -172,11 +182,14 @@ export async function revokeAllKeysRoute(request, ctx) {
   if (typeof ctx.account?.id !== "string" || ctx.account.id === "") {
     return errorResponse(401, "Sign in to sign out of every device.");
   }
-  // Keys first, tokens second: a key is the credential that opens the storage
-  // API, so if the second half fails for any reason the keys are already dead
-  // and nothing is left holding a way in.
+  // One call, one account, both halves: the bound D1 device store revokes
+  // the account's keys, device tokens, share links and upload requests in the
+  // same statement set (devices.js revokeAccountCredentials), and the
+  // in-memory stand-in's `revokeAllKeys` calls its own sign-in store for the
+  // token half (keystore.js). Keys first, tokens second: a key is the
+  // credential that opens the storage API, so if the call fails only partway
+  // the keys are already dead and nothing is left holding a way in.
   await ctx.store.revokeAllKeys(ctx.account);
-  await ctx.store.signin.revokeAllDeviceTokens(ctx.account);
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
 
@@ -370,6 +383,12 @@ export async function storageWriteRoute(request, ctx) {
   // not write any path inside it.
   if (!ctx.store.canWrite(device)) {
     return errorResponse(403, "This key cannot write to the drive.");
+  }
+  // The prepaid pause (drive#586): at a $0 balance new writes stop, in the
+  // same words the web and `drive status` use. 402, because paying is what
+  // starts writes again. Reads on the same key are never asked.
+  if (await ctx.store.balancePaused(device)) {
+    return errorResponse(402, failureMessage("balance-empty"));
   }
   const body = new Uint8Array(await request.arrayBuffer());
   ctx.store.putObject(authorized.path, body);

@@ -30,8 +30,8 @@ import { bindings, defineWorker } from "cf/config";
 // what stays true here.
 export default defineWorker({
   name: "drive-api",
-  // The site Worker's compatibility date: the api Worker shares src/auth.js,
-  // src/status.js and src/messages.js with it, and two Workers on two dates
+  // The site Worker's compatibility date: the api Worker shares core/auth.js,
+  // core/status.js and core/messages.js with it, and two Workers on two dates
   // drift in the runtime they run on.
   compatibilityDate: "2026-09-29",
   // The same posture the site Worker ships with (cloudflare.config.ts, Nish
@@ -47,7 +47,7 @@ export default defineWorker({
     // The device sign-in store, the device token store, the team store and the
     // upload-queue report store all bind this one database (workers/api/src/
     // index.js reads it as env.DRIVE_DB), and Better Auth's own user and
-    // session tables live on it too (src/auth.js, migrations/drive/
+    // session tables live on it too (core/auth.js, migrations/drive/
     // 0005_better_auth.sql), so an approve resolves one account across both
     // Workers. Same name and same id as the site Worker's DRIVE_DB: the
     // accounts store #161 asked for is that same user table — Better Auth's
@@ -64,7 +64,7 @@ export default defineWorker({
     //
     // Per IP, 60 a minute, five times the 12 a well-behaved CLI already polls
     // (a device code is polled every DEVICE_CODE_INTERVAL_SECONDS = 5,
-    // workers/api/src/device-signin.js) and well above the sign-in binding's
+    // core/device-signin.js) and well above the sign-in binding's
     // 10 a minute, which would lock a polling CLI out of the flow it is in.
     // It stays far below what a script needs to walk short user codes.
     //
@@ -76,10 +76,11 @@ export default defineWorker({
     // Each binding needs its own namespace: Cloudflare wants a positive
     // integer string unique per account, and a namespace another binding
     // already uses fails the deploy with 10021. The site Worker holds 1001
-    // (waitlist), 1002/1003 (sign-in) and 1004/1005 (request-upload), so the
-    // api Worker's pair is 1006/1007. Both configs are one minute, the
-    // waitlist's period, so one number describes every rate limit on this
-    // account.
+    // (waitlist), 1002/1003 (sign-in), 1004/1005 (request-upload), 1008
+    // (share download) and 1009–1011 (health and mint routes). This Worker's
+    // device pair is 1006/1007 and the key-mint limiter below is 1012. Both
+    // configs are one minute, the waitlist's period, so one number describes
+    // every rate limit on this account.
     DEVICE_RATE_LIMITER: bindings.rateLimit({
       namespace: "1006",
       simple: { limit: 60, period: 60 },
@@ -100,14 +101,13 @@ export default defineWorker({
     // missing binding (the account gate and the count cap bind the route
     // anyway), but the deploy config gate refuses to ship without it, which
     // is what makes the name load-bearing.
+    // Namespace 1012: 1001–1005 and 1008–1011 are the site Worker, 1006/1007
+    // are this Worker's device pair. A namespace another binding already uses
+    // fails the deploy with 10021.
     KEYS_RATE_LIMITER: bindings.rateLimit({
-      namespace: "1008",
+      namespace: "1012",
       simple: { limit: 10, period: 60 },
     }),
-    // drive issue #386: the same founding-member offer switch the site Worker
-    // holds. This Worker owns the accounts row (workers/api/src/devices.js),
-    // so the write that sets the flag has to see the same var. Default open.
-    FOUNDING_OFFER_OPEN: bindings.text("1"),
     // drive#462: the iDrive e2 reseller API token, the credential that mints
     // a key limited to ONE bucket. iDrive e2 cannot scope a key to a folder
     // and its STS refuses `AssumeRole` outright (measured 2026-10-03,
@@ -130,27 +130,25 @@ export default defineWorker({
     //     --text <token> --worker drive-api
     // (--type is required: cf refuses the update without it.)
     IDRIVE_E2_API_TOKEN: bindings.secret(),
-    // No mailer is declared, and none is needed: no route this Worker mounts
-    // sends mail. The device flow starts with a code the CLI shows
-    // (POST /v1/device/code) and ends with the person approving it on
-    // /v1/device/approve, which the account gate holds behind a session the
-    // site Worker's own /api/signin mints — that route, and the sign-in link
-    // it sends through the site Worker's EMAIL binding, is the only place a
-    // drive mail leaves. Better Auth's instance over this database does read a
-    // mailer (src/auth.js `sendSigninLink`), but it is reached only through an
-    // auth endpoint, and this Worker mounts none, so the binding would be one
-    // no code reads: a name waiting to drift from the code that never calls it.
-    // When a route that mails lands here, it declares its mailer with it.
+    // Device approval mails the owner (drive#518). Same stock send_email
+    // binding the site Worker uses; MAIL_FROM stays undeclared so a missing
+    // sending domain is a skipped notice, not a refused deploy.
+    EMAIL: bindings.sendEmail(),
+    // MAIL_FROM stays undeclared: a declared secret is required at deploy, and
+    // the approval still finishes when the sending domain is unset. Set it
+    // once beside the site Worker's own:
+    //   cf workers secrets update MAIL_FROM --type secret_text \
+    //     --text <address> --worker drive-api
     //
-    // The three values this Worker reads from env that are not declared, for
+    // The other values this Worker reads from env that are not declared, for
     // the same reason the site Worker does not declare them
     // (cloudflare.config.ts): a declared secret is required at deploy, so the
     // deploy would refuse to ship until each was set, and every one of these
     // routes already answers its closed door without them — `authFor` returns
     // no instance with no BETTER_AUTH_SECRET or database, so every account
-    // route 401s rather than bypassing the gate (src/auth.js), and with no
+    // route 401s rather than bypassing the gate (core/auth.js), and with no
     // MAIL_FROM the sign-in link is a 503 that names the missing setting
-    // (src/email-send.js). Set them once, beside the site Worker's own, and
+    // (core/email-send.js). Set them once, beside the site Worker's own, and
     // they persist across deploys (cf 1.0.0-beta.7 and later inherit secret
     // bindings from the previous Worker version, drive issue #189):
     //   cf workers secrets update BETTER_AUTH_SECRET --type secret_text \

@@ -11,7 +11,7 @@
 // Approving requires a signed-in account (drive#136 finding 2): the approve
 // POST is an account route (routes.js), so the dispatcher resolves the
 // sign-in session cookie through the same gate every site account route uses
-// (src/status.js `signedInAccount` over the Better Auth instance src/auth.js
+// (core/status.js `signedInAccount` over the Better Auth instance core/auth.js
 // `authFor` builds, drive#109) and answers 401 to an anonymous request before
 // this handler runs. The account is the sign-in flow's (drive#130), copied onto
 // the code row by the store; approving no longer makes an account, it attaches
@@ -20,26 +20,29 @@
 // All three POSTs are rate limited, one bucket each: the two public ones write
 // or read a row for a caller that holds no credential, so an unlimited
 // version of them is a way to fill the table or burn reads from anywhere. The
-// limit runs before the body is read, so a refused call costs no parse and, on
-// the code route, no row. The limiter is the one edge limiter (src/rate-limit.js
+// approve page's GET is limited in its own bucket too: it names a pending
+// code's device and time, so an unlimited page is an existence oracle for
+// codes a phishing site is cycling (drive#518 review). Each limit runs before
+// the body is read, so a refused call costs no parse and, on the code route,
+// no row. The limiter is the one edge limiter (core/rate-limit.js
 // `enforceEdgeLimits`), the same guard the waitlist and the sign-in route run
 // behind, so the fail-closed posture and the 429 answer are written once.
-//
 // The DELETE below is the fourth device route and is the only one that is
 // neither public nor rate limited: the account gate has already resolved the
 // caller's own token from its own bearer header, so there is nothing for a
 // stranger to spend.
 
-import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
-import { isSameOriginRequest } from "../../../src/email-send.js";
-import { failureMessage } from "../../../src/messages.js";
-import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
-import { signedInAccount } from "../../../src/status.js";
-import { bearerToken, errorResponse, json } from "./http.js";
+import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../core/auth.js";
+import { isSameOriginRequest, sendEmail } from "../../../core/email-send.js";
+import { escapeHtml } from "../../../core/escape-html.js";
+import { bearerToken, errorResponse, json } from "../../../core/http.js";
+import { failureMessage } from "../../../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
+import { signedInAccount } from "../../../core/status.js";
 
-/** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
+/** The stand-in key store (core/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
-/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+/** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
 /**
  * The per-request context these handlers read. `store` and `url` are set by the
@@ -63,7 +66,7 @@ import { bearerToken, errorResponse, json } from "./http.js";
 // (drive#168), and test/deploy-api-worker.test.mjs gates that both names are
 // declared there, each on its own namespace, with the per-IP ceiling above the
 // CLI's own poll rate — a device code is polled every
-// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/device-signin.js), i.e. 12
+// DEVICE_CODE_INTERVAL_SECONDS (5s, core/device-signin.js), i.e. 12
 // requests a minute from one well-behaved CLI, which the sign-in binding's
 // 10/min would lock out of the flow it is already in. With no binding on env
 // these two routes fail closed: an unrate-limited public route is the case the
@@ -86,7 +89,7 @@ export const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
 /**
  * The limiter refusal a device route answers with, or null when the request is
  * allowed through. The 429's and the 503's words are the message table's
- * (through src/rate-limit.js), so the api Worker and the site Worker cannot
+ * (through core/rate-limit.js), so the api Worker and the site Worker cannot
  * state two different rate-limit answers.
  * @param {Request} request
  * @param {{env?: Record<string, any>}} ctx
@@ -115,37 +118,24 @@ const APPROVE_INTRO =
 const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
 
 // The characters an HTML text or attribute value must not contain, and what
-// they become. One pass over the string, so nothing is escaped twice and no
-// character is left for a second call to miss.
-const HTML_ESCAPES = Object.freeze({
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-});
+// they become, live in core/escape-html.js now: the transactional emails put
+// store-provided text into HTML too, and one escaper cannot drift from the
+// other (drive#518 review).
 
 /**
- * The two values a page render can put into HTML are this function's whole
- * job, and they are escaped for a fixed, closed set of characters — the code
- * the person typed and one of a fixed list of sentences this file writes.
- * There is no untrusted HTML, no attribute context and no URL context, so a
- * sanitization library (a new dependency this issue does not allow) would be a
- * large parser solving a problem this page does not have.
- * @param {unknown} text
+ * The approval page. A static shell; the code from the query string is never
+ * copied into the form (a pre-filled code is the phishing help drive#518
+ * closes). The pending device's name and time are shown when the store has
+ * them, escaped.
+ * @param {{notice?: string, deviceName?: string, requestedAt?: string}} [options]
  */
-function escapeHtml(text) {
-  return String(text).replace(
-    /[&<>"']/g,
-    (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)],
-  );
-}
-
-/**
- * The approval page. A static shell with the code from the query string
- * echoed into the form, escaped; nothing else is rendered from the request.
- * @param {{userCode?: string, notice?: string}} [options]
- */ function approvePage({ userCode = "", notice = "" } = {}) {
+function approvePage({ notice = "", deviceName = "", requestedAt = "" } = {}) {
+  const deviceLine =
+    deviceName === ""
+      ? ""
+      : `<p>Device: ${escapeHtml(deviceName)}` +
+        (requestedAt === "" ? "" : `, asked at ${escapeHtml(requestedAt)}`) +
+        `</p>\n`;
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
@@ -154,10 +144,11 @@ function escapeHtml(text) {
     `<title>${APPROVE_TITLE}</title>\n</head>\n<body>\n` +
     `<main>\n<h1>${APPROVE_TITLE}</h1>\n` +
     `<p>${APPROVE_INTRO}</p>\n` +
+    deviceLine +
     (notice ? `<p role="status">${escapeHtml(notice)}</p>\n` : "") +
     `<form method="post" action="/v1/device/approve">\n` +
     `<label for="user_code">Code from the terminal</label>\n` +
-    `<input id="user_code" name="user_code" value="${escapeHtml(userCode)}" ` +
+    `<input id="user_code" name="user_code" value="" ` +
     `autocomplete="one-time-code" autocapitalize="characters" required>\n` +
     `<button type="submit">Approve</button>\n</form>\n</main>\n</body>\n</html>\n`;
   return new Response(body, {
@@ -186,11 +177,67 @@ function connectedPage() {
 
 /**
  * The page with a refusal, still a page, so a mistyped code is fixable.
- * @param {string} userCode
  * @param {string} notice
+ * @param {string} [deviceName]
+ * @param {string} [requestedAt]
  */
-function approvePageError(userCode, notice) {
-  return approvePage({ userCode, notice });
+function approvePageError(notice, deviceName = "", requestedAt = "") {
+  return approvePage({ notice, deviceName, requestedAt });
+}
+
+/**
+ * @param {import("../../../core/device-signin.js").PendingDeviceApproval|null} pending
+ * @returns {{deviceName: string, requestedAt: string}}
+ */
+function pendingPageFields(pending) {
+  if (pending === null) {
+    return { deviceName: "", requestedAt: "" };
+  }
+  return {
+    deviceName: pending.name,
+    requestedAt: new Date(pending.createdAt * 1000).toISOString(),
+  };
+}
+
+/**
+ * Mail the owner that a device asked to connect. A deployment with no EMAIL
+ * binding (the api Worker until this route mailed) skips the send so the
+ * approval still finishes; a bound mailer that refuses is not swallowed.
+ * @param {DeviceCtx} ctx
+ * @param {{id: string, name?: string, email?: string}} account
+ * @param {import("../../../core/device-signin.js").PendingDeviceApproval|null} pending
+ */
+async function sendApproveNotice(ctx, account, pending) {
+  const binding = ctx.env.EMAIL;
+  const mailFrom = ctx.env.MAIL_FROM;
+  if (binding === undefined || binding === null) {
+    // The skip is loud on purpose (drive#518 review): the notice is the
+    // owner's one signal that a device asked in, so a deployment that can
+    // never send it should say so in the logs on every skipped approval.
+    console.warn("device-approve: no EMAIL binding; the owner's approve notice was not sent");
+    return;
+  }
+  if (typeof mailFrom !== "string" || mailFrom.trim() === "") {
+    console.warn("device-approve: MAIL_FROM is not set; the owner's approve notice was not sent");
+    return;
+  }
+  const to = typeof account.email === "string" ? account.email.trim() : "";
+  if (to === "") {
+    console.warn(
+      "device-approve: the approving account has no email; the approve notice was not sent",
+    );
+    return;
+  }
+  const fields = pendingPageFields(pending);
+  await sendEmail(binding, {
+    to,
+    from: mailFrom,
+    kind: "device-approve-notice",
+    data: {
+      deviceName: fields.deviceName === "" ? "a device" : fields.deviceName,
+      requestedAt: fields.requestedAt === "" ? new Date().toISOString() : fields.requestedAt,
+    },
+  });
 }
 /**
  * Reads the user code from a form post or a JSON body. The page posts a form,
@@ -342,6 +389,13 @@ export async function pollDeviceTokenRoute(request, ctx) {
  * @param {DeviceCtx} ctx
  */
 export async function approvePageRoute(request, ctx) {
+  // The page names a pending code's device and time, so an unlimited GET is
+  // an existence oracle for codes a phishing page is cycling (drive#518
+  // review). One bucket of the one edge limiter, before anything reads.
+  const limited = await deviceLimitRefused(request, ctx, "device-approve-page");
+  if (limited) {
+    return limited;
+  }
   const userCode = ctx.url.searchParams.get("user_code") ?? "";
   let account = ctx.account ?? null;
   if (account == null && ctx.accounts) {
@@ -366,7 +420,8 @@ export async function approvePageRoute(request, ctx) {
       },
     });
   }
-  return approvePage({ userCode });
+  const pending = userCode === "" ? null : await ctx.store.pendingDeviceApproval(userCode);
+  return approvePage(pendingPageFields(pending));
 }
 
 /**
@@ -396,7 +451,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
     .trim()
     .toUpperCase();
   if (userCode === "") {
-    return approvePageError("", "Type the code from the terminal.");
+    return approvePageError("Type the code from the terminal.");
   }
   // The store is async (the D1 implementation is), so this must be awaited:
   // an un-awaited Promise has no `error` property, which would render the
@@ -404,6 +459,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   // This is an account route, so ctx.account is guaranteed non-null by the dispatcher.
   /** @type {{id: string, name?: string, email?: string}} */
   const account = /** @type {{id: string, name?: string, email?: string}} */ (ctx.account);
+  const pending = await ctx.store.pendingDeviceApproval(userCode);
   const result = await ctx.store.approveDeviceCode(userCode, account);
   if ("error" in result) {
     const notice =
@@ -412,8 +468,10 @@ export async function approveDeviceCodeRoute(request, ctx) {
         : result.error === "approved-code"
           ? "That code has already been approved. Return to the terminal it was printed in."
           : "That code was not recognised. Check the terminal and try again.";
-    return approvePageError(userCode, notice);
+    const fields = pendingPageFields(pending);
+    return approvePageError(notice, fields.deviceName, fields.requestedAt);
   }
+  await sendApproveNotice(ctx, account, pending);
   return connectedPage();
 }
 

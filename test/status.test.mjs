@@ -1,6 +1,6 @@
 // Tests for first-run and sync status (drive issue #32). Two halves:
 //
-// 1. The logic in src/status.js: the one install command, the connection
+// 1. The logic in core/status.js: the one install command, the connection
 //    state a device is in, its sync state, upload progress, and the words the
 //    page says for each. Every branch, including the "waiting for you" and
 //    "unreachable" ones the page must not confuse.
@@ -17,27 +17,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import {
-  ageMs,
-  connectionLine,
-  connectionStateForStatus,
-  connectionStates,
-  deviceSyncState,
-  emptyState,
-  installCommand,
-  installLines,
-  isConnected,
-  lastSyncText,
-  pollIntervalMs,
-  stateCellText,
-  statusEndpoint,
-  stepLines,
-  syncErrorNotification,
-  uploadFragments,
-  uploadLine,
-} from "../src/get-started.js";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -45,12 +27,14 @@ import {
   EMPTY_STATES,
   FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
+  firstRunState,
   formatBytes,
   handleFirstRunStatusRequest,
   INSTALL_COMMAND,
   INSTALL_LINES,
   LOGIN_COMMAND,
   POLL_INTERVAL_MS,
+  STATUS_COMMAND,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
   SYNCED_WINDOW_MS,
@@ -58,8 +42,30 @@ import {
   syncStatus,
   UPLOAD_LABEL,
   uploadProgress,
-} from "../src/status.js";
-import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
+} from "../core/status.js";
+import {
+  ageMs,
+  connectionLine,
+  connectionStateForStatus,
+  connectionStates,
+  deviceRow,
+  deviceSyncState,
+  emptyState,
+  installCommand,
+  installLines,
+  isConnected,
+  lastSyncText,
+  NO_SYNC_LABEL,
+  pollIntervalMs,
+  stateCellText,
+  statusEndpoint,
+  stepLines,
+  syncErrorNotification,
+  syncInstantText,
+  uploadFragments,
+  uploadLine,
+} from "../src/get-started.js";
+import worker from "../src/index.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -79,24 +85,69 @@ const workerFetch =
 const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const now = Date.parse("2026-09-30T12:00:00.000Z");
+// drive#689: one instant the Last-sync tests pin, chosen because 23:30 UTC is
+// already the next day in Tokyo and still the same evening in New York.
+const SYNCED_AT = Date.parse("2026-11-03T23:30:00.000Z");
 /** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
+// The zone the process itself is in, which is the one a page that names no
+// zone writes in. Spelled out here so the expected words in the row test are
+// this machine's record and not a hardcoded name of it.
+function runtimeZone() {
+  const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (typeof zone !== "string") {
+    throw new Error("this runtime names no time zone");
+  }
+  return zone;
+}
 
 test("the box carries the login and init lines, and the steps walk through them", () => {
   assert.equal(INSTALL_COMMAND, "drive init");
   assert.equal(LOGIN_COMMAND, "drive login");
+  assert.equal(STATUS_COMMAND, "drive status");
   assert.equal(FIRST_RUN_COMMAND, `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`);
   assert.equal(FIRST_RUN_STEPS.length, 3);
   assert.match(FIRST_RUN_STEPS[0].body, /drive init/);
   assert.match(FIRST_RUN_STEPS[0].body, /drive login/);
   assert.match(FIRST_RUN_STEPS[1].body, /Approve the code/);
-  assert.match(FIRST_RUN_STEPS[2].body, /flips to connected/);
+  assert.match(FIRST_RUN_STEPS[2].body, new RegExp(STATUS_COMMAND));
   for (const step of FIRST_RUN_STEPS) {
     assert.equal(typeof step.title, "string");
     assert.ok(step.title.length > 0, "every step needs a title");
     assert.equal(typeof step.body, "string");
     assert.ok(step.body.length > 0, "every step needs a sentence");
   }
+});
+
+test("no first-run sentence promises a flip the status route cannot make", () => {
+  // Drive issue #556's last bullet. Until the api Worker is deployed (#342)
+  // nothing stamps `devices.last_seen_at`, so a page that promises the machine
+  // signing in flips the line on its own is a page someone keeps waiting at.
+  // Every sentence the page shows while it waits names the command that
+  // answers from the machine instead, and none of them promises the flip: the
+  // strings are pinned here because this is the drift that made the bug.
+  const promises =
+    /flips?\s+to\s+connected|updates\s+on\s+its\s+own|moment\s+your\s+Mac\s+signs\s+in|Nothing\s+to\s+refresh/;
+  for (const [name, entry] of Object.entries(CONNECTION_COPY)) {
+    assert.doesNotMatch(entry.next, promises, `${name}'s next promises the page a flip`);
+  }
+  // The two waiting states name the command that answers from the machine:
+  // while nothing stamps last_seen_at they are the states a person sits in.
+  for (const name of ["waiting", "unreachable"]) {
+    assert.match(
+      CONNECTION_COPY[/** @type {keyof typeof CONNECTION_COPY} */ (name)].next,
+      /drive status/,
+      `${name}'s next names the machine command`,
+    );
+  }
+  assert.doesNotMatch(FIRST_RUN_STEPS[2].body, promises, "step 3 promises the page a flip");
+  assert.match(FIRST_RUN_STEPS[2].body, /drive status/);
+  // The shipped shell's own description is the same sentence, read from the
+  // file a search engine reads rather than from the module.
+  const description = shell.match(/<meta name="description" content="([^"]*)"/i);
+  assert.ok(description, "get-started.html needs a meta description");
+  assert.doesNotMatch(description[1], promises, "the meta description promises the page a flip");
+  assert.match(description[1], /drive status/);
 });
 
 test("the page leads with one pasted install line per system", () => {
@@ -124,18 +175,8 @@ test("the page leads with one pasted install line per system", () => {
       `the install line for ${row.os} must be one package-manager invocation`,
     );
   }
-  // The detail a line cannot carry (the tap, the module path, the Windows
-  // installer name) belongs in the docs' "Other ways" section, so no customer
-  // page shows an internal name. test/own-words.test.mjs walks the pages; this
-  // is the same rule at the source of the page's copy.
-  for (const row of INSTALL_LINES) {
-    assert.doesNotMatch(row.line, /nishfleet/i, `the install line for ${row.os} must not name us`);
-    assert.doesNotMatch(
-      row.line,
-      /launchd|\/tap\//,
-      `the install line for ${row.os} must stay one line`,
-    );
-  }
+  // drive#509: the line is the one .goreleaser.yaml publishes, including the
+  // tap path. A short `brew install drive` cannot resolve after a release.
 });
 
 test("the renderer hands the page one row per system", () => {
@@ -365,6 +406,51 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
   assert.equal(forgot.status, 401);
 });
 
+test("the poll answers connected when one of the account's devices signed in", async () => {
+  // Drive issue #556. The route used to answer `waiting` for every account,
+  // because it carried no device rows at all, so nothing it said could ever be
+  // connected. The state now comes from the account's device rows, through the
+  // one window `connectionStatus` uses for the page's own line, so the answer
+  // here and the answer the page draws cannot drift.
+  const account = { id: "1", name: "Your drive" };
+  const endpoint = "https://drive.test/api/first-run-status";
+  /** @param {unknown[]} devices */
+  const poll = async (devices) =>
+    await (await handleFirstRunStatusRequest(new Request(endpoint), account, null, devices)).json();
+  const seenNow = Date.now() - 30_000;
+  const seenHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+  const fresh = { id: "key_1", name: "Nish's Mac", kind: "device", lastSeenAt: seenNow };
+  const stale = { id: "key_2", name: "Old Mac", kind: "device", lastSeenAt: seenHoursAgo };
+
+  // The issue's own case: a device seen 30 seconds ago, named, is connected.
+  assert.deepEqual(await poll([fresh]), { state: "connected", devices: [fresh], upload: null });
+  // An account whose machine has not signed in yet, and one whose last sign-in
+  // is hours old, both read as waiting rather than as connected.
+  assert.deepEqual(await poll([]), { state: "waiting", devices: [], upload: null });
+  assert.deepEqual(
+    await poll([{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }]),
+    {
+      state: "waiting",
+      devices: [{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }],
+      upload: null,
+    },
+  );
+  assert.deepEqual(await poll([stale]), { state: "waiting", devices: [stale], upload: null });
+  // One live device is enough, and an older one on the same account does not
+  // pull the answer back to waiting.
+  assert.equal(firstRunState([stale, fresh], Date.now()), "connected");
+
+  // The window's edge: a device seen exactly CONNECTED_WINDOW_MS ago is still
+  // connected, and one millisecond later is not.
+  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS }]), "connected");
+  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS - 1 }]), "waiting");
+  // A clock the route cannot read is a bug to see, not a wait to show somebody
+  // who has already signed in.
+  assert.throws(() => firstRunState([{ lastSeenAt: "not-a-date" }]), TypeError);
+  assert.throws(() => firstRunState({ lastSeenAt: Date.now() }), TypeError);
+  assert.throws(() => firstRunState("connected"), TypeError);
+});
+
 test("a request can only prove an account through a session Better Auth minted", async () => {
   // The sign-in flow has landed (build step 9, #10), so signedInAccount() is
   // no longer null for every caller — but it is still closed by default. With
@@ -481,6 +567,25 @@ test("a signed-out person cannot describe or create the starter", async () => {
   assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
 });
 
+test("a signed-out person cannot read the balance or open a top-up", async () => {
+  // drive#586: the balance and the top-up checkout are money on an account,
+  // so the gate answers 401 before either handler runs, and no checkout opens.
+  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const balance = await workerFetch(new Request("https://drive.test/api/balance"), env);
+  assert.equal(balance.status, 401, "a signed-out balance read answers 401");
+  assert.deepEqual(await balance.json(), { error: failureMessage("unauthorized") });
+  const topUp = await workerFetch(
+    new Request("https://drive.test/api/topup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount_usd: 10 }),
+    }),
+    env,
+  );
+  assert.equal(topUp.status, 401, "a signed-out top-up answers 401");
+  assert.deepEqual(await topUp.json(), { error: failureMessage("unauthorized") });
+});
+
 test("the pricing page links to the first-run page", () => {
   // The first-run page is what a person sees after sign-up; without a link it
   // is a page nothing reaches. Every such link sits outside the waitlist form
@@ -594,7 +699,7 @@ test("the shell carries one wordless install row per system for the renderer to 
 test("the shell is structure only: the module's copy is not re-declared in it", () => {
   // The old gate policed a second copy of every sentence; this one fails if a
   // second copy is ever reintroduced. The shell carries structure and styles;
-  // every word the page shows comes from src/status.js through the renderer.
+  // every word the page shows comes from core/status.js through the renderer.
   assert.ok(
     !shell.includes(INSTALL_COMMAND),
     "the shell must not carry the install command; the renderer writes it from the module",
@@ -709,21 +814,172 @@ test("a 401 is the waiting line, not an unreachable service", () => {
   assert.throws(() => connectionStateForStatus(null), TypeError);
 });
 
-test("the Last-sync cell says so, never blank, for a device with no sync", () => {
-  // The row's date column, distinct from its state column: a device that has
-  // never synced takes the module's own "no syncs yet" label, the same words
-  // syncStatus reports for the `never` state. A blank cell would read as a
-  // missing value rather than a device that has not synced.
-  assert.equal(lastSyncText({}), "No syncs yet");
-  assert.equal(lastSyncText({ lastSyncAt: null }), "No syncs yet");
-  assert.equal(lastSyncText({ lastSyncAt: "not-a-date" }), "No syncs yet");
-  // The words are the module's: the same label syncStatus produces, asserted
-  // against the module rather than a copy in the renderer.
-  assert.equal(lastSyncText({}), syncStatus({}, now).label);
-  // A real date renders as a local time, not the module's fallback.
-  const shown = lastSyncText({ lastSyncAt: new Date(now) });
-  assert.notEqual(shown, "No syncs yet");
-  assert.ok(shown.length > 0);
+test("the Last-sync cell sends an instant, and the row writes it in the reader's zone", () => {
+  // drive#689. The instant and the words were one value: lastSyncText called
+  // toLocaleString() with no locale and no time zone named, so the one date on
+  // the page was the one date drive did not write the way it writes every
+  // other — its day order, its seconds and its zone all came out in whatever
+  // the runtime's defaults happened to be. The cell now sends the instant and
+  // the row writes it, so the zone is a decision taken where the reader is.
+  assert.equal(lastSyncText({}), null);
+  assert.equal(lastSyncText({ lastSyncAt: null }), null);
+  // Unparseable dates take the same null: a row is a report, and the page's
+  // own poll failure is the `unreachable` state, not a device's.
+  assert.equal(lastSyncText({ lastSyncAt: "not-a-date" }), null);
+  // One instant travels, whatever form the row carried it in.
+  const instant = lastSyncText({ lastSyncAt: new Date(SYNCED_AT) });
+  assert.equal(instant, "2026-11-03T23:30:00.000Z");
+  assert.equal(lastSyncText({ lastSyncAt: SYNCED_AT }), instant);
+  // A minute earlier is a different instant, not a rounding of the same one.
+  assert.equal(lastSyncText({ lastSyncAt: SYNCED_AT - 600000 }), "2026-11-03T23:20:00.000Z");
+
+  // A device synced at 23:30 UTC, read in a US zone: the day on screen is the
+  // day that zone was in, not the day the Worker was in.
+  assert.equal(
+    syncInstantText(instant, { timeZone: "America/New_York", locale: "en-GB" }),
+    "3 Nov 2026, 18:30",
+  );
+  assert.equal(
+    syncInstantText(instant, { timeZone: "Pacific/Honolulu", locale: "en-GB" }),
+    "3 Nov 2026, 13:30",
+  );
+  // The same instant read east of Greenwich is a different day, which is the
+  // whole point of the split: the words follow the reader.
+  assert.equal(
+    syncInstantText(instant, { timeZone: "Asia/Tokyo", locale: "en-GB" }),
+    "4 Nov 2026, 08:30",
+  );
+  // The locale is the reader's too (drive#559): a US reader gets the US
+  // order and a 12-hour clock, not the British day-first 24-hour one.
+  assert.equal(
+    syncInstantText(instant, { timeZone: "America/New_York", locale: "en-US" }),
+    "Nov 3, 2026, 06:30 PM",
+  );
+  // The page passes no zone and no locale, so the browser's own are used.
+  assert.equal(
+    syncInstantText(instant),
+    new Date(instant).toLocaleString(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  );
+  // The second the old toLocaleString() showed is gone: a last-sync minute
+  // is as precise as the sentence needs, and the seconds were noise.
+  assert.doesNotMatch(syncInstantText(instant, { timeZone: "UTC" }), /:\d{2}:\d{2}/);
+  assert.throws(() => syncInstantText("not-a-date"), /ISO-8601 instant/);
+  assert.throws(() => syncInstantText(""), /ISO-8601 instant/);
+  // A Date and a number are refused: `new Date` takes both, and the guard's
+  // own words name a string, so a second door would leave the doc and the
+  // check describing two different functions. The row never hands it either.
+  // @ts-expect-error the guard is under test — the function takes a string
+  assert.throws(() => syncInstantText(new Date(instant)), /ISO-8601 instant/);
+  // @ts-expect-error the guard is under test — epoch milliseconds is a number
+  assert.throws(() => syncInstantText(SYNCED_AT), /ISO-8601 instant/);
+  // @ts-expect-error the guard is under test — a missing sync is null
+  assert.throws(() => syncInstantText(null), /ISO-8601 instant/);
+
+  // The cell is never blank. The "no syncs yet" words now live where the row
+  // is built, beside the state column that says the same thing. The two
+  // columns are written in two different halves of the module, so this export
+  // is what lets a test that runs in node compare them: the label the row
+  // writes is still the module's own, resolved once, so a rename of the label
+  // cannot leave the two columns saying two different things.
+  assert.equal(NO_SYNC_LABEL, syncStatus({}, now).label);
+  assert.equal(stateCellText(syncStatus({}, now)), NO_SYNC_LABEL);
+  assert.equal(NO_SYNC_LABEL, "No syncs yet");
+  // And the row really is the one place the instant is written, and the one
+  // place the label is written: a second call site that still expects the old
+  // always-string return would render a blank cell, and this fails first.
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.equal(
+    source.split("lastSyncText(").length - 1,
+    2,
+    "one definition and one call site: the module's row",
+  );
+
+  // The row itself, run for real (drive#689). The cell is where the reader's
+  // zone is applied, so a pattern matched against this file's text proves the
+  // words are in the right order and nothing about what the row writes. The
+  // row needs a document, and a page is not one, so the test hands it the
+  // smallest one that answers createElement: a tag, a class, some text and
+  // the cells the row is given.
+  const fakeDocument = /** @type {Document} */ ({
+    /** @param {string} tag */
+    createElement: (tag) => {
+      const el = {
+        tagName: tag,
+        className: "",
+        textContent: "",
+        dataset: /** @type {Record<string, string>} */ ({}),
+        /** @param {...unknown} kids */
+        replaceChildren: (...kids) => {
+          Object.assign(el, { children: kids });
+        },
+      };
+      return el;
+    },
+  });
+  const withDocument = /** @type {Document|undefined} */ (globalThis.document);
+  globalThis.document = fakeDocument;
+  try {
+    const row = deviceRow({
+      id: "dev_1",
+      name: "Mac",
+      kind: "device",
+      lastSyncAt: instant,
+    });
+    const cell = /** @type {{textContent: string}} */ (row.children[2]);
+    // The cell holds the instant written in no named zone, which is the
+    // browser's own: the row's decision, taken where the reader is. The zone
+    // is spelled out from the runtime so the expected words are the record's
+    // rather than the host's, and the row's words are proof it passed none.
+    assert.equal(cell.textContent, syncInstantText(instant, { timeZone: runtimeZone() }));
+    // The other cells are untouched by the change: a row that wrote the
+    // instant into the state column would be a different bug with the same
+    // symptom.
+    assert.equal(/** @type {{textContent: string}} */ (row.children[0]).textContent, "Mac");
+    assert.equal(/** @type {{textContent: string}} */ (row.children[1]).textContent, "device");
+
+    // A device that never synced writes the module's own words in that same
+    // cell, and the state column says the same thing: the row's two halves
+    // are what the single cell used to straddle.
+    const unsynced = deviceRow({ id: "dev_2", name: "Other", kind: "device" });
+    const unsyncedCell = /** @type {{textContent: string}} */ (unsynced.children[2]);
+    assert.equal(unsyncedCell.textContent, NO_SYNC_LABEL);
+    assert.equal(
+      /** @type {{dataset: {state: string}}} */ (/** @type {unknown} */ (unsynced.children[3]))
+        .dataset.state,
+      "never",
+    );
+  } finally {
+    if (withDocument === undefined) {
+      // @ts-expect-error a page is not one, so the global is deleted again
+      delete globalThis.document;
+    } else {
+      globalThis.document = withDocument;
+    }
+  }
+
+  // The day's shape is the site's own, and it is held to the file row that
+  // writes dates the same way: an instant in a year of its own takes the
+  // day, the short month and the numeric year out of both writers, in the
+  // same zone, so a change to either drifts this test rather than the page.
+  const zone = runtimeZone();
+  assert.equal(
+    syncInstantText(instant, { timeZone: zone }).startsWith(
+      new Date(instant).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        timeZone: zone,
+      }),
+    ),
+    true,
+    "the last-sync day is written the way the file rows write theirs",
+  );
 });
 
 test("a signed-in Mac inside the window is connected, and the page stops asking", () => {
@@ -833,6 +1089,10 @@ test("the Worker reads a device's reported queue into the status payload", async
     .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
     .bind(account.id)
     .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
+    .bind(account.id)
+    .run();
   const paused = await (await poll()).json();
   assert.equal(paused.upload.paused, true);
   assert.ok(
@@ -849,10 +1109,123 @@ test("the Worker reads a device's reported queue into the status payload", async
     .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
     .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
+    .run();
   const stale = await (await poll()).json();
   assert.equal(
     stale.upload,
     null,
     "a device that has not reported for a while still shows a queue",
   );
+});
+
+test("the Worker reads the account's device rows into the status payload", async () => {
+  // Drive issue #556 through the Worker's own route, not only through the
+  // handler: the poll the first-run page sends answers connected from the
+  // `devices` rows the api Worker's key store writes, over the real migrations.
+  // `drive login` mints a row with no last_seen_at on it, and it is the api
+  // Worker's own request path that stamps the clock the page reads
+  // (devices.js `renewKey`), which is what this test writes with.
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "mac@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1DeviceStore(made.db);
+  const poll = () =>
+    workerFetch(
+      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      env,
+    );
+
+  // A key that has signed in but never made a request: the row exists and
+  // carries its name, and it is not connected.
+  await store.put({
+    id: "key_mac",
+    accountId: account.id,
+    name: "Nish's Mac",
+    kind: "device",
+    accessKeyId: "b2_mac",
+    secretHash: "hash_mac",
+    prefix: `u/${account.id}/`,
+    capabilities: [],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  const minted = await (await poll()).json();
+  assert.equal(minted.state, "waiting", "a key that never made a request is not connected");
+  assert.equal(isConnected(minted), false, "the page does not read that payload as connected");
+  assert.equal(minted.devices.length, 1);
+  assert.equal(minted.devices[0].name, "Nish's Mac", "the poll carries the device's name");
+  assert.equal(minted.devices[0].lastSeenAt, null);
+
+  // The api Worker's request path stamps the row, and the next poll says
+  // connected with that name. The clock comes back in milliseconds, the unit
+  // the page compares against Date.now().
+  const renewed = await store.renewKey({ id: account.id }, "key_mac");
+  assert.ok(!("error" in renewed), `renewKey refused this key: ${JSON.stringify(renewed)}`);
+  const seen = await (await poll()).json();
+  assert.equal(seen.state, "connected", "a device seen 30 seconds ago reads as connected");
+  assert.equal(isConnected(seen), true);
+  assert.equal(seen.devices.length, 1);
+  assert.equal(seen.devices[0].name, "Nish's Mac");
+  assert.ok(
+    Math.abs(seen.devices[0].lastSeenAt - Date.now()) < 60_000,
+    `lastSeenAt ${seen.devices[0].lastSeenAt} is not a fresh epoch millisecond clock`,
+  );
+
+  // A device that signed out keeps its row and loses its answer: revoked, it is
+  // not this account's live Mac any more.
+  assert.equal("error" in (await store.revokeKey({ id: account.id }, "key_mac")), false);
+  const revoked = await (await poll()).json();
+  assert.equal(revoked.state, "waiting", "a revoked device is not connected");
+  assert.deepEqual(revoked.devices, []);
+
+  // Another account's device is never read as this account's sign-in.
+  await store.put({
+    id: "key_other",
+    accountId: "acct_other",
+    name: "Someone else's Mac",
+    kind: "device",
+    accessKeyId: "b2_other",
+    secretHash: "hash_other",
+    prefix: "u/acct_other/",
+    capabilities: [],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: Math.floor(Date.now() / 1000),
+    revokedAt: null,
+  });
+  const other = await (await poll()).json();
+  assert.equal(other.state, "waiting", "another account's device is not this account's sign-in");
+
+  // An agent key is a credential for a tool, not for this machine: every request
+  // one authenticates stamps `last_seen_at` on its row, so a busy agent must not
+  // flip the page to "your drive is mounted on this Mac" while the Mac has not
+  // signed in at all. `listLive` answers with the machine's own key only.
+  await store.put({
+    id: "key_agent",
+    accountId: account.id,
+    name: "Coding agent",
+    kind: "agent",
+    accessKeyId: "b2_agent",
+    secretHash: "hash_agent",
+    prefix: `u/${account.id}/agents/coding/`,
+    capabilities: ["list", "write"],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: Math.floor(Date.now() / 1000),
+    revokedAt: null,
+  });
+  const agentBusy = await (await poll()).json();
+  assert.equal(
+    agentBusy.state,
+    "waiting",
+    "an agent key's requests are not this machine signing in",
+  );
+  assert.equal(isConnected(agentBusy), false);
 });

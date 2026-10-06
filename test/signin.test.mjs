@@ -24,11 +24,14 @@ import {
   AFTER_SIGNIN_COOKIE,
   createAuth,
   SIGNIN_LINK_PATH,
+  SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
-} from "../src/auth.js";
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -41,10 +44,9 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import {
   createTestAuth,
+  DRIVE_MIGRATIONS,
   DRIVE_SCHEMA_MIGRATIONS,
   signIn,
   TEST_BASE_URL,
@@ -77,7 +79,7 @@ const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "ut
  *   DRIVE_DB: unknown,
  *   BETTER_AUTH_SECRET: string,
  *   BETTER_AUTH_URL: string,
- *   SIGNIN_MAIL: (link: {to: string, url: string}) => void,
+ *   SIGNIN_MAIL: (link: {to: string, url: string, userAgent: string|null}) => void,
  *   SIGNIN_RATE_LIMITER?: SigninLimiterFake,
  *   SIGNIN_GLOBAL_RATE_LIMITER?: SigninLimiterFake,
  * }}}
@@ -90,7 +92,7 @@ function dispatchEnv(options = {}) {
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
     BETTER_AUTH_URL: TEST_BASE_URL,
-    /** @param {{to: string, url: string}} link */
+    /** @param {{to: string, url: string, userAgent: string|null}} link */
     SIGNIN_MAIL: (link) => {
       sent.push(link);
     },
@@ -463,7 +465,7 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   );
   assert.equal(response.status, 429, "the walk must hit the edge limit, not the mailer");
   assert.equal(response.headers.get("retry-after"), "60");
-  // The shared refusal's shape (src/rate-limit.js): exactly the header set the
+  // The shared refusal's shape (core/rate-limit.js): exactly the header set the
   // waitlist's own limiter answers with, so the two endpoints cannot differ.
   assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -593,6 +595,245 @@ test("a limiter that throws fails closed with the table's words, never the error
   assert.equal(made.sent.length, before, "a failed limiter mails nothing");
 });
 
+// ------------------------------------- the per-address send limits (drive#550)
+
+// POST /api/signin mails a real link, so an inbox can be flooded with mail
+// that costs the drive a send and the customer their attention. The edge
+// limits above bound that by caller IP, which a script spread across many
+// hosts walks straight through while it fills one inbox. These are the second
+// guard: 5 links an hour and 20 a day to one address, however the asks arrive
+// and however many IPs they use (src/signin-send-limit.js over migration 0026).
+
+/** The body a sent link is answered with, which a refused one must match. */
+const sentLinkBody = {
+  ok: true,
+  step: "start",
+  method: "email",
+  expiresIn: SIGNIN_LINK_TTL_SECONDS,
+};
+
+/**
+ * The client address the next ask walks from. Every ask in this section comes
+ * from a different address on purpose, so neither the per-IP edge limit nor
+ * Better Auth's own per-IP limiter (three sends an address, the fourth a 429)
+ * can answer instead of the per-address counter under test.
+ * @type {number}
+ */
+let walk = 0;
+
+/**
+ * @returns {string} a client address no earlier ask in the file has used
+ */
+function nextClientIp() {
+  walk += 1;
+  if (walk <= 250) {
+    return `198.51.100.${walk}`;
+  }
+  if (walk <= 500) {
+    return `203.0.113.${walk - 250}`;
+  }
+  return `192.0.2.${walk - 500}`;
+}
+
+/**
+ * Asks for a link, from a client address no earlier ask has used, so the only
+ * guard left standing is the per-address counter, and the answer is read the
+ * way a browser would read it.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} email the address the link is asked for
+ * @returns {Promise<{status: number, body: unknown, cookies: string|null}>}
+ */
+async function askForLink(made, email) {
+  const response = await workerFetch(
+    post(
+      { step: "start", method: "email", email },
+      { headers: { "cf-connecting-ip": nextClientIp() } },
+    ),
+    made.env,
+  );
+  return {
+    status: response.status,
+    body: await response.json(),
+    cookies: response.headers.get("set-cookie"),
+  };
+}
+
+/**
+ * Six asks for one address, so the sixth is the one the hour ceiling speaks
+ * to.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} [email]
+ * @returns {Promise<{status: number, body: unknown, cookies: string|null}[]>}
+ */
+async function askSixTimes(made, email = "crowd@b.co") {
+  const answered = [];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    answered.push(await askForLink(made, email));
+  }
+  return answered;
+}
+
+/**
+ * The counter row, read through the deployed schema rather than through the
+ * mail seam above it: the row is the thing the next ask reads.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} address
+ * @returns {Promise<{hour_count: number, day_count: number}|null>}
+ */
+async function counterRow(made, address) {
+  const row = await made.db
+    .prepare('SELECT "hour_count", "day_count" FROM "signin_address_sends" WHERE "address" = ?1')
+    .bind(address)
+    .first();
+  if (row === null) {
+    return null;
+  }
+  const counted = /** @type {{hour_count: number, day_count: number}} */ (row);
+  return { hour_count: counted.hour_count, day_count: counted.day_count };
+}
+
+test("the sixth sign-in link in an hour is answered like a sent link, and never arrives", async () => {
+  // The issue's first half. Five links in an hour go out; the sixth is
+  // answered with the same 202 body a sent link is answered with and no mail
+  // arrives. The identical answer on purpose: an address that hears a
+  // different answer for the sixth ask has been told it is a real inbox
+  // somebody was asking about, which is the enumeration the sign-in screen
+  // avoids everywhere else.
+  const made = dispatchEnv();
+  const answered = await askSixTimes(made);
+  assert.equal(made.sent.length, 5, "5 links in an hour go out");
+  for (const [index, answer] of answered.entries()) {
+    assert.equal(answer.status, 202, `ask #${index + 1} is answered, not 429 or 503`);
+    assert.deepEqual(answer.body, sentLinkBody, `ask #${index + 1} is answered as a sent link is`);
+    assert.equal(answer.cookies, null, "a refused ask holds no session either");
+  }
+  assert.equal(made.sent[5], undefined, "the sixth ask mailed nothing");
+  assert.deepEqual(
+    await counterRow(made, "crowd@b.co"),
+    {
+      hour_count: 5,
+      day_count: 5,
+    },
+    "the row counted the five links that went out",
+  );
+});
+
+test("the twenty-first sign-in link in a day is answered like a sent link, and never arrives", async () => {
+  // The second ceiling, and the proof the two are separate counters. Four
+  // hour windows' worth of asks, five links each, spend the day's twenty;
+  // every ask after them is answered without mail. The clock is the test's
+  // own here: the deployed code reads the send's own second, and moving the
+  // hour window's start back is how a test says "this ask arrives an hour
+  // later" (the same move the integration test makes on the same SQL).
+  const made = dispatchEnv();
+  for (let burst = 0; burst < 4; burst += 1) {
+    const answered = await askSixTimes(made, "flood@b.co");
+    for (const [index, answer] of answered.entries()) {
+      assert.equal(answer.status, 202, `ask #${index + 1} of hour ${burst + 1} is answered`);
+    }
+    assert.equal(made.sent.length, (burst + 1) * 5, `hour ${burst + 1} mailed its five`);
+    if (burst < 3) {
+      await made.db
+        .prepare(
+          'update "signin_address_sends" set "hour_window_start" = "hour_window_start" - 4000 where "address" = ?1',
+        )
+        .bind("flood@b.co")
+        .run();
+    }
+  }
+  // A fifth hour: the day ceiling is what refuses now, not the hour's.
+  const overTheDay = await askForLink(made, "flood@b.co");
+  assert.equal(overTheDay.status, 202, "the ask after the day's twenty is still answered");
+  assert.deepEqual(overTheDay.body, sentLinkBody, "and answered as a sent link is");
+  assert.equal(made.sent.length, 20, "20 links in a day go out; the rest are answered only");
+  assert.deepEqual(await counterRow(made, "flood@b.co"), { hour_count: 5, day_count: 20 });
+});
+
+test("one address's ceiling is shared by every spelling of it", async () => {
+  // The address is the account key, and the account row is looked up by the
+  // lower(email) query (emailHasUser), so the counter is keyed the same way:
+  // Alice@, alice@ and ALICE@ share one ceiling. Without the lowercase key a
+  // script would mint five more links per spelling of the same inbox.
+  const made = dispatchEnv();
+  for (let ask = 0; ask < 5; ask += 1) {
+    const answer = await askForLink(made, "Same@b.co");
+    assert.equal(answer.status, 202);
+  }
+  assert.equal(made.sent.length, 5, "the first five go out");
+  const shouted = await askForLink(made, "same@B.co");
+  assert.equal(shouted.status, 202, "the other spelling is still answered");
+  assert.deepEqual(shouted.body, sentLinkBody, "and answered as a sent link is");
+  assert.equal(made.sent[5], undefined, "the other spelling mailed nothing");
+  const row = await made.db
+    .prepare('SELECT "address", "hour_count" FROM "signin_address_sends"')
+    .first();
+  assert.ok(row !== null);
+  assert.equal(row.address, "same@b.co", "one row, keyed by the lowercase address");
+  assert.equal(row.hour_count, 5);
+});
+
+test("two inboxes have two ceilings, so one flooded address does not lock out another", async () => {
+  // The guard is per address, not global: a customer who genuinely asks for
+  // links cannot spend another customer's ceiling, and a flooded neighbour's
+  // link still goes out.
+  const made = dispatchEnv();
+  const answered = await askSixTimes(made, "locked@b.co");
+  assert.equal(answered[5].status, 202, "the sixth ask is answered");
+  assert.equal(made.sent.length, 5, "the flooded address mailed five");
+  const neighbour = await askForLink(made, "neighbour@b.co");
+  assert.equal(neighbour.status, 202);
+  assert.equal(made.sent.length, 6, "the neighbour's first link goes out");
+  assert.equal(made.sent[5].to, "neighbour@b.co");
+});
+
+test("an address that went over its ceiling this hour gets its next link when the hour passes", async () => {
+  // The ceiling is a window, not a lifetime ban. The hour the counters name
+  // is what decides, and the day window does not reset with it: the same
+  // second the deployed rollover branch reads is the one the edit stands for.
+  const made = dispatchEnv();
+  await askSixTimes(made, "patient@b.co");
+  assert.equal(made.sent.length, 5, "the sixth ask was refused");
+  await made.db
+    .prepare(
+      'update "signin_address_sends" set "hour_window_start" = "hour_window_start" - 4000 where "address" = ?1',
+    )
+    .bind("patient@b.co")
+    .run();
+  const nextHour = await askForLink(made, "patient@b.co");
+  assert.equal(nextHour.status, 202);
+  assert.deepEqual(nextHour.body, sentLinkBody);
+  assert.equal(made.sent.length, 6, "the hour passed, so the link goes out again");
+  assert.deepEqual(
+    await counterRow(made, "patient@b.co"),
+    {
+      hour_count: 1,
+      day_count: 6,
+    },
+    "the hour window reset, the day window did not",
+  );
+});
+
+test("a counter that cannot be written answers that no link went out", async () => {
+  // The two answers differ on purpose (src/signin-send-limit.js). Over the
+  // limit is a caller the answer 202 does not distinguish from a sent link.
+  // A counter that failed to write is a deployment problem — a migration
+  // that has not been applied, a database that threw — and drive#431's rule
+  // covers that: nobody is told to check an inbox that will stay empty. The
+  // error text stays in the log (the throw test lives with the module), and
+  // the public answer is the one body the mail-failure path already answers
+  // with.
+  const made = dispatchEnv({
+    migrations: DRIVE_MIGRATIONS.filter((name) => !name.includes("0026_signin_address_sends")),
+  });
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "broken@b.co" }),
+    made.env,
+  );
+  assert.equal(response.status, 503, "a counter that cannot be written is not a 202");
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
+  assert.equal(made.sent.length, 0, "no link went out");
+});
+
 // ---------------------------------------------------------- the verify link
 
 test("a mailer that throws says the email did not go out, never a 202 for a link that never left", async () => {
@@ -647,7 +888,8 @@ test("a deployment with no email setting says the email did not go out", async (
       "a working mailer",
       {
         ...base,
-        SIGNIN_MAIL: (/** @type {{to: string, url: string}} */ link) => made.sent.push(link),
+        SIGNIN_MAIL: (/** @type {{to: string, url: string, userAgent: string|null}} */ link) =>
+          made.sent.push(link),
       },
     ],
   ]) {
@@ -973,6 +1215,92 @@ test("sign-out everywhere still ends this session when the key store fails", asy
   assert.equal(after.status, 401, "this browser is signed out even when keys stay live");
 });
 
+test("sign-out everywhere withdraws every key at the vendor, and a retry finishes a refused one", async () => {
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const account = await signIn(made, "vendor@example.com");
+  const now = 1_800_000_000_000;
+  const devices = createD1DeviceStore(made.db, { now: () => now });
+  for (const name of ["one", "two"]) {
+    await devices.put({
+      id: `key_${name}`,
+      accountId: account.account.id,
+      name,
+      kind: "agent",
+      accessKeyId: `ak_${name}`,
+      secretHash: `hash_${name}`,
+      prefix: `u/${account.account.id}/`,
+      capabilities: ["list", "read"],
+      createdAt: now,
+      lastSeenAt: null,
+      revokedAt: null,
+      expiresAt: null,
+      ttlSeconds: null,
+    });
+  }
+  // The deployment's own vendor (keyprovider-env.js): the reseller API's
+  // remove_access_key, answered here instead of at iDrive.
+  const vendor = "https://reseller.vendor.test/v1";
+  /** @type {string[]} */
+  const removed = [];
+  /** @type {Set<string>} */
+  const refusing = new Set(["ak_one"]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith(vendor)) {
+        return realFetch(input, init);
+      }
+      const { access_key_id: id } = JSON.parse(String(init?.body ?? "{}"));
+      if (refusing.has(id)) {
+        return new Response(JSON.stringify({ message: "vendor down" }), { status: 500 });
+      }
+      removed.push(id);
+      return new Response("{}", { status: 200 });
+    }
+  );
+  const env = {
+    ...made.env,
+    IDRIVE_E2_API_TOKEN: "reseller-token",
+    IDRIVE_E2_API_ENDPOINT: vendor,
+  };
+  const signOutAll = (/** @type {string} */ cookie) =>
+    workerFetch(
+      new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie },
+        body: JSON.stringify({ step: "signout-all" }),
+      }),
+      env,
+    );
+  const revokedAt = (/** @type {string} */ id) =>
+    made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(id)?.revoked_at;
+  try {
+    const out = await signOutAll(account.cookie);
+    assert.equal(out.status, 503, "a key the vendor kept is not reported as signed out");
+    assert.deepEqual(await out.json(), { error: failureMessage("storage-down") });
+    assert.deepEqual(removed, ["ak_two"], "the refusal did not stop the other key");
+    assert.equal(revokedAt("key_one"), null, "the refused key stays live for the retry");
+    assert.notEqual(revokedAt("key_two"), null);
+    const after = await workerFetch(
+      new Request(`${TEST_BASE_URL}/api/first-run-status`, {
+        headers: { cookie: account.cookie },
+      }),
+      env,
+    );
+    assert.equal(after.status, 401, "the sessions still went");
+
+    refusing.clear();
+    const again = await signIn(made, "vendor@example.com");
+    const retried = await signOutAll(again.cookie);
+    assert.equal(retried.status, 200);
+    assert.deepEqual(removed, ["ak_two", "ak_one"], "the retry attempted only the live key");
+    assert.notEqual(revokedAt("key_one"), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // --------------------------------------------------------- per-IP rate limit
 
 test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
@@ -983,7 +1311,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const env = made.env;
 
   // The first three sends from one IP land. Each one carries a different
-  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // x-forwarded-for: that header is not the key (core/auth.js consults only
   // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
   for (let i = 0; i < 3; i++) {
     const response = await workerFetch(
@@ -1194,10 +1522,9 @@ test("the page carries every string from src/signin.js verbatim", () => {
   // The page is a static asset, so the price line it shows is the price
   // module's; the test reads the module, so the two cannot drift.
   assert.ok(
-    page.includes(PRICE.noMinimumLine),
+    page.includes(PRICE.noPlansLine),
     "the page must carry the price module's no-minimum line",
   );
-  assert.ok(page.includes(PRICE.foundingLine), "the page must carry the founding line");
 });
 
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
@@ -1345,8 +1672,7 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     .replace(/\s+/g, " ")
     .trim();
   assert.equal(labelText, SIGNIN_COPY.cardConsent, "the box is labelled in short");
-  assert.ok(page.includes(SIGNIN_COPY.noMinimumLine), "the page must quote the no-minimum line");
-  assert.ok(page.includes(SIGNIN_COPY.foundingLine), "the page must quote the founding line");
+  assert.ok(page.includes(SIGNIN_COPY.noPlansLine), "the page must quote the no-minimum line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
   // "Never do" row). This page is a step-9 surface, so the rule is pinned on
   // it too, not only on the pricing page.

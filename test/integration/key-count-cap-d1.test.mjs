@@ -23,11 +23,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { failureMessage } from "../../src/messages.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { KEY_COUNT_CAP } from "../../core/keyprovider.js";
+import { createMemoryStore, KeyCountCapError } from "../../core/keystore.js";
+import { failureMessage } from "../../core/messages.js";
 import { dispatch } from "../../workers/api/src/index.js";
-import { KEY_COUNT_CAP } from "../../workers/api/src/keyprovider.js";
-import { createMemoryStore, KeyCountCapError } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 const START = Math.floor(Date.parse("2026-10-06T12:00:00.000Z") / 1000);
@@ -63,7 +63,7 @@ function storeOver(db, clock, provider) {
   return createMemoryStore({
     now,
     deviceStore: createD1DeviceStore(db, { now }),
-    keyProvider: /** @type {import("../../workers/api/src/keyprovider.js").KeyProvider} */ (
+    keyProvider: /** @type {import("../../core/keyprovider.js").KeyProvider} */ (
       /** @type {unknown} */ (provider)
     ),
   });

@@ -3,11 +3,12 @@
 //
 //     charge = min(2¢ x avg GB, $10 x max(1, avg TB))
 //
-// avg is the time-weighted stored size over the month (GB-minutes / 43,800).
-// Founding members pay half of both numbers. There is no minimum, no
-// membership and no first-month discount. The formula edges below are the
+// avg is the time-weighted stored size over the month: GB-minutes over the
+// minutes in that calendar month (drive#531).
+// There is no minimum, no membership, no first-month discount and no
+// founding rate: everyone pays the one price. The formula edges below are the
 // ones the issue names: 0 GB, 1 GB, 499 GB, 500 GB, 1 TB, 1.5 TB and 4 TB,
-// each for a regular and a founding member, held all month.
+// each held all month.
 //
 // The default cap ($12) is issue #39's and #464 owns moving it, so the cap
 // tests read it from BILLING_CONFIG rather than typing it.
@@ -21,10 +22,10 @@ import {
   BILLING_CONFIG,
   capStatus,
   downloadCostUsd,
-  foundingConfig,
   gbMonths,
   handleUsageRequest,
   meteredMonthlyBillUsd,
+  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
@@ -32,9 +33,9 @@ import {
   savedLine,
   storedGb,
   usageSummary,
-} from "../src/billing.js";
+} from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { PRICE } from "../src/pricing.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -48,74 +49,120 @@ const workerFetch =
     /** @type {unknown} */ (worker.fetch)
   );
 
-// Minutes in an average month, the spec's divisor. Held as a full month of a
+// The minutes in a 30-day calendar month, the divisor for a month like April
+// (drive#531). Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
-const MINUTES_PER_MONTH = 43800;
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
+const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
-const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
+const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 
 /** The same dollars the module formats, for a label assertion. */
 /** @param {number} cents */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
-test("the formula edges, regular and founding, held all month", () => {
-  // [GB, regular cents, founding cents]. Founding is half of both the rate
-  // and the maximum, so it is half the bill at every size.
+test("the divisor is the calendar month's own minutes, whatever the month", () => {
+  // drive#531: each month divides by its own length, so 1 TB held all month
+  // is $10.00 in a 30-day month and in a 31-day one alike. The literals are
+  // the gate: monthBillCents divides by monthMinutes directly, so a wrong
+  // bill needs no comparison to ship, and every caller reads the month through
+  // this one function (src/billing.js minutesInMonth reads UTC). Only a
+  // literal catches it. Chosen mid-month and mid-day: a local-time read would
+  // name the adjacent month on the other side of the world.
+  assert.equal(minutesInMonth("2026-09-16T12:00:00.000Z"), 43_200, "September (30 days)");
+  assert.equal(minutesInMonth("2026-10-16T12:00:00.000Z"), 44_640, "October (31 days)");
+  assert.equal(minutesInMonth("2027-02-16T12:00:00.000Z"), 40_320, "February (28 days)");
+  assert.equal(minutesInMonth("2028-02-16T12:00:00.000Z"), 41_760, "February (leap, 29 days)");
+});
+
+test("the formula edges, held all month", () => {
+  // [GB, cents].
   const cases = [
-    [0, 0, 0],
-    [1, 2, 1],
-    [499, 998, 499],
-    [500, 1000, 500],
-    [1000, 1000, 500],
-    [1500, 1500, 750],
-    [4000, 4000, 2000],
+    [0, 0],
+    [1, 2],
+    [499, 998],
+    [500, 1000],
+    [1000, 1000],
+    [1500, 1500],
+    [4000, 4000],
   ];
-  for (const [gb, regular, founding] of cases) {
-    const gbMinutes = fullMonthGbMinutes(gb);
-    const bill = monthBillCents({ gbMinutes });
-    assert.equal(bill.storageCents, regular, `${gb} GB bills ${usd(regular)}`);
-    assert.equal(bill.totalCents, regular, `${gb} GB, no downloads, totals ${usd(regular)}`);
-    assert.equal(bill.foundingMember, false);
-    const founder = monthBillCents({ gbMinutes, foundingMember: true });
-    assert.equal(founder.storageCents, founding, `${gb} GB founding bills ${usd(founding)}`);
-    assert.equal(founder.totalCents, founding);
-    assert.equal(founder.foundingMember, true);
+  for (const [gb, cents] of cases) {
+    const bill = monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: fullMonthGbMinutes(gb) });
+    assert.equal(bill.storageCents, cents, `${gb} GB bills ${usd(cents)}`);
+    assert.equal(bill.totalCents, cents, `${gb} GB, no downloads, totals ${usd(cents)}`);
+    assert.equal("foundingMember" in bill, false, "the bill carries no founding field");
   }
 });
 
-test("the founding half is the storage only: downloads are never discounted", () => {
-  // drive#482 halves the storage rate and the maximum. The download line is
-  // not part of the founding offer, so a founding month's downloads bill the
-  // same as a paying month's. drive#488 passes the flag through; it does not
-  // price the downloads, and this pins that boundary.
+test("downloads bill at the one rate: 1 cent a GB over 3x the stored size", () => {
   const gbMinutes = fullMonthGbMinutes(2000);
   const averageStoredGb = 2000;
   // 8 TB downloaded against 2 TB stored: 3x (6 TB) is free, 2 TB bills at 1c.
   const downloadBytes = 8000 * 1e9;
-  const full = monthBillCents({ gbMinutes, averageStoredGb, downloadBytes });
-  const founder = monthBillCents({
+  const bill = monthBillCents({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes,
     averageStoredGb,
     downloadBytes,
-    foundingMember: true,
   });
-  assert.equal(full.storageCents, 2000);
-  assert.equal(founder.storageCents, 1000, "the storage maximum halves");
-  assert.equal(full.downloadCents, 2000, "2 TB billable before the founding flag");
-  assert.equal(founder.downloadCents, full.downloadCents, "downloads are not discounted");
-  assert.equal(full.totalCents, 4000);
-  assert.equal(founder.totalCents, 3000, "only the storage half halves");
+  assert.equal(bill.storageCents, 2000);
+  assert.equal(bill.downloadCents, 2000);
+  assert.equal(bill.totalCents, 4000);
+});
+
+test("the retired founding fields are refused, so nothing quietly halves a bill again", () => {
+  for (const field of ["foundingMember", "payingAccountNumber", "foundingOfferOpen"]) {
+    for (const value of [true, false, 1]) {
+      assert.throws(
+        () => monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: 0, [field]: value }),
+        (err) => {
+          assert.ok(err instanceof TypeError);
+          assert.match(err.message, new RegExp(`month\\.${field} is no longer part of the bill`));
+          return true;
+        },
+      );
+    }
+  }
+  // usageSummary reads the same bill, so it refuses them too rather than
+  // quietly reporting full price to a caller that thinks it halved it.
+  for (const field of ["foundingMember", "payingAccountNumber", "foundingOfferOpen"]) {
+    assert.throws(
+      () =>
+        usageSummary({
+          monthMinutes: MONTH_MINUTES,
+          gbMinutes: 0,
+          storedGb: 0,
+          storedDaily: [],
+          downloadBytes: 0,
+          averageStoredGb: 0,
+          capUsd: 20,
+          [field]: true,
+        }),
+      new RegExp(`usage\\.${field} is no longer part of the bill`),
+    );
+  }
+  assert.equal(PRICE.rateCents, 2);
+  assert.equal(PRICE.maxUsdPerTb, 10);
+  assert.equal("founding" in PRICE, false);
+  assert.equal("foundingShare" in BILLING_CONFIG, false);
+  assert.equal("foundingLimit" in BILLING_CONFIG, false);
 });
 
 test("the issue's worked examples: 200 GB $4, 500 GB to 1 TB $10, 1.5 TB $15, 4 TB $40", () => {
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(50)), 1);
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(200)), 4);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(50), MONTH_MINUTES), 1);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(200), MONTH_MINUTES), 4);
   for (const gb of [500, 600, 750, 999, 1000]) {
-    assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(gb)), 10, `${gb} GB is $10`);
+    assert.equal(
+      monthlyStorageBillUsd(fullMonthGbMinutes(gb), MONTH_MINUTES),
+      10,
+      `${gb} GB is $10`,
+    );
   }
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(1500)), 15);
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(3000)), 30);
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(4000)), 40);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(1500), MONTH_MINUTES), 15);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(3000), MONTH_MINUTES), 30);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(4000), MONTH_MINUTES), 40);
 });
 
 test("the maximum is $10 up to 1 TB, then $10 a TB to the GB, and never falls", () => {
@@ -125,86 +172,41 @@ test("the maximum is $10 up to 1 TB, then $10 a TB to the GB, and never falls", 
   assert.equal(Math.round(monthlyMaximumUsd(1001) * 100), 1001, "counted to the GB above 1 TB");
   assert.equal(monthlyMaximumUsd(1500), 15);
   assert.equal(monthlyMaximumUsd(4000), 40);
-  assert.equal(monthlyMaximumUsd(1500, foundingConfig()), 7.5, "founding is half");
   // Adding data never lowers the bill.
   let last = -1;
   for (let gb = 0; gb <= 6000; gb += 25) {
-    const bill = monthlyStorageBillUsd(fullMonthGbMinutes(gb));
+    const bill = monthlyStorageBillUsd(fullMonthGbMinutes(gb), MONTH_MINUTES);
     assert.ok(bill >= last, `the bill fell at ${gb} GB`);
     last = bill;
   }
 });
 
-test("the founding numbers are derived as half, never typed", () => {
-  const founding = foundingConfig();
-  assert.equal(founding.rateUsdPerGbMonth, BILLING_CONFIG.rateUsdPerGbMonth / 2);
-  assert.equal(founding.maxUsdPerTb, BILLING_CONFIG.maxUsdPerTb / 2);
-  assert.equal(PRICE.founding.rateCents, 1);
-  assert.equal(PRICE.founding.maxUsdPerTb, 5);
-  assert.equal(Object.isFrozen(founding), true);
-});
-
-test("a founding config cannot be halved twice", () => {
-  // drive#482: monthBillCents() derived the founding half itself, so a caller
-  // that handed it a config foundingConfig() had already halved got half of
-  // half: $10.00 became $2.50. Founding is derived once, from the month's own
-  // fields, so an already-founding config is refused rather than re-halved.
-  const month = { gbMinutes: fullMonthGbMinutes(2000) };
-  assert.equal(monthBillCents({ ...month, foundingMember: true }).totalCents / 100, 10);
-  /** @param {import("../src/billing.js").BillingConfig} config */
-  const refuse = (config) =>
-    assert.throws(
-      () => monthBillCents({ ...month, config, foundingMember: true }),
-      (err) => {
-        assert.ok(err instanceof TypeError);
-        assert.match(err.message, /already (founding-priced|discounted)/);
-        return true;
-      },
-    );
-  refuse(foundingConfig());
-  // A copy of the founding config — the ordinary way a caller mends a config on
-  // its way somewhere — carries the mark, so it is refused as well. Dropping a
-  // non-enumerable mark on spread is what made this the second half of the
-  // bug: the same discount, applied twice, through a plain `{...config}`.
-  refuse({ ...foundingConfig() });
-  refuse(Object.assign({}, foundingConfig()));
-  // Without the mark, a cheaper rate plus the flag is the same mistake found by
-  // the numbers: refused too.
-  refuse({ ...BILLING_CONFIG, rateUsdPerGbMonth: 0.01, maxUsdPerTb: 10 });
-  // A config that merely carries founding's numbers without the flag is a legal
-  // config: it is a price sheet, and nothing halves it twice.
-  const copied = { ...BILLING_CONFIG, rateUsdPerGbMonth: 0.01, maxUsdPerTb: 10 };
-  assert.equal(monthBillCents({ ...month, config: copied }).totalCents / 100, 20);
-  // A marked config is not a price sheet at all, so it is refused with or
-  // without the flag: half of half is the only bill it could ever produce.
-  assert.throws(
-    () => monthBillCents({ ...month, config: foundingConfig() }),
-    /already founding-priced/,
-  );
-});
-
 test("the maximum follows the month's average, so a part-month bills for the part", () => {
-  // 2 TB held for 3 days is about 197 GB on average: about $3.94, under the
-  // $10 maximum. The old peak-based ceiling would have charged a 2 TB month.
-  const threeDays = fullMonthGbMinutes(2000) * ((3 * 1440) / MINUTES_PER_MONTH);
-  const bill = monthBillCents({ gbMinutes: threeDays });
+  // 2 TB held for 3 days of a 30-day month is 200 GB on average: $4.00, under
+  // the $10 maximum. The old peak-based ceiling would have charged a 2 TB month.
+  const threeDays = fullMonthGbMinutes(2000) * ((3 * 1440) / MONTH_MINUTES);
+  const bill = monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: threeDays });
   assert.equal(bill.maximumCents, 1000);
-  assert.ok(bill.storageCents > 390 && bill.storageCents < 400, `got ${bill.storageCents}`);
-  assert.equal(gbMonths(threeDays).toFixed(1), "197.3");
+  assert.equal(bill.storageCents, 400, `got ${bill.storageCents}`);
+  assert.equal(gbMonths(threeDays, MONTH_MINUTES).toFixed(1), "200.0");
 });
 
 test("the bill is the meter below the maximum, the maximum above it", () => {
-  assert.equal(meteredMonthlyBillUsd(fullMonthGbMinutes(300)), 6);
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(300)), 6);
-  assert.equal(meteredMonthlyBillUsd(fullMonthGbMinutes(2000)), 40);
-  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(2000)), 20);
+  assert.equal(meteredMonthlyBillUsd(fullMonthGbMinutes(300), MONTH_MINUTES), 6);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(300), MONTH_MINUTES), 6);
+  assert.equal(meteredMonthlyBillUsd(fullMonthGbMinutes(2000), MONTH_MINUTES), 40);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(2000), MONTH_MINUTES), 20);
 });
 
 test("the 'you saved' lines: against our maximum and against a usual 1 TB plan", () => {
   // 2 TB all month: metered $40, maximum $20, so the maximum saved $20. The
   // usual plan is $15 + 2 x $6 = $27, so that plan would cost $7 more.
   const twoTb = fullMonthGbMinutes(2000);
-  const capped = savedLine(monthBillCents({ gbMinutes: twoTb }), twoTb);
+  const capped = savedLine(
+    monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: twoTb }),
+    twoTb,
+    MONTH_MINUTES,
+  );
   assert.ok(capped);
   assert.equal(capped.usd, 20);
   assert.equal(capped.planUsd, 7);
@@ -214,7 +216,11 @@ test("the 'you saved' lines: against our maximum and against a usual 1 TB plan",
   );
   // 300 GB all month: bill $6 under the $10 maximum and the $15 plan.
   const small = fullMonthGbMinutes(300);
-  const uncapped = savedLine(monthBillCents({ gbMinutes: small }), small);
+  const uncapped = savedLine(
+    monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: small }),
+    small,
+    MONTH_MINUTES,
+  );
   assert.ok(uncapped);
   assert.equal(uncapped.usd, 4);
   assert.equal(uncapped.planUsd, 9);
@@ -224,46 +230,50 @@ test("the 'you saved' lines: against our maximum and against a usual 1 TB plan",
   );
   // At 500 GB the meter is exactly the maximum, so only the plan line shows.
   const atMax = fullMonthGbMinutes(500);
-  const plain = savedLine(monthBillCents({ gbMinutes: atMax }), atMax);
+  const plain = savedLine(
+    monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: atMax }),
+    atMax,
+    MONTH_MINUTES,
+  );
   assert.ok(plain);
   assert.equal(plain.usd, 0);
   assert.equal(plain.copy, "You saved $5.00 against a usual 1 TB plan.");
   // An empty drive saves nothing and says nothing.
-  assert.equal(savedLine(monthBillCents({ gbMinutes: 0 }), 0), null);
+  assert.equal(
+    savedLine(monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: 0 }), 0, MONTH_MINUTES),
+    null,
+  );
   // Every sentence comes from the one copy table.
   assert.match(SAVED_COPY.plan, /\{plan\}/);
-  assert.throws(() => savedLine(null, 0), TypeError);
+  assert.throws(() => savedLine(null, 0, MONTH_MINUTES), TypeError);
 });
 
 test("the cap counts min(metered, maximum), and bites only past the cap", () => {
   const cap = BILLING_CONFIG.defaultCapUsd;
   // Up to 1 TB the counted spend is at most the $10 maximum, under the cap.
   for (const gb of [0, 300, 600, 1000]) {
-    assert.equal(capStatus(fullMonthGbMinutes(gb), cap).state, "active", `${gb} GB`);
+    assert.equal(capStatus(fullMonthGbMinutes(gb), MONTH_MINUTES, cap).state, "active", `${gb} GB`);
   }
-  assert.equal(capStatus(fullMonthGbMinutes(1000), cap).countedUsd, 10);
+  assert.equal(capStatus(fullMonthGbMinutes(1000), MONTH_MINUTES, cap).countedUsd, 10);
   // A spend exactly on the cap is what the person agreed to pay.
-  assert.equal(capStatus(fullMonthGbMinutes(cap * 100), cap).state, "active");
+  assert.equal(capStatus(fullMonthGbMinutes(cap * 100), MONTH_MINUTES, cap).state, "active");
   // Past the cap the drive goes read-only, and raising the cap writes again.
   // 2 TB bills the $20 maximum, exactly the $20 default: not past it.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), cap).state, "active");
-  const past = capStatus(fullMonthGbMinutes(3000), cap);
+  assert.equal(capStatus(fullMonthGbMinutes(2000), MONTH_MINUTES, cap).state, "active");
+  const past = capStatus(fullMonthGbMinutes(3000), MONTH_MINUTES, cap);
   assert.equal(past.countedUsd, 30);
   assert.equal(past.state, "read_only");
   assert.equal(past.remainingUsd, 0);
-  const raised = capStatus(fullMonthGbMinutes(3000), 35);
+  const raised = capStatus(fullMonthGbMinutes(3000), MONTH_MINUTES, 35);
   assert.equal(raised.state, "active");
   assert.equal(raised.remainingUsd, 5);
-  // A founding member's cap counts the founding bill: the flag, not a
-  // pre-halved config (drive#482).
-  assert.equal(capStatus(fullMonthGbMinutes(2000), cap, BILLING_CONFIG, true).countedUsd, 10);
   for (const bad of [Number.NaN, -1, "600", null, undefined]) {
-    assert.throws(() => capStatus(bad, 12), TypeError);
+    assert.throws(() => capStatus(bad, MONTH_MINUTES, 12), TypeError);
     assert.throws(() => monthlyMaximumUsd(bad), TypeError);
   }
   // The old (gbMinutes, peakGb, capUsd) order is refused, not misread.
-  assert.throws(() => capStatus(0, 600, /** @type {any} */ (12)), TypeError);
-  assert.throws(() => meteredMonthlyBillUsd(-1), TypeError);
+  assert.throws(() => capStatus(0, MONTH_MINUTES, 600, /** @type {any} */ (12)), TypeError);
+  assert.throws(() => meteredMonthlyBillUsd(-1, MONTH_MINUTES), TypeError);
 });
 
 test("downloads are free up to 3x the average stored, then 1 cent a GB", () => {
@@ -277,20 +287,29 @@ test("downloads are free up to 3x the average stored, then 1 cent a GB", () => {
 });
 
 test("downloads add 1c a GB above 3x, on top of the storage line", () => {
-  const stored = { gbMinutes: fullMonthGbMinutes(100) };
+  const stored = { monthMinutes: MONTH_MINUTES, gbMinutes: fullMonthGbMinutes(100) };
   const quiet = monthBillCents(stored);
   assert.equal(quiet.totalCents, 200);
-  const busy = monthBillCents({ ...stored, downloadBytes: 400e9, averageStoredGb: 100 });
+  const busy = monthBillCents({
+    ...stored,
+    downloadBytes: 400e9,
+    averageStoredGb: 100,
+  });
   assert.equal(busy.downloadCents, 100, "the 100 GB above the free 3x");
   assert.equal(busy.storageCents, quiet.storageCents, "downloads do not move storage");
   assert.equal(busy.totalCents, 300);
   for (const gb of [400, 401, 500, 1600]) {
-    const bill = monthBillCents({ ...stored, downloadBytes: gb * 1e9, averageStoredGb: 100 });
+    const bill = monthBillCents({
+      ...stored,
+      downloadBytes: gb * 1e9,
+      averageStoredGb: 100,
+    });
     assert.equal(bill.downloadCents, gb - 300, `${gb} GB downloaded`);
   }
   // The maximum caps storage only. 2 TB is $20 of storage, plus 2 TB of
   // billable downloads.
   const capped = monthBillCents({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: fullMonthGbMinutes(2000),
     downloadBytes: 8000e9,
     averageStoredGb: 2000,
@@ -302,7 +321,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
 
 test("a light month pays for what it stores and nothing more", () => {
   // No minimum: 10 GB all month is 20 cents, never a floor.
-  const bill = monthBillCents({ gbMinutes: fullMonthGbMinutes(10) });
+  const bill = monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: fullMonthGbMinutes(10) });
   assert.equal(bill.totalCents, 20);
   assert.deepEqual(
     bill.lines.map((line) => [line.label, line.usd]),
@@ -317,6 +336,7 @@ test("a light month pays for what it stores and nothing more", () => {
 
 test("a card-less account is capped at the free $1", () => {
   const usage = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: fullMonthGbMinutes(60),
     storedGb: 60,
     storedDaily: [],
@@ -334,6 +354,7 @@ test("a card-less account is capped at the free $1", () => {
 
 test("the usage summary is the empty month before the meter lands", () => {
   const empty = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: 0,
     storedGb: 0,
     storedDaily: [],
@@ -361,7 +382,13 @@ test("the usage summary is the empty month before the meter lands", () => {
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
   const account = { id: "1", name: "Your drive" };
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -378,9 +405,36 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     account,
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
   assert.equal(posted.headers.get("allow"), "GET");
+});
+
+test("the usage endpoint refuses a month that is not an instant, and one it was not given", () => {
+  // drive#559: the month is the caller's (src/index.js owns the one boundary)
+  // and the answer names it, so a caller that hands over nothing, or a day
+  // that is not an instant, is a caller bug the read refuses by name rather
+  // than shipping a heading nobody can check a statement against. The gate is
+  // first (account-gate.test.mjs pins the 401 below it), so the account here
+  // is signed in and only the month is wrong.
+  const account = { id: "1", name: "Your drive" };
+  const withNone = () =>
+    handleUsageRequest(new Request("https://drive.test/api/usage"), account, null, null, "");
+  assert.throws(withNone, /handleUsageRequest needs the month's first instant/);
+  assert.throws(
+    () =>
+      handleUsageRequest(
+        new Request("https://drive.test/api/usage"),
+        account,
+        null,
+        null,
+        "next month",
+      ),
+    /handleUsageRequest needs the month's first instant/,
+  );
 });
 
 test("the Worker routes the usage read to the handler", async () => {
@@ -400,12 +454,12 @@ test("the Worker routes the usage read to the handler", async () => {
 
 test("every line is integer cents, whatever the meter recorded", () => {
   for (const gbMinutes of [0, 1, 37, 21900, 43800, 1234567, 99999999]) {
-    for (const foundingMember of [false, true]) {
+    {
       const bill = monthBillCents({
+        monthMinutes: MONTH_MINUTES,
         gbMinutes,
         downloadBytes: 987654321,
         averageStoredGb: 42.7,
-        foundingMember,
       });
       for (const key of /** @type {const} */ ([
         "meteredCents",
@@ -423,13 +477,28 @@ test("every line is integer cents, whatever the meter recorded", () => {
     }
   }
   for (const bad of [Number.NaN, -1, "600", null]) {
-    assert.throws(() => monthBillCents({ gbMinutes: bad }), TypeError);
-    assert.throws(() => monthBillCents({ gbMinutes: 0, downloadBytes: bad }), TypeError);
-    assert.throws(() => monthBillCents({ gbMinutes: 0, averageStoredGb: bad }), TypeError);
+    assert.throws(() => monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: bad }), TypeError);
+    assert.throws(
+      () => monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: 0, downloadBytes: bad }),
+      TypeError,
+    );
+    assert.throws(
+      () => monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: 0, averageStoredGb: bad }),
+      TypeError,
+    );
   }
-  assert.throws(() => monthBillCents({ gbMinutes: undefined }), TypeError);
   assert.throws(
-    () => monthBillCents({ gbMinutes: 0, downloadBytes: 1e9, averageStoredGb: 0 }),
+    () => monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: undefined }),
+    TypeError,
+  );
+  assert.throws(
+    () =>
+      monthBillCents({
+        monthMinutes: MONTH_MINUTES,
+        gbMinutes: 0,
+        downloadBytes: 1e9,
+        averageStoredGb: 0,
+      }),
     /averageStoredGb/,
   );
 });
@@ -439,7 +508,12 @@ test("the retired inputs fail loudly: peak, first month, month number", () => {
   // gone. A caller still on the old rule is refused, never silently ignored.
   for (const retired of ["peakGb", "peakBytes", "firstMonth", "monthNumber"]) {
     assert.throws(
-      () => monthBillCents({ gbMinutes: 0, [retired]: retired === "firstMonth" ? true : 1 }),
+      () =>
+        monthBillCents({
+          monthMinutes: MONTH_MINUTES,
+          gbMinutes: 0,
+          [retired]: retired === "firstMonth" ? true : 1,
+        }),
       new RegExp(`month\\.${retired}`),
     );
   }
@@ -461,6 +535,7 @@ test("the usage page and the cap check read this one function", () => {
     [2000, 5000],
   ]) {
     const usage = {
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: fullMonthGbMinutes(stored),
       storedGb: stored,
       storedDaily: [],
@@ -470,6 +545,7 @@ test("the usage page and the cap check read this one function", () => {
       cardAdded: true,
     };
     const bill = monthBillCents({
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: usage.gbMinutes,
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
@@ -479,7 +555,7 @@ test("the usage page and the cap check read this one function", () => {
     assert.deepEqual(summary.billCents, bill, "the summary carries the one function's result");
     assert.equal(summary.labels.cost, usd(bill.totalCents));
     assert.equal(
-      capStatus(usage.gbMinutes, BILLING_CONFIG.defaultCapUsd).countedUsd,
+      capStatus(usage.gbMinutes, MONTH_MINUTES, BILLING_CONFIG.defaultCapUsd).countedUsd,
       bill.storageCents / 100,
     );
   }
@@ -492,6 +568,7 @@ test("a card-less month shows no charge, and the money is untouched", () => {
   // billUsd still carry it, and cardOnFile is the one flag the page hides the
   // invoice rows on.
   const usage = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: fullMonthGbMinutes(400),
     storedGb: 400,
     storedDaily: [],
@@ -508,35 +585,4 @@ test("a card-less month shows no charge, and the money is untouched", () => {
   // flag: a card-less account is shown no charge while its cap line is
   // untouched (see the usage endpoint's own test).
   assert.equal(usageSummary({ ...usage, cardOnFile: true }).labels.cost, usd(800));
-});
-
-test("account 1,000 is founding while the offer is open, account 1,001 is not", () => {
-  const month = { gbMinutes: fullMonthGbMinutes(200) };
-  const last = monthBillCents({ ...month, payingAccountNumber: 1000 });
-  assert.equal(last.foundingMember, true);
-  assert.equal(last.totalCents, 200, "200 GB at 1 cent");
-  const next = monthBillCents({ ...month, payingAccountNumber: 1001 });
-  assert.equal(next.foundingMember, false);
-  assert.equal(next.totalCents, 400, "200 GB at 2 cents");
-  assert.equal(BILLING_CONFIG.foundingLimit, 1000);
-});
-
-test("switching the offer off keeps existing founders at half and prices new accounts in full", () => {
-  const month = { gbMinutes: fullMonthGbMinutes(2000) };
-  const existing = monthBillCents({ ...month, foundingMember: true, foundingOfferOpen: false });
-  assert.equal(existing.foundingMember, true);
-  assert.equal(existing.totalCents, 1000, "2 TB at $5 a TB");
-  const fresh = monthBillCents({ ...month, foundingMember: false, foundingOfferOpen: false });
-  assert.equal(fresh.totalCents, 2000, "2 TB at $10 a TB");
-  const rankedAfterClose = monthBillCents({
-    ...month,
-    payingAccountNumber: 1,
-    foundingOfferOpen: false,
-  });
-  assert.equal(rankedAfterClose.foundingMember, false);
-  assert.equal(rankedAfterClose.totalCents, 2000);
-  for (const bad of [1, "true", null]) {
-    assert.throws(() => monthBillCents({ gbMinutes: 0, foundingMember: bad }), TypeError);
-    assert.throws(() => monthBillCents({ gbMinutes: 0, foundingOfferOpen: bad }), TypeError);
-  }
 });

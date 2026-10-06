@@ -1,7 +1,7 @@
 // The docs site (drive issue #98): every page reachable, every number the
 // invoice's own, and the agent-facing index complete. The docs are a generated
 // section of the site, so the gate is the same one the shipped pricing page
-// uses: the tests build their expectations from src/billing.js and fail CI
+// uses: the tests build their expectations from core/billing.js and fail CI
 // when a page drifts from it.
 
 import assert from "node:assert/strict";
@@ -10,16 +10,23 @@ import { test } from "node:test";
 import {
   BILLING_CONFIG,
   GB_PER_TB,
-  MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
+  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
-} from "../src/billing.js";
-import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+} from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
+import { PAGES, SITE } from "../core/seo.js";
+import {
+  agentDeleteSentence,
+  FAQ,
+  faqMarkdown,
+  markerValues,
+  RIVAL_1TB_LINE,
+  scoreboardVerdict,
+} from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
-import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
-import { PAGES, SITE } from "../src/seo.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
@@ -35,13 +42,16 @@ const siteDir = new URL("../public/docs/", import.meta.url);
 /** @param {string} name */
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
-// The price numbers, worked out the way the invoice works them out: a month
-// that stored `tb` terabytes all month is gb x 43,800 GB-minutes, whose
-// average is the same gb. Nothing in these tests types a dollar figure.
+// The price numbers, worked out the way the invoice works them out, for a
+// 31-day month (October), the month a fixed 43,800-minute divisor over-billed
+// (drive#531): a month that stored `tb` terabytes all of October is gb x
+// 44,640 GB-minutes, whose average is the same gb. Nothing in these tests
+// types a dollar figure.
+const OCTOBER_MINUTES = minutesInMonth("2026-10-15T00:00:00.000Z");
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH });
+  return monthBillCents({ gbMinutes: gb * OCTOBER_MINUTES, monthMinutes: OCTOBER_MINUTES });
 }
 
 /** @param {number} amount */
@@ -135,9 +145,18 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The headline, the rule, no minimum, founding pricing and the cap, each
-  // read from the one config the invoice reads.
-  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine, PRICE.foundingLine]) {
+  // The headline, the rule, the prepaid lines, the cap, and the per-save hour:
+  // each read from the one config the invoice reads.
+  for (const line of [
+    PRICE.headline,
+    PRICE.rule,
+    PRICE.noPlansLine,
+    // The per-save hour, drive#535 finish line 2: the page that says billing
+    // is "counted by the minute" has to say the smallest unit that minute
+    // counting bills, or a file saved six times in an hour reads as an hour's
+    // worth of storage when the meter billed six.
+    PRICE.versionMinimumLine,
+  ]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);
   }
   assert.ok(
@@ -156,13 +175,14 @@ test("every worked example on the pricing page is the invoice's own arithmetic",
   for (const tb of [0.2, 0.8, 1.5, 3]) {
     const gb = tb * GB_PER_TB;
     const bill = billFor(tb);
-    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * OCTOBER_MINUTES, OCTOBER_MINUTES))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
     assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
   }
   // And the metered column is genuinely larger than the bill at the sizes the
   // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
-    meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) > billFor(2).totalCents / 100,
+    meteredMonthlyBillUsd(2 * GB_PER_TB * OCTOBER_MINUTES, OCTOBER_MINUTES) >
+      billFor(2).totalCents / 100,
     "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
 });
@@ -187,20 +207,21 @@ test("the agents page names the tools the CLI connects and their real powers", (
   for (const tool of AGENT_TOOLS) {
     assert.ok(page.includes(tool), `the agents page must name the ${tool} tool`);
   }
-  // The key table is read from workers/api/src/keyprovider.js, so the page
-  // cannot claim a power the api Worker does not grant.
+  // The key table is read from core/keyprovider.js, so the page
+  // cannot claim a power the api Worker does not grant, and the delete and
+  // reach sentences from what the storage enforces (test/key-truth.test.mjs).
   assert.equal(KEY_POWERS.device.canDelete, true);
   assert.equal(KEY_POWERS.agent.canDelete, false);
   assert.ok(
-    page.includes("An agent key cannot delete a file."),
-    "the agents page must say an agent key cannot delete",
+    page.includes(agentDeleteSentence()),
+    "the agents page must say what an agent key's delete really does",
   );
   assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {
   const page = shipped("security.md");
-  assert.ok(page.includes("An agent key cannot delete a file."));
+  assert.ok(page.includes(agentDeleteSentence()));
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the security page must state the default cap",
@@ -221,7 +242,7 @@ test("the security page answers whether writing resumes once the cap is raised",
   // stack: docs-site/*.md and `drive --help` both said the drive goes read-only
   // at the cap, and neither said what raising it does. The pages an agent
   // reads were also the only place the answer could live, because the code that
-  // decides it (src/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
+  // decides it (core/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
   // is not served. So the answer is one sentence on the page that already
   // states the cap, and this pins it: an eval cannot grade an answer the
   // reading stack does not carry, and a page that loses the sentence fails here
@@ -244,13 +265,13 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+command\s+from\s+this\s+repository's\s+source\s+with\s+the\s+Go\s+toolchain/i,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+same\s+package\s+locally\s+with/i,
     "the limits page must give the install that works today",
   );
   assert.match(
     page,
-    /drive --help/,
-    "the limits page must point at the command's own words for the exact route",
+    /goreleaser release --snapshot --clean/,
+    "the limits page must name the snapshot command that produces the packages",
   );
   assert.match(
     page,
@@ -293,7 +314,7 @@ test("the changelog opens today and every entry is a real line", () => {
 
 test("the changelog's docs list names every page in DOC_PAGES order", () => {
   // The changelog repeats the docs list in prose ("These docs: ..."), a second
-  // copy of src/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
+  // copy of core/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
   // sitemap and the built site, but not in this sentence, so an agent reading
   // the changelog missed a shipped page. The gate reads that one sentence and
   // requires every DOC_PAGES title, in the same order, so the next page added
@@ -354,6 +375,21 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
     /no-delete keys/,
     "the agents answer must come out when one of its rows is not yet measured",
   );
+});
+
+test("the FAQ states the one-hour minimum on a saved version", () => {
+  // drive#535, finish line 2 - the FAQ half. The cost answer used to say "Files
+  // are billed for at least one hour.", which is true of a FILE and reads as a
+  // floor on what you keep. The meter bills a full hour for every SAVED VERSION
+  // (core/meter.js's MINIMUM_MINUTES_PER_VERSION), and a customer who saves
+  // six times inside an hour is billed six hours, so the answer carries the
+  // pricing page's own sentence rather than a shorter one.
+  const faq = shipped("faq.md");
+  assert.ok(
+    faq.includes(PRICE.versionMinimumLine),
+    "the FAQ must state the per-save hour the meter bills",
+  );
+  assert.equal(faq.includes("Files are billed for at least one hour."), false);
 });
 
 test("the shipped FAQ is exactly the answers the data publishes", () => {
@@ -500,7 +536,7 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
 test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  // The indexable pages come from src/seo.js PAGES rather than a typed path,
+  // The indexable pages come from core/seo.js PAGES rather than a typed path,
   // so a page that moves there moves this expectation with it instead of the
   // test and the sitemap drifting together.
   assert.deepEqual(
@@ -547,9 +583,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "brew install drive",
-    "sudo apt install drive",
-    "sudo dnf install drive",
+    "brew install nish3451/tap/drive",
+    "sudo apt install ./drive_*.deb",
+    "sudo dnf install ./drive_*.rpm",
     "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
@@ -586,20 +622,33 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
 });
 
 test("the docs config and the site's own config agree on the origin", () => {
-  // The VitePress config cannot import src/seo.js (it is outside the docs
-  // project, and VitePress's Vite will not load from there), so it repeats the
-  // origin. This is the gate that keeps the repeat honest: a base or an origin
-  // edited in one place fails here rather than shipping a docs site on a
-  // different host from the pricing page.
+  // The one site address lives in cmd/drive/site.json (drive#527). The docs
+  // config and core/seo.js both import it, so this gate checks the docs config
+  // reads that file and writes no address of its own, and that core/seo.js
+  // carries the same value.
   const config = readFileSync(
     new URL("../docs-site/.vitepress/config.mts", import.meta.url),
     "utf8",
   );
   assert.match(
     config,
-    new RegExp(`const SITE_ORIGIN = "${SITE.origin}";`),
-    "the docs config must use the canonical origin from src/seo.js",
+    /import site from "\.\.\/\.\.\/cmd\/drive\/site\.json" with \{ type: "json" \};/,
+    "the docs config must import the one site address from cmd/drive/site.json",
   );
+  assert.match(
+    config,
+    /const SITE_ORIGIN = site\.origin/,
+    "the docs config must take its origin from site.json",
+  );
+  assert.doesNotMatch(
+    config,
+    /https:\/\/[a-z0-9.-]+\.(dev|com|in|app)/,
+    "the docs config must not write a site address of its own",
+  );
+  const siteFile = JSON.parse(
+    readFileSync(new URL("../cmd/drive/site.json", import.meta.url), "utf8"),
+  );
+  assert.equal(SITE.origin, siteFile.origin, "core/seo.js must read the same site address");
   assert.match(
     config,
     /base: "\/docs\/"/,

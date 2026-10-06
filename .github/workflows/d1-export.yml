@@ -1,0 +1,129 @@
+# A weekly SQL dump of both D1 databases, kept off Cloudflare (drive#520).
+#
+# Time Travel covers the last 30 days, and the deploy records a restore-point
+# bookmark only when a migration runs (deploy-production.yml). The weekly dump
+# is the copy that survives everything else: a wrong restore, a deleted
+# database, an account problem — it lands as an encrypted GitHub artifact on
+# GitHub's storage, off the storage provider's and Cloudflare's accounts.
+#
+# The dumps are sealed with age before upload: anyone with read access to a
+# private repository can download its workflow artifacts, so only ciphertext
+# ships. The recipient is the repo variable AGE_RECIPIENT — the backup key's
+# PUBLIC half, never a secret (docs/runbook.md, "The weekly backup") — and a
+# run without it fails loud: a backup that quietly shipped plaintext, or
+# quietly shipped nothing, is exactly the invisibility drive#520 exists to
+# end. The age release itself is digest-pinned (docs/security.md).
+#
+# The export goes through the stock D1 export API (`output_format: "polling"`,
+# Cloudflare's OpenAPI schema): the first call starts the dump, later calls
+# poll with the returned `at_bookmark` until `status: "complete"` carries a
+# `signed_url`, valid one hour. The pinned `cf` CLI has no d1 export command,
+# so this is the stock REST call, not hand-rolled backup logic.
+#
+# Secrets stay behind `environment: production` (drive#507; enforced by
+# test/workflow-secrets.test.mjs). Retention 90 days keeps 13 weekly points.
+name: D1 weekly backup
+
+on:
+  schedule:
+    # Mondays 05:37 UTC, between the Worker's nightly trips (reconcile 04:00,
+    # trash purge 05:00) and the week's start.
+    - cron: "37 5 * * 1"
+  workflow_dispatch: {} # a manual run for restore drills
+
+concurrency:
+  group: d1-export
+  cancel-in-progress: false # a backup never kills a backup
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: export
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install age, pinned by digest (docs/security.md)
+        env:
+          AGE_VERSION: v1.3.2
+          AGE_LINUX_AMD64_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+        run: |
+          node -e 'const fs=require("fs");const [,url,out]=process.argv;(async()=>{const r=await fetch(url);if(!r.ok){console.error("download: HTTP "+r.status);process.exit(1);}fs.writeFileSync(out,Buffer.from(await r.arrayBuffer()));})()' "https://github.com/FiloSottile/age/releases/download/$AGE_VERSION/age-$AGE_VERSION-linux-amd64.tar.gz" "$RUNNER_TEMP/age.tar.gz"
+          echo "$AGE_LINUX_AMD64_SHA256  $RUNNER_TEMP/age.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/age-bin"
+          tar -xzf "$RUNNER_TEMP/age.tar.gz" -C "$RUNNER_TEMP/age-bin" --strip-components=1 age/age
+          test -x "$RUNNER_TEMP/age-bin/age"
+      - name: Export both databases
+        run: |
+          test -n "$AGE_RECIPIENT" || { echo "::error::the age recipient is unset: set the repo variable AGE_RECIPIENT to the backup key's public key (docs/runbook.md, The weekly backup) — the backup refuses to ship plaintext dumps"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/d1-export"
+          stamp=$(date -u +%Y%m%d)
+          headers="$RUNNER_TEMP/d1-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e"; do
+            read -r name db <<<"$pair"
+            file="$RUNNER_TEMP/d1-export/$name-$stamp.sql"
+            bookmark=""
+            url=""
+            for attempt in $(seq 1 20); do
+              echo "poll $attempt for $name"
+              if [ -n "$bookmark" ]; then
+                body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
+              else
+                body='{"output_format":"polling"}'
+              fi
+              resp=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
+                -H "@$headers" -H 'content-type: application/json' -d "$body" \
+                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/export") \
+                || { echo "::error::$name export: the API call failed"; exit 1; }
+              state=$(printf '%s' "$resp" | node -e '
+                const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+                if (r.success !== true) { console.error("api: " + (r.errors?.[0]?.message ?? "not success")); process.exit(1); }
+                const t = r.result ?? {};
+                if (t.status === "error") { console.error("export: " + (t.error ?? "failed")); process.exit(1); }
+                if (t.status === "complete") { process.stdout.write("done " + (t.result?.signed_url ?? "")); }
+                else { process.stdout.write("wait " + (t.at_bookmark ?? "")); }
+              ') || { echo "::error::$name export: the API answer is not a valid export response"; exit 1; }
+              case "$state" in
+                done\ *) url="${state#done }"; break ;;
+                wait\ *) bookmark="${state#wait }" ;;
+                *) echo "::error::$name export: unreadable poll state"; exit 1 ;;
+              esac
+              sleep 15
+            done
+            test -n "$url" || { echo "::error::$name export: no download URL after 20 polls"; exit 1; }
+            # The signed URL's dump is data, not code: it is written to
+            # $RUNNER_TEMP and shipped as an artifact, never executed, and it
+            # changes every run so no digest can be pinned. The runtime's own
+            # fetch (TLS, no shell quoting) takes it instead of curl, which
+            # test/workflow-downloads.test.mjs would read as an unpinned
+            # executable download (drive#581's gate is about assets that run).
+            node -e 'const fs=require("fs");(async()=>{const r=await fetch(process.argv[1]);if(!r.ok){console.error("download: HTTP "+r.status);process.exit(1);}fs.writeFileSync(process.argv[2],Buffer.from(await r.arrayBuffer()));})()' "$url" "$file" \
+              || { echo "::error::$name export: the dump download failed"; exit 1; }
+            echo "exported $name -> $name-$stamp.sql ($(wc -c < "$file") bytes, sha256 $(sha256sum "$file" | cut -d' ' -f1))"
+            # Sealed before anything ships: only the .age ciphertext reaches
+            # the artifact, and the plaintext dies with the runner's temp.
+            "$RUNNER_TEMP/age-bin/age" -r "$AGE_RECIPIENT" -o "$file.age" "$file" \
+              || { echo "::error::$name export: the age encryption failed"; exit 1; }
+            rm -f "$file"
+          done
+          sha256sum "$RUNNER_TEMP/d1-export/"*.sql.age
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
+      - name: Upload the sealed dumps off Cloudflare
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: d1-backup
+          path: ${{ runner.temp }}/d1-export/*.sql.age
+          retention-days: 90
+          if-no-files-found: error

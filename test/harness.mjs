@@ -16,14 +16,31 @@
 
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { createAuth } from "../core/auth.js";
+import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
-/** Every migration that applies to the customer database, in order. */
+/**
+ * Every migration the short default list applies to the customer database, in
+ * the order `wrangler d1 migrations apply` applies them.
+ *
+ * Short, but never shorter than the schema a real request touches. A list that
+ * skips a table production has is how the pre-charge limit's read passed
+ * against a fixture and failed against a customer: `file_versions` (0005) was
+ * missing here, so `src/files.js uploadRequest` -> `accountStoredBytes`
+ * answered 500 on every upload a test drove (drive#536). When product code
+ * starts reading a table, the table lands in this list.
+ */
 export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0002_file_index.sql",
   "drive/0003_branches.sql",
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
+  // The meter's own tables: `file_versions`, `usage_minutes`, `events_seen` and
+  // `meter_rollup_state`. `file_versions` is the 1 TB pre-charge limit's source
+  // of truth now (drive#536) - the live rows the storage event intake writes as
+  // people save - so the web upload path reads it on every save and a schema
+  // without it refuses every upload. Additive only, as its own header says.
+  "drive/0005_meter.sql",
   "drive/0006_share_links.sql",
   "drive/0008_teams.sql",
   "drive/0009_upload_request_caps.sql",
@@ -43,6 +60,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
   // state) primary key, and after 0012's snapshot pointer columns.
   "drive/0015_branch_row_id.sql",
+  // Branch jobs (drive#563): progress and stored counts, plus the unique
+  // index that covers in-flight approve/create states.
+  "drive/0030_branch_jobs.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.
@@ -51,17 +71,43 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
+  // The purge's resume cursor (drive#565): the drive path the nightly batch
+  // delete stopped after. Nullable expand; getCloseState and listDuePurge
+  // read it, so any test that opens a close state needs the column.
+  "drive/0020_account_purge_cursor.sql",
+  // The prepaid balance (drive#586): the ledger the usage read sums for its
+  // balance line, and the low-balance and auto top-up columns.
+  "drive/0020_balance_ledger.sql",
+  // The per-agent monthly cap's schema default, cleared (drive#534). Rebuilds
+  // `agent_caps` so `monthly_cap_usd` is nullable with no default, then clears
+  // the 0004 default (12.0) off the rows that never chose a cap.
+  "drive/0021_agent_caps_nullable_cap.sql",
+  // The prepaid draws (drive#586): low-balance and auto top-up columns.
+  "drive/0021_prepaid_draws.sql",
+  // The cap notices the hourly walk sends (drive#496): cap_warned_at and
+  // read_only_sent_at. Expand only, two nullable columns.
+  "drive/0024_cap_notices.sql",
+  // The per-link caps and retention (drive#549): upload_requests.max_files
+  // and shares.max_download_bytes. Expand only.
+  "drive/0025_link_caps.sql",
+  // Per-address send counters (drive#550): 5 links an hour, 20 a day
+  // per inbox; the guard spends a slot only when both windows have room.
+  "drive/0026_signin_address_sends.sql",
+  // Per-device upload-queue reports (drive#516). Additive table keyed by
+  // account and device. Numbered 0027 because 0022–0026 are already taken.
+  "drive/0027_device_queue_reports.sql",
 ]);
 
 /**
  * Every `drive/` migration, in the order the production Worker applies them.
  *
- * `DRIVE_MIGRATIONS` above is the subset the cap-mount tests need, and it is
- * deliberately short. A request that reads the month's usage — which the cap
- * write does, because the answer carries `capLine` — needs `0005_meter` and
- * `0006_usage_stored_bytes` as well, and a test that only reads a row could
- * not see that. This list is the whole schema, so a test built on it cannot
- * discover a table that production has is missing here.
+ * `DRIVE_MIGRATIONS` above is the subset the sign-in and cap-mount tests need,
+ * and it is deliberately short — but it carries `0005_meter`, because a
+ * request that saves a file reads `file_versions`. A request that reads the
+ * month's usage — which the cap write does, because the answer carries
+ * `capLine` — needs `0006_usage_stored_bytes` as well, and a test that only
+ * reads a row could not see that. This list is the whole schema, so a test
+ * built on it cannot discover a table that production has is missing here.
  *
  * A test that asserts a cap really is stored reads the row back through this
  * list rather than through the harness's default one (drive issue #421).
@@ -71,30 +117,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
  * another order: `0012_agent_key_ttl.sql` lands before
  * `0012_branch_snapshot_kv.sql` here exactly as the filenames sort.
  */
-export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
-  "drive/0002_file_index.sql",
-  "drive/0003_branches.sql",
-  "drive/0004_agent_undo.sql",
-  "drive/0005_better_auth.sql",
-  "drive/0005_meter.sql",
-  "drive/0006_share_links.sql",
-  "drive/0006_usage_stored_bytes.sql",
-  "drive/0007_device_codes.sql",
-  "drive/0008_teams.sql",
-  "drive/0009_upload_request_caps.sql",
-  "drive/0010_accounts_devices.sql",
-  "drive/0011_rate_limit.sql",
-  "drive/0012_agent_key_ttl.sql",
-  "drive/0012_branch_snapshot_kv.sql",
-  "drive/0013_billing_pushes.sql",
-  "drive/0014_device_queues.sql",
-  "drive/0015_branch_row_id.sql",
-  "drive/0016_founding.sql",
-  "drive/0017_account_close.sql",
-  "drive/0017_agent_caps_drop_month_key.sql",
-  "drive/0017_drop_branches_snapshot.sql",
-  "drive/0018_agent_caps_drop_month_spend.sql",
-]);
+export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze(
+  MIGRATION_FILES.map((name) => `drive/${name}`),
+);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
@@ -283,9 +308,11 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
+ * (drive#550): `userAgent` is the requesting request's own header, null when
+ * there was none, so a test can read what the mail would name.
+ * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);

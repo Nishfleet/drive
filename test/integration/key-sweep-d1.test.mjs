@@ -5,7 +5,7 @@
 // so an expired row or a revoke whose vendor call failed leaves a key the
 // storage server still enforces. The sweep walks exactly those dead rows,
 // removes their vendor keys and stamps each row as accounted for
-// (migrations/drive/0020's `vendor_key_removed_at`), then records how many
+// (migrations/drive/0031's `vendor_key_removed_at`), then records how many
 // keys the vendor answers with.
 //
 // This proof runs the real store (createD1DeviceStore over the real
@@ -23,10 +23,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
-import { IdriveKeyError } from "../../workers/api/src/idrive-keys.js";
-import { runKeySweep } from "../../workers/api/src/key-sweep.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { IdriveKeyError } from "../../core/idrive-keys.js";
+import { runKeySweep } from "../../core/key-sweep.js";
+import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 const START = Math.floor(Date.parse("2026-10-06T12:00:00.000Z") / 1000);
@@ -91,7 +91,7 @@ function storeOver(db, clock, vendor) {
   return createMemoryStore({
     now,
     deviceStore: createD1DeviceStore(db, { now }),
-    keyProvider: /** @type {import("../../workers/api/src/keyprovider.js").KeyProvider} */ (
+    keyProvider: /** @type {import("../../core/keyprovider.js").KeyProvider} */ (
       /** @type {unknown} */ (vendor)
     ),
   });
@@ -222,7 +222,7 @@ test("a provider without a removal is skipped loudly: it mints no vendor key tha
   const clock = { second: START };
   // The S3/STS shape: it mints sessions that expire on their own, so it has
   // no `revoke` and the sweep has nothing to do.
-  const s3Shape = /** @type {import("../../workers/api/src/keyprovider.js").KeyProvider} */ (
+  const s3Shape = /** @type {import("../../core/keyprovider.js").KeyProvider} */ (
     /** @type {unknown} */ ({
       mint: async () => ({
         accessKeyId: "ak-s3",
