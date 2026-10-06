@@ -40,16 +40,23 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 // formatting check. A binding that declares one field and not the other fails
 // here with the body it could not read, because a half-declared binding is the
 // case an edit makes by hand.
+//
+// The name has to start a line (`^`) for the match to count. A d1 block written
+// out in prose — a comment that shows the wrong way to bind a name — is the one
+// shape that otherwise wins: the regex would read the example as the binding
+// and this map would hold the decoy under the real name, so the parity below
+// would compare a comment against a deploy.
 /** @typedef {{name: string, id: string}} D1Binding */
 
 /**
- * @returns {Map<string, D1Binding>} the d1 bindings the config declares, by the
- * name it binds them under.
+ * @param {string} text a worker config's source
+ * @returns {Map<string, D1Binding>} the d1 bindings it declares, by the name it
+ * binds them under
  */
-function declaredD1Bindings() {
+export const d1Bindings = (text) => {
   /** @type {Map<string, D1Binding>} */
   const found = new Map();
-  const bindings = read("cloudflare.config.ts").matchAll(/(\w+):\s*bindings\.d1\(\{([^}]*)\}\)/g);
+  const bindings = text.matchAll(/^[ \t]*(\w+)[ \t]*:[ \t]*bindings\.d1\(\{([^}]*)\}/gm);
   for (const [, binding, body] of bindings) {
     const name = /name:\s*"([^"]+)"/.exec(body)?.[1];
     const id = /id:\s*"([^"]+)"/.exec(body)?.[1];
@@ -60,7 +67,12 @@ function declaredD1Bindings() {
     found.set(binding, { name, id });
   }
   return found;
-}
+};
+
+/**
+ * @returns {Map<string, D1Binding>} the d1 bindings the deploy's config declares
+ */
+const declaredD1Bindings = () => d1Bindings(read("cloudflare.config.ts"));
 
 /**
  * @param {Map<string, D1Binding>} bindings
@@ -79,7 +91,7 @@ function binding(bindings, name) {
 // A Cloudflare d1 id is a UUID. Both halves of the parity are checked against
 // the one shape, so two empty strings or two placeholders cannot pass as a
 // pair either.
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 test("the meter and the file index bind the same database", () => {
   // The parity the issue names: the meter's ledger and the file index the
@@ -108,6 +120,27 @@ test("the meter and the file index bind the same database", () => {
     drive.name,
     `METER_DB and DRIVE_DB bind different database names ("${meter.name}" and "${drive.name}") on the same id; name them the same database so the config says what the deploy binds.`,
   );
+});
+
+test("a commented-out example does not win over the live binding", () => {
+  // The one shape the parse has to refuse: a comment that writes a d1 block
+  // out in prose. METER_DB's own comment block is where a split would be
+  // explained, so the decoy is written the way that explanation would write it,
+  // and the map this reads must still hold the database the deploy binds.
+  const withDecoy = `
+${read("cloudflare.config.ts")}
+// A third way to split the meter, do not do this:
+//   METER_DB: bindings.d1({
+//     name: "meter-of-its-own",
+//     id: "11111111-2222-3333-4444-555555555555",
+//   }),
+`;
+  const declared = d1Bindings(withDecoy);
+  const meter = binding(declared, "METER_DB");
+  const drive = binding(declared, "DRIVE_DB");
+  assert.equal(meter.id, drive.id, "the live METER_DB binding is the one the gate reads");
+  assert.equal(meter.name, "drive-data");
+  assert.equal(declared.size, 3, "only the declared bindings are parsed");
 });
 
 test("the waitlist keeps its own database, so the parity is a rule and not a coincidence", () => {
