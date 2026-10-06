@@ -847,7 +847,7 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
     },
     async setAccountState() {},
     async accountState() {
-      return "active";
+      return /** @type {"active"} */ ("active");
     },
   };
   const ok = await handleCapRequest(
@@ -936,7 +936,7 @@ test("POST /api/cap answers 409 on a closed account and does not write", async (
       throw new Error("a closed account must not reach setAccountState");
     },
     async accountState() {
-      return "closed";
+      return /** @type {"closed"} */ ("closed");
     },
   };
   const refused = await handleCapRequest(
@@ -1004,7 +1004,7 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
     },
     async setAccountState() {},
     async accountState() {
-      return "active";
+      return /** @type {"active"} */ ("active");
     },
   };
   const swapped = await handleCapRequest(
