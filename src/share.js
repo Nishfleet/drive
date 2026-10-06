@@ -461,7 +461,7 @@ export const UPLOAD_PAGE_LINE =
  * @typedef {{token: string, accountId: string, path: string, name: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
  *   downloadCount: number, downloadBytes: number, maxDownloadBytes: number|null,
- *   etag: string}} ShareRecord
+ *   etag?: string}} ShareRecord
  * @typedef {{token: string, accountId: string, folder: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
  *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number}} RequestRecord
@@ -903,12 +903,12 @@ function storedShareEtag(etag) {
  * minted pin is a row from before the column existed, so it is not a
  * change.
  *
- * @param {string} minted
+ * @param {string|null|undefined} minted
  * @param {string|null|undefined} live
  * @returns {boolean}
  */
 function shareContentChanged(minted, live) {
-  if (minted === "") {
+  if (typeof minted !== "string" || minted === "") {
     return false;
   }
   return storedShareEtag(live) !== minted;

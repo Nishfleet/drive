@@ -378,7 +378,7 @@ test("replacing a file after mint refuses the share link", async () => {
   assert.equal(made.status, 201);
   const record = await links.shares.get(TOKEN);
   assert.ok(record);
-  assert.ok(record.etag.length > 0, "mint stores the file's etag");
+  assert.ok(record.etag && record.etag.length > 0, "mint stores the file's etag");
 
   const before = await handleShareFileRequest(
     new Request((await made.json()).share.url),
