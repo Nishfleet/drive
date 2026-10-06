@@ -134,19 +134,19 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 		t.Skipf("this host will not bring up the mount on %s (%s)", mountDir, mountSkipReason())
 	}
 
-	if _, err := KeepOffline(mountDir, "keep.bin"); err != nil {
+	if _, err := KeepOffline(context.Background(), mountDir, "keep.bin"); err != nil {
 		t.Fatalf("keep offline: %v", err)
 	}
 	for i := 1; i <= 4; i++ {
 		p := filepath.Join(mountDir, "other"+string(rune('0'+i))+".bin")
-		if _, err := fillReadFile(p); err != nil {
+		if _, err := fillReadFile(context.Background(), p); err != nil {
 			t.Fatalf("fill cache with %s: %v", p, err)
 		}
 	}
 	targets := fillTargets{root: mountDir, offline: []string{"keep.bin"}}
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := targets.read(false, 0); err != nil {
+		if _, err := targets.read(context.Background(), false, 0); err != nil {
 			t.Fatalf("keep-warm: %v", err)
 		}
 		time.Sleep(500 * time.Millisecond)

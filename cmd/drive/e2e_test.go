@@ -1180,7 +1180,7 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 	// Read past the cap: each file is read in full, so the six together ask
 	// for 36 MiB against a 24 MiB cap.
 	for _, name := range []string{"one.bin", "two.bin", "three.bin", "four.bin", "five.bin", "six.bin"} {
-		if _, err := fillReadFile(filepath.Join(mountDir, name)); err != nil {
+		if _, err := fillReadFile(context.Background(), filepath.Join(mountDir, name)); err != nil {
 			t.Fatalf("read %s through the mount: %v", name, err)
 		}
 	}
