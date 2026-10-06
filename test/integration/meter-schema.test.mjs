@@ -637,7 +637,7 @@ test("WRITE+READ: the nightly size row lands through the real migrations and rea
       file_version_rows: 1,
       file_version_bytes: GB,
       usage_minute_rows: 1,
-      file_index_rows: 0,
+      file_index_rows: 1,
     },
   );
 });

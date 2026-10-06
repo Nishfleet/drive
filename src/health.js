@@ -108,6 +108,10 @@ import { meterFreshness } from "../core/meter.js";
 //   - The email binding. Only the token-gated internal send route uses it
 //     (core/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
+//   - The reindex queue (drive#566). Only the nightly cron produces on it,
+//     a customer request cannot observe whether it answers, and a probe
+//     would have to enqueue a real reindex walk to find out; a cron that
+//     cannot send is a failed trigger, which the platform alerts on.
 //   - HEALTH_RATE_LIMITER. It is this route's own gate (handleHealthRequest
 //     runs enforceEdgeLimits before any probe), not a dependency another
 //     route fails closed without. Probing it with a fresh random key would
@@ -168,7 +172,13 @@ const LIVENESS_QUERY = "SELECT 1";
  * request failed, which is exactly the outage this endpoint exists to catch
  * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
- * would really send mail.
+ * would really send mail. The reindex queue is not, and for the same reason:
+ * only the nightly cron produces on it, no customer request can observe
+ * whether it answers, and a probe's one operation would really be to enqueue
+ * a walk (drive#566). A cron that cannot send is a failed trigger in
+ * Cloudflare's logs, which is its own alert; the queue's consumer does fail
+ * the search-reindex trip, and that shows as accounts not being reindexed,
+ * which the reindex's own log line names.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",

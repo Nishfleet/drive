@@ -854,8 +854,17 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // absence fails closed at the intake (core/meter.js) instead of at the probe.
   // The meter's queue (drive#519) is optional on purpose: without it the
   // crons run the per-account steps in-process (src/meter-jobs.js), and a
-  // producer binding cannot be probed without sending a real job.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "HEALTH_RATE_LIMITER", "METER_JOBS"]);
+  // producer binding cannot be probed without sending a real job. The reindex
+  // queue is only produced on by the nightly cron (drive#566), whose failure
+  // is a failed trigger rather than a customer request that could answer 503;
+  // a probe would have to enqueue a real walk to find out.
+  const NOT_CHECKED = new Set([
+    "EMAIL",
+    "METER_EVENT_TOKEN",
+    "HEALTH_RATE_LIMITER",
+    "METER_JOBS",
+    "REINDEX_QUEUE",
+  ]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,

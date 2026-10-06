@@ -71,7 +71,11 @@ const BUDGET_MS = 1000;
  */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
+  for (const name of [
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0030_file_index_staging.sql",
+  ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   /** The D1 meta a run answers with: every required field of the runtime's

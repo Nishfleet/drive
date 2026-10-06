@@ -107,6 +107,28 @@ export default defineConfig({
         maxRetries: 5,
         maxBatchSize: 10,
       }),
+      // The nightly reindex's consumer (drive#566). The 03:00 cron enqueues
+      // one message per account on this queue, and each message is consumed
+      // on its own: maxBatchSize 1 gives a 100,000-file walk a whole
+      // invocation instead of sharing one with every account behind it, and
+      // maxRetries 2 gives a failed walk its own retry budget instead of
+      // failing every account after it, which is what the serial loop this
+      // replaces did. There is no dead-letter queue yet: after the retries
+      // the message is dropped, the nightly cron enqueues the account again,
+      // and a message is lost for at most a day (#519 tracks the meter crons'
+      // dead-letter queues; the reindex can join them).
+      // The queue is created once, out of band, like the branch-snapshot
+      // namespace below: a deploy cannot provision one, and `ensureQueuesExistByConfig`
+      // fails the deploy with
+      //   Queue "drive-reindex" does not exist. To create it, run:
+      //   wrangler queues create <queue-id>
+      // so:
+      //   cf queues create drive-reindex
+      triggers.queue({
+        name: "drive-reindex",
+        maxBatchSize: 1,
+        maxRetries: 2,
+      }),
     ],
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron
@@ -167,6 +189,15 @@ export default defineConfig({
       BRANCH_SNAPSHOTS: bindings.kv({
         id: "13f2292d4fdc448492c2a4603e1cc682",
       }),
+      // The reindex queue's producer half (drive#566). The 03:00 cron sends
+      // one `{accountId}` message per account on it, and the same Worker
+      // consumes it (`queue` in src/index.js; the consumer trigger is above).
+      // Only an account id is in a message: the walk is scoped to that
+      // account's own prefix, so a message can name no file and no other
+      // account's bytes. Like the namespace above it, the queue is created
+      // once, out of band:
+      //   cf queues create drive-reindex
+      REINDEX_QUEUE: bindings.queue<{ accountId: string }>({ name: "drive-reindex" }),
       // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
       // from a Worker secret. The secret binding declares the name so the
       // runtime knows to inject it; a missing secret produces a warning at
