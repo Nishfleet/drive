@@ -421,13 +421,12 @@
       tl.fromTo("#intro-head", { y: 12 }, { y: 0, duration: 0.9, ease: "power2.out" }, 0.1);
       tl.fromTo("#intro-sub", { y: 10 }, { y: 0, duration: 0.9, ease: "power2.out" }, 0.2);
 
-      const scenes = [
-        ["s1", 6, 17],
-        ["s2", 17, 28],
-        ["s3", 28, 40],
-        ["s4", 40, 52],
-        ["s5", 52, 64],
-      ];
+      // One source of truth: each shot's own data-start/data-duration, so a
+      // timing edit in the markup can never drift from the animation timeline.
+      const scenes = [...document.querySelectorAll("[id^='shot-s']")].map((shot) => {
+        const start = Number(shot.dataset.start);
+        return [shot.id.slice("shot-".length), start, start + Number(shot.dataset.duration)];
+      });
 
       for (const [id, start, end] of scenes) {
         const d = end - start;
