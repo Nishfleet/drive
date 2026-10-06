@@ -138,23 +138,30 @@ export function sqliteBoundValues(sql, bound) {
 function runOne(sqlite, sql, params) {
   const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = sqliteBoundValues(sql, params).map(sqliteValue);
+  // `total_changes()` delta, not `changes()`: `changes()` is the last
+  // INSERT/UPDATE/DELETE and DDL does not reset it, so a CREATE after a write
+  // used to answer with the write's count. The delta is this statement's own
+  // count, matching test/d1-sqlite.mjs, and each counter is prepared after
+  // `all()` returns so it is not held while that statement iterates.
+  const before = Number(
+    /** @type {{n: number}} */ (sqlite.prepare("SELECT total_changes() AS n").get()).n,
+  );
   const results = statement.all(...bound);
+  const changes =
+    Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT total_changes() AS n").get()).n) -
+    before;
   return {
     results,
     success: true,
     meta: {
-      // The change count comes from SQLite's own `changes()`, which is true the
-      // moment the statement ran. node:sqlite exposes no `changes` property on a
-      // prepared statement, so reading one off it would answer 0 for every
-      // write: a test that asserts a revoke or a sweep landed would be told it
-      // did not, and a caller that trusts `meta.changes` for a conditional
-      // update would see no winner at all (drive#174). The two rows are read
-      // once and cast, because node:sqlite's types allow `get()` to answer
-      // undefined where a `SELECT` of one row always answers an object.
-      changes: Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT changes() AS n").get()).n),
-      last_row_id: Number(
-        /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get()).n,
-      ),
+      changes,
+      last_row_id:
+        changes === 0
+          ? 0
+          : Number(
+              /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get())
+                .n,
+            ),
     },
   };
 }
@@ -209,8 +216,7 @@ export function createTestD1(options = {}) {
      * @param {string} [column]
      */
     async first(column) {
-      const bound = sqliteBoundValues(sql, params).map(sqliteValue);
-      const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
+      const row = (await runOne(sqlite, sql, params)).results[0];
       if (row === undefined) {
         return null;
       }

@@ -68,13 +68,22 @@ import { createTestD1, createTestKv } from "./harness.mjs";
 // for a row written before the drop.
 const LEFTOVER_COLUMN_DROP = "0017_drop_branches_snapshot.sql";
 const READER_DEPENDS_ON = ["0030_branch_jobs.sql"];
+const leftoverDropAt = MIGRATION_FILES.indexOf(LEFTOVER_COLUMN_DROP);
+if (leftoverDropAt < 0) {
+  throw new Error(
+    `${LEFTOVER_COLUMN_DROP} is not in migrations/drive/; the leftover-column subset cannot be built`,
+  );
+}
 const WITH_LEFTOVER_COLUMN = Object.freeze(
-  MIGRATION_FILES.filter((name) =>
-    name === LEFTOVER_COLUMN_DROP
-      ? false
-      : MIGRATION_FILES.indexOf(name) < MIGRATION_FILES.indexOf(LEFTOVER_COLUMN_DROP) ||
-        READER_DEPENDS_ON.includes(name),
-  ).map((name) => `drive/${name}`),
+  [
+    ...MIGRATION_FILES.slice(0, leftoverDropAt),
+    ...READER_DEPENDS_ON.map((name) => {
+      if (!MIGRATION_FILES.includes(name)) {
+        throw new Error(`${name} is not in migrations/drive/; add it under its real filename`);
+      }
+      return name;
+    }),
+  ].map((name) => `drive/${name}`),
 );
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };

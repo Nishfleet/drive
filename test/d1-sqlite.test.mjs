@@ -170,16 +170,37 @@ test("an INSERT ... RETURNING comes back as the row it wrote, under both adapter
     // that read a scalar in production read a whole row here.
     // Spread: node:sqlite hands back a null-prototype row, so the object is
     // compared as the plain record it reads as.
-    const row = await db
-      .prepare("SELECT b2_event_id, received_at FROM events_seen WHERE b2_event_id = ?1")
-      .bind(`evt-${name}`)
-      .first();
-    assert.deepEqual({ ...row }, { b2_event_id: `evt-${name}`, received_at: 1_800_000_000_000 });
-    const column = await db
-      .prepare("SELECT b2_event_id, received_at FROM events_seen WHERE b2_event_id = ?1")
-      .bind(`evt-${name}`)
-      .first("received_at");
-    assert.equal(column, 1_800_000_000_000, `${name} ignored first()'s column`);
+    const numbered = db
+      .prepare(
+        "SELECT received_at AS t, b2_event_id AS id FROM events_seen WHERE received_at = ?2 AND b2_event_id = ?1",
+      )
+      .bind(`evt-${name}`, 1_800_000_000_000);
+    const row = await numbered.first();
+    assert.deepEqual({ ...row }, { t: 1_800_000_000_000, id: `evt-${name}` });
+    assert.equal(
+      await numbered.first("t"),
+      1_800_000_000_000,
+      `${name} ignored first()'s column on a numbered statement`,
+    );
+    // `meta.changes` is this statement's own count: `changes()` after a CREATE
+    // still names the last INSERT, and a `WITH ... INSERT` does not start with
+    // INSERT, so guessing from the SQL text answered the wrong number.
+    const created = await db
+      .prepare(`CREATE TABLE tmp_chg_${name.replaceAll(" ", "_")} (id TEXT PRIMARY KEY)`)
+      .run();
+    assert.equal(created.meta.changes, 0, `${name} reported a CREATE as changing rows`);
+    const replaced = await db
+      .prepare("INSERT OR REPLACE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
+      .bind(`evt-${name}`, 2)
+      .run();
+    assert.equal(replaced.meta.changes, 1, `${name} missed INSERT OR REPLACE`);
+    const viaWith = await db
+      .prepare(
+        "WITH new_row AS (SELECT ?1 AS id, ?2 AS at) INSERT INTO events_seen (b2_event_id, received_at) SELECT id, at FROM new_row",
+      )
+      .bind(`with-${name}`, 3)
+      .run();
+    assert.equal(viaWith.meta.changes, 1, `${name} missed a WITH ... INSERT`);
     // And no row is null, in both adapters.
     assert.equal(
       await db

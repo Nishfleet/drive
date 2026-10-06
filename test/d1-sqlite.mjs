@@ -201,35 +201,13 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  * @returns {MeteredD1}
  */
 export function d1Over(sqlite, { onQuery } = {}) {
-  const READ = /^\s*(SELECT|PRAGMA|WITH|EXPLAIN)\b/i;
-  // SQLite's own change counters, read the way test/harness.mjs reads them:
-  // node:sqlite hands neither back from `all()`, and a write that answered 0
-  // would tell a caller that trusts `meta.changes` that nothing landed.
-  const changesOf = sqlite.prepare("SELECT changes() AS n");
-  const rowIdOf = sqlite.prepare("SELECT last_insert_rowid() AS n");
   /**
-   * Whether the statement this call ran is the one that changed rows.
-   *
-   * `changes()` is the count from the most recent INSERT/UPDATE/DELETE, and a
-   * DDL statement does not reset it, so reading it after a CREATE answers with
-   * whatever the last write changed. D1 answers `meta.changes` for the statement
-   * that ran, and a `CREATE TABLE` changed no rows. So the count is read only
-   * for a write, and a write is one whose first keyword is a DML verb or a
-   * `WITH` clause that ends in one.
-   *
-   * @param {string} sql
+   * SQLite's connection-wide change counter, prepared fresh so it is not held
+   * across another statement's `all()` on this handle.
+   * @returns {number}
    */
-  const wroteRows = (sql) => {
-    const head = String(sql).trimStart();
-    if (/^(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(head)) {
-      return true;
-    }
-    if (/^WITH\b/i.test(head)) {
-      return /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(head);
-    }
-    return false;
-  };
-
+  const totalChanges = () =>
+    Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT total_changes() AS n").get()).n);
   /**
    * @param {string} sql
    * @param {any[]} bound
@@ -244,22 +222,29 @@ export function d1Over(sqlite, { onQuery } = {}) {
     // wrote read back as no row at all - the shape src/share.js and
     // src/waitlist.js write, and the shape a test of either would have called
     // a miss (drive#579).
+    //
+    // `meta.changes` is the connection's `total_changes()` delta, not a guess
+    // from the SQL text: `changes()` does not reset on DDL, a `WITH ... INSERT`
+    // does not start with INSERT, and a cached prepared counter would sit on
+    // this handle while `all()` iterates. The delta is the statement's own
+    // count, so a CREATE after a write answers 0 and an INSERT OR REPLACE
+    // answers the rows it wrote.
+    const before = totalChanges();
     const results = statement.all(...translated.bound);
-    if (READ.test(sql)) {
-      return {
-        results,
-        success: true,
-        meta: { rows_written: 0, changes: 0, last_row_id: 0 },
-      };
-    }
-    const changes = wroteRows(sql) ? Number(/** @type {{n: number}} */ (changesOf.get()).n) : 0;
+    const changes = totalChanges() - before;
     return {
       results,
       success: true,
       meta: {
         changes,
         rows_written: changes,
-        last_row_id: Number(/** @type {{n: number}} */ (rowIdOf.get()).n),
+        last_row_id:
+          changes === 0
+            ? 0
+            : Number(
+                /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get())
+                  .n,
+              ),
       },
     };
   }
