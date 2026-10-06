@@ -70,10 +70,18 @@ const shippedPages = () =>
 
 /** The sentences of one surface, as a reader sees them: a page hard-wraps a
  * sentence across lines, and the label that makes an out-of-v1 sentence honest
- * sits in the same one, so the text is folded before it is cut.
+ * sits in the same one, so the text is folded before it is cut. Markdown
+ * emphasis (or a quote, or a bracket) often sits between the full stop and the
+ * space, so a plain lookbehind on the punctuation would read the bold lead and
+ * the sentence after it as one, and a label in the lead would cover a
+ * neighbour. The split consumes those trailing marks.
  * @param {string} text
  * @returns {ReadonlyArray<string>} */
-const sentencesOf = (text) => oneLine(text).split(/(?<=[.!?])\s+/);
+const sentencesOf = (text) =>
+  oneLine(text)
+    .split(/(?<=[.!?])[*_`"'\])]*\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence !== "");
 
 /** The blocks of one surface, each folded to one line. A bullet is one
  * statement and a paragraph is another, so the label that keeps an out-of-v1
