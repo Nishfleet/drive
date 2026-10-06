@@ -214,15 +214,11 @@ export default defineConfig({
       // bindings, KV and ASSETS. The route itself sits behind this limiter so
       // an anonymous loop cannot spend those billed ops at will. 10 a minute
       // per IP is the sign-in figure: far above a monitor that polls once a
-      // minute, far below a script. Namespace 1011: 1006/1007 are the api
-      // Worker's device pair (workers/api/cloudflare.config.ts), 1008 is the
-      // share-download limiter below, and 1009/1010 are the two mint limiters
-      // under it. drive#641 and drive#682 each wrote 1009 here and under
-      // SHARE_MINT_RATE_LIMITER, and a namespace two bindings on one Worker
-      // share fails the deploy with 10021 (drive#698), so of the pair this is
-      // the one that moved.
+      // minute, far below a script. Namespace 1009, because 1006/1007 are the
+      // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
+      // the share-download limiter below.
       HEALTH_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1011",
+        namespace: "1009",
         simple: { limit: 10, period: 60 },
       }),
       // GET /s/<token> (drive issue #506): a logged-out share download has no
@@ -240,14 +236,18 @@ export default defineConfig({
       // /api/request each get their own bound, on top of the per-account cap
       // of 50 open links the handlers enforce. 30 a minute per IP is far
       // above an owner clicking "Share" and far below a script minting tokens
-      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
-      // namespace fails the deploy with 10021.
+      // to walk. Namespaces 1010/1011 continue the 1001-1009 series; a reused
+      // namespace fails the deploy with 10021. 1010/1011 were free because the
+      // HEALTH_RATE_LIMITER above took 1009, so test/deploy-api-worker.test.mjs
+      // (which reads both this file and the api Worker's, and fails on the
+      // first duplicate it finds) caught the SHARE_MINT_RATE_LIMITER reusing
+      // it here.
       SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1010",
         simple: { limit: 30, period: 60 },
       }),
       REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1010",
+        namespace: "1011",
         simple: { limit: 30, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every

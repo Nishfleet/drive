@@ -305,13 +305,14 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  // DRIVE_DB beside METER_DB (drive#698): the hourly trip takes the 1 TB
-  // pre-charge limit sweep on the same binding, and it refuses to run without
-  // one, so an env that only carried the meter's ledger used to fail the draw
-  // the outage is about. The sweep reads `accounts` and `file_versions` and
-  // swaps no key here (acc1 holds no device), so binding the same database is
-  // the deployment's shape, not a test convenience. The meter jobs queue stays
-  // unbound, so this test drives the un-fanned-out path the queue replaced.
+  // DRIVE_DB beside METER_DB (drive#536, drive#698): the hourly trip takes
+  // the 1 TB pre-charge limit sweep on the same binding, and it refuses to run
+  // without one, so an env that only carried the meter's ledger used to fail
+  // the draw the outage is about. The sweep reads `accounts` and
+  // `file_versions` and swaps no key here (acc1 holds no device), so binding
+  // the same database is the deployment's shape, not a test convenience. The
+  // meter jobs queue stays unbound, so this test drives the un-fanned-out path
+  // the queue replaced.
   const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
@@ -339,11 +340,13 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour unix ms of the closed hour being billed */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    // #678: the bill divides by the calendar month's own minutes, and the
+    // month here is the one `hour` falls in.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes: minutesInMonth(hour),
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
-      monthMinutes: minutesInMonth(hour),
     }).totalCents;
   };
   /**
