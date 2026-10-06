@@ -29,7 +29,7 @@ import { INSTALL_LINES } from "../core/install-lines.js";
 import { PRICE } from "../core/pricing.js";
 import { SITE } from "../core/seo.js";
 import { AGENT_TOOLS, KEY_POWERS, STORAGE_POWERS } from "./keys.js";
-import { NOT_OPEN, PLATFORMS, VERSION_HISTORY } from "./release-state.js";
+import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 
 /**
  * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
@@ -327,7 +327,6 @@ export function markerValues(extra = {}) {
     // Limits page rules out.
     VERSION_HISTORY: VERSION_HISTORY,
     NOT_OPEN: NOT_OPEN,
-    PLATFORMS: PLATFORMS,
     INSTALL_MACOS: INSTALL_LINES[0].line,
     INSTALL_DEBIAN: INSTALL_LINES[1].line,
     INSTALL_FEDORA: INSTALL_LINES[2].line,
