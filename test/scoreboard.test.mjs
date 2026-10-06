@@ -17,8 +17,8 @@
 //      out from.
 //
 // The money the price rows are compared against is the month's bill for that
-// size held all month, after the membership floor monthBillCents() already
-// applies: what the customer actually pays. The issue named core/pricing.js; that
+// size held all month, as monthBillCents() works it out: what the customer
+// actually pays. The issue named core/pricing.js; that
 // module still holds the superseded per-TB caps and is issue #23's to fix, so
 // the scoreboard reads the one billing function AGENTS.md's money gate names.
 
