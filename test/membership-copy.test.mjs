@@ -42,7 +42,7 @@ function dataFor(kind) {
     return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true, monthIso: MONTH_ISO };
   }
   if (kind === "account-closed" || kind === "account-close-reminder") {
-    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
+    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
   }
   // drive#586: the prepaid emails, both auto top-up states, so the gates
   // read every sentence a customer can be sent.

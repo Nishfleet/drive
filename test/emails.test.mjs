@@ -271,7 +271,7 @@ function dataFor(kind) {
       return receiptData();
     case "account-closed":
     case "account-close-reminder":
-      return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
+      return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
     case "top-up-receipt":
       return { amountUsd: 25, balanceUsd: 31.5, auto: false };
     case "low-balance":

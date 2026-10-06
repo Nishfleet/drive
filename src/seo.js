@@ -113,6 +113,10 @@ export const PAGES = Object.freeze([
   // any path that is not an asset (notFoundHandling: 404-page). It is noindex
   // and out of the sitemap: a crawler should not treat a missing URL as a page.
   Object.freeze({ path: "/404.html", indexable: false }),
+  // The site's own 5xx page (drive#584). src/index.js serves this file from
+  // app.onError when a page request fails, so a browser gets the site's
+  // chrome instead of a bare JSON body. Noindex: an error is not a page.
+  Object.freeze({ path: "/500.html", indexable: false }),
 ]);
 
 // The pages that ship as built Vite entries from the repo root, not as verbatim

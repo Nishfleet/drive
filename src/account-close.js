@@ -58,7 +58,7 @@ export function normalizeEmail(value) {
 }
 
 /**
- * The day a closed account's files are deleted, in words: "3 Nov"
+ * The day a closed account's files are deleted, in words: "3 Nov (UTC)"
  * (drive#422). The ISO stamp the Worker used to send was correct but
  * unreadable to a person, and the walkthrough named it.
  *
@@ -67,6 +67,20 @@ export function normalizeEmail(value) {
  * banner, not rendered by a page (drive#559 moved every page's date to the
  * browser). `en-GB` with a numeric day and a short month, namespaced to UTC
  * so the day is the same one for every reader.
+ *
+ * The zone rides in the value, and this is the one place the reason is
+ * written (drive#689). The day is a UTC day and it has to stay one: the
+ * nightly cron picks the account to purge by comparing
+ * `closed_at + 30 days` against the Worker's own UTC clock, so the day the
+ * reader's calendar would show is not the day the files go. What was wrong
+ * was not the day but the silence about it — a bare "3 Nov" let a reader
+ * west of Greenwich believe they had their files until the end of their own
+ * 3 November. Naming the zone here rather than in each of the four sentences
+ * that show the date (the two close emails, the close banner and the usage
+ * page) means the four sentences hold no zone of their own, so there is no
+ * sentence that can drift from the day. The email guard's shape is pinned
+ * against this function by test/account-close.test.mjs, which is what catches
+ * the guard and the day moving apart.
  * @param {number} closedAtSeconds
  * @returns {string}
  */
@@ -76,10 +90,10 @@ export function purgeOnDate(closedAtSeconds) {
       `purgeOnDate needs closed_at in unix seconds, got ${String(closedAtSeconds)}`,
     );
   }
-  return new Date((closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000).toLocaleDateString(
-    "en-GB",
-    { day: "numeric", month: "short", timeZone: "UTC" },
-  );
+  const day = new Date(
+    (closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000,
+  ).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  return `${day} (UTC)`;
 }
 
 /**
