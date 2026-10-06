@@ -336,6 +336,7 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   // 30-day month's minutes by too large a number, so September bills under what
   // it should and February worst of all. The outage test has to ask for the
   // month it is in, the same call src/dodo.js makes.
+  /** @param {number} hour unix ms of the closed hour being billed */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
     return monthBillCents({
