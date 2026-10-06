@@ -337,8 +337,10 @@ async function start(method, email) {
               email,
               card: cardInput !== null && cardInput.checked,
               age: ageInput !== null && ageInput.checked,
-              // undefined drops out of the JSON: a plain sign-in posts
-              // exactly what it posted before drive#558.
+              // `next` is undefined and drops out of the JSON unless this sign-in
+              // started from the device-approve page (drive#558). The age box
+              // (drive#781) is always sent, so a plain sign-in carries method,
+              // email, card and age.
               next: nextParam === "" ? undefined : nextParam,
             },
       ),

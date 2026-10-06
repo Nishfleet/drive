@@ -297,7 +297,7 @@ export function hasSignupCard(value) {
  * @returns {string|null}
  */
 export function refuseSignupWithoutCard(card) {
-  return isTick(card) ? null : SIGNIN_COPY.needCard;
+  return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
 }
 
 /**
