@@ -22,6 +22,7 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
   createS3Store,
   FILES_ENDPOINT,
@@ -59,6 +60,7 @@ import {
   settleBalances,
 } from "../core/prepaid.js";
 import { createD1QueueStore } from "../core/queues.js";
+import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -91,6 +93,7 @@ import {
   handleBranchesRequest,
   processBranchJob,
 } from "./branches.js";
+import { DEVICES_ENDPOINT, handleDevicesRequest } from "./devices-page.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -110,6 +113,7 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_SCHEDULE,
   reconcileIndex,
   SEARCH_ENDPOINT,
   withIndex,
@@ -126,7 +130,12 @@ import {
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
 } from "./share.js";
-import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import {
+  handleSigninLinkVerify,
+  handleSigninRequest,
+  SIGNIN_ENDPOINT,
+  signinClosedBody,
+} from "./signin.js";
 import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import { handleWaitlistRequest } from "./waitlist.js";
@@ -193,9 +202,18 @@ const API_PATH_PREFIX = "/v1";
 //     Standard Webhooks signature over the raw body is the gate
 //     (core/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
 //     it answers 503, a closed door.
+// The auth family Better Auth is mounted under (basePath "api/auth",
+// src/auth.js). One value for the account gate's public list and the route
+// table, so the two cannot drift: the one place a caller with no session must
+// reach is the auth family, to enroll a passkey or turn a factor on before
+// there is a session at all. isPublic (below) strips the trailing "/*", so a
+// signed-out caller reaches every /api/auth/... path.
+const AUTH_FAMILY = "/api/auth/*";
+
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
+  AUTH_FAMILY,
   SEND_EMAIL_PATH,
   HEALTH_PATH,
   SIGNIN_ENDPOINT,
@@ -574,6 +592,42 @@ const csrfWhenBrowser = async (c, next) => {
   return next();
 };
 
+// ------------------------------------------------- the sign-in family (Better Auth)
+// Better Auth's own routes, mounted as one public family under its basePath
+// (src/auth.js). The site's own /api/signin forward reaches the same library
+// internally (src/signin.js), and this mount is the second factor's surface:
+// two-factor enrollment and verification, recovery-code generation and
+// passkey registration (drive#524) are the stock endpoints an already
+// signed-in browser session calls from the account pages. The prefix is in
+// PUBLIC_ROUTES so the account gate passes it: a session cookie is the whole
+// credential here, exactly as it is for the site's own pages, and the POSTs
+// behind it are writes on an existing session, so this app's same-origin
+// check above still runs first and a cross-site form post is refused before
+// the library sees one. Better Auth applies its own trusted-origin rule on
+// top of that. With no sign-in configuration the family answers the same
+// closed door the /api/signin forward answers (src/signin.js).
+//
+// Only the second-factor and passkey surface is served here. The magic-link
+// send, its verify and every other stock route stay on the site's own
+// /api/signin forward, which carries the per-IP edge limits, the per-address
+// send ceiling (purgeExpiredSigninSends) and the sign-up rules; this mount
+// would otherwise be a second, anonymous way to mail a link and make an
+// account around those. Anything off the list is a 404 before the library
+// sees it.
+const AUTH_FAMILY_ALLOWED =
+  /^\/api\/auth\/(?:get-session|two-factor\/[a-z-]+|passkey\/[a-z-]+)\/?$/;
+
+const authApiHandler = async (/** @type {DriveContext} */ c) => {
+  if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
+    return c.json({ error: "Not found." }, 404);
+  }
+  const auth = authFor(c.env);
+  if (!auth) {
+    return c.json(signinClosedBody(), 503);
+  }
+  return auth.handler(c.req.raw);
+};
+
 /** @param {DriveContext} c */
 const filesHandler = async (c) => {
   const account = c.get("account");
@@ -645,6 +699,14 @@ export function createApp() {
   // is what holds it. /api/starter is a write route under this one rule
   // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
+
+  // The sign-in family (Better Auth) under its basePath (src/auth.js),
+  // mounted after both checks above: PUBLIC_ROUTES passes it through the
+  // account gate, and a cross-site browser post is refused here first.
+  // Method-limited to GET and POST, which is the whole stock surface, so a
+  // request with any other method is a 405 rather than a page-less call into
+  // the library.
+  app.on(["GET", "POST"], AUTH_FAMILY, authApiHandler);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -785,18 +847,24 @@ export function createApp() {
     /** @type {Record<string, unknown>|null} */
     let usage = null;
     if (!account) return unauthorizedResponse();
+    let openPublicLinks = 0;
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
       capUsd = await store.getCapUsd(account.id);
       // The card on file is the accounts row's own stamp, read the same way as
       // the cap (drive#417). Until it is really on file the usage page says no
-      // charge has been made and shows no bill, instead of the $10 membership
-      // line a card-less account would look like it had been charged. It is
+      // charge has been made and shows no bill, instead of a balance line a
+      // card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
       usage = /** @type {Record<string, unknown>} */ (
         await store.monthUsage(account.id, { capUsd })
       );
+      const now = Date.now();
+      const links = linksFor(c.env);
+      openPublicLinks =
+        (await links.shares.countOpen(account.id, now)) +
+        (await links.requests.countOpen(account.id, now));
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -814,7 +882,7 @@ export function createApp() {
       : null;
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, usage },
+      { ...account, capUsd, cardOnFile, usage, openPublicLinks },
       await liveQueueFor(c.env, account),
       balance,
       // The month these numbers belong to, sent as its first instant (drive#559):
@@ -826,6 +894,25 @@ export function createApp() {
       // would be a second answer to the same question.
       new Date(monthStart(Date.now())).toISOString(),
     );
+  });
+
+  // Own-data export (drive#547): the same handler GET /v1/export runs, served
+  // here so a signed-in browser can download it before the api Worker is bound.
+  // The account gate already answered 401 for a stranger. No DRIVE_DB means
+  // no keys and no file rows, which is a truthful empty export, not a 503.
+  app.get(EXPORT_ENDPOINT, (c) => {
+    const account = c.get("account");
+    if (!account) return unauthorizedResponse();
+    const db = c.env.DRIVE_DB;
+    return exportRoute(c.req.raw, {
+      store: {
+        listKeys: (acct) => (db ? createD1DeviceStore(db).listPublic(acct) : Promise.resolve([])),
+      },
+      db: db ?? null,
+      account,
+      now: Date.now,
+      url: new URL(c.req.url),
+    });
   });
 
   // The prepaid balance (drive#586): the balance and recent ledger lines, and
@@ -865,6 +952,23 @@ export function createApp() {
     });
   });
 
+  // Devices page (drive#525): list live keys and revoke one at the provider.
+  // The site Worker holds DRIVE_DB, so this route works while the api Worker
+  // is undeployed (#342). The store is built with the same keyProviderFor
+  // the cap and close paths use, so a revoke here withdraws the vendor key.
+  /** @param {DriveContext} c */
+  const devicesHandler = (c) => {
+    const db = c.env.DRIVE_DB;
+    const store = db
+      ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
+      : null;
+    return handleDevicesRequest(c.req.raw, c.get("account"), store);
+  };
+  app.get(DEVICES_ENDPOINT, devicesHandler);
+  app.delete(DEVICES_ENDPOINT, devicesHandler);
+  app.get(`${DEVICES_ENDPOINT}/*`, devicesHandler);
+  app.delete(`${DEVICES_ENDPOINT}/*`, devicesHandler);
+
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
   // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
@@ -877,7 +981,10 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store);
+    return handleCapRequest(c.req.raw, c.get("account"), store, {
+      ...mailFromEnv(c.env),
+      deviceName: sessionLabel(c.req.raw),
+    });
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -919,6 +1026,8 @@ export function createApp() {
         // The mint route's own bound (drive issue #549). The per-account
         // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -939,6 +1048,8 @@ export function createApp() {
       handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account"), {
         // The mint route's own bound (drive issue #549).
         limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -1076,6 +1187,13 @@ export function createApp() {
   return app;
 }
 
+// One app per isolate, built on the first fetch: createApp takes no env and
+// closes over no request, so the compiled router is safe to share across
+// fetches (the api Worker's appFor cache, minus the table key), and a
+// construction failure fails that request, not the isolate's boot.
+/** @type {ReturnType<typeof createApp> | undefined} */
+let app;
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
 // Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
@@ -1100,7 +1218,8 @@ const sentryOptions = (env) => ({
  */
 const handler = {
   async fetch(request, env, _context) {
-    return createApp().fetch(request, env);
+    if (app === undefined) app = createApp();
+    return app.fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string
@@ -1146,6 +1265,18 @@ const handler = {
    * @returns {Promise<void>}
    */
   async scheduled(event, env, context, store) {
+    // Every string cloudflare.config.ts declares has a branch below.
+    // Anything else used to fall through to the nightly reindex, so a
+    // mistyped trigger silently walked every account's store.
+    if (
+      event.cron !== METER_CRON &&
+      event.cron !== METER_RECONCILE_SCHEDULE &&
+      event.cron !== CLOSE_SCHEDULE &&
+      event.cron !== TRASH_PURGE_SCHEDULE &&
+      event.cron !== REINDEX_SCHEDULE
+    ) {
+      throw new Error(`unknown cron: ${event.cron}`);
+    }
     // The meter's trip. The controller carries the schedule string the
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.

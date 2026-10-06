@@ -1985,9 +1985,11 @@ details p {
           </div>
           <span class="tag t2" aria-hidden="true">plays in 274 ms</span>
           <div class="term">
-            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="copy" type="button" data-copy="drive init" aria-label="Copy the command drive init">copy</button></div>
+            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="copy" type="button" data-copy="drive login&#10;drive init" aria-label="Copy the commands drive login and drive init">copy</button></div>
+            <p><span class="pr">$</span> drive login</p>
+            <p class="ok">signed in &middot; storage settings written</p>
             <p><span class="pr">$</span> drive init</p>
-            <p class="ok">signed in &middot; drive mounted in Finder</p>
+            <p class="ok">drive mounted in Finder</p>
             <p><span class="pr">$</span> <span class="caret" aria-hidden="true"></span></p>
           </div>
         </div>
@@ -2060,16 +2062,17 @@ details p {
             <button type="button" data-agent="gemini" aria-pressed="false">Gemini</button>
             <button type="button" data-agent="kiro" aria-pressed="false">Kiro</button>
           </fieldset>
-          <p class="never">Agent keys can list, read and write. They can never delete.</p>
+          <p class="never">Each tool works in its own folder, on its own key. An agent's delete is undoable for 1 day.</p>
         </div>
         <div class="bigterm" aria-live="polite">
           <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <p><span class="pr">$</span> drive login</p>
+          <p class="ok">signed in &middot; storage settings written</p>
           <p><span class="pr">$</span> drive init</p>
-          <p class="ok">signed in &middot; drive mounted</p>
+          <p class="ok">drive mounted</p>
           <p><span class="pr">$</span> drive agents connect <span id="agent-id">claude</span></p>
-          <p class="ok"><span id="agent-name">Claude Code</span> connected to drive</p>
+          <p class="ok"><span id="agent-name">Claude Code</span> connected to its own folder</p>
           <p class="dim">  can: list &middot; read &middot; write</p>
-          <p class="dim">  cannot: delete</p>
         </div>
       </div>
     </section>
@@ -2186,7 +2189,7 @@ details p {
           </div>
           <div>
             <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No plans. Your balance never expires.</p></details>
-            <details><summary>Can my agents wreck my files?</summary><p>No. Agent keys can list, read and write. They can never delete.</p></details>
+            <details><summary>Can my agents wreck my files?</summary><p>No. Each tool gets its own folder, mounted on its own key. An agent's delete is undoable for 1 day. On Windows the folder is the one you use, because the agent mount is not proven there yet.</p></details>
             <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When the bill would pass it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
             <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
           </div>
@@ -2195,7 +2198,7 @@ details p {
         <section class="business" aria-labelledby="business-heading">
           <h2 id="business-heading">Business</h2>
           <div>
-            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support.</p>
+            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support. The teams API is the only way to manage a company drive in version 1, and the company screens come later.</p>
             <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
             <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
             <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
@@ -2206,7 +2209,8 @@ details p {
                 <input type="hidden" name="source" value="pricing-page">
                 <button type="submit">Send</button>
               </div>
-              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email and we add it to the waitlist.</p>
+              <p class="form-note">We use this address to send one email when sign-in opens. Send means you agree to that email. Read the <a href="/privacy">privacy policy</a>.</p>
+              <p class="form-note" id="form-note" role="status" aria-live="polite"></p>
             </form>
             <noscript><p class="form-note">The form sends without JavaScript too.</p></noscript>
           </div>
