@@ -182,9 +182,16 @@ test("the kind's hour is the ceiling: a shorter provider session wins, a longer 
   // session of six hours is refused at the hour rather than honoured.
   assert.equal(mintTtlSeconds("agent", 43200), AGENT_KEY_TTL_SECONDS);
   assert.equal(mintTtlSeconds("branch", 86400), 3600);
-  // A kind that never expires keeps that, whatever the provider says.
-  assert.equal(mintTtlSeconds("device", 43200), null);
+  // A device key never expires only on a provider that names no session.
+  // On a provider that names one, the vendor's session is the credential's
+  // real life (drive#544 mint answers carry expiresIn; drive#713 refuses the
+  // row that ignored it), so the row records the session whatever its
+  // length: stretching it is impossible, and shrinking it would be the
+  // drive#713 lie again (drive#749 renews by re-minting before it ends).
+  assert.equal(mintTtlSeconds("device", 43200), 43200);
+  assert.equal(mintTtlSeconds("device", 900), 900);
   assert.equal(mintTtlSeconds("device", null), null);
+  assert.equal(mintTtlSeconds("device", undefined), null);
   // No provider session named, or a nonsense one, falls back to the hour.
   assert.equal(mintTtlSeconds("agent", null), 3600);
   assert.equal(mintTtlSeconds("agent", undefined), 3600);
