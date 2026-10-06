@@ -131,6 +131,9 @@ func runStatus(args []string) error {
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
+	if line := deviceRenewStatusLine(home); line != "" {
+		fmt.Println(line)
+	}
 	// The once-a-day update notice (drive#560): the last line `drive status`
 	// prints. It never fails the command, and it never prints more than once
 	// in 24 hours.

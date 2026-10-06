@@ -35,9 +35,9 @@ import { downloadUrlFor, signGrant } from "./grant.js";
 import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
+  bucketForKeyPrefix,
   CAPABILITIES_BY_KIND,
   KEY_KINDS,
-  bucketForKeyPrefix,
   keyTtlSeconds,
   mintTtlSeconds,
   renewTtlSeconds,
@@ -529,14 +529,12 @@ export function createMemoryStore(options = {}) {
       // The device session re-mint (drive#749), the stand-in twin of the D1
       // store's branch: the row here is the store, so the swap is three
       // field writes and the two map entries the old access key sat behind.
-      if (
-        device.kind === "device" &&
-        providerNamesSessions &&
-        keyProvider !== undefined
-      ) {
+      if (device.kind === "device" && providerNamesSessions && keyProvider !== undefined) {
         const minted = await keyProvider.mint({
           prefix: device.prefix,
-          capabilities: [...device.capabilities],
+          capabilities: /** @type {import("./keyprovider.js").KeyScope["capabilities"]} */ ([
+            ...device.capabilities,
+          ]),
           bucket: bucketForKeyPrefix(device.accountId, device.prefix),
         });
         const ttl = mintTtlSeconds(device.kind, minted.expiresIn ?? null);

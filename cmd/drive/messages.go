@@ -243,6 +243,10 @@ var messageTable = map[string][2]string{
 		"The {1} key's hour could not be restarted, so it may stop working when it runs out.",
 		"Run `drive init` again to sign the tool in with a fresh key.",
 	},
+	"device-key-renew-failed": {
+		"This device's storage key could not be renewed, so the drive may stop uploading when the session ends.",
+		"Run `drive login` again, then `drive mount`.",
+	},
 	"branch-key-mint": {
 		"The branch was copied, but its key could not be minted.",
 		"Run `drive branch` again with the same name to mint the key; the copy is already there.",

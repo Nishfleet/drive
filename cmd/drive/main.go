@@ -30,6 +30,7 @@ Usage:
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
   drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
+  drive renew [flags]      renew this device's storage key before the vendor session ends
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive pause [flags]      stop the bytes leaving the device; survives a restart
@@ -174,6 +175,7 @@ var commands = map[string]func([]string) error{
 	"import":    runImport,
 	"update":    runUpdate,
 	"prefetch":  runPrefetch,
+	"renew":     runRenew,
 }
 
 // version is the fallback when the toolchain records no module version

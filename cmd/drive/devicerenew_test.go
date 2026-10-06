@@ -1,0 +1,235 @@
+package main
+
+import (
+	"errors"
+	"io"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestNeedsDeviceRenewAtEightyPercent(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	const ttl int64 = 900
+	expires := now.Unix() + ttl
+	if needsDeviceRenew(expires, ttl, now) {
+		t.Fatal("a session just minted must not renew yet")
+	}
+	at80 := now.Add(time.Duration(float64(ttl)*deviceKeyRenewFraction) * time.Second)
+	if !needsDeviceRenew(expires, ttl, at80) {
+		t.Fatal("at 80 percent of the session the key must renew")
+	}
+	before := now.Add(time.Duration(float64(ttl)*deviceKeyRenewFraction)*time.Second - time.Second)
+	if needsDeviceRenew(expires, ttl, before) {
+		t.Fatal("one second before 80 percent must still wait")
+	}
+	if needsDeviceRenew(0, ttl, now) {
+		t.Fatal("a key with no expiry never needs a renew")
+	}
+	if !needsDeviceRenew(now.Unix()-1, ttl, now) {
+		t.Fatal("a session that already ended must renew")
+	}
+}
+
+func TestLoginAcceptsAnExpiringDeviceKey(t *testing.T) {
+	api := newFakeAPI()
+	api.deviceExpiresIn = 900
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.KeyExpiresAt == 0 {
+		t.Fatal("login refused to store the mint's expiry")
+	}
+	if creds.KeyTTLSeconds != 900 {
+		t.Fatalf("key TTL = %d, want 900 from expiresIn", creds.KeyTTLSeconds)
+	}
+	cfg, err := ParseRcloneConfig(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionToken == "" {
+		t.Fatal("login did not write the session token into rclone.conf")
+	}
+}
+
+func TestApplyDeviceCredentialRewritesRcloneConfAndLeavesTheCache(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(DefaultCacheDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	queued := filepath.Join(DefaultCacheDir(home), "queued.bin")
+	if err := os.WriteFile(queued, []byte("waiting"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testStorage()
+	cfg.SessionToken = "tok_old"
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRcloneEnv(home, cfg, "rcuser", "rcpass"); err != nil {
+		t.Fatal(err)
+	}
+	creds := Credentials{KeyID: "key_laptop", AccessKeyID: cfg.AccessKey, KeyExpiresAt: time.Now().Unix() + 100, KeyTTLSeconds: 900}
+	if err := SaveCredentials(home, creds); err != nil {
+		t.Fatal(err)
+	}
+	fresh := cfg
+	fresh.AccessKey = "ak_fresh"
+	fresh.SecretKey = "sk_fresh"
+	fresh.SessionToken = "tok_fresh"
+	creds.KeyExpiresAt = time.Now().Unix() + 900
+	if err := applyDeviceCredential(home, creds, fresh); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseRcloneConfig(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessKey != "ak_fresh" || got.SessionToken != "tok_fresh" {
+		t.Fatalf("rclone.conf = %+v, want the fresh credential", got)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "sk_fresh") {
+		t.Fatalf("rclone.env missing the fresh secret:\n%s", env)
+	}
+	if !strings.Contains(string(env), "rcuser") {
+		t.Fatalf("rclone.env dropped the rc user:\n%s", env)
+	}
+	if _, err := os.Stat(queued); err != nil {
+		t.Fatalf("queued upload was dropped: %v", err)
+	}
+	saved, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AccessKeyID != "ak_fresh" {
+		t.Fatalf("credentials access key = %q", saved.AccessKeyID)
+	}
+}
+
+func TestFailedRenewShowsANamedStatusLine(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if line := deviceRenewStatusLine(home); line != "" {
+		t.Fatalf("no failure file, got %q", line)
+	}
+	if rec := recordDeviceRenewFailure(home, fail("device-key-renew-failed")); rec != nil {
+		t.Fatal(rec)
+	}
+	line := deviceRenewStatusLine(home)
+	if line == "" {
+		t.Fatal("a failed renew must name itself in drive status")
+	}
+	if strings.Contains(line, waitingToUploadWhy) {
+		t.Fatalf("failed renew read as waiting to upload:\n%s", line)
+	}
+	if !strings.Contains(line, "could not be renewed") {
+		t.Fatalf("status line missing the named failure:\n%s", line)
+	}
+	if err := clearDeviceRenewFailure(home); err != nil {
+		t.Fatal(err)
+	}
+	if line := deviceRenewStatusLine(home); line != "" {
+		t.Fatalf("cleared failure still prints: %q", line)
+	}
+}
+
+func TestRenewDeviceKeyOnceRewritesBeforeExpiry(t *testing.T) {
+	api := newFakeAPI()
+	api.deviceExpiresIn = 900
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds.KeyExpiresAt = time.Now().Add(-time.Second).Unix()
+	if err := SaveCredentials(home, creds); err != nil {
+		t.Fatal(err)
+	}
+	if err := renewDeviceKeyOnce(home, server.URL); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.renewedIDs) != 1 || api.renewedIDs[0] != creds.KeyID {
+		t.Fatalf("renewed %v, want %s", api.renewedIDs, creds.KeyID)
+	}
+	got, err := ParseRcloneConfig(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got.AccessKey, "_renewed") {
+		t.Fatalf("access key = %q, want the renewed credential", got.AccessKey)
+	}
+	after, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.KeyExpiresAt <= time.Now().Unix() {
+		t.Fatalf("stored expiry %d is not in the future", after.KeyExpiresAt)
+	}
+}
+
+func TestRenewDeviceKeyOnceRecordsANamedFailure(t *testing.T) {
+	api := newFakeAPI()
+	api.deviceExpiresIn = 900
+	api.rejectRenews = true
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	err := renewDeviceKeyOnce(home, server.URL)
+	if err == nil {
+		t.Fatal("a refused renew must fail")
+	}
+	var f *failure
+	if !errors.As(err, &f) || f.Kind != "device-key-renew-failed" {
+		t.Fatalf("got %v, want device-key-renew-failed", err)
+	}
+}
+
+func TestDeviceRenewSidecarIsNotPartOfTheMount(t *testing.T) {
+	unit := deviceRenewSystemdUnit("/usr/local/bin/drive", "/home/test")
+	if strings.Contains(unit, "BindsTo=") || strings.Contains(unit, "PartOf=") {
+		t.Fatalf("the renew sidecar must stay up while it restarts the mount:\n%s", unit)
+	}
+	if !strings.Contains(unit, "drive renew --home /home/test") {
+		t.Fatalf("ExecStart missing drive renew:\n%s", unit)
+	}
+}

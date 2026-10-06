@@ -135,6 +135,12 @@ func Login(home, apiBase string, out io.Writer) error {
 		AccessKeyID:    cfg.AccessKey,
 		KeyID:          key.KeyID,
 	}
+	if key.ExpiresAt != nil {
+		creds.KeyExpiresAt = *key.ExpiresAt
+	}
+	if key.ExpiresIn > 0 {
+		creds.KeyTTLSeconds = int64(key.ExpiresIn)
+	}
 	if err := SaveCredentials(home, creds); err != nil {
 		return err
 	}

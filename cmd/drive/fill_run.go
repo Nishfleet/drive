@@ -150,6 +150,57 @@ func rcErrorCause(stderr string) string {
 	return msg
 }
 
+// updateRemoteConfig reloads the live rclone remote with a fresh credential
+// (drive#749). The payload is a 0600 file, never argv, because
+// `/proc/<pid>/cmdline` is world-readable for the life of the call.
+func (c *rcClient) updateRemoteConfig(home string, cfg StorageConfig) error {
+	params := map[string]string{
+		"access_key_id":     cfg.AccessKey,
+		"secret_access_key": cfg.SecretKey,
+	}
+	if cfg.SessionToken != "" {
+		params["session_token"] = cfg.SessionToken
+	}
+	body, err := json.Marshal(map[string]any{
+		"name":       RcloneRemoteName,
+		"parameters": params,
+	})
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(DefaultConfigDir(home), "rc-update.json")
+	if err := WriteFileAtomic(path, append(body, '\n'), 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(path)
+	ctx, cancel := context.WithTimeout(context.Background(), rcTimeout)
+	defer cancel()
+	args := []string{"rc", "--rc-addr", c.addr}
+	if c.user != "" || c.pass != "" {
+		args = append(args, "--user", c.user, "--pass", c.pass)
+	}
+	args = append(args, "--json", "@"+path, "config/update")
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.CommandContext(ctx, c.binary, args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	b, err := cmd.Output()
+	if err != nil {
+		if msg := rcErrorCause(stderr.String()); msg != "" {
+			return fmt.Errorf("rclone rc config/update: %s: %w", msg, err)
+		}
+		return fmt.Errorf("rclone rc config/update: %w", err)
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var reply map[string]any
+	if err := json.Unmarshal(b, &reply); err != nil {
+		return fmt.Errorf("rclone rc config/update: decode %s: %w", strings.TrimSpace(string(b)), err)
+	}
+	return nil
+}
+
 // stats reads the cache's live state from the running mount.
 func (c *rcClient) stats(ctx context.Context) (vfsStats, error) {
 	var s vfsStats

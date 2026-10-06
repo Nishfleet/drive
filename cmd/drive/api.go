@@ -62,6 +62,7 @@ type MintedKey struct {
 	Prefix       string   `json:"prefix"`
 	Capabilities []string `json:"capabilities"`
 	ExpiresAt    *int64   `json:"expiresAt"`
+	ExpiresIn    int      `json:"expiresIn,omitempty"`
 	Endpoint     string   `json:"endpoint,omitempty"`
 	Bucket       string   `json:"bucket,omitempty"`
 	Region       string   `json:"region,omitempty"`
@@ -492,6 +493,20 @@ type RenewedKey struct {
 	// ExpiresAt is the epoch second the api Worker stops accepting the
 	// credential after this restart, or nil for a kind that never expires.
 	ExpiresAt *int64 `json:"expiresAt"`
+	// Credential is the fresh storage pair a device-key renewal on a
+	// session provider returns (drive#749). Absent for an agent-key
+	// window move, which changes no secret.
+	Credential *RenewedCredential `json:"credential,omitempty"`
+}
+
+// RenewedCredential is the storage pair POST /v1/keys/<id>/renew hands back
+// when the renewal minted a fresh session under the same row id.
+type RenewedCredential struct {
+	AccessKeyID  string `json:"accessKeyId"`
+	Secret       string `json:"secret"`
+	SessionToken string `json:"sessionToken"`
+	ExpiresIn    int    `json:"expiresIn"`
+	ExpiresAt    int64  `json:"expiresAt"`
 }
 
 // RenewKey restarts the hour on one of this device's keys (POST
@@ -531,6 +546,34 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 	}
 	if *renewed.ExpiresAt <= time.Now().Unix() {
 		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive init` again in a moment")
+	}
+	return renewed, nil
+}
+
+// RenewDeviceKey re-mints this device's storage session under the same row id
+// (POST /v1/keys/<keyId>/renew, drive#749). The Worker hands back a fresh
+// credential because the vendor ends the old session on its own clock. The
+// answer is refused unless it names this key, kind device, and a secret.
+func (c *APIClient) RenewDeviceKey(keyID string) (RenewedKey, error) {
+	var renewed RenewedKey
+	if err := c.do(http.MethodPost, keysPath+"/"+url.PathEscape(keyID)+"/renew", nil, &renewed); err != nil {
+		return RenewedKey{}, err
+	}
+	if renewed.KeyID != keyID || renewed.Kind != "device" {
+		return RenewedKey{}, errors.New("the api Worker answered about a different key; run `drive login` again in a moment")
+	}
+	if renewed.Credential == nil || renewed.Credential.AccessKeyID == "" || renewed.Credential.Secret == "" {
+		return RenewedKey{}, errors.New("the api Worker sent no fresh credential; run `drive login` again in a moment")
+	}
+	if renewed.ExpiresAt == nil && renewed.Credential.ExpiresAt > 0 {
+		at := renewed.Credential.ExpiresAt
+		renewed.ExpiresAt = &at
+	}
+	if renewed.ExpiresAt == nil {
+		return RenewedKey{}, errors.New("the api Worker sent no expiry for the key; run `drive login` again in a moment")
+	}
+	if *renewed.ExpiresAt <= time.Now().Unix() {
+		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive login` again in a moment")
 	}
 	return renewed, nil
 }
@@ -663,6 +706,14 @@ type Credentials struct {
 	DownloadURL    string `json:"downloadUrl,omitempty"`
 	AccessKeyID    string `json:"accessKeyId,omitempty"`
 	KeyID          string `json:"keyId,omitempty"`
+	// KeyExpiresAt is the epoch second this device's storage session ends at,
+	// from the mint or the last renew (drive#749). 0 is a key that never
+	// expires, which is the key-pair path and every credentials file written
+	// before this field existed.
+	KeyExpiresAt int64 `json:"keyExpiresAt,omitempty"`
+	// KeyTTLSeconds is the session length the mint named, so the renew loop
+	// can ask at 80 percent of the lifetime instead of guessing.
+	KeyTTLSeconds int64 `json:"keyTtlSeconds,omitempty"`
 }
 
 // CredentialsPath is the signed-in device's own file. It is next to the rclone

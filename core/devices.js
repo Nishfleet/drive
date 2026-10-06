@@ -133,27 +133,6 @@ function changesOf(result) {
 }
 
 /**
- * Move one row's window forward: the later of the expiry this call computed and
- * the expiry the row already holds.
- *
- * This is the one statement that renews an hour, and the comparison is in the
- * SQL, not only in the JavaScript, because the JavaScript can only compare
- * against the row *this call read*. Two requests can read the same row and
- * write in either order, so a request that read first and writes second would
- * otherwise pull a restarted hour back to the value it read — the row must
- * keep the later expiry for the bound to hold under a race, and this is where
- * that is decided. `tests/integration/agent-key-ttl-d1.test.mjs` runs this
- * exact statement with a stale value to prove it.
- *
- * @param {D1Database} db
- * @param {{id: string}} device
- * @param {number|null} expiresAt the window this call computed, or null for a
- *   kind that never expires (its row keeps the null it has)
- * @param {number} lastSeenAt
- * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
- *   caller proves a write landed
- */
-/**
  * A device session re-mint's row write (drive#749): the fresh credential's
  * access key and secret hash replace the old ones, and `expires_at` is the
  * new session's end. Unlike `renewKeyRow`'s keep-later window rule, this SET
@@ -177,13 +156,13 @@ function changesOf(result) {
  *   caller proves a write landed
  */
 export function renewDeviceCredentialRow(
-  db,
-  keyId,
-  accessKeyId,
-  secretHash,
-  ttlSeconds,
-  expiresAt,
-  lastSeenAt,
+  /** @type {D1Database} */ db,
+  /** @type {string} */ keyId,
+  /** @type {string} */ accessKeyId,
+  /** @type {string} */ secretHash,
+  /** @type {number|null} */ ttlSeconds,
+  /** @type {number|null} */ expiresAt,
+  /** @type {number} */ lastSeenAt,
 ) {
   return run(
     db,
@@ -202,6 +181,27 @@ export function renewDeviceCredentialRow(
   );
 }
 
+/**
+ * Move one row's window forward: the later of the expiry this call computed and
+ * the expiry the row already holds.
+ *
+ * This is the one statement that renews an hour, and the comparison is in the
+ * SQL, not only in the JavaScript, because the JavaScript can only compare
+ * against the row *this call read*. Two requests can read the same row and
+ * write in either order, so a request that read first and writes second would
+ * otherwise pull a restarted hour back to the value it read — the row must
+ * keep the later expiry for the bound to hold under a race, and this is where
+ * that is decided. `tests/integration/agent-key-ttl-d1.test.mjs` runs this
+ * exact statement with a stale value to prove it.
+ *
+ * @param {D1Database} db
+ * @param {{id: string}} device
+ * @param {number|null} expiresAt the window this call computed, or null for a
+ *   kind that never expires (its row keeps the null it has)
+ * @param {number} lastSeenAt
+ * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
+ *   caller proves a write landed
+ */
 export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
   return run(
     db,
@@ -1216,7 +1216,7 @@ export function createD1DeviceStore(db, options = {}) {
       if (device.kind === "device" && providerNamesSessions) {
         const credential = await mintCredential({
           prefix: device.prefix,
-          capabilities: [...device.capabilities],
+          capabilities: /** @type {KeyScope["capabilities"]} */ ([...device.capabilities]),
           bucket: bucketForKeyPrefix(account.id, device.prefix),
         });
         const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
