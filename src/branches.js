@@ -526,10 +526,17 @@ export function createKvSnapshotStore(kv, options = {}) {
      * order they were appended in is the order they are read back in.
      *
      * The count comes from the namespace's own listing, so the answer is what
-     * a reader will find. A namespace that cannot list falls back to the
-     * highest index it can see by probing, and a namespace that can do
-     * neither answers null: the caller then has to read the parts back, which
-     * is the old shape and is said out loud rather than guessed at.
+     * a reader will find: the index after the highest one there, which is
+     * where the first line of this batch goes. A namespace that cannot list
+     * answers null, and the caller then cannot hold the count, so the job
+     * fails as a storage fault rather than guessing a number (drive#766).
+     *
+     * Two batches of one job never hold this listing at the same time: the
+     * batch that finishes is the one that enqueues the next, so the counting
+     * read above is this job's only one. A batch the platform redelivers
+     * re-lands on the index the last write already holds, so its lines are
+     * written again under fresh names and an assembled snapshot folds them
+     * back into one entry per file.
      *
      * @param {string} key
      * @param {string[]} lines
@@ -711,7 +718,14 @@ export function createKvSnapshotStore(kv, options = {}) {
       let swept = 0;
       for (const entry of names) {
         const name = typeof entry === "string" ? entry : entry?.name;
+        // Only a name that is one of ours goes: a part's own shape is checked
+        // here as it is read, so a key that happens to start with the prefix
+        // (a sibling of it written by another job) is never deleted
+        // (drive#766).
         if (typeof name !== "string" || !name.startsWith(prefix)) {
+          continue;
+        }
+        if (jobPartLine(key, name) === null) {
           continue;
         }
         await kv.delete(name);
@@ -730,7 +744,11 @@ export function createKvSnapshotStore(kv, options = {}) {
         const names = Array.isArray(listed?.keys) ? listed.keys : [];
         for (const entry of names) {
           const name = typeof entry === "string" ? entry : entry?.name;
-          if (typeof name !== "string" || !name.startsWith(jobPartsPrefix(key))) {
+          if (
+            typeof name !== "string" ||
+            !name.startsWith(jobPartsPrefix(key)) ||
+            jobPartLine(key, name) === null
+          ) {
             continue;
           }
           await kv.delete(name);
@@ -782,7 +800,9 @@ export function createMemorySnapshotStore(values = new Map()) {
       const prefix = jobPartsPrefix(key);
       let swept = 0;
       for (const name of [...values.keys()]) {
-        if (name.startsWith(prefix)) {
+        // Only a name that is one of ours goes, for the same reason the
+        // namespace's delete checks it (drive#766).
+        if (name.startsWith(prefix) && jobPartLine(key, name) !== null) {
           values.delete(name);
           swept += 1;
         }

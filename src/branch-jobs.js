@@ -181,6 +181,10 @@ export async function handleBranchJobs(batch, process, queue = null, onExhausted
   let retried = 0;
   let stale = 0;
   for (const message of batch.messages) {
+    // Whether this message's own batch already ran. A message that reached
+    // its ack is never retried: the work is done, and a retry of it would
+    // repeat that batch (drive#766).
+    let ackedThisMessage = false;
     try {
       const job = branchJob(message.body);
       // Ack first, then enqueue. The enqueue used to come first, so a batch
@@ -190,6 +194,7 @@ export async function handleBranchJobs(batch, process, queue = null, onExhausted
       // own cursor, and `branchJobIsCurrent` is what drops it.
       const result = await process(job);
       message.ack();
+      ackedThisMessage = true;
       acked += 1;
       if (result?.continue && queue) {
         await sendBranchJob(queue, job);
@@ -214,6 +219,7 @@ export async function handleBranchJobs(batch, process, queue = null, onExhausted
         try {
           await onExhausted(message.body, error);
           message.ack();
+          ackedThisMessage = true;
           acked += 1;
           continue;
         } catch (cleanupError) {
@@ -222,6 +228,22 @@ export async function handleBranchJobs(batch, process, queue = null, onExhausted
             cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
           );
         }
+      }
+      if (ackedThisMessage) {
+        // The batch itself finished and its ack stands; what failed is the
+        // enqueue of the continuation, and there is nothing to retry. The
+        // chain stops here, and the row stays in the state it is in, which is
+        // what the resume route reads: a stuck creating/approving row is
+        // resumed or cancelled through the API rather than through a second
+        // run of a batch that already ran (drive#766).
+        console.error(
+          "branch job finished but the next batch was not enqueued",
+          `kind=${String(body?.kind)}`,
+          `account=${String(body?.accountId)}`,
+          `name=${String(body?.name)}`,
+          error instanceof Error ? error.message : String(error),
+        );
+        continue;
       }
       message.retry();
       retried += 1;

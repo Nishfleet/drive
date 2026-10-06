@@ -710,6 +710,55 @@ test("a redelivered message whose cursor already moved is a no-op", async () => 
   assert.deepEqual(gone, { done: true }, "a message for a row that is gone is acked");
 });
 
+test("the parts sweep takes only a name that is one of ours", async () => {
+  // The rule the part reader already follows (src/branches.js jobPartLine):
+  // a name that is not this parent's own part is never read and never
+  // deleted. The sweep runs when a create folds its parts into the one
+  // snapshot value, so a key that shares the prefix but is another job's is
+  // not this one to take (drive#766).
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  const db = createTestD1();
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
+  const queue = fakeQueue();
+  const created = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "parts" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(created.state, "creating");
+  const row = await getBranch(db, snapshots, ACCOUNT, "parts");
+  assert.ok(row, "the row was claimed");
+  const key = row.snapshotKey;
+  assert.ok(key, "the branch has a snapshot key");
+  const prefix = `${key}.a`;
+  // The three shapes that carry the prefix but are not a part: a key beside
+  // the parts, a name whose body is not a line index, and the prefix on its
+  // own.
+  const strangers = [`${key}.extra`, `${prefix}7.x`, prefix];
+  const ours = [`${prefix}0.0`, `${prefix}1.1`];
+  for (const name of [...strangers, ...ours]) {
+    kv.values.set(name, "x");
+  }
+  assert.ok(
+    typeof snapshots.deleteParts === "function",
+    "the store sweeps the parts of its own key",
+  );
+  assert.equal(await snapshots.deleteParts(key), 2, "only the two parts were swept");
+  for (const name of strangers) {
+    assert.equal(kv.values.has(name), true, `${name} is still in the namespace`);
+  }
+  for (const name of ours) {
+    assert.equal(kv.values.has(name), false, `${name} is gone`);
+  }
+});
+
 test("a cancel that cannot remove the copy keeps the name claimed", async () => {
   // The other side of the cancel's order. If the copy cannot be removed the
   // row keeps its claim and says `storage-down`, so the next create of that name
@@ -945,6 +994,54 @@ test("handleBranchJobs acks a finished batch, retries a throw, and continues", a
   assert.equal(bad.retried, true);
   assert.equal(next.acked, true);
   assert.equal(queue.sent.length, 1);
+});
+
+test("handleBranchJobs never retries a batch that already acked", async () => {
+  // The continuation enqueue is inside the same try as the ack, so a send
+  // failure lands in the catch after the ack. A retry there would repeat a
+  // batch that already ran, so the message stays acked and the chain stops
+  // (drive#766).
+  /** @type {Array<{body: unknown, ack: () => void, retry: () => void, attempts?: number, acked?: boolean, retried?: boolean}>} */
+  const messages = [];
+  const job = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-1",
+    branchId: 1,
+    name: "work",
+  };
+  /** @param {unknown} body */
+  const make = (body) => {
+    /** @type {{body: unknown, ack: () => void, retry: () => void, attempts?: number, acked?: boolean, retried?: boolean}} */
+    const message = {
+      body,
+      attempts: 1,
+      ack() {
+        message.acked = true;
+      },
+      retry() {
+        message.retried = true;
+      },
+    };
+    messages.push(message);
+    return message;
+  };
+  const message = make(job);
+  /** @type {{sent: Array<{body: unknown}>, send: (body: unknown) => Promise<unknown>}} */
+  const queue = {
+    sent: [],
+    send() {
+      return Promise.reject(new Error("send failed"));
+    },
+  };
+  const stats = await handleBranchJobs(
+    { messages: [message] },
+    async () => ({ continue: true }),
+    queue,
+  );
+  assert.equal(stats.acked, 1);
+  assert.equal(stats.retried, 0);
+  assert.equal(message.acked, true);
+  assert.equal(message.retried, undefined);
 });
 
 test("branchJobIsCurrent answers the four cursor cases without guessing", () => {
