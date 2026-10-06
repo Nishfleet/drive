@@ -196,7 +196,11 @@ func TestDoctorAPIUnreachableNamesTheAddress(t *testing.T) {
 	var b strings.Builder
 	// Port 1 on loopback refuses; the read never gets a status code.
 	const tried = "https://127.0.0.1:1"
-	printDoctorAPI(&b, t.TempDir(), tried)
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: tried, DeviceToken: "dtok_test"}); err != nil {
+		t.Fatal(err)
+	}
+	printDoctorAPI(&b, home, tried)
 	got := doctorAPILine(b.String())
 	if !strings.HasSuffix(got, "("+tried+")") {
 		t.Errorf("unreachable api = %q, want the address it tried in brackets at the end", got)
@@ -352,4 +356,83 @@ func countNonBlankLines(s string) int {
 		}
 	}
 	return n
+}
+
+// TestDoctorLogTailScrubsSecrets seeds a mount.log with the credential shapes
+// a log can carry and runs the real print path: no secret may survive into
+// the block people paste into a support message, and an ordinary line must
+// come through unchanged.
+func TestDoctorLogTailScrubsSecrets(t *testing.T) {
+	const plain = "2026/10/07 10:00:00 NOTICE: mount ready at /home/u/Drive"
+	cases := []struct{ name, line, secret string }{
+		{"device token", "login ok token dtok_AbC123-xyz_9 saved", "dtok_AbC123-xyz_9"},
+		{"bearer", "GET /usage Bearer abc.def-123 failed", "abc.def-123"},
+		{"authorization", "Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"},
+		{"sigv4 header", "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261007/auto/s3/aws4_request, SignedHeaders=host, Signature=deadbeef01", "AKIAEXAMPLE"},
+		{"sigv4 header signature", "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/x, Signature=deadbeef01", "deadbeef01"},
+		{"sigv4 no header name", "sent AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261007/auto/s3/aws4_request, Signature=cafe0123", "AKIAEXAMPLE"},
+		{"presigned signature", "GET https://b.example/k?X-Amz-Signature=0123abcd&X-Amz-Expires=60", "0123abcd"},
+		{"presigned credential", "GET https://b.example/k?X-Amz-Credential=AKIAEXAMPLE%2F2026&X-Amz-Date=1", "AKIAEXAMPLE"},
+		{"presigned token", "GET https://b.example/k?a=1&X-Amz-Security-Token=FwoGZXIvYXdz", "FwoGZXIvYXdz"},
+		{"plain Signature", "url ?Signature=abcdef99&x=1", "abcdef99"},
+		{"access key equals", "access_key_id=AKIAEXAMPLE2 ok", "AKIAEXAMPLE2"},
+		{"secret json", `{"secret_access_key": "wJalrXUtnFEMI", "n": 1}`, "wJalrXUtnFEMI"},
+		{"session token colon", "session_token: IQoJb3JpZ2luX2Vj", "IQoJb3JpZ2luX2Vj"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mount.log")
+			if err := os.WriteFile(path, []byte(plain+"\n"+tc.line+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var b strings.Builder
+			printDoctorLogFile(&b, path, 20)
+			got := b.String()
+			if strings.Contains(got, tc.secret) {
+				t.Errorf("secret %q survived: %q", tc.secret, got)
+			}
+			if !strings.Contains(got, "<redacted>") {
+				t.Errorf("no <redacted> mark in %q", got)
+			}
+			if !strings.Contains(got, plain) {
+				t.Errorf("ordinary line changed: %q", got)
+			}
+		})
+	}
+	if got := scrubLogLine(plain); got != plain {
+		t.Errorf("scrubLogLine changed an ordinary line: %q", got)
+	}
+}
+
+// TestDoctorAPIExplicitBaseWithoutTokenIsNotSignedIn checks that an explicit
+// --api on a device with no stored token names the missing login instead of
+// calling the Worker with an empty token.
+func TestDoctorAPIExplicitBaseWithoutTokenIsNotSignedIn(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }))
+	defer srv.Close()
+	var b strings.Builder
+	printDoctorAPI(&b, t.TempDir(), srv.URL)
+	got := b.String()
+	if !strings.Contains(got, "not signed in") || !strings.Contains(got, "drive login") || !strings.Contains(got, srv.URL) {
+		t.Errorf("explicit --api, no token = %q, want the login line and the address", got)
+	}
+	if hit {
+		t.Error("the api was called with an empty token")
+	}
+}
+
+// TestTroubleshootingPageNamesWhatTheCodeUses keeps the docs page from
+// drifting off the code: the unit name and the log file name it tells people
+// to look for are the constants the CLI itself uses.
+func TestTroubleshootingPageNamesWhatTheCodeUses(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("..", "..", "docs-site", "troubleshooting.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{SystemdUnitName, filepath.Base(filepath.Join(DefaultConfigDir("/h"), "mount.log"))} {
+		if !strings.Contains(string(page), want) {
+			t.Errorf("docs-site/troubleshooting.md does not mention %q", want)
+		}
+	}
 }

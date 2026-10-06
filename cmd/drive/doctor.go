@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -169,6 +170,36 @@ func printDoctorLogs(w io.Writer, goos, home string, lines int) {
 	printDoctorLogFile(w, filepath.Join(DefaultConfigDir(home), "mount.log"), lines)
 }
 
+// logSecretPatterns are the shapes of a credential that can reach a log line:
+// a device token (the `dtok_` ids core/device-signin.js issues), an
+// Authorization header or a bearer value, the query values of a presigned
+// storage URL, and the key fields of an S3 credential. They are compiled once
+// at package level, and each keeps its name so only the value is masked and a
+// support reader still sees which field was there. The Authorization rule
+// comes first and takes the rest of the line, because a SigV4 header carries
+// spaces and commas inside one value.
+var logSecretPatterns = []struct {
+	re   *regexp.Regexp
+	with string
+}{
+	{regexp.MustCompile(`\bdtok_[A-Za-z0-9_-]+`), `<redacted>`},
+	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*).*`), `${1}<redacted>`},
+	{regexp.MustCompile(`(?i)(bearer\s+)[^\s"',;]+`), `${1}<redacted>`},
+	{regexp.MustCompile(`(?i)\b(x-amz-signature|x-amz-credential|x-amz-security-token|signature|credential)=[^&\s"',]+`), `${1}=<redacted>`},
+	{regexp.MustCompile(`(?i)\b(access_key_id|secret_access_key|session_token)(["']?\s*[:=]\s*["']?)[^\s"',&]+`), `${1}${2}<redacted>`},
+}
+
+// scrubLogLine masks every credential shape in one log line with the word
+// config.go and mount.go already use, `<redacted>`. The block doctor prints is
+// made to be pasted into a support message, so a secret in the mount's log
+// must not travel with it. An ordinary line comes back unchanged.
+func scrubLogLine(line string) string {
+	for _, p := range logSecretPatterns {
+		line = p.re.ReplaceAllString(line, p.with)
+	}
+	return line
+}
+
 // printDoctorLogFile prints the tail of a log file this CLI or its login item
 // wrote. Every branch ends with a line, so a missing or empty log reads as an
 // answer.
@@ -184,7 +215,7 @@ func printDoctorLogFile(w io.Writer, path string, lines int) {
 	}
 	fmt.Fprintf(w, "log:    last %d line(s) of %s\n", len(tail), path)
 	for _, line := range tail {
-		fmt.Fprintf(w, "        %s\n", line)
+		fmt.Fprintf(w, "        %s\n", scrubLogLine(line))
 	}
 }
 
@@ -205,7 +236,7 @@ func printDoctorJournal(w io.Writer, home string, lines int) {
 	}
 	fmt.Fprintf(w, "log:    last %d line(s) of journalctl --user -u %s\n", lines, SystemdUnitName)
 	for _, line := range strings.Split(text, "\n") {
-		fmt.Fprintf(w, "        %s\n", line)
+		fmt.Fprintf(w, "        %s\n", scrubLogLine(line))
 	}
 }
 
@@ -287,6 +318,13 @@ func printDoctorAPI(w io.Writer, home, apiFlag string) {
 	creds, err := LoadCredentials(home)
 	if err != nil {
 		fmt.Fprintf(w, "api:    unknown (%s)\n", firstLine(err.Error()))
+		return
+	}
+	// An explicit --api with no stored token would send an empty bearer and
+	// report the Worker's 401 as if the address were the problem. The honest
+	// answer is the same one a bare device gets, with the address beside it.
+	if strings.TrimSpace(creds.DeviceToken) == "" {
+		fmt.Fprintf(w, "api:    not signed in on this device (run `drive login`) (%s)\n", base)
 		return
 	}
 	if reason := doctorAPIReason(base, creds.DeviceToken); reason != "" {

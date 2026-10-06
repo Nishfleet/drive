@@ -1,6 +1,6 @@
 ---
 title: When something goes wrong
-description: The three commands to run first, where the log lives on each system, moving to a new laptop, a lost laptop, your email, and taking your files out.
+description: What to run first, where the log lives on each system, moving to a new laptop, a lost laptop, your email, and taking your files out.
 ---
 
 # When something goes wrong
@@ -12,10 +12,10 @@ page is the map for the rest. What it does not fix, it hands you as a block to
 send: [Support](https://drive-pricing.nishant345.workers.dev/support) says how
 to reach a person.
 
-## The three commands
+## What to run first
 
-Run them in this order and read what each prints. The third pair is for a
-mount that will not come up.
+Run them in this order and read what each prints. The last step, `drive
+unmount` then `drive mount`, is one fix for a mount that will not come up.
 
 ```sh
 drive status
