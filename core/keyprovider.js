@@ -20,7 +20,7 @@
  * own id for the row that now holds its hash. A raw storage provider persists
  * no rows, so it has no id to hand back, which is why this is a type of its
  * own rather than KeyProvider with an optional field (drive#371).
- * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>}} AccountKeyProvider
+ * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>, swapPrepaidToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
  *
  * @typedef {object} KeyProvider
  * @property {(scope: KeyScope, options?: {expiresAt?: number|null, cappedReason?: string|null}) => Promise<MintedCredential>} mint
