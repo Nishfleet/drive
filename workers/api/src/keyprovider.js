@@ -147,7 +147,11 @@ export function keyTtlSeconds(kind) {
  */
 export function mintTtlSeconds(kind, providerExpiresIn) {
   const ceiling = keyTtlSeconds(kind);
-  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn) || providerExpiresIn <= 0) {
+  if (
+    typeof providerExpiresIn !== "number" ||
+    !Number.isFinite(providerExpiresIn) ||
+    providerExpiresIn <= 0
+  ) {
     return ceiling;
   }
   // No ceiling of its own: the provider's session is the only lifetime there is.

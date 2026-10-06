@@ -450,7 +450,12 @@ test("a provider that names a session is recorded on a device row, not read as f
     now: clock.now,
     keyProvider: {
       async mint() {
-        return { accessKeyId: "ak_sts", secret: "sk_sts", sessionToken: "stok", expiresIn: session };
+        return {
+          accessKeyId: "ak_sts",
+          secret: "sk_sts",
+          sessionToken: "stok",
+          expiresIn: session,
+        };
       },
     },
     deviceStore: createD1DeviceStore(db, { now: clock.now }),
@@ -460,14 +465,20 @@ test("a provider that names a session is recorded on a device row, not read as f
   const minted = await store.mintKey(account, { kind: "device", name: "laptop" });
 
   // The row and the answer carry the provider's own window.
-  assert.equal(rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at, at + session);
+  assert.equal(
+    rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at,
+    at + session,
+  );
   assert.equal(minted.expiresAt, at + session);
   // The credential dies when the session does, not an hour later, and a second
   // instance over the same database agrees without sharing any memory with this
   // one (index.js `storeFor` builds a store per request).
   const second = storeOver(db, clock);
   clock.advance(session - 1);
-  assert.ok(await second.authenticate(minted.accessKeyId, minted.secret), "the session is still open");
+  assert.ok(
+    await second.authenticate(minted.accessKeyId, minted.secret),
+    "the session is still open",
+  );
   clock.advance(2);
   assert.equal(
     await second.authenticate(minted.accessKeyId, minted.secret),
@@ -475,4 +486,3 @@ test("a provider that names a session is recorded on a device row, not read as f
     "the credential is refused once the provider's session has run out",
   );
 });
-
