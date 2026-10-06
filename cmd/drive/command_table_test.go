@@ -116,7 +116,7 @@ func TestHelpNamesTheDocsPageTheStatusLineNames(t *testing.T) {
 // command that does not exist.
 func TestNotesNameOnlyRealCommands(t *testing.T) {
 	for _, note := range []struct{ name, body string }{
-		{"the in-folder note", noteBody("/drive")},
+		{"the in-folder note", noteBody(Env{DriveDir: "/drive", AgentDir: "/drive-agents/claude"})},
 		{"the skill note", skillBody("/drive")},
 	} {
 		named := noteCommands(note.body)

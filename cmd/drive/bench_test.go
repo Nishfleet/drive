@@ -167,7 +167,7 @@ func benchSetup(tb testing.TB) *benchStandin {
 		benchH = benchStart(tb)
 	})
 	if benchH == nil {
-		tb.Skip("this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
+		skipNoMount(tb, "this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
 	}
 	return benchH
 }
@@ -630,7 +630,7 @@ func BenchmarkInstallToMounted(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit an unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit an unprivileged FUSE mount")
 	}
 	f, err := os.Open(filepath.Join(mountDir, "bench-install.bin"))
 	if err != nil {
@@ -679,7 +679,7 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountB).Run()
 	}()
 	if !waitForMount(b, mount, mountB) {
-		b.Skip("this host does not permit a second unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit a second unprivileged FUSE mount")
 	}
 
 	const name = "bench-sync.txt"
@@ -791,7 +791,7 @@ func BenchmarkMountReady(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit a second unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit a second unprivileged FUSE mount")
 	}
 	h.report(b, "mount-ready", "ready", time.Since(start), 0)
 }
@@ -884,7 +884,7 @@ func BenchmarkPrefetchMountReady(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit an unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit an unprivileged FUSE mount")
 	}
 	d := time.Since(start)
 	b.Logf("prefetch-bench metric=mount-ready value=%.3f unit=s", d.Seconds())
