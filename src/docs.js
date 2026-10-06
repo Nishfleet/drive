@@ -181,7 +181,7 @@ export const KEY_TABLE = Object.freeze(
 
 /**
  * Space's 1 TB price, as the scoreboard's "price at 1 TB" row records it
- * (docs/scoreboard.md, checked on spacefs.com 2026-09-30): about $20 month to
+ * (docs/scoreboard.md, checked 2026-09-30): about $20 month to
  * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
  * test/docs.test.mjs still fails if either number leaves that internal row.
  */
