@@ -2,25 +2,25 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import "urlpattern-polyfill";
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
-import { createTestD1 } from "../../../test/harness.mjs";
-import { sha256Hex } from "../src/db.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
+import { sha256Hex } from "../../../core/db.js";
 import {
   createD1DeviceSigninStore,
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
-} from "../src/device-signin.js";
+} from "../../../core/device-signin.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import { createTestD1 } from "../../../test/harness.mjs";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 
-// The session cookie Better Auth mints, named by src/auth.js
+// The session cookie Better Auth mints, named by core/auth.js
 // `AUTH_COOKIE_PREFIX` (the same name test/auth.test.mjs asserts against a real
 // instance): `__Secure-` because the site is HTTPS only, then the prefix, then
 // Better Auth's own session name.
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 
 // The sign-in store the api Worker resolves a browser approval through:
-// src/auth.js `authFor` builds a Better Auth instance and src/status.js
+// core/auth.js `authFor` builds a Better Auth instance and core/status.js
 // `signedInAccount` asks it for the session the cookie names, so a stand-in
 // here speaks `api.getSession`. One token is signed in; every other value the
 // browser could have invented has no session.
@@ -845,7 +845,7 @@ test("a code started by the route is approvable from a fresh instance (drive#136
     signin: createD1DeviceSigninStore(db, { now: () => 0 }),
   });
   const accounts = accountsFor("sess_ok");
-  /** @param {import("../src/device-signin.js").DeviceSigninStore} signin */
+  /** @param {import("../../../core/device-signin.js").DeviceSigninStore} signin */
   const ctxFor = (signin) => ({
     env: {
       DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },

@@ -14,6 +14,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - The spec says what to build and why. The code and its tests say what is built. When they differ, the code wins, and the finished work is listed in `docs-site/changelog.md` and `docs/scoreboard.md`. `docs/build-spec.md` is 300 lines, so search it for the step you need instead of reading it whole.
 - An issue can name a path that has moved. Check `README.md` ("The repository") before you search. The static pages are in `public/`, but `get-started.html` sits at the repo root and Vite builds it to `/get-started.html`.
 - The site Worker is `src/index.js` (the route table). The api Worker is `workers/api/src/index.js`. The download Worker is `workers/dl/src/index.js`. The CLI is `cmd/drive/`. Each has its tests beside it: `test/` for the site Worker, `workers/*/test/`, and `cmd/drive/*_test.go`.
+- `core/` is the code all three Workers share (drive issue #616). A module more than one Worker needs lives there, never in one Worker's own `src/`. `biome.json` refuses an import that crosses: a module in `src/` or `core/` may not import a `workers/**` tree, and a module in a Worker's own `workers/*/src/` may not import the site Worker's `src/`. So a cross-import fails `npm run lint`; the way to share a module is to move it into `core/` and import it from there. `test/pr-gate.test.mjs` gate 8 plants each crossing and proves the rule on every `npm test` run.
 - The D1 bindings are `WAITLIST_DB` and `DRIVE_DB` in `cloudflare.config.ts`. There is no plain `DB`. Migrations live in `migrations/waitlist/` and `migrations/drive/`.
 
 ## Set up and check fast
@@ -40,12 +41,12 @@ A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that
 
 A PR that adds a `bindings.secret()` lists the secret's name in its body under 'Secrets to set' and stays draft until it is set on drive-pricing (`test/worker-secrets.test.mjs`).
 
-- [ ] The route is in the `src/index.js` table, behind the account gate (`signedInAccount`, `src/status.js`) or on the public list there, with the anonymous-401 proof in `test/status.test.mjs`.
-- [ ] Every read and write stays in the account its store was built for — `src/files.js` pins `u/${account}` into every storage key — and `test/pr-gate.test.mjs` proves, through the request path, that one account's requests can neither read nor list another account's bytes.
-- [ ] Input is validated at the edge (`validatePath`, `safeFileName` in `src/files.js`; `test/files.test.mjs`), and a file leaves as an attachment or as preview bytes a browser cannot read as a page — the preview serves the file's kind, never the upload's claim, with `nosniff` and a sandbox (`src/files.js`).
+- [ ] The route is in the `src/index.js` table, behind the account gate (`signedInAccount`, `core/status.js`) or on the public list there, with the anonymous-401 proof in `test/status.test.mjs`.
+- [ ] Every read and write stays in the account its store was built for — `core/files.js` pins `u/${account}` into every storage key — and `test/pr-gate.test.mjs` proves, through the request path, that one account's requests can neither read nor list another account's bytes.
+- [ ] Input is validated at the edge (`validatePath`, `safeFileName` in `core/files.js`; `test/files.test.mjs`), and a file leaves as an attachment or as preview bytes a browser cannot read as a page — the preview serves the file's kind, never the upload's claim, with `nosniff` and a sandbox (`core/files.js`).
 - [ ] No secret in code, flags, logs or error text: gitleaks on every PR (`.github/workflows/ci.yml`) and the safety rules `test/messages.test.mjs` enforces on every string.
-- [ ] Money is whole cents out of the one billing function, `monthBillCents` (`src/billing.js`), pinned by `test/billing.test.mjs`.
+- [ ] Money is whole cents out of the one billing function, `monthBillCents` (`core/billing.js`), pinned by `test/billing.test.mjs`.
 - [ ] Tests come first for core logic, and `npm test` is green before the PR; `.github/workflows/ci.yml` runs that same command with the helper-script ban and gitleaks beside it. `npm test` reaches Biome through `pretest` -> `check`, so `npm run lint` is part of what CI runs; `npm run format` writes the fix.
-- [ ] User-facing failure words are the one table's (`src/messages.js`), and `test/messages.test.mjs` fails on a string that drifts from it.
+- [ ] User-facing failure words are the one table's (`core/messages.js`), and `test/messages.test.mjs` fails on a string that drifts from it.
 - [ ] Customer-facing copy uses our words, never a rival's terms (`test/own-words.test.mjs`).
 - [ ] The PR says what was proven on real records and what was not, with the path, id or timestamp that proves it (`docs/build-spec.md`).

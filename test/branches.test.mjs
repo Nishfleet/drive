@@ -2,13 +2,15 @@
 // branches table is exercised against a real SQLite engine via node:sqlite,
 // with the shipped migrations applied — D1 is SQLite, so the SQL the Worker
 // runs is the SQL these tests run. Storage is the in-memory FileStore
-// (src/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
+// (core/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
 // own copy call is pinned separately in test/files.test.mjs.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
   approveBranch,
   BRANCHES_ENDPOINT,
@@ -27,9 +29,7 @@ import {
   sameFile,
   snapshotKey,
 } from "../src/branches.js";
-import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
 import { REQUIRED_BINDINGS } from "../src/health.js";
-import { failureMessage } from "../src/messages.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -232,7 +232,7 @@ async function driven() {
 }
 
 /**
- * @param {import("../src/files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {string} path
  * @returns {Promise<string|null>}
  */
@@ -369,7 +369,7 @@ test("the folder walk hands each copy the size its listing reported", async () =
   /** @type {Array<{from: string, to: string, size: number|undefined}>} */
   const copies = [];
   const listing = scoped.list.bind(scoped);
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const store = {
     ...scoped,
     async list(path) {

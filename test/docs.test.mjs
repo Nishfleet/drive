@@ -1,7 +1,7 @@
 // The docs site (drive issue #98): every page reachable, every number the
 // invoice's own, and the agent-facing index complete. The docs are a generated
 // section of the site, so the gate is the same one the shipped pricing page
-// uses: the tests build their expectations from src/billing.js and fail CI
+// uses: the tests build their expectations from core/billing.js and fail CI
 // when a page drifts from it.
 
 import assert from "node:assert/strict";
@@ -14,12 +14,19 @@ import {
   minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
-} from "../src/billing.js";
-import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+} from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
+import { PAGES, SITE } from "../core/seo.js";
+import {
+  agentDeleteSentence,
+  FAQ,
+  faqMarkdown,
+  markerValues,
+  RIVAL_1TB_LINE,
+  scoreboardVerdict,
+} from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
-import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
-import { PAGES, SITE } from "../src/seo.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
@@ -191,20 +198,21 @@ test("the agents page names the tools the CLI connects and their real powers", (
   for (const tool of AGENT_TOOLS) {
     assert.ok(page.includes(tool), `the agents page must name the ${tool} tool`);
   }
-  // The key table is read from workers/api/src/keyprovider.js, so the page
-  // cannot claim a power the api Worker does not grant.
+  // The key table is read from core/keyprovider.js, so the page
+  // cannot claim a power the api Worker does not grant, and the delete and
+  // reach sentences from what the storage enforces (test/key-truth.test.mjs).
   assert.equal(KEY_POWERS.device.canDelete, true);
   assert.equal(KEY_POWERS.agent.canDelete, false);
   assert.ok(
-    page.includes("An agent key cannot delete a file."),
-    "the agents page must say an agent key cannot delete",
+    page.includes(agentDeleteSentence()),
+    "the agents page must say what an agent key's delete really does",
   );
   assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {
   const page = shipped("security.md");
-  assert.ok(page.includes("An agent key cannot delete a file."));
+  assert.ok(page.includes(agentDeleteSentence()));
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the security page must state the default cap",
@@ -225,7 +233,7 @@ test("the security page answers whether writing resumes once the cap is raised",
   // stack: docs-site/*.md and `drive --help` both said the drive goes read-only
   // at the cap, and neither said what raising it does. The pages an agent
   // reads were also the only place the answer could live, because the code that
-  // decides it (src/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
+  // decides it (core/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
   // is not served. So the answer is one sentence on the page that already
   // states the cap, and this pins it: an eval cannot grade an answer the
   // reading stack does not carry, and a page that loses the sentence fails here
@@ -297,7 +305,7 @@ test("the changelog opens today and every entry is a real line", () => {
 
 test("the changelog's docs list names every page in DOC_PAGES order", () => {
   // The changelog repeats the docs list in prose ("These docs: ..."), a second
-  // copy of src/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
+  // copy of core/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
   // sitemap and the built site, but not in this sentence, so an agent reading
   // the changelog missed a shipped page. The gate reads that one sentence and
   // requires every DOC_PAGES title, in the same order, so the next page added
@@ -504,7 +512,7 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
 test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  // The indexable pages come from src/seo.js PAGES rather than a typed path,
+  // The indexable pages come from core/seo.js PAGES rather than a typed path,
   // so a page that moves there moves this expectation with it instead of the
   // test and the sitemap drifting together.
   assert.deepEqual(
@@ -590,20 +598,33 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
 });
 
 test("the docs config and the site's own config agree on the origin", () => {
-  // The VitePress config cannot import src/seo.js (it is outside the docs
-  // project, and VitePress's Vite will not load from there), so it repeats the
-  // origin. This is the gate that keeps the repeat honest: a base or an origin
-  // edited in one place fails here rather than shipping a docs site on a
-  // different host from the pricing page.
+  // The one site address lives in cmd/drive/site.json (drive#527). The docs
+  // config and core/seo.js both import it, so this gate checks the docs config
+  // reads that file and writes no address of its own, and that core/seo.js
+  // carries the same value.
   const config = readFileSync(
     new URL("../docs-site/.vitepress/config.mts", import.meta.url),
     "utf8",
   );
   assert.match(
     config,
-    new RegExp(`const SITE_ORIGIN = "${SITE.origin}";`),
-    "the docs config must use the canonical origin from src/seo.js",
+    /import site from "\.\.\/\.\.\/cmd\/drive\/site\.json" with \{ type: "json" \};/,
+    "the docs config must import the one site address from cmd/drive/site.json",
   );
+  assert.match(
+    config,
+    /const SITE_ORIGIN = site\.origin/,
+    "the docs config must take its origin from site.json",
+  );
+  assert.doesNotMatch(
+    config,
+    /https:\/\/[a-z0-9.-]+\.(dev|com|in|app)/,
+    "the docs config must not write a site address of its own",
+  );
+  const siteFile = JSON.parse(
+    readFileSync(new URL("../cmd/drive/site.json", import.meta.url), "utf8"),
+  );
+  assert.equal(SITE.origin, siteFile.origin, "core/seo.js must read the same site address");
   assert.match(
     config,
     /base: "\/docs\/"/,
