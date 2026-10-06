@@ -1137,7 +1137,7 @@ func TestExcludeTransientFromBackupWithoutTmutilIsNotAMountFailure(t *testing.T)
 func TestExcludeTransientFromBackupIsANoOpOffMacOS(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(bin, "calls")
-	fake := "#!/bin/sh\nprintf '%s\n' \"$@\" >> " + log + "\nexit 0\n"
+	fake := "#!/bin/sh\nprintf '%s\n' \"$*\" >> " + log + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "tmutil"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
