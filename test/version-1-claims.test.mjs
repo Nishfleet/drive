@@ -228,7 +228,8 @@ test("every surface named in the issue states the facts it is about", () => {
 // ---------------------------------------------------------------------------
 
 test("customer pages do not sell a $5 roll-over or a live team bill", () => {
-  const leak = /roll into the next|reaches \$5|chargeThreshold|unpaid_cents|one company bill split by team/;
+  const leak =
+    /roll into the next|reaches \$5|chargeThreshold|unpaid_cents|one company bill split by team/;
   for (const surface of [
     "public/index.html",
     "public/signin.html",
@@ -248,7 +249,11 @@ test("every Get drive button goes to the waitlist while sign-up is invite-only",
   assert.doesNotMatch(index, /<a class="btn" href="\/signin">Get drive/);
   const buttons =
     index.match(/<a class="btn" href="#waitlist" data-waitlist-source="[^"]+">Get drive/g) ?? [];
-  assert.equal(buttons.length, 3, `three Get drive buttons to the waitlist, found ${buttons.length}`);
+  assert.equal(
+    buttons.length,
+    3,
+    `three Get drive buttons to the waitlist, found ${buttons.length}`,
+  );
 });
 
 test("get-started names Linux, not only Mac", () => {
