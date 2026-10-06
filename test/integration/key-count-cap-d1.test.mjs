@@ -235,7 +235,10 @@ test("s3 and branch keys count toward the same cap, and mintTeamKey cannot walk 
   const store = storeOver(db, clock, provider);
   const { account, deviceToken } = await signIn(store, "kinds");
 
-  assert.equal((await mintThroughRoute(store, deviceToken, {}, { kind: "s3", name: "s3" })).status, 201);
+  assert.equal(
+    (await mintThroughRoute(store, deviceToken, {}, { kind: "s3", name: "s3" })).status,
+    201,
+  );
   assert.equal(
     (await mintThroughRoute(store, deviceToken, {}, { kind: "branch", name: "b" })).status,
     201,

@@ -71,9 +71,7 @@ export async function runKeySweep({ devices, provider, now }) {
         "key-sweep: dead vendor keys need a provider on this Worker, and this deployment has none",
       );
     }
-    console.log(
-      "key-sweep: this deployment mints no vendor keys, so there is nothing to sweep",
-    );
+    console.log("key-sweep: this deployment mints no vendor keys, so there is nothing to sweep");
     return { considered: 0, removed: 0, failed: 0, vendorKeys: null };
   }
   if (typeof provider.revoke !== "function") {

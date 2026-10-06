@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SESSION_TTL_SECONDS } from "../../../core/auth.js";
 import { readGrant } from "../../../core/grant.js";
-import { bucketForAccount, CAPABILITIES_BY_KIND, KEY_COUNT_CAP } from "../../../core/keyprovider.js";
+import {
+  bucketForAccount,
+  CAPABILITIES_BY_KIND,
+  KEY_COUNT_CAP,
+} from "../../../core/keyprovider.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   authorizePath,
