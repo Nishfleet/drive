@@ -3376,40 +3376,44 @@ async function restoreRequest(request, store, account, now) {
     const parkedAt = trashStorePath(
       found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
     );
-    // The destination is listed before anything moves, for the reason the
-    // delete lists its source: the copy below writes over whatever is at this
-    // path, so the bytes there now have to be the ones the restore was asked
-    // to replace. A file at that path when the restore started carries an ETag
-    // here, and a save that lands between this listing and the copy is caught
-    // by it. A path with nothing at it lists nothing, and that is held to as
-    // "still empty" rather than left unguarded: a save that creates the path in
-    // that window is the same loss as one that replaces a file there, so the
-    // two are asked for in the two shapes the store answers
-    // (drive issue #605).
+    // A file already at the live path is a save that landed after the delete.
+    // Copying over it would throw those bytes away, so the restore stops here
+    // and leaves both copies where they are (drive issue #605).
     const destination = await listingEntry(store, checked.path);
-    const destinationGuard =
-      destination && typeof destination.etag === "string" && destination.etag !== ""
-        ? { ifMatch: destination.etag }
-        : { ifAbsent: true };
-    // The mirror of the delete: the copy is the storage's own, so the bytes
-    // never come through the Worker, and the remove is conditional on the ETag
-    // the trash listing carried. The listing above is what found the row, so
-    // the parked file is there unless a second restore ran in the same tick.
-    // The copy is held to the destination as well: CopyObject cannot carry
-    // that precondition itself, so the store reads the destination immediately
-    // before it writes and refuses when it is no longer what this listing said.
-    // Without the guard the copy would put the parked bytes over a save that
-    // landed while the restore ran, and the conditional remove below would
-    // clear the trash copy of the newer file as well, so nothing would be left
-    // to recover. The refusal is raised by the copy itself, which is why it
-    // lands here rather than around the move.
-    await store.copy(parkedAt, checked.path, found.size, destinationGuard);
-    const etag = typeof found.etag === "string" ? found.etag : null;
+    if (destination) {
+      return json({ error: failureMessage("restore-file-changed") }, 409);
+    }
+    // The destination listed empty. The copy is the storage's own, so the bytes
+    // never come through the Worker, and it is held to that emptiness: a save
+    // that creates the path before the write is refused the same way. CopyObject
+    // cannot carry that precondition itself, so the store reads the destination
+    // immediately before it writes (drive issue #605).
+    await store.copy(parkedAt, checked.path, found.size, { ifAbsent: true });
+    // Re-list right after the copy. A save that lands during the copy can still
+    // win the live path, because the guard is a read and not a lock. If the
+    // bytes there are no longer the parked ones, the save stays at the path,
+    // the parked copy stays in Recently deleted, and the person is told
+    // (drive issue #605). A listing that reports no ETag cannot make that
+    // comparison, so it is not treated as a change: refusing here would turn
+    // every restore on a store that lists without ETags into a 409.
+    const after = await listingEntry(store, checked.path);
+    const parkedEtag = typeof found.etag === "string" ? found.etag : "";
+    if (!after) {
+      return json({ error: failureMessage("restore-file-changed") }, 409);
+    }
+    if (
+      typeof after.etag === "string" &&
+      after.etag !== "" &&
+      parkedEtag !== "" &&
+      etagMismatch(after.etag, parkedEtag)
+    ) {
+      return json({ error: failureMessage("restore-file-changed") }, 409);
+    }
     // A copy that lands while this one runs changes the parked key, and the
     // remove of it is refused: the file is back, the parked copy that changed is
     // still parked, and the person is asked to try the restore again, which
     // brings back the newer parked copy.
-    await store.remove(parkedAt, { ifMatch: etag });
+    await store.remove(parkedAt, { ifMatch: parkedEtag || null });
     return json({ ok: true, path: checked.path });
   } catch (cause) {
     if (cause instanceof ChangedUnderUsError) {

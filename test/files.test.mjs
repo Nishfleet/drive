@@ -1191,10 +1191,10 @@ function moveRecorder(inner, big, onCopy) {
  * ETag) and before the copy writes, which is the window drive issue #605 is
  * about. The delete's guard is the conditional remove that comes after its copy,
  * so its own test uses the seam in `moveRecorder` above.
- * @param {import("../src/files.js").FileStore} inner
+ * @param {import("../core/files.js").FileStore} inner
  * @param {() => Promise<void>} beforeCopy
  * @param {string[]} [calls]
- * @returns {import("../src/files.js").FileStore & {calls: string[]}}
+ * @returns {import("../core/files.js").FileStore & {calls: string[]}}
  */
 function beforeCopyRecorder(inner, beforeCopy, calls = []) {
   return {
@@ -1330,6 +1330,7 @@ test("delete and restore move a 200 MB object by copying it in the storage, not 
     `list u/1/.trash/big.iso`,
     "list u/1/",
     `copy u/1/.trash/${trash} u/1/big.iso ${big} if empty`,
+    "list u/1/",
     `remove u/1/.trash/${trash} if ${parkedEtag}`,
   ]);
   assert.ok(await scoped.read("/big.iso"));
@@ -1403,39 +1404,48 @@ test("a save that lands while a restore is putting the file back is kept too", a
 });
 
 test("a save at the live path is kept, and a restore over it answers 409", async () => {
-  // The issue's case: park a file, land a save at that path, let the save change
-  // again while the restore is between its listing and its copy, and the save is
-  // still the live bytes. The route lists the destination before anything moves,
-  // so the copy carries the ETag that path held, and a destination that no
-  // longer has it is refused (drive issue #605). The save here lands at the
-  // copy, which is the window the issue names.
+  // The issue's case: park a file, land a save at that path, restore, and the
+  // save is still the live bytes. A file already there is refused before any
+  // copy, so the restore cannot throw those bytes away (drive issue #605).
   const { store, upload, scoped, call: firstCall } = drive();
   await upload("/", "notes.md", "the parked text", "text/markdown");
   await firstCall(moveCall("/delete", "/notes.md"));
-  // A file saved at the same path after the delete, before the restore starts.
   await scoped.write("/notes.md", "the file that was saved after the delete", "text/markdown");
-  const held = await etagOf(scoped, "/", "notes.md");
-  const moved = beforeCopyRecorder(store, async () => {
-    await scoped.write("/notes.md", "the save that landed while the copy ran", "text/markdown");
-  });
-  /** @param {Request} request */
-  const call = (request) => handleFilesRequest(request, moved, account, now);
+  const moved = moveRecorder(store, null, undefined);
 
-  const response = await call(moveCall("/restore", "/notes.md"));
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), moved, account, now);
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
-  // The copy was asked to hold the destination to the ETag the listing carried.
   assert.ok(
-    moved.calls.includes(
-      `copy u/1/.trash/${trashName("/notes.md", now)} u/1/notes.md 15 if ${held}`,
-    ),
-    `the copy carried the destination's ETag, got ${JSON.stringify(moved.calls)}`,
+    !moved.calls.some((entry) => entry.startsWith("copy ")),
+    `a restore over a live file must not copy, got ${JSON.stringify(moved.calls)}`,
   );
   const live = await scoped.read("/notes.md");
   assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the file that was saved after the delete");
+  const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the parked text");
+});
+
+test("a save that lands after the restore copy is kept, and the restore answers 409", async () => {
+  // The window CopyObject cannot close: the destination listed empty, the copy
+  // wrote, and a save landed on the live path before the restore looked again.
+  // The save stays, the parked copy stays, and the person is told
+  // (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the parked text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  const moved = moveRecorder(store, null, async () => {
+    await scoped.write("/notes.md", "the save that landed while the copy ran", "text/markdown");
+  });
+
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), moved, account, now);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  const live = await scoped.read("/notes.md");
+  assert.ok(live);
   assert.equal(await new Response(live.body).text(), "the save that landed while the copy ran");
-  // The parked copy is still parked, so nothing either side of the restore was
-  // lost and the person can try again.
   const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
   assert.ok(parked);
   assert.equal(await new Response(parked.body).text(), "the parked text");
@@ -1610,25 +1620,18 @@ test("a delete the S3 store refuses answers 409, and the file is not lost", asyn
 });
 
 test("a restore the S3 store would put over a saved file answers 409 and keeps both", async () => {
-  // The whole restore on the adapter the deployed Worker uses, because the
-  // memory store's guard cannot reach the window this is about: nothing is
-  // awaited between its comparison and its write, and a real HEAD to a storage
-  // is a round-trip a save can land inside. So the store under the route here
-  // is one whose guard answers from a HEAD, and the save lands between that
-  // answer and the copy (drive issue #605).
+  // The issue's case on the adapter the deployed Worker uses: a save already
+  // sits at the live path, so the restore must refuse before any copy. A PUT
+  // here would throw those bytes away (drive issue #605).
   const parkedKey = `u/acct-a${trashStorePath(trashName("/notes.md", now))}`;
   const liveKey = "u/acct-a/notes.md";
   /** @type {Map<string, string>} */
   const objects = new Map([
     [parkedKey, "the parked text"],
-    // The live path still holds the bytes the restore's listing will name. The
-    // save lands in the store below, between that listing and the guard's HEAD,
-    // which is the window the issue is about.
-    [liveKey, "the file that was there when the restore started"],
+    [liveKey, "the file that was saved after the delete"],
   ]);
   /** @type {string[]} */
   const requests = [];
-  let listed = false;
   /** @type {typeof fetch} */
   const fetchImpl = async (input, init = {}) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -1636,15 +1639,7 @@ test("a restore the S3 store would put over a saved file answers 409 and keeps b
     const source = request.headers.get("x-amz-copy-source");
     const prefix = new URL(request.url).searchParams.get("prefix");
     requests.push(`${request.method} ${key} ?${prefix}`);
-    if (request.method === "GET" && prefix !== null && prefix === "u/acct-a/") {
-      listed = true;
-    }
     if (request.method === "GET" && prefix !== null) {
-      // The listing asks with a delimiter, so a key deeper than the prefix comes
-      // back as a CommonPrefix, not a Contents row — the same shape a real S3
-      // answers, and the one the store's own parser expects. Returning a
-      // Contents row here instead would prove nothing, because the store would
-      // never see it the way it sees a real answer.
       const deeper = [...objects.keys()].filter(
         (candidate) => candidate.startsWith(prefix) && candidate.slice(prefix.length).includes("/"),
       );
@@ -1669,19 +1664,6 @@ test("a restore the S3 store would put over a saved file answers 409 and keeps b
         { status: 200 },
       );
     }
-    if (request.method === "HEAD") {
-      // The save lands now, in the round-trip between the route's listing and
-      // the guard's read of the same key. The guard is answered with the save's
-      // ETag, so it differs from the listing's and the copy is refused. This is
-      // the window, on the adapter the deployed Worker uses.
-      if (listed) {
-        objects.set(liveKey, "the save that landed while the restore ran");
-      }
-      return new Response(null, {
-        status: 200,
-        headers: { etag: `"${etagFor(objects.get(liveKey) ?? "")}"` },
-      });
-    }
     if (request.method === "PUT" && source !== null) {
       objects.set(key, objects.get(decodeURIComponent(source).slice("/drive/".length)) ?? "");
       return new Response('<CopyObjectResult><ETag>"copied"</ETag></CopyObjectResult>', {
@@ -1689,8 +1671,6 @@ test("a restore the S3 store would put over a saved file answers 409 and keeps b
       });
     }
     if (request.method === "DELETE") {
-      // Every conditional delete is answered with the bytes it no longer has,
-      // the way a storage answers an If-Match the key has moved past.
       return new Response(null, { status: 412 });
     }
     return new Response(null, { status: 404 });
@@ -1698,10 +1678,6 @@ test("a restore the S3 store would put over a saved file answers 409 and keeps b
   const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
   const acct = { id: "acct-a", name: "A" };
 
-  // The route lists the destination, the save is at that path, and the copy's
-  // guard reads it. The listing and the guard disagree on purpose — the
-  // listing carried the ETag the file had when the restore started, and the
-  // guard sees the save that replaced it — which is the refusal under test.
   const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), store, acct, now);
   assert.equal(
     response.status,
@@ -1709,14 +1685,11 @@ test("a restore the S3 store would put over a saved file answers 409 and keeps b
     `status was ${response.status}, requests ${JSON.stringify(requests)}`,
   );
   assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
-  // Nothing was copied over the save: the guard refused before the PUT.
   assert.ok(
-    !requests.some((entry) => entry === `PUT ${liveKey}`),
+    !requests.some((entry) => entry.startsWith("PUT ")),
     `the refused restore never wrote over the save, got ${JSON.stringify(requests)}`,
   );
-  // Both copies are where they were: the save at the live path, the parked file
-  // still parked.
-  assert.equal(objects.get(liveKey), "the save that landed while the restore ran");
+  assert.equal(objects.get(liveKey), "the file that was saved after the delete");
   assert.equal(objects.get(parkedKey), "the parked text");
 });
 
@@ -1786,7 +1759,7 @@ test("the S3 copy's guard is a read and not a lock, and this test pins that it i
   // This test does not pin the overwrite as something to keep. It pins the
   // limit of what the adapter can promise, so the guard cannot be widened in
   // the code and quietly believed to be stronger here. Closing it needs a
-  // store whose copy and check are one operation; until then `src/files.js`
+  // store whose copy and check are one operation; until then `core/files.js`
   // says this in the copy's own contract and points at the spec for why. In
   // the route the save inside the window is not merely overwritten: the
   // conditional remove then clears the parked key too, so nothing is left.
@@ -3649,10 +3622,10 @@ test("a deleted file nests under its own path, so restore is one prefix LIST", a
   assert.equal(parked.length, 1);
   assert.match(/** @type {string} */ (parked[0].name), /^[0-9]+$/);
 
-  // The restore asks that one prefix for the parked versions, plus the one
-  // listing of the live path that holds the destination ETag the copy is
-  // guarded with (drive issue #605). Nothing wider: no full-trash walk, which
-  // is what the drive#570 nested layout was for.
+  // The restore asks that one prefix for the parked versions, plus the live
+  // path listed before the copy and again after it, so a save that lands
+  // during the copy is still seen (drive issue #605). Nothing wider: no
+  // full-trash walk, which is what the drive#570 nested layout was for.
   /** @type {string[]} */
   const lists = [];
   const origList = store.list.bind(store);
@@ -3674,10 +3647,9 @@ test("a deleted file nests under its own path, so restore is one prefix LIST", a
     trashWalks[0].includes(`${TRASH_PATH}/holiday.jpg`),
     `the one trash listing is the file's own parked prefix, got ${trashWalks[0]}`,
   );
-  // The second listing is the destination, and it is the guard: the copy is
-  // held to the ETag that listing carried.
+  // The live path is listed before the copy and again after it.
   const destinationWalks = lists.filter((path) => !path.includes(TRASH_PATH));
-  assert.deepEqual(destinationWalks, ["u/1/"]);
+  assert.deepEqual(destinationWalks, ["u/1/", "u/1/"]);
 });
 
 // ------------------------------------------------- Range, validators, HEAD (drive#570)
