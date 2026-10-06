@@ -97,7 +97,8 @@ function plain(message, status, headers = {}) {
  *   string, createdAt: string, ageDays: number, windowDays: number,
  *   restorableUntil: string, canRewind: boolean,
  *   unavailableReason: "window-closed"|"already-closed"|null,
- *   files: {added: string[], changed: string[], removed: string[], count: number}}} RewindPreview
+ *   files: {added: string[], changed: string[], removed: string[], count: number},
+ *   progress: {kind: string, done: number, total: number}}} RewindPreview
  *
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns

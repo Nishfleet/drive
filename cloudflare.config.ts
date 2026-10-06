@@ -122,6 +122,13 @@ export default defineConfig({
     env: {
       ASSETS: bindings.assets(),
       METER_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
+      // Branch copy/approve/discard/rewind (drive#563). The producer rides the
+      // meter queue that already exists, because a deploy that names a queue
+      // which does not exist fails. Message kinds are `branch.*` vs `meter.*`,
+      // and src/index.js's queue handler splits the batch. A dedicated
+      // `drive-branch-jobs` queue is a later bind-name change once it is
+      // created out of band (`src/branch-jobs.js`).
+      BRANCH_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
       // Two databases, one purpose each (drive issue #170). The waitlist's
       // table lives alone in the waitlist database: the sign-up list is
       // public data and can be exported, reset or handed on without
@@ -159,12 +166,9 @@ export default defineConfig({
       // approve, discard and rewind as queued jobs in file batches so the
       // 10,000-subrequest ceiling is no longer the cap; 100,000 files is still
       // the remaining size limit (`BRANCH_FILE_LIMIT` in src/branches.js)
-      // because that snapshot has to sit in memory. The branch-jobs queue
-      // binding is not declared here: an unattended deploy that names a queue
-      // which does not exist fails. Create `drive-branch-jobs` and its
-      // dead-letter queue out of band, then add the producer and the
-      // `triggers.queue` consumer (`src/branch-jobs.js`). Until then the
-      // routes still copy in file batches and answer 202, in-process. The
+      // because that snapshot has to sit in memory. BRANCH_JOBS produces onto
+      // the existing `drive-meter-jobs` queue (kinds `branch.*`) until a
+      // dedicated queue is created out of band (`src/branch-jobs.js`). The
       // `branches` row
       // keeps a pointer to the key and the value's byte length
       // (migrations/drive/0012_branch_snapshot_kv.sql). Since drive#329 the

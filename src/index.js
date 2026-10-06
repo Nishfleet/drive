@@ -1489,38 +1489,39 @@ const handler = {
       }
     }
     if (branchMessages.length > 0) {
-      if (!env.DRIVE_DB) {
-        throw new Error("branch jobs: DRIVE_DB binding is not configured");
-      }
       const snapshots = snapshotsFor(env);
-      if (!snapshots) {
-        throw new Error("branch jobs: BRANCH_SNAPSHOTS binding is not configured");
+      if (!env.DRIVE_DB || !snapshots || !store) {
+        // A missing branch dependency must not fail the meter's messages in
+        // the same batch: both producers currently share drive-meter-jobs.
+        for (const message of branchMessages) {
+          message.retry();
+        }
+      } else {
+        await handleBranchJobs(
+          { messages: branchMessages },
+          async (job) => {
+            const scoped = scopeStore(store, { id: job.accountId });
+            const result = await processBranchJob(
+              env.DRIVE_DB,
+              snapshots,
+              scoped,
+              { id: job.accountId },
+              job.branchId,
+            );
+            return { continue: result.done === false };
+          },
+          branchJobsQueue(env),
+          async (body, error) => {
+            const job = branchJob(body);
+            const nextState = job.kind === BRANCH_QUEUE_KINDS.approve ? "open" : "discarded";
+            const sentence =
+              error instanceof Error && error.message
+                ? error.message
+                : failureMessage("unexpected");
+            await failJob(env.DRIVE_DB, job.branchId, nextState, sentence);
+          },
+        );
       }
-      await handleBranchJobs(
-        { messages: branchMessages },
-        async (job) => {
-          if (!store) {
-            throw new Error("branch jobs: file store is not configured");
-          }
-          const scoped = scopeStore(store, { id: job.accountId });
-          const result = await processBranchJob(
-            env.DRIVE_DB,
-            snapshots,
-            scoped,
-            { id: job.accountId },
-            job.branchId,
-          );
-          return { continue: result.done === false };
-        },
-        branchJobsQueue(env),
-        async (body, error) => {
-          const job = branchJob(body);
-          const nextState = job.kind === BRANCH_QUEUE_KINDS.approve ? "open" : "discarded";
-          const sentence =
-            error instanceof Error && error.message ? error.message : failureMessage("unexpected");
-          await failJob(env.DRIVE_DB, job.branchId, nextState, sentence);
-        },
-      );
     }
     if (meterMessages.length === 0) {
       return;

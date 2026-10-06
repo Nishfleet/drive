@@ -9,18 +9,20 @@
 // With the queue bound, the route claims the row, sends one message, and
 // answers 202. Each message is one batch of files with its own subrequest
 // budget; a failed batch is retried on its own; the row carries progress the
-// UI and CLI poll. The binding is optional on purpose, the same reason the
-// meter jobs queue is (src/meter-jobs.js): a deploy that binds a queue which
-// does not exist fails, and an unattended `cf deploy` does not create one.
-// Create the queues once, out of band, before the binding is added to
-// cloudflare.config.ts:
+// UI and CLI poll. BRANCH_JOBS currently produces onto the existing
+// `drive-meter-jobs` queue (created for drive#519): a deploy that names a
+// queue which does not exist fails, and an unattended `cf deploy` does not
+// create one. Message kinds are `branch.*`, and the Worker's `queue`
+// handler splits them from `meter.*`. Create a dedicated queue out of band
+// when the two streams should no longer share a DLQ, then point the binding
+// at it:
 //
 //   cf queues create drive-branch-jobs
 //   cf queues create drive-branch-jobs-dlq
 //
-// Until then `branchJobsQueue` answers null and the route runs the batches
-// in-process, still in file batches, still answering 202. Removing the
-// binding switches back to that path; nothing else changes.
+// Until BRANCH_JOBS is bound, `branchJobsQueue` answers null and the route
+// runs the batches in-process. That in-process path is the test and local
+// stand-in; a 20,000-file copy still needs a fresh invocation per batch.
 
 /** The producer queue name, and the dead-letter queue a failed job lands on. */
 export const BRANCH_JOBS_QUEUE = "drive-branch-jobs";

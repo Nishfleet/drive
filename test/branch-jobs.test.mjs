@@ -9,6 +9,7 @@ import { createMemoryStore, scopeStore } from "../core/files.js";
 import {
   BRANCH_JOBS_MAX_RETRIES,
   BRANCH_QUEUE_KINDS,
+  branchJobsQueue,
   handleBranchJobs,
 } from "../src/branch-jobs.js";
 import {
@@ -22,6 +23,7 @@ import {
   processBranchJob,
   snapshotKey,
 } from "../src/branches.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { handleRewindRequest, rewindBranch } from "../src/rewind.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
 
@@ -407,6 +409,82 @@ test("handleBranchJobs acks a finished batch, retries a throw, and continues", a
   assert.equal(bad.retried, true);
   assert.equal(next.acked, true);
   assert.equal(queue.sent.length, 1);
+});
+
+test("branchJobsQueue reads BRANCH_JOBS", () => {
+  const queue = fakeQueue();
+  assert.equal(branchJobsQueue({ BRANCH_JOBS: queue }), queue);
+  assert.equal(branchJobsQueue({}), null);
+});
+
+test("the Worker queue consumer runs a branch.create batch", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  const db = createTestD1();
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  assert.equal(queue.sent.length, 1);
+  const env = {
+    DRIVE_DB: db,
+    BRANCH_SNAPSHOTS: kv,
+    BRANCH_JOBS: queue,
+    [TEST_FILES_STORE]: raw,
+  };
+  const context = { waitUntil() {} };
+  let steps = 0;
+  while (queue.sent.length > 0 && steps < 8) {
+    const next = queue.sent.shift();
+    /** @type {{body: unknown, ack(): void, retry(): void, acked?: boolean, retried?: boolean}} */
+    const message = {
+      body: next.body,
+      ack() {
+        message.acked = true;
+      },
+      retry() {
+        message.retried = true;
+      },
+    };
+    await worker.queue({ messages: [message] }, env, context);
+    assert.equal(message.acked, true, `batch ${steps} must ack`);
+    steps += 1;
+  }
+  assert.ok(steps >= 2, "clear then copy are separate batches");
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "open");
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), "a");
+});
+
+test("a branch message without DRIVE_DB is retried and does not throw", async () => {
+  /** @type {{body: unknown, ack(): void, retry(): void, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body: {
+      kind: BRANCH_QUEUE_KINDS.create,
+      accountId: "acct-1",
+      branchId: 1,
+      name: "work",
+    },
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  await worker.queue({ messages: [message] }, {}, { waitUntil() {} });
+  assert.equal(message.retried, true);
+  assert.equal(message.acked, undefined);
 });
 
 test("handleBranchJobs acks and runs onExhausted after max retries", async () => {

@@ -956,7 +956,8 @@ function parseJobCursor(raw) {
     return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
       ? /** @type {Record<string, unknown>} */ (parsed)
       : {};
-  } catch {
+  } catch (error) {
+    console.error?.(`branch job_cursor is not JSON: ${errorText(error)}`);
     return {};
   }
 }
@@ -1234,10 +1235,11 @@ async function processApproveBatch(db, snapshots, store, branch) {
   let plan = {};
   try {
     plan = JSON.parse(planJson);
-  } catch {
-    const error = failureMessage("unexpected");
-    await failJob(db, branch.id, "open", error);
-    return { error, status: 500, done: true };
+  } catch (error) {
+    console.error?.(`approve plan is not JSON for ${branch.id}: ${errorText(error)}`);
+    const failed = failureMessage("unexpected");
+    await failJob(db, branch.id, "open", failed);
+    return { error: failed, status: 500, done: true };
   }
   /** @type {string[]} */
   const added = Array.isArray(plan.added)
