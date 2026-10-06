@@ -93,6 +93,12 @@ th {
 .footer a {
   color: var(--ink-soft);
 }
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
   </style>
 </head>
 <body>
@@ -169,7 +175,15 @@ th {
     </section>
   </main>
   <footer class="footer">
-    <a href="/support">Support</a>
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
   </footer>
   <script>
 const DEVICES_ENDPOINT = "/api/devices";
@@ -242,7 +256,7 @@ async function readKeys() {
   }
   if (response.status === 401) {
     const payload = await response.json().catch(() => null);
-    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Your session ended. Sign in, then reload this page.");
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Sign in to see your devices.");
     showSessionNav(false);
     return;
   }
@@ -273,7 +287,7 @@ async function revokeKey(keyId, button) {
   }
   if (response.status === 401) {
     const payload = await response.json().catch(() => null);
-    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Your session ended. Sign in, then reload this page.");
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Sign in to see your devices.");
     showSessionNav(false);
     return;
   }
