@@ -72,7 +72,7 @@ func TestFailureTableIsComplete(t *testing.T) {
 }
 
 func TestSharedKindsMatchThePageTable(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "messages.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "messages.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestSharedKindsMatchThePageTable(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(text, entry[0]) {
-			t.Errorf("src/messages.js no longer carries the CLI what for %s: %q", kind, entry[0])
+			t.Errorf("core/messages.js no longer carries the CLI what for %s: %q", kind, entry[0])
 		}
 	}
 }

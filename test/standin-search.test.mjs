@@ -6,7 +6,7 @@
 // half that only real storage can answer: the files are in an S3 bucket, the
 // index is built by walking that bucket with the shipped S3 store, and the
 // search runs over what the walk found. Everything is the production path —
-// `createS3Store` (src/files.js) scoped by `scopeStore`, fed to
+// `createS3Store` (core/files.js) scoped by `scopeStore`, fed to
 // `reconcileIndex` (src/search.js) exactly as the Worker's scheduled handler
 // wires it, then `searchDrive` over the result.
 //
@@ -45,7 +45,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createS3Store, scopeStore } from "../src/files.js";
+import { createS3Store, scopeStore } from "../core/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
 import { sqlitePlaceholders } from "./harness.mjs";
 
@@ -280,7 +280,7 @@ async function seedDrive(dir, bucket) {
  * cheap on a drive that is already empty -- one list call per folder found,
  * and one call at all on a prefix with none -- and it is what makes the refusal
  * mean "this account's prefix holds no files at all".
- * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {import("../core/files.js").FileStore} store scoped to ACCOUNT
  * @returns {Promise<number>}
  */
 async function countFilesUnderPrefix(store) {
@@ -314,7 +314,7 @@ async function countFilesUnderPrefix(store) {
  * `clearRealDrive` then removes those paths (a 404 for a write that never
  * landed is success). It cannot name a path it never pushed, which is why
  * the push is first.
- * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {import("../core/files.js").FileStore} store scoped to ACCOUNT
  * @param {string[]} written the paths this call writes, filled in as it goes
  * @returns {Promise<void>}
  */
@@ -343,7 +343,7 @@ async function seedRealDrive(store, written) {
  * because a proof that quietly left 100,000 objects behind in a customer's
  * bucket is not a proof that can be re-run. The removals are batched like the
  * seed, so the drive is left as it was found in the time the seed took.
- * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {import("../core/files.js").FileStore} store scoped to ACCOUNT
  * @param {string[]} written the paths seedRealDrive wrote
  * @returns {Promise<void>}
  */

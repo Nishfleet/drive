@@ -54,7 +54,7 @@ type ShareLink struct {
 	Name         string `json:"name"`
 	URL          string `json:"url"`
 	StateLabel   string `json:"stateLabel"`
-	ExpiresLabel string `json:"expiresLabel"`
+	ExpiresAtIso string `json:"expiresAtIso"`
 }
 
 // RequestLink is the minted upload page (src/share.js `requestRow()`).
@@ -64,7 +64,7 @@ type RequestLink struct {
 	Name         string `json:"name"`
 	URL          string `json:"url"`
 	StateLabel   string `json:"stateLabel"`
-	ExpiresLabel string `json:"expiresLabel"`
+	ExpiresAtIso string `json:"expiresAtIso"`
 	UploadsLabel string `json:"uploadsLabel"`
 }
 
@@ -169,7 +169,7 @@ func runShare(args []string) error {
 		return err
 	}
 	fmt.Println(link.URL)
-	fmt.Printf("%s, %s\n", link.Path, link.ExpiresLabel)
+	fmt.Printf("%s, %s\n", link.Path, untilLabel(link.ExpiresAtIso))
 	return nil
 }
 
@@ -234,20 +234,35 @@ func runRequest(args []string) error {
 		return err
 	}
 	fmt.Println(link.URL)
-	fmt.Printf("%s, %s\n", link.Folder, link.ExpiresLabel)
+	fmt.Printf("%s, %s\n", link.Folder, untilLabel(link.ExpiresAtIso))
 	return nil
+}
+
+// untilLabel is a link's expiry as this machine reads it: "Until 7 Oct", the
+// day written in the zone the command ran in (drive#559). The api Worker sends
+// the instant and no words for it, the same way it sends no words for any other
+// date, because a date rendered on the server is a UTC date and a link that
+// dies on the 8th must not be printed as the 7th. An instant that will not
+// parse is printed as it arrived rather than guessed at: the row came from the
+// Worker, so its bytes are the best answer this command has.
+func untilLabel(iso string) string {
+	at, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	return "Until " + at.Local().Format("2 Jan")
 }
 
 // printShareLine is one row of `drive share --list`: the token a person needs
 // for --revoke, the state, the expiry, and the link itself.
 func printShareLine(link ShareLink) {
-	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Path, link.URL)
+	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, untilLabel(link.ExpiresAtIso), link.Path, link.URL)
 }
 
 func printRequestLine(link RequestLink) {
 	// No header row: `drive request --list` is one line per link, six
 	// tab-separated fields, so a later header has to name them in this order.
-	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Folder, link.UploadsLabel, link.URL)
+	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, untilLabel(link.ExpiresAtIso), link.Folder, link.UploadsLabel, link.URL)
 }
 
 // tokenRE is the one token shape the api Worker mints and accepts: 22
@@ -443,7 +458,7 @@ func deleteJSON(endpoint, token string, body, out any) error {
 }
 
 // drivePathArg turns what a person typed into the path the api Worker expects:
-// a path inside the drive, starting with a slash (src/files.js validatePath).
+// a path inside the drive, starting with a slash (core/files.js validatePath).
 // An absolute path under the mount dir is the form a shell's ~ expansion or a
 // Finder drag produces (`/Users/nish/Drive/Photos/cat.jpg`), so it is accepted
 // and the mount dir is dropped; anything else keeps its own segments. A

@@ -14,11 +14,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { createIdriveKeyProvider, deleteSwitchesFor } from "../core/idrive-keys.js";
+import { CAPABILITIES_BY_KIND } from "../core/keyprovider.js";
+import { HIDDEN_VERSION_DAYS } from "../core/s3.js";
 import { agentDeleteSentence, branchReachSentence, KEY_TABLE } from "../src/docs.js";
 import { STORAGE_POWERS } from "../src/keys.js";
-import { createIdriveKeyProvider, deleteSwitchesFor } from "../workers/api/src/idrive-keys.js";
-import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
-import { HIDDEN_VERSION_DAYS } from "../workers/api/src/s3.js";
 
 /** @param {string} path */
 const readRepo = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");

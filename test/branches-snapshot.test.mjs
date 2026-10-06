@@ -5,7 +5,7 @@
 // `branches.snapshot` column, and D1's row limit is 1 MiB. A 100,000-file
 // branch averages ~117 bytes an entry and comes to ~11 MiB — twelve
 // row-limits — so the write was refused and the person was told
-// `snapshot-bound` (src/messages.js). The boundary is the file count, not the
+// `snapshot-bound` (core/messages.js). The boundary is the file count, not the
 // branch's byte size: a 10 GB branch of one file is one entry.
 //
 // Phase 2, this file's other half: the snapshot moved out of the row into the
@@ -34,6 +34,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
   createBranch,
   createKvSnapshotStore,
@@ -42,8 +44,6 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../src/branches.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import { failureMessage } from "../src/messages.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -235,15 +235,9 @@ test("a branch whose snapshot is over the row limit is created, listed and diffe
   const branches = await listBranches(db, snapshots, store, ACCOUNT);
   const huge = branches.find((branch) => branch.name === "huge");
   assert.ok(huge, "the branch is listed");
-  // The diff ran against the namespace's value, not the row's column: the row's
-  // column is `{}`, which would have reported 1 addition (the copy's one file)
-  // and no removals. Only a value read out of the namespace produces 100,000
-  // removals, so the counts below prove which source was read.
-  assert.equal(
-    huge.changed,
-    100001,
-    "the diff ran against the namespace's value, not the row's column",
-  );
+  // drive#563: the list reads stored counts, not a live walk of 100,000
+  // files. The one-branch diff below is what still reads the namespace.
+  assert.equal(huge.changed, 0, "the list does not walk the store");
   assert.equal(huge.snapshotKey, key, "the list row points at the value, and carries no JSON");
   assert.deepEqual(
     Object.keys(/** @type {{snapshot: Record<string, unknown>}} */ (huge).snapshot),
@@ -296,8 +290,13 @@ test("an empty pointer is not filled from the leftover column", async () => {
     "an empty pointer is empty, not the column",
   );
   const before = await listBranches(db, snapshots, store, ACCOUNT);
+  assert.equal(before[0].changed, 0, "the list reads stored counts, not a live walk");
+  const emptyDiff = await diffBranch(store, {
+    ...before[0],
+    snapshot: await readSnapshot(snapshots, before[0].snapshotKey),
+  });
   assert.equal(
-    before[0].changed,
+    emptyDiff.added.length + emptyDiff.changed.length + emptyDiff.removed.length,
     1,
     "the copy's one file counts as added because the snapshot did not come from the column",
   );
@@ -334,12 +333,28 @@ test("listBranches never fills an empty pointer from the leftover column", async
   const listed = await listBranches(db, snapshots, store, ACCOUNT);
   const old = listed.find((branch) => branch.name === "old");
   const fresh = listed.find((branch) => branch.name === "new");
+  assert.ok(old);
+  assert.ok(fresh);
+  assert.equal(old.changed, 0, "the list reads stored counts, not a live walk");
+  assert.equal(fresh.changed, 0, "the list reads stored counts, not a live walk");
+  const oldDiff = await diffBranch(store, {
+    ...old,
+    snapshot: await readSnapshot(snapshots, old.snapshotKey),
+  });
+  const freshDiff = await diffBranch(store, {
+    ...fresh,
+    snapshot: await readSnapshot(snapshots, fresh.snapshotKey),
+  });
   assert.equal(
-    old?.changed,
+    oldDiff.added.length + oldDiff.changed.length + oldDiff.removed.length,
     3,
     "an empty pointer is not filled from the column: every copy file counts as added",
   );
-  assert.equal(fresh?.changed, 2, "a pointer still diffs from the namespace: 1 added, 1 changed");
+  assert.equal(
+    freshDiff.added.length + freshDiff.changed.length + freshDiff.removed.length,
+    2,
+    "a pointer still diffs from the namespace: 1 added, 1 changed",
+  );
   assert.equal(old?.snapshotKey, "", "the stripped row has no pointer");
   assert.notEqual(fresh?.snapshotKey, "", "the namespaced row has one");
   for (const branch of listed) {
@@ -543,7 +558,7 @@ function failingRun(failure) {
 
 /**
  * A scoped drive with one small file, over a fresh D1.
- * @returns {Promise<{db: import("./harness.mjs").TestD1, store: import("../src/files.js").FileStore}>}
+ * @returns {Promise<{db: import("./harness.mjs").TestD1, store: import("../core/files.js").FileStore}>}
  */
 async function driveWithOneFile() {
   const db = createTestD1();
