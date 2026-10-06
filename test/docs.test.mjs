@@ -27,6 +27,7 @@ import {
 } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
@@ -411,14 +412,14 @@ test("the FAQ does not name a rival or quote a rival's price", () => {
   // rival's 1 TB figures internally, and the line is kept in src/docs.js so
   // this test can prove the FAQ never quotes it.
   assert.equal(faq.includes(RIVAL_1TB_LINE), false, "the FAQ must not quote the rival line");
-  assert.doesNotMatch(faq, /\bSpace\b/);
+  assert.doesNotMatch(faq, RIVAL_PRODUCT);
   const row = scoreboard.split("\n").find((line) => line.startsWith("| price at 1 TB |"));
   assert.ok(row);
   const figures = [...row.matchAll(/\$(\d+)/g)].map((match) => match[1]);
   for (const figure of ["20", "15"]) {
     assert.ok(
       figures.includes(figure),
-      `the scoreboard's price at 1 TB row must still record $${figure} for Space`,
+      `the scoreboard's price at 1 TB row must still record $${figure} for the competitor`,
     );
   }
 });
@@ -559,7 +560,7 @@ test("the sitemap lists the home page and the indexable pages, then every docs p
 
 test("every shell sample in the docs is a command the CLI actually has", () => {
   // The orchestrator's second-pass note (issue #98, comment 1) asks for every
-  // code sample to be run in CI, the way Space checks its 84 samples. There is
+  // code sample to be run in CI, the way the competitor checks its 84 samples. There is
   // no stock doc-test route for this corpus: `mdbook test` runs Rust in fenced
   // blocks, `sphinx.ext.doctest` runs Python `>>>` sessions, and VitePress,
   // Starlight and Docusaurus ship no runner at all (searched the three tools'

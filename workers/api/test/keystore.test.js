@@ -293,7 +293,7 @@ test("the sweep drops expired and revoked device tokens and leaves the live ones
 
 // ---- the one-hour agent credential (drive issue #106) ----
 //
-// Space swaps a key for a one-hour scoped credential; ours lived until the
+// The competitor swaps a key for a one-hour scoped credential; ours lived until the
 // person revoked it, so a leaked agent key was a key that worked forever. The
 // three claims below are the issue's finish line, proved against the store the
 // api Worker runs: an expired credential is refused, a renewed one works, and

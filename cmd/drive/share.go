@@ -13,7 +13,7 @@ import (
 )
 
 // Share links and upload requests on the CLI side (drive issue #19,
-// build-spec.md "Against Space": "Public file links and upload requests").
+// build-spec.md "Against the competitor": "Public file links and upload requests").
 //
 //   drive share <file>      a link anyone can open, logged out, for 7 days
 //   drive request <folder>  a page anyone can drop files onto, into one folder

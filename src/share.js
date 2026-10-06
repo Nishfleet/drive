@@ -1,5 +1,5 @@
 // Share links and upload requests (drive issue #19, build-spec.md "Against
-// Space": "Public file links and upload requests" — the one Space feature the
+// the competitor": "Public file links and upload requests" — the one competitor feature the
 // spec lists as a gap with no design anywhere else).
 //
 // Two features, one file, because they are the same problem from both ends:
