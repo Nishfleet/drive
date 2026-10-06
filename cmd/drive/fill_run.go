@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,113 +45,6 @@ import (
 // a drive larger than the cache no longer downloads continuously while the
 // machine sits idle.
 
-// rcClient is rclone's remote control over its loopback address, reached
-// through the rclone binary itself (`rclone rc --rc-addr --user --pass ...`)
-// rather than an HTTP client, so no listener of our own is added and the rc
-// user/pass stay in rclone.env (mode 0600) the mount already wrote (drive#498).
-type rcClient struct {
-	binary string
-	addr   string
-	// fs is the mounted remote, e.g. drive:bucket/u/id, which vfs/stats and
-	// vfs/refresh both take.
-	fs string
-	// user and pass are the --user/--pass rclone rc sends (the same pair
-	// --rc-user/--rc-pass set on the mount, drive#498). Empty only in tests
-	// that point at a fake rclone with no auth.
-	user string
-	pass string
-}
-
-// newRCClient builds the client for the mount's remote control. The address
-// is the one MountPlan puts on the command line, so there is one address in
-// the product, not one in the CLI and another in the fill loop.
-func newRCClient(binary, addr, fs string) *rcClient {
-	return &rcClient{binary: binary, addr: addr, fs: fs}
-}
-
-// vfsStats is the part of vfs/stats the fill loop reads. Field names are
-// rclone's own: the JSON keys come straight from the vfs/stats output, and
-// the opt block is the mount's live options, not a copy this product keeps.
-type vfsStats struct {
-	DiskCache struct {
-		BytesUsed     int64  `json:"bytesUsed"`
-		Files         int64  `json:"files"`
-		OutOfSpace    bool   `json:"outOfSpace"`
-		Path          string `json:"path"`
-		UploadsQueued int64  `json:"uploadsQueued"`
-	} `json:"diskCache"`
-	InUse int64 `json:"inUse"`
-	Opt   struct {
-		CacheMaxSize int64 `json:"CacheMaxSize"`
-		// CacheMinFreeSpace is the disk floor rclone keeps the cache above
-		// (--vfs-cache-min-free-space, issue #112). rclone reports it as -1
-		// when the flag is off, which is how the test tells "no floor" from
-		// "a floor of nothing".
-		CacheMinFreeSpace int64 `json:"CacheMinFreeSpace"`
-		ReadAhead         int64 `json:"ReadAhead"`
-		ChunkSize         int64 `json:"ChunkSize"`
-		ChunkSizeLimit    int64 `json:"ChunkSizeLimit"`
-		WriteBack         int64 `json:"WriteBack"`
-	} `json:"opt"`
-}
-
-// call runs one remote-control method and decodes the reply.
-func (c *rcClient) call(ctx context.Context, method string, params map[string]string, out any) error {
-	args := []string{"rc", "--rc-addr", c.addr}
-	if c.user != "" || c.pass != "" {
-		args = append(args, "--user", c.user, "--pass", c.pass)
-	}
-	args = append(args, method)
-	for k, v := range params {
-		args = append(args, k+"="+v)
-	}
-	// The output guard: a remote-control error comes back as JSON with an
-	// "error" field, and a non-zero exit with no JSON is a real failure, so a
-	// missing method or a dead address is reported, never swallowed into an
-	// empty stats block the fill would read as "no bytes cached".
-	// exec.Command takes an argument vector and runs no shell, so a
-	// remote or stored value cannot inject anything at this call site:
-	// binary is the rclone path ResolveRclone resolved to an absolute
-	// path before the mount started, and args is built here from the
-	// method name and the loop's own constants.
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	cmd := exec.CommandContext(ctx, c.binary, args...)
-	cmd.Stderr = nil
-	b, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("rclone rc %s: %w", method, err)
-	}
-	if err := json.Unmarshal(b, out); err != nil {
-		return fmt.Errorf("rclone rc %s: decode %s: %w", method, strings.TrimSpace(string(b)), err)
-	}
-	return nil
-}
-
-// stats reads the cache's live state from the running mount.
-func (c *rcClient) stats(ctx context.Context) (vfsStats, error) {
-	var s vfsStats
-	if err := c.call(ctx, "vfs/stats", map[string]string{"fs": c.fs}, &s); err != nil {
-		return vfsStats{}, err
-	}
-	return s, nil
-}
-
-// refresh asks rclone to refresh the mount's directory cache, so a file just
-// written to the object store (or a folder just kept offline) is visible to
-// the read the fill does next. rclone's vfs/refresh is the stock call for
-// this; the loop does not list the object store a second way. The fill always
-// passes recursive=false: a whole-tree refresh on a timer is the bug in
-// drive#568, and a non-recursive root refresh is enough for the reads this
-// pass makes. The conflict guard (#30) shares this call with recursive=false.
-func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
-	params := map[string]string{"fs": c.fs}
-	if recursive {
-		params["recursive"] = "true"
-	}
-	var reply map[string]any
-	return c.call(ctx, "vfs/refresh", params, &reply)
-}
-
 // loopbackRCAddr is the address the mount's remote control binds. rclone's
 // default is localhost:5572; the plan sets it explicitly so the fill loop and
 // the operator reach the same one even on a host with another rclone running.
@@ -185,9 +77,6 @@ type fillBackend interface {
 	// fs is the mounted remote, the value a stats call is addressed to.
 	remote() string
 }
-
-// remote is the mounted remote, so an interface value carries what rc needs.
-func (c *rcClient) remote() string { return c.fs }
 
 // fillPass is one iteration of the loop: read the cache's live stats, ask
 // rclone to refresh, read the targets through the mount into rclone's own

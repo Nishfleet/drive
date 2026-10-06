@@ -262,7 +262,7 @@ func rcloneEnvRedacted(p MountPlan) string {
 
 func rcClientForMount(p MountPlan) *rcClient {
 	c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
-	c.user, c.pass = p.RCUser, p.RCPass
+	c.SetAuth(p.RCUser, p.RCPass)
 	return c
 }
 

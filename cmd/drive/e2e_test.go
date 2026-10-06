@@ -616,7 +616,7 @@ func rcClientForTestHome(t *testing.T, home, addr, fs string) *rcClient {
 	if auth.User == "" || auth.Pass == "" {
 		t.Fatal("rclone.env has no rc user/pass after mount")
 	}
-	c.user, c.pass = auth.User, auth.Pass
+	c.SetAuth(auth.User, auth.Pass)
 	return c
 }
 

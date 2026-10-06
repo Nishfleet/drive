@@ -618,7 +618,7 @@ func readCostLine(apiBase, token string) string {
 	if token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: usageTimeout}
+	client := newHTTPClient(usageTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return failDetail("offline", err).Error()

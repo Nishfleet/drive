@@ -328,8 +328,8 @@ func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{}`))
 	})
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if !cacheIsFull(home, true) {
 		t.Fatal("cacheIsFull = false, want true when rclone vfs/stats says outOfSpace")
 	}
@@ -348,8 +348,8 @@ func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{}`))
 	})
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	capBytes, usedBytes, ok := cacheState(home, true)
 	if !ok {
 		t.Fatal("cacheState did not read vfs/stats")

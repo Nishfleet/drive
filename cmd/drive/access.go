@@ -200,27 +200,5 @@ func writeJSONObject(path string, doc map[string]any) error {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	out = append(out, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create dir for %s: %w", path, err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".drive-settings-*")
-	if err != nil {
-		return fmt.Errorf("temp file for %s: %w", path, err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", path, err)
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename into place %s: %w", path, err)
-	}
-	return nil
+	return WriteFileAtomic(path, out, 0o600)
 }
