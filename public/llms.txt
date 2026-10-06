@@ -8,8 +8,9 @@
 Drive is a mounted folder (macOS and Linux) where your files live in object
 storage; what is on your disk is the parts you have opened, held in a cache
 capped at 20G with 1G of your disk always kept free. Libraries bigger than the
-laptop open on demand. Agents read and write the same files through the folder, the
-MCP filesystem server, or the S3 API, each with its own scoped key.
+laptop open on demand. Agents read and write the same files through the folder
+and the stock MCP filesystem server; `drive init` connects each tool it finds
+and gives that tool its own key.
 
 ## Pricing
 
