@@ -1,0 +1,46 @@
+# Drive launch video — script
+
+Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-over.
+
+## Timeline
+
+| time (s) | scene | on-screen text | source screen |
+| --- | --- | --- | --- |
+| 0–6 | intro | FOR PEOPLE AND THEIR AGENTS · "A drive that holds more than your laptop." · "Plain files in object storage, opened by the apps you already use." | — |
+| 6–17 | hero | THE DRIVE · "Plain files, opened by the apps you already use." | `public/index.html` hero |
+| 17–28 | huge files | HUGE FILES · "A 5 GB video starts without a 5 GB download." | `public/index.html` finder section |
+| 28–40 | agents | EVERY AGENT · "Agent keys can list, read and write. They can never delete." | `public/index.html` agents section |
+| 40–52 | price | ONE PRICE · "2¢ per GB a month. Never more than $10 per TB." | `public/index.html` calculator |
+| 52–64 | cap | THE CAP · "At the cap, writes stop. Every file stays." | `public/index.html` cap section |
+| 64–75 | cta | drive · "Get drive." · "The drive is not open yet. Sign-ups go to the waitlist." · "Join the waitlist on the drive site." | — |
+
+## Claims and their sources
+
+| on-screen claim | source |
+| --- | --- |
+| "A drive that holds more than your laptop." | `README.md:4` ("a folder on macOS or Linux that holds more than the laptop does") |
+| "Plain files in object storage, opened by the apps you already use." | `README.md:4` ("Your files live in object storage and open on demand") and `README.md:8` ("Real names, opened by the apps you already use") |
+| "A 5 GB video starts without a 5 GB download." | `public/index.html` finder section ("A 5 GB video starts without a 5 GB download.") — measured on the page |
+| "Agent keys can list, read and write. They can never delete." | `public/index.html` agents section; `README.md` ("an agent key can list, read and write, but it can never delete") |
+| "2¢ per GB a month. Never more than $10 per TB." | `public/index.html` calculator subhead ("2 cents per GB until the bill reaches $10, at 500 GB") and its metered note ("You pay 2 cents per GB a month…"); `README.md` pricing line; the rule is min(2¢ × GB-months, $10 × max(1, TB)) in `src/billing.js` |
+| "At the cap, writes stop. Every file stays." | `public/index.html` cap section ("A cap that stops writes, not files.") |
+| "The drive is not open yet. Sign-ups go to the waitlist." | `public/index.html` waitlist copy |
+| "Join the waitlist on the drive site." | no host is printed, on purpose. `drive-pricing.nishant345.workers.dev` answers `302` to a Cloudflare Access login for anyone logged out, so a printed URL is a dead end. Verified 2026-10-06. |
+
+## Music
+
+No music. The video ships silent, so there is no track licence to clear.
+
+## Screens
+
+The five product frames are real screenshots of the Drive web pages, captured from
+`public/index.html` served locally (the production site is behind Cloudflare
+Access). Captures are 1920x1080 with the page ticker hidden so no frozen
+animation appears in the stills.
+
+## Fonts
+
+The five woff2 files under `assets/fonts/` are the same ones the pages ship
+(`public/fonts/`). They are SIL Open Font License 1.1, and each family's OFL text
+is copied in beside it: `big-shoulders-display-OFL.txt`, `instrument-sans-OFL.txt`
+and `jetbrains-mono-OFL.txt`.
