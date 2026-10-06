@@ -141,6 +141,13 @@ func TestLogoutRevokesTheKeyOnTheServerBeforeDeletingIt(t *testing.T) {
 	}
 }
 
+// liveKeyRetry is the next step the key-still-live entry names, so the three
+// logout tests assert one sentence instead of three copies of it. The error a
+// caller reads carries it behind the table's "Next: " prefix and the built
+// binary prints it behind printFailure's lowercase "next: ", so the call
+// sites keep their own prefixes and share the sentence.
+const liveKeyRetry = "Run `drive logout` again when you are online, with `--api <url>` or DRIVE_API_URL set."
+
 func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	home := configOnlyHome(t)
 	// Port 1 on loopback refuses; the revoke cannot get there.
@@ -150,14 +157,10 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	if err == nil {
 		t.Fatal("logout must fail, not claim a clean sign-out, when the key is still live")
 	}
-	const sentence = "signed out here; the key is still live"
-	if !strings.Contains(err.Error(), sentence) {
-		t.Errorf("error %q must say %q plainly", err, sentence)
+	if !strings.Contains(err.Error(), revokeWarning) {
+		t.Errorf("error %q must say %q plainly", err, revokeWarning)
 	}
-	// The state is one line and the retry is the next one: the table entry has
-	// to keep both, because "do X again" is the only useful half of the
-	// message for the person reading it.
-	if !strings.Contains(err.Error(), "Run `drive logout` again when you are online") {
+	if !strings.Contains(err.Error(), "Next: "+liveKeyRetry) {
 		t.Errorf("error %q must name the next step on its own line", err)
 	}
 	if strings.Contains(err.Error(), testStorage().SecretKey) {
@@ -176,10 +179,10 @@ func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	if err == nil {
 		t.Fatal("a key that cannot be revoked must not read as a clean sign-out")
 	}
-	if !strings.Contains(err.Error(), "signed out here; the key is still live") {
+	if !strings.Contains(err.Error(), revokeWarning) {
 		t.Errorf("error %q must carry the plain sentence", err)
 	}
-	if !strings.Contains(err.Error(), "Run `drive logout` again when you are online") {
+	if !strings.Contains(err.Error(), "Next: "+liveKeyRetry) {
 		t.Errorf("error %q must name the retry on its own line", err)
 	}
 	if !strings.Contains(err.Error(), "DRIVE_API_URL") {
@@ -254,10 +257,10 @@ func TestLogoutBinaryExitsNonZeroWhenTheKeyCannotBeRevoked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want a non-zero exit when the key cannot be revoked, got 0 with output:\n%s", out)
 	}
-	if !strings.Contains(string(out), "signed out here; the key is still live") {
+	if !strings.Contains(string(out), revokeWarning) {
 		t.Errorf("output does not say the key is still live:\n%s", out)
 	}
-	if !strings.Contains(string(out), "next: Run `drive logout` again when you are online") {
+	if !strings.Contains(string(out), "next: "+liveKeyRetry) {
 		t.Errorf("output does not name the next step:\n%s", out)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {

@@ -22,8 +22,9 @@ drive doctor
 ```
 
 1. `drive status` says whether the drive is mounted, what is waiting to
-   upload, and what this month costs so far. When something is wrong, its last
-   line names the page you are reading.
+   upload, and what this month costs so far. Its last line names this page,
+   so the way in is one `drive status` away whether the drive is broken or
+   not.
 2. `drive doctor` prints one block: the drive and rclone versions, whether the
    mount is up, the last lines of the log, and whether the account side
    answers. If you write to support, paste that block. It is the whole first
@@ -78,9 +79,9 @@ drive logout --all --yes
 go-ahead. It turns off every key and signs out every signed-in session, this
 machine included, so anything you still use signs in again after.
 
-It kills the keys, not the disk: what the lost laptop had already pulled onto
-its own disk stays on that disk. [Security](/security) has what a key could
-reach up to the moment you revoked it.
+It turns off the keys, not the disk: what the lost laptop had already pulled
+onto its own disk stays on that disk. [Security](/security) has what a key
+could reach up to the moment you revoked it.
 
 ## Change your email
 

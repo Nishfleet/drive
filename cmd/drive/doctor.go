@@ -84,10 +84,11 @@ func runDoctor(args []string) error {
 // the answer for a mount that never started.
 func printDoctorVersions(w io.Writer, rcloneBin string) {
 	fmt.Fprintf(w, "drive:  %s\n", versionText())
-	if v, err := InstalledRcloneVersion(resolvedRclone(rcloneBin)); err == nil {
+	rclone := resolvedRclone(rcloneBin)
+	if v, err := InstalledRcloneVersion(rclone); err == nil {
 		fmt.Fprintf(w, "rclone: %s\n", v)
 	} else {
-		fmt.Fprintf(w, "rclone: %s\n", rcloneReason(resolvedRclone(rcloneBin), err))
+		fmt.Fprintf(w, "rclone: %s\n", rcloneReason(rclone, err))
 	}
 	fmt.Fprintf(w, "os:     %s/%s\n", runtime.GOOS, runtime.GOARCH)
 }
