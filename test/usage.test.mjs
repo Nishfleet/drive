@@ -27,6 +27,7 @@ import {
   usageSummary,
 } from "../core/billing.js";
 import { CAP_ENDPOINT } from "../core/cap.js";
+import { createD1DeviceStore } from "../core/devices.js";
 import { EXPORT_ENDPOINT, EXPORT_FILENAME } from "../core/export.js";
 import { PRICE } from "../core/pricing.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
@@ -1376,6 +1377,27 @@ test("the export route answers 200 for a signed-in account with no api binding (
     BETTER_AUTH_SECRET: TEST_SECRET,
     BETTER_AUTH_URL: "https://drive.test",
   };
+  const devices = createD1DeviceStore(made.db);
+  await devices.put({
+    id: "key_export",
+    accountId: account.id,
+    name: "export laptop",
+    kind: "device",
+    accessKeyId: "b2_export",
+    secretHash: "hash_export",
+    prefix: `u/${account.id}/`,
+    capabilities: ["read", "write"],
+    createdAt: 1_700_000_000,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  await made.db
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', 12)",
+    )
+    .bind(account.id, "/notes.txt", "notes.txt")
+    .run();
+
   const response = await workerFetch(
     new Request(`https://drive.test${EXPORT_ENDPOINT}`, { headers: { cookie } }),
     env,
@@ -1389,7 +1411,27 @@ test("the export route answers 200 for a signed-in account with no api binding (
   assert.equal(body.account.id, account.id, "the document is this account's");
   assert.equal(body.account.email, account.email);
   assert.equal(body.complete, true);
-  assert.ok(Array.isArray(body.keys));
-  assert.ok(Array.isArray(body.files));
-  assert.ok(Array.isArray(body.versions));
+  assert.deepEqual(
+    body.keys,
+    await devices.listPublic(account),
+    "the key list is listPublic's own rows, the same shape GET /v1/export carries",
+  );
+  assert.equal(body.files.length, 1);
+  assert.equal(body.files[0].path, "/notes.txt");
+  assert.deepEqual(Object.keys(body.next), ["fileCursor", "versionCursor"]);
+
+  // A cursor past the only file is an empty page, not a repeat of notes.txt.
+  // The cap-and-continue walk itself lives in workers/api/test/export.test.js
+  // against this same handler.
+  const nextPage = await workerFetch(
+    new Request(
+      `https://drive.test${EXPORT_ENDPOINT}?fileCursor=${encodeURIComponent("/notes.txt")}`,
+      { headers: { cookie } },
+    ),
+    env,
+  );
+  assert.equal(nextPage.status, 200);
+  const nextBody = await nextPage.json();
+  assert.equal(nextBody.files.length, 0, "a cursor past the last file repeats nothing");
+  assert.equal(nextBody.complete, true);
 });
