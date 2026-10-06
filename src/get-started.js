@@ -302,6 +302,12 @@ export function lastSyncText(device) {
  * @returns {string}
  */
 export function syncInstantText(instant, options = {}) {
+  // A string, and only a string: `new Date` also takes a Date and a number,
+  // and accepting them here would leave the guard and the words describing
+  // two different doors.
+  if (typeof instant !== "string") {
+    throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
+  }
   const time = new Date(instant);
   if (Number.isNaN(time.getTime())) {
     throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
@@ -471,10 +477,16 @@ function showConnection(state) {
 }
 
 /**
+ * One device's row: the name, the kind, the last sync and the state
+ * (drive#689). Exported because the last-sync cell is the thing this change
+ * moved: the row is where the reader's zone is applied, so the proof of it is
+ * the cell's own words out of a real row rather than a pattern matched against
+ * this file's text. The row needs a DOM, and a page is not one, so the test
+ * hands it the smallest document that answers `createElement`.
  * @param {DeviceRow} device
  * @returns {HTMLTableRowElement}
  */
-function deviceRow(device) {
+export function deviceRow(device) {
   const sync = deviceSyncState(device);
   // The instant, written in this browser's zone. A device that has never
   // synced takes NO_SYNC_LABEL — the module's own words, resolved once above,

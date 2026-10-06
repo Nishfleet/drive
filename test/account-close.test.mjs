@@ -192,14 +192,24 @@ test("every surface that shows the purge day states the zone with it", async () 
   assert.equal(world.email.sent.length, 1, "the day-0 mail went out through the real sender");
   const mailed = /** @type {{subject: string, text: string}} */ (world.email.sent[0]);
   assert.match(mailed.subject, /closed/i);
-  // The sentence that carries the date names the zone on the same line, and
-  // the zone came from purgeOnDate(), not from the copy.
-  for (const line of mailed.text.split("\n")) {
-    if (/purge|deleted|30 days/i.test(line)) {
-      assert.match(line, / \(UTC\)/, `the close sentence states its zone: ${line}`);
-      assert.doesNotMatch(line, /\d{4}-\d{2}-\d{2}/);
-    }
-  }
+  // Every day the close text writes has the zone beside it. The predicate is
+  // the day itself, not a word like "30 days": "You have 30 days to cancel"
+  // is a sentence with no day in it, and a gate keyed on the window word
+  // would demand a zone of a sentence that has none to name. So the day is
+  // the shape to find, and a day without its zone is what fails.
+  const month = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+  // The two shapes this gates on: a day with its zone beside it, and a day
+  // written bare. Neither is typed out as words, so the mail's own sentences
+  // are what is measured.
+  assert.match(mailed.text, new RegExp(`\\d{1,2} ${month} \\(UTC\\)`), "the day carries its zone");
+  assert.doesNotMatch(
+    mailed.text,
+    new RegExp(`\\d{1,2} ${month}(?! \\()`),
+    "no day is written without its zone beside it",
+  );
+  // The sentence that carries the date never carries the ISO form either:
+  // the unreadable shape this is all about.
+  assert.doesNotMatch(mailed.text, /\d{4}-\d{2}-\d{2}/);
 
   // The five close kinds are asserted through the template the same way, so a
   // kind whose sentence does not carry the zone fails here rather than only in

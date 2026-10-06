@@ -17,11 +17,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+// The site's one day-month-year shape (src/files.js formatWhen). The last-sync
+// cell writes its day the way a file row writes its day, so the two are held
+// to each other here rather than each to a copy of the shape.
+import { formatWhen } from "../src/files.js";
 import {
   ageMs,
   connectionLine,
   connectionStateForStatus,
   connectionStates,
+  deviceRow,
   deviceSyncState,
   emptyState,
   installCommand,
@@ -89,6 +94,16 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 const SYNCED_AT = Date.parse("2026-11-03T23:30:00.000Z");
 /** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
+// The zone the process itself is in, which is the one a page that names no
+// zone writes in. Spelled out here so the expected words in the row test are
+// this machine's record and not a hardcoded name of it.
+function runtimeZone() {
+  const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (typeof zone !== "string") {
+    throw new Error("this runtime names no time zone");
+  }
+  return zone;
+}
 
 test("the box carries the login and init lines, and the steps walk through them", () => {
   assert.equal(INSTALL_COMMAND, "drive init");
@@ -837,6 +852,15 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
   assert.doesNotMatch(syncInstantText(instant, { timeZone: "UTC" }), /:\d{2}:\d{2}/);
   assert.throws(() => syncInstantText("not-a-date"), /ISO-8601 instant/);
   assert.throws(() => syncInstantText(""), /ISO-8601 instant/);
+  // A Date and a number are refused: `new Date` takes both, and the guard's
+  // own words name a string, so a second door would leave the doc and the
+  // check describing two different functions. The row never hands it either.
+  // @ts-expect-error the guard is under test — the function takes a string
+  assert.throws(() => syncInstantText(new Date(instant)), /ISO-8601 instant/);
+  // @ts-expect-error the guard is under test — epoch milliseconds is a number
+  assert.throws(() => syncInstantText(SYNCED_AT), /ISO-8601 instant/);
+  // @ts-expect-error the guard is under test — a missing sync is null
+  assert.throws(() => syncInstantText(null), /ISO-8601 instant/);
 
   // The cell is never blank. The "no syncs yet" words now live where the row
   // is built, beside the state column that says the same thing. The two
@@ -856,14 +880,79 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
     2,
     "one definition and one call site: the module's row",
   );
-  // The row's date cell, and the row's alone. Asserted on the line, not the
-  // file, so a failure names the cell rather than dumping 900 lines.
-  const callLine =
-    source.split("\n").find((line) => line.includes("syncInstantText(instant)")) ?? "";
-  assert.match(
-    callLine,
-    /^\s*element\("td", null, instant === null \? NO_SYNC_LABEL : syncInstantText\(instant\)\),$/,
-    `the row writes the label when there is no instant and the words when there is, in the browser's own zone: ${callLine.trim()}`,
+
+  // The row itself, run for real (drive#689). The cell is where the reader's
+  // zone is applied, so a pattern matched against this file's text proves the
+  // words are in the right order and nothing about what the row writes. The
+  // row needs a document, and a page is not one, so the test hands it the
+  // smallest one that answers createElement: a tag, a class, some text and
+  // the cells the row is given.
+  const fakeDocument = /** @type {Document} */ ({
+    /** @param {string} tag */
+    createElement: (tag) => {
+      const el = {
+        tagName: tag,
+        className: "",
+        textContent: "",
+        dataset: /** @type {Record<string, string>} */ ({}),
+        /** @param {...unknown} kids */
+        replaceChildren: (...kids) => {
+          Object.assign(el, { children: kids });
+        },
+      };
+      return el;
+    },
+  });
+  const withDocument = /** @type {Document|undefined} */ (globalThis.document);
+  globalThis.document = fakeDocument;
+  try {
+    const row = deviceRow({
+      id: "dev_1",
+      name: "Mac",
+      kind: "device",
+      lastSyncAt: instant,
+    });
+    const cell = /** @type {{textContent: string}} */ (row.children[2]);
+    // The cell holds the instant written in no named zone, which is the
+    // browser's own: the row's decision, taken where the reader is. The zone
+    // is spelled out from the runtime so the expected words are the record's
+    // rather than the host's, and the row's words are proof it passed none.
+    assert.equal(cell.textContent, syncInstantText(instant, { timeZone: runtimeZone() }));
+    // The other cells are untouched by the change: a row that wrote the
+    // instant into the state column would be a different bug with the same
+    // symptom.
+    assert.equal(/** @type {{textContent: string}} */ (row.children[0]).textContent, "Mac");
+    assert.equal(/** @type {{textContent: string}} */ (row.children[1]).textContent, "device");
+
+    // A device that never synced writes the module's own words in that same
+    // cell, and the state column says the same thing: the row's two halves
+    // are what the single cell used to straddle.
+    const unsynced = deviceRow({ id: "dev_2", name: "Other", kind: "device" });
+    const unsyncedCell = /** @type {{textContent: string}} */ (unsynced.children[2]);
+    assert.equal(unsyncedCell.textContent, NO_SYNC_LABEL);
+    assert.equal(
+      /** @type {{dataset: {state: string}}} */ (/** @type {unknown} */ (unsynced.children[3]))
+        .dataset.state,
+      "never",
+    );
+  } finally {
+    if (withDocument === undefined) {
+      // @ts-expect-error a page is not one, so the global is deleted again
+      delete globalThis.document;
+    } else {
+      globalThis.document = withDocument;
+    }
+  }
+
+  // The day's shape is the site's own, and it is held to the file row that
+  // writes dates the same way: an instant in a year of its own takes the
+  // day, the short month and the numeric year out of both writers, in the
+  // same zone, so a change to either drifts this test rather than the page.
+  const zone = runtimeZone();
+  assert.equal(
+    syncInstantText(instant, { timeZone: zone }).split(",")[0],
+    formatWhen(instant, Date.parse("2027-01-01T00:00:00.000Z")),
+    "the last-sync day is written the way the file rows write theirs",
   );
 });
 
