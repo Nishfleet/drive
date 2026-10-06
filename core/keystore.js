@@ -29,6 +29,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
+import { downloadUrlFor, signGrant } from "./grant.js";
 import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
@@ -74,7 +75,7 @@ export {
  * `writesPaused` is the prepaid pause (drive#586): when set, it answers
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off.
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -87,6 +88,7 @@ export function createMemoryStore(options = {}) {
   // the same rule the D1 one enforces (drive#713).
   const providerNamesSessions = keyProvider !== undefined && keyProvider.namesSession === true;
   const storage = options.storage;
+  const download = options.download;
   const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
 
@@ -159,6 +161,16 @@ export function createMemoryStore(options = {}) {
     if (deviceStore !== undefined) {
       await deviceStore.put(device);
     }
+    // The download URL names this key, and only a key on the account's own
+    // folder: the dl Worker serves `u/<id>/…` from the account's bucket, so a
+    // team key (`drv-t-<id>`) gets none rather than one that cannot work.
+    const downloadUrl =
+      download !== undefined && scope.prefix.startsWith(`u/${account.id}/`)
+        ? downloadUrlFor(
+            download.baseUrl,
+            await signGrant(download.secret, { accountId: account.id, keyId }),
+          )
+        : null;
     return {
       keyId,
       accessKeyId: credential.accessKeyId,
@@ -177,6 +189,7 @@ export function createMemoryStore(options = {}) {
       // reach, and so drive#462's regression — a mint that named no bucket at
       // all — is visible in every answer rather than only in the policy.
       bucket: scope.bucket,
+      downloadUrl,
     };
   }
 

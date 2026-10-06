@@ -1042,6 +1042,32 @@ function usageStatement(db, accountId, hour, gbMinutes, storedBytes, now) {
 }
 
 /**
+ * The download meter a web route hands its handler (drive#517): it adds the
+ * bytes a response carries to the owner's download total for this hour. A
+ * failed meter write is logged and swallowed, because a broken meter must not
+ * stop a customer from reading their own file. Zero bytes record nothing.
+ * @param {D1Database|undefined} db the customer database, or undefined when
+ *   the deployment has none
+ * @param {() => number} [clock]
+ * @returns {((accountId: string, bytes: number) => Promise<void>)|undefined}
+ */
+export function downloadRecorder(db, clock = Date.now) {
+  if (!db) {
+    return undefined;
+  }
+  return async (accountId, bytes) => {
+    if (!(bytes > 0)) {
+      return;
+    }
+    try {
+      await recordDownloadBytes(db, accountId, bytes, clock());
+    } catch (error) {
+      console.error("meter: could not record download bytes", error);
+    }
+  };
+}
+
+/**
  * Add the bytes one download served to the account's current UTC hour, for the
  * dl Worker (drive issue #58, build step 5). This is the second writer of
  * `usage_minutes` and the mirror image of the rollup above: the rollup owns
