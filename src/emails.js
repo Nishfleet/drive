@@ -289,15 +289,20 @@ function requireDays(value, name) {
  * @returns {string}
  */
 function requireDay(value, name) {
-  // "3 Nov", the shape purgeOnDate() sends since drive#422: a day
-  // number and the month's short name, no year. The close window is
-  // 30 days, so the year never belongs in the sentence.
+  // "3 Nov (UTC)", the shape purgeOnDate() sends since drive#689: a day
+  // number, the month's short name, and the zone the day is in. The close
+  // window is 30 days, so the year never belongs in the sentence.
+  // The zone is required, not optional: drive#689 named it because a bare
+  // day was the UTC day, and this is the gate that stops a close email
+  // going out with the silence back in it.
   // en-GB's numeric day never pads, so neither does the guard.
   if (
     typeof value !== "string" ||
-    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(value)
+    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \(UTC\)$/.test(value)
   ) {
-    throw new TypeError(`${name} must be a short date (3 Nov), got ${String(value)}`);
+    throw new TypeError(
+      `${name} must be a short date with its zone (3 Nov (UTC)), got ${String(value)}`,
+    );
   }
   return value;
 }

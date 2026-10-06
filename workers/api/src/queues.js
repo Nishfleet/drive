@@ -6,17 +6,14 @@
 // process, so the Worker cannot see it. The CLI reads the queue where
 // `drive pause` and `drive status` already read it (cmd/drive/rc.go) and
 // POSTs the numbers to the api Worker over the device token it already
-// holds. They land here, keyed by the account the token resolved to, and the
-// pages read the freshest row.
+// holds. They land here, keyed by account and device (drive issue #516), so
+// a second device on the same account does not 429 the first.
 //
 // Two windows, one number each, so a mount's report cadence and the read's
 // staleness are stated once:
 //
 //   - QUEUE_REPORT_INTERVAL_SECONDS is the mount's own report interval and
-//     the minimum spacing between two accepted reports. The api route refuses
-//     a report that arrives sooner, which is the rate limit the issue asks
-//     for: far above what a real mount generates (a queue changes far more
-//     slowly than a keyboard), and far below what a loop could spend.
+//     the minimum spacing between two accepted reports from the same device.
 //   - QUEUE_FRESHNESS_SECONDS is how old a report may be and still read as
 //     live. A device that has not reported for a while reads as no queue to
 //     report -- the same honest null #308 answers today -- rather than as a
@@ -31,7 +28,7 @@
 // status and usage routes (the same D1 binding, `workers/api/src/index.js`
 // storeFor), so a queue written on one is read on the other.
 
-import { first, nowSeconds, run } from "./db.js";
+import { all, first, nowSeconds, run } from "./db.js";
 
 /**
  * How often a mount reports, and the minimum spacing between two accepted
@@ -43,11 +40,19 @@ import { first, nowSeconds, run } from "./db.js";
 export const QUEUE_REPORT_INTERVAL_SECONDS = 10;
 
 /**
- * How old a report may be and still read as live (seconds). Three missed
- * reports, so a mount whose loop stalled for a moment does not blink to "no
- * queue" while a mount that is gone reads as no queue rather than a stale one.
+ * How long a mount may stay silent when the queue has not changed (seconds).
+ * The CLI posts on change plus this heartbeat (cmd/drive/report.go).
  */
-export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_INTERVAL_SECONDS;
+export const QUEUE_REPORT_HEARTBEAT_SECONDS = 5 * 60;
+
+/**
+ * How old a report may be and still read as live (seconds). Three missed
+ * heartbeats, so a mount whose loop stalled for a moment does not blink to
+ * "no queue" while a mount that is gone reads as no queue rather than a
+ * stale one. The window has to outlast the heartbeat: a 10-second tick that
+ * only POSTs on change would otherwise look stale after 30 seconds of idle.
+ */
+export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_HEARTBEAT_SECONDS;
 
 /**
  * One report as the store holds it: the queue shape `uploadProgress()` and
@@ -99,9 +104,9 @@ export function uploadQueueFromRow(row, at) {
 }
 
 /**
- * The D1-backed queue store. Every method is a prepared statement against
- * `migrations/drive/0014_device_queues.sql`, so a report written on one
- * Worker instance is the row the pages read on the next one.
+ * The D1-backed queue store. Writes go to `device_queue_reports` (account +
+ * device) and dual-write the 0014 `device_queues` table so a previous reader
+ * still sees a row. Reads prefer the per-device table and fall back.
  * @param {D1Database} db
  * @param {{now?: () => number}} [options]
  */
@@ -111,32 +116,30 @@ export function createD1QueueStore(db, options = {}) {
   return {
     /**
      * Write one device's queue report for an account. The write is conditional
-     * on the stored row being at least QUEUE_REPORT_INTERVAL_SECONDS old, so a
-     * report inside the interval changes nothing and answers `refused` with
-     * how long the caller has left to wait — the rate limit, enforced in the
-     * database rather than in a read-then-write race.
+     * on that device's own row being at least QUEUE_REPORT_INTERVAL_SECONDS
+     * old, so two devices on one account do not 429 each other.
      * @param {string} accountId
      * @param {UploadQueue} queue
+     * @param {string} [deviceId] the device this report belongs to; defaults
+     *   to the account id so older callers still write one row per account
      * @returns {Promise<{stored: true, reportedAt: number}|{stored: false, retryAfter: number}>}
      */
-    async record(accountId, queue) {
+    async record(accountId, queue, deviceId = accountId) {
       const at = nowSeconds(now());
-      // The conditional upsert: the DO UPDATE only fires while the existing
-      // row's clock is at least one interval behind `at`. A row that is
-      // absent inserts; a row inside the interval updates nothing.
       const written = await run(
         db,
-        `INSERT INTO device_queues
-           (account_id, file_count, total_bytes, uploaded_bytes, paused, reported_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(account_id) DO UPDATE SET
+        `INSERT INTO device_queue_reports
+           (account_id, device_id, file_count, total_bytes, uploaded_bytes, paused, reported_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(account_id, device_id) DO UPDATE SET
            file_count = excluded.file_count,
            total_bytes = excluded.total_bytes,
            uploaded_bytes = excluded.uploaded_bytes,
            paused = excluded.paused,
            reported_at = excluded.reported_at
-         WHERE device_queues.reported_at <= ?7`,
+         WHERE device_queue_reports.reported_at <= ?8`,
         accountId,
+        deviceId,
         queue.files,
         queue.totalBytes,
         queue.uploadedBytes,
@@ -144,21 +147,39 @@ export function createD1QueueStore(db, options = {}) {
         at,
         at - QUEUE_REPORT_INTERVAL_SECONDS,
       );
-      // The statement's own change count is the answer, not a read of the row's
-      // clock: two reports inside the same second write the same `reported_at`,
-      // so a clock comparison would call the second one stored when the
-      // conditional update matched nothing. D1 reports zero changes for an
-      // upsert whose DO UPDATE predicate rejected the row (db.js `run` hands
-      // the statement's own result back, the same way the token sweep reads
-      // its count).
       const changed = Number(
         /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ?? 0,
       );
       if (changed > 0) {
+        await run(
+          db,
+          `INSERT INTO device_queues
+             (account_id, file_count, total_bytes, uploaded_bytes, paused, reported_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+           ON CONFLICT(account_id) DO UPDATE SET
+             file_count = excluded.file_count,
+             total_bytes = excluded.total_bytes,
+             uploaded_bytes = excluded.uploaded_bytes,
+             paused = excluded.paused,
+             reported_at = excluded.reported_at
+           WHERE device_queues.reported_at <= ?7`,
+          accountId,
+          queue.files,
+          queue.totalBytes,
+          queue.uploadedBytes,
+          queue.paused ? 1 : 0,
+          at,
+          at - QUEUE_REPORT_INTERVAL_SECONDS,
+        );
         return { stored: true, reportedAt: at };
       }
       const row = /** @type {Record<string, unknown>|null} */ (
-        await first(db, "SELECT reported_at FROM device_queues WHERE account_id = ?1", accountId)
+        await first(
+          db,
+          "SELECT reported_at FROM device_queue_reports WHERE account_id = ?1 AND device_id = ?2",
+          accountId,
+          deviceId,
+        )
       );
       const storedAt = Number(row?.reported_at ?? at);
       return {
@@ -169,33 +190,75 @@ export function createD1QueueStore(db, options = {}) {
 
     /**
      * The live queue for an account, or null when no device has reported one
-     * recently. The freshness window is applied here, in the one read both
-     * endpoints use, so the two surfaces cannot disagree about whether a row
-     * is live.
+     * recently. Fresh per-device rows are summed so two devices both show.
      * @param {string} accountId
      * @returns {Promise<UploadQueue|null>}
      */
     async latest(accountId) {
+      const at = nowSeconds(now());
+      const rows = /** @type {unknown[]} */ (
+        await all(db, "SELECT * FROM device_queue_reports WHERE account_id = ?1", accountId)
+      );
+      /** @type {UploadQueue[]} */
+      const live = [];
+      for (const row of rows) {
+        const queue = uploadQueueFromRow(row, at);
+        if (queue) {
+          live.push(queue);
+        }
+      }
+      if (live.length > 0) {
+        return live.reduce(
+          (sum, q) => ({
+            files: sum.files + q.files,
+            uploadedBytes: sum.uploadedBytes + q.uploadedBytes,
+            totalBytes: sum.totalBytes + q.totalBytes,
+            paused: sum.paused || q.paused,
+          }),
+          { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false },
+        );
+      }
       const row = await first(db, "SELECT * FROM device_queues WHERE account_id = ?1", accountId);
-      return uploadQueueFromRow(row, nowSeconds(now()));
+      return uploadQueueFromRow(row, at);
     },
 
     /**
-     * Drop the rows no read can answer from any more. Housekeeping, never the
-     * boundary: `latest` already treats a stale row as absent, so a deployment
-     * that never sweeps reads the same queues and only holds more rows. It is
-     * exposed so the tests (and a deployment that wants it on a timer) can run
-     * it without waiting out a window.
+     * Drop the rows no read can answer from any more.
      * @param {number} [at] epoch seconds to judge the rows at
      * @returns {Promise<number>} how many rows went
      */
     async sweep(at = nowSeconds(now())) {
-      const result = await run(
-        db,
-        "DELETE FROM device_queues WHERE reported_at < ?1",
-        at - QUEUE_FRESHNESS_SECONDS,
+      const cutoff = at - QUEUE_FRESHNESS_SECONDS;
+      const next = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
+      const prev = await run(db, "DELETE FROM device_queues WHERE reported_at < ?1", cutoff);
+      return (
+        Number(/** @type {{meta?: {changes?: number}}} */ (next)?.meta?.changes ?? 0) +
+        Number(/** @type {{meta?: {changes?: number}}} */ (prev)?.meta?.changes ?? 0)
       );
-      return Number(/** @type {{meta?: {changes?: number}}} */ (result)?.meta?.changes ?? 0);
+    },
+
+    /**
+     * Drop this device's live report so logout does not leave a ghost queue
+     * for the freshness window.
+     * @param {string} accountId
+     * @param {string} deviceId
+     * @returns {Promise<void>}
+     */
+    async remove(accountId, deviceId) {
+      await run(
+        db,
+        "DELETE FROM device_queue_reports WHERE account_id = ?1 AND device_id = ?2",
+        accountId,
+        deviceId,
+      );
+      const leftover = await first(
+        db,
+        "SELECT account_id FROM device_queue_reports WHERE account_id = ?1 LIMIT 1",
+        accountId,
+      );
+      if (leftover === null || leftover === undefined) {
+        await run(db, "DELETE FROM device_queues WHERE account_id = ?1", accountId);
+      }
     },
   };
 }

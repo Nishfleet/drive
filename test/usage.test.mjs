@@ -1163,6 +1163,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
     .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
     .bind(signedInAccount.id)
     .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
+    .bind(signedInAccount.id)
+    .run();
   const paused = await (await read()).json();
   assert.ok(
     paused.uploadLine.startsWith(UPLOAD_LABEL.paused),
@@ -1181,6 +1185,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // stale line, so the page hides the line instead of freezing a number.
   await made.db
     .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
+    .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
     .run();
   assert.equal((await (await read()).json()).uploadLine, null, "a stale report still shows a line");
