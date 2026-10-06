@@ -1610,7 +1610,6 @@ export async function handleRequestInfoRequest(request, links, capState, options
     open: true,
     folder: folderDisplayName(record.folder),
     owner,
-    expiresLabel: expiresLabel(record.expiresAt),
     expiresAtIso: expiresAtIso(record.expiresAt),
   });
 }

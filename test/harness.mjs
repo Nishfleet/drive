@@ -87,16 +87,17 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The per-link caps and retention (drive#549): upload_requests.max_files
   // and shares.max_download_bytes. Expand only.
   "drive/0025_link_caps.sql",
-  // The per-link arrival digest (drive#684): upload_requests.digest_at and
-  // pending_uploads. Expand only; the upload path and the info route read the
-  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
-  "drive/0026_request_digest.sql",
   // Per-address send counters (drive#550): 5 links an hour, 20 a day
   // per inbox; the guard spends a slot only when both windows have room.
   "drive/0026_signin_address_sends.sql",
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // The per-link arrival digest (drive#684): upload_requests.digest_at and
+  // pending_uploads. Expand only; the upload path and the info route read the
+  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
+  // Numbered 0028 because 0022–0026 are already taken.
+  "drive/0028_request_digest.sql",
 ]);
 
 /**

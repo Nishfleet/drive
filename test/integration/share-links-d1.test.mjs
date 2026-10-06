@@ -330,7 +330,6 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
     // No owner resolver on this call: the name is the empty string, and the
     // page hides its "Shared by" line rather than showing a blank (drive#684).
     owner: "",
-    expiresLabel: expiresLabel(now + 7 * DAY_MS),
     expiresAtIso: expiresAtIso(now + 7 * DAY_MS),
   });
 

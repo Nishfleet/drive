@@ -49,8 +49,8 @@ function drop(name, body) {
 
 test("the real migrations add the two additive digest columns", () => {
   assert.ok(
-    MIGRATION_FILES.includes("0026_request_digest.sql"),
-    "0026_request_digest.sql is missing from the migration set",
+    MIGRATION_FILES.includes("0028_request_digest.sql"),
+    "0028_request_digest.sql is missing from the migration set",
   );
   const { sqlite } = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
 
@@ -69,7 +69,7 @@ test("the real migrations add the two additive digest columns", () => {
   assert.equal(pending.dflt_value, "'[]'", "the old code's INSERT needs the empty default");
 
   const migration = readFileSync(
-    new URL("../../migrations/drive/0026_request_digest.sql", import.meta.url),
+    new URL("../../migrations/drive/0028_request_digest.sql", import.meta.url),
     "utf8",
   );
   const sql = migration.replace(/--[^\n]*/g, "");
