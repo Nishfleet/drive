@@ -114,6 +114,8 @@ export default defineConfig({
       // file_versions, usage_minutes, events_seen and meter_rollup_state
       // (migrations/drive/0005_meter.sql) are created and read beside the file
       // index, and giving them a database of their own is this line alone.
+      // test/binding-parity.test.mjs fails the suite if this id ever differs
+      // from DRIVE_DB's, so the split is a red test and not just this comment.
       METER_DB: bindings.d1({
         name: "drive-data",
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
@@ -214,11 +216,13 @@ export default defineConfig({
       // bindings, KV and ASSETS. The route itself sits behind this limiter so
       // an anonymous loop cannot spend those billed ops at will. 10 a minute
       // per IP is the sign-in figure: far above a monitor that polls once a
-      // minute, far below a script. Namespace 1009, because 1006/1007 are the
-      // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
-      // the share-download limiter below.
+      // minute, far below a script. Namespace 1011, because 1001–1005 are this
+      // Worker, 1006/1007 are the api Worker's device pair
+      // (workers/api/cloudflare.config.ts), 1008 is the share-download limiter
+      // below and 1009/1010 are this file's two mint limiters. A namespace
+      // another binding already uses fails the deploy with 10021.
       HEALTH_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1011",
         simple: { limit: 10, period: 60 },
       }),
       // GET /s/<token> (drive issue #506): a logged-out share download has no
@@ -236,8 +240,9 @@ export default defineConfig({
       // /api/request each get their own bound, on top of the per-account cap
       // of 50 open links the handlers enforce. 30 a minute per IP is far
       // above an owner clicking "Share" and far below a script minting tokens
-      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
-      // namespace fails the deploy with 10021.
+      // to walk. Namespace 1009 and 1010 (REQUEST_MINT below) continue the
+      // 1001–1008 series; 1011 is the health limiter above. A namespace another
+      // binding already uses fails the deploy with 10021.
       SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
         namespace: "1009",
         simple: { limit: 30, period: 60 },

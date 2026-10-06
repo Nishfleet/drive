@@ -161,8 +161,12 @@ test("the per-IP ceiling sits above the CLI's own poll rate and the sign-in limi
 test("every rate-limit namespace on the account is distinct", () => {
   // Cloudflare wants a positive integer string unique per account, and a
   // namespace another binding already uses fails the deploy with 10021. The
-  // site Worker holds the first five; the api Worker's pair has to start after
-  // them rather than reuse one.
+  // site Worker holds 1001-1005 and 1008-1011, with the api Worker's device
+  // pair taking 1006/1007 in between, so the two Workers' numbers interleave
+  // and a new binding has to take a number nothing here already holds. #641
+  // gave the health limiter 1009, the number #682's mint pair had taken 22
+  // minutes earlier, and the deploy refused the duplicate: the mint pair keeps
+  // 1009 and the health route moved to 1011.
   const api = Object.values(apiConfig.env)
     .filter((binding) => binding.type === "rate-limit")
     .map((binding) => ({ binding: "api", namespace: binding.namespace }));
