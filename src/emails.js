@@ -236,8 +236,49 @@ export function paymentFailedTemplate(data = {}) {
 
 // ---------------------------------------------------------------------------
 // 5) Monthly receipt -- this month's bill and, when there is one, the saved
-//    line. { billUsd, meteredUsd, ceilingUsd, capped }
+//    line. { monthIso, billUsd, meteredUsd, ceilingUsd, capped }
 // ---------------------------------------------------------------------------
+// The month the receipt is for, as an instant: the first millisecond of the
+// UTC month (`monthStart`, src/meter.js), sent as "2026-10-01T00:00:00.000Z".
+// The month is NAME rather than "this month" (drive#559) because a mail is
+// read days later and "this month" is whatever month the reader is in now. It
+// is a month, never a day, so the guard is the month shape itself: a value
+// that is not the first instant of a UTC month is refused rather than guessed
+// at, and no caller text reaches the subject.
+const MONTH_ISO = /^\d{4}-(0[1-9]|1[0-2])-01T00:00:00\.000Z$/;
+// Twelve names, one per month, in one place and in one order: the month a
+// customer reads out of their inbox. A table rather than the runtime's locale
+// table, because the receipt's words are a decision (docs/build-spec.md) and
+// an email reader's zone must not turn "October" into "Oktobri".
+const MONTH_NAMES = Object.freeze([
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+]);
+
+/**
+ * @param {unknown} value
+ * @returns {string} the month named "October 2026", for the subject and the first line
+ */
+function monthLabel(value) {
+  if (typeof value !== "string" || !MONTH_ISO.test(value)) {
+    throw new TypeError(
+      `monthIso must be a month's first instant (2026-10-01T00:00:00.000Z), got ${String(value)}`,
+    );
+  }
+  const at = new Date(value);
+  return `${MONTH_NAMES[at.getUTCMonth()]} ${at.getUTCFullYear()}, UTC`;
+}
+
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -245,6 +286,10 @@ export function paymentFailedTemplate(data = {}) {
 export function monthlyReceiptTemplate(data = {}) {
   const { billUsd, meteredUsd, ceilingUsd, capped } = data;
   const bill = requireMoney(billUsd, "billUsd");
+  // The month the rest of the numbers describe. It is checked first, before
+  // anything is rendered, so a receipt with no month in it never renders at
+  // all rather than going out with a name missing from its subject.
+  const month = monthLabel(data.monthIso);
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a
   // receipt that guessed the baseline would state the wrong saving.
@@ -254,14 +299,20 @@ export function monthlyReceiptTemplate(data = {}) {
     ceilingUsd: requireMoney(ceilingUsd, "ceilingUsd"),
     capped,
   });
-  const subject = `Your Drive receipt: ${usd(bill)} this month`;
+  const subject = `Your Drive receipt: ${month}`;
   const lines = [
-    `Your Drive bill for this month is ${usd(bill)}.`,
+    `Your Drive bill for ${month} is ${usd(bill)}.`,
+    "",
+    // The same sentence the usage page states (src/usage.js USAGE_LABELS.monthNote):
+    // a month read in two zones is two different months, so one surface says
+    // the rule once and in the same words.
+    "Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
     "",
     "This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.",
   ];
   const html_lines = [
-    `<p>Your Drive bill for this month is ${usd(bill)}.</p>`,
+    `<p>Your Drive bill for ${month} is ${usd(bill)}.</p>`,
+    "<p>Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>",
     "<p>This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.</p>",
   ];
   if (saved) {

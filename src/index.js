@@ -47,6 +47,7 @@ import {
   listMeteredAccounts,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  monthStart,
   pruneHiddenVersions,
   reconcileMeter,
   recordNightlySizes,
@@ -753,6 +754,14 @@ export function createApp() {
       { ...account, capUsd, cardOnFile, usage },
       await liveQueueFor(c.env, account),
       balance,
+      // The month these numbers belong to, sent as its first instant (drive#559):
+      // the one UTC month boundary the meter, the cap walk and the invoice read
+      // (src/meter.js monthStart). It rides on the answer so the page can write
+      // the month's name in the browser's own words and the customer can check
+      // their statement against it. It is not worked out here in billing.js:
+      // this file already owns the month, and a second boundary in the handler
+      // would be a second answer to the same question.
+      new Date(monthStart(Date.now())).toISOString(),
     );
   });
 

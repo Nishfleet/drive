@@ -291,14 +291,14 @@ export function lastSyncText(device) {
  * cell sits beside the code a person has to paste, so the words a synced Mac
  * reads are the words on its own clock, not a second one.
  *
- * `en-GB` with a numeric day and a short month is the pair the rest of the
- * site writes its days in (src/files.js formatWhen, src/account-close.js
- * purgeOnDate), so a device's last sync reads the same way as every other day
- * drive shows. The time zone is injected rather than read from the runtime so
- * a test can pin one; `undefined` is the zone the browser is in, which is
- * what the page passes.
+ * The locale is the reader's too (drive#559): a numeric day, a short month,
+ * the year and the clock, in the order and the 12- or 24-hour form the
+ * browser's own locale uses, the same choice the file rows make
+ * (public/files.html whenLabel). The zone and the locale are injected rather
+ * than read from the runtime so a test can pin them; `undefined` is the
+ * browser's own, which is what the page passes.
  * @param {string} instant an ISO-8601 stamp
- * @param {{timeZone?: string}} [options]
+ * @param {{timeZone?: string, locale?: string}} [options]
  * @returns {string}
  */
 export function syncInstantText(instant, options = {}) {
@@ -312,13 +312,12 @@ export function syncInstantText(instant, options = {}) {
   if (Number.isNaN(time.getTime())) {
     throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
   }
-  return time.toLocaleString("en-GB", {
+  return time.toLocaleString(options.locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
     timeZone: options.timeZone,
   });
 }
