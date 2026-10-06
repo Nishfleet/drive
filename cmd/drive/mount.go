@@ -621,6 +621,10 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		if err != nil {
 			return err
 		}
+	} else if err := reclaimStrayHoldings(p.MountDir); err != nil {
+		// A holding folder an earlier run could not empty goes into the
+		// drive that is up now.
+		fmt.Fprintf(os.Stderr, "note: local files beside %s could not be copied into the drive (%v); copy them by hand\n", p.MountDir, err)
 	}
 	if len(strays) > 0 {
 		fmt.Fprintf(os.Stderr, "note: %s already had local files; they were moved to %s so the drive can mount, and they will be copied into the drive once it is up\n", p.MountDir, holding)

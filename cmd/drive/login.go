@@ -117,10 +117,12 @@ func Login(home, apiBase string, out io.Writer) error {
 		if base == "" {
 			base = apiBase
 		}
-		if old, err := NewAPIClient(base, previous.DeviceToken); err == nil {
-			if err := old.ClearQueueReport(); err != nil && !isAPIStatus(err, "401") && !isAPIStatus(err, "404") {
-				fmt.Fprintf(out, "note: the previous login's upload queue could not be cleared (%v); it ages out in 15 minutes\n", err)
-			}
+		old, err := NewAPIClient(base, previous.DeviceToken)
+		if err == nil {
+			err = old.ClearQueueReport()
+		}
+		if err != nil && !isAPIStatus(err, "401") && !isAPIStatus(err, "404") {
+			fmt.Fprintf(out, "note: the previous login's upload queue could not be cleared (%v); it ages out in 15 minutes\n", err)
 		}
 	}
 	if previous.KeyID != "" && previous.KeyID != key.KeyID {

@@ -148,8 +148,9 @@ type pendingSave struct {
 	hashFails int
 	// baselineUnknown is set when the remote hash could not be read at
 	// first sight, so previous is not the version the save replaces. It
-	// is read again on later passes, and until it is known a version that
-	// is not this device's is not claimed as a conflict.
+	// is read again on later passes while the save is queued. Until it is
+	// known, a version that is not this device's is not claimed as a
+	// conflict, and a save that leaves the queue still unknown is named.
 	baselineUnknown bool
 }
 
@@ -364,7 +365,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 		landed, err := b.remoteHash(ctx, name)
 		if err != nil {
-			g.hashFailed(&res, name, save)
+			g.hashFailed(&res, name, save, "the remote hash for this file could not be read")
 			continue
 		}
 		save.polls++
@@ -377,10 +378,15 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// and another device's save does not.
 			size, modTime, ok, err := b.remoteVersion(ctx, name)
 			if err != nil {
-				g.hashFailed(&res, name, save)
+				g.hashFailed(&res, name, save, "the size and time of this file in storage could not be read")
 				continue
 			}
-			if ok && sameVersion(size, modTime, save.stagedSize, save.stagedMtime) {
+			if !ok {
+				// The object went between the two reads: nothing has
+				// landed, so the next pass looks again.
+				continue
+			}
+			if sameVersion(size, modTime, save.stagedSize, save.stagedMtime) {
 				save.winPolls++
 				if save.winPolls >= conflictWinPolls {
 					g.synced[name] = landed
@@ -418,8 +424,14 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		case save.baselineUnknown:
 			// The version that preceded the save was never read, so a
 			// version that is not this device's may be that one and is
-			// not claimed as a conflict. It is watched a little longer.
+			// not claimed as a conflict. It is watched a little longer,
+			// then named: an overwrite in that window cannot be told
+			// from the version the save replaced.
 			if save.polls >= conflictClaimPolls {
+				res.Skipped = append(res.Skipped, ConflictSkip{
+					Remote: name,
+					Reason: "the version before this save could not be read, so an overwrite could not be told apart",
+				})
 				g.drop(name, save)
 			}
 		default:
@@ -463,10 +475,9 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 // after conflictHashFailPolls of them, names the save once. The next pass
 // drops a named save, so a path whose remote cannot be read is not watched
 // for ever.
-func (g *conflictGuard) hashFailed(res *ConflictResult, name string, save *pendingSave) {
+func (g *conflictGuard) hashFailed(res *ConflictResult, name string, save *pendingSave, reason string) {
 	save.hashFails++
 	if save.hashFails >= conflictHashFailPolls && !save.reported {
-		const reason = "the remote hash for this file could not be read"
 		res.Skipped = append(res.Skipped, ConflictSkip{Remote: name, Reason: reason})
 		save.reason = reason
 		save.reported = true

@@ -106,6 +106,8 @@ func restoreStrayMountFiles(holding, mountDir string) error {
 			// top of it would overwrite the drive's version, so it stays.
 			kept = append(kept, e.Name())
 			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("look for %s in the drive: %w", e.Name(), err)
 		}
 		if err := moveIntoDrive(from, to); err != nil {
 			return fmt.Errorf("copy %s into the drive: %w", e.Name(), err)
@@ -127,6 +129,10 @@ func moveIntoDrive(from, to string) error {
 		return err
 	}
 	if err := copyTree(from, to); err != nil {
+		// to did not exist before the copy, so what is there now is only
+		// this copy's partial bytes. Leaving them would upload a truncated
+		// file and block the next restore of the whole one.
+		_ = os.RemoveAll(to)
 		return err
 	}
 	return os.RemoveAll(from)

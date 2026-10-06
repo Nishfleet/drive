@@ -838,6 +838,7 @@ func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
 	// The upload leaves the queue without landing, and the read works again.
 	delete(f.hashErr, "report.txt")
 	f.pending = nil
+	var named []ConflictSkip
 	for i := 0; i < conflictClaimPolls+1; i++ {
 		res, err := g.pass(context.Background(), f)
 		if err != nil {
@@ -846,9 +847,13 @@ func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
 		if len(res.Claimed) != 0 {
 			t.Fatalf("claimed %v against the version the save replaces", res.Claimed)
 		}
+		named = append(named, res.Skipped...)
 	}
 	if len(f.copied) != 0 {
 		t.Errorf("copied %v", f.copied)
+	}
+	if len(named) != 1 || named[0].Remote != "report.txt" {
+		t.Errorf("Skipped = %+v, want the save with an unread baseline named once", named)
 	}
 }
 
