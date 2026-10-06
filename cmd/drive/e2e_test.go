@@ -672,6 +672,9 @@ func mountSkipReason() string {
 // skipNoMount skips the calling test when this host will not bring up a mount.
 // Under CI=true it fails instead: GitHub's ubuntu runners can mount, so a skip
 // there means the runner is broken, not that the proof is optional (drive#501).
+// waitForMount already Fatals when rclone exits before the mount appears, so
+// this helper only sees a live rclone and a directory that never became a
+// mount — the host refused FUSE (or macOS NFS).
 func skipNoMount(t testing.TB, format string, args ...any) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)

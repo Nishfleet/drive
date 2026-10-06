@@ -210,11 +210,13 @@ test("ci.yml runs the mount proofs on ubuntu-latest, without -short", () => {
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   assert.match(body, /^ {4}runs-on: ubuntu-latest$/m, "the go job is a hosted runner");
   for (const name of ["TestStandinMountProof", "TestTwoDevicesKeepBothSaves"]) {
-    const run = [...body.matchAll(/^\s+run: go test .* -run (\S+)/gm)].find((m) =>
-      m[1].includes(name),
-    );
-    assert.ok(run, `the go job runs ${name} as its own command`);
-    assert.doesNotMatch(run[0], /-short/, `${name} is not in -short mode`);
+    const idx = body.indexOf(`-run ${name}`);
+    assert.notEqual(idx, -1, `the go job runs ${name} as its own command`);
+    const stepStart = body.lastIndexOf("- name:", idx);
+    const fromName = body.slice(stepStart);
+    const next = fromName.slice(1).search(/^\s+- name:|^ {2}[\w-]+:/m);
+    const step = next === -1 ? fromName : fromName.slice(0, 1 + next);
+    assert.doesNotMatch(step, /-short/, `${name} is not in -short mode`);
   }
   assert.match(
     body,

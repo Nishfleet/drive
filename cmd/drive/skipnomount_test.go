@@ -24,7 +24,7 @@ func TestSkipNoMountFailsUnderCI(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSkipNoMountFailsUnderCI$", "-test.v")
-	cmd.Env = append(os.Environ(), "DRIVE_SKIPNOMOUNT_PROBE=fail", "CI=true")
+	cmd.Env = append(envWithoutCI(), "DRIVE_SKIPNOMOUNT_PROBE=fail", "CI=true")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("want a failure under CI=true, got success:\n%s", out)
