@@ -29,8 +29,8 @@ async function insertAccount(db, id) {
 
 test("the real migration adds one nullable welcome column and nothing destructive", () => {
   assert.ok(
-    MIGRATION_FILES.includes("0027_welcome_sent_at.sql"),
-    "0027_welcome_sent_at.sql is missing",
+    MIGRATION_FILES.includes("0028_welcome_sent_at.sql"),
+    "0028_welcome_sent_at.sql is missing",
   );
   const { sqlite } = makeMeteredDB();
   const row = sqlite
@@ -41,7 +41,7 @@ test("the real migration adds one nullable welcome column and nothing destructiv
   assert.equal(row.dflt_value, null, "it has no default");
 
   const sql = readFileSync(
-    new URL("../../migrations/drive/0027_welcome_sent_at.sql", import.meta.url),
+    new URL("../../migrations/drive/0028_welcome_sent_at.sql", import.meta.url),
     "utf8",
   ).replace(/--[^\n]*/g, "");
   assert.match(sql, /ALTER TABLE accounts ADD COLUMN welcome_sent_at INTEGER/);

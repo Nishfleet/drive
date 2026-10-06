@@ -41,9 +41,10 @@ function dataFor(kind) {
     return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true, replyTo: REPLY_TO };
   }
   if (kind === "account-closed" || kind === "account-close-reminder") {
-    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov", replyTo: REPLY_TO };
+    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)", replyTo: REPLY_TO };
   }
-  if (kind === "files-deleted") return { purgedOn: "3 Nov", graceDays: 30, replyTo: REPLY_TO };
+  if (kind === "files-deleted")
+    return { purgedOn: "3 Nov (UTC)", graceDays: 30, replyTo: REPLY_TO };
   // drive#586: the prepaid emails, both auto top-up states, so the gates
   // read every sentence a customer can be sent.
   if (kind === "top-up-receipt")

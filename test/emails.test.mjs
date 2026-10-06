@@ -158,16 +158,16 @@ test("the reminder names the real window, and due once the window has passed", (
   const onTime = accountCloseReminderTemplate({
     graceDays: 30,
     reminderDays: 25,
-    purgeOn: "3 Nov",
+    purgeOn: "3 Nov (UTC)",
     replyTo: REPLY_TO,
   });
   assert.equal(onTime.subject, "Your Drive files will be deleted in 5 days");
-  assert.match(onTime.text, /in 5 days, on 3 Nov/);
+  assert.match(onTime.text, /in 5 days, on 3 Nov \(UTC\)/);
 
   const late = accountCloseReminderTemplate({
     graceDays: 30,
     reminderDays: 25,
-    purgeOn: "3 Nov",
+    purgeOn: "3 Nov (UTC)",
     due: true,
     replyTo: REPLY_TO,
   });
@@ -184,7 +184,11 @@ test("the close lane links to the usage page, and the deletion notice cannot be 
     assert.match(text, /\/usage\.html/, `${kind} links to the usage page`);
     assert.doesNotMatch(text, /Open your drive/, `${kind} does not open a shut drive`);
   }
-  const deleted = filesDeletedTemplate({ purgedOn: "3 Nov", graceDays: 30, replyTo: REPLY_TO });
+  const deleted = filesDeletedTemplate({
+    purgedOn: "3 Nov (UTC)",
+    graceDays: 30,
+    replyTo: REPLY_TO,
+  });
   assert.match(deleted.text, /Nothing else was deleted\. This deletion cannot be undone\./);
   assert.doesNotMatch(deleted.text, /we will look/);
   assert.match(deleted.text, /https:\/\/[^\s]+/, "the deletion notice still has a link");
@@ -345,9 +349,9 @@ function dataFor(kind) {
       return { ...receiptData(), ...base };
     case "account-closed":
     case "account-close-reminder":
-      return { ...base, graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
+      return { ...base, graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
     case "files-deleted":
-      return { ...base, purgedOn: "3 Nov", graceDays: 30 };
+      return { ...base, purgedOn: "3 Nov (UTC)", graceDays: 30 };
     case "top-up-receipt":
       return { ...base, amountUsd: 25, balanceUsd: 31.5, auto: false };
     case "low-balance":
