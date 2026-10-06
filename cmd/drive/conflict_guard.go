@@ -231,6 +231,11 @@ type conflictBackend interface {
 	// is never true here: a conflict copy is always in the folder
 	// whose save was lost, so only that folder's listing changed.
 	refresh(ctx context.Context, recursive bool) error
+	// forget drops one path from rclone's VFS cache. operations/hashsum
+	// and operations/stat on the mount's remote control can still name
+	// this device's cache after another device's PUT has landed; forgetting
+	// the path makes the next read hit storage.
+	forget(ctx context.Context, name string) error
 }
 
 // ConflictResult is what one guard pass did, so a proof and a log
@@ -628,6 +633,16 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// that cache: a different length is the retried overwrite.
 		if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
 			return g.keepLosingSave(ctx, b, name, save, landed)
+		}
+		// When hashsum and stat both still name the VFS cache, forget
+		// the path so the next read is storage (TestTwoDevicesKeepBothSaves).
+		if ferr := b.forget(ctx, name); ferr == nil {
+			if h, herr := b.remoteHash(ctx, name); herr == nil && h != "" && h != save.hash && h != save.previous {
+				return g.keepLosingSave(ctx, b, name, save, h)
+			}
+			if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
+				return g.keepLosingSave(ctx, b, name, save, landed)
+			}
 		}
 		save.winPolls++
 		if save.winPolls >= conflictWinPolls {
@@ -1337,6 +1352,14 @@ func remoteBase(name string) string {
 		return name[i+1:]
 	}
 	return name
+}
+
+// forget drops one path from rclone's VFS directory cache so the next
+// operations/stat or operations/hashsum reads storage rather than the
+// bytes this device still has cached.
+func (c *rcClient) forget(ctx context.Context, name string) error {
+	var reply map[string]any
+	return c.call(ctx, "vfs/forget", map[string]string{"file": name}, &reply)
 }
 
 // copyLocalToRemote copies one file this device can read into the

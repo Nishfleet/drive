@@ -137,11 +137,20 @@ type fakeConflictBackend struct {
 	listErr       error
 	// versions is the size and mtime operations/stat reports per object.
 	versions map[string]objectVersion
+	// forgetReveals is what operations/hashsum and operations/stat start
+	// reporting after vfs/forget: the VFS cache had been naming this
+	// device's own bytes.
+	forgetReveals map[string]revealedRemote
 }
 
 type objectVersion struct {
 	size    int64
 	modTime time.Time
+}
+
+type revealedRemote struct {
+	hash    string
+	version objectVersion
 }
 
 func newFakeBackend() *fakeConflictBackend {
@@ -262,6 +271,18 @@ func (f *fakeConflictBackend) refresh(_ context.Context, _ bool) error {
 		return f.failWith
 	}
 	f.refreshed++
+	return nil
+}
+
+func (f *fakeConflictBackend) forget(_ context.Context, name string) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	if revealed, ok := f.forgetReveals[name]; ok {
+		f.objects[name] = revealed.hash
+		f.versions[name] = revealed.version
+		delete(f.forgetReveals, name)
+	}
 	return nil
 }
 
@@ -480,17 +501,21 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("polling pass: %v", err)
 	}
-	if f.hashCalls != conflictPollMax {
-		t.Fatalf("the pass polled %d paths, want the bound %d", f.hashCalls, conflictPollMax)
+	// A win poll hashes once, then vfs/forget and hashes again so a stale
+	// VFS cache cannot hide an overwrite. The bound is still conflictPollMax
+	// paths; each path costs two hashsum calls.
+	const hashesPerWinPoll = 2
+	if f.hashCalls != hashesPerWinPoll*conflictPollMax {
+		t.Fatalf("the pass hashed %d times, want %d (%d paths × %d hashes)", f.hashCalls, hashesPerWinPoll*conflictPollMax, conflictPollMax, hashesPerWinPoll)
 	}
 	// The first hundred in first-sight order were polled; the tail was not.
 	for i, name := range g.order {
-		want := 1
+		want := hashesPerWinPoll
 		if i >= conflictPollMax {
 			want = 0
 		}
 		if got := f.pollCounts[name]; got != want {
-			t.Fatalf("save %d was polled %d times after one pass, want %d", i, got, want)
+			t.Fatalf("save %d was hashed %d times after one pass, want %d", i, got, want)
 		}
 	}
 	// The second pass resumes from where the first stopped: the tail gets
@@ -499,8 +524,8 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("second polling pass: %v", err)
 	}
-	if f.hashCalls != 2*conflictPollMax {
-		t.Fatalf("two passes polled %d paths, want %d", f.hashCalls, 2*conflictPollMax)
+	if f.hashCalls != 2*hashesPerWinPoll*conflictPollMax {
+		t.Fatalf("two passes hashed %d times, want %d", f.hashCalls, 2*hashesPerWinPoll*conflictPollMax)
 	}
 	// Every path has now been polled, each as often as its window says,
 	// and no path has been polled twice while another waited: the head's
@@ -510,11 +535,11 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 		if save == nil {
 			t.Fatalf("%s dropped early", name)
 		}
-		if save.winPolls != f.pollCounts[name] {
+		if save.winPolls*hashesPerWinPoll != f.pollCounts[name] {
 			t.Fatalf("save %d: %d win polls against %d remote hashes", i, save.winPolls, f.pollCounts[name])
 		}
-		if i >= conflictPollMax && f.pollCounts[name] != 1 {
-			t.Fatalf("save %d in the tail was polled %d times, want 1: the second pass resumed past the head instead of repeating it", i, f.pollCounts[name])
+		if i >= conflictPollMax && f.pollCounts[name] != hashesPerWinPoll {
+			t.Fatalf("save %d in the tail was hashed %d times, want %d: the second pass resumed past the head instead of repeating it", i, f.pollCounts[name], hashesPerWinPoll)
 		}
 	}
 }
@@ -970,6 +995,43 @@ func TestConflictGuardKeepsASaveWhenHashsumStillNamesTheVFSCache(t *testing.T) {
 	want := "report (conflict, mac).txt"
 	if len(f.copied) != 1 || f.copied[0] != want {
 		t.Fatalf("copied %v, want [%s] (hashsum still named this device, size did not)", f.copied, want)
+	}
+	if got := f.objects[want]; got != md5Hex(body) {
+		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
+	}
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardKeepsASaveWhenForgetRevealsTheOverwrite is the real
+// two-device case: operations/hashsum and operations/stat both still name
+// this device's VFS cache after the other PUT has landed. vfs/forget drops
+// that cache so the next read is storage, and the earlier save is kept.
+func TestConflictGuardKeepsASaveWhenForgetRevealsTheOverwrite(t *testing.T) {
+	body := "A-this-device-saved-first\n"
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": body})
+	f.pending = []queueEntry{{Name: "report.txt", Size: int64(len(body))}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex(body)
+	f.versions["report.txt"] = objectVersion{size: int64(len(body)), modTime: time.Now()}
+	other := "B-the-other-device-retried\n"
+	f.forgetReveals = map[string]revealedRemote{
+		"report.txt": {
+			hash:    md5Hex(other),
+			version: objectVersion{size: int64(len(other)), modTime: time.Now()},
+		},
+	}
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after forget revealed the overwrite: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]", f.copied, want)
 	}
 	if got := f.objects[want]; got != md5Hex(body) {
 		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
