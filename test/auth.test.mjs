@@ -27,7 +27,8 @@ import {
   signinDeviceName,
   signinLinkEmail,
 } from "../core/auth.js";
-import worker from "../src/index.js";
+import { createMemoryStore } from "../core/files.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import {
   createTestAuth,
   createTestD1,
@@ -289,6 +290,7 @@ test("the Worker's gate reads Better Auth's session, not a cookie the browser ch
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "gated@example.com");
   for (const path of ["/api/files", "/api/usage", "/api/first-run-status"]) {

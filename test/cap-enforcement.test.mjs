@@ -12,8 +12,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCapEnforcement } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
+import { createMemoryStore } from "../core/files.js";
 import { HOUR_MS, hourStart, METER_CRON, monthStart } from "../core/meter.js";
-import worker from "../src/index.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { createD1LinkStore, newRequestRecord } from "../src/share.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
@@ -67,6 +68,9 @@ async function seeded(capCents) {
     BETTER_AUTH_URL: "https://drive.test",
     REQUEST_UPLOAD_RATE_LIMITER: passLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: passLimiter(),
+    // Tests inject the in-memory files store. Production never builds it
+    // (src/index.js storeFor, drive#505).
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const walk = () =>
     runCapEnforcement({
