@@ -273,7 +273,8 @@ test("customer docs do not point at repository files or issue numbers", () => {
   // drive#545: limits.md named (#154), the FAQ named docs/scoreboard.md, the
   // security page named workers/api paths, the pricing page named
   // monthBillCents. Those are repo internals, not customer copy.
-  const leak = /(?:workers\/api\/|cmd\/drive\/[a-z]|docs\/scoreboard\.md|monthBillCents|\(issue #\d+\)|\(#\d+\))/;
+  const leak =
+    /(?:workers\/api\/|cmd\/drive\/[a-z]|docs\/scoreboard\.md|monthBillCents|\(issue #\d+\)|\(#\d+\))/;
   for (const surface of [
     "docs-site/faq.md",
     "docs-site/limits.md",
