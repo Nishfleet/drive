@@ -74,11 +74,6 @@ func noteCommands(note string) []string {
 	return out
 }
 
-// TestNotesNameOnlyRealCommands holds both agent notes to the command
-// table: the in-folder note (CLAUDE.md / AGENTS.md, noteBody) and the skill
-// note (SKILL.md / steering, skillBody) may name only commands main runs, in
-// code spans or in plain words, so `drive init` can never again advertise a
-// command that does not exist.
 // TestHelpNamesNoTrackerReference refuses a tracker row id in the help text
 // (drive issue #562: `drive --help` used to point at "issue #19" and
 // "drive#117", which are private pointers that mean nothing to the person
@@ -100,6 +95,11 @@ func TestHelpNamesNoTrackerReference(t *testing.T) {
 // to pass by rewriting a size.
 var trackerRefRe = regexp.MustCompile(`(#|[A-Za-z][A-Za-z0-9_-]*#)\d+`)
 
+// TestNotesNameOnlyRealCommands holds both agent notes to the command
+// table: the in-folder note (CLAUDE.md / AGENTS.md, noteBody) and the skill
+// note (SKILL.md / steering, skillBody) may name only commands main runs, in
+// code spans or in plain words, so `drive init` can never again advertise a
+// command that does not exist.
 func TestNotesNameOnlyRealCommands(t *testing.T) {
 	for _, note := range []struct{ name, body string }{
 		{"the in-folder note", noteBody("/drive")},
