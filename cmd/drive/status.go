@@ -28,11 +28,11 @@ import (
 //
 // Both answers come from something that already exists rather than a second
 // way to ask: rclone writes the queue as it queues it, and the api Worker
-// already computes the money in src/billing.js `usageSummary()`. This file
+// already computes the money in core/billing.js `usageSummary()`. This file
 // only renders what those two already know.
 
 // USAGE_PATH is the api Worker's monthly-usage endpoint (src/index.js routes
-// /api/usage to src/billing.js `handleUsageRequest`). The CLI reads the same
+// /api/usage to core/billing.js `handleUsageRequest`). The CLI reads the same
 // endpoint the usage page reads, so the numbers on this line and the numbers
 // on the page cannot disagree.
 const USAGE_PATH = "/api/usage"
@@ -84,7 +84,14 @@ func runStatus(args []string) error {
 	if reason := cacheStatusLine(home); reason != "" {
 		fmt.Printf("cache: unknown (%s)\n", reason)
 	}
-	if why := queueWhy(on, cacheIsFull(home, on), Paused(home), queue); why != "" {
+	paused := Paused(home)
+	cacheLine := ""
+	if capBytes, usedBytes, ok := cacheState(home, on); ok {
+		cacheLine = cacheCapWhy(capBytes, usedBytes, queue.Bytes, paused, on)
+	}
+	if cacheLine != "" {
+		fmt.Println(cacheLine)
+	} else if why := queueWhy(on, cacheIsFull(home, on), paused, queue); why != "" {
 		fmt.Println(why)
 	}
 	if lines, reason := rcProgressLines(home, on); lines != "" {
@@ -176,7 +183,7 @@ func rcProgressLines(home string, on bool) (string, string) {
 	if !on {
 		return "", ""
 	}
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		return "", "per file: unknown. Next: run `drive status` again in a moment."
 	}
@@ -190,7 +197,12 @@ func rcProgressLines(home string, on bool) (string, string) {
 	if err != nil {
 		return "", "per file: unknown. Next: run `drive status` again in a moment."
 	}
-	return formatRCProgress(queue.Queue, stats), ""
+	block := formatRCProgress(queue.Queue, stats)
+	if tries := maxUploadTries(queue.Queue); tries > uploadFailingAfterTries {
+		f := failf("upload-failing", fmt.Sprintf("%d", tries), mountLogHint(CurrentGOOS(), home))
+		block = f.Error() + "\n" + block
+	}
+	return block, ""
 }
 
 // formatRCProgress is the per-file block `drive status` prints: each queued
@@ -212,6 +224,8 @@ func formatRCProgress(items []QueueItem, stats Stats) string {
 			progress = fmt.Sprintf("%d%%, %s left", t.Percentage, etaLabel(t.Eta))
 		} else if item.Uploading {
 			progress = sendingLabel
+		} else if item.Tries > uploadFailingAfterTries {
+			progress = uploadFailingProgress(item)
 		}
 		fmt.Fprintf(&b, "  %s  %s  %s\n",
 			uploadFileName(item.Name), fileSizeLabel(item.Size), progress)
@@ -243,6 +257,51 @@ func etaLabel(eta *float64) string {
 	default:
 		return fmt.Sprintf("%dh %02dm", seconds/3600, (seconds%3600)/60)
 	}
+}
+
+// uploadFailingProgress is the per-file word for a save rclone has failed to
+// send more than uploadFailingAfterTries times (issue #543). It names the
+// attempt count and the wait rclone itself reports, so the line is rclone's
+// numbers, not a guess.
+func uploadFailingProgress(item QueueItem) string {
+	return fmt.Sprintf("failed %d times, retrying in %s", item.Tries, retryDelayLabel(item.Delay))
+}
+
+// retryDelayLabel renders rclone's own queue delay (seconds until the next
+// attempt) the way a person reads it. A missing or zero delay is "a moment",
+// never a zero that would read as "now".
+func retryDelayLabel(seconds float64) string {
+	switch secs := int64(seconds); {
+	case secs < 1:
+		return "a moment"
+	case secs < 60:
+		return pluralUnit(secs, "second")
+	case secs < 3600:
+		return pluralUnit(secs/60, "minute")
+	default:
+		return pluralUnit(secs/3600, "hour")
+	}
+}
+
+// pluralUnit writes a count and its unit, with the unit singular at one.
+func pluralUnit(n int64, unit string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, unit)
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
+}
+
+// maxUploadTries is the highest failed-attempt count in the queue. It decides
+// whether `drive status` prints the upload-failing failure, so the summary and
+// the per-file lines cannot disagree.
+func maxUploadTries(items []QueueItem) int {
+	max := 0
+	for _, item := range items {
+		if item.Tries > max {
+			max = item.Tries
+		}
+	}
+	return max
 }
 
 // uploadFileName renders the queue entry's name for one column. rclone's
@@ -284,7 +343,7 @@ func transfersLine(home string, on bool) string {
 		}
 		return transfersNotMounted
 	}
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		if Paused(home) {
 			return "transfers: " + pausedLabel
@@ -323,8 +382,9 @@ func transfersLine(home string, on bool) string {
 // rclone is asked about nothing and no file format is invented here: the
 // queue is read where rclone itself records it.
 type VFSMeta struct {
-	Dirty bool  `json:"Dirty"`
-	Size  int64 `json:"Size"`
+	Dirty       bool   `json:"Dirty"`
+	Size        int64  `json:"Size"`
+	Fingerprint string `json:"Fingerprint"`
 }
 
 // PendingUploads counts the files rclone has in its VFS cache and has not
@@ -390,7 +450,7 @@ type Pending struct {
 }
 
 // UPLOAD_WORDS are the words `drive status` uses for the queue, kept next to
-// the words the first-run page uses for the same queue (src/status.js
+// the words the first-run page uses for the same queue (core/status.js
 // `UPLOAD_LABEL`). The page is a static asset and cannot import the module,
 // and the Go caller cannot import the page, so the two copies are the same
 // words by construction: an empty queue says "Up to date" on both, one file
@@ -409,6 +469,11 @@ const (
 	waitingUnmountedNext = "They will upload when the drive is mounted again."
 	diskCacheFullWhat    = "The local cache is full, so new saves can't upload."
 	diskCacheFullNext    = "Free up disk space on this device and try the save again."
+	// uploadFailingAfterTries is how many failed attempts a save may have before
+	// `drive status` calls it failing rather than merely waiting (issue #543).
+	// rclone retries forever with a 5-minute backoff, so without this threshold a
+	// dead upload reads as "waiting" and the person never learns it stopped.
+	uploadFailingAfterTries = 3
 )
 
 // queueWhy is the line after the uploads count: what is waiting and why
@@ -442,7 +507,7 @@ func queueWhy(on, outOfSpace, paused bool, q Pending) string {
 // question asked of the kernel.
 func cacheIsFull(home string, on bool) bool {
 	if on {
-		c, err := mountRCClient()
+		c, err := mountRCClient(home)
 		if err == nil {
 			ctx, cancel := rcCtx()
 			defer cancel()
@@ -452,6 +517,50 @@ func cacheIsFull(home string, on bool) bool {
 		}
 	}
 	return cacheDiskHasNoSpace(DefaultCacheDir(home))
+}
+
+// cacheState is the VFS cache's own limit and live size, read from the
+// running mount's vfs/stats. ok is false when the mount is down or does not
+// answer, so a caller never mistakes an absent answer for a zero cap.
+func cacheState(home string, on bool) (capBytes, usedBytes int64, ok bool) {
+	if !on {
+		return 0, 0, false
+	}
+	c, err := mountRCClient(home)
+	if err != nil {
+		return 0, 0, false
+	}
+	ctx, cancel := rcCtx()
+	defer cancel()
+	s, err := c.cacheStats(ctx)
+	if err != nil {
+		return 0, 0, false
+	}
+	return s.Opt.CacheMaxSize, s.DiskCache.BytesUsed, true
+}
+
+// cacheCapWhy is the line `drive status` prints when unsent saves have pushed
+// the VFS cache past its cap (issue #543). rclone evicts only clean items, so
+// a stuck upload queue grows the cache past --vfs-cache-max-size; the old
+// "free up disk space" line named the wrong cause. The cause here is the real
+// one: the drive is paused, not mounted, or uploads are simply behind.
+// dirtyBytes is the sum of the queue's sizes (the unsent saves); usedBytes is
+// rclone's own diskCache.bytesUsed. It is silent while the cache is inside its
+// cap.
+func cacheCapWhy(capBytes, usedBytes, dirtyBytes int64, paused, on bool) string {
+	if capBytes <= 0 || (dirtyBytes <= capBytes && usedBytes <= capBytes) {
+		return ""
+	}
+	var cause string
+	switch {
+	case paused:
+		cause = fileSizeLabel(dirtyBytes) + " of saves are waiting because the drive is paused"
+	case !on:
+		cause = fileSizeLabel(dirtyBytes) + " of saves are waiting because the drive is not mounted"
+	default:
+		cause = fileSizeLabel(dirtyBytes) + " of saves are waiting because uploads are behind"
+	}
+	return failf("cache-over-cap", fileSizeLabel(capBytes), cause).Error()
 }
 
 // UploadLabel renders the queue line. Zero files is a complete state, not an
@@ -467,7 +576,7 @@ func UploadLabel(q Pending) string {
 	}
 }
 
-// UsageSummary is the shape GET /api/usage returns (src/billing.js
+// UsageSummary is the shape GET /api/usage returns (core/billing.js
 // `usageSummary()`): the month's numbers and the cap. The CLI decodes the two
 // halves it prints and no more, so the money is computed once, in the Worker,
 // by the code that owns the prices.
@@ -476,7 +585,11 @@ type UsageSummary struct {
 	BillUsd    float64 `json:"billUsd"`
 	MaximumUsd float64 `json:"maximumUsd"`
 	CapLine    string  `json:"capLine"`
-	Cap        struct {
+	// BalanceLine is the prepaid balance (drive#586), written by the Worker
+	// (core/topup.js balanceLine) with the top-up prompt when it is low or $0.
+	// Empty from a Worker that has no balance store yet.
+	BalanceLine string `json:"balanceLine"`
+	Cap         struct {
 		CapUsd       float64 `json:"capUsd"`
 		CountedUsd   float64 `json:"countedUsd"`
 		RemainingUsd float64 `json:"remainingUsd"`
@@ -526,6 +639,9 @@ func readCostLine(apiBase, token string) string {
 		return fail("api-answer").Error()
 	}
 	fmt.Println(line)
+	if balance := strings.TrimSpace(u.BalanceLine); balance != "" {
+		fmt.Println(balance)
+	}
 	return ""
 }
 

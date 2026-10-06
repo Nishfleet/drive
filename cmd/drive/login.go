@@ -1,6 +1,8 @@
 package main
 
 import (
+	_ "embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -10,10 +12,34 @@ import (
 	"strings"
 )
 
+// siteAddress is the one place the site's address is written (drive#527). It
+// sits in this package because Go's //go:embed cannot reach outside its own
+// directory, and core/seo.js and docs-site/.vitepress/config.mts import the
+// same file, so a domain move is one edit here and not a sweep of ten files.
+//
+//go:embed site.json
+var siteAddress []byte
+
 // defaultAPIBase is the one host that fronts both /api/* and /v1/* (drive#156).
-// It matches src/seo.js SITE_ORIGIN; TestDefaultAPIBaseMatchesTheShippedSite
-// fails if they drift. --api and DRIVE_API_URL still win.
-const defaultAPIBase = "https://drive-pricing.nishant345.workers.dev"
+// It is the embedded site address, so the CLI and the site cannot drift.
+// --api and DRIVE_API_URL still win. A site.json that does not parse is a
+// build mistake, and a binary built from one fails loudly rather than sending
+// a customer to a host nobody chose.
+var defaultAPIBase = mustSiteOrigin()
+
+/** The origin field of the embedded site address. */
+func mustSiteOrigin() string {
+	var site struct {
+		Origin string `json:"origin"`
+	}
+	if err := json.Unmarshal(siteAddress, &site); err != nil {
+		panic("drive: site.json is not valid JSON: " + err.Error())
+	}
+	if !strings.HasPrefix(site.Origin, "https://") {
+		panic("drive: site.json origin must be an https address, got " + site.Origin)
+	}
+	return site.Origin
+}
 
 // openURL opens the device-approve page. Tests replace it so the stand-in
 // never needs a display.
@@ -53,6 +79,12 @@ func Login(home, apiBase string, out io.Writer) error {
 		return err
 	}
 	client.Token = token
+	previous, loadErr := LoadCredentials(home)
+	if loadErr != nil {
+		// An unreadable credentials file is not a previous key we can
+		// revoke. Login still mints; the new file replaces the broken one.
+		previous = Credentials{}
+	}
 	key, err := client.MintKey("device", deviceName())
 	if err != nil {
 		return err
@@ -65,6 +97,7 @@ func Login(home, apiBase string, out io.Writer) error {
 		Bucket:       key.Bucket,
 		Prefix:       key.Prefix,
 		Region:       firstNonEmpty(key.Region, "us-east-1"),
+		DownloadURL:  key.DownloadURL,
 	}
 	if cfg.Endpoint == "" || cfg.Bucket == "" || cfg.AccessKey == "" || cfg.SecretKey == "" {
 		missing := []string{}
@@ -92,6 +125,7 @@ func Login(home, apiBase string, out io.Writer) error {
 		Bucket:       cfg.Bucket,
 		Prefix:       cfg.Prefix,
 		Region:       cfg.Region,
+		DownloadURL:  cfg.DownloadURL,
 		AccessKeyID:  cfg.AccessKey,
 		KeyID:        key.KeyID,
 	}
@@ -100,6 +134,29 @@ func Login(home, apiBase string, out io.Writer) error {
 	}
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
+	}
+	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
+		return err
+	}
+	if previous.DeviceToken != "" && previous.DeviceToken != token {
+		// The queue row is keyed by the device token, so the old login's
+		// row would count this device twice for its freshness window.
+		base := previous.APIBase
+		if base == "" {
+			base = apiBase
+		}
+		old, err := NewAPIClient(base, previous.DeviceToken)
+		if err == nil {
+			err = old.ClearQueueReport()
+		}
+		if err != nil && !isAPIStatus(err, "401") && !isAPIStatus(err, "404") {
+			fmt.Fprintf(out, "note: the previous login's upload queue could not be cleared (%v); it ages out in 15 minutes\n", err)
+		}
+	}
+	if previous.KeyID != "" && previous.KeyID != key.KeyID {
+		if err := client.RevokeKey(previous.KeyID); err != nil && !isAPIStatus(err, "404") {
+			fmt.Fprintf(out, "note: the previous device key could not be revoked (%v); it is still live\n", err)
+		}
 	}
 	who := accountLabel(account)
 	if who == "" {

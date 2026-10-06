@@ -23,12 +23,12 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { failureMessage } from "../src/messages.js";
+import { DEVICE_CODE_INTERVAL_SECONDS } from "../core/device-signin.js";
+import { createMemoryStore } from "../core/keystore.js";
+import { failureMessage } from "../core/messages.js";
 import apiConfig from "../workers/api/cloudflare.config.ts";
 import { DEVICE_GLOBAL_LIMIT, DEVICE_IP_LIMIT } from "../workers/api/src/device-routes.js";
-import { DEVICE_CODE_INTERVAL_SECONDS } from "../workers/api/src/device-signin.js";
 import { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -85,33 +85,30 @@ test("the api Worker's config declares the two device limiters the routes read",
   }
 });
 
-test("the config binds the api Worker to the drive database, the device limits, and the founding offer switch", () => {
+test("the config binds the api Worker to the drive database, the device limits, and the reseller token", () => {
   // The declarations are the env this Worker has: the one database its stores
   // and Better Auth's user and session tables live on, the two limiters above,
-  // the founding-member offer switch (drive#386) the accounts store reads
-  // when a row becomes paying, and the iDrive e2 reseller token (drive#462)
-  // the per-bucket key provider mints with. The accounts store the device
+  // and the iDrive e2 reseller token (drive#462) the per-bucket key provider
+  // mints with, plus the send_email binding device approval uses to mail the
+  // owner (drive#518). The accounts store the device
   // approval reads is the user table already on this database (#181), not a
-  // second one, and no mailer is declared because no route this Worker mounts
-  // sends mail (the site Worker's /api/signin owns the sign-in link).
+  // second one.
   assert.deepEqual(Object.keys(apiConfig.env), [
     "DRIVE_DB",
     "DEVICE_RATE_LIMITER",
     "DEVICE_GLOBAL_RATE_LIMITER",
-    "FOUNDING_OFFER_OPEN",
     "IDRIVE_E2_API_TOKEN",
+    "EMAIL",
   ]);
   // The iDrive token is a secret binding, so its value is never in the config
   // and `wrangler types` reads it off the deployed Worker (drive#462).
   assert.equal(apiConfig.env.IDRIVE_E2_API_TOKEN.type, "secret");
-  assert.equal(apiConfig.env.FOUNDING_OFFER_OPEN.type, "text");
-  assert.equal(apiConfig.env.FOUNDING_OFFER_OPEN.value, "1");
+  assert.equal(apiConfig.env.EMAIL.type, "send-email");
   assert.equal(
     apiConfig.env.DRIVE_DB.name,
     "drive-data",
     "customer data lives in the drive database",
   );
-  assert.ok(!("EMAIL" in apiConfig.env), "no api route mails, so no mailer is declared");
   assert.ok(
     !("ACCOUNTS_STORE" in apiConfig.env),
     "the account store is Better Auth's user table on DRIVE_DB (#181)",

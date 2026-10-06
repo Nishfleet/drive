@@ -2,20 +2,17 @@
 // so node --test can exercise every branch without a running runtime.
 
 import isEmail from "validator/lib/isEmail.js";
-import { failureMessage } from "./messages.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
+
+export { isSameOriginRequest };
 
 export const SOURCES = ["pricing-page", "business"];
 
 const MAX_EMAIL_LENGTH = 254;
 const MAX_BODY_BYTES = 4096;
-
-class BodyTooLargeError extends Error {
-  constructor() {
-    super("body too large");
-    this.name = "BodyTooLargeError";
-  }
-}
 
 /**
  * Returns { email, source } or { error }.
@@ -98,66 +95,6 @@ export async function recordSignup(db, signup) {
 }
 
 /**
- * @param {unknown} body
- * @param {number} status
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      ...headers,
-    },
-  });
-}
-
-// Two layers, because either alone is bypassable: a declared content-length
-// is checked first so an oversized body is rejected without being read at
-// all, and the stream is counted as it arrives so a request that declares
-// nothing (or lies about a smaller size) is stopped at the same limit.
-/**
- * @param {Request} request
- * @param {number} maxBytes
- * @returns {Promise<Uint8Array>}
- */
-async function readLimitedBody(request, maxBytes) {
-  const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    const length = Number(declared);
-    if (Number.isFinite(length) && length > maxBytes) {
-      throw new BodyTooLargeError();
-    }
-  }
-  const stream = request.body;
-  if (stream === null) {
-    return new Uint8Array(0);
-  }
-  const reader = stream.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new BodyTooLargeError();
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
-}
-
-/**
  * @param {Request} request
  * @returns {Promise<{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}>}
  */
@@ -184,22 +121,6 @@ async function readSignupRequest(request) {
 }
 
 /**
- * Rejects a cross-site request outright. A cross-site form post can put an
- * address in this waitlist that nobody typed, and browsers always send Origin
- * on a cross-site POST; a same-origin fetch or our own no-JavaScript form
- * post sends the page's own origin, so this is a real check rather than a
- * token nobody could forge.
- * @param {Request} request
- */
-export function isSameOriginRequest(request) {
-  const origin = request.headers.get("origin");
-  if (origin === null) {
-    return true;
-  }
-  return origin === new URL(request.url).origin;
-}
-
-/**
  * Handles every method on /api/waitlist and always returns a Response.
  * @param {Request} request
  * @param {D1Database} db
@@ -222,7 +143,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
 
   // Rate limit next: it bounds the work that actually costs something (a body
   // parse and a D1 write), so it runs before both. One shared helper
-  // (src/rate-limit.js) owns the client-IP key, the fail-closed answer and the
+  // (core/rate-limit.js) owns the client-IP key, the fail-closed answer and the
   // 429, so the waitlist, the sign-in route (drive issue #147) and the api
   // Worker's device routes cannot state two different limits or two different
   // refusals. Unchanged behaviour: a missing binding, a failed call and a

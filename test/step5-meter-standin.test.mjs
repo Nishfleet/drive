@@ -50,14 +50,15 @@ import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseListVersions } from "../src/files.js";
+import { parseListVersions } from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { createMemoryStore } from "../core/keystore.js";
+import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../core/meter.js";
+import { createS3Client, provisionBucket } from "../core/s3.js";
+import { createS3KeyProvider } from "../core/s3-keys.js";
+import { computeHiddenAt, versionMarkers } from "../core/s3-listing.js";
 import worker from "../src/index.js";
-import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../src/meter.js";
 import { dispatch } from "../workers/api/src/index.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
-import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
-import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 
@@ -264,6 +265,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   const signedIn = /** @type {{account: {id: string}, deviceToken: string}} */ (
     /** @type {unknown} */ (poll)
   );
+  // The account row exists the moment sign-up lands (drive issue #564): the
+  // metered account list is read off `accounts`, so a proof that signs an
+  // account in must make the row the production sign-up makes.
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(signedIn.account.id, "meter-proof@drive.test", Date.now())
+    .run();
   const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(signedIn.account.id);
   const provisioned = await provisionBucket(root, {
     bucket: BUCKET,
@@ -404,9 +412,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     query: { versions: "", prefix: key.prefix },
   });
   assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
-  const listed = parseListVersions(listing.text).filter((version) =>
-    version.path.startsWith(key.prefix),
-  );
+  // One page alone cannot know a version's stop — the pair that ends a
+  // version can sit on two pages (drive issue #504) — so the stop is the
+  // shipped cross-page pass, the same one the store answers with.
+  const listed = computeHiddenAt(
+    parseListVersions(listing.text),
+    versionMarkers(listing.text),
+  ).filter((version) => version.path.startsWith(key.prefix));
   t.diagnostic(
     `the provider's own listing: ${JSON.stringify(listed.map((v) => ({ version: v.b2FileId.slice(0, 8), marker: v.hiddenAt === null && v.sizeBytes === 0, size: v.sizeBytes, at: new Date(v.createdAt).toISOString(), hidden: v.hiddenAt === null ? null : new Date(v.hiddenAt).toISOString() })))}`,
   );
@@ -420,7 +432,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   );
   assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
   // The dead-letter table was an earlier design that was replaced by the
-  // per-event rejection in the intake (src/meter.js recordEvents). The test
+  // per-event rejection in the intake (core/meter.js recordEvents). The test
   // keeps the assertion as a gate: the name must not appear in the schema.
   assert.ok(
     !Object.hasOwn(db.tables, "event_dead_letters"),
@@ -481,9 +493,11 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
  * account writes with: ListObjectVersions is the stock API for a versioned
- * bucket, and the parser is the shipped one (src/files.js
+ * bucket, and the parse is the shipped one (core/files.js
  * `createS3Store.listVersions` answers with it), so a version's stop time here
- * is the stop time the product reads in production.
+ * is the stop time the product reads in production. This proof's listing is
+ * one page; the store folds the pages together and computes the stops once
+ * over the whole list (drive issue #504), and so does this call.
  * The reconciler only calls listVersions; the other methods are stubs that
  * throw if reached, which would indicate a bug in the reconciler.
  * @param {ReturnType<typeof createS3Client>} client
@@ -502,10 +516,13 @@ function signedListingStore(client, bucket) {
       if (response.status !== 200) {
         throw new Error(`the provider's own version listing failed with ${response.status}`);
       }
-      return parseListVersions(response.text);
+      return computeHiddenAt(parseListVersions(response.text), versionMarkers(response.text));
     },
     async list() {
       throw new Error("the reconciler never lists a folder");
+    },
+    async listKeys() {
+      throw new Error("the reconciler never walks the key space");
     },
     async read() {
       throw new Error("the reconciler never reads a file");
@@ -513,11 +530,26 @@ function signedListingStore(client, bucket) {
     async write() {
       throw new Error("the reconciler never writes a file");
     },
+    async writeIfAbsent() {
+      throw new Error("the reconciler never writes a file");
+    },
     async remove() {
       throw new Error("the reconciler never removes a file");
     },
+    async removeBatch() {
+      throw new Error("the reconciler never deletes a batch");
+    },
     async copy() {
       throw new Error("the reconciler never copies a file");
+    },
+    async listPage() {
+      throw new Error("the reconciler never lists a page");
+    },
+    async listAll() {
+      throw new Error("the reconciler never lists a bucket");
+    },
+    async stat() {
+      throw new Error("the reconciler never stats a file");
     },
   };
 }

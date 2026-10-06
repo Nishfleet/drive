@@ -599,7 +599,7 @@ func TestWindowsMountProof(t *testing.T) {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	seedStandin(t, root, cfg, append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home)), "seed.bin", 1<<20)
+	seedStandin(t, root, cfg, append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home), rcloneSecretEnv+"="+cfg.SecretKey), "seed.bin", 1<<20)
 
 	bin := windowsDriveBin(t)
 	// The mount the product ships: no --foreground, so the Task Scheduler

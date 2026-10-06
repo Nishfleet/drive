@@ -11,7 +11,7 @@
 //
 // Every read is pinned to the signed-in account, and only the signed-in
 // account: `ctx.account.id` is the one filter on every statement, the same
-// rule `src/files.js` applies to storage keys (drive#73). A route that took
+// rule `core/files.js` applies to storage keys (drive#73). A route that took
 // an account id from the request would let one account read another's rows,
 // so it takes none.
 //
@@ -21,8 +21,8 @@
 // out every device — the other two lifecycle items, both customer-data
 // deletion — are Nish-reserved and are not part of this route.
 
-import { all } from "./db.js";
-import { errorResponse, json } from "./http.js";
+import { all } from "../../../core/db.js";
+import { errorResponse, json } from "../../../core/http.js";
 
 /**
  * How many rows one export page carries. A Worker response cannot hold a
@@ -50,7 +50,7 @@ function nullable(value, read) {
 /**
  * GET /v1/export — the caller's own account data as one JSON document.
  * @param {Request} request
- * @param {{store: {listKeys: (account: {id: string}) => Array<{keyId: string, name: string, kind: string, prefix: string, capabilities: string[], createdAt: number, lastSeenAt: number|null, revokedAt: number|null}>}, db?: D1Database|null, account: {id: string, name?: string, email?: string}, now: () => number, url?: URL}} ctx
+ * @param {{store: {listKeys: (account: {id: string}) => Promise<Array<{keyId: string, name: string, kind: string, prefix: string, capabilities: string[], createdAt: number, lastSeenAt: number|null, revokedAt: number|null}>>}, db?: D1Database|null, account: {id: string, name?: string, email?: string}, now: () => number, url?: URL}} ctx
  */
 export async function exportRoute(request, ctx) {
   if (request.method !== "GET") {
@@ -70,7 +70,7 @@ export async function exportRoute(request, ctx) {
   // secret at all — the store keeps only a hash). The export carries those
   // rows as they are, so the key half cannot gain a field the rest of the api
   // never shows and there is no second copy of the shape to drift.
-  const keys = ctx.store.listKeys(account);
+  const keys = await ctx.store.listKeys(account);
   // The file index and the version history are the customer database's
   // (DRIVE_DB). A deployment with no database bound has no files to name, so
   // The file index and the version history are the customer database's

@@ -13,15 +13,15 @@ import {
   consumeSigninReturn,
   SIGNIN_RETURN_TTL_SECONDS,
   storeSigninReturn,
-} from "../../src/auth.js";
-import { sha256Hex } from "../../workers/api/src/db.js";
+} from "../../core/auth.js";
+import { sha256Hex } from "../../core/db.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 const APPROVE_PATH = "/v1/device/approve?user_code=ABCD-EFGH";
 
 test("the real migration creates the return-path table, expand only", () => {
   const migration = readFileSync(
-    new URL("../../migrations/drive/0020_signin_return.sql", import.meta.url),
+    new URL("../../migrations/drive/0031_signin_return.sql", import.meta.url),
     "utf8",
   );
   const sql = migration.replace(/--[^\n]*/g, "");

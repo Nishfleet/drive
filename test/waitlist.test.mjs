@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { failureMessage } from "../src/messages.js";
+import { failureMessage } from "../core/messages.js";
 import {
   handleWaitlistRequest,
   isSameOriginRequest,

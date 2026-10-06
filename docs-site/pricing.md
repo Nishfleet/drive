@@ -1,6 +1,6 @@
 ---
 title: Pricing and your bill
-description: The rate, the maximum, founding member pricing, downloads, and the bill worked out for four sizes.
+description: The rate, the maximum, downloads, and the bill worked out for four sizes.
 ---
 
 # Pricing and your bill
@@ -10,7 +10,15 @@ description: The rate, the maximum, founding member pricing, downloads, and the 
 ## The rate
 
 {{RATE}}, kept a month, counted by the minute. You pay for what you store, and
-stop paying for what you delete. {{NO_MINIMUM}}
+stop paying for what you delete. {{NO_PLANS}}
+
+## Deleted files
+
+{{TRASH_BILLING}} Deleting from the Files page moves the file to Recently
+deleted, where it stays 30 days and you can restore it yourself; the meter
+stops counting it the same hour. [See how deletes and restores work](/how-it-works).
+
+{{VERSION_MINIMUM}}
 
 ## The maximum
 
@@ -19,9 +27,8 @@ stop paying for what you delete. {{NO_MINIMUM}}
 The default cap is {{DEFAULT_CAP}}. Raise or lower it in your account, and at
 your cap the drive goes read-only: nothing is deleted and the bill stops there.
 
-## Founding members
+## Sign-up
 
-{{FOUNDING}}
 We need a card at sign-up because there is no free tier.
 
 ## Downloads

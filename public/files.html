@@ -564,6 +564,7 @@ dialog.viewer::backdrop {
         <div class="actions"><span></span></div>
       </li>
     </ul>
+    <button type="button" id="more" hidden>More</button>
     <div class="empty" id="empty" hidden>
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
@@ -598,6 +599,7 @@ dialog.viewer::backdrop {
 // endpoint or the 30-day window drifts from that module.
 const FILES_ENDPOINT = "/api/files";
 const PREVIEW_ENDPOINT = "/api/files/preview";
+const EMBED_ENDPOINT = "/api/files/embed";
 const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
@@ -656,10 +658,47 @@ const DELETE_COPY = {
 };
 const RESTORE_COPY = { done: "Put back." };
 
+// A date as a person reads it, in the time zone of the browser showing it
+// (drive#559). The Worker sends instants and never words for them: a date
+// rendered on a server in the UTC zone reads an hour off for a whole country,
+// and at the end of a month it reads the wrong day. `toLocaleString` with no
+// locale asked for writes the words and the order the browser's own reader has
+// chosen, and an omitted time zone means the one the clock it sits on shows.
+// Three shapes, the same three the list has always had: the clock for
+// something written today, the day and the month for this year, the year in
+// for anything older.
+function whenLabel(iso) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const now = new Date();
+  const today =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate();
+  if (today) {
+    return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  if (at.getFullYear() === now.getFullYear()) {
+    return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  }
+  return at.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+// The day a parked file leaves Recently deleted: always a day in the next 30,
+// so it reads as a day and a month in the reader's own calendar.
+function dayLabel(iso) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
 const list = document.getElementById("file-list");
 const empty = document.getElementById("empty");
 const emptyWhat = document.getElementById("empty-what");
 const emptyNext = document.getElementById("empty-next");
+const moreButton = document.getElementById("more");
 const signedOutWhat = document.getElementById("signed-out-what");
 const signedOut = document.getElementById("signed-out");
 const statusLine = document.getElementById("status");
@@ -676,6 +715,10 @@ const tabDeleted = document.getElementById("tab-deleted");
 
 let path = "/";
 let view = "folder";
+// The listing's continuation token (drive#570): what the last page handed
+// back, or null when the folder has shown every row. The More button holds
+// it; the page never does arithmetic on it, it only passes it back.
+let nextCursor = null;
 
 function say(message, kind) {
   statusLine.textContent = message;
@@ -847,7 +890,7 @@ function rowFor(row) {
   meta.append(name);
   const sub = document.createElement("p");
   sub.className = "sub";
-  sub.textContent = row.kind === "folder" ? "Folder" : [typeLabel(row.kind), row.sizeLabel, row.whenLabel].filter(Boolean).join(" · ");
+  sub.textContent = row.kind === "folder" ? "Folder" : [typeLabel(row.kind), row.sizeLabel, whenLabel(row.modifiedIso)].filter(Boolean).join(" · ");
   meta.append(sub);
   li.append(meta);
 
@@ -907,7 +950,7 @@ function trashRowFor(row) {
   meta.append(name);
   const sub = document.createElement("p");
   sub.className = "sub";
-  sub.textContent = [row.sizeLabel, row.deletedLabel].filter(Boolean).join(" · ");
+  sub.textContent = [row.sizeLabel, row.deletedIso ? `Deleted ${whenLabel(row.deletedIso)}` : ""].filter(Boolean).join(" · ");
   meta.append(sub);
   if (row.goneLabel) {
     const gone = document.createElement("p");
@@ -917,7 +960,7 @@ function trashRowFor(row) {
   } else {
     const until = document.createElement("p");
     until.className = "sub";
-    until.textContent = row.untilLabel;
+    until.textContent = row.untilIso ? `Restorable until ${dayLabel(row.untilIso)}.` : "";
     meta.append(until);
   }
   li.append(meta);
@@ -935,6 +978,12 @@ function trashRowFor(row) {
   return li;
 }
 
+function appendRows(rows) {
+  for (const row of rows) {
+    list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
+  }
+}
+
 function renderRows(rows) {
   list.textContent = "";
   if (rows.length === 0) {
@@ -945,10 +994,45 @@ function renderRows(rows) {
     return;
   }
   empty.hidden = true;
-  for (const row of rows) {
-    list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
+  appendRows(rows);
+}
+
+// The continuation token in, the next slice of rows out. One shape for both
+// the first load and the More click, so the paging logic lives once.
+async function listPage(cursor) {
+  const url =
+    view === "deleted"
+      ? `${FILES_ENDPOINT}?view=deleted`
+      : `${FILES_ENDPOINT}?path=${encodeURIComponent(path)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+  return api(url);
+}
+
+// What the More button shows: the token decides it, and an in-flight load
+// turns it off so a second click cannot ask for the same page twice.
+function showMore(cursor) {
+  moreButton.hidden = view !== "folder" || cursor === null;
+  moreButton.disabled = false;
+}
+
+async function loadMore() {
+  if (nextCursor === null || view !== "folder") {
+    return;
+  }
+  moreButton.disabled = true;
+  try {
+    const payload = await listPage(nextCursor);
+    nextCursor = payload.nextCursor ?? null;
+    appendRows(payload.rows || []);
+    showMore(nextCursor);
+  } catch (error) {
+    reportFailure(error);
+    moreButton.disabled = false;
   }
 }
+
+moreButton.addEventListener("click", () => {
+  loadMore();
+});
 
 function showBody(node) {
   viewerBody.textContent = "";
@@ -971,20 +1055,24 @@ function openViewer(row) {
     return;
   }
   const src = `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+  // The media elements read the embed URL, which always serves a picture
+  // inline. The direct-open preview URL sends an SVG as an attachment so a
+  // top-level open cannot render it as a document on our address (drive#657).
+  const mediaSrc = `${EMBED_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (row.kind === "image") {
     const img = document.createElement("img");
-    img.src = src;
+    img.src = mediaSrc;
     img.alt = row.name;
     showBody(img);
   } else if (row.kind === "video") {
     const video = document.createElement("video");
-    video.src = src;
+    video.src = mediaSrc;
     video.controls = true;
     video.playsInline = true;
     showBody(video);
   } else if (row.kind === "audio") {
     const audio = document.createElement("audio");
-    audio.src = src;
+    audio.src = mediaSrc;
     audio.controls = true;
     showBody(audio);
   } else if (row.kind === "pdf") {
@@ -1022,14 +1110,12 @@ async function refresh(keepStatus) {
   if (!keepStatus) {
     say("");
   }
-  const url =
-    view === "deleted"
-      ? `${FILES_ENDPOINT}?view=deleted`
-      : `${FILES_ENDPOINT}?path=${encodeURIComponent(path)}`;
   try {
-    const payload = await api(url);
+    const payload = await listPage(null);
     showSignedIn();
+    nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
     renderRows(payload.rows || []);
+    showMore(nextCursor);
     if (view === "folder") {
       crumbsForParts(path === "/" ? [] : path.slice(1).split("/"));
     } else {
