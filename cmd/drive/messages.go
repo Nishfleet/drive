@@ -121,12 +121,13 @@ var messageTable = map[string][2]string{
 	// command, so it is a CLI-shaped entry.
 	"cli-too-old": {
 		"This drive is too old for the server it talks to.",
-		"Run `drive update` to get the current version, then run the command again.",
+		"Run drive update to get the current version, then run the command again.",
 	},
-	// `drive update` landed but the mount did not come back (drive#560), so
-	// the drive is still running the old build and the state is mixed.
+	// `drive update` landed but the mount did not come back (drive#560). The
+	// mount may still be the old binary, or it may be down after an unmount
+	// that did not remount, so the words name the one fact both share.
 	"update-restart": {
-		"Drive updated, but its mount did not restart, so it is still running the old drive.",
+		"Drive updated, but its mount did not restart, so this machine is not yet serving the new drive.",
 		"Run `drive status` to see the mount, then `drive mount` to start it.",
 	},
 	"api-down": {

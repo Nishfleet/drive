@@ -197,7 +197,7 @@ export function createApp(table = routes) {
   // probe, a browser on a device approval page — pass through untouched.
   app.use("*", async (c, next) => {
     if (cliTooOld(c.req.header("user-agent"), c.env.env)) {
-      return errorResponse(426, failureMessage("cli-too-old"));
+      return errorResponse(426, failureMessage("cli-too-old"), { upgrade: "drive" });
     }
     await next();
   });

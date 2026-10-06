@@ -365,6 +365,9 @@ func TestUpdateExistsOn(t *testing.T) {
 // winner's write is what quiets it. This runs two goroutines against the
 // production entry point, so the lock itself is what is being tested.
 func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows flock is a no-op, so two colliding status runs may both print")
+	}
 	home := t.TempDir()
 	path := updateCheckPath(home)
 	now, _ := stepClock(t, time.Unix(1_700_000_000, 0))
@@ -497,8 +500,16 @@ func TestAStateFileFromTheFutureCountsAsNeverChecked(t *testing.T) {
 func TestUpdateCheckPathSitsBesideTheVFSCache(t *testing.T) {
 	home := t.TempDir()
 	got := updateCheckPath(home)
-	if filepath.Dir(got) != filepath.Dir(DefaultCacheDir(home)) {
-		t.Errorf("updateCheckPath = %q, want it beside the vfs cache %q", got, filepath.Dir(DefaultCacheDir(home)))
+	cache := DefaultCacheDir(home)
+	if filepath.Dir(got) != filepath.Dir(cache) {
+		t.Errorf("updateCheckPath = %q, want it beside the vfs cache %q", got, filepath.Dir(cache))
+	}
+	rel, err := filepath.Rel(cache, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel == "." || !strings.HasPrefix(rel, "..") {
+		t.Errorf("updateCheckPath = %q is inside the vfs cache %q; drive cache --clear would forget it", got, cache)
 	}
 	if filepath.Base(got) != "update-check.json" {
 		t.Errorf("updateCheckPath = %q, want the update-check.json name", got)

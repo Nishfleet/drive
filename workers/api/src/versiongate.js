@@ -9,9 +9,9 @@
 // The gate only refuses what it can read as a drive version, and never a
 // whole header: a health probe, a browser on a device approval page and an
 // unparseable version all pass through to the gates and routes below. The
-// floor itself is a deployment setting: MIN_CLI_VERSION here is the default,
-// and the api Worker's MIN_CLI_VERSION variable overrides it, the same lever
-// shape as the site Worker's bindings.text() vars.
+// floor is MIN_CLI_VERSION in this module. A request env that carries a
+// readable MIN_CLI_VERSION uses that instead; an unset or unreadable value
+// is the module default, never a silent "serve everyone".
 //
 // Version compares are the CLI's own compareVersions shape (rclonecheck.go):
 // dotted numeric parts, padded with zeros, so 0.9 sorts below 0.10 the way a
@@ -90,16 +90,18 @@ export function versionBelowFloor(version, floor) {
 }
 
 /**
- * The floor this request is judged against: the deployment's own
- * MIN_CLI_VERSION variable when it sets a version this module can read, the
- * module default otherwise. A misconfigured floor must never widen the gate
- * into refusing nothing, so an unreadable one is no setting at all.
+ * The floor this request is judged against: env.MIN_CLI_VERSION when that
+ * value is a version this module can read, the module default otherwise. A
+ * misconfigured floor must never widen the gate into refusing nothing, so
+ * an unreadable one is no setting at all.
  * @param {unknown} env
  * @returns {string}
  */
 export function floorFor(env) {
-  const configured = /** @type {{MIN_CLI_VERSION?: unknown}|null|undefined} */ (env)
-    ?.MIN_CLI_VERSION;
+  if (env == null || typeof env !== "object") {
+    return MIN_CLI_VERSION;
+  }
+  const configured = /** @type {{MIN_CLI_VERSION: unknown}} */ (env).MIN_CLI_VERSION;
   if (typeof configured === "string" && versionParts(configured.trim()) !== null) {
     return configured.trim();
   }

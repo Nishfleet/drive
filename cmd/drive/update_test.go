@@ -406,6 +406,42 @@ func TestUpdateDoesNotRestartAMountOnAMachineWithoutOne(t *testing.T) {
 	}
 }
 
+// TestUpdateDoesNotRestartWhenRcloneIsBelowTheFloor is the other half of
+// drive#560 bullet 3: the binary updated, rclone is still below the floor, and
+// RestartMount would then fail on that old rclone (drive#105). The update
+// names the rclone fix and leaves the mount alone, so a successful install
+// is not turned into an update-restart failure.
+func TestUpdateDoesNotRestartWhenRcloneIsBelowTheFloor(t *testing.T) {
+	orig := mountOn
+	t.Cleanup(func() { mountOn = orig })
+	mountOn = func(string, string) (bool, error) { return true, nil }
+	f := brewBins()
+	f.out["brew outdated --cask nish3451/tap/drive"] = "drive (1.0.0) < 1.1.0"
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:         "0.1.0",
+		lookPath:     f.lookPath,
+		run:          f.run,
+		capture:      f.capture,
+		rclone:       writeFakeRclone(t, "rclone v1.60.1\n- os/version: ubuntu 24.04\n"),
+		home:         t.TempDir(),
+		restartMount: true,
+		out:          out,
+		err:          io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "updated drive 0.1.0") {
+		t.Fatalf("output = %q, want the upgraded-version line", out.String())
+	}
+	if strings.Contains(out.String(), "mount restarted") {
+		t.Fatalf("an rclone below the floor must not restart the mount, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "too old") {
+		t.Fatalf("the update must still offer the rclone fix, got %q", out.String())
+	}
+}
+
 func TestModuleVersionEmptyAndDevel(t *testing.T) {
 	if got := moduleVersion(&debug.BuildInfo{Main: debug.Module{Version: ""}}); got != "" {
 		t.Fatalf("empty version = %q", got)

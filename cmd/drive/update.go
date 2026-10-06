@@ -214,10 +214,15 @@ func updateDrive(o updateOptions) error {
 	// rclone below the floor makes the mount's own flags fail (drive#105), and
 	// the update is the one moment a person is likely to act (drive#560). It is
 	// said before the restart, so a restart that failed cannot hide the remedy
-	// for the other old thing on this machine.
+	// for the other old thing on this machine. A mount restart against that
+	// old rclone would then fail with update-restart after a successful
+	// install, so the restart waits until rclone is at the floor.
+	rcloneReady := false
 	if rcloneBin, rErr := ResolveRclone(o.rclone); rErr == nil {
 		if err := CheckRclone(CurrentGOOS(), rcloneBin); err != nil {
 			fmt.Fprintln(out, err)
+		} else {
+			rcloneReady = true
 		}
 	} else {
 		fmt.Fprintln(out, RcloneInstallHint(CurrentGOOS(), true))
@@ -226,13 +231,19 @@ func updateDrive(o updateOptions) error {
 	if home == "" {
 		home = os.Getenv("HOME")
 	}
+	if home == "" {
+		dir, homeErr := os.UserHomeDir()
+		if homeErr == nil {
+			home = dir
+		}
+	}
 	// The installed binary changed while the mount was running, and a mount
 	// serves the code it started with, so the update does not take effect on
 	// a running mount until it is restarted (drive#560). This runs only after
 	// the package manager's own upgrade, and it restarts nothing when this
 	// machine has no mount up.
-	if o.restartMount {
-		on, mErr := Mounted(CurrentGOOS(), home)
+	if o.restartMount && rcloneReady {
+		on, mErr := mountOn(CurrentGOOS(), home)
 		switch {
 		case on && mErr == nil:
 			if err := restartMountAfterUpdate(o.rclone, home); err != nil {

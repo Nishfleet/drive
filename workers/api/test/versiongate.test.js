@@ -84,6 +84,7 @@ test("a request from an old drive is answered 426 with the update words", async 
     ctx,
   );
   assert.equal(res.status, 426);
+  assert.equal(res.headers.get("upgrade"), "drive");
   assert.deepEqual(await res.json(), { error: failureMessage("cli-too-old") });
 });
 

@@ -87,6 +87,11 @@ func TestSharedKindsMatchThePageTable(t *testing.T) {
 			t.Errorf("core/messages.js no longer carries the CLI what for %s: %q", kind, entry[0])
 		}
 	}
+	// cli-too-old is printed by both the api Worker and the CLI, so its next
+	// line is the page table's words too (the JS table cannot carry backticks).
+	if next := messageTable["cli-too-old"][1]; !strings.Contains(text, next) {
+		t.Errorf("core/messages.js no longer carries the CLI next for cli-too-old: %q", next)
+	}
 }
 
 func TestPrintFailureNeverShowsABareError(t *testing.T) {
