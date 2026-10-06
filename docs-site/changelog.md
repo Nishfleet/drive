@@ -14,6 +14,8 @@ the live site.
   file is replaced afterwards, the link refuses with a short page instead of
   handing out the new bytes. A file on the stock known-bad hash list is
   refused when you share it and when someone drops it on an upload page.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".

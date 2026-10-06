@@ -36,6 +36,11 @@ Read and write come from the capability table the server grants
 provider enforces on the key it mints (workers/api/src/idrive-keys.js), because
 a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
 
+On Linux and macOS, `drive init` mounts `~/Drive-agents/<tool>` for each tool
+on that tool's own key. The MCP server and the tool's allowed folders point at
+that folder, not at the folder you use. Windows is not in version 1, and the tool there still works inside
+your Drive, because the agent mount is not proven there.
+
 ## The spending cap
 
 Set a cap and the drive goes read-only at it: nothing is deleted and the bill

@@ -36,8 +36,9 @@ import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../core/auth.js"
 import { isSameOriginRequest, sendEmail } from "../../../core/email-send.js";
 import { escapeHtml } from "../../../core/escape-html.js";
 import { bearerToken, errorResponse, json } from "../../../core/http.js";
-import { failureMessage } from "../../../core/messages.js";
+import { failureMessage, SIGN_IN_COMMAND } from "../../../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
+import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
 import { signedInAccount } from "../../../core/status.js";
 
 /** The stand-in key store (core/keystore.js `createMemoryStore`), the same one
@@ -371,6 +372,11 @@ export async function pollDeviceTokenRoute(request, ctx) {
     return json({
       status: "approved",
       deviceToken: result.deviceToken,
+      // When the window ends, as an epoch second. The CLI keeps it (drive#557)
+      // so a device knows its own token has a shelf life and can sign in again
+      // before a command ever sees a 401, and so the sliding rule the store
+      // applies on each use has a date the person could be told.
+      expiresAt: result.expiresAt,
       account: {
         id: result.account.id,
         name: result.account.name,
@@ -378,7 +384,10 @@ export async function pollDeviceTokenRoute(request, ctx) {
       },
     });
   }
-  return errorResponse(400, "That device code has expired. Run `drive init` again for a new one.");
+  return errorResponse(
+    400,
+    `That device code has expired. Run ${SIGN_IN_COMMAND} again for a new one.`,
+  );
 }
 
 /**
@@ -464,7 +473,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if ("error" in result) {
     const notice =
       result.error === "expired-code"
-        ? "That code has expired. Run `drive init` again for a new one."
+        ? `That code has expired. Run ${SIGN_IN_COMMAND} again for a new one.`
         : result.error === "approved-code"
           ? "That code has already been approved. Return to the terminal it was printed in."
           : "That code was not recognised. Check the terminal and try again.";
@@ -505,5 +514,21 @@ export async function revokeDeviceTokenRoute(request, ctx) {
     // caller sent is not one this drive knows.
     return errorResponse(404, "That token is not one this drive knows.");
   }
+  const mail = mailFromEnv(ctx.env);
+  await notifySecurityEvent({
+    email: mail.email,
+    mailFrom: mail.mailFrom,
+    to:
+      typeof ctx.account === "object" &&
+      ctx.account !== null &&
+      typeof ctx.account.email === "string"
+        ? ctx.account.email
+        : "",
+    event: "device-logged-out",
+    // Tokens do not store the name typed at `drive login`. This mail is
+    // about the token that just died, so "this device" is the honest label.
+    deviceName: "this device",
+    happenedAt: new Date().toISOString(),
+  });
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
