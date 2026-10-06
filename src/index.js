@@ -58,6 +58,7 @@ import {
   prepaidPauseOn,
   settleBalances,
 } from "../core/prepaid.js";
+import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { createD1QueueStore } from "../core/queues.js";
 import {
   handleFirstRunStatusRequest,
@@ -282,6 +283,25 @@ function closeDepsFor(env) {
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
     now: () => Date.now(),
+  };
+}
+
+/**
+ * The prepaid key swap's live deps (drive#589): the same D1 device store the
+ * cap walk uses, so a $0 pause hits the same rows. Missing DRIVE_DB is null,
+ * and the callers skip the swap rather than inventing an in-memory store.
+ * @param {Env} env
+ * @returns {{pauseOn: boolean, devices: ReturnType<typeof createD1DeviceStore>}|null}
+ */
+function prepaidPauseFromEnv(env) {
+  if (!env.DRIVE_DB) {
+    return null;
+  }
+  return {
+    pauseOn: prepaidPauseOn(env),
+    devices: createD1DeviceStore(env.DRIVE_DB, {
+      keyProvider: keyProviderFor(env) ?? undefined,
+    }),
   };
 }
 
@@ -877,7 +897,21 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store);
+    const answered = await handleCapRequest(c.req.raw, c.get("account"), store);
+    const account = c.get("account");
+    // After a cap raise, restore what the prepaid pause took (drive#589),
+    // because a pause that ran first left no `capped_from` for the raise to
+    // read. The swap is a no-op when the balance is still $0 or the pause
+    // never took a key. Only a cap write that actually ran (2xx) does this:
+    // a 400 must not swap keys.
+    if (answered.ok && store && account && db) {
+      await pauseAccountKeys(account.id, {
+        db,
+        devices: store,
+        pauseOn: prepaidPauseOn(c.env),
+      });
+    }
+    return answered;
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -1002,6 +1036,7 @@ export function createApp() {
       secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
       email: c.env.EMAIL,
       mailFrom: dodoEnv(c.env).MAIL_FROM ?? "",
+      ...(prepaidPauseFromEnv(c.env) ?? {}),
     }),
   );
 
@@ -1239,6 +1274,7 @@ const handler = {
         // the draws above are written, and a retry must not wait on a mail
         // outage.
         const dodo = dodoEnv(env);
+        const pause = prepaidPauseFromEnv(env);
         await settleBalances(env.METER_DB, drawn.accounts, {
           email: env.EMAIL,
           mailFrom: dodo.MAIL_FROM ?? "",
@@ -1247,7 +1283,23 @@ const handler = {
           baseUrl: dodo.DODO_BASE_URL,
           fetch: dodo.DODO_FETCH ?? globalThis.fetch,
           now,
+          ...(pause ?? {}),
         });
+        // Accounts the hour did not draw still need the swap: a cap raise
+        // with no usage this hour, or PREPAID_PAUSE flipped on against
+        // accounts already at $0.
+        if (pause) {
+          const drawnSet = new Set(drawn.accounts);
+          for (const accountId of await listMeteredAccounts(env.METER_DB)) {
+            if (!drawnSet.has(accountId)) {
+              await pauseAccountKeys(accountId, {
+                db: env.METER_DB,
+                devices: pause.devices,
+                pauseOn: pause.pauseOn,
+              });
+            }
+          }
+        }
         // The pre-charge limit's own trip (drive#536). The web upload path has
         // held 1 TB free since drive#464, but a mount holds a storage key and
         // writes past any page, so the same hourly run reads the over-limit
@@ -1547,6 +1599,7 @@ const handler = {
           productId: dodo.DODO_TOPUP_PRODUCT_ID,
           baseUrl: dodo.DODO_BASE_URL,
           fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+          ...(prepaidPauseFromEnv(env) ?? {}),
         },
         store,
       }),

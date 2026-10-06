@@ -751,6 +751,10 @@ export function createMemoryStore(options = {}) {
  *   own hour is then the ceiling. A renewal is measured from here, so a
  *   provider's shorter session is never renewed past its own end.
  * @property {string[]|null} [cappedFrom] the capabilities the cap took, when it did
+ * @property {string[]|null} [prepaidPausedFrom] the capabilities the prepaid
+ *   pause took (drive#589), when it did. Separate from `cappedFrom` so a
+ *   top-up restores what the pause took and a cap raise restores what the
+ *   cap took.
  */
 
 /**

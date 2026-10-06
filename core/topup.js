@@ -40,6 +40,7 @@ import {
 } from "./ledger.js";
 import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
 import { PREPAID } from "./pricing.js";
+import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 
 export const TOPUP_ENDPOINT = "/api/topup";
@@ -201,7 +202,7 @@ function objectOrNull(value) {
  * stops retrying them. Answers 409 only for a refund whose payment has not
  * been credited yet, so Dodo retries it after the payment lands.
  * @param {Request} request
- * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string}} deps
+ * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} deps
  * @returns {Promise<Response>}
  */
 export async function handleBillingWebhook(request, deps) {
@@ -256,7 +257,7 @@ export async function handleBillingWebhook(request, deps) {
  * @param {D1Database} db
  * @param {Record<string, unknown>} data
  * @param {number} now
- * @param {{email?: unknown, mailFrom?: string}} mail
+ * @param {{email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} mail
  */
 async function creditFromEvent(db, data, now, mail) {
   const metadata = objectOrNull(data.metadata);
@@ -324,6 +325,17 @@ async function creditFromEvent(db, data, now, mail) {
       balanceCents: credited.balanceCents,
       auto: metadata.source === "auto",
       mail,
+    });
+  }
+  // The prepaid pause restore (drive#589): a credit that brings the
+  // balance above $0 swaps the mount and device keys back to writes.
+  // A replay whose credit was already written still runs it, so a swap
+  // that failed on the first delivery is retried without double-crediting.
+  if (credited.accountFound && mail.devices) {
+    await pauseAccountKeys(/** @type {string} */ (accountId), {
+      db,
+      devices: mail.devices,
+      pauseOn: mail.pauseOn === true,
     });
   }
   return json({ ok: true, credited: credited.credited });
