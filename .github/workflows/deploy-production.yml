@@ -145,6 +145,32 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Record the D1 restore point
+        # A migration is one-way: D1 has no down-migrations, and the databases
+        # sit outside the Worker version a rollback restores (drive#520). So
+        # before the first `cf d1 migrations apply` this captures each
+        # database's Time Travel bookmark and prints it on the run and the
+        # step summary — the point a `cf d1 time-travel restore --bookmark`
+        # returns to (docs/runbook.md has the steps; running one is Nish's).
+        # A failed capture fails the deploy here, before any migration ran:
+        # no restore point, no migration.
+        id: bookmark
+        run: |
+          headers="$RUNNER_TEMP/d1-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e"; do
+            read -r name db <<<"$pair"
+            json=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/time_travel/bookmark") \
+              || { echo "::error::no restore point for $name: the bookmark request failed"; exit 1; }
+            bm=$(printf '%s' "$json" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));if(r.success!==true||typeof r.result?.bookmark!=="string"||!r.result.bookmark)process.exit(1);process.stdout.write(r.result.bookmark)') \
+              || { echo "::error::no restore point for $name: the bookmark is missing in the API answer"; exit 1; }
+            echo "restore point for $name (bookmark): $bm" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Apply D1 migrations
         # The databases live outside the Worker version, so their migrations
         # apply before the code that reads the new tables ships (drive #170,

@@ -98,6 +98,17 @@ export default defineConfig({
       // cron runs after it, at 06:00 UTC.
       triggers.scheduled({ schedule: "0 6 * * *" }),
     ],
+    // Issue #520: failures were invisible because this key was absent — the
+    // Worker shipped with observability off, so `console.error` in the cron
+    // branches and `app.onError` went nowhere a human looks. Workers Logs
+    // collects every invocation's console lines for 14 days (the default
+    // sampling here is 1, everything), which is the floor; the pipeline that
+    // pages a human is Sentry, wired in src/monitoring.js off the
+    // per-deployment SENTRY_DSN var (the docs runbook has the setup).
+    observability: {
+      enabled: true,
+      headSamplingRate: 1,
+    },
     env: {
       ASSETS: bindings.assets(),
       // Two databases, one purpose each (drive issue #170). The waitlist's

@@ -17,10 +17,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-// The site's one day-month-year shape (src/files.js formatWhen). The last-sync
-// cell writes its day the way a file row writes its day, so the two are held
-// to each other here rather than each to a copy of the shape.
-import { formatWhen } from "../src/files.js";
 import {
   ageMs,
   connectionLine,
@@ -839,14 +835,37 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
 
   // A device synced at 23:30 UTC, read in a US zone: the day on screen is the
   // day that zone was in, not the day the Worker was in.
-  assert.equal(syncInstantText(instant, { timeZone: "America/New_York" }), "3 Nov 2026, 18:30");
-  assert.equal(syncInstantText(instant, { timeZone: "Pacific/Honolulu" }), "3 Nov 2026, 13:30");
+  assert.equal(
+    syncInstantText(instant, { timeZone: "America/New_York", locale: "en-GB" }),
+    "3 Nov 2026, 18:30",
+  );
+  assert.equal(
+    syncInstantText(instant, { timeZone: "Pacific/Honolulu", locale: "en-GB" }),
+    "3 Nov 2026, 13:30",
+  );
   // The same instant read east of Greenwich is a different day, which is the
   // whole point of the split: the words follow the reader.
-  assert.equal(syncInstantText(instant, { timeZone: "Asia/Tokyo" }), "4 Nov 2026, 08:30");
-  // The page passes no zone, so the browser's own is the one used. The shape
-  // is pinned rather than the value, because node's own zone is the host's.
-  assert.match(syncInstantText(instant), /^\d{1,2} \w{3} \d{4}, \d{2}:\d{2}$/);
+  assert.equal(
+    syncInstantText(instant, { timeZone: "Asia/Tokyo", locale: "en-GB" }),
+    "4 Nov 2026, 08:30",
+  );
+  // The locale is the reader's too (drive#559): a US reader gets the US
+  // order and a 12-hour clock, not the British day-first 24-hour one.
+  assert.equal(
+    syncInstantText(instant, { timeZone: "America/New_York", locale: "en-US" }),
+    "Nov 3, 2026, 06:30 PM",
+  );
+  // The page passes no zone and no locale, so the browser's own are used.
+  assert.equal(
+    syncInstantText(instant),
+    new Date(instant).toLocaleString(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  );
   // The second the old toLocaleString() showed is gone: a last-sync minute
   // is as precise as the sentence needs, and the seconds were noise.
   assert.doesNotMatch(syncInstantText(instant, { timeZone: "UTC" }), /:\d{2}:\d{2}/);
@@ -950,8 +969,15 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
   // same zone, so a change to either drifts this test rather than the page.
   const zone = runtimeZone();
   assert.equal(
-    syncInstantText(instant, { timeZone: zone }).split(",")[0],
-    formatWhen(instant, Date.parse("2027-01-01T00:00:00.000Z")),
+    syncInstantText(instant, { timeZone: zone }).startsWith(
+      new Date(instant).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        timeZone: zone,
+      }),
+    ),
+    true,
     "the last-sync day is written the way the file rows write theirs",
   );
 });
@@ -1063,6 +1089,10 @@ test("the Worker reads a device's reported queue into the status payload", async
     .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
     .bind(account.id)
     .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
+    .bind(account.id)
+    .run();
   const paused = await (await poll()).json();
   assert.equal(paused.upload.paused, true);
   assert.ok(
@@ -1077,6 +1107,10 @@ test("the Worker reads a device's reported queue into the status payload", async
   // makes a report stale and there is no wall clock to wait out here.
   await made.db
     .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
+    .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
     .run();
   const stale = await (await poll()).json();

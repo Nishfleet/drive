@@ -32,13 +32,25 @@ const pages = readdirSync(publicDir)
 // read every sentence a customer can be sent.
 const REPLY_TO = "support@drive.example";
 
+// The month every date-bearing email fixture states (drive#559).
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 /** @param {string} kind */
 function dataFor(kind) {
   if (kind === "welcome") return { replyTo: REPLY_TO };
   if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12, replyTo: REPLY_TO };
   if (kind === "payment-failed") return { amountUsd: 23.5, replyTo: REPLY_TO };
   if (kind === "monthly-receipt") {
-    return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true, replyTo: REPLY_TO };
+    // drive#559: the receipt names the month it bills, so the data carries the
+    // month's first instant.
+    return {
+      billUsd: 12,
+      meteredUsd: 16,
+      ceilingUsd: 12,
+      capped: true,
+      monthIso: MONTH_ISO,
+      replyTo: REPLY_TO,
+    };
   }
   if (kind === "account-closed" || kind === "account-close-reminder") {
     return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)", replyTo: REPLY_TO };

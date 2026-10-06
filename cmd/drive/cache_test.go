@@ -402,3 +402,21 @@ func TestStatusCarriesTheCacheLine(t *testing.T) {
 		t.Errorf("cache line missing the measured size: %q", out)
 	}
 }
+
+func TestClearCacheRefusesWhileMounted(t *testing.T) {
+	home := t.TempDir()
+	writeCached(t, home, "bucket/u/me/other.bin", 1<<20, false)
+	orig := mountOn
+	mountOn = func(string, string) (bool, error) { return true, nil }
+	t.Cleanup(func() { mountOn = orig })
+	err := runCache([]string{"--home", home, "--clear"})
+	if err == nil {
+		t.Fatal("clearing the cache under a live mount must be refused")
+	}
+	if !strings.Contains(err.Error(), "mounted") {
+		t.Errorf("got %v, want a mounted refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "other.bin")); statErr != nil {
+		t.Errorf("the refusal deleted a cache file: %v", statErr)
+	}
+}

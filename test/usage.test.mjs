@@ -61,6 +61,9 @@ const filesPage = readFileSync(new URL("../public/files.html", import.meta.url),
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
 const MONTH_MINUTES = 30 * 1440;
 
@@ -74,17 +77,22 @@ function month(storedGb, overrides = {}) {
   for (let index = USAGE_HISTORY_DAYS; index > 0; index -= 1) {
     days.push({ day: `2026-09-${String(index).padStart(2, "0")}`, gb: storedGb });
   }
-  return usageSummary({
-    monthMinutes: MONTH_MINUTES,
-    gbMinutes: storedGb * MONTH_MINUTES,
-    storedGb,
-    storedDaily: days,
-    downloadBytes: 0,
-    averageStoredGb: storedGb,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
-    cardAdded: true,
-    ...overrides,
-  });
+  return {
+    ...usageSummary({
+      monthMinutes: MONTH_MINUTES,
+      gbMinutes: storedGb * MONTH_MINUTES,
+      storedGb,
+      storedDaily: days,
+      downloadBytes: 0,
+      averageStoredGb: storedGb,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+      ...overrides,
+    }),
+    // The month the answer belongs to (drive#559), the field the Worker adds on
+    // its way out: the page names the month in the browser's words from it.
+    monthIso: MONTH_ISO,
+  };
 }
 
 test("the summary carries the raw sizes and the finished labels both surfaces show", () => {
@@ -319,7 +327,13 @@ test("GB-months are the meter over the calendar month's own minutes (drive#531)"
 });
 
 test("the usage endpoint answers the empty month with the page's shape", async () => {
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -356,10 +370,13 @@ test("an account with a card on file is shown the bill it is charged", async () 
   // The other half of drive#417: the honest no-charge label is for the
   // card-less month alone. A real card on file is the bill the one bill
   // function works out, on both surfaces: an empty month is $0.00, no minimum.
-  const withCard = await handleUsageRequest(new Request("https://drive.test/api/usage"), {
-    ...account,
-    cardOnFile: true,
-  }).json();
+  const withCard = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    { ...account, cardOnFile: true },
+    null,
+    null,
+    MONTH_ISO,
+  ).json();
   assert.equal(withCard.cardOnFile, true);
   assert.equal(withCard.labels.cost, "$0.00");
   assert.equal(withCard.billCents.totalCents, 0, "the one bill function's own total");
@@ -376,7 +393,13 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
     const anonymous = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
-  const handler = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
+  const handler = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal((await handler.json()).billUsd, 0);
   assert.ok(
     page.includes(`const USAGE_ENDPOINT = "${USAGE_ENDPOINT}";`),
@@ -393,6 +416,9 @@ test("the upload line rides the usage answer beside capLine", async () => {
   const body = await handleUsageRequest(
     new Request("https://drive.test/api/usage"),
     account,
+    null,
+    null,
+    MONTH_ISO,
   ).json();
   assert.deepEqual(Object.keys(body).sort(), [
     "balanceLine",
@@ -406,6 +432,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "labels",
     "maximumUsd",
     "meteredUsd",
+    "monthIso",
     "saved",
     "storedDaily",
     "storedGb",
@@ -422,6 +449,8 @@ test("the upload line rides the usage answer beside capLine", async () => {
     new Request("https://drive.test/api/usage"),
     account,
     queue,
+    null,
+    MONTH_ISO,
   ).json();
   assert.equal(reported.uploadLine, uploadProgress(queue).label);
   assert.equal(reported.uploadLine, uploadLine(queue));
@@ -432,10 +461,18 @@ test("the upload line rides the usage answer beside capLine", async () => {
     account,
     null,
     "Balance $1.50. Top up to keep adding files.",
+    MONTH_ISO,
   ).json();
   assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
   assert.throws(
-    () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
+    () =>
+      handleUsageRequest(
+        new Request("https://drive.test/api/usage"),
+        account,
+        { files: 2 },
+        null,
+        MONTH_ISO,
+      ),
     TypeError,
     "a payload that is not a queue is refused, never rendered as a default",
   );
@@ -532,18 +569,27 @@ test("the page states the free allowance from the config, not a literal", () => 
   assert.match(USAGE_LABELS.downloadsHint, /Free up to 3×/);
 });
 
-/** A month with nothing stored in it: the read a brand-new account gets. */
-function emptyMonth() {
-  return usageSummary({
-    monthMinutes: MONTH_MINUTES,
-    gbMinutes: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
-    cardAdded: true,
-  });
+/**
+ * A month with nothing stored in it: the read a brand-new account gets.
+ * @param {Record<string, unknown>} [overrides] fields for usageSummary, the way a card state is
+ */
+function emptyMonth(overrides = {}) {
+  return {
+    ...usageSummary({
+      monthMinutes: MONTH_MINUTES,
+      gbMinutes: 0,
+      storedGb: 0,
+      storedDaily: [],
+      downloadBytes: 0,
+      averageStoredGb: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+      ...overrides,
+    }),
+    // The month the answer belongs to (drive#559), the field the Worker adds on
+    // its way out: an empty month still belongs to a named month.
+    monthIso: MONTH_ISO,
+  };
 }
 
 // The ids public/usage.html reaches for, so the stub below hands back one
@@ -551,6 +597,7 @@ function emptyMonth() {
 // forgets this list reads as a null element here rather than passing silently.
 const PAGE_IDS = Object.freeze([
   "saved",
+  "month-heading",
   "usage-status",
   "usage-body",
   "chart",
@@ -778,6 +825,35 @@ test("the empty chart is a state with a next step, not a blank panel", () => {
   assert.match(page, /at most \$\{Math\.round\(largest\)\} GB/);
 });
 
+test("the page names the month the numbers belong to, and says it is UTC", async () => {
+  // drive#559, acceptance 2. The rollups are UTC months, so the section says
+  // which month it is about: October 2026, UTC, written from the instant the
+  // Worker sent, with the one sentence under it explaining the rule.
+  const read = runPage({ ...month(12), uploadLine: null });
+  await settle();
+  const monthHeading = elementOf(read.elements, "month-heading");
+  const monthName = new Date(MONTH_ISO).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  assert.equal(monthHeading.textContent, `${monthName}, ${USAGE_LABELS.monthZone}`);
+  assert.match(monthHeading.textContent, /2026/);
+  assert.ok(
+    page.includes(`<p class="hint" id="month-note">${USAGE_LABELS.monthNote}</p>`),
+    "the UTC rule ships in the markup, so a reader with no script sees it too",
+  );
+  // The zone is spelled out rather than implied: "October 2026" on its own is
+  // also the reader's own calendar month.
+  assert.equal(USAGE_LABELS.monthZone, "UTC");
+  // A read that carries no month is as unusable as no answer, so it takes the
+  // unreachable state instead of a heading over someone else's month.
+  const noMonth = runPage({ ...month(12), monthIso: "", uploadLine: null });
+  await settle();
+  assert.equal(elementOf(noMonth.elements, "usage-body").hidden, true);
+  assert.equal(elementOf(noMonth.elements, "month-heading").textContent, "");
+});
+
 test("a new account's month says it is empty instead of showing a blank area", () => {
   // The bug (drive issue #427): the status slot in "This month" is reserved from
   // the first paint, and a reachable read hid it, so a drive with nothing stored
@@ -842,17 +918,7 @@ test("no bill is shown as if charged while no card is on file", async () => {
   // gate; the run is the page's own script against a real summary.
   assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
   const cardless = runPage({
-    ...usageSummary({
-      monthMinutes: MONTH_MINUTES,
-      gbMinutes: 0,
-      storedGb: 0,
-      storedDaily: [],
-      downloadBytes: 0,
-      averageStoredGb: 0,
-      capUsd: BILLING_CONFIG.defaultCapUsd,
-      cardAdded: true,
-      cardOnFile: false,
-    }),
+    ...emptyMonth({ cardOnFile: false }),
     uploadLine: null,
   });
   await settle();
@@ -860,17 +926,7 @@ test("no bill is shown as if charged while no card is on file", async () => {
   assert.equal(elementOf(cardless.elements, "bill-lines").hidden, true);
 
   const charged = runPage({
-    ...usageSummary({
-      monthMinutes: MONTH_MINUTES,
-      gbMinutes: 0,
-      storedGb: 0,
-      storedDaily: [],
-      downloadBytes: 0,
-      averageStoredGb: 0,
-      capUsd: BILLING_CONFIG.defaultCapUsd,
-      cardAdded: true,
-      cardOnFile: true,
-    }),
+    ...emptyMonth({ cardOnFile: true }),
     uploadLine: null,
   });
   await settle();
@@ -1163,6 +1219,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
     .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
     .bind(signedInAccount.id)
     .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
+    .bind(signedInAccount.id)
+    .run();
   const paused = await (await read()).json();
   assert.ok(
     paused.uploadLine.startsWith(UPLOAD_LABEL.paused),
@@ -1181,6 +1241,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // stale line, so the page hides the line instead of freezing a number.
   await made.db
     .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
+    .run();
+  await made.db
+    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
     .run();
   assert.equal((await (await read()).json()).uploadLine, null, "a stale report still shows a line");

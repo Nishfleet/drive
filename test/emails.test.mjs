@@ -317,6 +317,10 @@ test("payment failed never blames the person", () => {
 /** @param {Record<string, unknown>} [overrides] */
 function receiptData(overrides = {}) {
   return {
+    // October 2026, sent the way the Worker sends it: the month's own first
+    // instant, UTC (drive#559). The receipt names the month it bills for, so
+    // "this month" is never what a reader opens in a later month.
+    monthIso: "2026-10-01T00:00:00.000Z",
     billUsd: 12,
     meteredUsd: 16,
     ceilingUsd: 12,
@@ -374,7 +378,7 @@ test("a capped month says our price cap saved you, metered minus bill", () => {
   assert.equal(saved, "Our price cap saved you $4.00");
   assert.match(text, /Our price cap saved you \$4\.00/);
   assert.match(html, /Our price cap saved you \$4\.00/);
-  assert.match(text, /bill for this month is \$12\.00/);
+  assert.match(text, /bill for October 2026, UTC is \$12\.00/);
 });
 
 test("an uncapped month says you paid less than a flat plan, ceiling minus bill", () => {
@@ -411,23 +415,17 @@ test("a receipt is built from months that can actually happen", () => {
   // impossible one.
   // 0.6 TB metered at 2c/GB = $12, ceiling $23 (uncapped): bill $12, saved $11.
   const uncapped = monthlyReceiptTemplate({
-    billUsd: 12,
-    meteredUsd: 12,
-    ceilingUsd: 23,
-    capped: false,
+    ...receiptData({ billUsd: 12, meteredUsd: 12, ceilingUsd: 23, capped: false }),
     replyTo: REPLY_TO,
   });
   assert.equal(uncapped.saved, "You paid $11.00 less than a flat plan");
   // 2 TB peak: meter $40, ceiling $23 (capped): bill $23, saved $17.
   const capped = monthlyReceiptTemplate({
-    billUsd: 23,
-    meteredUsd: 40,
-    ceilingUsd: 23,
-    capped: true,
+    ...receiptData({ billUsd: 23, meteredUsd: 40, ceilingUsd: 23, capped: true }),
     replyTo: REPLY_TO,
   });
   assert.equal(capped.saved, "Our price cap saved you $17.00");
-  assert.match(capped.text, /bill for this month is \$23\.00/);
+  assert.match(capped.text, /bill for October 2026, UTC is \$23\.00/);
 });
 
 test("savedLine refuses a month with nonsense in it", () => {
@@ -438,6 +436,52 @@ test("savedLine refuses a month with nonsense in it", () => {
     { meteredUsd: -1, billUsd: 0, ceilingUsd: 0, capped: true },
   ]) {
     assert.throws(() => savedLine(month), TypeError);
+  }
+});
+
+test("the receipt names the month it bills, and says the month is UTC", () => {
+  // drive#559, acceptance 3. A mail is read days later, so "this month" is
+  // whatever month the reader is in now: the subject and the first line name
+  // the month the numbers belong to, and the one sentence under it says that
+  // the month is a UTC month.
+  const { subject, text, html } = monthlyReceiptTemplate(receiptData());
+  assert.match(subject, /Your Drive receipt: October 2026, UTC$/);
+  assert.match(text, /Your Drive bill for October 2026, UTC is \$12\.00\./);
+  // The UTC rule in one sentence, the same words the usage page states.
+  assert.match(text, /Drive bills whole months in UTC:/);
+  assert.match(text, /00:00 on the 1st/);
+  assert.match(html, /October 2026, UTC/);
+  // A different month is named as itself, not offset or rolled: the label comes
+  // from the instant the Worker sent, in UTC, whatever the reader's calendar
+  // and whatever zone the mail is opened in.
+  const july = monthlyReceiptTemplate(
+    receiptData({
+      monthIso: "2026-07-01T00:00:00.000Z",
+      billUsd: 8,
+      meteredUsd: 8,
+      ceilingUsd: 23,
+      capped: false,
+    }),
+  );
+  assert.match(july.subject, /July 2026, UTC$/);
+  assert.match(july.text, /bill for July 2026, UTC is \$8\.00\./);
+});
+
+test("the receipt refuses a month that is not a month's first instant", () => {
+  // The subject is built from this field, so a value that is not the first
+  // instant of a UTC month is refused rather than rendered as a name nobody
+  // billed: a day in the middle of a month, a moment in one, a month number
+  // with no year, a hand-written month name, and nothing at all.
+  for (const monthIso of [
+    undefined,
+    "October 2026",
+    "2026-10-08T00:00:00.000Z",
+    "2026-10-01T09:30:00.000Z",
+    "2026-10-01",
+    "2026-13-01T00:00:00.000Z",
+    "2026-10-01T00:00:00.000+02:00",
+  ]) {
+    assert.throws(() => monthlyReceiptTemplate(receiptData({ monthIso })), TypeError);
   }
 });
 
@@ -866,19 +910,27 @@ test("a body the template cannot be built from is a 400, not a 502", async () =>
   assert.equal(env.EMAIL.sent.length, 0, "nothing is sent for a 400");
 });
 
-test("a receipt with no saving and no capped flag is a 400, not a $0 receipt", async () => {
-  // The one output this lane must never produce: a receipt that silently
-  // claims an uncapped month, or a $0 bill that hides a lost meter number.
+test("a receipt with no month, no saving and no capped flag is a 400", async () => {
+  // The one output this lane must never produce: a receipt that names no
+  // month, or a $0 bill that hides a lost meter number.
   const res = await handleSendEmailRequest(
     authed({
       to: "person@example.com",
       kind: "monthly-receipt",
-      data: { billUsd: 12, meteredUsd: 16, ceilingUsd: 12 },
+      data: {
+        billUsd: 12,
+        meteredUsd: 16,
+        ceilingUsd: 12,
+        // A month with no month in it is refused on the month, before the
+        // capped flag: a receipt that names no month is not a receipt, even
+        // when the rest of its month is real (drive#559).
+        capped: true,
+      },
     }),
     makeEnv(),
   );
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /capped must be true or false/);
+  assert.match((await res.json()).error, /monthIso must be a month's first instant/);
 });
 
 test("the route names the five kinds when the kind is wrong", async () => {
