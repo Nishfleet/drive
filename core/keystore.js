@@ -22,7 +22,6 @@
 // (now) so a device code can be tested as expired without sleeping, and the
 // routes below own the HTTP shape.
 
-import { downloadUrlFor, signGrant } from "./grant.js";
 import { newId, nowSeconds, sha256Hex } from "./db.js";
 import {
   createMemoryDeviceSigninStore,
@@ -30,6 +29,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
+import { downloadUrlFor, signGrant } from "./grant.js";
 import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,

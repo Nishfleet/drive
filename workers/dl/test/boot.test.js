@@ -11,9 +11,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-
-import { makeMeteredDB } from "../../../test/d1-sqlite.mjs";
 import { signGrant } from "../../../core/grant.js";
+import { makeMeteredDB } from "../../../test/d1-sqlite.mjs";
 import worker from "../src/index.js";
 
 const ENTRY = fileURLToPath(new URL("../src/index.js", import.meta.url));
