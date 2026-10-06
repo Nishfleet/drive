@@ -21,7 +21,8 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Platforms | macOS and Linux. No Windows in v1 | spec.md |
 | Headline price | "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB." from `core/pricing.js` (PRICE.headline) | drive#463, drive#586 |
 | Bill ceiling | Never more than $10 per TB, counted to the GB (`PRICE.maxUsdPerTb`, `monthBillCents` in `core/billing.js`). The older max($12, $8 × peak TB) row is retired. | Nish, 2026-10-04 (drive#463) |
-| Company tier | "Business": same storage price, plus single sign-on, SOC 2 report, one company bill split by team, and priority support. On the pricing page from day one as "Talk to us"; built after v1 | Nish, 2026-09-29 |
+
+| Company tier | "Business": same storage price, plus single sign-on, SOC 2 report, one company bill split by team, and priority support. On the pricing page from day one as "Talk to us"; built after v1. The company UI is later, so the teams API is the only v1 path to a company drive: `docs/api.md` documents `POST /v1/teams`, the invite that names an email and a role (`read_only` / `read_write`), and the removal that revokes the member's key (drive#20, drive#518) | Nish, 2026-09-29 |
 | Never do | Confusing credit units, balances that expire, "unlimited" plans | Nish, 2026-09-29 (Higgsfield research). Any prepaid top-up never expires |
 | Encryption | B2 server-side encryption (SSE-B2) on. Not end-to-end in v1 | My default |
 
