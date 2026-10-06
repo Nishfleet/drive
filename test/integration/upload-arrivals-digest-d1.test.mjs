@@ -19,6 +19,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore } from "../../core/files.js";
 import {
   createD1LinkStore,
@@ -26,7 +27,6 @@ import {
   newRequestRecord,
   sendArrivalDigests,
 } from "../../src/share.js";
-import { createD1DeviceStore } from "../../core/devices.js";
 import { MIGRATION_FILES } from "../d1-sqlite.mjs";
 import { createTestD1, DRIVE_SCHEMA_MIGRATIONS } from "../harness.mjs";
 
