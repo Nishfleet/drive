@@ -7,7 +7,7 @@
 // — so an expired agent key or a revoke that failed at the vendor leaves a key
 // the storage server still enforces. This sweep walks the dead rows, removes
 // their vendor keys and stamps each row as accounted for
-// (migrations/drive/0031), so the next night does not call
+// (migrations/drive/0033), so the next night does not call
 // `remove_access_key` again for a key the vendor no longer holds.
 //
 // A row is stamped only when the vendor's own answer says the key is gone: a
