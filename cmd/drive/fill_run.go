@@ -257,6 +257,7 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	if budget < 0 {
 		budget = 0
 	}
+	targets.ctx = ctx
 	recentBytes, err := targets.read(fillRecent, budget)
 	if err != nil {
 		return res, fmt.Errorf("fill: read into cache: %w", err)
@@ -530,6 +531,9 @@ type fillTargets struct {
 	root    string
 	offline []string
 	recent  []string
+	// ctx is the pass deadline. A cancelled or timed-out pass stops between
+	// files rather than walking the rest of the set (drive#516).
+	ctx context.Context
 	// opens records a recently-opened file as filled; nil is a test that does
 	// not exercise the open registry.
 	opens *recentOpens
@@ -552,6 +556,9 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 			read = fillReadFile
 		}
 		for _, rel := range t.recent {
+			if err := t.ctxErr(); err != nil {
+				return spent, err
+			}
 			if spent >= budget {
 				break
 			}
@@ -573,6 +580,9 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 		}
 	}
 	for _, rel := range t.offline {
+		if err := t.ctxErr(); err != nil {
+			return spent, err
+		}
 		if _, err := KeepOffline(t.root, rel); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -581,6 +591,13 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 		}
 	}
 	return spent, nil
+}
+
+func (t fillTargets) ctxErr() error {
+	if t.ctx == nil {
+		return nil
+	}
+	return t.ctx.Err()
 }
 
 // fillReadFile reads one mounted file into io.Discard, which fills rclone's

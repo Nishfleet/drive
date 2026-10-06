@@ -8,7 +8,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
 import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
@@ -26,7 +31,7 @@ import {
 } from "../src/search.js";
 import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
-/** @typedef {import("../src/files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 
 // The ExportedHandler type makes fetch optional and declares the runtime's
 // three arguments. The tests drive the Worker directly, so one wrapper
@@ -76,7 +81,7 @@ function makeD1() {
     "waitlist/0001_waitlist.sql",
     "drive/0002_file_index.sql",
     "drive/0010_accounts_devices.sql",
-    "drive/0025_file_index_fts.sql",
+    "drive/0031_file_index_fts.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }

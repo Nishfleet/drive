@@ -1,3 +1,6 @@
+import { storageVarsFromEnv } from "../core/files.js";
+import { meterFreshness } from "../core/meter.js";
+
 // The health endpoint the outage alert watches (drive issue #96, north star
 // "Reliable": we hear about an outage before customers do). `GET /api/health`
 // answers one question honestly — can this Worker reach the things a request
@@ -50,7 +53,10 @@
 //     argument for the same reason (drive issue #506): src/share.js answers
 //     503 without SHARE_DOWNLOAD_RATE_LIMITER rather than serve an unbounded
 //     public download, so a deploy that lost it is an outage this endpoint
-//     names.
+//     names. The share and upload-request mint routes are the same argument
+//     for the same reason (drive issue #549): src/share.js answers 503 without
+//     SHARE_MINT_RATE_LIMITER or REQUEST_MINT_RATE_LIMITER rather than let one
+//     account mint links without bound.
 //
 //   - The branch snapshot namespace. A branch's snapshot moved out of the D1
 //     row into KV (drive issue #252), so every diff and every approve reads this
@@ -62,14 +68,51 @@
 //     question the check asks is only whether the binding answers, not whether
 //     it holds anything.
 //
+//   - The meter's watermark (drive issue #520). The meter can answer every
+//     hour while billing nothing — a lost watermark, a dead trigger, a
+//     backlog the catch-up cap is still draining — and no request path
+//     notices, because billing is a cron's job. The check is one D1 read on
+//     METER_DB (src/meter.js meterFreshness): versions with no watermark, or
+//     a watermark METER_STALE_AFTER_HOURS behind the last closed hour, is a
+//     503 naming "meter". A binding that cannot answer at all keeps its own
+//     name, METER_DB, from the generic database check above.
+//
+//   - The storage endpoint (drive issue #520). With no S3 endpoint among the
+//     per-deployment vars, the Files handlers answer from the in-memory
+//     store: a drive that forgets everything on redeploy and shares nothing
+//     between isolates, while every page still renders. That is the exact
+//     failure a health check exists to name, so it is a 503 naming
+//     "storage". The question is asked through src/files.js's one reader,
+//     storageVarsFromEnv, so this endpoint and the store cannot disagree
+//     about what "no endpoint" means. In local dev without storage vars this
+//     check is red by design; the runbook says so.
+//
+// Reported, but NOT a 503 (drive#522): the sender address. Every customer
+// email (close receipts, reminders, the welcome, sign-in links) is sent from
+// MAIL_FROM, and with it unset or unusable each one fails at the customer's
+// click while the site serves. Until launch the deploy only warns about it
+// (drive#752 turns that back into a block), so this endpoint is where the
+// gap stays visible: `"email":"not-ready"` rides on the answer, ok or not.
+// It is not a failing dependency, because the deploy smoke rolls back on any
+// answer that is not ok, and a pre-launch drive with no sending domain yet
+// (#199) would then never ship. The check reads the address through
+// src/email-send.js replyToFor, the same reader every send uses, so this and
+// the mail path cannot disagree, and the answer is one word: never the
+// address itself.
+//
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
-//   - Secrets. Their presence is a deployment shape, not a reachability
+//   - Other secrets. Their presence is a deployment shape, not a reachability
 //     question, and a value cannot be probed without risking disclosure.
 //     A missing secret makes the one route that needs it answer 403/503 by
-//     name already (src/email-send.js, src/waitlist.js).
+//     name already (core/email-send.js, src/waitlist.js).
 //   - The email binding. Only the token-gated internal send route uses it
-//     (src/email-send.js); no customer request needs it, and its only
+//     (core/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
+//   - HEALTH_RATE_LIMITER. It is this route's own gate (handleHealthRequest
+//     runs enforceEdgeLimits before any probe), not a dependency another
+//     route fails closed without. Probing it with a fresh random key would
+//     not prove the per-IP bucket and would add a billed op on every poll
+//     (drive#539).
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read
@@ -77,6 +120,9 @@
 // dependencies still answer inside HEALTH_TIMEOUT_MS, not three times it.
 // A dependency that does not answer in its share reports itself by name, so
 // the alert says which dependency rather than "unhealthy".
+
+import { replyToFor } from "../core/email-send.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
 /** The path the outside monitor (#36) polls. Public, and reads no account. */
 export const HEALTH_PATH = "/api/health";
@@ -116,13 +162,15 @@ const LIVENESS_QUERY = "SELECT 1";
  * public upload-request route fail closed without them (src/waitlist.js,
  * src/signin.js, src/share.js). METER_DB is on it because the
  * meter's event intake and the hourly rollup both fail closed without it
- * (src/meter.js), and a deploy that lost it would silently stop billing.
+ * (core/meter.js), and a deploy that lost it would silently stop billing.
  * DRIVE_DB is on it because a deploy that lost it
  * would serve every page and sign-up while every file, search and branch
  * request failed, which is exactly the outage this endpoint exists to catch
  * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
- * would really send mail.
+ * would really send mail. METER_JOBS and BRANCH_JOBS are producer
+ * bindings (drive#519, drive#563): without them the work runs in-process,
+ * and a health probe cannot exercise a queue without sending a real job.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
@@ -135,6 +183,8 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "REQUEST_UPLOAD_RATE_LIMITER",
   "REQUEST_UPLOAD_LINK_RATE_LIMITER",
   "SHARE_DOWNLOAD_RATE_LIMITER",
+  "SHARE_MINT_RATE_LIMITER",
+  "REQUEST_MINT_RATE_LIMITER",
   "BRANCH_SNAPSHOTS",
 ]);
 
@@ -260,6 +310,23 @@ async function checkD1(name, db, timeoutMs) {
 }
 
 /**
+ * The meter's watermark, read on the same share of the deadline the generic
+ * database checks get (issue #520). A stale answer is a thrown error, not a
+ * return value, so it lands in the same catch every other check reports
+ * through: the log gets the reason, the response gets the name "meter" and
+ * nothing else.
+ * @param {{prepare: (sql: string) => {first: () => Promise<{rolled_through?: unknown, earliest?: unknown}>}}} db
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
+async function checkMeterFreshness(db, timeoutMs) {
+  const freshness = await withTimeout(meterFreshness(db), timeoutMs, "meter");
+  if (freshness.stale) {
+    throw new Error(`the meter is behind: ${freshness.detail}`);
+  }
+}
+
+/**
  * The asset layer, fetched with a HEAD on a path the site does not serve.
  * HEAD is the cheap form: it proves the asset Worker answers without pulling
  * a document, and a 404 is the expected answer (nothing is served there), so
@@ -338,6 +405,26 @@ async function checkKv(kv, timeoutMs, name) {
 }
 
 /**
+ * Whether this deployment can send customer email at all (drive#522): a
+ * MAIL_FROM that replyToFor, the reader every send goes through, accepts.
+ * Unset, empty or malformed is "not-ready". The address never leaves here.
+ * @param {Record<string, unknown>} env
+ * @returns {"ready" | "not-ready"}
+ */
+export function emailReadiness(env) {
+  const from = env?.MAIL_FROM;
+  if (typeof from !== "string" || from.trim() === "") {
+    return "not-ready";
+  }
+  try {
+    replyToFor(from);
+    return "ready";
+  } catch {
+    return "not-ready";
+  }
+}
+
+/**
  * Runs every dependency check and reports the outcome as data, so a test can
  * read it and the fetch handler can render it without the two disagreeing.
  *
@@ -360,9 +447,39 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       return { ok: false, failing: name };
     }
   }
+  // The storage endpoint (issue #520): with no S3 endpoint among the
+  // per-deployment vars, the Files handlers answer from the in-memory store
+  // (src/files.js storageVarsFromEnv is the one reader this and storeFor use).
+  // That drive forgets everything on redeploy, so it fails here by name
+  // rather than serving a silently empty Files page.
+  const storageEnv = /** @type {import("../core/files.js").StorageEnv} */ (
+    /** @type {unknown} */ (env)
+  );
+  if (storageVarsFromEnv(storageEnv).endpoint === undefined) {
+    return { ok: false, failing: "storage" };
+  }
   const checks = /** @type {{name: string, run: (left: number) => Promise<void>}[]} */ ([]);
   for (const { name, db } of d1Bindings(env)) {
     checks.push({ name, run: (left) => checkD1(name, db, left) });
+  }
+  // The meter's watermark (issue #520), read through the binding the generic
+  // loop above already liveness-checked: a read that throws keeps the
+  // binding's name (METER_DB) from that check, and a read that answers
+  // "behind" reports "meter" — the job, not the database. The shape guard is
+  // the same isDatabaseBinding the discovery used, so the cast below is the
+  // check that was just made.
+  const meterDb = env.METER_DB;
+  if (isDatabaseBinding(meterDb)) {
+    checks.push({
+      name: "meter",
+      run: (left) =>
+        checkMeterFreshness(
+          /** @type {{prepare: (sql: string) => {first: () => Promise<{rolled_through?: unknown, earliest?: unknown}>}}}} */ (
+            meterDb
+          ),
+          left,
+        ),
+    });
   }
   // The binding is read off the untyped env and checked by shape, exactly as
   // d1Bindings does: the cast is the check that was just made, not a default.
@@ -417,6 +534,8 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     "REQUEST_UPLOAD_RATE_LIMITER",
     "REQUEST_UPLOAD_LINK_RATE_LIMITER",
     "SHARE_DOWNLOAD_RATE_LIMITER",
+    "SHARE_MINT_RATE_LIMITER",
+    "REQUEST_MINT_RATE_LIMITER",
   ]) {
     const bound = env[name];
     if (
@@ -491,7 +610,8 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
  * getting a 200 that means nothing.
  *
  * The body carries no secret, no query text, no stack and no account data:
- * `{"ok":true}` or `{"ok":false,"failing":"<binding name>"}`. A binding name
+ * `{"ok":true}` or `{"ok":false,"failing":"<binding name>"}`, plus
+ * `"email":"not-ready"` when the deployment cannot send mail. A binding name
  * is configuration the operator already has, and it is the one thing that
  * tells them where to look.
  *
@@ -506,14 +626,38 @@ export async function handleHealthRequest(request, env) {
       headers: { allow: "GET", ...JSON_HEADERS },
     });
   }
+  // The probe fans out to every D1, five rate-limit bindings, KV and ASSETS.
+  // The per-IP gate runs first so a stranger cannot spend those billed ops
+  // in a loop (drive#539). A missing binding fails closed, the same posture
+  // every other limited route uses.
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding:
+          /** @type {{limit(options: {key: string}): Promise<{success: boolean}>}|undefined} */ (
+            env.HEALTH_RATE_LIMITER
+          ),
+        key: clientIpKey(request, "health"),
+        name: "HEALTH_RATE_LIMITER",
+      },
+    ],
+    "health",
+  );
+  if (limited) {
+    return limited;
+  }
   const result = await checkHealth(env);
+  // The email part (drive#522) is reported beside the verdict, never as it:
+  // only when it is not ready, so a deployment that can send answers exactly
+  // as before, and one that cannot says so on every poll.
+  const email = emailReadiness(env) === "ready" ? {} : { email: "not-ready" };
   if (result.ok) {
-    return new Response(JSON.stringify({ ok: true }), {
+    return new Response(JSON.stringify({ ok: true, ...email }), {
       status: 200,
       headers: JSON_HEADERS,
     });
   }
-  return new Response(JSON.stringify({ ok: false, failing: result.failing }), {
+  return new Response(JSON.stringify({ ok: false, failing: result.failing, ...email }), {
     status: 503,
     headers: JSON_HEADERS,
   });

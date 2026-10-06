@@ -81,12 +81,17 @@ would rather you read it here than find out in week three.
   The default cap is {{DEFAULT_CAP}}.
 - **The maximum.** The bill is never more than {{MAX_PER_TB}} for each TB you
   store, so a full drive cannot surprise you.
-- **Agents cannot delete.** An agent key cannot remove a file; only a person
-  can, and a person's delete is restorable.
+- **An agent's delete is undoable for a short time only.** {{AGENT_DELETE}}
+- **A branch key is not a wall.** {{BRANCH_REACH}}
 - **A branch is a real copy.** `drive branch` copies every byte of the folder,
   so a branch counts against your storage until you `discard` it or `approve`
   it, and `approve` stops with a list of conflicting files instead of a
   silent overwrite.
+- **A branch still has a size cap.** Copy, approve, discard and rewind now run
+  as a queued job in file batches, so they stay inside one Worker's request
+  budget. A folder with more than 100,000 files still cannot be branched: the
+  snapshot for that many files is about 11 MiB in memory, and that is the
+  remaining limit.
 
 ## Honest notes on the numbers
 

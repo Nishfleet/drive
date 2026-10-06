@@ -12,13 +12,29 @@ account we hold, and a folder on your machine shows them to you. The
 [privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) lists every company that handles your data. Every device and every agent tool gets its own key, and a key can
 only do what its kind of key is allowed to do. Keys are yours to revoke.
 
+## Sub-processors
+
+The
+[privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) is the
+full record, with what each one stores and where. The page below is the
+same list; it is read from the privacy page so the count can never
+silently disagree with it.
+
+- **Cloudflare** — the site, the API, downloads, the account database and email.
+  Cloudflare's global network.
+- **iDrive e2** — the object storage that holds your files and their old
+  versions. Paris, France (region eu-west-3).
+- **Dodo Payments** — card payments, refunds, and the card itself. We never hold
+  a card number.
+
 ## What each key can do
 
 {{KEY_TABLE}}
 
-The key table is read from the same capability table the server enforces
-(workers/api/src/keyprovider.js), so a page cannot grant a power the code does
-not. {{AGENT_CANNOT_DELETE}}
+Read and write come from the capability table the server grants
+(workers/api/src/keyprovider.js). Delete and reach come from what the storage
+provider enforces on the key it mints (workers/api/src/idrive-keys.js), because
+a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
 
 ## The spending cap
 

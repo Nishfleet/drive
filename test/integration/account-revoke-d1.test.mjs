@@ -1,9 +1,9 @@
 // Account close and "sign out every device" revoke every credential an
 // account holds, over the real D1 schema (drive#497).
 //
-// Before this change `revokeLiveKeys` (workers/api/src/devices.js) updated
+// Before this change `revokeLiveKeys` (core/devices.js) updated
 // only the `devices` table. The client holds the storage credential itself
-// (workers/api/src/keystore.js), so a D1-only revoke left a key working at the
+// (core/keystore.js), so a D1-only revoke left a key working at the
 // storage server until it expired, and close/sign-out left the account's
 // device tokens, share links and upload requests alone entirely.
 //
@@ -16,13 +16,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-
-import { failureMessage } from "../../src/messages.js";
+import { createD1DeviceSigninStore } from "../../core/device-signin.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
+import { failureMessage } from "../../core/messages.js";
 import { createD1LinkStore, linkState } from "../../src/share.js";
-import { createD1DeviceSigninStore } from "../../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { dispatch } from "../../workers/api/src/index.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
@@ -34,9 +33,9 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * The storage server as the api sees it, plus the one question this proof
  * asks of it: does this pair still open a file? A credential is live from its
  * mint until the api revokes it, which is the behaviour the vendor's
- * `remove_access_key` gives (workers/api/src/idrive-keys.js) and the S3 path
+ * `remove_access_key` gives (core/idrive-keys.js) and the S3 path
  * gets from a short session instead.
- * @returns {{provider: import("../../workers/api/src/keyprovider.js").KeyProvider, accepts: (accessKeyId: string, secret: string) => boolean, live: () => number}}
+ * @returns {{provider: import("../../core/keyprovider.js").KeyProvider, accepts: (accessKeyId: string, secret: string) => boolean, live: () => number}}
  */
 function storageServer() {
   /** @type {Map<string, string>} accessKeyId -> secret */
@@ -111,6 +110,7 @@ async function linkAndRequest(db, accountId, suffix) {
     revokedAt: null,
     downloadCount: 0,
     downloadBytes: 0,
+    maxDownloadBytes: null,
   });
   await links.requests.create({
     token: requestToken,
@@ -122,6 +122,7 @@ async function linkAndRequest(db, accountId, suffix) {
     uploadCount: 0,
     uploadBytes: 0,
     maxBytes: 1_000_000,
+    maxFiles: 100,
   });
   return { shareToken, requestToken, links };
 }
@@ -289,4 +290,109 @@ test("closing the account revokes the same credentials and refuses the closed ac
   assert.equal(refused.status, 403);
   assert.deepEqual(await refused.json(), { error: failureMessage("account-closed") });
   assert.equal(server.live(), 0, "a refused mint must not create a live credential");
+});
+
+test("one provider refusal does not stop the other keys, and a retry finishes the refused one", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const server = storageServer();
+  const clock = () => NOW_MS;
+  /** @type {Set<string>} the access key ids the vendor refuses to remove */
+  const refusing = new Set();
+  /** @type {string[]} */
+  const attempted = [];
+  const provider = {
+    ...server.provider,
+    /** @param {string} accessKeyId */
+    async revoke(accessKeyId) {
+      attempted.push(accessKeyId);
+      if (refusing.has(accessKeyId)) {
+        throw new Error("remove_access_key: the vendor is down");
+      }
+      return server.provider.revoke?.(accessKeyId);
+    },
+  };
+  const signin = createD1DeviceSigninStore(db, { now: clock });
+  const devices = createD1DeviceStore(db, { now: clock, keyProvider: provider });
+  const store = createMemoryStore({
+    now: clock,
+    signin,
+    keyProvider: provider,
+    deviceStore: devices,
+  });
+  const mine = { id: "acct_retry", name: "Retry", email: "retry@example.com" };
+  const first = await store.mintKey(mine, { kind: "agent", name: "one" });
+  const second = await store.mintKey(mine, { kind: "agent", name: "two" });
+  const third = await store.mintKey(mine, { kind: "agent", name: "three" });
+  const token = await deviceToken(db, mine, "Nish's MacBook");
+  const links = await linkAndRequest(db, mine.id, "retry");
+  refusing.add(first.accessKeyId);
+
+  await assert.rejects(store.revokeAllKeys(mine), (/** @type {Error} */ error) => {
+    assert.match(error.message, /refused to withdraw 1 key/);
+    assert.doesNotMatch(error.message, /ak_live_/, "no key id in the message");
+    return true;
+  });
+
+  // Every key was attempted, the refused one first, and the loop went on. The
+  // refused key is tried more than once: the provider call retries a bounded
+  // number of times before it gives up.
+  assert.deepEqual(
+    [...new Set(attempted)].sort(),
+    [first.accessKeyId, second.accessKeyId, third.accessKeyId].sort(),
+  );
+  assert.equal(server.accepts(second.accessKeyId, second.secret), false);
+  assert.equal(server.accepts(third.accessKeyId, third.secret), false);
+  assert.equal(server.accepts(first.accessKeyId, first.secret), true, "the vendor kept this one");
+
+  // The refused key's row stays live, so it says what is true; the others
+  // are stamped. Tokens, shares and upload requests landed in one batch.
+  const rowRevokedAt = (/** @type {string} */ id) =>
+    sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(id)?.revoked_at;
+  assert.equal(rowRevokedAt(first.keyId), null);
+  assert.equal(rowRevokedAt(second.keyId), NOW);
+  assert.equal(rowRevokedAt(third.keyId), NOW);
+  assert.equal(await signin.accountForDeviceToken(token), null);
+  assert.equal(revokedAt(sqlite, "shares", links.shareToken), NOW);
+  assert.equal(revokedAt(sqlite, "upload_requests", links.requestToken), NOW);
+
+  // The retry finds the one live key, attempts only it, and finishes.
+  refusing.clear();
+  attempted.length = 0;
+  assert.deepEqual(await store.revokeAllKeys(mine), { revoked: 1 });
+  assert.deepEqual(attempted, [first.accessKeyId]);
+  assert.equal(server.accepts(first.accessKeyId, first.secret), false);
+  assert.equal(rowRevokedAt(first.keyId), NOW);
+  assert.equal(server.live(), 0);
+});
+
+test("a key the vendor kept cannot open the api once its account is closed", async () => {
+  const { db } = makeMeteredDB();
+  const server = storageServer();
+  const clock = () => NOW_MS;
+  const provider = {
+    ...server.provider,
+    async revoke() {
+      throw new Error("remove_access_key: the vendor is down");
+    },
+  };
+  const devices = createD1DeviceStore(db, { now: clock, keyProvider: provider });
+  const store = createMemoryStore({
+    now: clock,
+    signin: createD1DeviceSigninStore(db, { now: clock }),
+    keyProvider: provider,
+    deviceStore: devices,
+  });
+  const account = { id: "acct_closed_key", name: "Closed", email: "closed-key@example.com" };
+  const neighbour = { id: "acct_open_key", name: "Open", email: "open-key@example.com" };
+  const key = await store.mintKey(account, { kind: "agent", name: "laptop" });
+  const theirs = await store.mintKey(neighbour, { kind: "agent", name: "pi" });
+  assert.equal((await devices.authenticate(key.accessKeyId, key.secret))?.id, key.keyId);
+
+  await assert.rejects(devices.closeAccount(account, NOW), /refused to withdraw 1 key/);
+  // The row is still live for the retry, but the account is closed, so the
+  // api's own key login refuses it.
+  assert.equal(await devices.authenticate(key.accessKeyId, key.secret), null);
+  assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
+  // An account that never closed (no accounts row at all) still logs in.
+  assert.equal((await devices.authenticate(theirs.accessKeyId, theirs.secret))?.id, theirs.keyId);
 });
