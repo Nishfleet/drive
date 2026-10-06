@@ -63,6 +63,7 @@ import { json, readJsonObject } from "../core/http.js";
 import { balanceCents } from "../core/ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
+import { notifySecurityEvent } from "../core/security-event.js";
 import { formatBytes, unauthorizedResponse } from "../core/status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
@@ -961,8 +962,8 @@ export function folderDisplayName(folder) {
  * @param {Request} request
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
- * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{id: string, name: string, email?: string|null}|null} account the signed-in account, or null when signed out
+ * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, email?: unknown, mailFrom?: string, deviceName?: string}} [options]
  */
 export async function handleShareRequest(request, files, links, account, options = {}) {
   if (!account) {
@@ -1034,6 +1035,14 @@ export async function handleShareRequest(request, files, links, account, options
       maxDownloadBytes: shareDownloadCapFor(object.size),
     });
     await store.create(record);
+    await notifySecurityEvent({
+      email: options.email,
+      mailFrom: options.mailFrom,
+      to: typeof account.email === "string" ? account.email : "",
+      event: "share-link-created",
+      deviceName: options.deviceName,
+      happenedAt: new Date(now).toISOString(),
+    });
     return json({ ok: true, share: shareRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
@@ -1264,8 +1273,8 @@ function shareHeaders(path, contentType, extra = {}) {
  * @param {Request} request
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
- * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{id: string, name: string, email?: string|null}|null} account the signed-in account, or null when signed out
+ * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, email?: unknown, mailFrom?: string, deviceName?: string}} [options]
  */
 export async function handleRequestRequest(request, files, links, account, options = {}) {
   if (!account) {
@@ -1333,6 +1342,14 @@ export async function handleRequestRequest(request, files, links, account, optio
       maxBytes: sized.maxBytes,
     });
     await store.create(record);
+    await notifySecurityEvent({
+      email: options.email,
+      mailFrom: options.mailFrom,
+      to: typeof account.email === "string" ? account.email : "",
+      event: "upload-request-created",
+      deviceName: options.deviceName,
+      happenedAt: new Date(now).toISOString(),
+    });
     return json({ ok: true, request: requestRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {

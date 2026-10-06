@@ -70,6 +70,14 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "security-event") {
+    return {
+      event: "agent-key-minted",
+      deviceName: "office laptop",
+      happenedAt: "2026-10-06T09:00:00.000Z",
+      replyTo: REPLY_TO,
+    };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 
