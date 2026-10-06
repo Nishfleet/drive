@@ -118,6 +118,20 @@ var messageTable = map[string][2]string{
 		"The drive's api refused the request.",
 		"Run `drive init` again; if it repeats, run `drive status` and keep its output.",
 	},
+	// The api Worker answered 426: this build is older than the minimum
+	// version the deployment still serves (drive#560). The fix is one exact
+	// command, so it is a CLI-shaped entry.
+	"cli-too-old": {
+		"This drive is too old for the server it talks to.",
+		"Run drive update to get the current version, then run the command again.",
+	},
+	// `drive update` landed but the mount did not come back (drive#560). The
+	// mount may still be the old binary, or it may be down after an unmount
+	// that did not remount, so the words name the one fact both share.
+	"update-restart": {
+		"Drive updated, but its mount did not restart, so this machine is not yet serving the new drive.",
+		"Run `drive status` to see the mount, then `drive mount` to start it.",
+	},
 	"api-down": {
 		"The drive's api is not answering right now.",
 		"Wait a few minutes and run the command again.",

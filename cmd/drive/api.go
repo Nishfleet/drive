@@ -1,8 +1,26 @@
 package main
 
 import (
+	"fmt"
+	"runtime"
 	"strings"
+
+	"github.com/Nishfleet/drive/internal/api"
 )
+
+// userAgent is what every drive request to the api names itself with:
+// drive/<version> (<os>/<arch>). The api Worker reads the version out
+// of it and answers 426 with the update sentence when the version is
+// below the deployment's configured minimum (drive#560), so an api
+// shape change under an old CLI names the fix instead of surfacing as
+// an unreadable answer. Go's own default ("Go-http-client/1.1")
+// carries no version, which is why the header is set by hand on every
+// request this client sends.
+func userAgent() string {
+	return fmt.Sprintf("drive/%s (%s/%s)", versionText(), runtime.GOOS, runtime.GOARCH)
+}
+
+func init() { api.SetUserAgent(userAgent) }
 
 // resolveAPIBase is --api / DRIVE_API_URL, then the apiBase `drive login`
 // wrote, then the live site when this device already holds a token. Empty

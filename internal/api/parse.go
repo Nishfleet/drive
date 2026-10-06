@@ -58,6 +58,12 @@ func FailureKind(err error) string {
 		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
 			return "key-revoked"
 		}
+		// 426 Upgrade Required is the api Worker's version gate (drive#560):
+		// this build is below the deployment's minimum, and the fix is one
+		// command, so it gets its own words instead of api-refused's.
+		if strings.Contains(apiErr.Status, "426") {
+			return "cli-too-old"
+		}
 		return "api-refused"
 	}
 	return "offline"

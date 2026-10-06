@@ -32,6 +32,26 @@ func SetFail(fn func(kind string, detail error, args ...string) error) {
 	wrapFail = fn
 }
 
+// userAgentHeader is the User-Agent this client sends, or "" when the caller
+// set none. The api Worker reads the CLI version out of it and answers 426 with
+// the update sentence when the build is below the deployment's configured
+// minimum (drive#560), so a shape change under an old CLI names the fix
+// instead of surfacing as an unreadable answer. Go's own default
+// ("Go-http-client/1.1") carries no version, which is why it is set by hand.
+// The value is built in cmd/drive, which owns the version.
+var userAgentHeader func() string
+
+// SetUserAgent points the client at the header builder. cmd/drive passes
+// userAgent(), which knows the CLI's own version.
+func SetUserAgent(fn func() string) { userAgentHeader = fn }
+
+func userAgent() string {
+	if userAgentHeader == nil {
+		return ""
+	}
+	return userAgentHeader()
+}
+
 // The api Worker's routes, in one place, so a path cannot drift between the
 // calls that use it.
 const (
@@ -150,6 +170,9 @@ func (c *Client) do(method, path string, body, out any) error {
 	}
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
+	}
+	if ua := userAgent(); ua != "" {
+		request.Header.Set("user-agent", ua)
 	}
 	client := c.HTTP
 	if client == nil {
@@ -339,7 +362,7 @@ func (c *Client) ClearQueueReport() error {
 // token was already dead (revoked or expired), which is the state logout is
 // trying to reach; it is not an error. Any other non-2xx is a real failure.
 func (c *Client) RevokeDeviceToken() error {
-	resp, err := c.doRaw(http.MethodDelete, deviceTokenPath, nil)
+	resp, err := c.DoRaw(http.MethodDelete, deviceTokenPath, nil)
 	if err != nil {
 		return err
 	}
@@ -376,7 +399,7 @@ func (c *Client) RevokeDeviceToken() error {
 // nothing happened. Any non-2xx is a real failure and is reported, so the local
 // half does not run over an account that is still signed in everywhere.
 func (c *Client) RevokeAllKeys() error {
-	resp, err := c.doRaw(http.MethodDelete, keysPath, nil)
+	resp, err := c.DoRaw(http.MethodDelete, keysPath, nil)
 	if err != nil {
 		return err
 	}
@@ -388,13 +411,13 @@ func (c *Client) RevokeAllKeys() error {
 	return nil
 }
 
-// doRaw is like do but returns the raw HTTP response without trying to
+// DoRaw is like do but returns the raw HTTP response without trying to
 // unmarshal a body. Used where the caller must handle specific status codes
 // (e.g. 401 meaning "already dead"). The Authorization header is set by the
 // caller and MUST NEVER BE LOGGED (fleet-ops secret-leak rule: a request
 // header containing a bearer token is never printed, so no middleware or
 // debug logger may capture the request).
-func (c *Client) doRaw(method, path string, body any) (*http.Response, error) {
+func (c *Client) DoRaw(method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -412,6 +435,9 @@ func (c *Client) doRaw(method, path string, body any) (*http.Response, error) {
 	}
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
+	}
+	if ua := userAgent(); ua != "" {
+		request.Header.Set("user-agent", ua)
 	}
 	client := c.HTTP
 	if client == nil {

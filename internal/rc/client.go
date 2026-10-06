@@ -90,9 +90,13 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]stri
 	// method name and the loop's own constants.
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, c.Binary, args...)
-	cmd.Stderr = nil
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	b, err := cmd.Output()
 	if err != nil {
+		if msg := rcErrorCause(stderr.String()); msg != "" {
+			return fmt.Errorf("rclone rc %s: %s: %w", method, msg, err)
+		}
 		return fmt.Errorf("rclone rc %s: %w", method, err)
 	}
 	if err := json.Unmarshal(b, out); err != nil {
@@ -448,7 +452,60 @@ func (c *Client) RemoteHas(ctx context.Context, name string) (bool, error) {
 	return string(reply.Item) != "null", nil
 }
 
-// remoteHash is the md5 of the object at the plain path, and "" when
+// isRemoteMissing reports a path rclone does not have yet: a listing or
+// stat of a prefix that has never been written is "no files", not a
+// failed pass.
+func isRemoteMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "directory not found")
+}
+
+// ParentContents names the files one folder of the remote holds. The
+// folder is asked for first (operations/stat): a folder that is not
+// there yet holds no paths and that is an answer, because the first
+// save into a new folder queues before rclone has created the folder
+// in storage. The listing itself is rclone's operations/list, which
+// names files at that one level — the level the saves in it live at.
+func (c *Client) ParentContents(ctx context.Context, dir string) (map[string]bool, error) {
+	if dir != "" {
+		var statReply struct {
+			Item json.RawMessage `json:"item"`
+		}
+		if err := c.Call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": dir}, &statReply); err != nil {
+			if isRemoteMissing(err) {
+				return map[string]bool{}, nil
+			}
+			return nil, err
+		}
+		if string(statReply.Item) == "null" {
+			return map[string]bool{}, nil
+		}
+	}
+	var reply struct {
+		List []struct {
+			Name  string `json:"Name"`
+			IsDir bool   `json:"IsDir"`
+		} `json:"list"`
+	}
+	if err := c.Call(ctx, "operations/list", map[string]string{"fs": c.fs, "remote": dir}, &reply); err != nil {
+		if isRemoteMissing(err) {
+			return map[string]bool{}, nil
+		}
+		return nil, err
+	}
+	present := make(map[string]bool, len(reply.List))
+	for _, entry := range reply.List {
+		if !entry.IsDir {
+			present[entry.Name] = true
+		}
+	}
+	return present, nil
+}
+
+// RemoteHash is the md5 of the object at the plain path, and "" when
 // there is no object there. Existence is asked first: operations/hashsum
 // on a path that is not there is an error, and a save that lands where
 // nothing was is exactly the case the rule has to name, so "no object" is
@@ -593,6 +650,9 @@ func splitHashLine(line string) (hash, path string, ok bool) {
 	return trimmed[:i], strings.TrimSpace(trimmed[i+1:]), true
 }
 
+// RemoteBase is the last segment of a '/'-separated remote path.
+func RemoteBase(name string) string { return remoteBase(name) }
+
 // remoteBase is the last segment of a '/'-separated remote path.
 func remoteBase(name string) string {
 	if i := strings.LastIndex(name, "/"); i >= 0 {
@@ -601,15 +661,41 @@ func remoteBase(name string) string {
 	return name
 }
 
-// copyLocalToRemote copies one staged file into the mount's own
-// remote with rclone's own copy operation: the object store already
+// rcErrorCause is one short line of rclone's stderr, so a listing of a
+// prefix that is not there yet can be told from a dead remote control
+// without printing a backend dump.
+func rcErrorCause(stderr string) string {
+	msg := strings.TrimSpace(stderr)
+	if msg == "" {
+		return ""
+	}
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	const max = 200
+	if len(msg) > max {
+		return msg[:max]
+	}
+	return msg
+}
+
+// CopyLocalToRemote copies one file this device can read into the mount's
+// own remote with rclone's own copy operation: the object store already
 // holds the upload path and the credentials, and rclone is already
 // the thing that talks to it, so this is not a second way to write
-// to storage.
-func (c *Client) CopyLocalToRemote(ctx context.Context, stagingRoot, srcRemote, dstRemote string) error {
+// to storage. srcRemote is relative to srcRoot, which for a
+// conflict copy is this device's own mount.
+func (c *Client) CopyLocalToRemote(ctx context.Context, srcRoot, srcRemote, dstRemote string) error {
+	srcFs := srcRoot
+	if filepath.IsAbs(srcRoot) {
+		// Force the local backend. rclone's cache folder is named
+		// drive{XXXX} when the remote has extra config, and `{XXXX}`
+		// is also rclone's connection-string config syntax.
+		srcFs = ":local:" + srcRoot
+	}
 	var reply map[string]any
 	return c.Call(ctx, "operations/copyfile", map[string]string{
-		"srcFs":     stagingRoot,
+		"srcFs":     srcFs,
 		"srcRemote": srcRemote,
 		"dstFs":     c.fs,
 		"dstRemote": dstRemote,

@@ -165,6 +165,9 @@ func (c *rcClient) remoteHas(ctx context.Context, name string) (bool, error) {
 func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) {
 	return c.RemoteHash(ctx, name)
 }
+func (c *rcClient) parentContents(ctx context.Context, dir string) (map[string]bool, error) {
+	return c.ParentContents(ctx, dir)
+}
 func (c *rcClient) remoteVersion(ctx context.Context, name string) (int64, time.Time, bool, error) {
 	return c.RemoteVersion(ctx, name)
 }
@@ -190,6 +193,7 @@ func matchHashSum(lines []string, name string) (string, error) {
 func sameVersion(size int64, modTime time.Time, stagedSize int64, stagedMtime time.Time) bool {
 	return rc.SameVersion(size, modTime, stagedSize, stagedMtime)
 }
+func remoteBase(name string) string { return rc.RemoteBase(name) }
 
 func mountRCClient(home string) (*rcClient, error) {
 	binary, err := ResolveRclone("")

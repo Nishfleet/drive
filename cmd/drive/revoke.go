@@ -96,6 +96,7 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 		return fmt.Errorf("build POST %s: %w", RevokePath, err)
 	}
 	req.SetBasicAuth(pair.AccessKeyID, pair.SecretKey)
+	req.Header.Set("user-agent", userAgent())
 	req.ContentLength = 0 // an empty body: the key is in the header and nowhere else
 	resp, err := client.Do(req)
 	if err != nil {
