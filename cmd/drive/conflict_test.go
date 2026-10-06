@@ -583,11 +583,16 @@ func TestConflictGuardNamesWhenClaimSourceChanged(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mountDir, "report.txt"), []byte("changed under the mount\n"), 0o644); err != nil {
+	save := g.seen["report.txt"]
+	src := save.holdPath
+	if src == "" {
+		src = filepath.Join(mountDir, "report.txt")
+	}
+	if err := os.WriteFile(src, []byte("changed under the mount\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f.clobber = true
-	_, err := g.claim(context.Background(), f, "report.txt", g.seen["report.txt"])
+	_, err := g.claim(context.Background(), f, "report.txt", save)
 	if !errors.Is(err, errClaimSourceChanged) {
 		t.Fatalf("claim = %v, want the named skip for a source that changed", err)
 	}
@@ -643,13 +648,13 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 
 	// A wave of 300 lands as this device's own wins: each needs its
 	// conflictWinPolls polls, a hundred per pass, so the wave takes about
-	// sixty passes.
+	// 120 passes (40 polls × 3 batches of 100).
 	const wave = 300
 	for i := 0; i < wave; i++ {
 		f.objects[name(i)] = md5Hex(body)
 	}
 	f.pending = f.pending[wave:]
-	for range 80 {
+	for range 160 {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("pass %d in the win wave: %v", passes, err)
 		}
@@ -898,6 +903,113 @@ func TestConflictGuardLeavesAWinningSaveAlone(t *testing.T) {
 	}
 }
 
+// TestConflictGuardKeepsASaveWhenTheOtherUploadRetries is the same-instant
+// case rclone actually produces: this device's PUT lands, the other device's
+// PUT is refused as "corrupted on transfer: sizes differ" and retried 10s
+// later. Twenty polls is that 10s, so an overwrite after 20 polls is the
+// retry landing; the guard must still write the conflict copy.
+func TestConflictGuardKeepsASaveWhenTheOtherUploadRetries(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved-first\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 26}}
+	f.objects["report.txt"] = "nothing-here-yet"
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("A-this-device-saved-first\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the save landed: %v", err)
+	}
+	for range 20 {
+		if _, err := g.pass(context.Background(), f); err != nil {
+			t.Fatalf("pass during the rclone retry wait: %v", err)
+		}
+	}
+	if len(g.seen) != 1 {
+		t.Fatalf("the guard already dropped the path after 20 polls, so a 10s rclone retry would lose the save")
+	}
+	f.objects["report.txt"] = md5Hex("B-the-other-device-retried\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the retried upload landed: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]", f.copied, want)
+	}
+	if got := f.objects[want]; got != md5Hex("A-this-device-saved-first\n") {
+		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
+	}
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardKeepsASaveWhenHashsumStillNamesTheVFSCache is the
+// same-instant rclone retry as seen from this device: operations/hashsum
+// still names this device's bytes (it hashed the VFS cache) after the
+// other PUT has landed, but the object in storage is a different length.
+func TestConflictGuardKeepsASaveWhenHashsumStillNamesTheVFSCache(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved-first\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 26}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	body := "A-this-device-saved-first\n"
+	f.objects["report.txt"] = md5Hex(body)
+	f.versions["report.txt"] = objectVersion{size: int64(len(body)), modTime: time.Now()}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the save landed: %v", err)
+	}
+	f.versions["report.txt"] = objectVersion{size: int64(len(body)) + 3, modTime: time.Now()}
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the remote size changed: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s] (hashsum still named this device, size did not)", f.copied, want)
+	}
+	if got := f.objects[want]; got != md5Hex(body) {
+		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
+	}
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardClaimsFromHoldAfterMountIsOverwritten proves the snapshot
+// taken at sight is what gets copied: rclone can replace the VFS cache with
+// the other device's bytes before the guard claims, and the earlier save
+// must still survive.
+func TestConflictGuardClaimsFromHoldAfterMountIsOverwritten(t *testing.T) {
+	g, mountDir, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved-first\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 26}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	if g.seen["report.txt"] == nil || g.seen["report.txt"].holdPath == "" {
+		t.Fatal("the save was not snapshotted at sight")
+	}
+	if err := os.WriteFile(filepath.Join(mountDir, "report.txt"), []byte("B-now-on-this-mount\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-now-on-this-mount\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the mount was overwritten: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if got := f.objects[want]; got != md5Hex("A-this-device-saved-first\n") {
+		t.Errorf("the conflict copy holds %q, want the bytes snapshotted at sight", got)
+	}
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
 // TestConflictGuardKeepsASaveThatLandsSecondsLater proves the case a
 // same-instant proof cannot see. A device's own save has already landed, so
 // the plain path holds its bytes, and the other device's save lands on top
@@ -967,9 +1079,11 @@ func TestConflictGuardRehashesTheBytesTheUploadWillCarry(t *testing.T) {
 	if err := os.WriteFile(path, []byte("second write\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The other device's save lands on top, and the conflict copy is the
-	// bytes this device will actually upload — the re-hash at the decision
-	// is what keeps the newer write.
+	// Re-hash while the upload is still queued: those are the bytes the
+	// write-back will carry.
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the second write: %v", err)
+	}
 	f.pending = nil
 	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
 	if _, err := g.pass(context.Background(), f); err != nil {

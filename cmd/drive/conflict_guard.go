@@ -25,10 +25,11 @@ import (
 //      not taken yet. A path there is a save in flight. The pass
 //      takes up to conflictSightMax saves it has not seen before
 //      and hashes each one straight out of the VFS cache file the
-//      bytes live in — no second copy is written anywhere — and
-//      reads what the plain path held before from one listing of
-//      the save's folder. A drop bigger than the bound is taken
-//      pass after pass, where the last pass stopped.
+//      bytes live in, then keeps a hold snapshot of those bytes so
+//      a later claim can copy them after rclone drops the cache as
+//      stale. It also reads what the plain path held before from
+//      one listing of the save's folder. A drop bigger than the
+//      bound is taken pass after pass, where the last pass stopped.
 //   2. A path that leaves the queue has landed. The pass polls up
 //      to conflictPollMax landed paths, oldest first, and again
 //      resumes where it stopped. For each, the object's hash at the
@@ -101,10 +102,13 @@ const conflictClaimPolls = 20
 // save was not overwritten. Another device's upload can land on top of
 // this one for the whole of one sync window after it: a save made two
 // seconds later still has its five-second write-back to land on top of an
-// upload that landed a moment ago. The plain path is polled every
-// conflictInterval, so conflictWinPolls polls cover that window with
-// margin for rclone's own scheduling.
-const conflictWinPolls = 20
+// upload that landed a moment ago. A same-instant PUT can also miss that
+// window entirely: rclone refuses it as "corrupted on transfer: sizes
+// differ" and retries 10s later, and a win declared before that retry
+// leaves the earlier save with no copy (TestTwoDevicesKeepBothSaves).
+// The plain path is polled every conflictInterval, so 40 polls are 20s:
+// the 5s write-back, the 10s retry, and margin for rclone's scheduling.
+const conflictWinPolls = 40
 
 // conflictHashFailPolls is how many remote-hash failures one path may
 // take after it leaves the queue before the skip is named. Holding
@@ -182,6 +186,12 @@ type pendingSave struct {
 	// known, a version that is not this device's is not claimed as a
 	// conflict, and a save that leaves the queue still unknown is named.
 	baselineUnknown bool
+	// holdPath is a snapshot of this device's bytes, taken when the
+	// save was hashed. rclone can remove the VFS cache file as stale
+	// once another device's PUT has landed, so the claim copies from
+	// this snapshot rather than from a mount that no longer holds
+	// the save.
+	holdPath string
 }
 
 // conflictBackend is what one guard pass needs from a running mount.
@@ -275,11 +285,11 @@ type conflictGuard struct {
 	synced   map[string]string // last-synced fingerprint per path
 }
 
-// newConflictGuard builds the guard for one mount. The guard keeps
-// no bytes of its own: the identity of this device's save is its
-// hash, taken straight out of the VFS cache file the bytes live in,
-// and the bytes themselves are read again through the same mount
-// only when a conflict copy has to be written.
+// newConflictGuard builds the guard for one mount. The identity of
+// this device's save is its hash, taken straight out of the VFS cache
+// file the bytes live in. A hold snapshot of those bytes is kept until
+// the save is decided, because rclone can drop the cache file as stale
+// once another device's PUT has landed.
 func newConflictGuard(device, mountDir string) *conflictGuard {
 	return &conflictGuard{
 		device:   device,
@@ -440,6 +450,9 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	}
 	g.order, g.cursor = retireFinished(g.order, finished, next)
 	for _, name := range finished {
+		if s := g.seen[name]; s != nil {
+			s.dropHold()
+		}
 		delete(g.seen, name)
 	}
 	if len(res.Claimed) > 0 {
@@ -559,6 +572,7 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 		return nil, ConflictSkip{}, err
 	}
 	save.previous, save.baselineUnknown = previous, unknown
+	save.holdPath = g.snapshotSave(name, hash)
 	return save, ConflictSkip{}, nil
 }
 
@@ -567,21 +581,6 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 // claim. drop says the path is finished and leaves the watch list;
 // skip names a save the rule found it could not protect.
 func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name string, save *pendingSave) (drop bool, skip *ConflictSkip, copy *ConflictCopy, err error) {
-	if !save.byFingerprint && g.mountChanged(name, save) {
-		// The bytes the upload will carry are the bytes on this
-		// device's mount at upload time, so a save written again
-		// before the upload fires is re-hashed on change, lest the
-		// decision be made against an older version than the one
-		// that landed. One stat per decided path, and a full read
-		// only when the stat moved.
-		reason, err := g.rehash(name, save)
-		if err != nil {
-			return false, nil, nil, err
-		}
-		if reason != "" {
-			return true, &ConflictSkip{Remote: name, Reason: reason}, nil, nil
-		}
-	}
 	save.polls++
 	landed, err := b.remoteHash(ctx, name)
 	if err != nil {
@@ -618,9 +617,18 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// This device's save is the one that landed. An overwrite can
 		// still land on top of it for the whole sync window after it,
 		// because the other device's own write-back timer has not fired
-		// yet, so the guard does not declare a win the moment it sees
-		// its own bytes: it watches for conflictWinPolls polls and only
-		// then drops the entry.
+		// yet, or because rclone refused that PUT as a size mismatch and
+		// will retry it in 10s, so the guard does not declare a win the
+		// moment it sees its own bytes: it watches for conflictWinPolls
+		// polls and only then drops the entry.
+		//
+		// operations/hashsum on the mount's remote control can still
+		// name this device's VFS cache after the other PUT has landed,
+		// so the object's size is the check that cannot be fooled by
+		// that cache: a different length is the retried overwrite.
+		if size, _, ok, vErr := b.remoteVersion(ctx, name); vErr == nil && ok && size > 0 && save.stat.size > 0 && size != save.stat.size {
+			return g.keepLosingSave(ctx, b, name, save, landed)
+		}
 		save.winPolls++
 		if save.winPolls >= conflictWinPolls {
 			g.synced[name] = landed
@@ -651,21 +659,35 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		}
 		return false, nil, nil, nil
 	default:
-		// The plain path holds a version that is neither this
-		// device's bytes nor the version that preceded the save:
-		// the other device's save landed. The conflict copy is
-		// written from the bytes this device's mount serves now, so
-		// the bytes are verified once more before anything is
-		// written: a hash that is still this device's save is
-		// claimed, and a save whose bytes this machine no longer
-		// holds is named, because there is nothing left to write.
-		if save.byFingerprint {
-			g.synced[name] = landed
-			return true, &ConflictSkip{
-				Remote: name,
-				Reason: "the file is compared by size and time and a copy could not be kept",
-			}, nil, nil
+		return g.keepLosingSave(ctx, b, name, save, landed)
+	}
+}
+
+// keepLosingSave writes this device's bytes under the conflict name, because
+// the plain path now holds another device's save.
+func (g *conflictGuard) keepLosingSave(ctx context.Context, b conflictBackend, name string, save *pendingSave, landed string) (bool, *ConflictSkip, *ConflictCopy, error) {
+	if save.byFingerprint {
+		g.synced[name] = landed
+		return true, &ConflictSkip{
+			Remote: name,
+			Reason: "the file is compared by size and time and a copy could not be kept",
+		}, nil, nil
+	}
+	info, statErr := g.mountStat(name)
+	if errors.Is(statErr, os.ErrNotExist) {
+		skip := fmt.Sprintf("the save is no longer on this machine, so its bytes cannot be kept: %v", statErr)
+		return true, &ConflictSkip{Remote: name, Reason: skip}, nil, nil
+	}
+	if statErr == nil && info.size > conflictProtectMax {
+		skip := fmt.Sprintf("%d bytes is over the %d-byte protection cap", info.size, conflictProtectMax)
+		return true, &ConflictSkip{Remote: name, Reason: skip}, nil, nil
+	}
+	if save.holdPath != "" {
+		if _, err := os.Stat(save.holdPath); err != nil {
+			save.dropHold()
 		}
+	}
+	if save.holdPath == "" {
 		mountHash, err := g.hashMountFile(name)
 		if errors.Is(err, errProtectTooLarge) {
 			skip := fmt.Sprintf("the save grew past the %d-byte protection cap while it was claimed", conflictProtectMax)
@@ -681,16 +703,16 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		if mountHash != save.hash {
 			return true, &ConflictSkip{Remote: name, Reason: conflictSkipSourceChanged}, nil, nil
 		}
-		claim, err := g.claim(ctx, b, name, save)
-		if errors.Is(err, errClaimSourceChanged) {
-			return true, &ConflictSkip{Remote: name, Reason: conflictSkipSourceChanged}, nil, nil
-		}
-		if err != nil {
-			return false, nil, nil, err
-		}
-		g.synced[name] = landed
-		return true, nil, &claim, nil
 	}
+	claim, err := g.claim(ctx, b, name, save)
+	if errors.Is(err, errClaimSourceChanged) {
+		return true, &ConflictSkip{Remote: name, Reason: conflictSkipSourceChanged}, nil, nil
+	}
+	if err != nil {
+		return false, nil, nil, err
+	}
+	g.synced[name] = landed
+	return true, nil, &claim, nil
 }
 
 // hashFailed counts one failed read of a landed save's remote version and,
@@ -727,6 +749,8 @@ func (g *conflictGuard) rehash(name string, save *pendingSave) (string, error) {
 		return "", fmt.Errorf("conflict: read %s from the mount: %w", name, err)
 	}
 	save.stat, save.hash = info, hash
+	save.dropHold()
+	save.holdPath = g.snapshotSave(name, hash)
 	return "", nil
 }
 
@@ -746,7 +770,10 @@ func (g *conflictGuard) claim(ctx context.Context, b conflictBackend, path strin
 		if err != nil {
 			return ConflictCopy{}, fmt.Errorf("conflict: %w", err)
 		}
-		src := g.sourceFile(path)
+		src := save.holdPath
+		if src == "" {
+			src = g.sourceFile(path)
+		}
 		if src == "" {
 			return ConflictCopy{}, errClaimSourceChanged
 		}
@@ -760,12 +787,7 @@ func (g *conflictGuard) claim(ctx context.Context, b conflictBackend, path strin
 		if kept == save.hash {
 			return ConflictCopy{Remote: name, LosingPath: path, Device: g.device}, nil
 		}
-		srcHash, srcErr := g.hashMountFile(path)
-		if srcErr != nil || srcHash != save.hash {
-			// The name holds another writer's bytes, and this device
-			// no longer serves the save it hashed: retrying would
-			// copy the other device's bytes under this device's
-			// conflict names. Name the loss instead.
+		if srcHash, srcErr := hashPath(src); srcErr != nil || srcHash != save.hash {
 			return ConflictCopy{}, errClaimSourceChanged
 		}
 		if index >= conflictCopyLimit {
@@ -977,6 +999,69 @@ func (g *conflictGuard) hashMountFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+func hashPath(path string) (string, error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	// nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-md5
+	h := md5.New()
+	if _, err := io.Copy(h, in); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (s *pendingSave) dropHold() {
+	if s == nil || s.holdPath == "" {
+		return
+	}
+	_ = os.Remove(s.holdPath)
+	s.holdPath = ""
+}
+
+// snapshotSave copies the bytes just hashed into a file the guard owns, so a
+// later claim can still write them after rclone has dropped the VFS cache
+// copy as stale.
+func (g *conflictGuard) snapshotSave(name, hash string) string {
+	src := g.sourceFile(name)
+	if src == "" {
+		return ""
+	}
+	dir := g.cacheDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	dir = filepath.Join(dir, "conflict-hold")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	prefix := "h-"
+	if len(hash) >= 8 {
+		prefix = "h-" + hash[:8] + "-"
+	}
+	out, err := os.CreateTemp(dir, prefix)
+	if err != nil {
+		return ""
+	}
+	dst := out.Name()
+	in, err := os.Open(src)
+	if err != nil {
+		out.Close()
+		os.Remove(dst)
+		return ""
+	}
+	defer in.Close()
+	_, err = io.Copy(out, in)
+	closeErr := out.Close()
+	if err != nil || closeErr != nil {
+		os.Remove(dst)
+		return ""
+	}
+	return dst
+}
+
 // errNoCacheFile is a save whose bytes are not in the VFS cache yet, or
 // have been evicted. The pass leaves it unseen so the next pass can
 // hash it; it is not a failure of the other saves in the same queue.
@@ -1183,8 +1268,8 @@ func (c *rcClient) remoteFingerprint(ctx context.Context, name string) (string, 
 	}, &reply); err != nil {
 		return "", err
 	}
-	if md5 := reply.Item.Hashes["MD5"]; md5 != "" {
-		return md5, nil
+	if md5sum := reply.Item.Hashes["MD5"]; md5sum != "" {
+		return md5sum, nil
 	}
 	if reply.Item.ID != "" {
 		return "etag:" + reply.Item.ID, nil
