@@ -411,7 +411,15 @@ test("the scoreboard carries the Windows row and the docs gain the installer", (
   assert.match(cells[5], /#154/, "and it names the issue that will produce the figure");
   // The docs pages a person reads must say the same thing, so the site cannot
   // claim a Windows installer that has not shipped.
-  asserts("docs-site/limits.md", /Windows installs with an MSI/, "the limits page names the MSI");
+  // drive#776: the wording changed from "Windows installs with an MSI" to a
+  // bullet whose first sentence says both things at once. What is held is the
+  // meaning, not the old words: the page names the MSI, says its builds are
+  // unsigned, and says Windows is out of version 1 rather than offering it.
+  asserts(
+    "docs-site/limits.md",
+    /Windows is not in version 1[^*]*unsigned MSI|unsigned MSI[^*]*not in version 1/,
+    "the limits page says Windows is out of version 1 and its installer is an unsigned MSI",
+  );
   asserts("docs-site/limits.md", /unsigned/, "and says the builds are unsigned");
 });
 
