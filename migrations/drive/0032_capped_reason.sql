@@ -26,16 +26,16 @@
 -- itself on every write -- so it marks nothing, and a row with no reason is a
 -- key nothing has capped by reason.
 --
--- Numbered 0031, the next free prefix, rather than the 0022 this issue first
+-- Numbered 0032, the next free prefix, rather than the 0022 this issue first
 -- proposed: `wrangler d1 migrations apply` walks the directory in a
 -- full-filename sort (test/d1-sqlite.mjs `orderMigrationFiles`), so a file that
 -- sorts BEFORE one already applied makes the deploy refuse, which takes the
 -- whole production deploy down. 0026_signin_address_sends.sql owns 0026,
 -- 0027_device_queue_reports.sql owns 0027, 0029_welcome_sent_at.sql and
--- 0030_branch_jobs.sql are on disk, and 0028 is a gap a new file must not
+-- 0030_branch_jobs.sql and 0031_signin_return.sql are on disk, and 0028 is a gap a new file must not
 -- fill (it would sort before already-applied 0029/0030). drive#619's gate
 -- (test/migrations.test.mjs) fails a new file that shares a prefix with
--- another, so the marker takes 0031 and nothing else can race it.
+-- another, so the marker takes 0032 and nothing else can race it.
 --
 -- The new statement depends on nothing before it wrote: it adds one column to
 -- `devices`, and every earlier file touches another table or another column.
