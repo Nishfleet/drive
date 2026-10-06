@@ -63,4 +63,6 @@ HyperFrames repository (Apache-2.0) instead.
 `assets/gsap-3.14.2.min.js` is GSAP 3.14.2, copied byte for byte (sha256
 `c174bfce…8280`). Its own header keeps the copyright line and points to its
 licence, the GSAP Standard "no charge" License (https://gsap.com/standard-license).
-That licence allows commercial use, and it costs nothing.
+Its terms allow use "at no charge in commercial or non-commercial apps, web
+sites, games, components, and other software as long as end users are not charged
+a fee of any kind". Nobody pays to watch this video, so it fits.
