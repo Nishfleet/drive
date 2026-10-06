@@ -131,7 +131,7 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 	}
 	defer stopStandinProcess(cmd, mountDir)
 	if !waitForMount(t, cmd, mountDir) {
-		t.Skipf("this host will not bring up the mount on %s (%s)", mountDir, mountSkipReason())
+		skipNoMount(t, "this host will not bring up the mount on %s (%s)", mountDir, mountSkipReason())
 	}
 
 	if _, err := KeepOffline(mountDir, "keep.bin"); err != nil {

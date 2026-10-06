@@ -37,9 +37,10 @@ import (
 // It needs a mount. Where the host does not give one the test skips with a
 // message naming this host's own constraint: an unprivileged FUSE mount on
 // Linux (run it inside `unshare -Urm`) or passwordless sudo for the NFS mount
-// on macOS. An rclone that exits before the mount appears is still a real
-// failure. Set DRIVE_STANDIN_SIZE_MB to change the big file's size (default
-// 64).
+// on macOS. Under CI=true that skip is a failure: the runner is built to
+// mount (drive#501). An rclone that exits before the mount appears is still a
+// real failure. Set DRIVE_STANDIN_SIZE_MB to change the big file's size
+// (default 64).
 func TestStandinMountProof(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -262,7 +263,7 @@ func TestStandinPauseProof(t *testing.T) {
 		if !waitForMount(t, cmd, mountDir) {
 			_ = cmd.Process.Signal(os.Interrupt)
 			_ = cmd.Wait()
-			t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+			skipNoMount(t, "this host does not permit an unprivileged FUSE mount on %s; "+
 				"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run StandinPause", mountDir)
 		}
 		return cmd
@@ -649,7 +650,7 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 	stop := func() { stopStandinProcess(cmd, mountDir) }
 	if !waitForMount(t, cmd, mountDir) {
 		stop()
-		t.Skipf("this host will not bring up the mount on %s (%s): the proof needs "+
+		skipNoMount(t, "this host will not bring up the mount on %s (%s): the proof needs "+
 			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
 			"NFS mount", mountDir, mountSkipReason())
 	}
@@ -666,6 +667,18 @@ func mountSkipReason() string {
 	}
 	return "the host does not permit an unprivileged FUSE mount (run it inside a " +
 		"user namespace: unshare -Urm go test ./cmd/drive -run Standin)"
+}
+
+// skipNoMount skips the calling test when this host will not bring up a mount.
+// Under CI=true it fails instead: GitHub's ubuntu runners can mount, so a skip
+// there means the runner is broken, not that the proof is optional (drive#501).
+func skipNoMount(t testing.TB, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("CI") != "" {
+		t.Fatalf("%s: a FUSE skip is a failure under CI=true (drive#501)", msg)
+	}
+	t.Skip(msg)
 }
 
 // stopStandinProcess stops a foreground mount the way the test namespace allows:

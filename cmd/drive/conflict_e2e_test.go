@@ -80,7 +80,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 			if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 				t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 			}
-			t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+			skipNoMount(t, "this host will not bring up the %s mount (%s)", device, mountSkipReason())
 		}
 		return func() { stopStandinProcess(cmd, filepath.Join(home, "Drive")) }
 	}
@@ -252,7 +252,7 @@ func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr s
 		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 			t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 		}
-		t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+		skipNoMount(t, "this host will not bring up the %s mount (%s)", device, mountSkipReason())
 	}
 	return func() { stopStandinProcess(cmd, mountDir) }
 }
