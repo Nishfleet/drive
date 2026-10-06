@@ -1495,11 +1495,8 @@ const handler = {
       context.waitUntil(
         Promise.all(
           batch.messages.map(async (message) => {
-            const body = message.body;
-            const accountId =
-              typeof body === "object" && body !== null && typeof body.accountId === "string"
-                ? body.accountId
-                : "";
+            const body = /** @type {{accountId?: unknown}} */ (message.body);
+            const accountId = typeof body?.accountId === "string" ? body.accountId : "";
             if (accountId === "") {
               console.error("search: a reindex message carried no account id");
               message.ack();

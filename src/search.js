@@ -34,7 +34,7 @@
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly cron, one queue message per
 // account, and never from a request.
-import { fileRow, locate, upsertStatements, deleteStatement } from "../core/file-index.js";
+import { deleteStatement, fileRow, locate, upsertStatements } from "../core/file-index.js";
 import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";

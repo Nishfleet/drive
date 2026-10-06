@@ -2559,7 +2559,11 @@ test("the nightly size row counts the tables once a day, and a retry rewrites th
   assert.equal(sizes.fileVersionRows, 1);
   assert.equal(sizes.fileVersionBytes, GB);
   assert.equal(sizes.usageMinuteRows, 1);
-  assert.equal(sizes.fileIndexRows, 1, "the create's event also upserted the search row (drive#566)");
+  assert.equal(
+    sizes.fileIndexRows,
+    1,
+    "the create's event also upserted the search row (drive#566)",
+  );
 
   // A retried run in the same UTC day rewrites the day's row - the size row
   // is a reading of today, not an event that happened.
