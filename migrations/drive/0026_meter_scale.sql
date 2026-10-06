@@ -4,13 +4,19 @@
 -- rolling the code back, and the old code reads none of these.
 --
 -- Numbered 0025 on drive#519's own PR, which shared the prefix with
--- 0025_link_caps.sql. Applied in filename order, that left the order between
--- the two up to whatever the filesystem returned, so this one moved to the
--- next free number (0026) to be deterministic again (drive#728). The two touch
+-- 0025_link_caps.sql. One file per prefix is this folder's rule
+-- (test/migrations.test.mjs): two files under one number leave every reader
+-- that orders by the number rather than the whole name to break the tie from
+-- whatever order the directory is read in, so the same schema can be built in
+-- two orders on two machines. This one moved to the next free number, 0026,
+-- so the number alone says which file applies first (drive#728). The two touch
 -- nothing of each other's, so the order between them was never load-bearing.
+--
 -- Renumbering makes `wrangler d1 migrations apply` see an unapplied filename
--- and re-run this file, which is why every statement here is idempotent
--- (IF NOT EXISTS on all three): the re-run is a no-op, not a second table.
+-- and re-run this file, which is why all three statements here are
+-- IF NOT EXISTS: the re-run is a no-op, not a second index or table.
+-- 0025_link_caps.sql keeps its number - its ALTER TABLE has no IF NOT EXISTS
+-- to fall back on, so re-running it would fail on a column already there.
 
 -- The live rows the hourly rollup reads every hour. The hourly statements
 -- read live rows (`hidden_at IS NULL`) from this index and recently hidden
