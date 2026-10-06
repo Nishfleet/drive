@@ -18,8 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../core/files.js";
-import worker from "../src/index.js";
+import { createMemoryStore, FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../core/files.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 import { trackProcess } from "./minio-standin.mjs";
@@ -36,10 +36,10 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   skip: existsSync(CHROME) ? false : "Chrome is not installed",
 }, async (t) => {
   // A real account over the real Worker: the D1 test database with the shipped
-  // migrations, one signed-in session, and the same memory store a deployment
-  // without a bucket uses. Nothing here is a stub of the page's API, so the
-  // listing, the preview and the download the browser gets are the routes it
-  // will get.
+  // migrations, one signed-in session, and the in-memory store tests inject
+  // (production never builds that store — drive#505). Nothing here is a stub
+  // of the page's API, so the listing, the preview and the download the
+  // browser gets are the routes it will get.
   const made = createTestAuth();
   const { cookie } = await signIn(made, "click@example.com");
   const env = {
@@ -47,6 +47,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: TEST_SECRET,
     BETTER_AUTH_URL: TEST_BASE_URL,
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const workerFetch =
@@ -341,6 +342,7 @@ test("signed in, the files menu shows Sign out and signing out ends the session"
     BETTER_AUTH_URL: TEST_BASE_URL,
     SIGNIN_RATE_LIMITER: pass,
     SIGNIN_GLOBAL_RATE_LIMITER: pass,
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const workerFetch =

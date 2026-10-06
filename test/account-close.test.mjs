@@ -29,7 +29,7 @@ import {
   purgeOnDate,
   runAccountCloseCron,
 } from "../src/account-close.js";
-import worker from "../src/index.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
@@ -591,6 +591,7 @@ test("GET /api/account/close is account-gated, and a signed-in close writes the 
     BETTER_AUTH_URL: "https://drive.test",
     EMAIL: email,
     MAIL_FROM,
+    [TEST_FILES_STORE]: createFileStore(),
   };
   const status = await workerFetch(
     new Request(`https://drive.test${CLOSE_ENDPOINT}`, { headers: { cookie } }),
