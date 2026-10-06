@@ -99,7 +99,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Share-link content pin (drive#554): shares.etag is the file's storage
   // fingerprint at mint. Expand only, default empty so older rows keep
   // serving by path.
-  "drive/0031_share_etag.sql",
+  "drive/0037_share_etag.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0031_signin_return.sql",
 ]);
 
 /**
@@ -313,8 +317,9 @@ export function createTestD1(options = {}) {
  * point of the flow.
  *
  * (drive#550): `userAgent` is the requesting request's own header, null when
- * there was none, so a test can read what the mail would name.
- * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
  * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */

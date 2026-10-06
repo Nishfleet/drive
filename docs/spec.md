@@ -59,7 +59,7 @@ The first says don't build. The second says if you build, sell to people first. 
 | Headline | "Never more than $12 a TB, then $8" as the ceiling line under the rate; never an "unlimited" plan (Nish, 2026-09-30) |
 | Spending cap | Each account sets one, default $20; storage goes read-only on exceeding the cap, nothing is deleted. Email at 80%. The cap counts min(metered so far, ceiling) (Nish via #464, 2026-10-04) |
 | "You saved" line | Copy varies by month type (Nish via #39, 2026-09-30): capped month (metered > ceiling) "Our price cap saved you $X", X = metered − bill; uncapped month "You paid $X less than a flat plan", X = ceiling − bill. Hidden when X ≤ 0, or when the month's bill is $0 |
-| Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum |
+| Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum. The company UI is later: in version 1 the teams API is the only path to a company drive (`docs/api.md`), where a team is created, a member is invited by email as `read_only` or `read_write`, and removing a member revokes that member's key (drive#20, drive#518) |
 | Snapshots | Paid add-on only |
 | Storage | iDrive e2 as primary — one bucket per customer, each key limited to that bucket (drive#371) — plus a backup copy on a Hetzner Storage Box. Backblaze B2 stays the standby |
 
