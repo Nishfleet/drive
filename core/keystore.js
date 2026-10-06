@@ -31,6 +31,7 @@ import {
   DEVICE_TOKEN_TTL_SECONDS,
   renewDeviceTokenWindow,
 } from "./device-signin.js";
+import { downloadUrlFor, signGrant } from "./grant.js";
 import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
@@ -73,12 +74,14 @@ export {
  * `keyProvider` is where a minted key's credential comes from (build step 1,
  * drive#2). With one, the credential is the storage endpoint's own, scoped by
  * the policy it was minted with, so the endpoint refuses what the key may not
- * do; without one (no storage configured) the credential is the stand-in the
- * api's own storage API verifies. The choice is made once, by the factory.
+ * do. Without one the credential is the stand-in the api's own storage API
+ * verifies — tests call this factory that way; production storeFor refuses to
+ * build a store without a provider (drive#505). The choice is made once, by
+ * the factory.
  * `writesPaused` is the prepaid pause (drive#586): when set, it answers
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off.
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -91,6 +94,7 @@ export function createMemoryStore(options = {}) {
   // the same rule the D1 one enforces (drive#713).
   const providerNamesSessions = keyProvider !== undefined && keyProvider.namesSession === true;
   const storage = options.storage;
+  const download = options.download;
   const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
 
@@ -116,8 +120,9 @@ export function createMemoryStore(options = {}) {
     /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
     let credential;
     if (keyProvider === undefined) {
-      // No storage configured: the stand-in credential the api's own storage
-      // API knows, and nothing outside the Worker has ever seen.
+      // Tests: no storage configured, so the stand-in credential the api's
+      // own storage API knows. Production never reaches this branch
+      // (workers/api/src/index.js storeFor requires a key provider).
       credential = {
         accessKeyId: newId("ak"),
         secret: newId("sk"),
@@ -163,6 +168,16 @@ export function createMemoryStore(options = {}) {
     if (deviceStore !== undefined) {
       await deviceStore.put(device);
     }
+    // The download URL names this key, and only a key on the account's own
+    // folder: the dl Worker serves `u/<id>/…` from the account's bucket, so a
+    // team key (`drv-t-<id>`) gets none rather than one that cannot work.
+    const downloadUrl =
+      download !== undefined && scope.prefix.startsWith(`u/${account.id}/`)
+        ? downloadUrlFor(
+            download.baseUrl,
+            await signGrant(download.secret, { accountId: account.id, keyId }),
+          )
+        : null;
     return {
       keyId,
       accessKeyId: credential.accessKeyId,
@@ -181,6 +196,7 @@ export function createMemoryStore(options = {}) {
       // reach, and so drive#462's regression — a mint that named no bucket at
       // all — is visible in every answer rather than only in the policy.
       bucket: scope.bucket,
+      downloadUrl,
     };
   }
 
@@ -220,6 +236,17 @@ export function createMemoryStore(options = {}) {
      */
     async approveDeviceCode(userCode, account) {
       return signin.approveDeviceCode(userCode, account);
+    },
+
+    /**
+     * The device a code belongs to, for the approve page's intro (drive#558);
+     * the page reads it from whichever store the route was built with, so this
+     * stand-in forwards to the same inner store the other device methods do.
+     * @param {string} userCode
+     * @returns {Promise<{name: string}|null>}
+     */
+    async describeUserCode(userCode) {
+      return signin.describeUserCode(userCode);
     },
 
     /**

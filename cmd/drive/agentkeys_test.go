@@ -120,6 +120,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Endpoint:     "http://127.0.0.1:39181",
 			Bucket:       "drive-standin",
 			Region:       "us-east-1",
+			DownloadURL:  "https://dl.example.test/k/grant_" + body.Name + "/",
 		}
 		f.keys[key.KeyID] = key
 		writeTestJSON(w, 201, key)

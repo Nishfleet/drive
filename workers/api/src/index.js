@@ -5,7 +5,11 @@ import { authFor } from "../../../core/auth.js";
 import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
 import { createD1DeviceStore } from "../../../core/devices.js";
 import { bearerToken, errorResponse } from "../../../core/http.js";
-import { keyProviderFor, storageLocationFromEnv } from "../../../core/keyprovider-env.js";
+import {
+  downloadFromEnv,
+  keyProviderFor,
+  storageLocationFromEnv,
+} from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
 import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
@@ -13,11 +17,17 @@ import { createD1QueueStore } from "../../../core/queues.js";
 import { signedInAccount } from "../../../core/status.js";
 import { createD1TeamStore } from "../../../core/teams.js";
 import { routes } from "./routes.js";
+import { cliTooOld } from "./versiongate.js";
 
 // Kept as a named export of this entry: it was one before the provider choice
 // moved to keyprovider-env.js, and an importer of this Worker's entry should
 // keep answering the same way (drive#497).
 export { storageLocationFromEnv };
+
+/** Tests that need the in-memory key store pass it on env; production never does. */
+export const TEST_KEY_STORE = Symbol("drive.testKeyStore");
+/** One missing-config line per isolate env, not per request. */
+const missingApiStoreLogged = new WeakSet();
 
 /**
  * What a route in the registry carries. Shared with routes.js so the registry
@@ -25,19 +35,21 @@ export { storageLocationFromEnv };
  * than imported) so neither module has to import the other to be read.
  * @typedef {{method: string, path: string, auth?: "public"|"account", handler: Function}} Route
  *
- * The stand-in key store this Worker hands its routes.
+ * The key store this Worker hands its routes.
  * @typedef {ReturnType<typeof createMemoryStore>} KeyStore
  *
- * What a handler gets besides the request. `store` is the stand-in key store
- * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
- * because a deployment without them answers its closed door rather than
- * pretending to hold keys. `accounts` is the sign-in flow's Better Auth
- * instance (core/auth.js `authFor`), read through core/status.js
- * `signedInAccount` for the browser half of a device approval; a deployment
- * with no database, secret or address has no instance and stays signed out.
- * `queues` is the D1-backed upload-queue report store (queues.js), or null
- * where no database is bound: the queue report route refuses rather than
- * answering as though it had stored a row.
+ * What a handler gets besides the request. `store` is the key store the
+ * deployment can actually serve — D1 plus a real key provider — and `db` the
+ * Worker's D1 binding. A deployment missing DRIVE_DB, a storage endpoint or a
+ * key provider answers 503 at fetch rather than minting stand-in credentials
+ * that vanish with the isolate (drive#505). Tests that need the in-memory
+ * stand-in import createMemoryStore themselves and pass it to dispatch.
+ * `accounts` is the sign-in flow's Better Auth instance (core/auth.js `authFor`),
+ * read through core/status.js `signedInAccount` for the browser half of a device
+ * approval; a deployment with no database, secret or address has no instance
+ * and stays signed out. `queues` is the D1-backed upload-queue report store
+ * (queues.js), or null where no database is bound: the queue report route
+ * refuses rather than answering as though it had stored a row.
  * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL, queues?: ReturnType<typeof import("../../../core/queues.js").createD1QueueStore>|null}} Ctx
  *
  * The per-request value Hono's context carries. `account` is resolved once by
@@ -176,6 +188,19 @@ function callHandler(route, c) {
 export function createApp(table = routes) {
   /** @type {Hono<{Bindings: Ctx, Variables: ApiVariables}>} */
   const app = new Hono({ strict: false });
+
+  // The version gate (drive#560), first so an old CLI is told to update
+  // before it is asked for credentials it can already produce: it reads the
+  // version out of the request's own User-Agent and answers 426 with the
+  // message table's cli-too-old words when the version is below this
+  // deployment's floor. Requests that name no drive version — a health
+  // probe, a browser on a device approval page — pass through untouched.
+  app.use("*", async (c, next) => {
+    if (cliTooOld(c.req.header("user-agent"), c.env.env)) {
+      return errorResponse(426, failureMessage("cli-too-old"), { upgrade: "drive" });
+    }
+    await next();
+  });
 
   // The account is resolved once per request from the request's own
   // credentials (drive#55, drive#136), never trusted from the context: a CLI
@@ -375,9 +400,8 @@ export async function dispatch(request, ctx, table = routes) {
 }
 
 // One key store per Worker isolate, the same choice src/index.js makes for the
-// Web Files bytes: the stand-in holds what this isolate minted, and the real
-// one (D1 plus the storage provider, build step 1) replaces this factory with
-// the same methods, so no route changes.
+// Web Files bytes: D1 plus the storage provider, built once per isolate so no
+// route changes. A missing production dependency is a 503, not a second store.
 /** @type {ReturnType<typeof createMemoryStore>|undefined} */
 let keyStore;
 /**
@@ -429,42 +453,62 @@ export function accountByEmail(db) {
 }
 
 /**
- * The stand-in key store, until the D1-backed one lands: the same shape
- * createMemoryStore gives the tests, so a route cannot tell the difference.
- * The env is what will choose it, and the parameter is named here so the
- * signature the type check reads and the one the runtime calls are the same
- * function. `env` is read below, so there is no unused parameter to void.
+ * Production dependencies this Worker cannot serve without.
  * @param {ApiEnv} env
+ * @returns {Array<"DRIVE_DB" | "key provider" | "storage endpoint">}
+ */
+function missingProductionStore(env) {
+  /** @type {Array<"DRIVE_DB" | "key provider" | "storage endpoint">} */
+  const missing = [];
+  if (!env.DRIVE_DB) {
+    missing.push("DRIVE_DB");
+  }
+  if (!keyProviderFor(env)) {
+    missing.push("key provider");
+  }
+  if (!storageLocationFromEnv(env)) {
+    missing.push("storage endpoint");
+  }
+  return missing;
+}
+
+/**
+ * The production key store: D1-backed sign-in, teams and devices, with keys
+ * minted at the configured provider. A missing DRIVE_DB, key provider or
+ * storage endpoint is null, not an in-memory stand-in (drive#505). Tests
+ * import createMemoryStore themselves.
+ * @param {ApiEnv} env
+ * @returns {KeyStore | null}
  */
 function storeFor(env) {
+  const injected = /** @type {{[key: symbol]: KeyStore | undefined}} */ (env)[TEST_KEY_STORE];
+  if (injected) {
+    return injected;
+  }
+  const missing = missingProductionStore(env);
+  if (missing.length > 0) {
+    if (!missingApiStoreLogged.has(env)) {
+      missingApiStoreLogged.add(env);
+      console.error(
+        `api: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not configured`,
+      );
+    }
+    return null;
+  }
   if (keyStore === undefined || keyStoreDb !== env.DRIVE_DB) {
-    // The device sign-in half is D1-backed whenever the deployment binds a
-    // database, so a code started on one instance is visible on the next and
-    // survives a restart (drive#136 finding 1); without one it stays the
-    // in-memory stand-in. The storage key half is the S3 provider when the
-    // five STORAGE_* values are set, otherwise the stand-in credential.
     keyStore = createMemoryStore({
-      signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
+      signin: createD1DeviceSigninStore(env.DRIVE_DB),
       keyProvider: keyProviderFor(env) ?? undefined,
       storage: storageLocationFromEnv(env),
-      // Teams are D1-backed for the same reason (drive#20): a team and its
-      // members must survive the isolate that created them, because "the owner
-      // removes a member and the key stops working" is a claim about the next
-      // request, which may be a different instance. The store is a field on
-      // the same memory store object, so the routes read `store.teams` either
-      // way and the in-memory path (no DRIVE_DB) is the stand-in. The account
-      // resolver is the sign-in flow's own `user` table (core/auth.js owns it,
-      // and it is on the same DRIVE_DB), so an email invite binds a real
-      // account instead of leaving every invite unbound.
-      teams: env.DRIVE_DB
-        ? createD1TeamStore(env.DRIVE_DB, { resolveAccountByEmail: accountByEmail(env.DRIVE_DB) })
-        : undefined,
-      // Keys persist for the same reason (drive#64): cap enforcement reads
-      // the account's device rows and writes the swapped key id back, and
-      // that request may be a different isolate than the one that minted.
-      deviceStore: env.DRIVE_DB
-        ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
-        : undefined,
+      // The dl Worker's download URL, minted beside each account-folder key
+      // when the deployment has a dl host and its grant secret (drive#517).
+      download: downloadFromEnv(env),
+      teams: createD1TeamStore(env.DRIVE_DB, {
+        resolveAccountByEmail: accountByEmail(env.DRIVE_DB),
+      }),
+      deviceStore: createD1DeviceStore(env.DRIVE_DB, {
+        keyProvider: keyProviderFor(env) ?? undefined,
+      }),
       // The prepaid pause (drive#586), only while PREPAID_PAUSE is "on".
       writesPaused:
         env.DRIVE_DB && prepaidPauseOn(env)
@@ -482,10 +526,14 @@ export default {
    * @param {ApiEnv} env
    */
   async fetch(request, env) {
+    const store = storeFor(env);
+    if (!store) {
+      return errorResponse(503, failureMessage("drive-not-configured"));
+    }
     return dispatch(request, {
       env,
       db: env.DRIVE_DB,
-      store: storeFor(env),
+      store,
       // The same sign-in gate the site Worker's account routes resolve
       // (core/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
       // is one account in both Workers and the approval page needs no second
@@ -497,7 +545,7 @@ export default {
       // and the team store live on, so a report written on one instance
       // is the row the next one reads (drive#318). Without a database
       // there is no row to write, and the route answers 503.
-      queues: env.DRIVE_DB ? createD1QueueStore(env.DRIVE_DB) : null,
+      queues: createD1QueueStore(env.DRIVE_DB),
       now: Date.now,
     });
   },

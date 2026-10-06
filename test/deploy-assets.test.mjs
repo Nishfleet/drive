@@ -29,7 +29,7 @@ import { failureMessage } from "../core/messages.js";
 import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../core/seo.js";
 import worker from "../src/index.js";
 import { DOC_PAGES } from "../src/render-docs.js";
-import apiWorker, { dispatch } from "../workers/api/src/index.js";
+import { dispatch } from "../workers/api/src/index.js";
 import { API_PREFIX } from "../workers/api/src/routes.js";
 
 /** @param {string} path @returns {string} */
@@ -383,13 +383,6 @@ function siteRequest(request, env = {}) {
   );
 }
 
-/** The api Worker's own fetch, driven with the bindings its routes read.
- * @type {(request: Request, env: unknown) => Promise<Response>}
- */
-const apiFetch = /** @type {(request: Request, env: unknown) => Promise<Response>} */ (
-  /** @type {unknown} */ (apiWorker.fetch)
-);
-
 test("the site Worker mounts the api registry's own family", async () => {
   // The prefix is the api registry's (workers/api/src/routes.js API_PREFIX,
   // the value every path in that registry starts with), so the site Worker's
@@ -599,17 +592,25 @@ test("an /api/* caller that sent a browser Accept header still gets JSON", async
 test("one host answers both families: the api Worker behind the binding", async () => {
   // The proof this issue asks for, at the level a worker can prove it: the
   // site's own route table, a service binding, and the api Worker's own
-  // dispatcher behind it. The binding is injected, because no deployment has
-  // produced one — drive-api is not deployed, and a real binding fails this
-  // Worker's own deploy until it is — so what this proves is that the two
-  // Workers compose through this route table, not that the live host answers.
+  // dispatcher behind it. dispatch is driven with the stand-in store tests
+  // import, because production fetch refuses a missing DRIVE_DB (drive#505)
+  // and this test is about routing, not storeFor. The binding is injected,
+  // because no deployment has produced one — drive-api is not deployed, and a
+  // real binding fails this Worker's own deploy until it is.
+  const store = createMemoryStore({ now: () => 0 });
   const env = {
     API: {
       fetch: (/** @type {Request} */ request) =>
-        apiFetch(request, {
-          DRIVE_DB: null,
-          DEVICE_RATE_LIMITER: allowAll(),
-          DEVICE_GLOBAL_RATE_LIMITER: allowAll(),
+        dispatch(request, {
+          env: {
+            DEVICE_RATE_LIMITER: allowAll(),
+            DEVICE_GLOBAL_RATE_LIMITER: allowAll(),
+          },
+          db: null,
+          store,
+          accounts: null,
+          account: null,
+          now: () => 0,
         }),
     },
   };

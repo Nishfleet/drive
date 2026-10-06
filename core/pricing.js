@@ -137,6 +137,16 @@ export function buildPrice({
     // drive#586 retired "No minimum": a top-up is $10 or more. The balance is
     // kept until it is used.
     noPlansLine: "No plans. Your balance never expires.",
+    // The meter's floor on a saved version (drive#535: core/meter.js's
+    // MINIMUM_MINUTES_PER_VERSION). The prepaid lines above are about what
+    // you must keep on your account - a top-up opens storage, it does not
+    // expire - and this is what the meter bills at its smallest: every save
+    // is booked for a full hour however quickly it is overwritten. A file
+    // saved five times in one hour therefore bills more than that one hour,
+    // and that is what this sentence states, so the page that promises the
+    // copy is "counted by the minute" cannot read as though saving were free.
+    versionMinimumLine:
+      "Each save is billed for at least one hour, so a file saved again and again inside one hour bills more than that hour.",
     // drive#521: the trash billing rule, the one sentence the pricing page
     // and docs carry verbatim. "Stop paying for what you delete" is this:
     // the meter stops counting the hour the file lands in Recently deleted,

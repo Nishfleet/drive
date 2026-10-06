@@ -3,17 +3,20 @@
 // state change, and the routes a read-only drive must refuse read that state
 // through the Worker's own dispatch.
 //
-// Every month here is downloads alone: the hour row stores 1 GB on average and
-// no GB-minutes, so the only line on the bill is the downloads past the free
-// 3x allowance. That is the case the old cap read missed, because it returned
+// Every month here holds 1 GB all month - the hour row carries the GB-minutes
+// that makes the allowance's average 1 GB (drive#535) - and downloads 503 GB,
+// so the bill is the 2-cent storage line plus the downloads past the free 3x
+// allowance. That is the case the old cap read missed, because it returned
 // `downloadBytes: 0`.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { minutesInMonth } from "../core/billing.js";
 import { runCapEnforcement } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
+import { createMemoryStore } from "../core/files.js";
 import { HOUR_MS, hourStart, METER_CRON, monthStart } from "../core/meter.js";
-import worker from "../src/index.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { createD1LinkStore, newRequestRecord } from "../src/share.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
@@ -24,7 +27,8 @@ const GB = 1_000_000_000;
 const TOKEN = "CCCCCCCCCCCCCCCCCCCCCC";
 
 // 503 GB downloaded over a 1 GB average: 500 GB past the free 3 GB, at
-// $0.01 a GB, is $5.00 counted with no storage line at all.
+// $0.01 a GB, is $5.00, and the 1 GB held all month adds the 2-cent storage
+// line, so the cap counts $5.02.
 const DOWNLOADED_BYTES = 503 * GB;
 
 function passLimiter() {
@@ -44,12 +48,19 @@ async function seeded(capCents) {
     )
     .bind(account.id, account.email, capCents)
     .run();
+  // The GB-minutes a real meter writes for a drive that held 1 GB all month:
+  // one GB-minute for every minute of the month, which is what makes the
+  // allowance's derived average exactly 1 GB (drive#535). A row with
+  // downloads and no GB-minutes is a month no meter can produce - every
+  // stored file books minutes, with the one-hour minimum - and the bill
+  // refuses it by name rather than charge every downloaded byte.
+  const now = Date.now();
   await made.db
     .prepare(
       `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, download_bytes, stored_bytes, rolled_up_at)
-       VALUES (?1, ?2, 0, ?3, ?4, ?2)`,
+       VALUES (?1, ?2, ?3, ?4, ?5, ?2)`,
     )
-    .bind(account.id, hourStart(Date.now()), DOWNLOADED_BYTES, GB)
+    .bind(account.id, hourStart(now), minutesInMonth(now), DOWNLOADED_BYTES, GB)
     .run();
   /** @type {Array<{to: string, subject: string}>} */
   const mail = [];
@@ -67,6 +78,9 @@ async function seeded(capCents) {
     BETTER_AUTH_URL: "https://drive.test",
     REQUEST_UPLOAD_RATE_LIMITER: passLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: passLimiter(),
+    // Tests inject the in-memory files store. Production never builds it
+    // (src/index.js storeFor, drive#505).
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const walk = () =>
     runCapEnforcement({
@@ -104,7 +118,7 @@ test("a month of downloads over the cap: the walk saves read_only and mails once
   assert.equal(await state(), "read_only", "the walk did not save the state");
   assert.equal(mail.length, 1, "the read-only notice did not go out");
   assert.equal(mail[0].to, account.email);
-  assert.equal(first.results[0].countedUsd, 5, "downloads alone count $5.00");
+  assert.equal(first.results[0].countedUsd, 5.02, "2c storage + $5.00 of downloads");
 
   // The next hourly run finds the same state, so it mails nothing.
   const second = await walk();
@@ -154,7 +168,7 @@ test("over the cap, the routes refuse writes and /api/usage shows the real month
     await workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env)
   ).json();
   assert.equal(usage.downloads.usedBytes, DOWNLOADED_BYTES, "the usage read dropped the downloads");
-  assert.equal(usage.cap.countedUsd, 5);
+  assert.equal(usage.cap.countedUsd, 5.02);
   assert.equal(usage.cap.state, "read_only");
 
   // The owner's public upload-request link stops at the owner's cap.

@@ -13,7 +13,7 @@
 // is createS3Store, which speaks plain S3 to `rclone serve s3`
 // (`rclone serve s3 /srv/drive`); the real iDrive e2 / B2 adapter swaps in
 // behind the same four-method interface when #2 lands. createMemoryStore is the
-// test and no-configuration stand-in, and renders every state for a screenshot.
+// test stand-in: production storeFor never builds it (drive#505).
 
 import { AwsClient } from "aws4fetch";
 import {
@@ -1102,9 +1102,9 @@ function quotedEntityTag(etag) {
 }
 
 /**
- * The in-memory stand-in: one Map of path to bytes. The tests use it and the
- * page runs on it with no storage configured, so every screen renders and
- * every state is exercised without a bucket.
+ * The in-memory stand-in: one Map of path to bytes. Tests use it so every
+ * screen renders and every state is exercised without a bucket. Production
+ * never builds this store (src/index.js storeFor, drive#505).
  * @returns {FileStore}
  */
 export function createMemoryStore() {
@@ -2504,13 +2504,14 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
  *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
  *   can read stored bytes, whether the pause at a $0 balance is on
  *   (drive#586), and the account's own state, so a read-only drive refuses a
  *   web write (drive#496). Tests that do not pass a database skip the first
  *   two checks; tests that do not pass a resolver are answering for a drive
- *   that is not read-only.
+ *   that is not read-only. `recordDownload` adds the bytes a download,
+ *   preview or embed serves to the account's download total (drive#517).
  */
 export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
@@ -2561,7 +2562,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return readRequest(
       request,
       url,
-      scoped,
+      meterReads(scoped, account.id, options.recordDownload),
       route.endsWith("download"),
       route === FILES_EMBED_ENDPOINT,
     );
@@ -2576,6 +2577,32 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return restoreRequest(request, scoped, account, now);
   }
   return plain("Not found.", 404);
+}
+
+/**
+ * A view of a store whose reads add the bytes they serve to the account's
+ * download total (drive#517): the whole object on a 200, the slice on a 206,
+ * nothing on a 304 or a 416. With no recorder it is the store itself.
+ * @param {FileStore} store
+ * @param {string} accountId
+ * @param {((accountId: string, bytes: number) => Promise<void>)|undefined} recordDownload
+ * @returns {FileStore}
+ */
+export function meterReads(store, accountId, recordDownload) {
+  if (!recordDownload) {
+    return store;
+  }
+  /** @type {FileStore} */
+  const metered = Object.create(store);
+  metered.read = async (path, readOptions) => {
+    const object = await store.read(path, readOptions);
+    const status = object?.status ?? 200;
+    if (object && (status === 200 || status === 206)) {
+      await recordDownload(accountId, object.contentLength ?? object.size);
+    }
+    return object;
+  };
+  return metered;
 }
 
 /**

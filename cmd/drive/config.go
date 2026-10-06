@@ -192,6 +192,11 @@ const (
 	rcloneRCUserEnv = "RCLONE_RC_USER"
 	rcloneRCPassEnv = "RCLONE_RC_PASS"
 	rcloneSecretEnv = "RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY"
+	// rcloneDownloadURLEnv is the S3 backend's download_url (the dl Worker).
+	// The URL carries the key's download grant (drive#517), so it rides with
+	// the secret in the 0600 environment and never on rclone's command line,
+	// where any local process could read it from the process list.
+	rcloneDownloadURLEnv = "RCLONE_CONFIG_DRIVE_DOWNLOAD_URL"
 )
 
 // secretWays names every safe way to hand the storage secret to `drive mount`,
@@ -628,6 +633,9 @@ func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
 	}
 	if c.SecretKey != "" {
 		fmt.Fprintf(&b, "%s=%s\n", rcloneSecretEnv, systemdEnvQuote(c.SecretKey))
+	}
+	if c.DownloadURL != "" {
+		fmt.Fprintf(&b, "%s=%s\n", rcloneDownloadURLEnv, systemdEnvQuote(c.DownloadURL))
 	}
 	if b.Len() == 0 {
 		return nil

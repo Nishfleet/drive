@@ -861,6 +861,49 @@ test("the approve page shows the device name and time and never pre-fills the co
   assert.match(html, /2026-10-05T12:00:00.000Z/);
   assert.match(html, /value=""/);
   assert.doesNotMatch(html, new RegExp(`value="${code.userCode}"`));
+
+  // The name is store data rendered into HTML text, so a script tag arrives
+  // escaped and nothing else on the page changes (drive#558).
+  const quoted = await store.requestDeviceCode({ name: "<script>alert(1)</script>" });
+  const hostile = await dispatch(
+    new Request(
+      `https://api.test/v1/device/approve?user_code=${encodeURIComponent(quoted.userCode)}`,
+      { headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+    ),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(hostile.status, 200);
+  const hostileBody = await hostile.text();
+  assert.match(hostileBody, /&lt;script&gt;/);
+  assert.doesNotMatch(hostileBody, /<script>alert/);
+});
+
+test("a code is still pending and approvable at minute 12 (drive#558)", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_12m", name: "Twelve", email: "12@example.com" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
+
+  // The mail round trip fits inside the code's life now: at minute 12 the CLI
+  // is still waiting, and the page can still approve.
+  clock.advance(12 * 60);
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
+  const approved = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+        origin: "https://api.test",
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(approved.status, 200);
+  const minted = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(minted.status, "approved", "the minute-12 approval minted a sign-in");
 });
 
 test("approving a device mails the owner a notice", async () => {
@@ -874,7 +917,7 @@ test("approving a device mails the owner a notice", async () => {
   const code = await store.requestDeviceCode({ name: "office laptop" });
   /** @type {Array<Record<string, unknown>>} */
   const sent = [];
-  const approved = await dispatch(
+  const mailed = await dispatch(
     new Request("https://api.test/v1/device/approve", {
       method: "POST",
       headers: {
@@ -897,7 +940,7 @@ test("approving a device mails the owner a notice", async () => {
       },
     }),
   );
-  assert.equal(approved.status, 200);
+  assert.equal(mailed.status, 200);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, "mail@example.com");
   assert.equal(/** @type {{email: string}} */ (sent[0].from).email, "drive@example.com");

@@ -278,6 +278,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The original changed after that branch was made, so nothing was copied back.",
     next: "Discard the branch and make it again from the folder as it is now.",
   }),
+  // A folder over BRANCH_FILE_LIMIT files (drive#563). Jobs copy in batches,
+  // but the snapshot still has to sit in memory, so the cap is the remaining
+  // honest limit after the subrequest ceiling is no longer the one.
+  "branch-too-large": Object.freeze({
+    what: "That folder has too many files to branch.",
+    next: "Branch a smaller folder, or split the files first.",
+  }),
   // An agent's own rewind is past the drive's 30-day window, so the copy this
   // would undo and the old versions behind it are both gone (issue #13, "the
   // 30-day undo"). Nothing was changed: the original folder is as it is.
@@ -319,6 +326,12 @@ export const FAILURE_MESSAGES = Object.freeze({
   unexpected: Object.freeze({
     what: "That did not work.",
     next: "Try again in a moment.",
+  }),
+  // The api Worker answered 426: this CLI is older than the minimum version
+  // the deployment still serves (drive#560). The fix is one exact command.
+  "cli-too-old": Object.freeze({
+    what: "This drive is too old for the server it talks to.",
+    next: "Run drive update to get the current version, then run the command again.",
   }),
   // Close account (drive#235): the person confirms by typing their email.
   "close-confirm-email": Object.freeze({
