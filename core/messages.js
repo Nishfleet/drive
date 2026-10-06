@@ -214,6 +214,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That key is not on this account.",
     next: "Reload the devices page and pick a key that is still listed.",
   }),
+  // A devices-page revoke where Drive's own record changed but the storage
+  // provider (or the record store) did not confirm (drive#525). Drive refuses
+  // the key at once; the provider's own credential expires on its own.
+  "key-provider-unconfirmed": Object.freeze({
+    what: "Drive turned the key off, but the storage provider did not confirm it.",
+    next: "Reload the devices page: Drive refuses the key now, and the provider's own credential expires within about an hour.",
+  }),
   // A URL with more segments than /api/devices/<keyId>, or an empty id.
   "key-path-unknown": Object.freeze({
     what: "That is not a key path.",

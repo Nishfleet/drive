@@ -894,10 +894,11 @@ export function createApp() {
     });
   });
 
-  // Devices page (drive#525): list live keys and revoke one at the provider.
-  // The site Worker holds DRIVE_DB, so this route works while the api Worker
-  // is undeployed (#342). The store is built with the same keyProviderFor
-  // the cap and close paths use, so a revoke here withdraws the vendor key.
+  // Devices page (drive#525): list live keys and revoke one. The site Worker
+  // holds DRIVE_DB, so this route works while the api Worker is undeployed
+  // (#342). The store uses keyProviderFor(env): it withdraws the vendor key
+  // only if this Worker's env carries a provider, otherwise the revoke is
+  // Drive's own record and the provider credential expires on its own.
   /** @param {DriveContext} c */
   const devicesHandler = (c) => {
     const db = c.env.DRIVE_DB;

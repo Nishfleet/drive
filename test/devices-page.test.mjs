@@ -167,6 +167,53 @@ test("DELETE revokes the named key at the provider and 404s another account's ke
   assert.deepEqual(revokedIds, ["ak_mac"]);
 });
 
+test("a provider failure is a 502 with its own words, not key-not-found", async () => {
+  const made = createTestAuth();
+  const { account } = await signIn(made, "owner@example.com");
+  const store = createD1DeviceStore(made.db, {
+    keyProvider: {
+      async mint() {
+        throw new Error("mint is unused on the devices page");
+      },
+      async revoke() {
+        throw new Error("the provider is down");
+      },
+    },
+  });
+  await store.put(deviceRow("key_mac", account.id, { accessKeyId: "ak_mac" }));
+  const failed = await handleDevicesRequest(
+    new Request(`https://drive.test${DEVICES_ENDPOINT}/key_mac`, { method: "DELETE" }),
+    account,
+    store,
+  );
+  assert.equal(failed.status, 502);
+  assert.deepEqual(await failed.json(), { error: failureMessage("key-provider-unconfirmed") });
+
+  const broken = await handleDevicesRequest(
+    new Request(`https://drive.test${DEVICES_ENDPOINT}/key_x`, { method: "DELETE" }),
+    account,
+    {
+      listPublic: async () => [],
+      revokeKey: async () => {
+        throw new Error("D1 is down");
+      },
+    },
+  );
+  assert.equal(broken.status, 502);
+});
+
+test("a wrong method answers with the api's one shared sentence", async () => {
+  const made = createTestAuth();
+  const { account } = await signIn(made, "owner@example.com");
+  const res = await handleDevicesRequest(
+    new Request(`https://drive.test${DEVICES_ENDPOINT}`, { method: "PUT" }),
+    account,
+    createD1DeviceStore(made.db),
+  );
+  assert.equal(res.status, 405);
+  assert.deepEqual(await res.json(), { error: "That method is not allowed here." });
+});
+
 test("the Worker lists and revokes through the account gate", async () => {
   const made = createTestAuth();
   const { cookie, account } = await signIn(made, "mac@example.com");
@@ -228,4 +275,12 @@ test("the shipped page lists kind and last used, and posts revoke to the route",
   assert.match(page, /button\.disabled = true/);
   assert.match(page, /if \(response\.status === 401\)/);
   assert.match(page, /showSessionNav\(false\)/);
+});
+
+test("the page names the revoke button per key, words sign-out failure itself, and says what a revoke does", () => {
+  assert.match(page, /button\.setAttribute\("aria-label", `Revoke \$\{/);
+  assert.match(page, /Could not sign you out just now/);
+  assert.match(page, /if \(!ms\) return NEVER/);
+  assert.doesNotMatch(page, /turns it off at the storage provider/);
+  assert.match(page, /Drive refuses a revoked key at once/);
 });

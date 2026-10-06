@@ -1,10 +1,14 @@
-// The devices page (drive#525): list this account's live keys and revoke one
-// at the provider. The site Worker owns the page and this route, so a lost
-// laptop can be turned off even while the api Worker is undeployed (#342).
+// The devices page (drive#525): list this account's live keys and revoke one.
+// The site Worker owns the page and this route, so a lost laptop can be turned
+// off even while the api Worker is undeployed (#342).
 //
-// The store is core/devices.js: `listPublic` is the same public shape
-// GET /v1/keys returns, and `revokeKey` withdraws the credential at the
-// vendor. Nothing here mints a key or reads a secret.
+// What a revoke does, exactly: `revokeKey` marks the key revoked in D1 at
+// once, and Drive refuses a revoked key from then on. It also withdraws the
+// provider's own credential, but only when this Worker's env carries a
+// provider (`keyProviderFor`). The site Worker declares no provider token
+// today (IDRIVE_E2_API_TOKEN is bound on the api Worker only), so here the
+// provider's temporary credential is not withdrawn and expires on its own
+// (about an hour, drive#173). Nothing here mints a key or reads a secret.
 
 import { errorResponse, json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
@@ -96,7 +100,14 @@ export async function handleDevicesRequest(request, account, store) {
     if (!store) {
       return errorResponse(503, failureMessage("unexpected"));
     }
-    const result = await store.revokeKey(account, parsed.keyId);
+    /** @type {{revoked: true}|{error: string}} */
+    let result;
+    try {
+      result = await store.revokeKey(account, parsed.keyId);
+    } catch {
+      // The record store or the provider failed, which is not "no such key".
+      return errorResponse(502, failureMessage("key-provider-unconfirmed"));
+    }
     if ("error" in result) {
       return errorResponse(404, failureMessage("key-not-found"));
     }

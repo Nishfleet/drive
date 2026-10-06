@@ -146,7 +146,8 @@ th {
       <h1 id="devices-heading">Devices</h1>
       <p class="lede">
         Every key on this account: the device or agent that holds it, when it
-        was last used, and a button that turns it off at the storage provider.
+        was last used, and a button that revokes it. Drive refuses a revoked key at once.
+        The storage provider's own temporary credential then expires on its own, within about an hour.
       </p>
     </section>
 
@@ -190,7 +191,8 @@ const DEVICES_ENDPOINT = "/api/devices";
 const SIGNIN_ENDPOINT = "/api/signin";
 const NEVER = "Never";
 const REVOKE_LABEL = "Revoke";
-const REVOKE_CONFIRM = "Revoke this key? It will stop working at once.";
+const REVOKE_CONFIRM = "Revoke this key? Drive refuses it at once. The storage provider's own credential expires within about an hour.";
+const SIGNOUT_FAILED = "Could not sign you out just now. Try again.";
 
 const statusEl = document.getElementById("devices-status");
 const emptyEl = document.getElementById("devices-empty");
@@ -216,7 +218,7 @@ function sayStatus(text) {
 }
 
 function lastUsedText(ms) {
-  if (ms === null) return NEVER;
+  if (!ms) return NEVER;
   return new Date(ms).toLocaleString();
 }
 
@@ -232,6 +234,7 @@ function keyRow(key) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = REVOKE_LABEL;
+  button.setAttribute("aria-label", `Revoke ${key.name || key.keyId}`);
   button.addEventListener("click", () => revokeKey(key.keyId, button));
   action.appendChild(button);
   tr.replaceChildren(name, kind, used, action);
@@ -311,13 +314,13 @@ async function postSignout(step) {
       body: JSON.stringify({ step }),
     });
   } catch (_error) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(SIGNOUT_FAILED);
     navSignout.disabled = false;
     navSignoutAll.disabled = false;
     return;
   }
   if (!response.ok) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(SIGNOUT_FAILED);
     navSignout.disabled = false;
     navSignoutAll.disabled = false;
     return;

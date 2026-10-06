@@ -96,3 +96,24 @@ test("spec.md and build-spec.md match the shipped price, plans, provider and pla
   assert.match(build, /No plans/, "build-spec.md must state that there are no plans");
   assert.match(build, /No Windows in v1/, "build-spec.md must keep Windows out of v1");
 });
+
+test("spec.md and build-spec.md state no retired price as current", () => {
+  const retired = [
+    /max\(\$12, \$8/,
+    /\$12 a TB, then \$8/,
+    /\$10 a month membership/,
+    /membership is \$10/,
+  ];
+  for (const name of ["docs/spec.md", "docs/build-spec.md"]) {
+    for (const line of read(name).split("\n")) {
+      if (/retired|older|was max/i.test(line)) continue;
+      for (const pattern of retired) {
+        assert.doesNotMatch(
+          line,
+          pattern,
+          `${name} states a retired price as current: ${line.trim()}`,
+        );
+      }
+    }
+  }
+});
