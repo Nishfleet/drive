@@ -1042,6 +1042,79 @@ export async function monthUsageThrough(db, accountId, through) {
   });
 }
 
+// size30 (drive#642): the largest stored_bytes mark in the trailing 30 UTC
+// days, and the earliest hour that mark was reached. One statement, so there
+// is no second peak to drift from. A window with no rows is an empty drive
+// (size30 0), not a guessed charge. A stored_bytes value that does not parse
+// is refused, never billed.
+export const SIZE30_SQL = `SELECT
+    COALESCE(MAX(stored_bytes), 0) AS size30_bytes,
+    MIN(hour) AS reached_hour,
+    COUNT(*) AS hours,
+    SUM(CASE WHEN typeof(stored_bytes) != 'integer' THEN 1 ELSE 0 END) AS bad_rows
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= ?2
+    AND hour <= ?3
+    AND stored_bytes = (
+      SELECT COALESCE(MAX(stored_bytes), 0) FROM usage_minutes
+      WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3
+    )`;
+
+const SIZE30_DOWNLOADS_SQL = `SELECT COALESCE(SUM(download_bytes), 0) AS download_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3`;
+
+/**
+ * size30 for one account as of `through`: the largest stored_bytes mark in
+ * `[from, through]`. `from` is the start of the trailing window the caller
+ * computed (billing.js size30Window). Missing or unparseable rows refuse
+ * rather than guess a charge.
+ * @param {D1Database} db
+ * @param {unknown} accountId
+ * @param {number} from
+ * @param {number} through
+ * @returns {Promise<{size30Bytes: number, reachedHour: number|null, downloadBytes: number, hours: number}>}
+ */
+export async function size30Through(db, accountId, from, through) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`size30Through needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(through) || from > through) {
+    throw new TypeError(
+      `size30Through needs a from..through window in epoch ms, got ${from}..${through}`,
+    );
+  }
+  const row = await db.prepare(SIZE30_SQL).bind(accountId, from, through).first();
+  if (Number(row?.bad_rows ?? 0) > 0) {
+    throw new TypeError(
+      `size30 for ${accountId} has a stored_bytes value that does not parse, so no draw is made`,
+    );
+  }
+  const size30Bytes = Number(row?.size30_bytes ?? 0);
+  const hours = Number(row?.hours ?? 0);
+  const reachedHour = row?.reached_hour == null ? null : Number(row.reached_hour);
+  if (!Number.isSafeInteger(size30Bytes) || size30Bytes < 0) {
+    throw new TypeError(
+      `size30_bytes must be 0 or more whole bytes, got ${row?.size30_bytes}`,
+    );
+  }
+  if (reachedHour !== null && (!Number.isFinite(reachedHour) || reachedHour < 0)) {
+    throw new TypeError(`size30 reached_hour does not parse, got ${row?.reached_hour}`);
+  }
+  const downloads = await db.prepare(SIZE30_DOWNLOADS_SQL).bind(accountId, from, through).first();
+  const downloadBytes = Number(downloads?.download_bytes ?? 0);
+  if (!Number.isSafeInteger(downloadBytes) || downloadBytes < 0) {
+    throw new TypeError(`download_bytes must be 0 or more whole bytes, got ${downloads?.download_bytes}`);
+  }
+  return Object.freeze({
+    size30Bytes,
+    reachedHour,
+    downloadBytes,
+    hours,
+  });
+}
+
 /**
  * The instant a month is read at, and the month's own label, checked before
  * any read runs: a month that has not started yet is refused rather than read

@@ -6,18 +6,20 @@
 // function, monthBillCents(), and fails CI when the shipped page drifts from
 // them. The meta/llms gate test/seo.test.mjs does the same.
 //
-// Source of truth: drive#463 (Nish, 2026-10-04): pay only for what you store.
+// Source of truth: drive#642 (Nish, 2026-10-05): you pay for the biggest size
+// your drive reached in the last 30 days. Replaces drive#463's per-minute
+// average.
 //
-//     charge = min(rate x avg GB, MAX_USD_PER_TB x max(1, avg TB))
+//     charge = min(rate x size30 GB, MAX_USD_PER_TB x max(1, size30 TB))
 //
-// with avg the time-weighted stored size over the month. 2 cents per GB until
-// the bill reaches the maximum (at 500 GB), a flat maximum from there to 1 TB,
-// and above 1 TB the maximum grows with the storage, prorated to the GB. No
-// minimum, no plans, no membership. Everyone pays the same.
+// with size30 the largest stored size in the trailing 30 days. 2 cents per GB
+// until the bill reaches the maximum (at 750 GB when the maximum is $15), a
+// flat maximum from there to 1 TB, and above 1 TB the maximum grows with the
+// storage, prorated to the GB. No plans, no membership. Everyone pays the same.
 //
-// MAX_USD_PER_TB is the one number Nish may move (to 8 or 12). Every sentence
-// below is built from it, and test/pricing-copy.test.mjs proves the copy and
-// the bill both follow it when it moves.
+// MAX_USD_PER_TB is the one number Nish may move. Every sentence below is
+// built from it, and test/pricing-copy.test.mjs proves the copy and the bill
+// both follow it when it moves.
 //
 // There is no bill arithmetic here: core/billing.js's monthBillCents() is the
 // one function that turns this config into dollars. This file holds the
@@ -25,7 +27,7 @@
 // (drive issue #23, folded #86).
 
 const RATE_USD_PER_GB_MONTH = 0.02;
-const MAX_USD_PER_TB = 10;
+const MAX_USD_PER_TB = 15;
 // Kept for the card-less write cap leftover until every account has a card
 // (#387). Not a public credit: copy never names this dollar.
 const FREE_MONTHLY_USD = 1;
@@ -87,11 +89,6 @@ function centsWords(cents) {
   return cents === 1 ? "1 cent" : `${cents} cents`;
 }
 
-/** @param {number} gb */
-function sizeWords(gb) {
-  return gb >= GB_PER_TB ? `${gb / GB_PER_TB} TB` : `${gb} GB`;
-}
-
 /**
  * Builds the whole price, numbers and sentences, from the two numbers that set
  * it. PRICE below is this with the shipped numbers; the copy test calls it with
@@ -104,7 +101,7 @@ export function buildPrice({
 } = {}) {
   const rateCents = wholeCents(rateUsdPerGbMonth, "the rate");
   const max = wholeDollars(maxUsdPerTb, "the maximum per TB");
-  // Where the rate reaches the maximum: 500 GB at 2 cents and $10.
+  // Where the rate reaches the maximum: 750 GB at 2 cents and $15.
   const reachesMaxGb = Math.round((max * 100) / rateCents);
   const rateText = `${rateCents}¢`;
   // drive#586: prepaid. The lead names the smallest top-up, read from
@@ -112,8 +109,11 @@ export function buildPrice({
   const leadLine = `Add $${PREPAID.minTopUpUsd} or more.`;
   const rateLine = `Pay ${centsWords(rateCents)} per GB from your balance.`;
   const maxLine = `Never more than $${max} per TB.`;
+  const size30Line =
+    "You pay for the biggest size your drive reached in the last 30 days.";
+  const pitchLine = "Pay only for what you use.";
   return Object.freeze({
-    // The metered rate, in US dollars per GB per month, billed by the minute.
+    // The metered rate, in US dollars per GB per month, billed on size30.
     rateUsdPerGbMonth,
     rateCents,
     // The maximum, in dollars for each TB stored, never less than one TB's
@@ -128,6 +128,8 @@ export function buildPrice({
     leadLine,
     rateLine,
     maxLine,
+    size30Line,
+    pitchLine,
     headline: `${leadLine} ${rateLine} ${maxLine}`,
     // The share card's big number and the unit under it.
     headlineAmount: rateText,
@@ -137,22 +139,16 @@ export function buildPrice({
     // drive#586 retired "No minimum": a top-up is $10 or more. The balance is
     // kept until it is used.
     noPlansLine: "No plans. Your balance never expires.",
-    // The meter's floor on a saved version (drive#535: core/meter.js's
-    // MINIMUM_MINUTES_PER_VERSION). The prepaid lines above are about what
-    // you must keep on your account - a top-up opens storage, it does not
-    // expire - and this is what the meter bills at its smallest: every save
-    // is booked for a full hour however quickly it is overwritten. A file
-    // saved five times in one hour therefore bills more than that one hour,
-    // and that is what this sentence states, so the page that promises the
-    // copy is "counted by the minute" cannot read as though saving were free.
+    // drive#642: the bill follows size30, not how often a file is saved. The
+    // meter's per-version hour (core/meter.js MINIMUM_MINUTES_PER_VERSION)
+    // still marks GB-minutes; it does not set the money.
     versionMinimumLine:
-      "Each save is billed for at least one hour, so a file saved again and again inside one hour bills more than that hour.",
-    // drive#521: the trash billing rule, the one sentence the pricing page
-    // and docs carry verbatim. "Stop paying for what you delete" is this:
-    // the meter stops counting the hour the file lands in Recently deleted,
-    // and the nightly purge removes it for good 30 days later.
+      "The bill follows the biggest size your drive reached in the last 30 days, not how often you save.",
+    // drive#642: a delete does not stop the bill. The peak stays in size30
+    // until it ages out of the trailing 30 days, then the nightly purge
+    // removes the file for good.
     trashLine:
-      "A deleted file stops counting as soon as it lands in Recently deleted. After 30 days it is removed for good.",
+      "A deleted file still counts toward the biggest size for 30 days, then it drops out.",
     // drive#417: until a card is really on file the usage page says no charge has
     // been made and shows no bill as if charged. `monthBillCents()` still works
     // the bill out (money, untouched); this is the word the page and the CLI
@@ -163,19 +159,16 @@ export function buildPrice({
     needCard: `We need a card at sign-up because there is no free tier. Your first $${PREPAID.minTopUpUsd} top-up opens storage. 20 GB draws about ${centsWords(20 * rateCents)} a month from your balance.`,
     // The whole rule in words, for the examples note, the offer description
     // and llms.txt.
-    rule: `You pay ${centsWords(rateCents)} per GB a month until the bill reaches $${max}, at ${sizeWords(reachesMaxGb)}. From ${sizeWords(reachesMaxGb)} to 1 TB the bill stays $${max}. Above 1 TB you never pay more than $${max} for each TB, counted to the GB.`,
-    // The worked examples, as sizes held all month. The dollars beside each
-    // are monthBillCents()'s, never typed here. `toGb` marks a range row.
+    rule: `${size30Line} ${centsWords(rateCents)} per GB a month, never more than $${max} per TB.`,
+    sameAsPlanLine: `the same $${max}, and less in any month you store less`,
+    // The worked examples, as size30 figures. The dollars beside each are
+    // monthBillCents()'s, never typed here. Rows at 1 TB and above must not
+    // claim a saving against a usual plan (drive#642).
     examples: /** @type {ReadonlyArray<Readonly<{label: string, gb: number, toGb?: number}>>} */ (
       Object.freeze([
         Object.freeze({ label: "50 GB", gb: 50 }),
         Object.freeze({ label: "200 GB", gb: 200 }),
-        Object.freeze({
-          label: `${sizeWords(reachesMaxGb)} to 1 TB`,
-          gb: reachesMaxGb,
-          toGb: GB_PER_TB,
-        }),
-        Object.freeze({ label: "3 TB", gb: 3 * GB_PER_TB }),
+        Object.freeze({ label: "1 TB", gb: GB_PER_TB }),
       ])
     ),
     usualPlan: USUAL_PLAN,

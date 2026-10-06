@@ -161,7 +161,7 @@ export async function agentCapGate(db, device, at) {
   return agentCapStatus({
     // The bill reads only the month's GB-minutes (drive#463), so that is
     // all the cap counts.
-    usage: { gbMinutes: usage.gbMinutes },
+    usage: { size30Bytes: usage.peakBytes, downloadBytes: usage.downloadBytes },
     caps: caps ?? undefined,
     requestsToday: today.requests,
     // The day the count belongs to, so the decision can tell this day's count

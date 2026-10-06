@@ -4,19 +4,23 @@
 // The ledger itself (core/ledger.js) only appends and sums. This file decides
 // WHEN money is drawn and what the balance then triggers:
 //
-//   - drawUsageHours: run by the hourly meter job after the rollup. For each
-//     account with usage in an hour, it draws the month's bill so far minus
-//     what the month has already drawn (a high-water mark, so a reroll that
-//     lowers the bill never credits money back, and a raised one is caught on
-//     the next hour). One draw per account per hour, keyed usage:<acct>:<hour>,
-//     so a retried run never draws twice.
+//   - drawUsageHours: run after the meter. It groups the closed hours into
+//     UTC days and draws each account once per day (drive#642): the monthly
+//     price of size30 / 30, remainder carried. One row per account per day
+//     in daily_draws, keyed usage:<acct>:day:<YYYY-MM-DD> on the ledger when
+//     the day's cents are at least 1, so a retried run never draws twice.
 //   - writesPaused: uploads and new writes pause at a balance of $0 or less.
 //     Reads, listing, downloads and restore never consult it, and nothing is
 //     deleted because the balance is empty.
 //   - settleBalance: after a draw, the "$2 left" email (once per crossing) and
 //     the auto top-up (off by default; at most one started per day).
 
-import { gbMonths, minutesInMonth, monthBillCents } from "./billing.js";
+import {
+  dailyDrawMillicents,
+  MILLICENTS_PER_CENT,
+  monthBillCents,
+  size30Window,
+} from "./billing.js";
 import { resolveDodoUrl } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
 import {
@@ -26,10 +30,10 @@ import {
   LOW_BALANCE_CENTS,
   MAX_TOP_UP_CENTS,
   MIN_TOP_UP_CENTS,
-  usageKey,
+  usageDayKey,
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
-import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
 
@@ -65,14 +69,6 @@ export async function writesPaused(db, accountId) {
 }
 
 /**
- * @param {number} monthStartMs
- */
-function monthEnd(monthStartMs) {
-  const instant = new Date(monthStartMs);
-  return Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth() + 1, 1);
-}
-
-/**
  * Draws each account's usage for the given closed hours from its balance.
  * @param {D1Database} db
  * @param {readonly number[]} hours epoch ms, any order; each is floored to its hour
@@ -87,22 +83,30 @@ export async function drawUsageHours(db, hours, options = {}) {
     throw new TypeError(`drawUsageHours needs an array of hours, got ${String(hours)}`);
   }
   const now = options.now ?? Date.now();
-  const unique = [...new Set(hours.map((hour) => hourStart(hour)))].sort((a, b) => a - b);
+  const days = [
+    ...new Set(
+      hours.map((hour) => size30Window(hourStart(hour)).today),
+    ),
+  ].sort();
   let drawn = 0;
   let cents = 0;
   /** @type {Set<string>} */
   const touched = new Set();
-  for (const hour of unique) {
+  for (const day of days) {
+    const dayStart = Date.parse(`${day}T00:00:00.000Z`);
     const rows = await db
-      .prepare("SELECT DISTINCT account_id FROM usage_minutes WHERE hour = ?1 ORDER BY account_id")
-      .bind(hour)
+      .prepare(
+        `SELECT DISTINCT account_id FROM usage_minutes
+          WHERE hour >= ?1 AND hour < ?2 ORDER BY account_id`,
+      )
+      .bind(dayStart, dayStart + 24 * HOUR_MS)
       .all();
     for (const raw of rows.results ?? []) {
       const accountId = /** @type {{account_id: unknown}} */ (raw).account_id;
       if (typeof accountId !== "string" || accountId === "") {
         throw new TypeError("usage_minutes has a row with no account_id");
       }
-      const amount = await drawFor(db, accountId, hour, now);
+      const amount = await drawForDay(db, accountId, day, now);
       if (amount > 0) {
         drawn += 1;
         cents += amount;
@@ -113,16 +117,13 @@ export async function drawUsageHours(db, hours, options = {}) {
   return { drawn, cents, accounts: [...touched] };
 }
 
-// The hours an account's draw still owes (drive#519): for each calendar month
-// with rolled hours after the account's draw mark, the newest such hour. One
-// draw at a month's newest hour covers the whole month so far (drawFor draws
-// the month's bill through that hour minus what the month already drew), so
-// a month needs one draw however many hours were missed, and a month the
-// clock has left is still drawn at its own last hour with its own bill.
-const PENDING_DRAW_HOURS_SQL = `SELECT MAX(hour) AS hour FROM usage_minutes
+// The UTC days an account's draw still owes (drive#642): each distinct day
+// with rolled hours after the account's draw mark, so a missed day is charged
+// once on the next run and a double run charges once (daily_draws PK).
+const PENDING_DRAW_DAYS_SQL = `SELECT DISTINCT strftime('%Y-%m-%d', hour / 1000, 'unixepoch') AS day
+  FROM usage_minutes
   WHERE account_id = ?1 AND hour > ?2 AND hour <= ?3
-  GROUP BY strftime('%Y-%m', hour / 1000, 'unixepoch')
-  ORDER BY hour`;
+  ORDER BY day`;
 const DRAW_MARK_READ_SQL = "SELECT drawn_through FROM prepaid_draw_marks WHERE account_id = ?1";
 const DRAW_MARK_WRITE_SQL = `INSERT INTO prepaid_draw_marks (account_id, drawn_through, updated_at)
   VALUES (?1, ?2, ?3)
@@ -164,12 +165,15 @@ export async function drawAccountPending(db, accountId, options) {
   if (after >= through) {
     return { drawn: 0, cents: 0 };
   }
-  const pending = await db.prepare(PENDING_DRAW_HOURS_SQL).bind(accountId, after, through).all();
+  const pending = await db.prepare(PENDING_DRAW_DAYS_SQL).bind(accountId, after, through).all();
   let drawn = 0;
   let cents = 0;
   for (const raw of pending.results ?? []) {
-    const hour = Number(/** @type {{hour: unknown}} */ (raw).hour);
-    const amount = await drawFor(db, accountId, hour, now);
+    const day = /** @type {{day: unknown}} */ (raw).day;
+    if (typeof day !== "string") {
+      throw new TypeError(`prepaid draw: a pending day did not parse, got ${String(day)}`);
+    }
+    const amount = await drawForDay(db, accountId, day, now);
     if (amount > 0) {
       drawn += 1;
       cents += amount;
@@ -224,56 +228,79 @@ function previousMonthStart(at) {
 }
 
 /**
- * One account's draw for one hour. Answers the cents drawn (0 when the hour
- * was already drawn or the month's bill has not passed what was drawn).
+ * One account's draw for one UTC day (drive#642). Answers the cents drawn
+ * (0 when the day was already drawn, the millicents did not yet make a cent,
+ * or size30 is 0). Missing or unparseable meter rows throw, so the job
+ * reports the failure and the next run retries; a silent $0 is not a draw.
  * @param {D1Database} db
  * @param {string} accountId
- * @param {number} hour
+ * @param {string} day YYYY-MM-DD
  * @param {number} now
  */
-async function drawFor(db, accountId, hour, now) {
-  const key = usageKey(accountId, hour);
-  const already = await db
-    .prepare("SELECT 1 AS hit FROM balance_ledger WHERE idempotency_key = ?1")
-    .bind(key)
-    .first();
-  if (already) {
-    // Drawn on an earlier run. A reroll that raised this hour's bill is
-    // caught by the next hour's high-water draw, never by a second row here.
-    return 0;
-  }
-  const usage = await monthUsageThrough(db, accountId, hour);
+async function drawForDay(db, accountId, day, now) {
+  const through = Date.parse(`${day}T23:59:59.999Z`);
+  const window = size30Window(through);
+  const size30 = await size30Through(db, accountId, window.from, through);
   const bill = monthBillCents({
-    gbMinutes: usage.gbMinutes,
-    monthMinutes: minutesInMonth(hour),
-    downloadBytes: usage.downloadBytes,
-    // The allowance's average is the same one conversion the storage line
-    // makes (drive#535): the GB-minutes over the month's minutes, not an
-    // average of the hour's marks, which counted a save again and again.
-    averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
+    size30Bytes: size30.size30Bytes,
+    downloadBytes: size30.downloadBytes,
   });
-  const from = monthStart(hour);
-  const sum = await db
+  const previousDay = new Date(Date.parse(`${day}T00:00:00.000Z`) - 24 * HOUR_MS)
+    .toISOString()
+    .slice(0, 10);
+  const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
+    await db
+      .prepare("SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
+      .bind(accountId, previousDay)
+      .first()
+  );
+  const remainderIn = Number(prev?.remainder_millicents ?? 0);
+  const step = dailyDrawMillicents(
+    bill.totalMillicents,
+    Number.isSafeInteger(remainderIn) ? remainderIn : 0,
+  );
+  const reached =
+    size30.reachedHour === null ? null : new Date(size30.reachedHour).toISOString().slice(0, 10);
+  await db
     .prepare(
-      `SELECT COALESCE(SUM(amount_cents), 0) AS drawn FROM balance_ledger
-        WHERE account_id = ?1 AND kind = 'usage' AND window_start >= ?2 AND window_start < ?3`,
+      `INSERT INTO daily_draws (
+        account_id, day, size30_bytes, size30_reached, monthly_millicents,
+        draw_millicents, remainder_millicents, created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      ON CONFLICT(account_id, day) DO NOTHING`,
     )
-    .bind(accountId, from, monthEnd(from))
-    .first();
-  const drawnSoFar = -Number(/** @type {{drawn?: unknown}|null} */ (sum)?.drawn ?? 0);
-  const amount = Math.max(0, bill.totalCents - drawnSoFar);
-  if (amount === 0) {
+    .bind(
+      accountId,
+      day,
+      size30.size30Bytes,
+      reached,
+      bill.totalMillicents,
+      step.drawMillicents,
+      step.remainderMillicents,
+      now,
+    )
+    .run();
+  const stored = /** @type {{draw_millicents?: unknown}|null} */ (
+    await db
+      .prepare("SELECT draw_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
+      .bind(accountId, day)
+      .first()
+  );
+  const drawMillicents = Number(stored?.draw_millicents ?? step.drawMillicents);
+  const amountCents = Math.trunc(drawMillicents / MILLICENTS_PER_CENT);
+  if (amountCents === 0) {
     return 0;
   }
+  const dayStart = Date.parse(`${day}T00:00:00.000Z`);
   const { inserted } = await appendLedgerEntry(db, {
     accountId,
     kind: "usage",
-    amountCents: -amount,
-    idempotencyKey: key,
-    windowStart: hour,
+    amountCents: -amountCents,
+    idempotencyKey: usageDayKey(accountId, day),
+    windowStart: dayStart,
     now,
   });
-  return inserted ? amount : 0;
+  return inserted ? amountCents : 0;
 }
 
 /**
