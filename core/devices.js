@@ -15,7 +15,7 @@
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { BILLING_CONFIG, minutesInMonth, storedGb } from "./billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "./cap.js";
-import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { all, batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
@@ -99,6 +99,14 @@ function deviceFromRow(row) {
       ? {}
       : { cappedFrom: parseCappedFrom(r.capped_from) }),
   };
+}
+
+/**
+ * How many rows one statement changed, off D1's run result.
+ * @param {unknown} result
+ */
+function changesOf(result) {
+  return Number(/** @type {{meta?: {changes?: number}}} */ (result)?.meta?.changes ?? 0);
 }
 
 /**
@@ -346,13 +354,16 @@ export function createD1DeviceStore(db, options = {}) {
    * second call keeps the first revoke's timestamp and counts only what it
    * actually killed.
    *
-   * Order, and why: the live keys are read before the write so each one's
-   * provider credential can be withdrawn by the access key id its row holds;
-   * D1 is then revoked first, so the api refuses every credential from the
-   * next request on whether or not the vendor call succeeds; the vendor is
-   * last, one credential at a time. A vendor refusal is thrown after the local
-   * rows are already dead (revokeCredentialAtProvider), so the failure is
-   * visible and a retry — with no live key left — is a clean revoke.
+   * Order, and why: one `db.batch` revokes the device tokens, share links,
+   * upload requests and every key row with no vendor credential to withdraw,
+   * so a crash cannot leave those half-revoked: D1 runs a batch as one
+   * transaction. Each key row that names a vendor credential is then revoked
+   * only after its provider call succeeds, one key at a time, and a refusal
+   * does not stop the loop: every key is attempted, the failures are counted,
+   * and one error is thrown at the end. A key the vendor refused keeps
+   * `revoked_at` unset: the credential still works at the vendor, so the row
+   * says what is true, and a retry finds it live and attempts it again rather
+   * than reading a clean revoke off a row that lied (drive#529 review).
    * @param {string} accountId
    * @returns {Promise<number>} how many storage key rows this call killed
    */
@@ -360,45 +371,71 @@ export function createD1DeviceStore(db, options = {}) {
     const at = nowSeconds(now());
     const live = await all(
       db,
-      "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND revoked_at IS NULL",
+      "SELECT id, b2_key_id FROM devices WHERE account_id = ?1 AND revoked_at IS NULL",
       accountId,
     );
-    const keys = await run(
-      db,
-      "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
-      at,
-      accountId,
-    );
-    await run(
-      db,
-      "UPDATE device_tokens SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
-      at,
-      accountId,
-    );
+    const withdrawable = typeof inner?.revoke === "function";
     // The site Worker's share and upload-request rows (src/share.js
-    // createD1LinkStore, migrations/drive/0006_share_links.sql). A revoked
-    // link is refused by the same `revoked_at` read the single revoke writes,
-    // so a link killed here is dead on the next request to whichever isolate
-    // answers it.
-    await run(
-      db,
-      "UPDATE shares SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
-      at,
-      accountId,
-    );
-    await run(
-      db,
-      "UPDATE upload_requests SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
-      at,
-      accountId,
-    );
-    for (const row of live) {
-      const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
-      if (typeof accessKeyId === "string" && accessKeyId !== "") {
-        await revokeCredentialAtProvider(accessKeyId);
-      }
+    // createD1LinkStore, migrations/drive/0006_share_links.sql) are in the
+    // same batch: a revoked link is refused by the same `revoked_at` read the
+    // single revoke writes, so a link killed here is dead on the next request
+    // to whichever isolate answers it.
+    const results = await batch(db, [
+      {
+        sql: withdrawable
+          ? "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL AND (b2_key_id IS NULL OR b2_key_id = '')"
+          : "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        params: [at, accountId],
+      },
+      {
+        sql: "UPDATE device_tokens SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        params: [at, accountId],
+      },
+      {
+        sql: "UPDATE shares SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        params: [at, accountId],
+      },
+      {
+        sql: "UPDATE upload_requests SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        params: [at, accountId],
+      },
+    ]);
+    let killed = changesOf(results[0]);
+    if (!withdrawable) {
+      return killed;
     }
-    return Number(/** @type {{meta?: {changes?: number}}} */ (keys).meta?.changes ?? 0);
+    let failed = 0;
+    /** @type {unknown} */
+    let firstError = null;
+    for (const row of /** @type {Array<{id: string, b2_key_id: unknown}>} */ (live)) {
+      const accessKeyId = row.b2_key_id;
+      if (typeof accessKeyId !== "string" || accessKeyId === "") {
+        continue;
+      }
+      try {
+        await revokeCredentialAtProvider(accessKeyId);
+      } catch (error) {
+        failed += 1;
+        firstError ??= error;
+        continue;
+      }
+      killed += changesOf(
+        await run(
+          db,
+          "UPDATE devices SET revoked_at = ?1 WHERE id = ?2 AND account_id = ?3 AND revoked_at IS NULL",
+          at,
+          row.id,
+          accountId,
+        ),
+      );
+    }
+    if (failed > 0) {
+      throw new Error(
+        `The storage provider refused to withdraw ${failed} key(s); they stay live so a retry attempts them again.`,
+        { cause: firstError },
+      );
+    }
+    return killed;
   }
 
   /**
@@ -436,24 +473,41 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Reopen a closed account inside its grace window. Refused once the purge
+   * has begun or could have begun: a saved `purge_cursor` means files are
+   * already gone, and a `closed_at` at or before `purgeDueAt` (the same
+   * cutoff `listDuePurge` reads) means the nightly pass may be deleting the
+   * first batch right now, before it saves a cursor. Reopening either would
+   * hand back an active account with part of its files missing. The update
+   * repeats every condition, so a purge batch that saved its cursor between
+   * the read and the write wins and the cancel is refused.
    * @param {string} accountId
+   * @param {number} [purgeDueAt] unix seconds; a `closed_at` at or before it
+   *   is due its purge. Omitted, only the saved cursor refuses.
    */
-  async function cancelClose(accountId) {
+  async function cancelClose(accountId, purgeDueAt) {
     const existing = await getCloseState(accountId);
     if (existing === null || existing.state !== "closed" || existing.closedAt === null) {
       throw new TypeError("close-not-closed");
     }
-    if (existing.purgedAt !== null) {
+    const due = typeof purgeDueAt === "number" && existing.closedAt <= purgeDueAt;
+    if (existing.purgedAt !== null || existing.purgeCursor !== null || due) {
       throw new TypeError("close-already-purged");
     }
-    await run(
+    const changed = await run(
       db,
       `UPDATE accounts
          SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
              close_mail_sent_at = NULL, purge_cursor = NULL
-       WHERE id = ?1`,
+       WHERE id = ?1 AND state = 'closed' AND purged_at IS NULL
+         AND (purge_cursor IS NULL OR purge_cursor = '')
+         AND (?2 IS NULL OR closed_at > ?2)`,
       accountId,
+      typeof purgeDueAt === "number" ? purgeDueAt : null,
     );
+    if (changesOf(changed) === 0) {
+      throw new TypeError("close-already-purged");
+    }
     const written = await getCloseState(accountId);
     if (written === null) {
       throw new Error(`cancelClose left no accounts row for ${accountId}`);
@@ -604,9 +658,11 @@ export function createD1DeviceStore(db, options = {}) {
    * the vendor's own key API this is `remove_access_key`; on the STS path the
    * credential is a bounded session and there is nothing to withdraw, which
    * is why the call is the provider's to make rather than assumed here. A
-   * provider that refuses is not swallowed: the api's own row is already
-   * revoked (the caller is refused at once), and the refusal is thrown so the
-   * failure is visible rather than read as a clean revoke.
+   * provider that refuses is not swallowed: the refusal is thrown so the
+   * failure is visible rather than read as a clean revoke. The single-key
+   * paths revoke the api's row first; the account-wide revoke
+   * (`revokeAccountCredentials`) stamps a vendor key's row only after this
+   * succeeds, so a refused key is still live for the retry to find.
    *
    * A refused call is retried a short, bounded number of times first
    * (drive#518 review): a vendor blip must not strand a live credential
@@ -811,9 +867,17 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<Device|null>}
      */
     async authenticate(accessKeyId, secret) {
+      // A closed account's key is refused here whatever its own row says: the
+      // close revokes every row, but a key the vendor refused to withdraw
+      // keeps its row live for the retry (revokeAccountCredentials), and that
+      // row must not open the api in the meantime. An account with no
+      // `accounts` row has never closed, so the outer join keeps it.
       const row = await first(
         db,
-        "SELECT * FROM devices WHERE b2_key_id = ?1 AND revoked_at IS NULL",
+        `SELECT devices.* FROM devices
+           LEFT JOIN accounts ON accounts.id = devices.account_id
+          WHERE devices.b2_key_id = ?1 AND devices.revoked_at IS NULL
+            AND (accounts.state IS NULL OR accounts.state != 'closed')`,
         accessKeyId,
       );
       const device = deviceFromRow(row);

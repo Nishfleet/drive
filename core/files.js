@@ -963,7 +963,7 @@ export function scopeStore(store, account) {
       // A store that returned a key outside this account's prefix has a bug,
       // not a row to show: the page would render another account's path.
       throw new Error(
-        `the store returned ${key}, which is not under ${prefix}/; a scoped store must never read outside the account's own prefix`,
+        "the store returned a key outside the account's own prefix; a scoped store must never read outside it",
       );
     }
     return `/${key.slice(prefix.length + 1)}`;
@@ -1669,7 +1669,7 @@ export function createS3Store(config) {
           // the request open. A truncated folder is the one failure this file
           // exists to prevent, so it is named instead of returned.
           throw new Error(
-            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+            "storage list repeated continuation-token; the folder is not fully listed",
           );
         }
         seen = token;
@@ -1733,7 +1733,7 @@ export function createS3Store(config) {
         }
         if (token === seen) {
           throw new Error(
-            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+            "storage list repeated continuation-token; the folder is not fully listed",
           );
         }
         seen = token;
@@ -1920,7 +1920,7 @@ export function createS3Store(config) {
           // The same repeat guard the folder listing below carries: a server
           // answering the same token forever would hold the cron open.
           throw new Error(
-            `storage list repeated continuation-token "${token}" for ${prefix}; the listing is not fully read`,
+            "storage list repeated continuation-token; the listing is not fully read",
           );
         }
         seen = token;
@@ -1968,10 +1968,15 @@ export function createS3Store(config) {
         throw new Error(`storage batch delete failed with ${response.status}`);
       }
       const xml = await response.text();
-      for (const match of xml.matchAll(/<Error>([\s\S]*?)<\/Error>/g)) {
-        const key = decodeEntities(tagValue(match[1], "Key"));
-        const code = tagValue(match[1], "Code");
-        throw new Error(`storage batch delete refused "${key}" with ${code || "an error"}`);
+      // The message names positions and the provider's code, never the key:
+      // a key carries the person's file name, and the purge logs this text.
+      const refused = [...xml.matchAll(/<Error>([\s\S]*?)<\/Error>/g)];
+      if (refused.length > 0) {
+        const index = paths.indexOf(decodeEntities(tagValue(refused[0][1], "Key")));
+        const code = tagValue(refused[0][1], "Code");
+        throw new Error(
+          `storage batch delete refused ${refused.length} of ${paths.length} keys (first at index ${index}) with ${code || "an error"}`,
+        );
       }
     },
     /**

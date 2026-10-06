@@ -3388,7 +3388,39 @@ test("removeBatch refuses a 200 answer that carries per-key errors", async () =>
   });
   await assert.rejects(
     store.removeBatch(["u/acct/gone.txt", "u/acct/stuck.txt"]),
-    /refused "u\/acct\/stuck\.txt" with InternalError/,
+    (/** @type {Error} */ error) => {
+      assert.match(error.message, /refused 1 of 2 keys \(first at index 1\) with InternalError/);
+      // The purge logs this text, so the key (the person's file name) is not in it.
+      assert.doesNotMatch(error.message, /stuck/);
+      return true;
+    },
+  );
+});
+
+test("a scoped purge cursor cannot reach outside the account's own prefix", async () => {
+  const { createMemoryStore } = await import("../core/files.js");
+  const store = createMemoryStore();
+  await scopeStore(store, { id: "acct_a" }).write("/a.txt", "mine", "text/plain");
+  await scopeStore(store, { id: "acct_b" }).write("/b.txt", "theirs", "text/plain");
+  const scoped = scopeStore(store, { id: "acct_a" });
+  // A cursor that climbs out is refused before any listing runs.
+  await assert.rejects(
+    scoped.listKeys("/", { startAfter: "/../acct_b/a.txt" }),
+    /a scoped store needs a drive path/,
+  );
+  await assert.rejects(
+    scoped.listKeys("/", { startAfter: "u/acct_b/" }),
+    /a scoped store needs a drive path/,
+  );
+  // A cursor shaped like another account's key is still a path inside this
+  // one: the prefix is prepended, so the listing never names acct_b's file.
+  const keys = await scoped.listKeys("/", { startAfter: "/" });
+  assert.deepEqual(keys, ["/a.txt"]);
+  const spoofed = await scoped.listKeys("/", { startAfter: "/u/acct_b/b.txt" });
+  assert.deepEqual(
+    spoofed,
+    [],
+    "the listing starts after u/acct_a/u/acct_b/b.txt, never in acct_b",
   );
 });
 
