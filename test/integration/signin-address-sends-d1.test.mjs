@@ -22,8 +22,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { createMemoryStore } from "../../core/files.js";
+import { METER_RECONCILE_SCHEDULE } from "../../core/meter.js";
 import worker from "../../src/index.js";
-import { METER_RECONCILE_SCHEDULE } from "../../src/meter.js";
 import {
   purgeExpiredSigninSends,
   SIGNIN_SEND_DAILY_MAX,
@@ -279,9 +280,10 @@ test("the nightly trip runs the sweep on the customer database", async () => {
   assert.equal(await spend(db, "live@b.co", NOW - 3600_000), "allowed");
   /** @type {Promise<unknown>[]} */
   const waited = [];
-  const store = {
-    list: async () => ({ objects: [], truncated: false }),
-  };
+  // The nightly trip uses the store it is handed for the reconcile too
+  // (drive#505: no in-memory fallback in production), so the stand-in is the
+  // tests' full in-memory store, not a list-only stub.
+  const store = createMemoryStore();
   const trigger =
     /** @type {{scheduled(event: unknown, env: unknown, context: unknown, store: unknown): Promise<unknown>}} */ (
       /** @type {unknown} */ (worker)

@@ -17,6 +17,15 @@ the live site.
 
 ## 2026-10-05
 
+- The stored-bytes mark for one hour is what your drive held at the end of
+  that hour, so a file you replace several times inside an hour counts once, not
+  once per save. Each save is still billed for at least one hour, and the
+  pricing page, the how-it-works page, the FAQ and llms.txt now say so.
+- The free download allowance follows the average your GB-minutes work out to,
+  not the biggest single hour mark, so an hour where two versions were both
+  live no longer raises the allowance on its own.
+- A month whose files are all empty bills $0 through the usage and cap routes
+  instead of failing them.
 - The last-sync time on the Get started page is written in the time zone your
   own computer is in, with the day first and the month short, the order the
   site's other dates use.

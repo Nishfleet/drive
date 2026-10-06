@@ -11,7 +11,7 @@
 // test/pricing-copy.test.mjs for the price.
 //
 // What the endpoint does today, and what it deliberately does not. The store
-// is Better Auth over the customer database (src/auth.js): a link that is
+// is Better Auth over the customer database (core/auth.js): a link that is
 // single-use, expiring and stored beside the account's own rows, so a session
 // survives the isolate that made it. This route owns the HTTP shape — the two
 // steps, the closed door, the words — and none of the rules behind them: who
@@ -22,7 +22,7 @@
 // The route stays a closed door (503, the message table's words) when no
 // EMAIL binding is bound to the deployment, so a deployment that could not
 // mail a link never reports one sent. That is the same posture
-// POST /api/emails/send takes with EMAIL_SEND_TOKEN unset (src/email-send.js).
+// POST /api/emails/send takes with EMAIL_SEND_TOKEN unset (core/email-send.js).
 //
 // Third-party sign-in (Google, GitHub) is read by the endpoint and answered
 // the closed way. The OAuth client ids and secrets are credentials on Nish's
@@ -44,19 +44,16 @@
 // no parse and no email; both are declared next to the waitlist's in
 // cloudflare.config.ts, and both are probed by the health endpoint
 // (src/health.js), which answers 503 naming one a deploy lost. The shared
-// module (src/rate-limit.js) owns the key, the fail-closed answer and the 429,
+// module (core/rate-limit.js) owns the key, the fail-closed answer and the 429,
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { json } from "../workers/api/src/http.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
   pendingCardAccountId,
   signupCardFingerprint,
-} from "./abuse-guards.js";
+} from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
@@ -64,16 +61,20 @@ import {
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
   sessionAccount,
-} from "./auth.js";
-import { provisionAccountBucket } from "./files.js";
-import { failureMessage } from "./messages.js";
-import { PRICE } from "./pricing.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { provisionAccountBucket } from "../core/files.js";
+import { json } from "../core/http.js";
+import { keyProviderFor } from "../core/keyprovider-env.js";
+import { failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
-import { cookieHeaders, cookieValue, redirect, signinLinkRequest } from "./signin-http.js";
 import { signinSendOutcome } from "./signin-send-limit.js";
+import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 
-/** @typedef {import("./auth.js").Auth} Auth */
+/** @typedef {import("../core/auth.js").Auth} Auth */
 
 /**
  * What a caller is told when the address is not one a link can be sent to. One
@@ -131,7 +132,7 @@ export const SIGNIN_OFFERED_METHODS = Object.freeze(["email"]);
 // Every word and every path the page shows, in one place. The page carries
 // these verbatim (test/signin.test.mjs pins each one against the shipped
 // file); nothing here is money, so no number is written twice — the one price
-// line comes from src/pricing.js, the single price source.
+// line comes from core/pricing.js, the single price source.
 export const SIGNIN_COPY = Object.freeze({
   title: "Sign in",
   // drive#180: the screen offers only what the server can complete, so the
@@ -185,7 +186,7 @@ export const SIGNIN_COPY = Object.freeze({
 
 /**
  * The route's one closed-door answer, built from the message table so the
- * words are the same ones every other surface uses (src/messages.js).
+ * words are the same ones every other surface uses (core/messages.js).
  * @returns {{error: string}}
  */
 export function signinClosedBody() {
@@ -324,7 +325,7 @@ function readStart(body) {
 
 /**
  * The environment this route needs. It is the Worker's own env plus the three
- * Better Auth settings (src/auth.js) and the test seam that stands in for the
+ * Better Auth settings (core/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
  * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
@@ -428,16 +429,32 @@ export async function handleSigninRequest(request, env) {
         if (db === undefined || db === null || typeof db !== "object") {
           everywhereError = failureMessage("drive-not-configured");
         } else {
-          try {
-            await createD1DeviceStore(db).revokeAllKeys(account);
-            await createD1DeviceSigninStore(db).revokeAllDeviceTokens(account);
+          // The deployment's own key provider, the one close and the cap
+          // route use (keyprovider-env.js), so a signed-out key is withdrawn
+          // at the vendor and not only refused by the api. Each of the three
+          // writes is attempted whatever the one before it did: a vendor
+          // refusal leaves that key live for the next tap to retry
+          // (devices.js revokeAccountCredentials), and it must not leave the
+          // device tokens or the browser sessions standing as well.
+          const keyProvider =
+            keyProviderFor(
+              /** @type {{[key: string]: unknown}} */ (/** @type {unknown} */ (env)),
+            ) ?? undefined;
+          const steps = [
+            () => createD1DeviceStore(db, { keyProvider }).revokeAllKeys(account),
+            () => createD1DeviceSigninStore(db).revokeAllDeviceTokens(account),
             // Better Auth's own adapter, not a hand-written delete against
             // its table. Its revoke-sessions endpoint would do the same, but
             // it demands a fresh session, so a day-old sign-in could not
             // sign out everywhere.
-            await (await auth.$context).internalAdapter.deleteUserSessions(account.id);
-          } catch (_error) {
-            everywhereError = failureMessage("storage-down");
+            async () => (await auth.$context).internalAdapter.deleteUserSessions(account.id),
+          ];
+          for (const step of steps) {
+            try {
+              await step();
+            } catch (_error) {
+              everywhereError = failureMessage("storage-down");
+            }
           }
         }
       }
@@ -559,7 +576,7 @@ export async function handleSigninRequest(request, env) {
     // Better Auth answers 429 from its rate limiter; translate that into the
     // message table's words rather than passing its body through, and carry the
     // library's own retry-after through as the `retry-after` header the edge
-    // limiter sets (src/rate-limit.js), so a client gets one backoff signal.
+    // limiter sets (core/rate-limit.js), so a client gets one backoff signal.
     if (authResponse.status === 429) {
       const retryAfter = authResponse.headers.get("x-retry-after");
       return json(
@@ -684,6 +701,28 @@ export async function handleSigninLinkVerify(request, env) {
           `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,
         );
       }
+      // The welcome email, once (drive#522). Four customer templates had no
+      // caller at all, so somebody could sign up, be charged, hit their cap
+      // and never hear from us. This is the seam that is guaranteed to run for
+      // a real account, and it is once-only because the claim lives on the
+      // account row (src/welcome.js), not in this isolate.
+      //
+      // A welcome is the one of those four that does not wait on a billing
+      // decision, so it ships here; the other three are still waiting on
+      // #496, and test/email-callers.test.mjs names them so they cannot go
+      // missing again quietly.
+      //
+      // Never throws: sendWelcomeOnce reports instead, because a failed
+      // welcome must never cost somebody their sign-in.
+      const secrets = /** @type {{MAIL_FROM?: string}} */ (env);
+      await sendWelcomeOnce({
+        db: /** @type {D1Database} */ (driveDb),
+        devices: createWelcomeStore(/** @type {D1Database} */ (driveDb)),
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        account,
+        now: Date.now(),
+      });
     }
   }
   // The one thing this route does is take the cookie Better Auth set onto a
@@ -695,4 +734,119 @@ export async function handleSigninLinkVerify(request, env) {
   const returnTo = safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
   cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
   return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
+}
+
+/**
+ * The internal Better Auth request that the start step forwards a send to.
+ *
+ * The route never calls `auth.api.signInMagicLink` directly because that
+ * bypasses the router's onRequest hook — and with it the per-IP rate limiter
+ * Better Auth stores in D1 (drive issue #200). Forwarding a real request
+ * through `auth.handler` puts the call in that hook, so the counter is
+ * checked and incremented the same way a browser hit the library route.
+ *
+ * The URL is the library's own endpoint under the configured auth base path;
+ * the body carries only the address the start step already validated. Of the
+ * caller's headers it forwards only what the callee reads — the `origin` its
+ * origin check validates against and the `cf-connecting-ip` its rate limiter
+ * keys on — never the whole header set (see the note in the body below).
+ * @param {Auth} auth the Better Auth instance from `authFor`
+ * @param {string} email the address the start step validated
+ * @param {Request} request the caller's request, whose origin and client-IP headers are forwarded
+ * @returns {Request}
+ */
+function signinLinkRequest(auth, email, request) {
+  const basePath = auth.options.basePath;
+  const base = /** @type {string} */ (auth.options.baseURL);
+  // Forward only what the callee reads, not the caller's whole header set. The
+  // library validates the origin from `origin` and resolves the per-IP
+  // rate-limit key from `cf-connecting-ip` (its configured ipAddressHeaders,
+  // core/auth.js); a JSON body is all it parses. The caller's `content-length`
+  // names this route's body, not the JSON built here, so carrying it across
+  // risks a body/length mismatch, and `Cookie`/`Authorization` belong to a
+  // signed-in person a magic-link send has no need to impersonate. `accept` is
+  // not forwarded either: the library's answer is JSON and the route reads the
+  // status, never a negotiated representation.
+  const headers = new Headers();
+  const origin = request.headers.get("origin");
+  if (origin !== null) {
+    headers.set("origin", origin);
+  }
+  const clientIp = request.headers.get("cf-connecting-ip");
+  if (clientIp !== null) {
+    headers.set("cf-connecting-ip", clientIp);
+  }
+  // The user-agent travels so the mail can name the browser or device
+  // that asked (drive#550): the library's own request context carries
+  // the forwarded headers into the magic-link callback, which is where
+  // the mail is built. It is a person's own string, not a key anything
+  // is bound to.
+  const userAgent = request.headers.get("user-agent");
+  if (userAgent !== null) {
+    headers.set("user-agent", userAgent);
+  }
+  // The body is the library's own shape, not the route's `step` wrapper.
+  headers.set("content-type", "application/json");
+  return new Request(`${base}${basePath}/sign-in/magic-link`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ email }),
+  });
+}
+
+/**
+ * The `Set-Cookie` headers of a library response, each as its own line, so the
+ * browser sees every cookie the library set or cleared rather than one header
+ * with several cookies in it. The Workers runtime gives one cookie per
+ * `Set-Cookie` header, and a comma-joined pair is not what a browser reads.
+ * @param {Response} response
+ * @returns {Record<string, string[]>}
+ */
+function cookieHeaders(response) {
+  const cookies = response.headers.getSetCookie();
+  return cookies.length === 0 ? {} : { "set-cookie": cookies };
+}
+
+/**
+ * One cookie value from the request, or empty. Used only to read the
+ * after-signin return path the approve page set.
+ * @param {Request} request
+ * @param {string} name
+ */
+function cookieValue(request, name) {
+  const header = request.headers.get("cookie") ?? "";
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) {
+      continue;
+    }
+    if (part.slice(0, idx).trim() !== name) {
+      continue;
+    }
+    try {
+      return decodeURIComponent(part.slice(idx + 1).trim());
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+/**
+ * A redirect the browser follows, never cached: it can carry a session cookie,
+ * and the same rule every other account response carries.
+ * @param {string} location
+ * @param {Record<string, string[]>} [extraHeaders]
+ * @returns {Response}
+ */
+function redirect(location, extraHeaders = {}) {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location,
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      ...extraHeaders,
+    },
+  });
 }

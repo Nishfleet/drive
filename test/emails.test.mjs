@@ -9,18 +9,21 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG } from "../src/billing.js";
+import { BILLING_CONFIG } from "../core/billing.js";
 import {
   handleSendEmailRequest,
   isAuthorizedSend,
   isSameOriginRequest,
+  replyToFor,
   sendEmail,
-} from "../src/email-send.js";
+} from "../core/email-send.js";
 import {
+  accountCloseReminderTemplate,
   capWarningTemplate,
   DEFAULT_CAP_USD,
   EMAIL_KINDS,
   FROM_NAME,
+  filesDeletedTemplate,
   monthlyReceiptTemplate,
   paymentFailedTemplate,
   RATE_USD_PER_GB,
@@ -29,11 +32,15 @@ import {
   SAVED_COPY,
   savedLine,
   welcomeTemplate,
-} from "../src/emails.js";
+} from "../core/emails.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
 // a deployment decision, not a code one).
 const MAIL_FROM = "notifications@drive.example";
+
+// The address every template's footer names, and the one sendEmail derives
+// from MAIL_FROM (drive#522).
+const REPLY_TO = replyToFor(MAIL_FROM);
 
 /**
  * A fake send_email binding: records the message, and can be told to fail.
@@ -103,6 +110,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "monthly-receipt",
     "account-closed",
     "account-close-reminder",
+    // The purge notice (drive#522): sent the moment the files are deleted.
+    "files-deleted",
     "top-up-receipt",
     "low-balance",
     "device-approve-notice",
@@ -129,12 +138,68 @@ test("every email carries one sign-off, in both parts", () => {
   }
 });
 
+test("every kind carries an absolute footer link and the reply address", () => {
+  // Bullet 5 of drive#522: no template may ship without a way back to the
+  // site and a way to reach a person. The link is absolute, because a mail
+  // client has no page to resolve a relative one against.
+  for (const kind of EMAIL_KINDS) {
+    const { text, html } = renderEmail(kind, dataFor(kind));
+    assert.match(text, /https:\/\/[^\s]+/, `${kind} needs an absolute text link`);
+    assert.match(html, /href="https:\/\/[^"]+"/, `${kind} needs an absolute HTML link`);
+    assert.ok(text.includes(REPLY_TO), `${kind} needs the reply address in text`);
+    assert.ok(html.includes(REPLY_TO), `${kind} needs the reply address in HTML`);
+  }
+});
+
+test("the reminder names the real window, and due once the window has passed", () => {
+  // The day-25 reminder counts down. A late retry (day 30 or later) must not
+  // claim "in 5 days" on a date that already went by, because the purge runs
+  // in that same pass (drive#522).
+  const onTime = accountCloseReminderTemplate({
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov (UTC)",
+    replyTo: REPLY_TO,
+  });
+  assert.equal(onTime.subject, "Your Drive files will be deleted in 5 days");
+  assert.match(onTime.text, /in 5 days, on 3 Nov \(UTC\)/);
+
+  const late = accountCloseReminderTemplate({
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov (UTC)",
+    due: true,
+    replyTo: REPLY_TO,
+  });
+  assert.equal(late.subject, "Your Drive files are due to be deleted");
+  assert.match(late.text, /due to be deleted/);
+  assert.doesNotMatch(late.text, /in 5 days/);
+});
+
+test("the close lane links to the usage page, and the deletion notice cannot be undone", () => {
+  // A closed account has no drive to open, so the close-lane footer link goes
+  // to the usage page instead of the default "Open your drive" (drive#522).
+  for (const kind of ["account-closed", "account-close-reminder"]) {
+    const { text } = renderEmail(kind, dataFor(kind));
+    assert.match(text, /\/usage\.html/, `${kind} links to the usage page`);
+    assert.doesNotMatch(text, /Open your drive/, `${kind} does not open a shut drive`);
+  }
+  const deleted = filesDeletedTemplate({
+    purgedOn: "3 Nov (UTC)",
+    graceDays: 30,
+    replyTo: REPLY_TO,
+  });
+  assert.match(deleted.text, /Nothing else was deleted\. This deletion cannot be undone\./);
+  assert.doesNotMatch(deleted.text, /we will look/);
+  assert.match(deleted.text, /https:\/\/[^\s]+/, "the deletion notice still has a link");
+});
+
 // ---------------------------------------------------------------------------
 // 1) welcome
 // ---------------------------------------------------------------------------
 
 test("welcome names the one install command and what it does", () => {
-  const { subject, text } = welcomeTemplate();
+  const { subject, text } = welcomeTemplate({ replyTo: REPLY_TO });
   assert.equal(subject, "Your drive is ready");
   assert.match(text, /drive init/);
   // The one command, not a second install path: the CLI ships with build
@@ -150,7 +215,7 @@ test("welcome names the one install command and what it does", () => {
 // ---------------------------------------------------------------------------
 
 test("the cap warning fires at 80% and names the cap in dollars", () => {
-  const { subject, text } = capWarningTemplate({ capUsd: 12 });
+  const { subject, text } = capWarningTemplate({ capUsd: 12, replyTo: REPLY_TO });
   assert.match(subject, /80%/);
   assert.match(text, /80% of your \$12\.00 spending cap/);
   // 80% of a $12 cap is $9.60: the reader can check the warning against the
@@ -163,7 +228,7 @@ test("the cap warning fires at 80% and names the cap in dollars", () => {
 test("the cap warning defaults to the decided cap and carries it in both parts", () => {
   // The template requires the cap, so a caller that means the default passes
   // it explicitly; both paths render the same message.
-  const withDefault = capWarningTemplate({ capUsd: DEFAULT_CAP_USD });
+  const withDefault = capWarningTemplate({ capUsd: DEFAULT_CAP_USD, replyTo: REPLY_TO });
   assert.match(withDefault.html, /\$20\.00/);
   assert.match(withDefault.text, /\$20\.00/);
 });
@@ -173,19 +238,30 @@ test("a cap warning with no usable cap is a loud error, not a $0 email", () => {
   // must not silently send the default ("you have used 80% of your $12.00
   // spending cap") for someone who set $50. Every unusable value throws.
   for (const capUsd of [undefined, null, Number.NaN, -1, "12"]) {
-    assert.throws(() => capWarningTemplate({ capUsd }), TypeError, `capUsd ${capUsd}`);
-    assert.throws(() => readOnlyTemplate({ capUsd }), TypeError, `capUsd ${capUsd}`);
+    assert.throws(
+      () => capWarningTemplate({ capUsd, replyTo: REPLY_TO }),
+      TypeError,
+      `capUsd ${capUsd}`,
+    );
+    assert.throws(
+      () => readOnlyTemplate({ capUsd, replyTo: REPLY_TO }),
+      TypeError,
+      `capUsd ${capUsd}`,
+    );
   }
-  assert.throws(() => readOnlyTemplate({}), TypeError);
-  assert.throws(() => capWarningTemplate(), TypeError);
-  assert.throws(() => paymentFailedTemplate({ amountUsd: undefined }), TypeError);
-  assert.throws(() => monthlyReceiptTemplate({ billUsd: -1 }), TypeError);
+  assert.throws(() => readOnlyTemplate({ replyTo: REPLY_TO }), TypeError);
+  assert.throws(() => capWarningTemplate({ replyTo: REPLY_TO }), TypeError);
+  assert.throws(
+    () => paymentFailedTemplate({ amountUsd: undefined, replyTo: REPLY_TO }),
+    TypeError,
+  );
+  assert.throws(() => monthlyReceiptTemplate({ billUsd: -1, replyTo: REPLY_TO }), TypeError);
 });
 
 test("the cap warning says nothing is deleted", () => {
   // The cap is the scariest mail the product sends, and "nothing is deleted"
   // is the sentence that has to be in it (build-spec.md "Spending cap").
-  const { text, html } = capWarningTemplate({ capUsd: 12 });
+  const { text, html } = capWarningTemplate({ capUsd: 12, replyTo: REPLY_TO });
   assert.match(text, /Nothing is deleted/);
   assert.match(html, /Nothing is deleted/);
 });
@@ -195,7 +271,7 @@ test("the cap warning says nothing is deleted", () => {
 // ---------------------------------------------------------------------------
 
 test("read-only names the cap, says nothing is deleted, and gives the way back", () => {
-  const { subject, text, html } = readOnlyTemplate({ capUsd: 12 });
+  const { subject, text, html } = readOnlyTemplate({ capUsd: 12, replyTo: REPLY_TO });
   assert.match(subject, /read-only/);
   assert.match(text, /\$12\.00 spending cap and is now read-only/);
   assert.match(text, /Nothing is deleted/);
@@ -206,7 +282,7 @@ test("read-only names the cap, says nothing is deleted, and gives the way back",
 });
 
 test("read-only still says the files are readable", () => {
-  const { text } = readOnlyTemplate({ capUsd: 12 });
+  const { text } = readOnlyTemplate({ capUsd: 12, replyTo: REPLY_TO });
   assert.match(text, /still readable/);
 });
 
@@ -215,7 +291,7 @@ test("read-only still says the files are readable", () => {
 // ---------------------------------------------------------------------------
 
 test("payment failed names the amount and the way to fix it", () => {
-  const { subject, text, html } = paymentFailedTemplate({ amountUsd: 23.5 });
+  const { subject, text, html } = paymentFailedTemplate({ amountUsd: 23.5, replyTo: REPLY_TO });
   assert.match(subject, /payment did not go through/);
   assert.match(text, /could not charge \$23\.50/);
   assert.match(html, /\$23\.50/);
@@ -228,7 +304,7 @@ test("payment failed never blames the person", () => {
   // Nish's north star (drive#35): say what happened and what to do, not who is
   // at fault. The banned words are the ones that turn a card problem into a
   // blame message.
-  const { text } = paymentFailedTemplate({ amountUsd: 4 });
+  const { text } = paymentFailedTemplate({ amountUsd: 4, replyTo: REPLY_TO });
   for (const blame of ["your fault", "you failed", "declined card", "expired card"]) {
     assert.equal(text.toLowerCase().includes(blame), false, `no "${blame}"`);
   }
@@ -249,6 +325,8 @@ function receiptData(overrides = {}) {
     meteredUsd: 16,
     ceilingUsd: 12,
     capped: true,
+    // The footer address every template prints (drive#522).
+    replyTo: REPLY_TO,
     ...overrides,
   };
 }
@@ -258,26 +336,36 @@ function receiptData(overrides = {}) {
 // rather than one blob for all five.
 /** @param {string} kind */
 function dataFor(kind) {
+  // replyTo on every branch, because every template footer prints it
+  // (drive#522). sendEmail is the real producer of it; these tests render
+  // templates directly, so they pass the address the deployment would derive.
+  const base = { replyTo: REPLY_TO };
   switch (kind) {
     case "welcome":
-      return {};
+      return { ...base };
     case "cap-warning":
-      return { capUsd: 12 };
+      return { ...base, capUsd: 12 };
     case "read-only":
-      return { capUsd: 12 };
+      return { ...base, capUsd: 12 };
     case "payment-failed":
-      return { amountUsd: 23.5 };
+      return { ...base, amountUsd: 23.5 };
     case "monthly-receipt":
-      return receiptData();
+      return { ...receiptData(), ...base };
     case "account-closed":
     case "account-close-reminder":
-      return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
+      return { ...base, graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
+    case "files-deleted":
+      return { ...base, purgedOn: "3 Nov (UTC)", graceDays: 30 };
     case "top-up-receipt":
-      return { amountUsd: 25, balanceUsd: 31.5, auto: false };
+      return { ...base, amountUsd: 25, balanceUsd: 31.5, auto: false };
     case "low-balance":
-      return { balanceUsd: 1.8, autoTopUpUsd: null };
+      return { ...base, balanceUsd: 1.8, autoTopUpUsd: null };
     case "device-approve-notice":
-      return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+      return {
+        ...base,
+        deviceName: "office laptop",
+        requestedAt: "2026-10-05T12:00:00.000Z",
+      };
     default:
       throw new Error(`no test data for ${kind}`);
   }
@@ -326,14 +414,16 @@ test("a receipt is built from months that can actually happen", () => {
   // pins the arithmetic on real, consistent months rather than on an
   // impossible one.
   // 0.6 TB metered at 2c/GB = $12, ceiling $23 (uncapped): bill $12, saved $11.
-  const uncapped = monthlyReceiptTemplate(
-    receiptData({ billUsd: 12, meteredUsd: 12, ceilingUsd: 23, capped: false }),
-  );
+  const uncapped = monthlyReceiptTemplate({
+    ...receiptData({ billUsd: 12, meteredUsd: 12, ceilingUsd: 23, capped: false }),
+    replyTo: REPLY_TO,
+  });
   assert.equal(uncapped.saved, "You paid $11.00 less than a flat plan");
   // 2 TB peak: meter $40, ceiling $23 (capped): bill $23, saved $17.
-  const capped = monthlyReceiptTemplate(
-    receiptData({ billUsd: 23, meteredUsd: 40, ceilingUsd: 23, capped: true }),
-  );
+  const capped = monthlyReceiptTemplate({
+    ...receiptData({ billUsd: 23, meteredUsd: 40, ceilingUsd: 23, capped: true }),
+    replyTo: REPLY_TO,
+  });
   assert.equal(capped.saved, "Our price cap saved you $17.00");
   assert.match(capped.text, /bill for October 2026, UTC is \$23\.00/);
 });
@@ -540,7 +630,14 @@ test("capped must be a real boolean, because it picks the saving's baseline", ()
       `capped: ${String(capped)}`,
     );
     assert.throws(
-      () => monthlyReceiptTemplate({ billUsd: 12, meteredUsd: 16, ceilingUsd: 23, capped }),
+      () =>
+        monthlyReceiptTemplate({
+          billUsd: 12,
+          meteredUsd: 16,
+          ceilingUsd: 23,
+          capped,
+          replyTo: REPLY_TO,
+        }),
       TypeError,
       `capped: ${String(capped)}`,
     );
@@ -572,7 +669,7 @@ test("the HTML part carries no unescaped caller value", () => {
 test("every interpolated value is a validated number or fixed prose", () => {
   // The templates only ever splice usd() output or a constant sentence into
   // the markup; a caller cannot smuggle markup through the data object.
-  const { html } = paymentFailedTemplate({ amountUsd: 1 });
+  const { html } = paymentFailedTemplate({ amountUsd: 1, replyTo: REPLY_TO });
   assert.match(html, /\$1\.00/);
   // The data object's string fields are never concatenated into html: passing
   // one changes nothing in the output.
@@ -599,9 +696,12 @@ test("sendEmail hands the rendered message to the binding", async () => {
   assert.deepEqual(email.sent[0], {
     to: "person@example.com",
     from: { email: MAIL_FROM, name: FROM_NAME },
+    // The header address and the footer line are the same value, derived from
+    // MAIL_FROM (drive#522).
+    replyTo: REPLY_TO,
     subject: "Your drive is ready",
-    text: welcomeTemplate().text,
-    html: welcomeTemplate().html,
+    text: welcomeTemplate({ replyTo: REPLY_TO }).text,
+    html: welcomeTemplate({ replyTo: REPLY_TO }).html,
   });
 });
 
@@ -915,21 +1015,41 @@ test("the route sends each of the five kinds through the one lane", async () => 
 // ---------------------------------------------------------------------------
 
 test("a top-up receipt names the money added and the balance it left", () => {
-  const manual = renderEmail("top-up-receipt", { amountUsd: 25, balanceUsd: 31.5, auto: false });
+  const manual = renderEmail("top-up-receipt", {
+    amountUsd: 25,
+    balanceUsd: 31.5,
+    auto: false,
+    replyTo: REPLY_TO,
+  });
   assert.equal(manual.subject, "Your Drive receipt: $25.00 added");
   assert.match(manual.text, /You added \$25\.00/);
   assert.match(manual.text, /balance is now \$31\.50\. It never expires\./);
-  const auto = renderEmail("top-up-receipt", { amountUsd: 10, balanceUsd: 11.2, auto: true });
+  const auto = renderEmail("top-up-receipt", {
+    amountUsd: 10,
+    balanceUsd: 11.2,
+    auto: true,
+    replyTo: REPLY_TO,
+  });
   assert.match(auto.text, /^Auto top-up added \$10\.00/);
-  assert.throws(() => renderEmail("top-up-receipt", { amountUsd: 10, balanceUsd: 1 }), /auto/);
-  assert.throws(() => renderEmail("top-up-receipt", { balanceUsd: 1, auto: false }), /amountUsd/);
+  assert.throws(
+    () => renderEmail("top-up-receipt", { amountUsd: 10, balanceUsd: 1, replyTo: REPLY_TO }),
+    /auto/,
+  );
+  assert.throws(
+    () => renderEmail("top-up-receipt", { balanceUsd: 1, auto: false, replyTo: REPLY_TO }),
+    /amountUsd/,
+  );
 });
 
 test("the low-balance email says what happens at $0, or that auto top-up covers it", () => {
-  const off = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: null });
+  const off = renderEmail("low-balance", {
+    balanceUsd: 1.8,
+    autoTopUpUsd: null,
+    replyTo: REPLY_TO,
+  });
   assert.equal(off.subject, "Your Drive balance is $1.80");
   assert.match(off.text, /Top up to keep adding files\./);
   assert.match(off.text, /nothing is deleted/);
-  const on = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: 25 });
+  const on = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: 25, replyTo: REPLY_TO });
   assert.match(on.text, /Auto top-up is on, so \$25\.00 will be added/);
 });

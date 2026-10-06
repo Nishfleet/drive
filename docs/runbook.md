@@ -20,6 +20,7 @@ Nothing here runs on its own except the workflows named in each section.
   | Meter nightly reconciler | `meter-nightly-reconcile` | `0 4 * * *` |
   | Nightly reindex | `nightly-reindex` | `0 3 * * *` |
   | Nightly trash purge | `nightly-trash-purge` | `0 5 * * *` |
+  | Nightly account close | `nightly-account-close` | `0 6 * * *` |
 
   A missing or late check-in opens an issue on the second consecutive miss
   (`failureIssueThreshold: 2`); the first good run resolves it.

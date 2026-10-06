@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // `drive branch`, `drive branches`, `drive diff`, `drive approve` and
@@ -31,6 +32,8 @@ type branchStandIn struct {
 	createConflict bool
 	failMint       bool
 	failGet        bool
+	createState    string
+	getStates      []string
 }
 
 func branchServer(t *testing.T) (*httptest.Server, *[]branchCall) {
@@ -41,6 +44,7 @@ func branchServer(t *testing.T) (*httptest.Server, *[]branchCall) {
 func branchServerWith(t *testing.T, cfg branchStandIn) (*httptest.Server, *[]branchCall) {
 	t.Helper()
 	calls := &[]branchCall{}
+	getIndex := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call := branchCall{Method: r.Method, Path: r.URL.Path, Auth: r.Header.Get("authorization")}
 		body := map[string]string{}
@@ -60,7 +64,15 @@ func branchServerWith(t *testing.T, cfg branchStandIn) (*httptest.Server, *[]bra
 			if name == "" {
 				name = "work"
 			}
-			writeJSON(t, w, 201, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"open","files":2}}`)
+			state := cfg.createState
+			if state == "" {
+				state = "open"
+			}
+			files := "2"
+			if state != "open" {
+				files = "0"
+			}
+			writeJSON(t, w, 202, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"`+state+`","files":`+files+`,"progress":{"kind":"create","done":0,"total":0}}}`)
 		case r.Method == "GET" && r.URL.Path == BRANCHES_PATH:
 			writeJSON(t, w, 200, `{"branches":[{"name":"work","sourcePrefix":"/Photos","state":"open","changed":3,"sourceChanged":1}]}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, BRANCHES_PATH+"/") && !strings.Contains(r.URL.Path[len(BRANCHES_PATH)+1:], "/"):
@@ -69,11 +81,20 @@ func branchServerWith(t *testing.T, cfg branchStandIn) (*httptest.Server, *[]bra
 				return
 			}
 			name := r.URL.Path[len(BRANCHES_PATH)+1:]
-			writeJSON(t, w, 200, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"open","files":2},"diff":{"added":["new.txt"],"changed":["a.txt"],"removed":[],"sourceChanged":["a.txt"]}}`)
+			state := "open"
+			if getIndex < len(cfg.getStates) {
+				state = cfg.getStates[getIndex]
+				getIndex++
+			}
+			files := "2"
+			if state != "open" {
+				files = "0"
+			}
+			writeJSON(t, w, 200, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"`+state+`","files":`+files+`},"diff":{"added":["new.txt"],"changed":["a.txt"],"removed":[],"sourceChanged":["a.txt"]}}`)
 		case r.Method == "POST" && r.URL.Path == BRANCHES_PATH+"/work/approve":
-			writeJSON(t, w, 200, `{"name":"work","state":"approved","applied":{"added":["new.txt"],"changed":["a.txt"],"removed":[]}}`)
+			writeJSON(t, w, 202, `{"name":"work","state":"approved","applied":{"added":["new.txt"],"changed":["a.txt"],"removed":[]}}`)
 		case r.Method == "POST" && r.URL.Path == BRANCHES_PATH+"/work/discard":
-			writeJSON(t, w, 200, `{"name":"work","state":"discarded","removed":2}`)
+			writeJSON(t, w, 202, `{"name":"work","state":"discarded","removed":2}`)
 		case r.Method == "POST" && r.URL.Path == keysPath:
 			if cfg.failMint {
 				writeJSON(t, w, 500, `{"error":"The api Worker could not mint a key."}`)
@@ -399,5 +420,32 @@ func TestDefaultBranchName(t *testing.T) {
 		if got := defaultBranchName(in); got != want {
 			t.Errorf("defaultBranchName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRunBranchPollsUntilCreatingFinishes(t *testing.T) {
+	sleepBranchJob = func(time.Duration) {}
+	t.Cleanup(func() { sleepBranchJob = time.Sleep })
+	server, requests := branchServerWith(t, branchStandIn{
+		createState: "creating",
+		getStates:   []string{"creating", "open"},
+	})
+	home := signedInHome(t)
+	out := captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("runBranch: %v", err)
+		}
+	})
+	if !strings.Contains(out, `created branch "work" from /Photos (2 files)`) {
+		t.Errorf("output = %q", out)
+	}
+	gets := 0
+	for _, call := range *requests {
+		if call.Method == "GET" && call.Path == BRANCHES_PATH+"/work" {
+			gets++
+		}
+	}
+	if gets != 2 {
+		t.Errorf("GET polls = %d, want 2; requests = %v", gets, *requests)
 	}
 }

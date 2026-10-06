@@ -26,10 +26,12 @@ import {
   SIGNIN_LINK_PATH,
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
-} from "../src/auth.js";
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -42,8 +44,6 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import {
   createTestAuth,
   DRIVE_MIGRATIONS,
@@ -465,7 +465,7 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   );
   assert.equal(response.status, 429, "the walk must hit the edge limit, not the mailer");
   assert.equal(response.headers.get("retry-after"), "60");
-  // The shared refusal's shape (src/rate-limit.js): exactly the header set the
+  // The shared refusal's shape (core/rate-limit.js): exactly the header set the
   // waitlist's own limiter answers with, so the two endpoints cannot differ.
   assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -1215,6 +1215,92 @@ test("sign-out everywhere still ends this session when the key store fails", asy
   assert.equal(after.status, 401, "this browser is signed out even when keys stay live");
 });
 
+test("sign-out everywhere withdraws every key at the vendor, and a retry finishes a refused one", async () => {
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const account = await signIn(made, "vendor@example.com");
+  const now = 1_800_000_000_000;
+  const devices = createD1DeviceStore(made.db, { now: () => now });
+  for (const name of ["one", "two"]) {
+    await devices.put({
+      id: `key_${name}`,
+      accountId: account.account.id,
+      name,
+      kind: "agent",
+      accessKeyId: `ak_${name}`,
+      secretHash: `hash_${name}`,
+      prefix: `u/${account.account.id}/`,
+      capabilities: ["list", "read"],
+      createdAt: now,
+      lastSeenAt: null,
+      revokedAt: null,
+      expiresAt: null,
+      ttlSeconds: null,
+    });
+  }
+  // The deployment's own vendor (keyprovider-env.js): the reseller API's
+  // remove_access_key, answered here instead of at iDrive.
+  const vendor = "https://reseller.vendor.test/v1";
+  /** @type {string[]} */
+  const removed = [];
+  /** @type {Set<string>} */
+  const refusing = new Set(["ak_one"]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith(vendor)) {
+        return realFetch(input, init);
+      }
+      const { access_key_id: id } = JSON.parse(String(init?.body ?? "{}"));
+      if (refusing.has(id)) {
+        return new Response(JSON.stringify({ message: "vendor down" }), { status: 500 });
+      }
+      removed.push(id);
+      return new Response("{}", { status: 200 });
+    }
+  );
+  const env = {
+    ...made.env,
+    IDRIVE_E2_API_TOKEN: "reseller-token",
+    IDRIVE_E2_API_ENDPOINT: vendor,
+  };
+  const signOutAll = (/** @type {string} */ cookie) =>
+    workerFetch(
+      new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie },
+        body: JSON.stringify({ step: "signout-all" }),
+      }),
+      env,
+    );
+  const revokedAt = (/** @type {string} */ id) =>
+    made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(id)?.revoked_at;
+  try {
+    const out = await signOutAll(account.cookie);
+    assert.equal(out.status, 503, "a key the vendor kept is not reported as signed out");
+    assert.deepEqual(await out.json(), { error: failureMessage("storage-down") });
+    assert.deepEqual(removed, ["ak_two"], "the refusal did not stop the other key");
+    assert.equal(revokedAt("key_one"), null, "the refused key stays live for the retry");
+    assert.notEqual(revokedAt("key_two"), null);
+    const after = await workerFetch(
+      new Request(`${TEST_BASE_URL}/api/first-run-status`, {
+        headers: { cookie: account.cookie },
+      }),
+      env,
+    );
+    assert.equal(after.status, 401, "the sessions still went");
+
+    refusing.clear();
+    const again = await signIn(made, "vendor@example.com");
+    const retried = await signOutAll(again.cookie);
+    assert.equal(retried.status, 200);
+    assert.deepEqual(removed, ["ak_two", "ak_one"], "the retry attempted only the live key");
+    assert.notEqual(revokedAt("key_one"), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // --------------------------------------------------------- per-IP rate limit
 
 test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
@@ -1225,7 +1311,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const env = made.env;
 
   // The first three sends from one IP land. Each one carries a different
-  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // x-forwarded-for: that header is not the key (core/auth.js consults only
   // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
   for (let i = 0; i < 3; i++) {
     const response = await workerFetch(

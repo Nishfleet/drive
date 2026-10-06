@@ -8,7 +8,7 @@
 //   2. A link works once.
 //   3. A link expires.
 //   4. A session survives a Worker restart (a new isolate, a new instance of
-//      src/auth.js, and the same database).
+//      core/auth.js, and the same database).
 //   5. Sign-out kills the session.
 //   6. Deny by default: an unknown cookie, a foreign database, and a
 //      deployment with no auth at all all read as signed out.
@@ -26,8 +26,9 @@ import {
   sessionAccount,
   signinDeviceName,
   signinLinkEmail,
-} from "../src/auth.js";
-import worker from "../src/index.js";
+} from "../core/auth.js";
+import { createMemoryStore } from "../core/files.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import {
   createTestAuth,
   createTestD1,
@@ -65,7 +66,7 @@ test("the migration file is what Better Auth's own planner generates", async () 
     secret: SECRET,
     baseURL: TEST_BASE_URL,
     emailAndPassword: { enabled: false },
-    // Mirrors the option in src/auth.js: the rate-limit counters are stored
+    // Mirrors the option in core/auth.js: the rate-limit counters are stored
     // in D1, so the planner now emits the rateLimit table too.
     rateLimit: { storage: "database" },
     plugins: [
@@ -193,7 +194,7 @@ test("a link expires", async () => {
 // ----------------------------------------------- a session survives a restart
 
 test("a session survives a Worker restart", async () => {
-  // A new isolate is a new instance of src/auth.js over the same database:
+  // A new isolate is a new instance of core/auth.js over the same database:
   // the session lives in the database, not in the object, which is the whole
   // reason the hand-written store would not do.
   const made = createTestAuth();
@@ -289,6 +290,7 @@ test("the Worker's gate reads Better Auth's session, not a cookie the browser ch
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "gated@example.com");
   for (const path of ["/api/files", "/api/usage", "/api/first-run-status"]) {
