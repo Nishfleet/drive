@@ -21,7 +21,7 @@ func configOnlyHome(t *testing.T) string {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(testStorage())), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteRcloneEnv(home, testStorage(), "", ""); err != nil {
+	if err := WriteRcloneEnv(home, testStorage(), "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return home
@@ -51,7 +51,7 @@ func writeDeviceKey(t *testing.T, home, accessKey, secret string) {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(storageWithKey(accessKey, secret))), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteRcloneEnv(home, storageWithKey(accessKey, secret), "", ""); err != nil {
+	if err := WriteRcloneEnv(home, storageWithKey(accessKey, secret), "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 }

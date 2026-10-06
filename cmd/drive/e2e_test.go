@@ -621,6 +621,21 @@ func rcClientForTestHome(t *testing.T, home, addr, fs string) *rcClient {
 	return c
 }
 
+func storedRCAddr(t *testing.T, home string) string {
+	t.Helper()
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Addr == "" {
+		t.Fatal("rclone.env has no rc address after mount")
+	}
+	if auth.Addr == loopbackRCAddr {
+		t.Fatalf("stored rc address is the shipped %s; two mounts would collide", loopbackRCAddr)
+	}
+	return auth.Addr
+}
+
 // startStandinMount starts `drive mount --foreground` for home against cfg and
 // waits until the kernel reports the mount, so a test reads through a real
 // mount rather than a directory that never became one. The keys reach the child
@@ -947,7 +962,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := rcClientForTestHome(t, home, loopbackRCAddr, RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
 	before, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)
@@ -1035,7 +1050,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := rcClientForTestHome(t, home, loopbackRCAddr, RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
 		_, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{fillName}}, 0, 0)

@@ -197,19 +197,25 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	}
 }
 
-// prepareMountAuth generates the remote-control user and password, stores
-// them with the storage secret in rclone.env (mode 0600), and puts them on
-// the plan so Args() and the login item can pass --rc-user/--rc-pass (or,
-// for systemd, EnvironmentFile=).
+// prepareMountAuth generates the remote-control user and password, picks a
+// free loopback port for this mount (drive#807), stores them with the storage
+// secret in rclone.env (mode 0600), and puts them on the plan so Args() and
+// the login item can pass --rc-user/--rc-pass/--rc-addr (or, for systemd,
+// EnvironmentFile= for the secrets).
 func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
 	user, pass, err := generateRCAuth()
 	if err != nil {
 		return err
 	}
+	addr, err := pickRCAddr()
+	if err != nil {
+		return err
+	}
 	p.RCUser = user
 	p.RCPass = pass
+	p.RCAddr = addr
 	p.SecretKey = c.SecretKey
-	return WriteRcloneEnv(home, c, user, pass)
+	return WriteRcloneEnv(home, c, user, pass, addr)
 }
 
 func generateRCAuth() (user, pass string, err error) {
@@ -280,19 +286,18 @@ func DeviceName() string {
 }
 
 // rcAddrEnvName is the environment variable that carries the remote
-// control's loopback address. Two mounts of the same drive on one host
-// (the two-machine proof, issue #30) cannot both bind one address, so the
-// address is overridable; the constant below is the shipped value and a
-// person's mount never sets either.
+// control's loopback address. Two mounts on one host cannot both bind one
+// address (drive#807), so a person's mount picks a free loopback port and
+// stores it in rclone.env under this name. DRIVE_RC_ADDR and --rc-addr still
+// override, which is how the two-machine proof (issue #30) and the tests pin
+// a port.
 const rcAddrEnvName = "DRIVE_RC_ADDR"
 
-// RCAddr is the loopback address the mount's remote control binds.
-// rclone's remote control is authenticated (drive#498), and it still binds
-// to loopback only and never to a wildcard: the background fill, the
-// conflict guard and `drive status` all reach this one address. A
-// DRIVE_RC_ADDR that is not a loopback address is refused and the shipped
-// address is used, because a wildcard bind would put a control port on the
-// network.
+// RCAddr is the loopback address a command that has not yet prepared a mount
+// would bind. A real `drive mount` overwrites it in prepareMountAuth with a
+// free port stored in rclone.env. DRIVE_RC_ADDR still wins when it is a
+// loopback address; a non-loopback value is refused and the rclone default
+// is used, because a wildcard bind would put a control port on the network.
 func RCAddr() string {
 	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
 		if IsLoopbackAddr(set) {
@@ -301,6 +306,35 @@ func RCAddr() string {
 		return loopbackRCAddr
 	}
 	return loopbackRCAddr
+}
+
+// pickRCAddr is the address this mount will bind. DRIVE_RC_ADDR wins when it
+// is loopback, so a test or --rc-addr can pin the port; otherwise a free
+// 127.0.0.1 port is chosen so a second mount on this machine does not die
+// with "address already in use" (drive#807).
+func pickRCAddr() (string, error) {
+	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" && IsLoopbackAddr(set) {
+		return set, nil
+	}
+	return listenLoopbackRCAddr()
+}
+
+// listenLoopbackRCAddr binds 127.0.0.1:0, reads the kernel-chosen port, and
+// closes the probe socket so rclone can bind the same address. The window
+// after close is the same one the tests' freePort already uses.
+func listenLoopbackRCAddr() (string, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("bind a free loopback port for rclone rc: %w", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		return "", fmt.Errorf("release the rc probe port: %w", err)
+	}
+	if !IsLoopbackAddr(addr) {
+		return "", fmt.Errorf("probe port %s is not loopback", addr)
+	}
+	return addr, nil
 }
 
 // IsLoopbackAddr reports whether addr is a loopback host:port. The remote
