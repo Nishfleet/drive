@@ -349,6 +349,10 @@ test("POST /api/cap on a closed account leaves it closed, and cancelClose still 
   assert.equal(row.state, "closed");
   assert.equal(row.closed_at, at / 1000);
   assert.equal(row.cap_cents, dollarsToCapCents(20), "the cap must not move on a closed account");
+  // The store's own write is guarded the same way (core/devices.js): a direct
+  // setAccountState cannot un-close the row the route just refused.
+  await store.setAccountState(account.id, "active");
+  assert.equal(await store.accountState(account.id), "closed");
 
   await store.cancelClose(account.id);
   const reopened = rowIn(sqlite, "SELECT state, closed_at FROM accounts WHERE id = ?", account.id);

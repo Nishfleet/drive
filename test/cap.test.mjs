@@ -846,6 +846,9 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
       return recordingProvider();
     },
     async setAccountState() {},
+    async accountState() {
+      return "active";
+    },
   };
   const ok = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -947,6 +950,11 @@ test("POST /api/cap answers 409 on a closed account and does not write", async (
   );
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), { error: tableMessage("cap-account-closed") });
+  assert.notEqual(
+    tableMessage("cap-account-closed"),
+    tableMessage("account-closed"),
+    "the cap refusal is not the key-mint refusal",
+  );
   assert.deepEqual(stored, [], "the cap row must not move on a closed account");
 });
 
@@ -995,6 +1003,9 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
       };
     },
     async setAccountState() {},
+    async accountState() {
+      return "active";
+    },
   };
   const swapped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {

@@ -801,7 +801,7 @@ export async function capStateForAccount(store, accountId) {
  *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
- * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>, accountState?: (accountId: string) => Promise<string>}|null} capStore
+ * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, accountState: (accountId: string) => Promise<"active"|"read_only"|"closed">, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
  */
 export async function handleCapRequest(request, account, capStore) {
   if (!account) {
@@ -842,15 +842,17 @@ export async function handleCapRequest(request, account, capStore) {
     return jsonCapError(failureMessage("cap-store-missing"), 503);
   }
   // A closed account's keys are already revoked and its files are on their way
-  // out (drive#537). Writing the cap, swapping keys, or saving `active` would
-  // un-stick the close: purge needs state=closed, and cancelClose throws
-  // close-not-closed once the row looks open. The store's setAccountState is
-  // guarded too; this 409 is the route's own refusal before any of those writes.
-  if (typeof capStore.accountState === "function") {
-    const saved = await capStore.accountState(account.id);
-    if (saved === "closed") {
-      return jsonCapError(failureMessage("cap-account-closed"), 409);
-    }
+  // out (drive#537). The accounts row has three states: active, read_only,
+  // closed (core/devices.js accountState). read_only must still take a cap
+  // write: raising the cap is how a stopped drive starts writing again. closed
+  // is the only terminal state. Writing the cap, swapping keys, or saving
+  // active would un-stick the close: purge needs state=closed, and cancelClose
+  // throws close-not-closed once the row looks open. setAccountState itself
+  // will not overwrite closed (WHERE state <> 'closed' in core/devices.js);
+  // this 409 is the route's refusal before any of those writes.
+  const saved = await capStore.accountState(account.id);
+  if (saved === "closed") {
+    return jsonCapError(failureMessage("cap-account-closed"), 409);
   }
   await capStore.setCapCents(account, dollarsToCapCents(usd));
   // The swap is decided from the month the account actually counted, so
