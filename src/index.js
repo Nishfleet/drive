@@ -1480,20 +1480,15 @@ const handler = {
         // the dead rows' vendor access keys and record how many keys the
         // vendor holds. A deployment whose provider has no removal (the
         // S3/STS one, whose sessions expire on their own) is skipped loudly
-        // by the sweep itself; the shared iDrive provider is the one with
-        // keys to remove. Awaited like the account close above: a sweep that
-        // failed must be a failed trigger, not a run that reported success.
-        // The provider is read off the same env the api Worker reads, so the
-        // two Workers mint with one credential and the sweep removes what
-        // that credential minted.
+        // by the sweep itself. A missing provider with leftover vendor keys
+        // fails this trigger rather than reporting success. The shared iDrive
+        // provider is the one with keys to remove. Awaited like the account
+        // close above: a sweep that failed must be a failed trigger, not a
+        // run that reported success. The provider is read off the same env
+        // the api Worker reads, so the two Workers mint with one credential
+        // and the sweep removes what that credential minted.
         const provider = keyProviderFor(env);
-        if (provider !== null) {
-          await runKeySweep({ devices, provider, now: event.scheduledTime });
-        } else {
-          console.log(
-            "key-sweep: this deployment mints no vendor keys, so there is nothing to sweep",
-          );
-        }
+        await runKeySweep({ devices, provider, now: event.scheduledTime });
       });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

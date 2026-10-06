@@ -39,7 +39,7 @@ const AGENT_TTL = 3600;
  * that is not that answer. `list` answers the keys still held, in the shape
  * the iDrive provider normalises (`{keys: [...]}`).
  * @returns {{
- *   refusals: Map<string, "missing"|"down">,
+ *   refusals: Map<string, "missing"|"missing-code"|"down">,
  *   revokeCalls: string[],
  *   mint: () => Promise<{accessKeyId: string, secret: string, sessionToken: null, expiresIn: null}>,
  *   revoke: (id: string) => Promise<void>,
@@ -47,7 +47,7 @@ const AGENT_TTL = 3600;
  * }}
  */
 function fakeVendor() {
-  /** @type {Map<string, "missing"|"down">} */
+  /** @type {Map<string, "missing"|"missing-code"|"down">} */
   const refusals = new Map();
   /** @type {string[]} */
   const revokeCalls = [];
@@ -70,6 +70,10 @@ function fakeVendor() {
         // set the vendor holds either.
         held.delete(id);
         throw new IdriveKeyError("remove_access_key", 403, "Access key does not exist");
+      }
+      if (refusal === "missing-code") {
+        held.delete(id);
+        throw new IdriveKeyError("remove_access_key", 403, "access_key_non_existant");
       }
       if (refusal === "down") {
         throw new Error("connection reset by peer");
@@ -122,14 +126,15 @@ test("the sweep removes dead rows' vendor keys, stamps them, counts the vendor's
   // the state a previous partial sweep or an out-of-band removal leaves).
   // One device key that stays live: the sweep must never touch it. One more
   // device key that a raw UPDATE marks revoked: our row says revoked but the
-  // vendor was never told — the orphan the sweep exists for.
+  // vendor was never told — the orphan the sweep exists for. The already-gone
+  // row uses the vendor's own error code (`access_key_non_existant`).
   const expired = await store.mintKey(account, { kind: "agent", name: "expired" });
   const staysLive = await store.mintKey(account, { kind: "device", name: "live" });
   const orphan = await store.mintKey(account, { kind: "device", name: "revoked-orphan" });
   const gone = await store.mintKey(account, { kind: "agent", name: "gone" });
   const orphanAt = START + 10;
   sqlite.prepare("UPDATE devices SET revoked_at = ? WHERE id = ?").run(orphanAt, orphan.keyId);
-  vendor.refusals.set(gone.accessKeyId, "missing");
+  vendor.refusals.set(gone.accessKeyId, "missing-code");
 
   // An hour passes: the two agent rows are past their TTL; the device rows
   // never expire. Then one sweep.
@@ -158,7 +163,7 @@ test("the sweep removes dead rows' vendor keys, stamps them, counts the vendor's
   assert.notEqual(expired.accessKeyId, expired.keyId);
 
   // The rows in the database: the three dead ones stamped at the sweep's
-  // second (the column migration 0020 added), the live row unstamped.
+  // second (the column migration 0033 added), the live row unstamped.
   for (const minted of [expired, orphan, gone]) {
     const row = rowIn(sqlite, minted.keyId);
     assert.equal(row.vendor_key_removed_at, at, `${minted.keyId} is stamped as accounted for`);
@@ -246,4 +251,91 @@ test("a provider without a removal is skipped loudly: it mints no vendor key tha
     now: clock.second * 1000,
   });
   assert.deepEqual(answer, { considered: 0, removed: 0, failed: 0, vendorKeys: null });
+});
+
+test("the vendor's prose missing-key answer stamps the row too", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const clock = { second: START };
+  const vendor = fakeVendor();
+  const store = storeOver(db, clock, vendor);
+  const code = await store.requestDeviceCode({ name: "prose-gone" });
+  await store.approveDeviceCode(code.userCode);
+  const poll = await store.pollDeviceCode(code.deviceCode);
+  const account = /** @type {{account: {id: string}}} */ (/** @type {unknown} */ (poll)).account;
+  const gone = await store.mintKey(account, { kind: "agent", name: "prose" });
+  vendor.refusals.set(gone.accessKeyId, "missing");
+  clock.second = START + AGENT_TTL + 60;
+  const answer = await runKeySweep({
+    devices: createD1DeviceStore(db, { now: () => clock.second * 1000 }),
+    provider: vendor,
+    now: clock.second * 1000,
+  });
+  assert.deepEqual(answer, { considered: 1, removed: 1, failed: 0, vendorKeys: 0 });
+  assert.equal(rowIn(sqlite, gone.keyId).vendor_key_removed_at, clock.second);
+});
+
+test("a key at its exact expiry second is sweepable and no longer live", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const clock = { second: START };
+  const vendor = fakeVendor();
+  const store = storeOver(db, clock, vendor);
+  const code = await store.requestDeviceCode({ name: "exact" });
+  await store.approveDeviceCode(code.userCode);
+  const poll = await store.pollDeviceCode(code.deviceCode);
+  const account = /** @type {{account: {id: string}}} */ (/** @type {unknown} */ (poll)).account;
+  const agent = await store.mintKey(account, { kind: "agent", name: "on-the-second" });
+  const expiresAt = START + AGENT_TTL;
+  clock.second = expiresAt;
+  const devices = createD1DeviceStore(db, { now: () => clock.second * 1000 });
+  assert.equal(await devices.countLiveKeys(account.id, expiresAt), 0, "the slot is free at expiry");
+  const answer = await runKeySweep({ devices, provider: vendor, now: expiresAt * 1000 });
+  assert.deepEqual(answer, { considered: 1, removed: 1, failed: 0, vendorKeys: 0 });
+  assert.equal(rowIn(sqlite, agent.keyId).vendor_key_removed_at, expiresAt);
+});
+
+test("a missing provider fails when dead vendor keys remain, and skips when none do", async () => {
+  const { db } = makeMeteredDB();
+  const clock = { second: START };
+  const vendor = fakeVendor();
+  const store = storeOver(db, clock, vendor);
+  const code = await store.requestDeviceCode({ name: "no-provider" });
+  await store.approveDeviceCode(code.userCode);
+  const poll = await store.pollDeviceCode(code.deviceCode);
+  const account = /** @type {{account: {id: string}}} */ (/** @type {unknown} */ (poll)).account;
+  await store.mintKey(account, { kind: "agent", name: "leftover" });
+  clock.second = START + AGENT_TTL + 60;
+  const devices = createD1DeviceStore(db, { now: () => clock.second * 1000 });
+  await assert.rejects(
+    () => runKeySweep({ devices, provider: null, now: clock.second * 1000 }),
+    /dead vendor keys need a provider/,
+  );
+  await runKeySweep({ devices, provider: vendor, now: clock.second * 1000 });
+  const skipped = await runKeySweep({ devices, provider: null, now: clock.second * 1000 });
+  assert.deepEqual(skipped, { considered: 0, removed: 0, failed: 0, vendorKeys: null });
+});
+
+test("an unrecognised vendor list shape records unknown, not a false zero", async () => {
+  const { db } = makeMeteredDB();
+  const clock = { second: START };
+  const vendor = fakeVendor();
+  const store = storeOver(db, clock, vendor);
+  const code = await store.requestDeviceCode({ name: "shape" });
+  await store.approveDeviceCode(code.userCode);
+  const poll = await store.pollDeviceCode(code.deviceCode);
+  const account = /** @type {{account: {id: string}}} */ (/** @type {unknown} */ (poll)).account;
+  await store.mintKey(account, { kind: "agent", name: "shaped" });
+  clock.second = START + AGENT_TTL + 60;
+  const odd = {
+    revoke: vendor.revoke,
+    list: async () => ({ unexpected: true }),
+  };
+  const answer = await runKeySweep({
+    devices: createD1DeviceStore(db, { now: () => clock.second * 1000 }),
+    provider: /** @type {import("../../core/keyprovider.js").KeyProvider} */ (
+      /** @type {unknown} */ (odd)
+    ),
+    now: clock.second * 1000,
+  });
+  assert.equal(answer.removed, 1);
+  assert.equal(answer.vendorKeys, null, "an unrecognised list is unknown, not zero");
 });

@@ -155,6 +155,18 @@ export function createMemoryStore(options = {}) {
    * @param {string} name
    */
   async function mintScopedKey(account, scope, kind, name) {
+    // The per-account live-key cap (drive issue #552), before the vendor
+    // call: mintKey and mintTeamKey both come through here, so a team mint
+    // cannot walk around the bound. The count is a read then a mint, not a
+    // single D1 transaction across isolates, so two concurrent mints can both
+    // see 19 and both pass; the per-account KEYS_RATE_LIMITER (10 a minute)
+    // is the bound on how wide that window can get.
+    const live = deviceStore?.countLiveKeys
+      ? await deviceStore.countLiveKeys(account.id, nowSeconds(now()))
+      : liveKeyCountInMap(devices, account.id, nowSeconds(now()));
+    if (live >= KEY_COUNT_CAP) {
+      throw new KeyCountCapError(account.id, live);
+    }
     const keyId = newId("key");
     /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
     let credential;
@@ -392,20 +404,8 @@ export function createMemoryStore(options = {}) {
       if (!KEY_KINDS.includes(/** @type {any} */ (kind))) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
       }
-      // The per-account live-key cap (drive issue #552), before the vendor
-      // call: a mint past the cap makes no vendor request, so a looping
-      // script cannot turn the account's quota into vendor access keys. An
-      // expired hourly key does not count — it can no longer authenticate and
-      // the nightly sweep removes its vendor key, so the account is free to
-      // mint again. The team mint (`mintTeamKey`) is deliberately not capped:
-      // the issue names the key mint this route serves, and a team key is
-      // each a deliberate act behind the team gate.
-      const live = deviceStore?.countLiveKeys
-        ? await deviceStore.countLiveKeys(account.id, nowSeconds(now()))
-        : liveKeyCountInMap(devices, account.id, nowSeconds(now()));
-      if (live >= KEY_COUNT_CAP) {
-        throw new KeyCountCapError(account.id, live);
-      }
+      // The live-key cap runs inside mintScopedKey, before the vendor call,
+      // so mintKey and mintTeamKey share one bound.
       const scope =
         request.scope ??
         (kind === "branch"

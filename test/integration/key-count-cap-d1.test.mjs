@@ -227,3 +227,32 @@ test("a limiter that says no answers 429 with the rate-limit words; a missing bi
   );
   assert.equal(through.status, 201, "no binding is not a closed door on an account-gated route");
 });
+
+test("s3 and branch keys count toward the same cap, and mintTeamKey cannot walk around it", async () => {
+  const { db } = makeMeteredDB();
+  const clock = { second: START };
+  const provider = recordingProvider();
+  const store = storeOver(db, clock, provider);
+  const { account, deviceToken } = await signIn(store, "kinds");
+
+  assert.equal(
+    (await mintThroughRoute(store, deviceToken, {}, { kind: "s3", name: "s3" })).status,
+    201,
+  );
+  assert.equal(
+    (await mintThroughRoute(store, deviceToken, {}, { kind: "branch", name: "b" })).status,
+    201,
+  );
+  for (let i = 3; i <= KEY_COUNT_CAP; i++) {
+    const minted = await mintThroughRoute(store, deviceToken, {}, { kind: "agent", name: `k${i}` });
+    assert.equal(minted.status, 201, `mint ${i} is under the cap`);
+  }
+  const refused = await mintThroughRoute(store, deviceToken, {}, { kind: "agent", name: "k21" });
+  assert.equal(refused.status, 409);
+  await assert.rejects(
+    () => store.mintTeamKey(account, "team_cap", "read_write", { name: "member" }),
+    KeyCountCapError,
+    "a team mint is the same vendor key and the same cap",
+  );
+  assert.equal(provider.mints.length, KEY_COUNT_CAP, "the refused team mint made no vendor call");
+});

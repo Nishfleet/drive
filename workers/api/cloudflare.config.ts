@@ -77,8 +77,9 @@ export default defineWorker({
     // integer string unique per account, and a namespace another binding
     // already uses fails the deploy with 10021. The site Worker holds 1001
     // (waitlist), 1002/1003 (sign-in), 1004/1005 (request-upload), 1008
-    // (share download) and 1009–1011 (health and mint routes). This Worker's
-    // device pair is 1006/1007 and the key-mint limiter below is 1012. Both
+    // (share download), 1009 (health) and 1010/1011 (share and request mint).
+    // This Worker's device pair is 1006/1007 and the key-mint limiter below
+    // is 1012. Both
     // configs are one minute, the waitlist's period, so one number describes
     // every rate limit on this account.
     DEVICE_RATE_LIMITER: bindings.rateLimit({
