@@ -312,7 +312,8 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   // `file_versions` and swaps no key here (acc1 holds no device), so binding
   // the same database is the deployment's shape, not a test convenience. The
   // meter jobs queue stays unbound, so this test drives the un-fanned-out path
-  // the queue replaced.
+  // the queue replaced; "with the queue bound, each cron sends one message per
+  // account" below covers the fanned-out one.
   const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>

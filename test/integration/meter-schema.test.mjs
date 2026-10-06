@@ -737,6 +737,8 @@ test("the renumbered meter migration is a no-op the second time", () => {
       .map((row) => `${row.type} ${row.name} ${row.sql}`)
       .sort();
   const before = objects();
+  /** @param {string} table */
+  const rows = (table) => sqlite.prepare(`SELECT * FROM ${table}`).all();
   assert.ok(
     before.some((object) => object.startsWith("index file_versions_live ")),
     "the whole set already built the index the file adds",
@@ -747,11 +749,12 @@ test("the renumbered meter migration is a no-op the second time", () => {
   );
 
   assert.deepEqual(objects(), before, "the second apply creates, alters and drops no object");
-  assert.deepEqual(
-    sqlite.prepare("SELECT * FROM meter_account_rerolls").all(),
-    [],
-    "and the re-roll table is still empty, not re-seeded",
-  );
+  // Both new tables, not one: the header's contract is "no INSERT, ever", and a
+  // second apply that re-seeded either table would duplicate rows while
+  // sqlite_master stayed identical. One table checked would let the other
+  // through, so every row of both is snapshotted.
+  assert.deepEqual(rows("meter_account_rerolls"), [], "and the re-roll table is still empty");
+  assert.deepEqual(rows("prepaid_draw_marks"), [], "and the draw-mark table is still empty");
 });
 
 // The adapter's batch() is a transaction, because D1's is: a batch is one
