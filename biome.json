@@ -14,7 +14,7 @@
       "!.cloudflare",
       "!node_modules",
       "!.lighthouseci",
-      "!marketing/launch-video/assets"
+      "!marketing/launch-video/assets/gsap-3.14.2.min.js"
     ]
   },
   "formatter": {

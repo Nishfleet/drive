@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "description": "Launch video for Drive, built with HyperFrames (drive#651).",
+  "//": "HyperFrames is invoked by the pinned version below, not from the repo's node_modules: `hyperframes` is not a package the repo depends on, and a composition's own toolchain must not change when the site's dependencies do. The version is pinned because the render has to repeat. Run these from this folder.",
   "scripts": {
     "check": "npx --yes hyperframes@0.8.134 check",
     "render": "npx --yes hyperframes@0.8.134 render --resolution landscape --format mp4",
