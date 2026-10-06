@@ -1180,6 +1180,57 @@ test("the account's open branches stop at the cap, and the next one is refused",
   });
   assert.equal(afterApprove.state, "open");
 });
+test("a queued create counts against the cap before its copy has run", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // Production creates copy in batches on a queue (drive#563), so a branch's
+  // row sits in 'creating' with its bytes still to be written. Ten of those
+  // are ten copies this account is about to hold, so the cap has to count
+  // them: counting only 'open' would let ten queued creates each pass and then
+  // each finish open, which is the whole bound the cap exists for. The queue
+  // here never runs the copies, so every row stays 'creating' for the test.
+  /** @type {Array<unknown>} */
+  const sent = [];
+  const queue = {
+    /** @param {unknown} body */
+    async send(body) {
+      sent.push(body);
+    },
+  };
+  for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
+    const made = await createBranch(
+      db,
+      snapshots,
+      scoped,
+      ACCOUNT,
+      { folder: "/Photos", name: `queued-${i}` },
+      () => Date.now(),
+      queue,
+    );
+    assert.equal(made.state, "creating", `branch ${i} should be queued, not open`);
+  }
+  assert.equal(sent.length, MAX_OPEN_BRANCHES, "every queued create asked the queue once");
+  // None of them is open yet, and the eleventh is still refused.
+  const open = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.deepEqual(
+    open.map((branch) => branch.state),
+    Array.from({ length: MAX_OPEN_BRANCHES }, () => "creating"),
+  );
+  const over = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "queued-over" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(over.error, failureMessage("branch-limit"));
+  assert.equal(over.status, 409);
+  // Nothing was written and no job was asked for: a refused create costs the
+  // queue nothing either.
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "queued-over"), null);
+  assert.equal(sent.length, MAX_OPEN_BRANCHES);
+});
 test("a concurrent create that loses the atomic claim copies nothing", async () => {
   const { scoped, db, snapshots } = await driven();
   // Two creates start together below the cap: "held" is already open, and the
