@@ -185,6 +185,15 @@ function makeFakeD1(options = {}) {
       row.revoked_at = revokedAt;
       return { success: true, meta: { changes: 1 } };
     }
+    if (s.startsWith("UPDATE device_tokens SET expires_at")) {
+      const [renewed, hash] = params;
+      const row = tokens.get(hash);
+      if (row === undefined || row.revoked_at !== null) {
+        return { success: true, meta: { changes: 0 } };
+      }
+      row.expires_at = Math.max(Number(row.expires_at), Number(renewed));
+      return { success: true, meta: { changes: 1 } };
+    }
     if (s.startsWith("DELETE FROM device_tokens")) {
       const [at] = params;
       let changes = 0;
@@ -384,6 +393,27 @@ test("a device token past its TTL resolves to no account over D1", async () => {
   );
   // The row is still on disk: refusing it is the lookup's job, not a sweep's.
   assert.equal(db.tokens.size, 1);
+});
+
+test("a device used on day 29 is still signed in on day 45 over D1", async () => {
+  let nowMs = 0;
+  const db = makeFakeD1();
+  const deviceToken = await mintOverD1(db, () => nowMs);
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  nowMs += 29 * dayMs;
+  assert.deepEqual(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(deviceToken),
+    ACCOUNT,
+    "the day-29 lookup resolves the account",
+  );
+
+  nowMs += 16 * dayMs;
+  assert.deepEqual(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(deviceToken),
+    ACCOUNT,
+    "day 45 is still signed in because day 29 restarted the window",
+  );
 });
 
 test("a revoke over D1 is one write that reports the first, and the token stops resolving", async () => {

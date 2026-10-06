@@ -114,21 +114,24 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err != nil {
 			return env, err
 		}
-		token, account, err := SignIn(client, deviceName(), os.Stdout)
+		signed, err := SignIn(client, deviceName(), os.Stdout)
 		if err != nil {
 			return env, err
 		}
 		creds = Credentials{
-			APIBase:      client.Base,
-			DeviceToken:  token,
-			AccountID:    account.ID,
-			AccountName:  account.Name,
-			AccountEmail: account.Email,
+			APIBase:     client.Base,
+			DeviceToken: signed.Token,
+			// The sign-in's own expiry, kept with the token it belongs to
+			// (drive#557) for the same reason `drive login` keeps it.
+			TokenExpiresAt: signed.ExpiresAt,
+			AccountID:      signed.Account.ID,
+			AccountName:    signed.Account.Name,
+			AccountEmail:   signed.Account.Email,
 		}
 		if err := SaveCredentials(env.Home, creds); err != nil {
 			return env, err
 		}
-		who := accountLabel(account)
+		who := accountLabel(signed.Account)
 		if who == "" {
 			fmt.Println("Signed in")
 		} else {
@@ -139,6 +142,10 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 	if err != nil {
 		return env, err
 	}
+	// The same re-sign-in every other account route gets, so a `drive agents`
+	// that meets a dead sign-in heals itself instead of telling the person to
+	// sign in again (drive#557).
+	client.Re = deviceReSigner{home: env.Home, base: base, out: os.Stdout}
 	env.Minter = ToolMinter{Client: client, Home: env.Home}
 	return env, nil
 }

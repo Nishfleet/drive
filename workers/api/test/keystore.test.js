@@ -9,7 +9,9 @@ import {
   createMemoryStore,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_REFRESH_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
+  renewDeviceTokenWindow,
   renewKeyWindow,
 } from "../../../core/keystore.js";
 
@@ -222,18 +224,93 @@ test("the device token TTL is the session TTL", () => {
   assert.equal(DEVICE_TOKEN_TTL_SECONDS, SESSION_TTL_SECONDS);
 });
 
-test("a fresh token resolves and a token past its TTL does not", async () => {
+// A token nobody touches still dies at its own TTL: the sliding window starts
+// at a REQUEST, so a device that signs in once and never comes back is
+// exactly as revokable by time as it was before the window could slide
+// (drive#557). One second before the TTL the token resolves; one second after
+// it, with no request in between, it is gone.
+test("a fresh token resolves and an untouched token past its TTL does not", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
   const { deviceToken, account } = await signedInAccount(store, clock);
   // The token resolves to the account it was minted against.
   assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
-  // One second before the TTL the token still resolves; one second after it is
-  // gone, judged by the clock the store shares.
-  clock.advance(DEVICE_TOKEN_TTL_SECONDS - 1);
-  assert.ok(await store.accountForDeviceToken(deviceToken), "still good one second before expiry");
-  clock.advance(2);
+  // The clock is moved forward to just past the expiry in one go, with no
+  // lookup on the way: any renewal would have to come from the lookups below.
+  clock.advance(DEVICE_TOKEN_TTL_SECONDS + 1);
   assert.equal(await store.accountForDeviceToken(deviceToken), null, "expired token is null");
+});
+
+// The day 29 / day 45 case, on the real store and not on the rule: a drive
+// reached every day has to still be signed in a fortnight after its 30-day
+// window would have closed, because the window is restarted on each use
+// (drive#557). Before the rule, a daily user's token died on day 30 exactly
+// like a dormant machine's.
+test("a device used on day 29 is still signed in on day 45", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { deviceToken, account } = await signedInAccount(store, clock);
+  const day = 24 * 60 * 60;
+
+  // Day 29: still inside the fixed 30-day window, and close enough to its end
+  // that this is the request that restarts it.
+  clock.advance(29 * day);
+  assert.deepEqual(
+    await store.accountForDeviceToken(deviceToken),
+    account,
+    "the day-29 lookup resolves the account",
+  );
+
+  // Day 45 is past the original 30 days and past the 30 days the day-29 lookup
+  // pushed it to. Nothing in between touched the token, which is what makes
+  // this the answer to the day-29 case rather than a daily-use case.
+  clock.advance(16 * day);
+  assert.deepEqual(
+    await store.accountForDeviceToken(deviceToken),
+    account,
+    "day 45 is still signed in because day 29 restarted the window",
+  );
+
+  // And a device that then stops being used is still dropped on schedule: the
+  // day-45 lookup pushed it to day 75, so nothing has to be done about it
+  // before then.
+  clock.advance(30 * day);
+  assert.equal(
+    await store.accountForDeviceToken(deviceToken),
+    null,
+    "a device that stops coming back is dropped when its window runs out",
+  );
+});
+
+// The rule itself, so the two stores above cannot each slide by their own
+// amount (drive#557).
+test("the device token window slides a day before its end, and never shortens", () => {
+  const day = 24 * 60 * 60;
+  // Far from the end: nothing is written, so a loop of account calls is not a
+  // loop of writes.
+  assert.equal(renewDeviceTokenWindow(100 * day, 0), 100 * day);
+  // Exactly a day left: that is inside the window, so it renews. The boundary
+  // renews rather than waiting for the next second, because the cost of a
+  // token that expires one second before the request that would have renewed
+  // it is a browser opening; the cost of renewing a second early is nothing.
+  assert.equal(renewDeviceTokenWindow(DEVICE_TOKEN_REFRESH_SECONDS, 0), DEVICE_TOKEN_TTL_SECONDS);
+  // A second outside it: nothing to do.
+  assert.equal(
+    renewDeviceTokenWindow(DEVICE_TOKEN_REFRESH_SECONDS + 1, 0),
+    DEVICE_TOKEN_REFRESH_SECONDS + 1,
+  );
+  // A second inside the window: a whole new window, from now.
+  assert.equal(
+    renewDeviceTokenWindow(DEVICE_TOKEN_REFRESH_SECONDS - 1, 0),
+    DEVICE_TOKEN_TTL_SECONDS,
+  );
+  // Already past the end (a request that raced another request's renewal): the
+  // later of the two wins, so the write that lands second cannot pull the
+  // window backwards.
+  assert.equal(
+    renewDeviceTokenWindow(DEVICE_TOKEN_TTL_SECONDS + 5, 0),
+    DEVICE_TOKEN_TTL_SECONDS + 5,
+  );
 });
 
 test("a revoked device token does not resolve to an account", async () => {

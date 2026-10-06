@@ -60,6 +60,9 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if creds.DeviceToken != testDeviceToken {
 		t.Fatalf("credentials token = %q", creds.DeviceToken)
 	}
+	if creds.TokenExpiresAt != testDeviceTokenExpiry {
+		t.Fatalf("credentials expiry = %d, want the poll's expiresAt so the CLI knows the window", creds.TokenExpiresAt)
+	}
 	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
 		t.Fatalf("credentials missing storage location: %+v", creds)
 	}
