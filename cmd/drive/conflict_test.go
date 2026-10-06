@@ -642,14 +642,14 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 	}
 
 	// A wave of 300 lands as this device's own wins: each needs its
-	// conflictWinPolls polls, a hundred per pass, so the wave takes about
-	// sixty passes.
+	// conflictWinPolls polls, a hundred per pass, so the wave takes
+	// wave*conflictWinPolls/conflictPollMax passes.
 	const wave = 300
 	for i := 0; i < wave; i++ {
 		f.objects[name(i)] = md5Hex(body)
 	}
 	f.pending = f.pending[wave:]
-	for range 80 {
+	for range wave*conflictWinPolls/conflictPollMax + 20 {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("pass %d in the win wave: %v", passes, err)
 		}
@@ -733,7 +733,7 @@ func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 			f.objects[name(i)] = md5Hex(body)
 		}
 	}
-	for range 60 {
+	for range total*conflictWinPolls/conflictPollMax + 20 {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("deciding pass: %v", err)
 		}
@@ -937,6 +937,38 @@ func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
 	}
 	if len(g.seen) != 0 {
 		t.Errorf("the guard still watches %v", g.seen)
+	}
+}
+
+// TestConflictGuardKeepsASaveOverwrittenByARetriedUpload is drive#813. Two
+// devices upload the same path at once: one lands, and the other's upload
+// fails rclone's size check and retries 10s later (rclone doubles the 5s
+// write-back delay after a failure). That retry lands on top of the save
+// that won, so the winner must still be watching 10s after its own landing,
+// or its save is overwritten with no copy kept.
+func TestConflictGuardKeepsASaveOverwrittenByARetriedUpload(t *testing.T) {
+	g, _, f := guardFor(t, "linux", map[string]string{"offline.txt": "B-landed-first\n"})
+	f.pending = []queueEntry{{Name: "offline.txt", Size: 15}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["offline.txt"] = md5Hex("B-landed-first\n")
+	// The other device's first retry fires 10s after its failed try; one
+	// pass per conflictInterval, plus a few for the upload itself.
+	retry := int(2*5*time.Second/conflictInterval) + 4
+	for i := range retry {
+		if _, err := g.pass(context.Background(), f); err != nil {
+			t.Fatalf("pass %d while the other upload waits to retry: %v", i, err)
+		}
+	}
+	f.objects["offline.txt"] = md5Hex("A-the-retried-upload\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the retried upload landed: %v", err)
+	}
+	want := "offline (conflict, linux).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]: the save that landed first was overwritten by a retry with no copy kept", f.copied, want)
 	}
 }
 

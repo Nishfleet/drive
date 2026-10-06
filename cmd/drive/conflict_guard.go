@@ -101,10 +101,12 @@ const conflictClaimPolls = 20
 // save was not overwritten. Another device's upload can land on top of
 // this one for the whole of one sync window after it: a save made two
 // seconds later still has its five-second write-back to land on top of an
-// upload that landed a moment ago. The plain path is polled every
-// conflictInterval, so conflictWinPolls polls cover that window with
-// margin for rclone's own scheduling.
-const conflictWinPolls = 20
+// upload that landed a moment ago. And two uploads of one path at the same
+// instant can fail one of them on rclone's size check, which retries it after
+// twice the write-back delay (10s), on top of the save that won (drive#813).
+// The plain path is polled every conflictInterval, so 60 polls are 30s: one
+// sync window plus that first retry, with margin for rclone's scheduling.
+const conflictWinPolls = 60
 
 // conflictHashFailPolls is how many remote-hash failures one path may
 // take after it leaves the queue before the skip is named. Holding
