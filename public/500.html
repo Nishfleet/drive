@@ -3,16 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — page not found</title>
-  <meta name="description" content="That page is not here. The home page has the price and the way in.">
+  <title>Drive — something went wrong</title>
+  <meta name="description" content="That did not work. The error is logged, and the home page has the price and the way in.">
   <meta name="robots" content="noindex">
-  <!-- The asset layer's 404 page (cloudflare.config.ts notFoundHandling:
-       404-page). Same chrome, palette and type as the rest of the funnel
-       (drive#458). No prices typed here. -->
+  <!-- The site's own 5xx page (drive#584). src/index.js serves this file from
+       app.onError when a page request fails, so a browser gets the site's
+       chrome instead of a bare JSON body. Same chrome, palette and type as the
+       rest of the funnel (drive#458). No prices typed here. -->
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* 404: shared tokens via class="drive". This block is the column and the
+/* 500: shared tokens via class="drive". This block is the column and the
    heading, nothing the shared file already owns. */
 
 body {
@@ -77,7 +78,7 @@ h1 {
   </style>
 </head>
 <body>
-  <a class="skip-link" href="#missing-heading">Skip to the message</a>
+  <a class="skip-link" href="#error-heading">Skip to the message</a>
   <header class="masthead">
     <span class="wordmark"><i aria-hidden="true"></i>drive</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
@@ -88,8 +89,8 @@ h1 {
   </header>
 
   <main>
-    <h1 id="missing-heading">That page is not here.</h1>
-    <p class="lede">The address is wrong, or the page moved. The home page has the price and the way in.</p>
+    <h1 id="error-heading">Something went wrong.</h1>
+    <p class="lede">That did not work. Try again in a moment. Your files and your balance are not affected.</p>
     <a class="btn" href="/">See the price <span aria-hidden="true">&#8594;</span></a>
   </main>
 

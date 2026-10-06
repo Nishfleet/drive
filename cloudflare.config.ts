@@ -247,14 +247,18 @@ export default defineConfig({
       // /api/request each get their own bound, on top of the per-account cap
       // of 50 open links the handlers enforce. 30 a minute per IP is far
       // above an owner clicking "Share" and far below a script minting tokens
-      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
-      // namespace fails the deploy with 10021.
+      // to walk. Namespaces 1010/1011 continue the 1001-1009 series; a reused
+      // namespace fails the deploy with 10021. 1010/1011 were free because the
+      // HEALTH_RATE_LIMITER above took 1009, so test/deploy-api-worker.test.mjs
+      // (which reads both this file and the api Worker's, and fails on the
+      // first duplicate it finds) caught the SHARE_MINT_RATE_LIMITER reusing
+      // it here.
       SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1010",
         simple: { limit: 30, period: 60 },
       }),
       REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1010",
+        namespace: "1011",
         simple: { limit: 30, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every

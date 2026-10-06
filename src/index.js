@@ -98,6 +98,7 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import {
   handleFirstRunStatusRequest,
@@ -119,6 +120,13 @@ import { handleWaitlistRequest } from "./waitlist.js";
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
+
+// The api Worker's family (workers/api/src/routes.js API_PREFIX), the one path
+// this Worker forwards and never renders a page for. Spelled here the way the
+// /v1/* route is, rather than imported, so the site Worker does not pull the
+// whole api route registry into its bundle; test/deploy-assets.test.mjs pins
+// the error path against a browser Accept on this family.
+const API_PATH_PREFIX = "/v1";
 
 /**
  * The per-request value Hono's context carries. `account` is resolved once by
@@ -946,6 +954,42 @@ export function createApp() {
     // `observability` in cloudflare.config.ts turns on.
     captureError(err, `${c.req.method} ${c.req.path}`);
     console.error("[pricing] request failed:", err.message, err.stack, err);
+    // drive#584: a browser that asked for a page gets the site's own 5xx page,
+    // so a failure deep in the Worker still looks like the site. An API caller
+    // keeps the one failure table's JSON, so a CLI never has to parse HTML.
+    // The JSON answer keys off the route family, not the Accept header alone:
+    // Java's HttpURLConnection sends a text/html default, and /v1/* is the CLI.
+    const accept = c.req.header("accept") ?? "";
+    // The path family, not the Accept header (Java's HttpURLConnection sends a
+    // text/html default and /v1/* is the CLI). A bare "/api" or "/v1" cannot
+    // reach here: both are real routes (API_PATH_PREFIX's own handler and a
+    // sites route), so this sees only subpaths of either family.
+    const isApiPath =
+      c.req.path.startsWith("/api/") || c.req.path.startsWith(`${API_PATH_PREFIX}/`);
+    if (accept.includes("text/html") && !isApiPath && c.env.ASSETS) {
+      const errorUrl = new URL(c.req.url);
+      errorUrl.pathname = "/500.html";
+      errorUrl.search = "";
+      return c.env.ASSETS.fetch(new Request(errorUrl, { headers: c.req.raw.headers }))
+        .then(
+          (asset) =>
+            // The answer is built by hand, not by copying the asset's headers: an
+            // error response must never be cacheable, and a page request's
+            // headers (a cache modifier the browser sent) cannot ride onto a 500
+            // from an unrelated path. src/seo.js marks /500.html noindex, so a
+            // crawler that follows a broken link keeps the error out of its
+            // index too.
+            new Response(asset.body, {
+              status: 500,
+              headers: {
+                "content-type": asset.headers.get("content-type") ?? "text/html; charset=utf-8",
+                "cache-control": "no-store",
+                "x-robots-tag": "noindex",
+              },
+            }),
+        )
+        .catch(() => c.json({ error: failureMessage("unexpected") }, 500));
+    }
     return c.json({ error: failureMessage("unexpected") }, 500);
   });
 
@@ -1253,6 +1297,16 @@ const handler = {
               },
             ),
           );
+          // Sign-in counter retention (drive#725): a row whose day window
+          // ended more than a day ago is deleted, so the public sign-in route
+          // cannot make this table keep every address anybody typed. It deletes
+          // counter rows only. Awaited like the link prune: a failed sweep is a
+          // failed run, retried the next night.
+          const signinSends = await purgeExpiredSigninSends(
+            env.DRIVE_DB,
+            toMillis(event.scheduledTime, "scheduledTime"),
+          );
+          console.log(`signin counter retention: pruned ${signinSends.purged} rows`);
         }
         // The nightly size row (drive issue #564): the growth numbers the
         // spec's decision watches, written to nightly_sizes and printed here,

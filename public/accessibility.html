@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — refunds and your balance</title>
-  <meta name="description" content="How the Drive prepaid balance works, when it pauses writing, how to get unused balance back, and what a receipt shows.">
-  <!-- drive#523: a legal and trust page. src/legal.js lists these pages, and
+  <title>Drive — accessibility</title>
+  <meta name="description" content="Drive's accessibility statement: the standard we work to, what we do, the gaps we know about, and how to tell us about a barrier.">
+  <!-- drive#584: a trust page. src/legal.js lists these pages, and
        test/legal.test.mjs and test/seo.test.mjs pin the tags below against
        src/seo.js. The page's rules live in public/site.css (body.policy). -->
-  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/refunds"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/accessibility"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/refunds">
+  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/accessibility">
   <meta property="og:site_name" content="Drive">
   <meta property="og:title" content="Drive — 2¢ per GB, never more than $10 per TB">
   <meta property="og:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
@@ -67,32 +67,39 @@ body {
   </header>
 
   <main>
-    <h1 id="policy-heading">Refunds and your balance</h1>
-    <p class="lede">How your balance is used, and how to get unused money back.</p>
+    <h1 id="policy-heading">Accessibility</h1>
+    <p class="lede">What we do so the drive works with a keyboard, a screen reader and a zoomed screen, and how to tell us when it does not.</p>
     <p class="updated">Last updated 6 October 2026.</p>
+
     <section>
-      <h2>How the balance works</h2>
+      <h2>Our target</h2>
+      <p>We work to WCAG 2.2 Level AA. It is a target we keep, not a certification: we have not had an outside audit, and we know of the gaps listed below.</p>
+    </section>
+
+    <section>
+      <h2>What we do</h2>
       <ul>
-        <li>You add money first. A top-up is $10 or more, up to $1000 at a time.</li>
-        <li>Storage draws 2 cents per GB a month from the balance, counted by the minute. You never pay more than $10 per TB.</li>
-        <li>Downloads are free up to 3 times what you store, then 1 cent per GB.</li>
-        <li>Your balance never expires.</li>
-        <li>We email you when the balance falls to $2. Auto top-up is off until you turn it on.</li>
-        <li>At $0, uploads and new writes pause. Reading, downloads and restore keep working, and nothing is deleted.</li>
+        <li>Every page is plain HTML with a heading order, landmark regions and a skip link.</li>
+        <li>Every control works with the keyboard alone, and focus is always visible.</li>
+        <li>Text and controls use the AA contrast ratios from the shared stylesheet.</li>
+        <li>Text zooms to 200% and reflows without sideways scrolling.</li>
+        <li>Animation follows your system's reduced-motion setting.</li>
+        <li>Icons that carry meaning have text, and decorative ones are hidden from a screen reader.</li>
       </ul>
     </section>
 
     <section>
-      <h2>Refunds</h2>
-      <p><mark class="to-fill" data-placeholder="refund-rule">[To fill: the refund rule. Draft default: you can ask for a refund of unused balance within 14 days of a top-up]</mark></p>
-      <p>To ask for a refund, write to us through the <a href="/support">support page</a> from your account's email address. A refund goes back to the card you paid with, through Dodo Payments.</p>
-      <p>Closing your account does not spend your balance. The rule above also covers the balance left when you close.</p>
+      <h2>Known gaps</h2>
+      <ul>
+        <li>We test by hand on macOS (Safari, Chrome, Firefox) and Linux (Firefox). We have not tested every page with a screen reader in every browser.</li>
+        <li>The Files and Usage pages need JavaScript, because they read your own drive. Without it they show their static shell only.</li>
+        <li>We have no published conformance report yet.</li>
+      </ul>
     </section>
 
     <section>
-      <h2>Receipts and tax</h2>
-      <p>We email a receipt for each top-up. Change your card in the billing portal on the usage page.</p>
-      <p><mark class="to-fill" data-placeholder="vat-line">[To fill: the VAT or sales-tax line that receipts carry]</mark></p>
+      <h2>Tell us</h2>
+      <p>If a page or a flow does not work for you, write to us through the <a href="/support">support page</a>. Say which page, what you used (browser, screen reader, keyboard), and what happened. We treat an accessibility barrier as a bug.</p>
     </section>
   </main>
 
