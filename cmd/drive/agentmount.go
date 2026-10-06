@@ -40,15 +40,6 @@ const (
 	// is a sibling of `~/Drive` and never inside it: a path inside the
 	// person's mount would let an agent walk up out of its own credential.
 	agentRootDirName = "Drive-agents"
-	// agentRcloneConfigName is the rclone config the agent mounts read. It is
-	// a file of its own, holding the agent credential, so the device mount's
-	// config is never handed to a process that must not hold a delete.
-	agentRcloneConfigName = "agent-rclone.conf"
-	// agentRcloneEnvName is the env file the agent login items read. The
-	// secret lives here, 0600, under the same
-	// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY name rclone itself reads
-	// (config.go, secretEnvName).
-	agentRcloneEnvName = "agent-rclone.env"
 )
 
 // AgentRootDir is the directory holding one path per connected agent tool.
@@ -62,14 +53,17 @@ func AgentMountDir(home, tool string) string {
 	return filepath.Join(AgentRootDir(home), toolNameInPath(tool))
 }
 
-// AgentRcloneConfigPath is the rclone config the agent mounts read.
-func AgentRcloneConfigPath(home string) string {
-	return filepath.Join(DefaultConfigDir(home), agentRcloneConfigName)
+// AgentRcloneConfigPath is the rclone config one tool's agent mount reads. It
+// carries the tool's name, so a second tool's connect never overwrites the
+// first tool's key and a restart of either mounts with its own credential.
+func AgentRcloneConfigPath(home, tool string) string {
+	return filepath.Join(DefaultConfigDir(home), "agent-"+toolNameInPath(tool)+"-rclone.conf")
 }
 
-// AgentRcloneEnvPath is the 0600 env file holding the agent secret.
-func AgentRcloneEnvPath(home string) string {
-	return filepath.Join(DefaultConfigDir(home), agentRcloneEnvName)
+// AgentRcloneEnvPath is the 0600 env file holding one tool's agent secret,
+// named for the tool for the same reason as the config file.
+func AgentRcloneEnvPath(home, tool string) string {
+	return filepath.Join(DefaultConfigDir(home), "agent-"+toolNameInPath(tool)+"-rclone.env")
 }
 
 // AgentLogPath is the log for one tool's agent mount.
@@ -171,8 +165,8 @@ func BuildAgentMountPlan(goos, home, rcloneBin string, tool string, c StorageCon
 		}(),
 		Remote:      RemoteFor(c),
 		MountDir:    AgentMountDir(home, tool),
-		ConfigPath:  AgentRcloneConfigPath(home),
-		EnvPath:     AgentRcloneEnvPath(home),
+		ConfigPath:  AgentRcloneConfigPath(home, tool),
+		EnvPath:     AgentRcloneEnvPath(home, tool),
 		CacheDir:    AgentCacheDir(home, tool),
 		CacheMax:    vfsCacheMaxValue,
 		LogPath:     AgentLogPath(home, tool),
@@ -216,7 +210,7 @@ func mountAgentPaths(goos, home, rcloneBin, tool string, device StorageConfig, k
 	if err := WriteFileAtomic(p.ConfigPath, []byte(RcloneConfig(AgentMountConfig(device, key))), 0o600); err != nil {
 		return failDetail("mount-failed", err)
 	}
-	if err := WriteFileAtomic(AgentRcloneEnvPath(home), []byte(agentRcloneEnv(AgentMountConfig(device, key))), 0o600); err != nil {
+	if err := WriteFileAtomic(AgentRcloneEnvPath(home, tool), []byte(agentRcloneEnv(AgentMountConfig(device, key))), 0o600); err != nil {
 		return failDetail("mount-failed", err)
 	}
 	itemPath := AgentLoginItemPath(goos, home, tool)
@@ -329,6 +323,16 @@ func UnmountAgent(goos, home, tool string) error {
 			return failDetail("unexpected", err)
 		}
 	} else if err := exec.Command("systemctl", "--user", "disable", "--now", AgentSystemdUnitName(tool)).Run(); err != nil {
+		if systemdUserSessionAbsent(err) {
+			// No user bus: connect started this mount detached, so the unmount
+			// is the stop. Treat a clean unmount as handled, or revoke would
+			// exit here and never withdraw the storage key.
+			if stopErr := unmountAgentDir(goos, AgentMountDir(home, tool)); stopErr != nil {
+				return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", AgentSystemdUnitName(tool), err, stopErr))
+			}
+			_ = os.Remove(itemPath)
+			return nil
+		}
 		if stopErr := unmountAgentDir(goos, AgentMountDir(home, tool)); stopErr != nil {
 			return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", AgentSystemdUnitName(tool), err, stopErr))
 		}

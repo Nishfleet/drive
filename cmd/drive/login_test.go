@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -63,6 +62,11 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
 		t.Fatalf("credentials missing storage location: %+v", creds)
 	}
+	// drive#517: the mint's download URL is saved, so the mount reads through
+	// the dl Worker instead of straight from storage.
+	if !strings.HasPrefix(creds.DownloadURL, "https://dl.example.test/k/grant_") {
+		t.Fatalf("credentials download URL = %q, want the mint's", creds.DownloadURL)
+	}
 
 	cfg, err := ParseRcloneConfig(RcloneConfigPath(home))
 	if err != nil {
@@ -93,6 +97,16 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	}
 	if loaded.Endpoint != creds.Endpoint || loaded.Bucket != creds.Bucket {
 		t.Fatalf("loaded location %+v, want credentials %+v", loaded, creds)
+	}
+	if loaded.DownloadURL != creds.DownloadURL {
+		t.Fatalf("mount config download URL = %q, want the saved %q", loaded.DownloadURL, creds.DownloadURL)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), rcloneDownloadURLEnv+"=") {
+		t.Fatalf("login did not put the download URL in rclone.env:\n%s", env)
 	}
 }
 
@@ -165,13 +179,19 @@ func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
 	}
 }
 
+// The one site address (drive#527). The CLI embeds cmd/drive/site.json, and
+// core/seo.js imports the same file, so this test reads that file rather than
+// searching a source file for a literal that no longer lives there.
 func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "src", "seo.js"))
+	src, err := os.ReadFile("site.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(src), defaultAPIBase) {
-		t.Fatalf("defaultAPIBase %q is not the origin src/seo.js ships", defaultAPIBase)
+		t.Fatalf("defaultAPIBase %q is not the origin cmd/drive/site.json holds", defaultAPIBase)
+	}
+	if !strings.HasPrefix(defaultAPIBase, "https://") {
+		t.Fatalf("defaultAPIBase %q must be an https address", defaultAPIBase)
 	}
 }
 

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,10 +59,10 @@ func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
 	if p.MountDir != AgentMountDir(home, "claude") {
 		t.Errorf("mount dir = %q, want %q", p.MountDir, AgentMountDir(home, "claude"))
 	}
-	if p.ConfigPath != AgentRcloneConfigPath(home) {
+	if p.ConfigPath != AgentRcloneConfigPath(home, "claude") {
 		t.Errorf("config path = %q", p.ConfigPath)
 	}
-	if p.EnvPath != AgentRcloneEnvPath(home) {
+	if p.EnvPath != AgentRcloneEnvPath(home, "claude") {
 		t.Errorf("env path = %q, want the agent env file", p.EnvPath)
 	}
 	if p.Remote != "drive:drive-standin/u/acct" && p.Remote != "drive:drive-standin/u/acct/" {
@@ -77,16 +80,16 @@ func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
 	if strings.Contains(args, "/rclone.conf") {
 		t.Errorf("argv names the device mount's config: %s", args)
 	}
-	if !strings.Contains(args, "agent-rclone.conf") {
+	if !strings.Contains(args, "agent-claude-rclone.conf") {
 		t.Errorf("argv does not name the agent config: %s", args)
 	}
 	unit := SystemdUnit(p)
-	if !strings.Contains(unit, "agent-rclone.env") {
+	if !strings.Contains(unit, "agent-claude-rclone.env") {
 		t.Errorf("systemd unit does not load the agent env file:\n%s", unit)
 	}
 	if strings.Contains(unit, filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")+"\n") ||
 		strings.Contains(unit, "EnvironmentFile="+filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")) {
-		if !strings.Contains(unit, "agent-rclone.env") {
+		if !strings.Contains(unit, "agent-claude-rclone.env") {
 			t.Errorf("systemd unit loads the device rclone.env:\n%s", unit)
 		}
 	}
@@ -123,7 +126,7 @@ func TestAgentStateReportsMissingKey(t *testing.T) {
 	if bad.err == nil {
 		t.Fatal("a plan with no storage settings must be a named failure")
 	}
-	if bad.ConfigPath != AgentRcloneConfigPath(env.Home) {
+	if bad.ConfigPath != AgentRcloneConfigPath(env.Home, "claude") {
 		t.Fatalf("a failed plan carries no config path: %+v", bad)
 	}
 }
@@ -136,5 +139,45 @@ func TestWindowsAgentPathLeavesTheToolInTheDrive(t *testing.T) {
 	}
 	if dir != "" {
 		t.Fatalf("windows agent dir = %q, want empty so Connect keeps DriveDir", dir)
+	}
+}
+
+// TestAgentToolsDoNotShareCredentialFiles pins that two connected tools write
+// to two config files and two env files, so connecting one cannot replace the
+// key another tool mounts with after a restart.
+func TestAgentToolsDoNotShareCredentialFiles(t *testing.T) {
+	home := t.TempDir()
+	a := BuildAgentMountPlan("linux", home, "/usr/bin/rclone", "claude", AgentMountConfig(testDeviceConfig(), testAgentKey()))
+	b := BuildAgentMountPlan("linux", home, "/usr/bin/rclone", "codex", AgentMountConfig(testDeviceConfig(), testAgentKey()))
+	if a.ConfigPath == b.ConfigPath {
+		t.Errorf("two tools share one config file: %q", a.ConfigPath)
+	}
+	if a.EnvPath == b.EnvPath {
+		t.Errorf("two tools share one env file: %q", a.EnvPath)
+	}
+	if a.MountDir == b.MountDir {
+		t.Errorf("two tools share one mount dir: %q", a.MountDir)
+	}
+}
+
+// TestUnmountAgentWithoutSystemdStillLetsRevokeGo covers a host with no user
+// bus: connect started the mount detached, so there is a login item file but
+// no unit to disable. A clean unmount must count as stopped, or `drive agents
+// revoke` exits before it withdraws the key.
+func TestUnmountAgentWithoutSystemdStillLetsRevokeGo(t *testing.T) {
+	home := t.TempDir()
+	item := AgentLoginItemPath("linux", home, "claude")
+	if err := os.MkdirAll(filepath.Dir(item), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(item, []byte("[Unit]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir()) // no systemctl: "executable file not found"
+	if err := UnmountAgent("linux", home, "claude"); err != nil {
+		t.Fatalf("an absent systemd must not block revoke: %v", err)
+	}
+	if _, err := os.Stat(item); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the login item must be gone after the stop: %v", err)
 	}
 }

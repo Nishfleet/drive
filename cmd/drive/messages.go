@@ -1,6 +1,6 @@
 package main
 
-// The CLI's one message table (drive#117, the CLI side of src/messages.js
+// The CLI's one message table (drive#117, the CLI side of core/messages.js
 // FAILURE_MESSAGES). Every error a person can read comes from this table and
 // carries two things:
 //
@@ -10,7 +10,7 @@ package main
 // No raw rclone or storage error reaches the terminal: the underlying detail
 // stays in the failure's detail (shown only with DRIVE_DEBUG=1) or in the
 // mount's own log, and the next step names where to look. The words for the
-// failures the drive has on every surface are copied from src/messages.js so
+// failures the drive has on every surface are copied from core/messages.js so
 // the CLI and the pages say the same thing; test/messages.test.mjs keeps that
 // table honest on the web side, and TestSharedKindsMatchThePageTable pins the
 // join here. Everything else is a CLI-shaped failure whose next step is an
@@ -72,7 +72,7 @@ func (f *failure) Unwrap() error { return f.detail }
 // TestFailureTableIsComplete holds every entry to the two-sentence shape.
 var messageTable = map[string][2]string{
 	// The five kinds the drive shares with the web pages. Their what lines
-	// are the src/messages.js words; TestSharedKindsMatchThePageTable pins
+	// are the core/messages.js words; TestSharedKindsMatchThePageTable pins
 	// them together.
 	"offline": {
 		"You look offline.",
@@ -115,6 +115,20 @@ var messageTable = map[string][2]string{
 	"api-refused": {
 		"The drive's api refused the request.",
 		"Run `drive init` again; if it repeats, run `drive status` and keep its output.",
+	},
+	// The api Worker answered 426: this build is older than the minimum
+	// version the deployment still serves (drive#560). The fix is one exact
+	// command, so it is a CLI-shaped entry.
+	"cli-too-old": {
+		"This drive is too old for the server it talks to.",
+		"Run drive update to get the current version, then run the command again.",
+	},
+	// `drive update` landed but the mount did not come back (drive#560). The
+	// mount may still be the old binary, or it may be down after an unmount
+	// that did not remount, so the words name the one fact both share.
+	"update-restart": {
+		"Drive updated, but its mount did not restart, so this machine is not yet serving the new drive.",
+		"Run `drive status` to see the mount, then `drive mount` to start it.",
 	},
 	"api-down": {
 		"The drive's api is not answering right now.",
@@ -291,7 +305,7 @@ func failDetail(kind string, detail error, args ...string) *failure {
 	entry, ok := messageTable[kind]
 	if !ok {
 		// A kind missing from the table is a programmer error, the same way
-		// failureMessage throws in src/messages.js. The CLI still has to print
+		// failureMessage throws in core/messages.js. The CLI still has to print
 		// a next step rather than crash, so it falls back to unexpected and
 		// keeps the missing kind in the detail for DRIVE_DEBUG=1.
 		missing := fmt.Errorf("no message table entry for %q", kind)
@@ -360,6 +374,12 @@ func apiFailureKind(err error) string {
 	if errors.As(err, &apiErr) {
 		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
 			return "key-revoked"
+		}
+		// 426 Upgrade Required is the api Worker's version gate (drive#560):
+		// this build is below the deployment's minimum, and the fix is one
+		// command, so it gets its own words instead of api-refused's.
+		if strings.Contains(apiErr.Status, "426") {
+			return "cli-too-old"
 		}
 		return "api-refused"
 	}

@@ -12,18 +12,18 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
-import { BILLING_CONFIG } from "../src/billing.js";
-import { DEFAULT_CAP_USD } from "../src/cap-default.js";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { DEFAULT_CAP_USD } from "../core/cap-default.js";
 import {
   LEGAL_PAGES,
   LEGAL_PLACEHOLDERS,
   PLACEHOLDER_MARK,
   REPORT_PATH,
   SUPPORT_PATH,
-} from "../src/legal.js";
-import { PREPAID, PRICE } from "../src/pricing.js";
-import { absoluteUrl, PAGES } from "../src/seo.js";
+} from "../core/legal.js";
+import { PREPAID, PRICE } from "../core/pricing.js";
+import { absoluteUrl, PAGES } from "../core/seo.js";
+import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 /** @param {string} name */
@@ -125,7 +125,7 @@ test("the four owner facts are marked placeholders, each in one place only", () 
   for (const id of seen.keys()) {
     assert.ok(
       LEGAL_PLACEHOLDERS.some((fact) => fact.id === id),
-      `${id} is not one of the four owner facts in src/legal.js`,
+      `${id} is not one of the four owner facts in core/legal.js`,
     );
   }
   // A fact may be filled (gone), never typed twice or moved off its page.
@@ -264,10 +264,10 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
-    ["restore.md", "src/files.js", "purgeExpiredTrash"],
-    ["restore.md", "src/files.js", "TRASH_PURGE_SCHEDULE"],
-    ["secrets-rotation.md", "src/meter.js", "METER_EVENT_TOKEN"],
-    ["secrets-rotation.md", "src/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
+    ["restore.md", "core/files.js", "purgeExpiredTrash"],
+    ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
+    ["secrets-rotation.md", "core/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
     ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];
   for (const [runbook, source, ...symbols] of claims) {
@@ -295,4 +295,33 @@ test("the site's own 5xx page ships as a noindex asset", () => {
   assert.match(html, /That did not work/);
   const sitemap = readPublic("sitemap.xml");
   assert.equal(sitemap.includes("/500.html"), false, "the 5xx page is not a destination");
+});
+
+// The status line is rewritten after first paint, and every rewrite is shorter
+// than the sentence the page paints with. A paragraph that shrank pulled the
+// sections below it up, and that layout shift failed the CLS budget
+// (lighthouserc.json) on main. The script pins the painted height before the
+// health answer can arrive.
+test("the status line keeps its painted height when the health answer lands", () => {
+  const page = readFileSync(new URL("../public/status.html", import.meta.url), "utf8");
+  const script = page.slice(page.lastIndexOf("<script>"));
+  const lock = script.indexOf("line.style.minHeight = `${line.offsetHeight}px`;");
+  assert.ok(lock !== -1, "the script pins the status line's painted height");
+  assert.ok(lock < script.indexOf('fetch("/api/health"'), "the height is pinned before the fetch");
+  const texts = [...script.matchAll(/line\.textContent =\s*"([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(texts.length >= 3, "the three answers are read from the script");
+  assert.equal(
+    script.split("line.textContent =").length - 1,
+    texts.length,
+    "every answer is a literal this test can measure",
+  );
+  const fallback = page.match(/<p id="status-line"[^>]*>([\s\S]*?)<\/p>/);
+  assert.ok(fallback, "the page paints a default status line");
+  const painted = fallback[1].replace(/<[^>]+>/g, "");
+  for (const text of texts) {
+    assert.ok(
+      text.length < painted.length,
+      `"${text}" is shorter than the painted line, so min-height holds it`,
+    );
+  }
 });

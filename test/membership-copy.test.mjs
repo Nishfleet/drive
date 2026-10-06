@@ -5,10 +5,10 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
+import { FAILURE_MESSAGES } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import { FAQ } from "../src/docs.js";
-import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/signin.js";
 
 const CREDIT_TEXT =
@@ -28,23 +28,46 @@ const pages = readdirSync(publicDir)
     text: readFileSync(new URL(name, publicDir), "utf8"),
   }));
 
+// The address every template footer names (drive#522), so the gates below
+// read every sentence a customer can be sent.
+const REPLY_TO = "support@drive.example";
+
+// The month every date-bearing email fixture states (drive#559).
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 /** @param {string} kind */
 function dataFor(kind) {
-  if (kind === "welcome") return {};
-  if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12 };
-  if (kind === "payment-failed") return { amountUsd: 23.5 };
+  if (kind === "welcome") return { replyTo: REPLY_TO };
+  if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12, replyTo: REPLY_TO };
+  if (kind === "payment-failed") return { amountUsd: 23.5, replyTo: REPLY_TO };
   if (kind === "monthly-receipt") {
-    return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true };
+    // drive#559: the receipt names the month it bills, so the data carries the
+    // month's first instant.
+    return {
+      billUsd: 12,
+      meteredUsd: 16,
+      ceilingUsd: 12,
+      capped: true,
+      monthIso: MONTH_ISO,
+      replyTo: REPLY_TO,
+    };
   }
   if (kind === "account-closed" || kind === "account-close-reminder") {
-    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
+    return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)", replyTo: REPLY_TO };
   }
+  if (kind === "files-deleted")
+    return { purgedOn: "3 Nov (UTC)", graceDays: 30, replyTo: REPLY_TO };
   // drive#586: the prepaid emails, both auto top-up states, so the gates
   // read every sentence a customer can be sent.
-  if (kind === "top-up-receipt") return { amountUsd: 25, balanceUsd: 31.5, auto: true };
-  if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null };
+  if (kind === "top-up-receipt")
+    return { amountUsd: 25, balanceUsd: 31.5, auto: true, replyTo: REPLY_TO };
+  if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null, replyTo: REPLY_TO };
   if (kind === "device-approve-notice") {
-    return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+    return {
+      deviceName: "office laptop",
+      requestedAt: "2026-10-05T12:00:00.000Z",
+      replyTo: REPLY_TO,
+    };
   }
   throw new Error(`no test data for ${kind}`);
 }

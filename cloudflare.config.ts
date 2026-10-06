@@ -2,7 +2,7 @@ import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // The three cron trips this Worker runs, spelled out below in `triggers` and
-// read from src/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
+// read from core/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
 // src/search.js (REINDEX_SCHEDULE) by the `scheduled` handler in src/index.js.
 //
 // They are spelled in both places on purpose, and this import list is why it
@@ -10,9 +10,9 @@ import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 // this file to read it, and every plain import it follows lands in the
 // dependency set the Cloudflare Vite plugin adds to Vite's `server.fs.deny`
 // list. Vite then refuses to read any of those files in `cf dev`, so a config
-// that imports src/meter.js or src/search.js for a cron string drags the whole
-// shared Worker graph behind it (src/files.js, src/messages.js, src/status.js,
-// src/auth.js, workers/api/src/db.js) and `npm run dev` dies with `Failed to
+// that imports core/meter.js or src/search.js for a cron string drags the whole
+// shared Worker graph behind it (core/files.js, core/messages.js, core/status.js,
+// core/auth.js, core/db.js) and `npm run dev` dies with `Failed to
 // load url /src/auth.js ... Does the file exist?` before it prints a route
 // (drive#432). test/meter.test.mjs pins the two halves together string by
 // string, so the schedule here cannot drift from the one src/index.js
@@ -60,10 +60,11 @@ export default defineConfig({
       runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
-    // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // Five Cron Triggers: the meter's hourly rollup (drive issue #6), the
     // meter's nightly reconciler (drive issue #59), the file index's
-    // nightly reconciler (drive issue #18), and the nightly trash purge
-    // (drive issue #521). `scheduled` in src/index.js tells
+    // nightly reconciler (drive issue #18), the nightly trash purge
+    // (drive issue #521), and the account close cron (drive issue #522).
+    // `scheduled` in src/index.js tells
     // them apart by the cron string the platform hands it, so no trigger
     // spends another's work. The reindex schedule is the only way a rebuild
     // starts, so no web request can spend the walk (the safety review: reindex
@@ -71,12 +72,15 @@ export default defineConfig({
     // meter's first hourly run; the meter's reconciler runs at 04:00 UTC, an
     // hour later, so the two nightly walks do not share a trip; the trash
     // purge runs at 05:00 UTC, after the reconciler, so a parked file's last
-    // hour is re-rolled before its bytes leave the bucket.
+    // hour is re-rolled before its bytes leave the bucket; the account close
+    // cron runs at 06:00 UTC, after the purge, on the same blast-radius rule
+    // that keeps it off the 04:00 reconcile's trip.
     //
     // Each schedule is the string the module that owns it exports:
-    // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
-    // src/search.js's REINDEX_SCHEDULE, and src/files.js's
-    // TRASH_PURGE_SCHEDULE. test/meter.test.mjs reads these four
+    // core/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
+    // src/search.js's REINDEX_SCHEDULE, core/files.js's
+    // TRASH_PURGE_SCHEDULE, and src/account-close.js's CLOSE_SCHEDULE.
+    // test/meter.test.mjs reads these five
     // out of this file and asserts they equal those exports, so a changed
     // schedule cannot drift from the trigger that runs it. They are not
     // imported from those modules - see the note at the top of this file for
@@ -86,9 +90,45 @@ export default defineConfig({
       triggers.scheduled({ schedule: "0 4 * * *" }),
       triggers.scheduled({ schedule: "0 3 * * *" }),
       triggers.scheduled({ schedule: "0 5 * * *" }),
+      // The account close cron, on its own trip (drive#522, CLOSE_SCHEDULE
+      // in src/account-close.js). It used to share the 04:00 reconcile's
+      // trigger, which gave a metering failure one blast radius big enough to
+      // delay every close receipt, reminder and purge behind it; the nightly
+      // trash purge (drive#521) took 05:00 in the same window, so the close
+      // cron runs after it, at 06:00 UTC.
+      triggers.scheduled({ schedule: "0 6 * * *" }),
+      // One message per account from the meter crons (drive#519). Both
+      // queues were created on the account on 2026-10-06; see the note at
+      // the top of src/meter-jobs.js. Remove this and METER_JOBS to go back
+      // to the in-process loop.
+      triggers.queue({
+        name: "drive-meter-jobs",
+        deadLetterQueue: "drive-meter-jobs-dlq",
+        maxRetries: 5,
+        maxBatchSize: 10,
+      }),
     ],
+    // Issue #520: failures were invisible because this key was absent — the
+    // Worker shipped with observability off, so `console.error` in the cron
+    // branches and `app.onError` went nowhere a human looks. Workers Logs
+    // collects every invocation's console lines for 14 days (the default
+    // sampling here is 1, everything), which is the floor; the pipeline that
+    // pages a human is Sentry, wired in src/monitoring.js off the
+    // per-deployment SENTRY_DSN var (the docs runbook has the setup).
+    observability: {
+      enabled: true,
+      headSamplingRate: 1,
+    },
     env: {
       ASSETS: bindings.assets(),
+      METER_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
+      // Branch copy/approve/discard/rewind (drive#563). The producer rides the
+      // meter queue that already exists, because a deploy that names a queue
+      // which does not exist fails. Message kinds are `branch.*` vs `meter.*`,
+      // and src/index.js's queue handler splits the batch. A dedicated
+      // `drive-branch-jobs` queue is a later bind-name change once it is
+      // created out of band (`src/branch-jobs.js`).
+      BRANCH_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
       // Two databases, one purpose each (drive issue #170). The waitlist's
       // table lives alone in the waitlist database: the sign-up list is
       // public data and can be exported, reset or handed on without
@@ -108,7 +148,7 @@ export default defineConfig({
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
       }),
       // The meter binds the same drive database under a name of its own (drive
-      // issue #6): src/meter.js says which tables it owns and which binding
+      // issue #6): core/meter.js says which tables it owns and which binding
       // carries them, so the customer-data split is a binding line here rather
       // than a code change in the meter. Same database, so same id:
       // file_versions, usage_minutes, events_seen and meter_rollup_state
@@ -122,8 +162,15 @@ export default defineConfig({
       // branch records one `{size, etag, modified}` entry per file it copied;
       // that is ~117 bytes a file, so a 100,000-file branch is ~11 MiB of JSON
       // — twelve times D1's 1 MiB row limit, which is why phase 1 refused it
-      // and why the snapshot now lives here instead. The `branches` row keeps
-      // a pointer to the key and the value's byte length
+      // and why the snapshot now lives here instead. drive#563 runs copy,
+      // approve, discard and rewind as queued jobs in file batches so the
+      // 10,000-subrequest ceiling is no longer the cap; 100,000 files is still
+      // the remaining size limit (`BRANCH_FILE_LIMIT` in src/branches.js)
+      // because that snapshot has to sit in memory. BRANCH_JOBS produces onto
+      // the existing `drive-meter-jobs` queue (kinds `branch.*`) until a
+      // dedicated queue is created out of band (`src/branch-jobs.js`). The
+      // `branches` row
+      // keeps a pointer to the key and the value's byte length
       // (migrations/drive/0012_branch_snapshot_kv.sql). Since drive#329 the
       // leftover column is unread and unwritten: `readSnapshot` takes the
       // pointer only, and a missing namespace is a 503 on every branch and
@@ -251,7 +298,7 @@ export default defineConfig({
         simple: { limit: 30, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
-      // drive email goes through, in src/email-send.js. No options: the
+      // drive email goes through, in core/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and
       // the sender address is set per deployment, so nothing here pins a
       // brand domain before drive has one.

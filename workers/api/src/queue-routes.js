@@ -26,12 +26,12 @@
 // The failure words are machine-facing, not the person's: the only caller is
 // the mount loop, and these strings are the api Worker's own error shape (the
 // same inline sentences workers/api/src/index.js uses for 400/404/405 and
-// workers/api/src/event-routes.js uses for its bucket), so they are
-// deliberately NOT the one user-facing table in src/messages.js.
+// core/event-routes.js uses for its bucket), so they are
+// deliberately NOT the one user-facing table in core/messages.js.
 
-import { failureMessage } from "../../../src/messages.js";
-import { sha256Hex } from "./db.js";
-import { bearerToken, errorResponse, json, readJsonObject } from "./http.js";
+import { sha256Hex } from "../../../core/db.js";
+import { bearerToken, errorResponse, json, readJsonObject } from "../../../core/http.js";
+import { failureMessage } from "../../../core/messages.js";
 
 /** The queue-report body, as the mount sends it. JSON names, so the Go CLI and
  * the Worker agree on the wire without a second name list.

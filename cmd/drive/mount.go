@@ -56,11 +56,6 @@ type MountPlan struct {
 	// reach the same one, so it is on the plan rather than a constant
 	// each of them keeps.
 	RCAddr string
-	// StagingDir is where the conflict guard keeps a save's bytes for
-	// the moments they could still be lost. It is inside this device's
-	// own drive folder, never inside the mount dir, so nothing staged
-	// is ever visible in the drive.
-	StagingDir string
 	// DownloadURL is the dl Worker (drive issue #58, build step 5), empty
 	// when none is configured. It is a mount argument, not a line in the
 	// rclone config the user owns: rclone streams every read through the
@@ -197,7 +192,6 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		VFSArgs:     VFSArgs(cacheMax),
 		Device:      DeviceName(),
 		RCAddr:      RCAddr(),
-		StagingDir:  ConflictStagingDir(home),
 		DownloadURL: c.DownloadURL,
 		// A pause that is in force when the mount is (re)started keeps being in
 		// force (drive issue #100): rclone's bandwidth limit lives in its own
@@ -239,6 +233,9 @@ func rcloneProcessEnv(p MountPlan) []string {
 	}
 	if p.SecretKey != "" {
 		env = overrideEnv(env, rcloneSecretEnv, p.SecretKey)
+	}
+	if p.DownloadURL != "" {
+		env = overrideEnv(env, rcloneDownloadURLEnv, p.DownloadURL)
 	}
 	return env
 }
@@ -285,14 +282,6 @@ func DeviceName() string {
 		}
 	}
 	return DefaultDeviceName()
-}
-
-// ConflictStagingDir is where the conflict guard keeps a save's bytes
-// while it could still be lost. It is inside the device's own config
-// folder, so a staged copy is never visible in the drive and never
-// uploaded by anything but the guard's own conflict copy.
-func ConflictStagingDir(home string) string {
-	return filepath.Join(DefaultConfigDir(home), "conflict-staging")
 }
 
 // rcAddrEnvName is the environment variable that carries the remote
@@ -391,16 +380,14 @@ func (p MountPlan) args(includeRCAuth bool) []string {
 	if includeRCAuth && p.RCUser != "" {
 		args = append(args, "--rc-user", p.RCUser, "--rc-pass", p.RCPass)
 	}
-	// The download host, when one is configured (issue #58). It is the S3
-	// provider's own flag --s3-download-url, the one rclone's docs list for
-	// "tell the backend where downloads can be fetched from", so reads on the
-	// mount go to the dl Worker and are counted. With none configured the
-	// mount reads from the endpoint itself and no flag is passed: rclone
-	// errors on an empty value, and an uncounted read is already the state of
-	// a local stand-in.
-	if p.DownloadURL != "" {
-		args = append(args, "--s3-download-url", p.DownloadURL)
-	}
+	// The download host, when one is configured (issue #58), is the S3
+	// backend's download_url: reads on the mount go to the dl Worker and are
+	// counted. It is not passed here as --s3-download-url, because the URL
+	// carries the key's download grant (drive#517) and the command line is
+	// readable by every local process. It rides in the 0600 environment as
+	// RCLONE_CONFIG_DRIVE_DOWNLOAD_URL instead (rcloneProcessEnv, rclone.env,
+	// the plist's EnvironmentVariables). With none configured the mount reads
+	// from the endpoint itself.
 	// The paused rate goes on rclone's own command line, so a mount that is
 	// started again after a `drive pause` comes back already paused. Measured
 	// on this host 2026-10-03 (rclone v1.75.1): --bwlimit "1KiB:off" started
@@ -453,7 +440,7 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
 	fmt.Fprintf(&b, "\t<key>StandardOutPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
 	fmt.Fprintf(&b, "\t<key>StandardErrorPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
-	if p.RCUser != "" || p.SecretKey != "" {
+	if p.RCUser != "" || p.SecretKey != "" || p.DownloadURL != "" {
 		// The plist is written 0600 (the launchd equivalent of systemd's
 		// EnvironmentFile): EnvironmentVariables carry the rc password and
 		// the storage secret, so they never sit in a 0644 file (drive#498).
@@ -464,6 +451,9 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 		}
 		if p.SecretKey != "" {
 			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneSecretEnv, html.EscapeString(p.SecretKey))
+		}
+		if p.DownloadURL != "" {
+			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneDownloadURLEnv, html.EscapeString(p.DownloadURL))
 		}
 		b.WriteString("\t</dict>\n")
 	}
@@ -850,13 +840,18 @@ func mountForeground(p MountPlan, home string) error {
 	}()
 	// The conflict guard (issue #30) runs in this process for as long as the
 	// mount does, on the same remote control: it watches this device's own
-	// upload queue, stages the bytes that could still be lost, and when another
-	// device's save lands it writes the conflict copy so both versions survive.
+	// upload queue, hashes the bytes that could still be lost straight out of
+	// the VFS cache, and when another device's save lands it writes the
+	// conflict copy so both versions survive. The state path is where the
+	// guard records how far behind it is, for `drive status`.
 	conflictCtx, cancelConflict := context.WithCancel(context.Background())
 	go func() {
 		_, _ = MountedDir(p.GOOS, p.MountDir)
+		// rcClientForMount carries the mount's own rc credentials (drive#498);
+		// the guard's fourth argument is the state file it writes so `drive
+		// status` can report how far behind the guard is (issue #569).
 		c := rcClientForMount(p)
-		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.StagingDir, c) {
+		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.CacheDir, p.Remote, ConflictGuardStatePath(home), c) {
 			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()
@@ -1030,7 +1025,7 @@ func launchctlArgvLabel(label, action, target, itemPath string) []string {
 }
 
 // RestartMount stops the mount and starts it again so rclone picks up a
-// swapped storage key (src/cap.js `mount.restart`). The VFS cache is the
+// swapped storage key (core/cap.js `mount.restart`). The VFS cache is the
 // uploads still waiting: nothing in this function deletes it, so a file
 // queued before the cap was reached is still there when writes resume.
 func RestartMount(goos, home, rcloneBin string, c StorageConfig) error {

@@ -1,5 +1,5 @@
 // Tests for share links and upload requests (drive issue #19). Two halves, the
-// same split test/files.test.mjs uses for src/files.js:
+// same split test/files.test.mjs uses for core/files.js:
 //
 // 1. The logic in src/share.js against a real in-memory FileStore and the
 //    memory LinkStore: tokens, the 7-day window, revocation, the logged-out
@@ -24,9 +24,10 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
-} from "../src/files.js";
+} from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { failureMessage } from "../core/messages.js";
 import { createApp } from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
 import {
   base64url,
   createD1LinkStore,
@@ -68,7 +69,6 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createTestD1 } from "./harness.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
@@ -347,7 +347,12 @@ test("POST /api/share mints a link for a file that is there, and 404s one that i
   assert.equal(body.share.stateLabel, "Open");
   assert.equal(body.share.url, `https://drive.test/s/${TOKEN}`);
   assert.equal(body.share.downloadsLabel, "No downloads yet");
-  assert.match(body.share.expiresLabel, /^Until \d/);
+  // The instant, not a UTC sentence (drive#559): "Until 8 Oct" is written in
+  // the Worker's own zone, which is the wrong day for the browser that has to
+  // read it. public/upload.html writes it in the reader's zone instead, and
+  // `drive` writes it in the machine's.
+  assert.equal(body.share.expiresAtIso, new Date(linkExpiry(now)).toISOString());
+  assert.match(body.share.expiresAtIso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
   const missing = await share("/not-here.jpg", { token: TOKEN });
   assert.equal(missing.status, 404);
@@ -1084,7 +1089,8 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   const infoBody = await info.json();
   assert.equal(infoBody.open, true);
   assert.equal(infoBody.folder, "Your drive");
-  assert.match(infoBody.expiresLabel, /^Until \d/);
+  assert.equal(infoBody.expiresAtIso, new Date(linkExpiry(now)).toISOString());
+  assert.match(infoBody.expiresAtIso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
   // The drop itself: the request body is the file, exactly as the page sends it.
   const dropped = await handleRequestUploadRequest(

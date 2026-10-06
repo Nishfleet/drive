@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
+import { FIRST_RUN_COMMAND, FIRST_RUN_STEPS } from "./core/status.js";
 import {
   assertSingleBeacon,
   BEACON_PAGES,
@@ -9,7 +10,6 @@ import {
   beaconToken,
   withBeacon,
 } from "./src/analytics.js";
-import { FIRST_RUN_COMMAND, FIRST_RUN_STEPS } from "./src/status.js";
 import apiWorker from "./workers/api/cloudflare.config.ts";
 
 export default defineConfig({
@@ -37,7 +37,7 @@ export default defineConfig({
           input: {
             // The first-run page is a built entry (drive issue #70): its
             // <script type="module"> is bundled from src/get-started.js,
-            // which imports the copy from src/status.js. Vite only treats an
+            // which imports the copy from core/status.js. Vite only treats an
             // HTML file as an entry when it is named here (index.html is the
             // implicit default), and the output keeps the entry's own file
             // name, so the page ships at /get-started.html as before. The
@@ -128,7 +128,7 @@ function webAnalyticsBeacon(): Plugin {
  * <code id="install-command"> empty and let the module fill them in, so the
  * first paint had a blank list: the page was not usable until the script ran,
  * and when the script filled the list the page jumped (a 0.23 CLS on the
- * Lighthouse run measured 2026-10-02). The words are src/status.js's, so the
+ * Lighthouse run measured 2026-10-02). The words are core/status.js's, so the
  * HTML carrying them statically is a build step and not a third copy to drift:
  * this runs in the same build that already reads that module for the module
  * script, and throws when a marker it replaces is not in the page, so a page
@@ -148,7 +148,7 @@ function staticFirstRunShell(): Plugin {
           (step) => `        <li><h3>${text(step.title)}</h3><p>${text(step.body)}</p></li>`,
         ).join("\n");
         const withSteps = html.replace(
-          '      <ol class="steps" id="steps">\n        <!-- Filled by get-started.js from src/status.js -->\n      </ol>',
+          '      <ol class="steps" id="steps">\n        <!-- Filled by get-started.js from core/status.js -->\n      </ol>',
           `      <ol class="steps" id="steps">\n${steps}\n      </ol>`,
         );
         const withCommand = withSteps.replace(

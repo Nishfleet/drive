@@ -151,7 +151,11 @@ a {
   line-height: 1;
 }
 
+/* The tagline sits on the orange hero field. The shared --ink-soft from
+   site.css reads at 2.4:1 there and fails the accessibility budget, so it
+   takes the same ink as the masthead links (about 6:1). */
 .tagline {
+  color: var(--drive-ink);
   font-size: 14px;
   font-weight: 600;
 }
@@ -2190,7 +2194,7 @@ details p {
         <section class="business" aria-labelledby="business-heading">
           <h2 id="business-heading">Business</h2>
           <div>
-            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support.</p>
+            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support. The teams API is the only way to manage a company drive in version 1, and the company screens come later.</p>
             <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
             <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
             <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">

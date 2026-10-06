@@ -4,6 +4,7 @@
 //   (request, ctx) => Response | Promise<Response>
 // where ctx = {env, db, store, params, url, account, now}.
 
+import { storageEventsRoute } from "../../../core/event-routes.js";
 import {
   approveDeviceCodeRoute,
   approvePageRoute,
@@ -11,7 +12,6 @@ import {
   requestDeviceCodeRoute,
   revokeDeviceTokenRoute,
 } from "./device-routes.js";
-import { storageEventsRoute } from "./event-routes.js";
 import { exportRoute } from "./export-routes.js";
 import {
   listKeysRoute,

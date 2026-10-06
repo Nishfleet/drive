@@ -21,13 +21,13 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
-import { json } from "../workers/api/src/http.js";
-import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
-import { failureMessage } from "./messages.js";
+import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
 
-/** One account's file store, the shape src/files.js exports and every helper
+/** One account's file store, the shape core/files.js exports and every helper
  * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
-/** @typedef {import("./files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One row of the file index, as it is written to D1. */
 /**
  * @typedef {{account_id: string, path: string, name: string, parent: string,
@@ -429,15 +429,30 @@ function countedBody(body) {
  * never lists, so no request pays for a walk.
  *
  * Position matters, and it is the one thing to get right: the write comes from
- * `scopeStore` (src/files.js), so the key this wrapper is handed is
+ * `scopeStore` (core/files.js), so the key this wrapper is handed is
  * `u/<id>/…`, never a drive path. `drivePathFromKey` is the inverse of the
  * scope's own mapping — the index stores the drive path the page and the CLI
  * print, and the account id the row belongs to, exactly as `reconcileIndex`
  * does when it walks an account's scoped store.
+ * @overload
  * @param {FileStore} store
  * @param {D1Database} db
  * @param {{id: string}} account
  * @param {() => number} [now]
+ * @returns {FileStore}
+ *
+ * @overload
+ * @param {FileStore | null | undefined} store
+ * @param {D1Database | null | undefined} db
+ * @param {{id: string}} account
+ * @param {() => number} [now]
+ * @returns {FileStore | null | undefined}
+ *
+ * @param {FileStore | null | undefined} store
+ * @param {D1Database | null | undefined} db
+ * @param {{id: string}} account
+ * @param {() => number} [now]
+ * @returns {FileStore | null | undefined}
  */
 export function withIndex(store, db, account, now = () => Date.now()) {
   if (!store || !db) {

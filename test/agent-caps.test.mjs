@@ -15,9 +15,9 @@ import {
   DEFAULT_AGENT_CAPS,
   dayKey,
   monthKey,
-} from "../src/agentcaps.js";
-import { BILLING_CONFIG, capStatus } from "../src/billing.js";
-import { READ_ONLY_CAPABILITIES } from "../src/cap.js";
+} from "../core/agentcaps.js";
+import { BILLING_CONFIG, capStatus } from "../core/billing.js";
+import { READ_ONLY_CAPABILITIES } from "../core/cap.js";
 
 // One pinned instant, so a day boundary is a fact of the test. Midday UTC,
 // comfortably clear of either midnight.
@@ -33,7 +33,7 @@ const MONTH_MINUTES = 30 * 1440;
 const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 
 /**
- * An agent key row in the shape src/cap.js reads, so an agent cap that bites
+ * An agent key row in the shape core/cap.js reads, so an agent cap that bites
  * produces the identical key swap an account cap produces.
  * @param {Record<string, unknown>} [overrides]
  */
@@ -61,7 +61,7 @@ const agent = (gb, overrides = {}) => ({
 
 test("a fresh agent key is capped by default, and the default is the account's", () => {
   // The default is the account's own $20 cap (drive#464, read from
-  // src/billing.js), so an agent inherits the number a customer already reads
+  // core/billing.js), so an agent inherits the number a customer already reads
   // on the usage page rather than a second number to learn.
   const defaults = agentCaps();
   assert.equal(defaults.monthlyCapUsd, BILLING_CONFIG.defaultCapUsd);
