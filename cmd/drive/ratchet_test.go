@@ -404,7 +404,7 @@ func timeRatchetEdit(t *testing.T, h *benchStandin, name string, size int64) rat
 	t.Helper()
 	// Same clock as BenchmarkSmallEdit: append until the new size is in
 	// storage, not until Close returns. A regression in write-back is a
-	// slower save, and the scoreboard's Space figure is the stored append.
+	// slower save, and the scoreboard's competitor figure is the stored append.
 	xs := make([]float64, ratchetRuns)
 	want := size
 	for i := range xs {

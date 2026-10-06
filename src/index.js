@@ -22,6 +22,7 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
   createS3Store,
   FILES_ENDPOINT,
@@ -59,6 +60,7 @@ import {
   settleBalances,
 } from "../core/prepaid.js";
 import { createD1QueueStore } from "../core/queues.js";
+import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -110,6 +112,7 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_SCHEDULE,
   reconcileIndex,
   SEARCH_ENDPOINT,
   withIndex,
@@ -785,6 +788,7 @@ export function createApp() {
     /** @type {Record<string, unknown>|null} */
     let usage = null;
     if (!account) return unauthorizedResponse();
+    let openPublicLinks = 0;
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
       capUsd = await store.getCapUsd(account.id);
@@ -797,6 +801,11 @@ export function createApp() {
       usage = /** @type {Record<string, unknown>} */ (
         await store.monthUsage(account.id, { capUsd })
       );
+      const now = Date.now();
+      const links = linksFor(c.env);
+      openPublicLinks =
+        (await links.shares.countOpen(account.id, now)) +
+        (await links.requests.countOpen(account.id, now));
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -814,7 +823,7 @@ export function createApp() {
       : null;
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, usage },
+      { ...account, capUsd, cardOnFile, usage, openPublicLinks },
       await liveQueueFor(c.env, account),
       balance,
       // The month these numbers belong to, sent as its first instant (drive#559):
@@ -826,6 +835,25 @@ export function createApp() {
       // would be a second answer to the same question.
       new Date(monthStart(Date.now())).toISOString(),
     );
+  });
+
+  // Own-data export (drive#547): the same handler GET /v1/export runs, served
+  // here so a signed-in browser can download it before the api Worker is bound.
+  // The account gate already answered 401 for a stranger. No DRIVE_DB means
+  // no keys and no file rows, which is a truthful empty export, not a 503.
+  app.get(EXPORT_ENDPOINT, (c) => {
+    const account = c.get("account");
+    if (!account) return unauthorizedResponse();
+    const db = c.env.DRIVE_DB;
+    return exportRoute(c.req.raw, {
+      store: {
+        listKeys: (acct) => (db ? createD1DeviceStore(db).listPublic(acct) : Promise.resolve([])),
+      },
+      db: db ?? null,
+      account,
+      now: Date.now,
+      url: new URL(c.req.url),
+    });
   });
 
   // The prepaid balance (drive#586): the balance and recent ledger lines, and
@@ -877,7 +905,10 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store);
+    return handleCapRequest(c.req.raw, c.get("account"), store, {
+      ...mailFromEnv(c.env),
+      deviceName: sessionLabel(c.req.raw),
+    });
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -919,6 +950,8 @@ export function createApp() {
         // The mint route's own bound (drive issue #549). The per-account
         // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -939,6 +972,8 @@ export function createApp() {
       handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account"), {
         // The mint route's own bound (drive issue #549).
         limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -1076,6 +1111,13 @@ export function createApp() {
   return app;
 }
 
+// One app per isolate, built on the first fetch: createApp takes no env and
+// closes over no request, so the compiled router is safe to share across
+// fetches (the api Worker's appFor cache, minus the table key), and a
+// construction failure fails that request, not the isolate's boot.
+/** @type {ReturnType<typeof createApp> | undefined} */
+let app;
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
 // Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
@@ -1100,7 +1142,8 @@ const sentryOptions = (env) => ({
  */
 const handler = {
   async fetch(request, env, _context) {
-    return createApp().fetch(request, env);
+    if (app === undefined) app = createApp();
+    return app.fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string
@@ -1146,6 +1189,18 @@ const handler = {
    * @returns {Promise<void>}
    */
   async scheduled(event, env, context, store) {
+    // Every string cloudflare.config.ts declares has a branch below.
+    // Anything else used to fall through to the nightly reindex, so a
+    // mistyped trigger silently walked every account's store.
+    if (
+      event.cron !== METER_CRON &&
+      event.cron !== METER_RECONCILE_SCHEDULE &&
+      event.cron !== CLOSE_SCHEDULE &&
+      event.cron !== TRASH_PURGE_SCHEDULE &&
+      event.cron !== REINDEX_SCHEDULE
+    ) {
+      throw new Error(`unknown cron: ${event.cron}`);
+    }
     // The meter's trip. The controller carries the schedule string the
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.

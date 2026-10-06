@@ -50,6 +50,8 @@ drive update hands off to the package manager that installed this binary
 
 Update flags:
   --check   say whether a newer release exists, install nothing
+  --home    where the drive lives (default $HOME); a mount that is up restarts on it
+  --rclone  path to the rclone binary (default rclone from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own

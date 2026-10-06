@@ -35,6 +35,7 @@ export const USAGE_LABELS = Object.freeze({
   gbMonths: "GB-months so far",
   downloads: "Downloads",
   downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
+  openPublicLinks: "Open public links",
   cost: "Cost so far",
   cap: "Your cap",
   // The cap's own sentence. The accounts store is live (drive issue #2), so
@@ -92,6 +93,14 @@ export const USAGE_LABELS = Object.freeze({
   // provider's customer portal. The header stays at its five links; this one
   // is page copy, so it is labelled here like the rest of the page's words.
   cardPortal: "Update your card in the billing portal",
+  // Own-data export (drive#547): a link in the page body, pointed at the
+  // site Worker's export route, so a signed-in person can download the JSON
+  // before the api Worker is bound. The files themselves stay in the drive
+  // folder; this document is the account records.
+  exportHeading: "Your data",
+  exportWhat:
+    "Download a JSON file of this account's records: the account, keys, file names and version history. Your files stay in the drive folder.",
+  exportAction: "Download your data as JSON",
 });
 
 // The summary labels the four `drive usage` lines print, in print order. They
