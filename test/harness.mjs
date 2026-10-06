@@ -60,6 +60,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
   // state) primary key, and after 0012's snapshot pointer columns.
   "drive/0015_branch_row_id.sql",
+  // Branch jobs (drive#563): progress and stored counts, plus the unique
+  // index that covers in-flight approve/create states.
+  "drive/0030_branch_jobs.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.

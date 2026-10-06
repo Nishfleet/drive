@@ -83,7 +83,14 @@ import {
   handleCloseStatusRequest,
   runAccountCloseCron,
 } from "./account-close.js";
-import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
+import { BRANCH_QUEUE_KINDS, branchJob, branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
+import {
+  BRANCHES_ENDPOINT,
+  createKvSnapshotStore,
+  failJob,
+  handleBranchesRequest,
+  processBranchJob,
+} from "./branches.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -736,6 +743,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -753,6 +762,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
@@ -1464,13 +1475,64 @@ const handler = {
    * @param {import("../core/files.js").FileStore} [store] injectable like scheduled's
    */
   async queue(batch, env, _context, store = storeFor(env) ?? undefined) {
+    const branchMessages = [];
+    const meterMessages = [];
+    for (const message of batch.messages) {
+      const kind =
+        message.body !== null && typeof message.body === "object"
+          ? /** @type {{kind?: unknown}} */ (message.body).kind
+          : "";
+      if (typeof kind === "string" && kind.startsWith("branch.")) {
+        branchMessages.push(message);
+      } else {
+        meterMessages.push(message);
+      }
+    }
+    if (branchMessages.length > 0) {
+      const snapshots = snapshotsFor(env);
+      if (!env.DRIVE_DB || !snapshots || !store) {
+        // A missing branch dependency must not fail the meter's messages in
+        // the same batch: both producers currently share drive-meter-jobs.
+        for (const message of branchMessages) {
+          message.retry();
+        }
+      } else {
+        await handleBranchJobs(
+          { messages: branchMessages },
+          async (job) => {
+            const scoped = scopeStore(store, { id: job.accountId });
+            const result = await processBranchJob(
+              env.DRIVE_DB,
+              snapshots,
+              scoped,
+              { id: job.accountId },
+              job.branchId,
+            );
+            return { continue: result.done === false };
+          },
+          branchJobsQueue(env),
+          async (body, error) => {
+            const job = branchJob(body);
+            const nextState = job.kind === BRANCH_QUEUE_KINDS.approve ? "open" : "discarded";
+            const sentence =
+              error instanceof Error && error.message
+                ? error.message
+                : failureMessage("unexpected");
+            await failJob(env.DRIVE_DB, job.branchId, nextState, sentence);
+          },
+        );
+      }
+    }
+    if (meterMessages.length === 0) {
+      return;
+    }
     if (!env.METER_DB) {
       throw new Error("meter jobs: METER_DB binding is not configured");
     }
     const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
     const dodo = dodoEnv(env);
     await handleMeterJobs(
-      batch,
+      { messages: meterMessages },
       meterJobHandlers({
         meterDb: env.METER_DB,
         capStore: env.DRIVE_DB
