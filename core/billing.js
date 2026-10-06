@@ -218,9 +218,10 @@ export function storedGb(bytesValue) {
 
 /**
  * GB-months: the meter's GB-minutes over the minutes in that calendar month.
- * It is also the month's time-weighted average stored size in GB, the avg_GB
- * both halves of the price read. `drive usage` and the usage page show it, so
- * the division lives in one place.
+ * It is also the month's time-weighted average stored size in GB, the avg_GB both
+ * halves of the price read: the metered rate multiplies it, the maximum is a
+ * function of it, and the free download allowance is 3x it. `drive usage` and
+ * the usage page show it, so the division lives in one place.
  * @param {unknown} gbMinutes
  * @param {unknown} monthMinutes minutesInMonth() of the month being billed
  */

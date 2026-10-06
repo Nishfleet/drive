@@ -54,6 +54,7 @@ function makeD1() {
     "drive/0004_agent_undo.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    "drive/0030_branch_jobs.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -469,8 +470,8 @@ test("createBranch refuses a bad folder, a bad name and the branches folder", as
   assert.match(/** @type {{error: string}} */ (branches).error, /branches folder/);
 });
 
-test("listBranches reports the live changed count and the original's drift", async () => {
-  const { scoped, db, snapshots } = await driven();
+test("listBranches reports stored counts, not a live walk", async () => {
+  const { scoped, raw, db, snapshots } = await driven();
   await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   let [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.changed, 0);
@@ -478,10 +479,27 @@ test("listBranches reports the live changed count and the original's drift", asy
 
   await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
   [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.equal(branch.changed, 0, "the list does not walk the store");
+
+  const detail = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(detail.status, 200);
+  [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.changed, 1);
-  assert.equal(branch.sourceChanged, 0);
 
   await scoped.write("/Photos/a.txt", new Blob(["changed under it"]).stream(), "text/plain");
+  await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
   [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.sourceChanged, 1);
 });
@@ -569,7 +587,8 @@ test("discard throws the branch away and leaves the original untouched", async (
   );
 
   const result = await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
-  assert.deepEqual(result, { name: "work", state: "discarded", removed: 2 });
+  assert.equal(result.state, "discarded");
+  assert.equal(result.removed, 2);
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), null);
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/sub/b.txt`), null);
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
@@ -639,7 +658,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     raw,
     account,
   );
-  assert.equal(created.status, 201);
+  assert.equal(created.status, 202);
   const createdBody = await created.json();
   assert.equal(createdBody.branch.name, "work");
   assert.equal(createdBody.branch.files, 2);
@@ -676,7 +695,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     raw,
     account,
   );
-  assert.equal(approved.status, 200);
+  assert.equal(approved.status, 202);
   assert.equal((await approved.json()).state, "approved");
 
   const second = await handleBranchesRequest(
@@ -686,7 +705,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     raw,
     account,
   );
-  assert.equal(second.status, 201);
+  assert.equal(second.status, 202);
   const discarded = await handleBranchesRequest(
     request("POST", `${BRANCHES_ENDPOINT}/second/discard`, {}),
     db,
@@ -694,7 +713,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     raw,
     account,
   );
-  assert.equal(discarded.status, 200);
+  assert.equal(discarded.status, 202);
   assert.equal((await discarded.json()).state, "discarded");
 });
 
@@ -840,7 +859,7 @@ test("the route answers a closed branch with an empty diff and its state", async
     raw,
     ACCOUNT,
   );
-  assert.equal(approved.status, 200);
+  assert.equal(approved.status, 202);
   await handleBranchesRequest(
     request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
     db,
@@ -1073,7 +1092,10 @@ test("a create whose prefix clear fails closes its own claim row", async () => {
 
   const broken = {
     ...scopeStore(raw, ACCOUNT),
-    remove: async () => {
+    listKeys: async () => {
+      throw new Error("storage is down");
+    },
+    removeBatch: async () => {
       throw new Error("storage is down");
     },
   };

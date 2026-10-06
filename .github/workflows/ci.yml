@@ -40,7 +40,7 @@ jobs:
   # the files inside those areas that the job still reads.
   changes:
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -126,8 +126,8 @@ jobs:
       (needs.changes.result != 'success' ||
        needs.changes.outputs.node == 'true' ||
        needs.changes.outputs.node_extra == 'true')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
-    timeout-minutes: 25 # own runners share the VPS with 10 builders: verify ran 6.5 min idle, passed 10 min under load (2026-10-04)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25 # verify ran 6.5 min idle and 10 min under load on our own runners (2026-10-04), so keep headroom on hosted runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,9 +136,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          # No cache on own runners: npm's cache is already on this disk, and
-          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
-          package-manager-cache: false
+          cache: npm
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: npm ci
@@ -234,19 +232,19 @@ jobs:
       (needs.changes.result != 'success' ||
        needs.changes.outputs.go == 'true' ||
        needs.changes.outputs.go_extra == 'true')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
-    timeout-minutes: 20 # go took 8 min under load on own runners (2026-10-04)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20 # go took 8 min under load on our own runners (2026-10-04), so keep headroom on hosted runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # goreleaser below runs `check` only and publishes nothing, so the Go
+      # cache this job keeps never reaches a release artifact.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
         with:
           go-version: "1.24"
-          # No cache on own runners: Go's build cache is already on this disk,
-          # and saving it took 2 min per job (2026-10-05).
-          cache: false
+          cache: true
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry
       # fails the job rather than reaching it.

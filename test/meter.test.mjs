@@ -874,6 +874,97 @@ test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves dow
   );
 });
 
+// The stored-bytes mark, driven the way a customer actually produces one: the
+// same path saved again and again inside a single hour (drive#535). A save is
+// a new version, so the hourly set grows - but only the last version is still
+// live when the hour closes, and that is the set the mark takes.
+/**
+ * One 10 GB file at one path, saved `saves` times inside one hour:
+ * `replaceEvery` minutes after midnight, each save creating the successor and
+ * hiding the version before it - the two events the storage server sends for
+ * a save. `grow` adds a byte to every save's size, which is what breaks the
+ * size-identical handoff waiver (drive#104).
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
+ * @param {{saves?: number, replaceEvery?: number, grow?: boolean}} [options]
+ */
+async function savedRepeatedly(db, { saves = 6, replaceEvery = 10, grow = false } = {}) {
+  const size = 10 * GB;
+  const path = "/u/abc123/notes.md";
+  for (let save = 0; save < saves; save += 1) {
+    const at = midnight() + save * replaceEvery * MINUTE_MS;
+    await storeCreate(db, "abc123", {
+      eventId: `evt-abc123-save-${save}`,
+      b2FileId: `file-save-${save}`,
+      path,
+      sizeBytes: grow ? size + save : size,
+      createdAt: at,
+    });
+    if (save === saves - 1) {
+      continue;
+    }
+    const hiddenAt = at + replaceEvery * MINUTE_MS;
+    const hide = validateEvent({
+      eventId: `evt-abc123-hide-${save}`,
+      keyName: "/u/abc123/",
+      path,
+      b2FileId: `file-save-${save}`,
+      action: "deleted",
+      hiddenAt,
+      eventTimestamp: hiddenAt,
+    });
+    assert.equal(hide.error, undefined, hide.error);
+    await recordEvent(db, hide, hiddenAt);
+  }
+}
+
+test("six saves of one file in an hour mark one file's size, and bill one file's minutes", async () => {
+  // drive#535, finish line 1: N saves of one file in one hour marked N times
+  // its size, which read as 60 GB stored for a 10 GB drive, as the month's
+  // peak, and - as the average of the marks - into the free download
+  // allowance. The mark is the live set at the hour's end, so one file marks
+  // once however many times it was saved.
+  const sameSize = makeMeteredDB().db;
+  await savedRepeatedly(sameSize);
+  const hour = midnight();
+  const rolled = await rollupHour(sameSize, hour, hour + 60 * MINUTE_MS);
+  assert.equal(
+    sameSize.tables.usage_minutes.get(`abc123|${hour}`).stored_bytes,
+    10 * GB,
+    "six saves of a 10 GB file mark 10 GB, the size the drive held at the hour's end",
+  );
+  // The minutes side: every handoff is same-size and to the millisecond, so the
+  // waiver applies to each pair and the hour bills the one file's 60 minutes.
+  assert.equal(rolled.gbMinutes, 600, "six saves of one 10 GB file bill 600 GB-minutes");
+  assert.equal(rolled.versions, 6, "all six version rows were live at some point of the hour");
+  // The same file saved with a size change on every save: the hour bills each
+  // save its own full hour, which is the minimum the pricing copy discloses
+  // (core/pricing.js versionMinimumLine, drive#535 finish line 2). The mark is
+  // still one file's size, because the marks follow what is live, not what was
+  // booked.
+  const growing = makeMeteredDB().db;
+  await savedRepeatedly(growing, { grow: true });
+  await rollupHour(growing, hour, hour + 60 * MINUTE_MS);
+  assert.equal(
+    growing.tables.usage_minutes.get(`abc123|${hour}`).stored_bytes,
+    10 * GB + 5,
+    "the last save's size is what the drive holds",
+  );
+  // Every save changed the file's size, so no handoff was a continuation: the
+  // five retired saves each bill the full 1-hour minimum and the save the hour
+  // closes on bills the ten minutes it held. This is the number the pricing
+  // copy has to disclose (src/pricing.js versionMinimumLine, finish line 2).
+  const sixSizes = [0, 1, 2, 3, 4, 5].map((save) => 10 * GB + save);
+  const expectedGbMinutes =
+    sixSizes.slice(0, 5).reduce((total, size) => total + size / GB, 0) * 60 +
+    (sixSizes[5] / GB) * 10;
+  assert.ok(
+    Math.abs(
+      growing.tables.usage_minutes.get(`abc123|${hour}`).gb_minutes_live - expectedGbMinutes,
+    ) < 1e-6,
+    "six saves that each change the size bill five hours of storage plus the live save's minutes",
+  );
+});
+
 test("one account's hour is summed from its own versions, and only that account's", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc123");

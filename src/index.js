@@ -88,7 +88,14 @@ import {
   handleCloseStatusRequest,
   runAccountCloseCron,
 } from "./account-close.js";
-import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
+import { BRANCH_QUEUE_KINDS, branchJob, branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
+import {
+  BRANCHES_ENDPOINT,
+  createKvSnapshotStore,
+  failJob,
+  handleBranchesRequest,
+  processBranchJob,
+} from "./branches.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -108,6 +115,7 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_SCHEDULE,
   reconcileIndex,
   SEARCH_ENDPOINT,
   withIndex,
@@ -796,6 +804,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -813,6 +823,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
@@ -839,8 +851,8 @@ export function createApp() {
       capUsd = await store.getCapUsd(account.id);
       // The card on file is the accounts row's own stamp, read the same way as
       // the cap (drive#417). Until it is really on file the usage page says no
-      // charge has been made and shows no bill, instead of the $10 membership
-      // line a card-less account would look like it had been charged. It is
+      // charge has been made and shows no bill, instead of a balance line a
+      // card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
       usage = /** @type {Record<string, unknown>} */ (
@@ -1135,6 +1147,13 @@ export function createApp() {
   return app;
 }
 
+// One app per isolate, built on the first fetch: createApp takes no env and
+// closes over no request, so the compiled router is safe to share across
+// fetches (the api Worker's appFor cache, minus the table key), and a
+// construction failure fails that request, not the isolate's boot.
+/** @type {ReturnType<typeof createApp> | undefined} */
+let app;
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
 // Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
@@ -1159,7 +1178,8 @@ const sentryOptions = (env) => ({
  */
 const handler = {
   async fetch(request, env, _context) {
-    return createApp().fetch(request, env);
+    if (app === undefined) app = createApp();
+    return app.fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string
@@ -1205,6 +1225,18 @@ const handler = {
    * @returns {Promise<void>}
    */
   async scheduled(event, env, context, store) {
+    // Every string cloudflare.config.ts declares has a branch below.
+    // Anything else used to fall through to the nightly reindex, so a
+    // mistyped trigger silently walked every account's store.
+    if (
+      event.cron !== METER_CRON &&
+      event.cron !== METER_RECONCILE_SCHEDULE &&
+      event.cron !== CLOSE_SCHEDULE &&
+      event.cron !== TRASH_PURGE_SCHEDULE &&
+      event.cron !== REINDEX_SCHEDULE
+    ) {
+      throw new Error(`unknown cron: ${event.cron}`);
+    }
     // The meter's trip. The controller carries the schedule string the
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.
@@ -1534,13 +1566,64 @@ const handler = {
    * @param {import("../core/files.js").FileStore} [store] injectable like scheduled's
    */
   async queue(batch, env, _context, store = storeFor(env) ?? undefined) {
+    const branchMessages = [];
+    const meterMessages = [];
+    for (const message of batch.messages) {
+      const kind =
+        message.body !== null && typeof message.body === "object"
+          ? /** @type {{kind?: unknown}} */ (message.body).kind
+          : "";
+      if (typeof kind === "string" && kind.startsWith("branch.")) {
+        branchMessages.push(message);
+      } else {
+        meterMessages.push(message);
+      }
+    }
+    if (branchMessages.length > 0) {
+      const snapshots = snapshotsFor(env);
+      if (!env.DRIVE_DB || !snapshots || !store) {
+        // A missing branch dependency must not fail the meter's messages in
+        // the same batch: both producers currently share drive-meter-jobs.
+        for (const message of branchMessages) {
+          message.retry();
+        }
+      } else {
+        await handleBranchJobs(
+          { messages: branchMessages },
+          async (job) => {
+            const scoped = scopeStore(store, { id: job.accountId });
+            const result = await processBranchJob(
+              env.DRIVE_DB,
+              snapshots,
+              scoped,
+              { id: job.accountId },
+              job.branchId,
+            );
+            return { continue: result.done === false };
+          },
+          branchJobsQueue(env),
+          async (body, error) => {
+            const job = branchJob(body);
+            const nextState = job.kind === BRANCH_QUEUE_KINDS.approve ? "open" : "discarded";
+            const sentence =
+              error instanceof Error && error.message
+                ? error.message
+                : failureMessage("unexpected");
+            await failJob(env.DRIVE_DB, job.branchId, nextState, sentence);
+          },
+        );
+      }
+    }
+    if (meterMessages.length === 0) {
+      return;
+    }
     if (!env.METER_DB) {
       throw new Error("meter jobs: METER_DB binding is not configured");
     }
     const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
     const dodo = dodoEnv(env);
     await handleMeterJobs(
-      batch,
+      { messages: meterMessages },
       meterJobHandlers({
         meterDb: env.METER_DB,
         capStore: env.DRIVE_DB

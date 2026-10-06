@@ -168,7 +168,9 @@ const LIVENESS_QUERY = "SELECT 1";
  * request failed, which is exactly the outage this endpoint exists to catch
  * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
- * would really send mail.
+ * would really send mail. METER_JOBS and BRANCH_JOBS are producer
+ * bindings (drive#519, drive#563): without them the work runs in-process,
+ * and a health probe cannot exercise a queue without sending a real job.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",

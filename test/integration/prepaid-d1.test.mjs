@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { minutesInMonth, monthBillCents } from "../../core/billing.js";
+import { gbMonths, minutesInMonth, monthBillCents } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
@@ -91,7 +91,9 @@ async function billThrough(db, hour) {
     gbMinutes: usage.gbMinutes,
     monthMinutes: minutesInMonth(hour),
     downloadBytes: usage.downloadBytes,
-    averageStoredGb: usage.averageStoredGb,
+    // The same average the draw itself passes (drive#535): derived from the
+    // GB-minutes, not read off the hours.
+    averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
   }).totalCents;
 }
 

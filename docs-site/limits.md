@@ -78,6 +78,11 @@ would rather you read it here than find out in week three.
   so a branch counts against your storage until you `discard` it or `approve`
   it, and `approve` stops with a list of conflicting files instead of a
   silent overwrite.
+- **A branch still has a size cap.** Copy, approve, discard and rewind now run
+  as a queued job in file batches, so they stay inside one Worker's request
+  budget. A folder with more than 100,000 files still cannot be branched: the
+  snapshot for that many files is about 11 MiB in memory, and that is the
+  remaining limit.
 
 ## Honest notes on the numbers
 

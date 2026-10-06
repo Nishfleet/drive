@@ -13,7 +13,7 @@
 // is the whole of the withdrawal there.
 
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
-import { BILLING_CONFIG, minutesInMonth, storedGb } from "./billing.js";
+import { BILLING_CONFIG, gbMonths, minutesInMonth, storedGb } from "./billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "./cap.js";
 import { all, batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { tokensMatch } from "./http.js";
@@ -1216,9 +1216,15 @@ export function createD1DeviceStore(db, options = {}) {
     async monthUsage(accountId, options) {
       const at = now();
       const month = await monthUsageThrough(db, accountId, at);
-      // The peak is the size the drive holds now (the page's "stored now"); the
-      // bill itself reads only the GB-minutes (drive#463).
+      // The peak is the size the drive holds now (the page's "stored now"). The
+      // bill itself reads only the GB-minutes (drive#463), and the average the
+      // free download allowance follows is the month's own average, worked out
+      // from the GB-minutes over that month's minutes (`gbMonths`, billing.js)
+      // rather than read out of monthUsageThrough: averaging the hour's
+      // stored-bytes marks counted a file saved six times inside one hour six
+      // times (drive#535), and no two callers could be held to one figure.
       const peakGb = storedGb(month.peakBytes);
+      const averageGb = gbMonths(month.gbMinutes, minutesInMonth(at));
       return {
         gbMinutes: month.gbMinutes,
         // The month this read's minutes fell in sets the divisor (drive#531).
@@ -1226,11 +1232,7 @@ export function createD1DeviceStore(db, options = {}) {
         storedGb: peakGb,
         storedDaily: [],
         downloadBytes: month.downloadBytes,
-        // The month's own average, not its peak: a save re-marks the hour, so
-        // the peak runs ahead of what the drive held and the cap would trip
-        // early on a busy day (drive#535). The average is what the invoice's
-        // maximum follows too (drive#463).
-        averageStoredGb: month.averageStoredGb,
+        averageStoredGb: averageGb,
         capUsd: options.capUsd,
         cardAdded: true,
         // The display stamp only, forwarded from the same accounts row

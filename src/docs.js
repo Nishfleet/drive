@@ -181,7 +181,7 @@ export const KEY_TABLE = Object.freeze(
 
 /**
  * Space's 1 TB price, as the scoreboard's "price at 1 TB" row records it
- * (docs/scoreboard.md, checked on spacefs.com 2026-09-30): about $20 month to
+ * (docs/scoreboard.md, checked 2026-09-30): about $20 month to
  * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
  * test/docs.test.mjs still fails if either number leaves that internal row.
  */
@@ -209,7 +209,7 @@ export const FAQ = Object.freeze([
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
-      "You add money first, and storage and downloads are drawn from your balance as they are metered. Files are counted for at least one hour.",
+      "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
@@ -305,6 +305,7 @@ export function markerValues(extra = {}) {
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
     NO_PLANS: PRICE.noPlansLine,
+    VERSION_MINIMUM: PRICE.versionMinimumLine,
     PRICE_RULE: PRICE.rule,
     TRASH_BILLING: PRICE.trashLine,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
