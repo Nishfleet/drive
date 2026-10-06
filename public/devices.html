@@ -218,7 +218,7 @@ function keyRow(key) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = REVOKE_LABEL;
-  button.addEventListener("click", () => revokeKey(key.keyId));
+  button.addEventListener("click", () => revokeKey(key.keyId, button));
   action.appendChild(button);
   tr.replaceChildren(name, kind, used, action);
   return tr;
@@ -255,10 +255,11 @@ async function readKeys() {
   render(payload.keys);
 }
 
-async function revokeKey(keyId) {
+async function revokeKey(keyId, button) {
   if (!window.confirm(REVOKE_CONFIRM)) {
     return;
   }
+  button.disabled = true;
   let response;
   try {
     response = await fetch(`${DEVICES_ENDPOINT}/${encodeURIComponent(keyId)}`, {
@@ -266,13 +267,21 @@ async function revokeKey(keyId) {
       headers: { accept: "application/json" },
     });
   } catch (_error) {
+    button.disabled = false;
     sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    return;
+  }
+  if (response.status === 401) {
+    const payload = await response.json().catch(() => null);
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "You are not signed in to your drive.");
+    showSessionNav(false);
     return;
   }
   if (response.status === 204) {
     await readKeys();
     return;
   }
+  button.disabled = false;
   const payload = await response.json().catch(() => null);
   sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
 }

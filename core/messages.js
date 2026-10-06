@@ -214,6 +214,11 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That key is not on this account.",
     next: "Reload the devices page and pick a key that is still listed.",
   }),
+  // A URL with more segments than /api/devices/<keyId>, or an empty id.
+  "key-path-unknown": Object.freeze({
+    what: "That is not a key path.",
+    next: "Open the key from the list.",
+  }),
   // A URL with more segments than /api/branches/<name>/<action>.
   "branch-path-unknown": Object.freeze({
     what: "That is not a branch path.",

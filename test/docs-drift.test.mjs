@@ -41,6 +41,10 @@ test("CLI user-facing text names only web pages that exist", () => {
     }
   }
   assert.ok(named.length > 0, "the CLI names no web page; the devices-page sentence is gone");
+  assert.ok(
+    named.some((entry) => entry.page === "devices"),
+    "the CLI no longer names the devices page; cmd/drive still has that sentence on origin/main",
+  );
   const aliases = new Map([
     ["devices", "public/devices.html"],
     ["usage", "public/usage.html"],

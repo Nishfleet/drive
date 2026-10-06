@@ -17,6 +17,10 @@ export const DEVICES_ENDPOINT = "/api/devices";
  * One live key as the devices page shows it: kind and last-used, no secret.
  * `lastSeenAt` is epoch milliseconds, the same unit the first-run page's
  * device list uses, so a clock the two pages share cannot disagree.
+ * `listPublic` returns `publicDevice`, whose `lastSeenAt` is the D1 column:
+ * epoch seconds (`core/devices.js` `nowSeconds`). `listForStatus` is the
+ * other read, and it already multiplies; this page must not use that one
+ * or the date would jump to year 55900.
  * @param {ReturnType<typeof import("../core/keystore.js").publicDevice>} key
  */
 function publicKey(key) {
@@ -43,7 +47,12 @@ export function devicesPath(pathname) {
   if (!rest.startsWith("/")) {
     return { error: "unknown" };
   }
-  const keyId = rest.slice(1);
+  let keyId = rest.slice(1);
+  try {
+    keyId = decodeURIComponent(keyId);
+  } catch {
+    return { error: "unknown" };
+  }
   if (keyId === "" || keyId.includes("/") || keyId === "." || keyId === "..") {
     return { error: "unknown" };
   }
@@ -66,11 +75,11 @@ export async function handleDevicesRequest(request, account, store) {
   if (!account) return unauthorizedResponse();
   const parsed = devicesPath(new URL(request.url).pathname);
   if ("error" in parsed) {
-    return errorResponse(404, failureMessage("key-not-found"));
+    return errorResponse(404, failureMessage("key-path-unknown"));
   }
   if (request.method === "GET") {
     if (parsed.keyId !== "") {
-      return errorResponse(404, failureMessage("key-not-found"));
+      return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
     }
     if (!store) {
       return errorResponse(503, failureMessage("unexpected"));
@@ -82,9 +91,7 @@ export async function handleDevicesRequest(request, account, store) {
   }
   if (request.method === "DELETE") {
     if (parsed.keyId === "") {
-      return errorResponse(405, "That method is not allowed here.", {
-        allow: "GET, DELETE",
-      });
+      return errorResponse(405, "That method is not allowed here.", { allow: "GET" });
     }
     if (!store) {
       return errorResponse(503, failureMessage("unexpected"));
@@ -98,5 +105,7 @@ export async function handleDevicesRequest(request, account, store) {
       headers: { "cache-control": "no-store" },
     });
   }
-  return errorResponse(405, "That method is not allowed here.", { allow: "GET, DELETE" });
+  return errorResponse(405, "That method is not allowed here.", {
+    allow: parsed.keyId === "" ? "GET" : "DELETE",
+  });
 }

@@ -12,6 +12,9 @@ import worker from "../src/index.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 const page = readFileSync(new URL("../public/devices.html", import.meta.url), "utf8");
+// Epoch seconds in `devices.last_seen_at`. `listPublic` returns that column
+// unchanged (`publicDevice`); the page multiplies by 1000, the same conversion
+// `listForStatus` does for the first-run poll.
 const SEEN_AT = 1_700_000_000;
 
 /** @type {(request: Request, env?: unknown) => Promise<Response>} */
@@ -46,6 +49,8 @@ test("devicesPath reads the list and one key id, and refuses a nested path", () 
   assert.deepEqual(devicesPath("/api/devices/key_mac"), { keyId: "key_mac" });
   assert.deepEqual(devicesPath("/api/devices/key_mac/extra"), { error: "unknown" });
   assert.deepEqual(devicesPath("/api/devices/.."), { error: "unknown" });
+  assert.deepEqual(devicesPath("/api/devices/key%2Fslash"), { error: "unknown" });
+  assert.deepEqual(devicesPath("/api/devices/%2e%2e"), { error: "unknown" });
 });
 
 test("GET lists live keys with kind and last-used, and hides revoked and other accounts", async () => {
@@ -87,6 +92,35 @@ test("GET lists live keys with kind and last-used, and hides revoked and other a
   assert.equal(agent.kind, "agent");
   assert.equal(agent.lastSeenAt, null);
   assert.equal(revokedIds.length, 0);
+});
+
+test("the collection only allows GET and a key only allows DELETE", async () => {
+  const made = createTestAuth();
+  const { account } = await signIn(made, "owner@example.com");
+  const store = createD1DeviceStore(made.db);
+  const nested = await handleDevicesRequest(
+    new Request(`https://drive.test${DEVICES_ENDPOINT}/key_mac/extra`),
+    account,
+    store,
+  );
+  assert.equal(nested.status, 404);
+  assert.deepEqual(await nested.json(), { error: failureMessage("key-path-unknown") });
+
+  const getItem = await handleDevicesRequest(
+    new Request(`https://drive.test${DEVICES_ENDPOINT}/key_mac`),
+    account,
+    store,
+  );
+  assert.equal(getItem.status, 405);
+  assert.equal(getItem.headers.get("allow"), "DELETE");
+
+  const deleteList = await handleDevicesRequest(
+    new Request(`https://drive.test${DEVICES_ENDPOINT}`, { method: "DELETE" }),
+    account,
+    store,
+  );
+  assert.equal(deleteList.status, 405);
+  assert.equal(deleteList.headers.get("allow"), "GET");
 });
 
 test("DELETE revokes the named key at the provider and 404s another account's key", async () => {
@@ -191,4 +225,7 @@ test("the shipped page lists kind and last used, and posts revoke to the route",
   assert.match(page, /method: "DELETE"/);
   assert.match(page, /REVOKE_CONFIRM/);
   assert.match(page, /href="\/devices" aria-current="page">Devices<\/a>/);
+  assert.match(page, /button\.disabled = true/);
+  assert.match(page, /if \(response\.status === 401\)/);
+  assert.match(page, /showSessionNav\(false\)/);
 });

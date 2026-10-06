@@ -102,7 +102,8 @@ export const PAGES = Object.freeze([
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
   // The devices page (drive#525): one account's keys, so it is noindex like
-  // files and usage. A crawler that reached it would see the sign-in prompt.
+  // files and usage. A crawler that reached it would see the heading and a
+  // signed-out status, never another account's keys.
   Object.freeze({ path: "/devices.html", indexable: false }),
   // The upload-request page is a stranger's one-folder drop box, reached only
   // from a link the owner minted: noindex so a crawler never finds one
