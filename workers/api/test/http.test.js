@@ -9,7 +9,7 @@ import {
   readJsonObject,
   readLimitedBody,
   tokensMatch,
-} from "../src/http.js";
+} from "../../../core/http.js";
 
 // drive#77 finding 5: http.js had no test at all. These pin the error shape
 // every api route answers with, the no-store rule, and the three ways a body

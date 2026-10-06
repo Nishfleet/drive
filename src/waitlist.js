@@ -2,10 +2,10 @@
 // so node --test can exercise every branch without a running runtime.
 
 import isEmail from "validator/lib/isEmail.js";
-import { BodyTooLargeError, json, readLimitedBody } from "../workers/api/src/http.js";
-import { isSameOriginRequest } from "./email-send.js";
-import { failureMessage } from "./messages.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
 export { isSameOriginRequest };
 
@@ -143,7 +143,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
 
   // Rate limit next: it bounds the work that actually costs something (a body
   // parse and a D1 write), so it runs before both. One shared helper
-  // (src/rate-limit.js) owns the client-IP key, the fail-closed answer and the
+  // (core/rate-limit.js) owns the client-IP key, the fail-closed answer and the
   // 429, so the waitlist, the sign-in route (drive issue #147) and the api
   // Worker's device routes cannot state two different limits or two different
   // refusals. Unchanged behaviour: a missing binding, a failed call and a

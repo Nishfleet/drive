@@ -106,6 +106,11 @@ const conflictClaimPolls = 20
 // margin for rclone's own scheduling.
 const conflictWinPolls = 20
 
+// conflictHashFailPolls is how many remote-hash failures one path may
+// take after it leaves the queue before the skip is named. Holding
+// forever with no line would hide a save that never decides.
+const conflictHashFailPolls = 10
+
 // conflictReportEvery is the least time between two reports of the
 // same cause, so a persistent failure keeps a named heartbeat on the
 // mount's log rather than one line and then silence.
@@ -163,6 +168,20 @@ type pendingSave struct {
 	// the instant it sees its own bytes: an upload can land on top of an
 	// own upload seconds later and still be within one sync window.
 	winPolls int
+	// byFingerprint is a save too large to hash whole: it is compared
+	// by size and mtime, not by a local md5, so a new remote is this
+	// device's landing rather than a skip that would alarm on every
+	// ordinary large upload.
+	byFingerprint bool
+	// hashFails is how many remote-hash errors this path has seen
+	// since its upload left the queue.
+	hashFails int
+	// baselineUnknown is set when the remote hash could not be read at
+	// first sight, so previous is not the version the save replaces. It
+	// is read again on later passes while the save is queued. Until it is
+	// known, a version that is not this device's is not claimed as a
+	// conflict, and a save that leaves the queue still unknown is named.
+	baselineUnknown bool
 }
 
 // conflictBackend is what one guard pass needs from a running mount.
@@ -179,6 +198,12 @@ type conflictBackend interface {
 	// an error: a save that lands where nothing was is exactly the
 	// case the rule has to name.
 	remoteHash(ctx context.Context, name string) (string, error)
+	// remoteVersion is the size and modification time of the object at
+	// the plain path, and ok is false when there is no object there. A
+	// save too large to hash whole has no local md5 to set against the
+	// remote ETag, so its version is what tells this device's landing
+	// from another device's.
+	remoteVersion(ctx context.Context, name string) (size int64, modTime time.Time, ok bool, err error)
 	// parentContents names the files one folder of the remote holds,
 	// so a path the listing leaves out is a path that never existed
 	// and no hash needs reading for it. A folder that does not exist
@@ -245,6 +270,7 @@ type conflictGuard struct {
 	seen     map[string]*pendingSave
 	order    []string
 	cursor   int
+	synced   map[string]string // last-synced fingerprint per path
 }
 
 // newConflictGuard builds the guard for one mount. The guard keeps
@@ -257,6 +283,7 @@ func newConflictGuard(device, mountDir string) *conflictGuard {
 		device:   device,
 		mountDir: mountDir,
 		seen:     map[string]*pendingSave{},
+		synced:   map[string]string{},
 	}
 }
 
@@ -290,7 +317,25 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		if e.Name == "" || !inFlight[e.Name] {
 			continue
 		}
-		if _, ok := g.seen[e.Name]; ok {
+		if save, ok := g.seen[e.Name]; ok {
+			if save.baselineUnknown {
+				if previous, unknown, err := g.previousHash(ctx, b, e.Name, listings); err == nil {
+					save.previous, save.baselineUnknown = previous, unknown
+				}
+			}
+			if save.reason == "" && !save.byFingerprint && g.mountChanged(e.Name, save) {
+				reason, err := g.rehash(e.Name, save)
+				if err != nil {
+					return res, err
+				}
+				if reason != "" {
+					save.reason = reason
+				}
+			}
+			if save.reason != "" && !save.reported {
+				res.Skipped = append(res.Skipped, ConflictSkip{Remote: e.Name, Reason: save.reason})
+				save.reported = true
+			}
 			continue
 		}
 		if hashes >= conflictSightMax {
@@ -318,7 +363,6 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	// watch list is shortened after the walk: an entry removed while
 	// the cursor is mid-walk would shift the slice under it.
 	finished := make([]string, 0, 4)
-	var claimed []string
 	polled := 0
 	i := g.cursor
 	if i >= len(g.order) {
@@ -345,7 +389,6 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 					return res, err
 				}
 				if copy != nil {
-					claimed = append(claimed, name)
 					res.Claimed = append(res.Claimed, *copy)
 				}
 				if skip != nil {
@@ -410,8 +453,22 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 		skip := fmt.Sprintf("the save is not in the drive any more: %v", err)
 		return &pendingSave{reason: skip, reported: true}, ConflictSkip{Remote: name, Reason: skip}, nil
 	}
-	if reason := statReason(info); reason != "" {
+	if !info.regular {
+		reason := fmt.Sprintf("it is a %s, not a regular file", info.modeType)
 		return &pendingSave{reason: reason, reported: true}, ConflictSkip{Remote: name, Reason: reason}, nil
+	}
+	if info.size > conflictProtectMax {
+		// Large files are compared by size and mtime rather than hashed
+		// whole: a 64 MiB cap would skip them and a late overwrite would
+		// go unnoticed.
+		fp := fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
+		save := &pendingSave{hash: fp, stat: info, byFingerprint: true}
+		previous, unknown, err := g.previousHash(ctx, b, name, listings)
+		if err != nil {
+			return nil, ConflictSkip{}, err
+		}
+		save.previous, save.baselineUnknown = previous, unknown
+		return save, ConflictSkip{}, nil
 	}
 	hash, err := g.hashMountFile(name)
 	if errors.Is(err, errProtectTooLarge) {
@@ -424,11 +481,13 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 	if err != nil {
 		return nil, ConflictSkip{}, fmt.Errorf("conflict: read %s from the mount: %w", name, err)
 	}
-	previous, err := g.previousHash(ctx, b, name, listings)
+	save := &pendingSave{hash: hash, stat: info}
+	previous, unknown, err := g.previousHash(ctx, b, name, listings)
 	if err != nil {
-		return nil, ConflictSkip{}, fmt.Errorf("conflict: read %s before the save lands: %w", name, err)
+		return nil, ConflictSkip{}, err
 	}
-	return &pendingSave{hash: hash, previous: previous, stat: info}, ConflictSkip{}, nil
+	save.previous, save.baselineUnknown = previous, unknown
+	return save, ConflictSkip{}, nil
 }
 
 // decide is steps 2 and 3 for one landed path: re-hash if this device
@@ -436,7 +495,7 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 // claim. drop says the path is finished and leaves the watch list;
 // skip names a save the rule found it could not protect.
 func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name string, save *pendingSave) (drop bool, skip *ConflictSkip, copy *ConflictCopy, err error) {
-	if g.mountChanged(name, save) {
+	if !save.byFingerprint && g.mountChanged(name, save) {
 		// The bytes the upload will carry are the bytes on this
 		// device's mount at upload time, so a save written again
 		// before the upload fires is re-hashed on change, lest the
@@ -454,9 +513,35 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 	save.polls++
 	landed, err := b.remoteHash(ctx, name)
 	if err != nil {
-		return false, nil, nil, fmt.Errorf("conflict: read %s after the save landed: %w", name, err)
+		return g.hashFailed(name, save, "the remote hash for this file could not be read")
 	}
 	switch {
+	case save.byFingerprint && landed != "" && landed != save.previous:
+		// A fingerprint-watched save has no local md5 that could
+		// equal the remote ETag, so the object's size and mtime say
+		// whose version it is: rclone carries the file's mtime to
+		// storage, so this device's landing matches what it hashed
+		// and another device's save does not.
+		size, modTime, ok, err := b.remoteVersion(ctx, name)
+		if err != nil {
+			return g.hashFailed(name, save, "the size and time of this file in storage could not be read")
+		}
+		if !ok {
+			return false, nil, nil, nil
+		}
+		if sameVersion(size, modTime, save.stat.size, save.stat.modTime) {
+			save.winPolls++
+			if save.winPolls >= conflictWinPolls {
+				g.synced[name] = landed
+				return true, nil, nil, nil
+			}
+			return false, nil, nil, nil
+		}
+		g.synced[name] = landed
+		return true, &ConflictSkip{
+			Remote: name,
+			Reason: "another version landed on a file too large to keep a copy of",
+		}, nil, nil
 	case landed == save.hash:
 		// This device's save is the one that landed. An overwrite can
 		// still land on top of it for the whole sync window after it,
@@ -465,7 +550,11 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// its own bytes: it watches for conflictWinPolls polls and only
 		// then drops the entry.
 		save.winPolls++
-		return save.winPolls >= conflictWinPolls, nil, nil, nil
+		if save.winPolls >= conflictWinPolls {
+			g.synced[name] = landed
+			return true, nil, nil, nil
+		}
+		return false, nil, nil, nil
 	case landed == "" || landed == save.previous:
 		// Nothing has landed where this save was going, or the
 		// object is the version that preceded the save: not a
@@ -474,6 +563,19 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// watched a little longer.
 		if save.polls >= conflictClaimPolls {
 			return true, nil, nil, nil
+		}
+		return false, nil, nil, nil
+	case save.baselineUnknown:
+		// The version that preceded the save was never read, so a
+		// version that is not this device's may be that one and is
+		// not claimed as a conflict. It is watched a little longer,
+		// then named: an overwrite in that window cannot be told
+		// from the version the save replaced.
+		if save.polls >= conflictClaimPolls {
+			return true, &ConflictSkip{
+				Remote: name,
+				Reason: "the version before this save could not be read, so an overwrite could not be told apart",
+			}, nil, nil
 		}
 		return false, nil, nil, nil
 	default:
@@ -485,6 +587,13 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		// written: a hash that is still this device's save is
 		// claimed, and a save whose bytes this machine no longer
 		// holds is named, because there is nothing left to write.
+		if save.byFingerprint {
+			g.synced[name] = landed
+			return true, &ConflictSkip{
+				Remote: name,
+				Reason: "the file is compared by size and time and a copy could not be kept",
+			}, nil, nil
+		}
 		mountHash, err := g.hashMountFile(name)
 		if errors.Is(err, errProtectTooLarge) {
 			skip := fmt.Sprintf("the save grew past the %d-byte protection cap while it was claimed", conflictProtectMax)
@@ -514,8 +623,23 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		if err != nil {
 			return false, nil, nil, err
 		}
+		g.synced[name] = landed
 		return true, nil, &claim, nil
 	}
+}
+
+// hashFailed counts one failed read of a landed save's remote version and,
+// after conflictHashFailPolls of them, names the save once. The next pass
+// drops a named save, so a path whose remote cannot be read is not watched
+// for ever.
+func (g *conflictGuard) hashFailed(name string, save *pendingSave, reason string) (bool, *ConflictSkip, *ConflictCopy, error) {
+	save.hashFails++
+	if save.hashFails >= conflictHashFailPolls && !save.reported {
+		save.reason = reason
+		save.reported = true
+		return true, &ConflictSkip{Remote: name, Reason: reason}, nil, nil
+	}
+	return false, nil, nil, nil
 }
 
 // rehash replaces a save's hash with the hash of the bytes the mount
@@ -628,15 +752,22 @@ func (g *conflictGuard) mountChanged(name string, save *pendingSave) bool {
 // listing instead of one hashsum per file, and a path the listing
 // leaves out is known to have never existed: nothing to read, and
 // nothing to wait for when the decision runs.
-func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, name string, listings map[string]map[string]bool) (string, error) {
+func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, name string, listings map[string]map[string]bool) (string, bool, error) {
+	if previous := g.synced[name]; previous != "" {
+		return previous, false, nil
+	}
 	present, err := g.parentListing(ctx, b, parentDir(name), listings)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !present[remoteBase(name)] {
-		return "", nil
+		return "", false, nil
 	}
-	return b.remoteHash(ctx, name)
+	hash, err := b.remoteHash(ctx, name)
+	if err != nil {
+		return "", true, nil
+	}
+	return hash, false, nil
 }
 
 // parentListing is the set of file names one folder of the remote
@@ -830,12 +961,79 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 	var reply struct {
 		Hashsum []string `json:"hashsum"`
 	}
-	if err := c.call(ctx, "operations/hashsum", map[string]string{
+	hashErr := c.call(ctx, "operations/hashsum", map[string]string{
 		"fs": c.fs, "remote": name, "hashType": "md5",
+	}, &reply)
+	if hashErr == nil {
+		hash, err := matchHashSum(reply.Hashsum, name)
+		if err == nil && hash != "" {
+			return hash, nil
+		}
+		hashErr = err
+	}
+	fp, fpErr := c.remoteFingerprint(ctx, name)
+	if fpErr != nil {
+		if hashErr != nil {
+			return "", hashErr
+		}
+		return "", fpErr
+	}
+	return fp, nil
+}
+
+// remoteVersion is the object's size and mtime from operations/stat, and
+// ok is false when there is no object at the plain path.
+func (c *rcClient) remoteVersion(ctx context.Context, name string) (int64, time.Time, bool, error) {
+	var reply struct {
+		Item *struct {
+			Size    int64     `json:"Size"`
+			ModTime time.Time `json:"ModTime"`
+		} `json:"item"`
+	}
+	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
+		return 0, time.Time{}, false, err
+	}
+	if reply.Item == nil {
+		return 0, time.Time{}, false, nil
+	}
+	return reply.Item.Size, reply.Item.ModTime, true, nil
+}
+
+// sameVersion reports whether an object is the file this device hashed.
+// The mtime is compared to the second because a backend may keep less
+// precision than the local filesystem does.
+func sameVersion(size int64, modTime time.Time, localSize int64, localMtime time.Time) bool {
+	if size != localSize || localMtime.IsZero() {
+		return false
+	}
+	d := modTime.Sub(localMtime)
+	return d < time.Second && d > -time.Second
+}
+
+// remoteFingerprint is the object's ETag or version when MD5 is missing
+// (multipart S3 uploads, web uploads). rclone's operations/stat ID is the
+// S3 ETag; size and modtime are the fallback when even that is empty.
+func (c *rcClient) remoteFingerprint(ctx context.Context, name string) (string, error) {
+	var reply struct {
+		Item struct {
+			ID      string            `json:"ID"`
+			Size    int64             `json:"Size"`
+			ModTime string            `json:"ModTime"`
+			Hashes  map[string]string `json:"Hashes"`
+		} `json:"item"`
+	}
+	if err := c.call(ctx, "operations/stat", map[string]string{
+		"fs": c.fs, "remote": name,
 	}, &reply); err != nil {
 		return "", err
 	}
-	return matchHashSum(reply.Hashsum, name)
+	if md5 := reply.Item.Hashes["MD5"]; md5 != "" {
+		return md5, nil
+	}
+	if reply.Item.ID != "" {
+		return "etag:" + reply.Item.ID, nil
+	}
+	return fmt.Sprintf("ver:%d:%s", reply.Item.Size, reply.Item.ModTime), nil
 }
 
 // matchHashSum picks the one hash of name out of a hashsum reply. The
@@ -874,9 +1072,16 @@ func matchHashSum(lines []string, name string) (string, error) {
 // a path may contain spaces: "report (conflict, mac).txt" is one name, not
 // the word after the hash.
 func splitHashLine(line string) (hash, path string, ok bool) {
-	trimmed := strings.TrimSpace(line)
+	// rclone prints "hash  path" with two spaces. An empty MD5 (multipart
+	// ETag without md5 metadata) is "  path", which TrimSpace would turn
+	// into a path-only line and then into an error. Keep the two-space
+	// split so an empty hash is still a hash.
+	trimmed := strings.TrimRight(line, " \t\n")
 	if trimmed == "" {
 		return "", "", false
+	}
+	if i := strings.Index(trimmed, "  "); i >= 0 {
+		return strings.TrimSpace(trimmed[:i]), strings.TrimSpace(trimmed[i+2:]), true
 	}
 	i := strings.IndexAny(trimmed, " \t")
 	if i <= 0 {
