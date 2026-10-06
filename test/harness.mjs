@@ -96,6 +96,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // Share-link content pin (drive#554): shares.etag is the file's storage
+  // fingerprint at mint. Expand only, default empty so older rows keep
+  // serving by path.
+  "drive/0031_share_etag.sql",
 ]);
 
 /**

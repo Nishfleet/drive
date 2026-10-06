@@ -10,11 +10,17 @@
 //                  GET /s/<token> resolves to one file's bytes, logged out.
 //                  It expires after 7 days by default and can be revoked, and
 //                  a revoked or expired token is a 404 like a token that
-//                  never existed. Downloads are counted on the share's own
-//                  row, and the resolved owner account id is what the dl
-//                  Worker uses to add the bytes to that owner's free-3x
-//                  allowance (build-spec.md "How the money is worked out";
-//                  the byte rollup itself is build step 5, issue #58).
+//                  never existed. The share row stores the file's etag at
+//                  mint (drive#554). If the live object later has a different
+//                  etag, the link refuses with a short page rather than
+//                  labelling the download: serving the new bytes would let a
+//                  swapped-in file ride the old link. Mint also hashes the
+//                  bytes against the stock known-bad list and refuses a hit.
+//                  Downloads are counted on the share's own row, and the
+//                  resolved owner account id is what the dl Worker uses to
+//                  add the bytes to that owner's free-3x allowance
+//                  (build-spec.md "How the money is worked out"; the byte
+//                  rollup itself is build step 5, issue #58).
 //   upload request `drive request <folder>` (POST /api/request) mints a token
 //                  that public/upload.html uses to drop files into one
 //                  folder. It expires on the same 7-day window and can be
@@ -64,6 +70,7 @@ import { balanceCents } from "../core/ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { formatBytes, unauthorizedResponse } from "../core/status.js";
+import { isMalwareBody } from "./malware.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
 export const SHARE_LINK_PREFIX = "/s";
@@ -453,7 +460,8 @@ export const UPLOAD_PAGE_LINE =
  *
  * @typedef {{token: string, accountId: string, path: string, name: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
- *   downloadCount: number, downloadBytes: number, maxDownloadBytes: number|null}} ShareRecord
+ *   downloadCount: number, downloadBytes: number, maxDownloadBytes: number|null,
+ *   etag: string}} ShareRecord
  * @typedef {{token: string, accountId: string, folder: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
  *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number}} RequestRecord
@@ -479,7 +487,7 @@ export const UPLOAD_PAGE_LINE =
 // a record written cannot drift: the record fields are the same words the
 // handlers already use, and the SQL spells them in snake_case.
 const SHARE_COLUMNS =
-  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes";
+  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes, etag";
 const REQUEST_COLUMNS =
   "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files";
 
@@ -507,6 +515,7 @@ function toShareRecord(row) {
       row.max_download_bytes === null || row.max_download_bytes === undefined
         ? null
         : Number(row.max_download_bytes),
+    etag: String(row.etag ?? ""),
   };
 }
 
@@ -585,7 +594,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO shares (${SHARE_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
           )
           .bind(
             record.token,
@@ -598,6 +607,7 @@ export function createD1LinkStore(db) {
             record.downloadCount,
             record.downloadBytes,
             record.maxDownloadBytes,
+            record.etag ?? "",
           )
           .run();
         return { ...record };
@@ -790,7 +800,7 @@ export async function purgeStaleLinks(db, now) {
  * links with a pinned token and clock, and so nothing but the store persists
  * it.
  *
- * @param {{accountId: string, path: string, now: number, token: string, days?: number, maxDownloadBytes?: number|null}} input
+ * @param {{accountId: string, path: string, now: number, token: string, days?: number, maxDownloadBytes?: number|null, etag?: string}} input
  * @returns {ShareRecord}
  */
 export function newShareRecord({
@@ -800,6 +810,7 @@ export function newShareRecord({
   token,
   days = DEFAULT_LINK_DAYS,
   maxDownloadBytes = null,
+  etag = "",
 }) {
   return {
     token,
@@ -812,6 +823,7 @@ export function newShareRecord({
     downloadCount: 0,
     downloadBytes: 0,
     maxDownloadBytes,
+    etag,
   };
 }
 
@@ -868,6 +880,38 @@ function plain(message, status, extraHeaders = {}) {
  */
 function methodNotAllowed(allowed, action) {
   return plain(`Method not allowed. ${action}`, 405, { allow: allowed });
+}
+
+/**
+ * The etag a share row stores: quotes and the weak prefix stripped so a
+ * later read through the same store compares as one string. An empty
+ * result means the store gave nothing to pin, and an old row that never
+ * stored one keeps serving by path.
+ *
+ * @param {string|null|undefined} etag
+ * @returns {string}
+ */
+function storedShareEtag(etag) {
+  if (typeof etag !== "string" || etag.length === 0) {
+    return "";
+  }
+  return etag.replace(/^W\//, "").replace(/"/g, "");
+}
+
+/**
+ * Whether a minted share's pin disagrees with the live object. An empty
+ * minted pin is a row from before the column existed, so it is not a
+ * change.
+ *
+ * @param {string} minted
+ * @param {string|null|undefined} live
+ * @returns {boolean}
+ */
+function shareContentChanged(minted, live) {
+  if (minted === "") {
+    return false;
+  }
+  return storedShareEtag(live) !== minted;
 }
 
 // A store or storage failure: the cause is logged with the route that hit it
@@ -1026,12 +1070,22 @@ export async function handleShareRequest(request, files, links, account, options
     if (!object) {
       return json({ error: failureMessage("file-not-found") }, 404);
     }
+    let bytes;
+    try {
+      bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+    } catch (cause) {
+      return serverFailure(`minting a share: ${String(cause)}`);
+    }
+    if (await isMalwareBody(bytes)) {
+      return json({ error: failureMessage("malware-refused") }, 403);
+    }
     const record = newShareRecord({
       accountId: account.id,
       path: checked.path,
       now,
       token: options.token ?? newLinkToken(),
       maxDownloadBytes: shareDownloadCapFor(object.size),
+      etag: storedShareEtag(object.etag),
     });
     await store.create(record);
     return json({ ok: true, share: shareRow(record, now, base) }, 201);
@@ -1131,6 +1185,9 @@ export async function handleShareFileRequest(request, files, links, options = {}
     if (!stat) {
       return plain(failureMessage("link-not-found"), 404);
     }
+    if (shareContentChanged(record.etag, stat.etag)) {
+      return plain(failureMessage("share-changed"), 409);
+    }
     // An open is counted, no bytes: the same rule the old HEAD path kept.
     // A link that has served its byte cap is refused instead (issue #549),
     // so an open cannot outrun the owner's limit.
@@ -1155,6 +1212,9 @@ export async function handleShareFileRequest(request, files, links, options = {}
   }
   if (!object) {
     return plain(failureMessage("link-not-found"), 404);
+  }
+  if (shareContentChanged(record.etag, object.etag)) {
+    return plain(failureMessage("share-changed"), 409);
   }
   const status = object.status ?? 200;
   // The client's own validator, still good: no byte moves, no download is
@@ -1499,6 +1559,9 @@ export async function handleRequestUploadRequest(request, files, links, capState
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
+  }
+  if (await isMalwareBody(sized.body)) {
+    return json({ error: failureMessage("malware-refused") }, 403);
   }
   if (options.db) {
     // The owner's 1 TB pre-charge limit, judged on the bytes actually read,

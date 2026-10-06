@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-06
 
+- A share link pins the file's version at the moment you make it. If that
+  file is replaced afterwards, the link refuses with a short page instead of
+  handing out the new bytes. A file on the stock known-bad hash list is
+  refused when you share it and when someone drops it on an upload page.
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states
