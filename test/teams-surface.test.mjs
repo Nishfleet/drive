@@ -35,10 +35,11 @@ const words = page.replaceAll("&nbsp;", " ").replaceAll("&middot;", "-").replace
 // form it owns. Sliced rather than matched whole so a copy edit inside the box
 // is what is judged, not the rest of the page.
 const businessHeading = words.indexOf('id="business-heading"');
-assert.ok(businessHeading >= 0, "the pricing page must carry the Business box");
 const waitlistForm = words.indexOf('<form class="waitlist"', businessHeading);
-assert.ok(waitlistForm > businessHeading, "the Business box must own the waitlist form");
-const businessBox = words.slice(businessHeading, waitlistForm);
+const businessBox =
+  businessHeading >= 0 && waitlistForm > businessHeading
+    ? words.slice(businessHeading, waitlistForm)
+    : "";
 
 /** One spec table row, from its leading label to the line's own end. @param {string} text @param {string} label */
 function specRow(text, label) {
@@ -69,8 +70,10 @@ const PER_TB = /\$\s?(\d+(?:\.\d+)?)\s*(?:\/|per\s*|a\s*)\s*TB\b/gi;
 const perTbAmounts = (text) => [...text.matchAll(PER_TB)].map((match) => Number(match[1]));
 
 test("the Talk-to-us box says the company screens come later and the API is the only way in", () => {
+  assert.ok(businessHeading >= 0, "the pricing page must carry the Business box");
+  assert.ok(waitlistForm > businessHeading, "the Business box must own the waitlist form");
   assert.match(businessBox, /teams API/i);
-  assert.match(businessBox, /only way to manage a company drive today/i);
+  assert.match(businessBox, /only way to manage a company drive in version 1/i);
   assert.match(businessBox, /company screens come later/i);
 });
 
@@ -148,7 +151,7 @@ test("the price gate has teeth: it catches the retired ceiling on a surface", ()
     PRICE.maxUsdPerTb,
   ]);
   assert.equal(
-    perTbAmounts("The teams API is the only way to manage a company drive today.").length,
+    perTbAmounts("The teams API is the only way to manage a company drive in version 1.").length,
     0,
   );
 });
