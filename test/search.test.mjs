@@ -7,7 +7,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
 import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
@@ -25,7 +30,7 @@ import {
 } from "../src/search.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 
-/** @typedef {import("../src/files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 
 // The ExportedHandler type makes fetch optional and declares the runtime's
 // three arguments. The tests drive the Worker directly, so one wrapper
@@ -1038,6 +1043,58 @@ test("the published worker really declares the reindex queue halves", async () =
   // off that deploy concern (docs/build-spec.md runbook).
 });
 
+test("the nightly walk's account list is the accounts table, versions or not", async () => {
+  // The list once read the index's own DISTINCT account ids, which grew with
+  // every row ever indexed and was blind to an account whose files are all
+  // deleted (drive issue #564). The accounts table is the one list of who the
+  // drive serves: an account that signed up and never indexed anything still
+  // gets its (empty, one-listing) walk, and an index row without an account
+  // row is not an account.
+  const db = makeD1();
+  assert.deepEqual(await indexAccounts(db), [], "no accounts, no walk");
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-quiet", "quiet@drive.test")
+    .run();
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("acc-loud", "loud@drive.test")
+    .run();
+  await db
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(
+      "acc-loud",
+      "/loud/file.txt",
+      "file.txt",
+      "/loud",
+      1,
+      "2026-09-30T00:00:00.000Z",
+      "2026-09-30T00:00:00.000Z",
+    )
+    .run();
+  // An index row whose account row is gone (a deleted account's rows outlive
+  // it until the index catches up) names no walk.
+  await db
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(
+      "acc-orphan",
+      "/orphan/file.txt",
+      "file.txt",
+      "/orphan",
+      1,
+      "2026-09-30T00:00:00.000Z",
+      "2026-09-30T00:00:00.000Z",
+    )
+    .run();
+  assert.deepEqual(await indexAccounts(db), [{ id: "acc-loud" }, { id: "acc-quiet" }]);
+});
+
 test("the deployed cron schedule is the one the module names", () => {
   // The reconciler's own quiet hour, asserted rather than read back from the
   // config: the config takes the schedule from this module's own constant, so
@@ -1106,20 +1163,30 @@ test("the worker serves /api/search behind the account gate and file writes keep
 
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  const sql = readFileSync(
-    new URL("../migrations/drive/0002_file_index.sql", import.meta.url),
-    "utf8",
+  for (const name of ["0002_file_index.sql", "0030_file_index_staging.sql"]) {
+    const sql = readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8");
+    const withoutComments = sql.replace(/--.*$/gm, "");
+    assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), `${name}: no drops`);
+    assert.ok(!/ALTER TABLE/im.test(withoutComments), `${name}: no existing table touched`);
+    for (const match of sql.matchAll(/(\w+)\s+TEXT NOT NULL(?!\s+DEFAULT)/g)) {
+      assert.fail(`${name}: column ${match[1]} is NOT NULL without a DEFAULT`);
+    }
+    for (const match of sql.matchAll(/(\w+)\s+INTEGER NOT NULL(?!\s+DEFAULT)/g)) {
+      assert.fail(`${name}: column ${match[1]} is NOT NULL without a DEFAULT`);
+    }
+  }
+  assert.ok(
+    readFileSync(
+      new URL("../migrations/drive/0002_file_index.sql", import.meta.url),
+      "utf8",
+    ).includes("CREATE TABLE IF NOT EXISTS file_index"),
   );
-  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS file_index"));
-  const withoutComments = sql.replace(/--.*$/gm, "");
-  assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), "no drops");
-  assert.ok(!/ALTER TABLE/im.test(withoutComments), "no existing table touched");
-  for (const match of sql.matchAll(/(\w+)\s+TEXT NOT NULL(?!\s+DEFAULT)/g)) {
-    assert.fail(`column ${match[1]} is NOT NULL without a DEFAULT`);
-  }
-  for (const match of sql.matchAll(/(\w+)\s+INTEGER NOT NULL(?!\s+DEFAULT)/g)) {
-    assert.fail(`column ${match[1]} is NOT NULL without a DEFAULT`);
-  }
+  assert.ok(
+    readFileSync(
+      new URL("../migrations/drive/0030_file_index_staging.sql", import.meta.url),
+      "utf8",
+    ).includes("CREATE TABLE IF NOT EXISTS file_index_staging"),
+  );
 });
 
 test("MAX_LIMIT is the ceiling a caller can ask for", async () => {

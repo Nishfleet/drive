@@ -515,6 +515,12 @@ h2 {
 
     <section aria-labelledby="month-heading">
       <h2 id="month-heading" tabindex="-1">This month</h2>
+      <!-- The month the section is about, named (drive#559): /api/usage carries
+           the month's first instant and this slot is filled from it, with the
+           zone the rollup is measured in. "This month" is what a browser with
+           no script reads; the slot under it is the sentence that says which
+           month a UTC rollup means, and it is readable with no script too. -->
+      <p class="hint" id="month-note">Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>
       <p class="saved" id="saved" hidden></p>
       <!-- The reserved slot (drive#225): the status is hidden until a read
            lands, and this holds the box it will land in, so nothing below it
@@ -667,6 +673,15 @@ h2 {
   </main>
 
   <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
     <p>Pay from your balance, metered by the minute. <a href="/">See the price</a>.</p>
   </footer>
 
@@ -685,6 +700,25 @@ const CAP_ENDPOINT = "/api/cap";
 const CLOSE_ENDPOINT = "/api/account/close";
 const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 const POLL_INTERVAL_MS = 60000;
+
+// The month the section is about, named (drive#559). /api/usage carries the
+// month's first instant, and the name is written here in the browser's own
+// words: a month rendered on the server is a UTC month, so the gateway a
+// browser sits behind does not decide when the month a customer is billed for
+// turned over. The zone is spelled out beside it, because "October 2026" on
+// its own is the month of the reader's calendar too.
+const MONTH_ZONE = "UTC";
+
+function monthName(iso) {
+  if (typeof iso !== "string") {
+    return "";
+  }
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) {
+    return "";
+  }
+  return at.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+}
 
 // One sentence and one next step for a read that could not reach the Worker,
 // the same pair src/usage.js pins as USAGE_LABELS.unreachable.
@@ -718,6 +752,7 @@ const MONTH_EMPTY = {
 };
 
 const savedEl = document.getElementById("saved");
+const monthHeadingEl = document.getElementById("month-heading");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
 const chartEl = document.getElementById("chart");
@@ -936,7 +971,12 @@ function render(summary) {
   }
   const labels = summary.labels;
   const cap = summary.cap;
+  // The month these numbers belong to, named (drive#559). A payload that
+  // carries no readable month instant is as unusable as no answer, so it takes
+  // the unreachable state rather than a heading with nothing under it.
+  const month = monthName(summary.monthIso);
   if (
+    month === "" ||
     typeof labels !== "object" ||
     labels === null ||
     LABEL_KEYS.some((key) => typeof labels[key] !== "string") ||
@@ -973,6 +1013,7 @@ function render(summary) {
     return;
   }
   sayReachable();
+  monthHeadingEl.textContent = `${month}, ${MONTH_ZONE}`;
 
   // A month with no stored day has no chart to draw and no saving to report, so
   // without this the "This month" area is blank for every new account (drive

@@ -6,17 +6,19 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { monthBillCents } from "../../src/billing.js";
-import { createMemoryStore, handleFilesRequest } from "../../src/files.js";
+import { minutesInMonth, monthBillCents } from "../../core/billing.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
+import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
 import {
   appendLedgerEntry,
   balanceCents,
   creditTopUp,
   LOW_BALANCE_CENTS,
   usageKey,
-} from "../../src/ledger.js";
-import { failureMessage } from "../../src/messages.js";
-import { BYTES_PER_GB, MINUTE_MS, monthUsageThrough, recordUsage } from "../../src/meter.js";
+} from "../../core/ledger.js";
+import { failureMessage } from "../../core/messages.js";
+import { BYTES_PER_GB, MINUTE_MS, monthUsageThrough, recordUsage } from "../../core/meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
@@ -25,16 +27,14 @@ import {
   prepaidPauseOn,
   settleBalance,
   writesPaused,
-} from "../../src/prepaid.js";
+} from "../../core/prepaid.js";
 import {
   balanceSummary,
   handleBillingWebhook,
   signWebhook,
   TOPUP_PURPOSE,
-} from "../../src/topup.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+} from "../../core/topup.js";
 import { storageWriteRoute } from "../../workers/api/src/key-routes.js";
-import { createMemoryStore as createKeyStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
@@ -89,6 +89,7 @@ async function billThrough(db, hour) {
   const usage = await monthUsageThrough(db, ACCOUNT, hour);
   return monthBillCents({
     gbMinutes: usage.gbMinutes,
+    monthMinutes: minutesInMonth(hour),
     downloadBytes: usage.downloadBytes,
     averageStoredGb: usage.averageStoredGb,
   }).totalCents;
@@ -544,9 +545,10 @@ test("auto top-up is turned on only after a first top-up, and off again", async 
     const refused = await handleAutoTopUpRequest(post({ amount_usd: bad }), me, db);
     assert.equal(refused.status, 400, String(bad));
   }
-  const crossSite = post({ amount_usd: 25 }, { origin: "https://evil.example" });
-  assert.equal((await handleAutoTopUpRequest(crossSite, me, db)).status, 403);
-
+  // The cross-site refusal lives in the Worker's one CSRF middleware
+  // (src/index.js csrfWhenBrowser), not in this handler; the walk in
+  // test/account-gate.test.mjs drives it through the real route table and
+  // names this endpoint in its paths list.
   const on = await handleAutoTopUpRequest(post({ amount_usd: 25 }), me, db);
   assert.equal(on.status, 200);
   assert.equal((await on.json()).auto_topup_usd, 25);

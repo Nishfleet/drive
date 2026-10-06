@@ -25,10 +25,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sha256Hex } from "../../workers/api/src/db.js";
-import { createD1DeviceStore, renewKeyRow } from "../../workers/api/src/devices.js";
-import { AGENT_KEY_TTL_SECONDS } from "../../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
+import { sha256Hex } from "../../core/db.js";
+import { createD1DeviceStore, renewKeyRow } from "../../core/devices.js";
+import { AGENT_KEY_TTL_SECONDS } from "../../core/keyprovider.js";
+import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**
@@ -352,6 +352,141 @@ test("a device key row written before the column stays expired-free and still wo
   assert.equal(listed.find((key) => key.keyId === "key_old")?.expiresAt, null);
 });
 
+test("a device row minted before the session was recorded is refused on a provider that names a session", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  // The STS path (drive#462): every mint is a session the vendor ends on its
+  // own, so the provider says so (`namesSession`, s3-keys.js). The row is
+  // written by the D1 store itself, the module that owns the `devices`
+  // table, in the shape the pre-#544 code left on every deployment running
+  // this provider: a device key with no expiry value at all, over a
+  // credential whose session has since died.
+  /** @type {import("../../core/keyprovider.js").KeyProvider} */
+  const sessionProvider = {
+    namesSession: true,
+    async mint(/** @type {import("../../core/keyprovider.js").KeyScope} */ scope) {
+      return { accessKeyId: `ak_${scope.prefix}`, secret: "sk_sts", expiresIn: 900 };
+    },
+  };
+  const devices = createD1DeviceStore(db, { now: clock.now, keyProvider: sessionProvider });
+  const account = { id: "acct_sts", name: "Sts drive" };
+  await devices.put({
+    id: "key_sts",
+    accountId: account.id,
+    name: "laptop",
+    kind: "device",
+    accessKeyId: "ak_sts",
+    secretHash: await sha256Hex("sk_sts"),
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+    createdAt: 1,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  assert.equal(
+    rowIn(sqlite, "SELECT expires_at FROM devices WHERE id = ?", "key_sts").expires_at,
+    null,
+  );
+
+  // A year later, on a second instance (the stand-in for the isolate a
+  // deploy replaces): the session behind this credential is long dead, so
+  // the row's null must not be read as "never expires". The mount's uploads
+  // fail while `drive status` looks healthy — the drive#713 lie this
+  // refusal ends.
+  clock.advance(AGENT_KEY_TTL_SECONDS * 24 * 365);
+  const second = createMemoryStore({
+    now: clock.now,
+    keyProvider: sessionProvider,
+    deviceStore: createD1DeviceStore(db, { now: clock.now, keyProvider: sessionProvider }),
+  });
+  assert.equal(
+    await second.authenticate("ak_sts", "sk_sts"),
+    null,
+    "a row read as never-expires over a dead session is refused",
+  );
+
+  // Refused, not cancelled: the api holds only the secret's hash, so there
+  // is nothing to re-mint for the caller. The row stays exactly as it was —
+  // no expiry written, no revoke, no use stamped — so nothing is deleted
+  // and `drive login` again is the way forward.
+  const row = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_sts");
+  assert.equal(row.expires_at, null, "the refusal wrote no expiry");
+  assert.equal(row.revoked_at, null, "and revoked nothing: the row is left in place");
+  assert.equal(row.last_seen_at, null, "and stamped no use");
+
+  // The refusal is about the null claim, not about device keys on this
+  // provider: a device row whose mint recorded the session (the post-#544
+  // shape, the hour the provider itself names) still authenticates on the
+  // same deployment.
+  const freshAt = clock.now() / 1000;
+  await devices.put({
+    id: "key_fresh",
+    accountId: account.id,
+    name: "laptop-2",
+    kind: "device",
+    accessKeyId: "ak_fresh",
+    secretHash: await sha256Hex("sk_fresh"),
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+    createdAt: freshAt,
+    expiresAt: freshAt + 900,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  const fresh = await second.authenticate("ak_fresh", "sk_fresh");
+  assert.ok(fresh, "a device row that carries its session still works on the same deployment");
+  assert.equal(fresh?.expiresAt, freshAt + 900);
+});
+
+test("a deliberate permanent device row stays valid on a provider that names no session", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  // The iDrive shape (idrive-keys.js): the mints are key pairs that do not
+  // die on their own — `expiresIn` null, no session token — so the provider
+  // carries no `namesSession` signal, and a device row with no expiry is
+  // exactly the permanent key it says it is.
+  /** @type {import("../../core/keyprovider.js").KeyProvider} */
+  const permanentProvider = {
+    async mint(/** @type {import("../../core/keyprovider.js").KeyScope} */ scope) {
+      return { accessKeyId: `ak_${scope.prefix}`, secret: "sk_pair", expiresIn: null };
+    },
+  };
+  const devices = createD1DeviceStore(db, { now: clock.now, keyProvider: permanentProvider });
+  const account = { id: "acct_perm", name: "Perm drive" };
+  await devices.put({
+    id: "key_perm",
+    accountId: account.id,
+    name: "laptop",
+    kind: "device",
+    accessKeyId: "ak_perm",
+    secretHash: await sha256Hex("sk_perm"),
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+    createdAt: 1,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+
+  // A year later, through a second instance: the row still authenticates,
+  // and the row it answers from is unchanged. The drive#544 refusal must
+  // never reach a deployment whose keys really are permanent.
+  clock.advance(AGENT_KEY_TTL_SECONDS * 24 * 365);
+  const second = createMemoryStore({
+    now: clock.now,
+    keyProvider: permanentProvider,
+    deviceStore: createD1DeviceStore(db, { now: clock.now, keyProvider: permanentProvider }),
+  });
+  const device = await second.authenticate("ak_perm", "sk_perm");
+  assert.ok(device, "the permanent device key still works a year on");
+  assert.equal(device?.expiresAt, null, "and it is still the permanent key it was minted as");
+  const row = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_perm");
+  assert.equal(row.expires_at, null, "the row still holds no expiry");
+  assert.ok(
+    /** @type {number} */ (row.last_seen_at) > 0,
+    "and the request that proved it stamped the use",
+  );
+});
+
 test("a request that read the row first cannot pull a restarted hour back, in the row itself", async () => {
   const { sqlite, db } = makeMeteredDB();
   const clock = fixedClock();
@@ -394,9 +529,7 @@ test("a provider session shorter than the hour is the lifetime every renewal mea
   const store = createMemoryStore({
     now: clock.now,
     keyProvider: {
-      mint /** @param {import("../../workers/api/src/keyprovider.js").KeyScope} scope */: async (
-        scope,
-      ) => ({
+      mint /** @param {import("../../core/keyprovider.js").KeyScope} scope */: async (scope) => ({
         accessKeyId: `ak_${scope.prefix}`,
         secret: "sk_provider",
         sessionToken: "sess_provider",

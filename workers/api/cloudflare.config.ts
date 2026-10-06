@@ -30,8 +30,8 @@ import { bindings, defineWorker } from "cf/config";
 // what stays true here.
 export default defineWorker({
   name: "drive-api",
-  // The site Worker's compatibility date: the api Worker shares src/auth.js,
-  // src/status.js and src/messages.js with it, and two Workers on two dates
+  // The site Worker's compatibility date: the api Worker shares core/auth.js,
+  // core/status.js and core/messages.js with it, and two Workers on two dates
   // drift in the runtime they run on.
   compatibilityDate: "2026-09-29",
   // The same posture the site Worker ships with (cloudflare.config.ts, Nish
@@ -47,7 +47,7 @@ export default defineWorker({
     // The device sign-in store, the device token store, the team store and the
     // upload-queue report store all bind this one database (workers/api/src/
     // index.js reads it as env.DRIVE_DB), and Better Auth's own user and
-    // session tables live on it too (src/auth.js, migrations/drive/
+    // session tables live on it too (core/auth.js, migrations/drive/
     // 0005_better_auth.sql), so an approve resolves one account across both
     // Workers. Same name and same id as the site Worker's DRIVE_DB: the
     // accounts store #161 asked for is that same user table — Better Auth's
@@ -64,7 +64,7 @@ export default defineWorker({
     //
     // Per IP, 60 a minute, five times the 12 a well-behaved CLI already polls
     // (a device code is polled every DEVICE_CODE_INTERVAL_SECONDS = 5,
-    // workers/api/src/device-signin.js) and well above the sign-in binding's
+    // core/device-signin.js) and well above the sign-in binding's
     // 10 a minute, which would lock a polling CLI out of the flow it is in.
     // It stays far below what a script needs to walk short user codes.
     //
@@ -76,10 +76,10 @@ export default defineWorker({
     // Each binding needs its own namespace: Cloudflare wants a positive
     // integer string unique per account, and a namespace another binding
     // already uses fails the deploy with 10021. The site Worker holds 1001
-    // (waitlist), 1002/1003 (sign-in) and 1004/1005 (request-upload), so the
-    // api Worker's pair is 1006/1007. Both configs are one minute, the
-    // waitlist's period, so one number describes every rate limit on this
-    // account.
+    // (waitlist), 1002/1003 (sign-in), 1004/1005 (request-upload) and 1008
+    // (share download), so the api Worker's pair is 1006/1007. Both configs
+    // are one minute, the waitlist's period, so one number describes every
+    // rate limit on this account.
     DEVICE_RATE_LIMITER: bindings.rateLimit({
       namespace: "1006",
       simple: { limit: 60, period: 60 },
@@ -126,9 +126,9 @@ export default defineWorker({
     // deploy would refuse to ship until each was set, and every one of these
     // routes already answers its closed door without them — `authFor` returns
     // no instance with no BETTER_AUTH_SECRET or database, so every account
-    // route 401s rather than bypassing the gate (src/auth.js), and with no
+    // route 401s rather than bypassing the gate (core/auth.js), and with no
     // MAIL_FROM the sign-in link is a 503 that names the missing setting
-    // (src/email-send.js). Set them once, beside the site Worker's own, and
+    // (core/email-send.js). Set them once, beside the site Worker's own, and
     // they persist across deploys (cf 1.0.0-beta.7 and later inherit secret
     // bindings from the previous Worker version, drive issue #189):
     //   cf workers secrets update BETTER_AUTH_SECRET --type secret_text \

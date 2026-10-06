@@ -6,7 +6,7 @@
 //
 //   * the write path — `withIndex(store, db, account)` wraps a FileStore so
 //     every upload, delete and restore keeps the one row current, and the
-//     metered storage-event intake (src/meter.js) upserts the one row for a
+//     metered storage-event intake (core/meter.js) upserts the one row for a
 //     file an event names, so the two feeds a file can arrive on both end in
 //     this table (drive#566); and
 //   * the nightly reconciler — `reconcileIndex(db, store, account)` walks the
@@ -16,7 +16,7 @@
 //     (REINDEX_SCHEDULE, src/index.js); no request can.
 //
 // A rebuild is staged rather than written in place. Its rows are written to
-// `file_index_staging` (migration 0022), each stamped with that attempt's
+// `file_index_staging` (migration 0030), each stamped with that attempt's
 // generation number, and one transaction deletes the account's old rows and
 // moves the finished set over. A rebuild that dies half-way therefore leaves
 // this account's rows as they were, and the next attempt clears the
@@ -34,13 +34,14 @@
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly cron, one queue message per
 // account, and never from a request.
-import { json } from "../workers/api/src/http.js";
-import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
-import { failureMessage } from "./messages.js";
+import { fileRow, locate, upsertStatements, deleteStatement } from "../core/file-index.js";
+import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
 
-/** One account's file store, the shape src/files.js exports and every helper
+/** One account's file store, the shape core/files.js exports and every helper
  * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
-/** @typedef {import("./files.js").FileStore} FileStore */
+/** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One row of the file index, as it is written to D1. */
 /**
  * @typedef {{account_id: string, path: string, name: string, parent: string,
@@ -78,9 +79,6 @@ export const MAX_WORD_LENGTH = 64;
 /** How many results one search returns, and the most a caller may ask for. */
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 200;
-/** Rows per multi-value INSERT. Seven bound columns a row keeps the statement
- * under D1's 100-bound-parameter ceiling (14 x 7 = 98). */
-const ROWS_PER_STATEMENT = 14;
 /** Statements per db.batch call, so a 100,000-file drive does not build one
  * giant batch. */
 const STATEMENTS_PER_BATCH = 64;
@@ -207,170 +205,6 @@ export async function searchDrive(db, account, query, options = {}) {
 }
 
 // ---------------------------------------------------------------- the feeds
-
-/** The name, parent and trash state of a validated drive path.
- * @param {string} path */
-function locate(path) {
-  const cut = path.lastIndexOf("/");
-  return {
-    name: cut === -1 ? path : path.slice(cut + 1),
-    parent: cut <= 0 ? "/" : path.slice(0, cut),
-    trashed: path === TRASH_PATH || path.startsWith(`${TRASH_PATH}/`),
-  };
-}
-
-/**
- * @param {{id: string}} account
- * @param {string} path
- * @param {{size?: number, modified?: number|null, modifiedAt?: string}} entry
- * @param {number} at
- * @returns {FileRow}
- */
-function fileRow(account, path, entry, at) {
-  const { name, parent } = locate(path);
-  const size =
-    typeof entry.size === "number" && Number.isFinite(entry.size) && entry.size >= 0
-      ? Math.floor(entry.size)
-      : 0;
-  const modified =
-    typeof entry.modified === "number"
-      ? new Date(entry.modified).toISOString()
-      : typeof entry.modifiedAt === "string"
-        ? entry.modifiedAt
-        : null;
-  return {
-    account_id: account.id,
-    path,
-    name,
-    parent,
-    size_bytes: size,
-    modified_at: modified,
-    indexed_at: new Date(at).toISOString(),
-  };
-}
-
-const UPSERT_COLUMNS = "(account_id, path, name, parent, size_bytes, modified_at, indexed_at)";
-const UPSERT_UPDATE =
-  "name = excluded.name, parent = excluded.parent, " +
-  "size_bytes = excluded.size_bytes, modified_at = excluded.modified_at, " +
-  "indexed_at = excluded.indexed_at";
-// Seven placeholders a row, reused row by row inside one statement.
-const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
-
-/** The prepared statements that write a chunk of rows. Exported so the test
- * can run them through the D1 shape, and the caller cannot build SQL.
- * @param {D1Database} db
- * @param {FileRow[]} rows
- * @returns {D1PreparedStatement[]} */
-export function upsertStatements(db, rows) {
-  /** @type {D1PreparedStatement[]} */
-  const statements = [];
-  for (let start = 0; start < rows.length; start += ROWS_PER_STATEMENT) {
-    const chunk = rows.slice(start, start + ROWS_PER_STATEMENT);
-    const values = chunk
-      .map((_, rowIndex) =>
-        ROW_PLACEHOLDERS.replace(/\?(\d+)/g, (_, n) => `?${rowIndex * 7 + Number(n)}`),
-      )
-      .join(", ");
-    const params = chunk.flatMap((row) => [
-      row.account_id,
-      row.path,
-      row.name,
-      row.parent,
-      row.size_bytes,
-      row.modified_at,
-      row.indexed_at,
-    ]);
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO file_index ${UPSERT_COLUMNS} VALUES ${values} ` +
-            `ON CONFLICT(account_id, path) DO UPDATE SET ${UPSERT_UPDATE}`,
-        )
-        .bind(...params),
-    );
-  }
-  return statements;
-}
-
-/** The one prepared statement that drops one row.
- * @param {D1Database} db
- * @param {{id: string}} account
- * @param {string} path */
-export function deleteStatement(db, account, path) {
-  return db
-    .prepare("DELETE FROM file_index WHERE account_id = ?1 AND path = ?2")
-    .bind(account.id, path);
-}
-
-/**
- * The one statement that upserts the index row for a file a storage event
- * names, or null when the event cannot name an indexable file.
- *
- * This is the metered intake's share of the write feed (drive#566). A file
- * written by a desktop mount or straight into the bucket never passes through
- * `withIndex`, so without this statement it stayed invisible to search until
- * the nightly rebuild — and the rebuild was the one job a crash could break for
- * good. The row is the same shape `withIndex` writes, so a file has one row
- * whichever feed named it, and the statement is handed back to the intake to
- * run inside the batch that already stores the version row: the two land
- * together or not at all.
- *
- * Null is the refusal shape, because the meter must never fail an event the
- * search cannot serve (the caller logs why):
- *   * a `hide` says a version stopped being visible, and search holds one row
- *     per path rather than per version, so the replacement's row arrives with
- *     the next create or with the nightly rebuild;
- *   * the event's key must sit under the account's own `u/<id>/` prefix — the
- *     same root `validateEvent` read the account from, so this only refuses a
- *     key that names the account folder itself and no file in it;
- *   * a path `validatePath` refuses is a path the walk refuses too, so the
- *     index must not hold a row the rebuild could never reproduce;
- *   * trash is never listed, by the page or the search.
- * @param {D1Database} db
- * @param {{accountId: string, path: string, sizeBytes: number, createdAt: number, effect: string}} event
- * @param {number} receivedAt
- * @returns {D1PreparedStatement|null}
- */
-export function eventIndexStatement(db, event, receivedAt) {
-  if (event.effect !== "create") {
-    return null;
-  }
-  const key = event.path.replace(/^\//, "");
-  const prefix = `u/${event.accountId}/`;
-  if (!key.startsWith(prefix)) {
-    console.error(`search: a storage event named no file under ${prefix}`);
-    return null;
-  }
-  const checked = validatePath(drivePathFromKey(key, { id: event.accountId }));
-  if (checked.error || checked.path === "/") {
-    console.error(`search: a storage event named a path the index cannot hold: ${event.path}`);
-    return null;
-  }
-  if (locate(checked.path).trashed) {
-    return null;
-  }
-  const row = fileRow(
-    { id: event.accountId },
-    checked.path,
-    { size: event.sizeBytes, modified: event.createdAt },
-    receivedAt,
-  );
-  return db
-    .prepare(
-      `INSERT INTO file_index ${UPSERT_COLUMNS} VALUES ${ROW_PLACEHOLDERS} ` +
-        `ON CONFLICT(account_id, path) DO UPDATE SET ${UPSERT_UPDATE}`,
-    )
-    .bind(
-      row.account_id,
-      row.path,
-      row.name,
-      row.parent,
-      row.size_bytes,
-      row.modified_at,
-      row.indexed_at,
-    );
-}
 
 /** Eight bound columns a staging row and at most twelve of them in one
  * statement, because D1 caps a statement at 100 bound parameters (12 x 8 = 96).
@@ -644,15 +478,30 @@ function countedBody(body) {
  * never lists, so no request pays for a walk.
  *
  * Position matters, and it is the one thing to get right: the write comes from
- * `scopeStore` (src/files.js), so the key this wrapper is handed is
+ * `scopeStore` (core/files.js), so the key this wrapper is handed is
  * `u/<id>/…`, never a drive path. `drivePathFromKey` is the inverse of the
  * scope's own mapping — the index stores the drive path the page and the CLI
  * print, and the account id the row belongs to, exactly as `reconcileIndex`
  * does when it walks an account's scoped store.
+ * @overload
  * @param {FileStore} store
  * @param {D1Database} db
  * @param {{id: string}} account
  * @param {() => number} [now]
+ * @returns {FileStore}
+ *
+ * @overload
+ * @param {FileStore | null | undefined} store
+ * @param {D1Database | null | undefined} db
+ * @param {{id: string}} account
+ * @param {() => number} [now]
+ * @returns {FileStore | null | undefined}
+ *
+ * @param {FileStore | null | undefined} store
+ * @param {D1Database | null | undefined} db
+ * @param {{id: string}} account
+ * @param {() => number} [now]
+ * @returns {FileStore | null | undefined}
  */
 export function withIndex(store, db, account, now = () => Date.now()) {
   if (!store || !db) {
@@ -664,8 +513,9 @@ export function withIndex(store, db, account, now = () => Date.now()) {
     ...store,
     /** @param {string} key
      * @param {BodyInit|null|undefined} body
-     * @param {string} contentType */
-    async write(key, body, contentType) {
+     * @param {string} contentType
+     * @param {{contentLength?: number}} [options] */
+    async write(key, body, contentType, options) {
       // The row the search reads is written after the store has read the body,
       // and the body is counted on the way through (a stream carries no length
       // a store would answer back), so a file is searchable with the size and
@@ -675,7 +525,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       // that set carries no length, and it is refused by name rather than
       // indexed as a size of 0.
       const counted = countedBody(body);
-      await write(key, counted.body, contentType);
+      await write(key, counted.body, contentType, options);
       const path = drivePathFromKey(key, account);
       if (locate(path).trashed) {
         return;
@@ -705,10 +555,10 @@ export function withIndex(store, db, account, now = () => Date.now()) {
  * index's own history. The old list came from the index's rows, which is
  * exactly the list a half-finished rebuild destroys (drive#566): after one
  * crash the account had no rows, so no later night ever visited it again. The
- * `accounts` table is the store the sign-ins write (src/abuse-guards.js,
- * workers/api/src/devices.js), so a customer with a drive has a row whether
- * or not any file was ever indexed, and the drive's own rows can never decide
- * who is worth walking.
+ * `accounts` table is the store the sign-ins write (core/abuse-guards.js,
+ * core/devices.js), so a customer with a drive has a row whether or not any
+ * file was ever indexed, and the drive's own rows can never decide who is
+ * worth walking.
  *
  * A closed account is skipped: its files were purged at close
  * (src/account-close.js), so a walk would find an empty prefix and its rows —

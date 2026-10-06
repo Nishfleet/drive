@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -205,12 +206,24 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
 	ks := testRevoker(t, home)
 
-	err := Logout("linux", home, false, nil, ks)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	err = Logout("linux", home, false, nil, ks)
+	os.Stderr = saved
+	_ = w.Close()
+	note, _ := io.ReadAll(r)
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
 	if !strings.Contains(err.Error(), "waiting to upload") {
 		t.Errorf("got %q, want the pending count named", err)
+	}
+	if !strings.Contains(string(note), "the drive is unmounted") {
+		t.Errorf("stderr = %q, want the unmount note on a refused logout", note)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); statErr != nil {
 		t.Errorf("the refusal must not delete the key: %v", statErr)
@@ -291,16 +304,9 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 
 	port := freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port,
 		"--log-level", "INFO")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
 
 	// Seed the stand-in so there is something in the drive to read. The seed
 	// runs after the server is up and writes through the rclone config the

@@ -38,7 +38,7 @@ const OTHER_TOKEN = "fedcba9876543210fedcba9876543210";
 /**
  * The six pages as they ship, read from the file each ships from: the five
  * public/ assets and get-started.html, the built Vite entry at the repo root
- * (drive#70, which src/seo.js records as the `root` page). Each file must
+ * (drive#70, which core/seo.js records as the `root` page). Each file must
  * exist: the build walks this list, so a page named here and missing on disk is
  * a build failure, not a page quietly left without a beacon.
  * @returns {Array<[string, string]>}

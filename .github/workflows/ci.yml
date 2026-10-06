@@ -24,7 +24,108 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # drive#660: which jobs a pull request's files can affect, read by the
+  # stock dorny/paths-filter from the PR's file list (the API, no checkout).
+  # It runs only on pull_request. On merge_group and on a push to main it is
+  # skipped, and every job below treats a `changes` that did not succeed as
+  # "run everything", so the merge queue always runs the whole suite and a
+  # mis-filed path costs a queue bounce, never a broken main.
+  #
+  # Skipping is job-level `if:`, never a workflow-level `paths:` filter: a job
+  # skipped by `if:` reports success to the required `verify` and `go` checks,
+  # while a workflow that never starts leaves them pending (drive#499).
+  #
+  # The `every` filters are negations: a file counts unless it is in a listed
+  # area, so a path nobody classified runs the job. The `_extra` filters list
+  # the files inside those areas that the job still reads.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      node: ${{ steps.every.outputs.node }}
+      site: ${{ steps.every.outputs.site }}
+      go: ${{ steps.every.outputs.go }}
+      node_extra: ${{ steps.some.outputs.node_extra }}
+      site_extra: ${{ steps.some.outputs.site_extra }}
+      go_extra: ${{ steps.some.outputs.go_extra }}
+    steps:
+      - id: every
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: |
+            # verify: everything except design and research notes.
+            node:
+              - '!docs/design/**'
+              - '!docs/research/**'
+            # npm run build + Lighthouse: the shipped static pages.
+            site:
+              - '!cmd/**'
+              - '!test/**'
+              - '!workers/**'
+              - '!docs/**'
+              - '!docs-site/**'
+              - '!evals/**'
+              - '!migrations/**'
+              - '!installer/**'
+              - '!bench/**'
+              - '!go.mod'
+              - '!go.sum'
+              - '!**/*.md'
+            # go: everything except the Node side.
+            go:
+              - '!src/**'
+              - '!public/**'
+              - '!workers/**'
+              - '!test/**'
+              - '!docs/**'
+              - '!docs-site/**'
+              - '!evals/**'
+              - '!migrations/**'
+              - '!installer/**'
+              - '!package.json'
+              - '!package-lock.json'
+              - '!biome.json'
+              - '!tsconfig.json'
+              - '!vite.config.ts'
+              - '!cloudflare.config.ts'
+              - '!lighthouserc.json'
+              - '!get-started.html'
+              - '!.npmrc'
+              - '!.nvmrc'
+              - '!**/*.md'
+      - id: some
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: some
+          filters: |
+            # Read by test/site-styles and test/meter.
+            node_extra:
+              - docs/design/pricing-brief.md
+              - docs/research/folder-moves.md
+            # Rendered into the pages by src/docs.js and src/render-docs.js.
+            site_extra:
+              - docs/scoreboard.md
+              - docs/benchmarks.md
+              - cmd/drive/main.go
+            # Read by the Go tests (os.ReadFile of ../../core).
+            go_extra:
+              - core/messages.js
+              - core/seo.js
+              - core/status.js
+              - core/queues.js
+
   verify:
+    needs: changes
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.node == 'true' ||
+       needs.changes.outputs.node_extra == 'true')
     runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
     timeout-minutes: 25 # own runners share the VPS with 10 builders: verify ran 6.5 min idle, passed 10 min under load (2026-10-04)
     steps:
@@ -73,8 +174,28 @@ jobs:
       # this job, which is what makes a budget a ratchet rather than a note.
       # Lowering a number in lighthouserc.json is how a speed win gets locked
       # in; raising one needs a measurement in the PR body.
-      - run: npm run build
-      - run: npx lhci autorun
+      # LHCI runs in its own throwaway container, pinned by digest, not from
+      # node_modules: @lhci/cli 0.15.1 is the newest release and its
+      # dependency chain (tmp, inquirer, lighthouse, puppeteer) carries high
+      # npm advisories with no fix (drive#581). The container sees only this
+      # checkout and runs as the runner's own user, so its reports stay
+      # removable. Chrome needs the larger /dev/shm, or the tab crashes.
+      - name: Build the site
+        if: >-
+          needs.changes.result != 'success' ||
+          needs.changes.outputs.site == 'true' ||
+          needs.changes.outputs.site_extra == 'true'
+        run: npm run build
+      - name: Lighthouse CI (in a throwaway container)
+        if: >-
+          needs.changes.result != 'success' ||
+          needs.changes.outputs.site == 'true' ||
+          needs.changes.outputs.site_extra == 'true'
+        run: >-
+          docker run --rm --shm-size=1g --user "$(id -u):$(id -g)" -e HOME=/tmp
+          -v "$PWD:/w" -w /w
+          patrickhulce/lhci-client:0.15.1@sha256:558210c5e422a7babaaa09c285b7469da3f00fac1a9880c37883c65d666a7fc9
+          lhci autorun --collect.settings.chromeFlags="--no-sandbox --headless=new"
       - run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
@@ -83,6 +204,12 @@ jobs:
 
   # The drive CLI is Go; the stand-in mount proof needs rclone and FUSE.
   go:
+    needs: changes
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.go == 'true' ||
+       needs.changes.outputs.go_extra == 'true')
     runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
     timeout-minutes: 20 # go took 8 min under load on own runners (2026-10-04)
     steps:

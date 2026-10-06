@@ -7,13 +7,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../../core/files.js";
 import {
   approveBranch,
   createBranch,
   createKvSnapshotStore,
   getBranch,
 } from "../../src/branches.js";
-import { createMemoryStore, scopeStore } from "../../src/files.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
