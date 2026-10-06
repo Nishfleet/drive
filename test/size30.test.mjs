@@ -13,14 +13,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   BILLING_CONFIG,
+  centsFromDrawnMillicents,
   DRAW_DAYS,
   dailyDrawMillicents,
   MILLICENTS_PER_CENT,
   monthBillCents,
   monthlyBillForStoredTb,
-  SIZE30_MS,
+  packDrawRemainder,
   savedLine,
+  SIZE30_MS,
   size30Window,
+  unpackDrawRemainder,
 } from "../core/billing.js";
 import { PRICE } from "../core/pricing.js";
 
@@ -111,6 +114,33 @@ test("thirty daily draws at a constant size add up to the monthly price exactly"
     assert.equal(sum, monthly, `${gb} GB: 30 draws sum to ${monthly} millicents`);
     assert.equal(remainder, 0, `${gb} GB: remainder is fully flushed after 30 days`);
   }
+});
+
+test("thirty daily cent draws at a constant size add up to the monthly cents exactly", () => {
+  for (const gb of [0.01, 10, 200, 500, 750, 1000, 1500, 4000]) {
+    const bill = billGb(gb);
+    let thirtyRemainder = 0;
+    let unposted = 0;
+    let centSum = 0;
+    for (let day = 0; day < DRAW_DAYS; day += 1) {
+      const step = dailyDrawMillicents(bill.storageMillicents, thirtyRemainder);
+      const cents = centsFromDrawnMillicents(step.drawMillicents, unposted);
+      assert.ok(cents.drawCents >= 0, "a cent draw is never negative");
+      centSum += cents.drawCents;
+      const packed = packDrawRemainder(step.remainderMillicents, cents.unpostedMillicents);
+      const unpacked = unpackDrawRemainder(packed);
+      thirtyRemainder = unpacked.thirtyRemainder;
+      unposted = unpacked.unpostedMillicents;
+    }
+    assert.equal(centSum, bill.storageCents, `${gb} GB: 30 cent draws sum to ${bill.storageCents}¢`);
+    assert.equal(thirtyRemainder, 0, `${gb} GB: /30 remainder flushed`);
+    assert.equal(
+      unposted,
+      bill.storageMillicents % MILLICENTS_PER_CENT,
+      `${gb} GB: leftover millicents are the month's tail that never made a cent`,
+    );
+  }
+  assert.deepEqual(unpackDrawRemainder(10), { thirtyRemainder: 10, unpostedMillicents: 0 });
 });
 
 test("the remainder is carried and never dropped or charged twice", () => {

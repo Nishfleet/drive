@@ -1398,11 +1398,12 @@ const handler = {
               "meter-daily-draw-check",
             );
           }
-          throw new Error(
+          console.error(
             `draw check: ${drawCheck.mismatches.length} mismatch(es) for ${drawCheck.yesterday}`,
           );
+        } else {
+          console.log(`draw check: ${drawCheck.yesterday} matched`);
         }
-        console.log(`draw check: ${drawCheck.yesterday} matched`);
       });
     }
     // The account close cron, on its own trip and its own Sentry Crons

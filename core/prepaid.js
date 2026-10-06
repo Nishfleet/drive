@@ -17,10 +17,13 @@
 
 import { accountStoredBytes } from "./abuse-guards.js";
 import {
+  centsFromDrawnMillicents,
   dailyDrawMillicents,
   MILLICENTS_PER_CENT,
   monthBillCents,
+  packDrawRemainder,
   size30Window,
+  unpackDrawRemainder,
 } from "./billing.js";
 import { resolveDodoUrl } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
@@ -282,8 +285,10 @@ async function drawForDay(db, accountId, day, now) {
       .bind(accountId, previousDay)
       .first()
   );
-  const remainderIn = prev === null ? 0 : Number(prev.remainder_millicents);
-  const step = dailyDrawMillicents(bill.totalMillicents, remainderIn);
+  const remainderPacked = prev === null ? 0 : Number(prev.remainder_millicents);
+  const remainderIn = unpackDrawRemainder(remainderPacked);
+  const step = dailyDrawMillicents(bill.totalMillicents, remainderIn.thirtyRemainder);
+  const cents = centsFromDrawnMillicents(step.drawMillicents, remainderIn.unpostedMillicents);
   const reached =
     size30.reachedHour === null ? null : new Date(size30.reachedHour).toISOString().slice(0, 10);
   await db
@@ -301,7 +306,7 @@ async function drawForDay(db, accountId, day, now) {
       reached,
       bill.totalMillicents,
       step.drawMillicents,
-      step.remainderMillicents,
+      packDrawRemainder(step.remainderMillicents, cents.unpostedMillicents),
       now,
     )
     .run();
@@ -320,7 +325,13 @@ async function drawForDay(db, accountId, day, now) {
       `draw_millicents does not parse for ${accountId} ${day}, so no draw is made`,
     );
   }
-  const amountCents = Math.trunc(drawMillicents / MILLICENTS_PER_CENT);
+  // Cents come from the stored millicents, not this run's freshly computed
+  // bill: a same-day reroll that lost the INSERT still posts the first
+  // draw's cents, so the ledger key cannot see a different amount.
+  const amountCents = centsFromDrawnMillicents(
+    drawMillicents,
+    remainderIn.unpostedMillicents,
+  ).drawCents;
   if (amountCents === 0) {
     return 0;
   }
@@ -407,8 +418,10 @@ export async function checkYesterdayDraws(db, now = Date.now()) {
           .bind(accountId, previousDay)
           .first()
       );
-      const remainderIn = prev === null ? 0 : Number(prev.remainder_millicents);
-      const expected = dailyDrawMillicents(bill.totalMillicents, remainderIn).drawMillicents;
+      const remainderPacked = prev === null ? 0 : Number(prev.remainder_millicents);
+      const remainderIn = unpackDrawRemainder(remainderPacked);
+      const expected = dailyDrawMillicents(bill.totalMillicents, remainderIn.thirtyRemainder)
+        .drawMillicents;
       const stored = /** @type {{draw_millicents?: unknown}|null} */ (
         await db
           .prepare("SELECT draw_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")

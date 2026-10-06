@@ -94,13 +94,11 @@ test("the formula edges, held all month", () => {
   }
 });
 
-test("downloads bill at the one rate: 1 cent a GB over 3x the stored size", () => {
-  const averageStoredGb = 2000;
-  // 8 TB downloaded against 2 TB stored: 3x (6 TB) is free, 2 TB bills at 1c.
+test("downloads bill at the one rate: 1 cent a GB over 3x size30", () => {
+  // 8 TB downloaded against 2 TB size30: 3x (6 TB) is free, 2 TB bills at 1c.
   const downloadBytes = 8000 * 1e9;
   const bill = monthBillCents({
     size30Bytes: bytes(2000),
-    averageStoredGb,
     downloadBytes,
   });
   assert.equal(bill.storageCents, 3000);
@@ -447,7 +445,7 @@ test("every line is integer cents, whatever the meter recorded", () => {
 test("the retired inputs fail loudly: peak, first month, month number", () => {
   // The maximum follows the average now, and the first-month half price is
   // gone. A caller still on the old rule is refused, never silently ignored.
-  for (const retired of ["peakGb", "peakBytes", "firstMonth", "monthNumber"]) {
+  for (const retired of ["peakGb", "peakBytes", "firstMonth", "monthNumber", "averageStoredGb"]) {
     assert.throws(
       () =>
         monthBillCents({

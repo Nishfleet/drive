@@ -53,7 +53,7 @@ The first says don't build. The second says if you build, sell to people first. 
 | Item | Choice |
 |---|---|
 | Price | **drive#642:** 2¢/GB-month on size30 (biggest size in the last 30 days), never more than $15 per TB. Historical: 2¢/GB-month, billed by the minute, shown as a monthly total |
-| Bill ceiling | min(metered, max($12, $8 × peak TB)), TB measured to the GB; B2 fallback $10/TB (Nish, 2026-09-30) |
+| Bill ceiling | **drive#642:** min(2¢ × size30 GB, $15 × max(1, size30 TB)). Historical #463: min(metered, max($12, $8 × peak TB)), B2 fallback $10/TB (replaced) |
 | Minimum per file | 1 hour of storage (B2 bills us by the byte-hour; proposed 2026-09-29, not yet confirmed by Nish) |
 | Downloads | Free up to 3x your average stored data each month, then 1¢/GB (the same rule B2 applies to us) |
 | Billing | Dodo usage billing on what is stored; no fixed monthly minimum |

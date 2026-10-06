@@ -1049,7 +1049,7 @@ export async function monthUsageThrough(db, accountId, through) {
 // is refused, never billed.
 export const SIZE30_SQL = `SELECT
     COALESCE(MAX(stored_bytes), 0) AS size30_bytes,
-    MIN(hour) AS reached_hour,
+    CASE WHEN COALESCE(MAX(stored_bytes), 0) = 0 THEN NULL ELSE MIN(hour) END AS reached_hour,
     COUNT(*) AS hours,
     SUM(CASE WHEN typeof(stored_bytes) != 'integer' THEN 1 ELSE 0 END) AS bad_rows
   FROM usage_minutes

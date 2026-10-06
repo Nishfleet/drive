@@ -347,6 +347,7 @@ const RETIRED_MONTH_FIELDS = Object.freeze([
   "peakBytes",
   "firstMonth",
   "monthNumber",
+  "averageStoredGb",
 ]);
 // Founding pricing is gone (drive#586, Nish 2026-10-05): everyone pays the one
 // rate. A caller still passing a founding field is refused, never ignored, so
@@ -431,6 +432,81 @@ export function dailyDrawMillicents(monthlyMillicents, remainderMillicents = 0) 
   return Object.freeze({
     drawMillicents: Math.floor(total / DRAW_DAYS),
     remainderMillicents: total % DRAW_DAYS,
+  });
+}
+
+/**
+ * Whole cents posted from one day's millicent draw. Leftover millicents
+ * (0..999) are carried so thirty days of cents sum to the month's cents.
+ * @param {unknown} drawMillicents
+ * @param {unknown} [unpostedMillicents]
+ */
+export function centsFromDrawnMillicents(drawMillicents, unpostedMillicents = 0) {
+  if (!Number.isSafeInteger(drawMillicents) || /** @type {number} */ (drawMillicents) < 0) {
+    throw new TypeError(
+      `drawMillicents must be 0 or more whole millicents, got ${String(drawMillicents)}`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(unpostedMillicents) ||
+    /** @type {number} */ (unpostedMillicents) < 0 ||
+    /** @type {number} */ (unpostedMillicents) >= MILLICENTS_PER_CENT
+  ) {
+    throw new TypeError(
+      `unpostedMillicents must be 0..${MILLICENTS_PER_CENT - 1}, got ${String(unpostedMillicents)}`,
+    );
+  }
+  const pool = /** @type {number} */ (drawMillicents) + /** @type {number} */ (unpostedMillicents);
+  return Object.freeze({
+    drawCents: Math.floor(pool / MILLICENTS_PER_CENT),
+    unpostedMillicents: pool % MILLICENTS_PER_CENT,
+  });
+}
+
+/**
+ * Pack the /30 millicent remainder (0..29) with millicents not yet posted as
+ * cents (0..999). An old daily_draws row that stored only 0..29 unpacks as
+ * unposted 0, so a leftover hourly-era remainder is still a /30 remainder.
+ * @param {unknown} thirtyRemainder
+ * @param {unknown} unpostedMillicents
+ */
+export function packDrawRemainder(thirtyRemainder, unpostedMillicents) {
+  if (
+    !Number.isSafeInteger(thirtyRemainder) ||
+    /** @type {number} */ (thirtyRemainder) < 0 ||
+    /** @type {number} */ (thirtyRemainder) >= DRAW_DAYS
+  ) {
+    throw new TypeError(
+      `thirtyRemainder must be 0..${DRAW_DAYS - 1}, got ${String(thirtyRemainder)}`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(unpostedMillicents) ||
+    /** @type {number} */ (unpostedMillicents) < 0 ||
+    /** @type {number} */ (unpostedMillicents) >= MILLICENTS_PER_CENT
+  ) {
+    throw new TypeError(
+      `unpostedMillicents must be 0..${MILLICENTS_PER_CENT - 1}, got ${String(unpostedMillicents)}`,
+    );
+  }
+  return (
+    /** @type {number} */ (unpostedMillicents) * DRAW_DAYS +
+    /** @type {number} */ (thirtyRemainder)
+  );
+}
+
+/**
+ * @param {unknown} packed
+ * @returns {{thirtyRemainder: number, unpostedMillicents: number}}
+ */
+export function unpackDrawRemainder(packed) {
+  if (!Number.isSafeInteger(packed) || /** @type {number} */ (packed) < 0) {
+    throw new TypeError(`packed draw remainder must be 0 or more, got ${String(packed)}`);
+  }
+  const value = /** @type {number} */ (packed);
+  return Object.freeze({
+    thirtyRemainder: value % DRAW_DAYS,
+    unpostedMillicents: Math.trunc(value / DRAW_DAYS),
   });
 }
 
@@ -526,10 +602,7 @@ export function monthBillCents(month) {
   const meteredMillicents = millicentsNumber(meteredMillicentsBig, "meteredMillicents");
   const maximumMillicents = millicentsNumber(maximumMillicentsBig, "maximumMillicents");
   const storageMillicents = millicentsNumber(storageMillicentsBig, "storageMillicents");
-  const size30Gb =
-    fields.averageStoredGb === undefined
-      ? Number(size30Bytes) / BYTES_PER_GB
-      : checked(fields.averageStoredGb, "month.averageStoredGb");
+  const size30Gb = Number(size30Bytes) / BYTES_PER_GB;
   const downloadCents = Math.round(downloadCostUsd(downloadBytes, size30Gb, config).usd * 100);
   const downloadMillicents = downloadCents * MILLICENTS_PER_CENT;
   const meteredCents = Math.trunc(meteredMillicents / MILLICENTS_PER_CENT);
