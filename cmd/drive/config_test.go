@@ -214,6 +214,24 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	}
 }
 
+func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		p := withProductBin(BuildMountPlan(goos, "/home/test", "rclone", testStorage()))
+		if goos == "windows" {
+			p.MountDir = "Z:"
+		}
+		args := p.productArgs()
+		if !hasArg(args, "--foreground") {
+			t.Errorf("%s: productArgs missing --foreground: %v", goos, args)
+		}
+		if args[0] != "mount" {
+			t.Errorf("%s: productArgs[0] = %q, want mount", goos, args[0])
+		}
+	}
+}
+
+// withProductBin fills DriveBin with a fixture path so renderer tests can
+// assert the login item execs this CLI. The paths are not install locations.
 func withProductBin(p MountPlan) MountPlan {
 	switch p.GOOS {
 	case "windows":

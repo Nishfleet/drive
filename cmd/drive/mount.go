@@ -365,8 +365,14 @@ func (p MountPlan) loginItemArgs() []string {
 // productArgs is the argument vector the login item execs: this CLI, in the
 // foreground, against the home the item was installed for. rclone, the
 // conflict guard, the fill loop and the queue report all start inside that
-// process. Windows keeps the chosen letter on the vector so status can still
-// read it off the task command line.
+// process. --foreground is required on every platform, including Windows:
+// without it the item would run `drive mount` and register itself again.
+// On Windows the Task Scheduler still starts the task at logon; the flag
+// only means "run rclone in this process, do not start the task". Windows
+// keeps the chosen letter on the vector so status can still read it off
+// the task command line. Secrets stay in rclone.env; the product reads
+// them through storageFromDisk and ReadSecretKey, the same path `drive
+// mount --home` uses after login.
 func (p MountPlan) productArgs() []string {
 	args := []string{"mount", "--foreground", "--home", p.Home}
 	if p.Device != "" {
