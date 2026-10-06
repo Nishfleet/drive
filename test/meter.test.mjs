@@ -596,6 +596,16 @@ test("a storage event makes the file it names searchable, with no walk (drive#56
   assert.equal(db.tables.file_index.size, 1, "the dedup ate the replay, so the row count held");
 });
 
+test("the meter refuses to store an event that failed validation (drive#566)", async () => {
+  const { db } = makeMeteredDB();
+  await assert.rejects(
+    () => recordEvent(db, { error: "The event is missing a path." }, midnight()),
+    /failed validation/,
+  );
+  assert.equal(db.tables.file_index.size, 0);
+  assert.equal(db.tables.file_versions.size, 0);
+});
+
 test("a hide never removes a live index row; the nightly rebuild owns the live set (drive#566)", async () => {
   const ACCOUNT = { id: "acct-1", name: "Account one" };
   const { db } = makeMeteredDB();

@@ -837,15 +837,16 @@ test("the nightly cron enqueues one message per account and the consumer walks t
 test("a reindex reaches an account the index holds no rows for", async () => {
   const db = makeD1();
   seedAccount(db, ACCOUNT.id, "active");
-  seedAccount(db, "acct-2", "active");
+  seedAccount(db, "acct-2", "read_only");
   seedAccount(db, "acct-closed", "closed");
   seedAccount(db, "acct-empty", "active");
 
   // The account list is the accounts table read through its own exported
   // reader, so the production reader is what decides, not the test: an
   // account with no index rows is on the list (its drive is exactly the one
-  // the old index-derived list would have skipped), and a closed one is not
-  // (its files were purged at close).
+  // the old index-derived list would have skipped), a read-only one is on
+  // it (the same COALESCE filter setAccountState uses), and a closed one is
+  // not (purgeAccountRecords already deleted its file_index rows).
   const accountIds = (await indexAccounts(db)).map((account) => account.id);
   assert.deepEqual(
     accountIds,

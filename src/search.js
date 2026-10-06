@@ -563,9 +563,14 @@ export function withIndex(store, db, account, now = () => Date.now()) {
  * file was ever indexed, and the drive's own rows can never decide who is
  * worth walking.
  *
- * A closed account is skipped: its files were purged at close
- * (src/account-close.js), so a walk would find an empty prefix and its rows —
- * if any survive — are not reachable by any request that authenticates.
+ * A closed account is skipped because close's purge (`purgeAccountRecords`
+ * in src/account-close.js) already deleted its `file_index` rows on day 30,
+ * proven by test/account-close.test.mjs. Walking it again would swap in an
+ * empty set after the files are gone; during the 30-day grace its keys are
+ * already revoked, so no new file can arrive. The filter is the same
+ * `COALESCE(state, 'active') <> 'closed'` `setAccountState` uses
+ * (core/devices.js), so a new open state the accounts CHECK later allows is
+ * still walked, and a closed one never is.
  * @param {D1Database} db
  * @returns {Promise<Array<{id: string}>>}
  */
@@ -574,8 +579,10 @@ export async function indexAccounts(db) {
     throw new Error("indexAccounts needs the file index database");
   }
   const result = await db
-    .prepare("SELECT id FROM accounts WHERE state IN (?1, ?2) AND id <> ?3 ORDER BY id")
-    .bind("active", "read_only", "")
+    .prepare(
+      "SELECT id FROM accounts WHERE COALESCE(state, 'active') <> ?1 AND id <> ?2 ORDER BY id",
+    )
+    .bind("closed", "")
     .all();
   const rows = /** @type {Array<{id: string}>} */ (result?.results ?? []);
   return rows.map((row) => ({ id: row.id }));
