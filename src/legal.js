@@ -1,8 +1,9 @@
-// The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
-// use and support. They are hand-written static pages in public/, like every
-// other page on the site, and this file is the one list of them, so the
-// footer links, the sitemap, src/seo.js and test/legal.test.mjs cannot
-// disagree about which pages exist or where they live.
+// The legal and trust pages (drive#523, drive#584): terms, privacy, refunds,
+// acceptable use, support, accessibility and status. They are hand-written
+// static pages in public/, like every other page on the site, and this file is
+// the one list of them, so the footer links, the sitemap, src/seo.js and
+// test/legal.test.mjs cannot disagree about which pages exist or where they
+// live.
 //
 // Four facts are the owner's to decide, not a worker's: the payee's legal
 // name, the contact address, the refund rule and the VAT line on receipts.
@@ -28,6 +29,10 @@ export const LEGAL_PAGES = Object.freeze([
   Object.freeze({ path: "/refunds", file: "refunds.html", label: "Refunds" }),
   Object.freeze({ path: "/acceptable-use", file: "acceptable-use.html", label: "Acceptable use" }),
   Object.freeze({ path: "/support", file: "support.html", label: "Support" }),
+  // drive#584: the two trust pages the launch checklist names that no other
+  // issue carries. Both are indexable and linked from every footer.
+  Object.freeze({ path: "/accessibility", file: "accessibility.html", label: "Accessibility" }),
+  Object.freeze({ path: "/status", file: "status.html", label: "Status" }),
 ]);
 
 /** Where a person reaches a human, and where abuse reports go. */

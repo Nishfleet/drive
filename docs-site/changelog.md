@@ -8,6 +8,13 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-06
+
+- A public status page that reads the Worker's own health route, an
+  accessibility statement, and the site's own 5xx page (a browser that hits an
+  error now sees the site instead of a JSON body). The security page states
+  where files are stored and what each key can do.
+
 ## 2026-10-05
 
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
