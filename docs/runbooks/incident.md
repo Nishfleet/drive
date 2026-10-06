@@ -8,7 +8,9 @@ and the point where the decision is Nish's.
 
 1. Read the health route. It answers `{"ok":true}` only when every bound
    dependency replies, and `{"ok":false,"failing":"<binding>"}` when one does
-   not:
+   not. The required bindings it checks are the names in `REQUIRED_BINDINGS`
+   (`src/health.js:137`), which `test/health.test.mjs` holds against
+   `cloudflare.config.ts`:
 
    ```
    curl -sS https://drive-pricing.nishant345.workers.dev/api/health
@@ -26,16 +28,20 @@ and the point where the decision is Nish's.
 
 ## Where the signals are
 
-- **Deploy failed.** The deploy workflow (`.github/workflows/deploy-production.yml`)
-  rolls the Worker back to the previous version automatically when a step after
-  the live-version read fails. Read that run first.
+- **Deploy failed.** The deploy workflow
+  (`.github/workflows/deploy-production.yml`) rolls the Worker back to the
+  previous version automatically when a step after the live-version read fails
+  (its "Roll back the Worker version" step). Read that run first.
 - **Health named a binding.** `WAITLIST_DB`, `DRIVE_DB`, `METER_DB`,
   `BRANCH_SNAPSHOTS`, `ASSETS` and the rate limiters are the names it can report.
   A D1 name means a database is unreachable. An `ASSETS` name means a page will
   not serve.
-- **Worker logs.** The `[pricing] request failed:` line carries the message and
-  stack for a request that threw. The site's own 5xx page (`public/500.html`,
-  served by `app.onError`) is what a browser in that request sees.
+- **Worker logs.** The `[pricing] request failed:` line (`src/index.js`
+  `app.onError`) carries the message and stack for a request that threw. The
+  site's own 5xx page (`public/500.html`, served by `app.onError`) is what a
+  browser in that request sees: the response is pinned `cache-control:
+  no-store` and `x-robots-tag: noindex`, so neither a browser nor a crawler
+  keeps the error.
 - **Access.** Until Drive has its own domain, the site sits behind Cloudflare
   Access. A stranger reaching the site instead of the Access sign-in is an
   incident in itself (drive#159).

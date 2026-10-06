@@ -945,6 +945,10 @@ export function createApp() {
     // The JSON answer keys off the route family, not the Accept header alone:
     // Java's HttpURLConnection sends a text/html default, and /v1/* is the CLI.
     const accept = c.req.header("accept") ?? "";
+    // The path family, not the Accept header (Java's HttpURLConnection sends a
+    // text/html default and /v1/* is the CLI). A bare "/api" or "/v1" cannot
+    // reach here: both are real routes (API_PATH_PREFIX's own handler and a
+    // sites route), so this sees only subpaths of either family.
     const isApiPath =
       c.req.path.startsWith("/api/") || c.req.path.startsWith(`${API_PATH_PREFIX}/`);
     if (accept.includes("text/html") && !isApiPath && c.env.ASSETS) {
@@ -952,7 +956,22 @@ export function createApp() {
       errorUrl.pathname = "/500.html";
       errorUrl.search = "";
       return c.env.ASSETS.fetch(new Request(errorUrl, { headers: c.req.raw.headers }))
-        .then((asset) => new Response(asset.body, { status: 500, headers: asset.headers }))
+        .then((asset) =>
+          // The answer is built by hand, not by copying the asset's headers: an
+          // error response must never be cacheable, and a page request's
+          // headers (a cache modifier the browser sent) cannot ride onto a 500
+          // from an unrelated path. src/seo.js marks /500.html noindex, so a
+          // crawler that follows a broken link keeps the error out of its
+          // index too.
+          new Response(asset.body, {
+            status: 500,
+            headers: {
+              "content-type": asset.headers.get("content-type") ?? "text/html; charset=utf-8",
+              "cache-control": "no-store",
+              "x-robots-tag": "noindex",
+            },
+          }),
+        )
         .catch(() => c.json({ error: failureMessage("unexpected") }, 500));
     }
     return c.json({ error: failureMessage("unexpected") }, 500);

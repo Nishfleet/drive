@@ -14,9 +14,11 @@ only do what its kind of key is allowed to do. Keys are yours to revoke.
 
 ## Sub-processors
 
-Three companies handle data for the drive. The
+The
 [privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) is the
-full record, with what each one stores and where:
+full record, with what each one stores and where. The page below is the
+same list; it is read from the privacy page so the count can never
+silently disagree with it.
 
 - **Cloudflare** — the site, the API, downloads, the account database and email.
   Cloudflare's global network.

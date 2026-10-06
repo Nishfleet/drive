@@ -15,15 +15,15 @@ rolling back a deploy.
 
 1. If they deleted it from the Files page, it is in `.trash/` for 30 days and
    they can restore it themselves from "Recently deleted" (`purgeExpiredTrash`,
-   `src/files.js`). Send them there first.
+   `src/files.js:717`). Send them there first.
 2. If they deleted it any other way (the CLI, an rclone command), the object
    storage still holds the previous version. Every stored path keeps its
    versions, and the reconciler reads them through `store.listVersions`
-   (`src/files.js`). An operator restores the wanted version into the current
-   key. The window is the provider's version window, so do this as soon as the
-   request arrives.
+   (`src/files.js:831`, the shape the reconciler and an operator both read). An
+   operator restores the wanted version into the current key. The window is the
+   provider's version window, so do this as soon as the request arrives.
 3. Do not run the nightly trash purge by hand to "tidy up" while a restore is
-   in flight. It runs at 05:00 UTC (`TRASH_PURGE_SCHEDULE`).
+   in flight. It runs at 05:00 UTC (`TRASH_PURGE_SCHEDULE`, `src/files.js:676`).
 
 ## A D1 row or table
 
@@ -43,9 +43,11 @@ not touch the data.
 
 ## The backup that is not built yet
 
-`docs/build-spec.md` step 8 plans a nightly `rclone sync --backup-dir` from the
-primary storage to a Hetzner Storage Box, with a 31-day purge and a restore
-through `drive restore`. It is not built. Until it is:
+`docs/build-spec.md` step 8 ("Backup and old versions") plans a nightly
+`rclone sync --backup-dir` from the primary storage to a Hetzner Storage Box,
+with a 31-day purge. It is not built, and the restore command from it does not
+ship yet: `cmd/drive/main.go:147` records that `drive restore` is no longer
+advertised. Until it is:
 
 - The provider's own versioning is the only copy of an old file.
 - A file removed from the primary storage on purpose is gone once the window

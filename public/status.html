@@ -73,11 +73,11 @@ body {
 
     <section>
       <h2>Right now</h2>
-      <p id="status-line" role="status" aria-live="polite">Checking the health route&hellip;</p>
+      <p id="status-line" role="status" aria-live="polite">This page reads the health check when the script runs. Open <a href="/api/health">the health check</a> for the machine-readable answer: <code>{"ok":true}</code> when every dependency answers, and the name of the one that did not when one fails.</p>
       <noscript>
         <p>The status needs JavaScript. Open <a href="/api/health">the health check</a> to read the same answer a machine reads: <code>{"ok":true}</code> when every dependency answers, and the name of the one that did not when one fails.</p>
       </noscript>
-      <p>The health route is <a href="/api/health"><code>/api/health</code></a>. It answers <code>{"ok":true}</code> when every dependency replies, and <code>{"ok":false,"failing":"&lt;name&gt;"}</code> when one does not, so a monitor learns where to look. An outside monitor polls it and alerts us. A failed dependency is not a lost file: the drive goes read-only before it lets anything be lost.</p>
+      <p>The health route is <a href="/api/health"><code>/api/health</code></a>. It answers <code>{"ok":true}</code> when every dependency replies, and <code>{"ok":false,"failing":"&lt;name&gt;"}</code> when one does not, so a monitor learns where to look. A failed dependency is not a lost file: the drive goes read-only before it lets anything be lost.</p>
     </section>
 
     <section>
@@ -107,8 +107,10 @@ body {
   <script>
 // The status line, read from the site's own health route (src/health.js).
 // The page is an asset, so it cannot import the Worker: it fetches the route
-// the Worker already exposes. Every path writes a line, so the live region
-// never sits on "Checking".
+// the Worker already exposes. Every path in this script writes a line, so the
+// live region never sits on the paragraph's own default; and if the script
+// does not run at all (JavaScript off, or a future header blocking it), that
+// default below still tells a reader where the machine-readable answer is.
 const line = document.getElementById("status-line");
 
 fetch("/api/health", { headers: { accept: "application/json" } })
@@ -118,8 +120,11 @@ fetch("/api/health", { headers: { accept: "application/json" } })
       line.textContent = "All systems operational.";
       return;
     }
-    const failing = body && typeof body.failing === "string" ? body.failing : "unknown";
-    line.textContent = `One dependency is not answering (${failing}). We are looking into it.`;
+    // The failing name is a binding name (WAITLIST_DB, METER_DB, ...), the
+    // machine-facing detail /api/health already reports. This page speaks the
+    // customer's words and links the route for the name.
+    line.textContent =
+      "One part of the site is not answering right now. We are looking into it. The health check below names the part.";
   })
   .catch(() => {
     line.textContent =

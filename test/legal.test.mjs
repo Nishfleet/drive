@@ -256,6 +256,39 @@ test("the launch checklist's runbooks ship with words in them", () => {
   }
 });
 
+// A runbook is read during an incident: a symbol it names that the code no
+// longer has sends an operator to a function that does not exist. Each claim
+// below names its source file, and the claim fails here when either the
+// runbook or the source drifts (drive#584).
+test("the runbooks name symbols that still exist in the code they cite", () => {
+  /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
+  const claims = [
+    ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
+    ["restore.md", "src/files.js", "purgeExpiredTrash"],
+    ["restore.md", "src/files.js", "TRASH_PURGE_SCHEDULE"],
+    ["secrets-rotation.md", "src/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "src/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
+    ["secrets-rotation.md", "cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
+  ];
+  for (const [runbook, source, readOnly, ...symbols] of claims) {
+    // readOnly marks a claim that the source must still carry the symbol it
+    // cites; the runbook text and the source text are both checked, so a
+    // rename in either fails here instead of misleading an operator.
+    const sourceText = readRepo(source);
+    const runbookText = readRepo("docs/runbooks/" + runbook);
+    for (const symbol of symbols) {
+      assert.ok(
+        runbookText.includes(symbol),
+        runbook + " must name " + symbol + " (it cites " + source + ")",
+      );
+      assert.ok(
+        sourceText.includes(symbol),
+        source + " must still carry the " + symbol + " the runbook cites",
+      );
+    }
+  }
+});
+
 test("the site's own 5xx page ships as a noindex asset", () => {
   const html = readPublic("500.html");
   assert.match(html, /<meta name="robots" content="noindex">/);

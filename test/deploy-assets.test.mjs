@@ -492,7 +492,12 @@ test("a browser that asked for a page gets the site's 5xx page, not JSON", async
   const page = read("public/500.html");
   const response = await siteRequest(
     new Request("https://drive.test/privacy", {
-      headers: { accept: "text/html,application/xhtml+xml" },
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        // A cache modifier a page request carries: it must not ride onto the
+        // error the route layer answers for the path (no-store is pinned).
+        "cache-control": "max-age=3600",
+      },
     }),
     {
       ASSETS: {
@@ -507,6 +512,38 @@ test("a browser that asked for a page gets the site's 5xx page, not JSON", async
   const body = await response.text();
   assert.match(body, /That did not work/, "the browser gets the site's own words");
   assert.ok(!body.trimStart().startsWith("{"), "a browser is not handed JSON");
+  assert.equal(
+    response.headers.get("cache-control"),
+    "no-store",
+    "an error response is never cacheable, whatever the request asked for",
+  );
+  assert.equal(
+    response.headers.get("x-robots-tag"),
+    "noindex",
+    "an error page stays out of a crawler's index",
+  );
+});
+
+test("the 5xx page's asset layer going down falls back to the JSON table", async () => {
+  // The same request with no ASSETS bound at all: the branch cannot serve the
+  // page, so the caller keeps the one failure table's JSON. This is also the
+  // no-ASSETS deployment, where the 500 branch is skipped on purpose.
+  const response = await siteRequest(
+    new Request("https://drive.test/privacy", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    }),
+    {
+      ASSETS: {
+        fetch: () => Promise.reject(new Error("the asset layer is down entirely")),
+      },
+    },
+  );
+  assert.equal(response.status, 500, "the fall back answer is still a 500");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "the fallback is the message table's own words, not a stack",
+  );
 });
 
 test("a /v1/* caller that sent a browser Accept header still gets JSON", async () => {
@@ -529,6 +566,33 @@ test("a /v1/* caller that sent a browser Accept header still gets JSON", async (
     await response.json(),
     { error: failureMessage("unexpected") },
     "an API caller keeps the JSON table whatever Accept it sent",
+  );
+});
+
+test("an /api/* caller that sent a browser Accept header still gets JSON", async () => {
+  // The sites route family's own case, beside the /v1/* one: the page-vs-JSON
+  // choice keys off the family, so an /api/* route that threw keeps the
+  // message table's JSON whatever Accept it carried. The route is the one
+  // /api/* path that forwards to the api Worker (POST /api/keys/revoke), so a
+  // throwing binding is the real shape.
+  const response = await siteRequest(
+    new Request("https://drive.test/api/keys/revoke", {
+      method: "POST",
+      headers: {
+        accept: "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2",
+        authorization: `Basic ${btoa("k_test:not-the-secret")}`,
+      },
+    }),
+    {
+      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
+      ASSETS: { fetch: async () => new Response("<html>page</html>", { status: 200 }) },
+    },
+  );
+  assert.equal(response.status, 500, "a throwing dependency is an error status, not an open one");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "an /api/* caller keeps the JSON table whatever Accept it sent",
   );
 });
 

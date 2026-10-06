@@ -15,22 +15,25 @@ deletes afterwards.
 ## What is held, and what a missing value does
 
 - `METER_EVENT_TOKEN` — the bearer token the meter's event intake requires. With
-  it unset the route answers 503. Declared in `cloudflare.config.ts`; a declared
-  secret must be set before a deploy.
+  it unset the route answers 503 (`src/meter.js:1652`, the check that fails
+  closed). Declared in `cloudflare.config.ts`; a declared secret must be set
+  before a deploy.
 - `EMAIL_SEND_TOKEN` and `MAIL_FROM` — the token and sender for the email send
-  route. With the token unset the route answers 403; with no `MAIL_FROM` it
-  answers 503. Not declared as secrets, on purpose: they are set once Drive has
-  a sending domain (drive#584 tracks that DNS work).
+  route. With the token wrong the route answers 403; with no `MAIL_FROM` it
+  answers 503 (`src/email-send.js:230,252`). Not declared as secrets, on
+  purpose: they are set once Drive has a sending domain (drive#584 tracks that
+  DNS work).
 - `IDRIVE_E2_API_TOKEN` — the api Worker's credential for minting scoped keys.
   A rotation invalidates the old value, so a mounted drive asks for a new key at
   its next start.
 - The storage key pair and the Dodo key and webhook secret — the object storage
   and payment credentials. Dodo is Nish's account, so a rotation there is his
   call.
-- The CI credentials: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
-  `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`. They live in the repo's
-  Actions secrets, not in a Worker. The same rule holds: rotate in the GitHub
-  and Cloudflare dashboards, never in a workflow file.
+- The CI credentials (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
+  `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`): the names the deploy and
+  health steps of `.github/workflows/deploy-production.yml` read. They live in
+  the repo's Actions secrets, not in a Worker. The same rule holds: rotate in
+  the GitHub and Cloudflare dashboards, never in a workflow file.
 
 ## The order
 
