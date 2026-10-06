@@ -68,9 +68,9 @@ const PER_TB = /\$\s?(\d+(?:\.\d+)?)\s*(?:\/|per\s*|a\s*)\s*TB\b/gi;
 /** @param {string} text @returns {number[]} */
 const perTbAmounts = (text) => [...text.matchAll(PER_TB)].map((match) => Number(match[1]));
 
-test("the Talk-to-us box says the company screens come later and the API is the only v1 way in", () => {
+test("the Talk-to-us box says the company screens come later and the API is the only way in", () => {
   assert.match(businessBox, /teams API/i);
-  assert.match(businessBox, /in version 1 only through the teams API/i);
+  assert.match(businessBox, /only way to manage a company drive today/i);
   assert.match(businessBox, /company screens come later/i);
 });
 
@@ -148,7 +148,7 @@ test("the price gate has teeth: it catches the retired ceiling on a surface", ()
     PRICE.maxUsdPerTb,
   ]);
   assert.equal(
-    perTbAmounts("A company drive is set up in version 1 only through the teams API.").length,
+    perTbAmounts("The teams API is the only way to manage a company drive today.").length,
     0,
   );
 });
