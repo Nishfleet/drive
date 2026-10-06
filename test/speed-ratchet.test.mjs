@@ -11,10 +11,11 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -28,7 +29,11 @@ const ROWS = [
   "big-folder-rename",
   "mount-ready",
   "cli-cold-start",
+  "site-bundle",
 ];
+
+/** Rows measured in bytes rather than seconds: a ceiling, not a timing. */
+const BYTE_ROWS = new Set(["site-bundle"]);
 
 /** Scoreboard metric -> baseline row ids the cell must name. */
 const SCOREBOARD = {
@@ -66,8 +71,20 @@ test("bench/baseline.json names every ratchet row, with 10+ runs and noise small
   for (const id of ROWS) {
     const row = baseline.rows[id];
     assert.ok(row, `missing row ${id}`);
+    assert.ok(row.mean > 0, `${id}: mean must be a measured number`);
+    if (BYTE_ROWS.has(id)) {
+      assert.equal(row.unit, "bytes", `${id}: a byte row must say so`);
+      assert.equal(row.tool, "cf-build", `${id}: tool is cf-build`);
+      assert.equal(row.stddev, 0, `${id}: a deterministic build has no noise to record`);
+      assert.equal(row.runs, 1, `${id}: one build is the run`);
+      continue;
+    }
+    assert.equal(
+      row.unit,
+      undefined,
+      `${id}: a second row carries no unit, the file's top-level unit is seconds`,
+    );
     assert.ok(row.runs >= 10, `${id}: runs=${row.runs}, want >= 10`);
-    assert.ok(row.mean > 0, `${id}: mean must be a measured second count`);
     assert.ok(row.stddev > 0, `${id}: stddev must be measured noise`);
     assert.ok(
       ratchetBand(row) < Math.max(0.5 * row.mean, 0.05),
@@ -189,4 +206,51 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
     "slower",
     `sleep 0.05 mean=${measured.mean} must fail against cli-cold-start mean=${cli.mean}`,
   );
+});
+
+/** @returns {{kind: "missing"} | {kind: "ok", bytes: number} | {kind: "empty"}} */
+function workerBundle() {
+  // `cf build` writes the isolate script at default/bundle/index.js and the
+  // unused SQLite dialect chunks beside it under bundle/assets. Static HTML
+  // lives in default/assets and Lighthouse already budgets it.
+  const dir = fileURLToPath(
+    new URL("../.cloudflare/output/v0/workers/default/bundle/", import.meta.url),
+  );
+  if (!existsSync(dir)) return { kind: "missing" };
+  let bytes = 0;
+  /** @param {string} folder */
+  function walk(folder) {
+    for (const name of readdirSync(folder)) {
+      if (name === ".vite") continue;
+      const path = join(folder, name);
+      const info = statSync(path);
+      if (info.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      if (info.isFile() && /\.(js|mjs|wasm)$/.test(name)) bytes += info.size;
+    }
+  }
+  walk(dir);
+  return bytes === 0 ? { kind: "empty" } : { kind: "ok", bytes };
+}
+
+test("the site Worker bundle stays within its baseline size", (t) => {
+  const found = workerBundle();
+  if (found.kind === "missing") {
+    t.skip("no Worker build output; CI runs npm run build before npm test");
+    return;
+  }
+  assert.notEqual(
+    found.kind,
+    "empty",
+    "the Worker output directory exists but has no JS or wasm bundle; the ratchet path drifted",
+  );
+  const bytes = found.kind === "ok" ? found.bytes : 0;
+  const budget = baseline.rows["site-bundle"];
+  assert.ok(
+    bytes <= budget.mean,
+    `the site Worker bundle is ${bytes} bytes, over the ${budget.mean}-byte budget. Shrink it, or raise the row in bench/baseline.json with the number that justified it.`,
+  );
+  t.diagnostic(`site-bundle: ${bytes} bytes, budget ${budget.mean} bytes`);
 });

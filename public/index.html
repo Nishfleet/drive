@@ -151,7 +151,11 @@ a {
   line-height: 1;
 }
 
+/* The tagline sits on the orange hero field. The shared --ink-soft from
+   site.css reads at 2.4:1 there and fails the accessibility budget, so it
+   takes the same ink as the masthead links (about 6:1). */
 .tagline {
+  color: var(--drive-ink);
   font-size: 14px;
   font-weight: 600;
 }

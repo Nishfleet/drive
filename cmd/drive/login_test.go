@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -179,13 +178,19 @@ func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
 	}
 }
 
+// The one site address (drive#527). The CLI embeds cmd/drive/site.json, and
+// core/seo.js imports the same file, so this test reads that file rather than
+// searching a source file for a literal that no longer lives there.
 func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "core", "seo.js"))
+	src, err := os.ReadFile("site.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(src), defaultAPIBase) {
-		t.Fatalf("defaultAPIBase %q is not the origin core/seo.js ships", defaultAPIBase)
+		t.Fatalf("defaultAPIBase %q is not the origin cmd/drive/site.json holds", defaultAPIBase)
+	}
+	if !strings.HasPrefix(defaultAPIBase, "https://") {
+		t.Fatalf("defaultAPIBase %q must be an https address", defaultAPIBase)
 	}
 }
 
