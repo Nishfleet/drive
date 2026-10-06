@@ -57,3 +57,10 @@ HyperFrames repository (Apache-2.0) instead.
 | [HyperFrames README demo](https://github.com/user-attachments/assets/f6ff9fae-f33d-4f68-bd54-f3ed4ba6473b) (5 s) | a real product screen, typed into on a dark field: show the product, not a mock-up |
 | [`style-4-prod` render](https://github.com/heygen-com/hyperframes/blob/main/packages/producer/tests/style-4-prod/output/output.mp4) (17 s, 1920x1080) | the main frame beside a short labelled callout that slides in |
 | [`style-5-prod` render](https://github.com/heygen-com/hyperframes/blob/main/packages/producer/tests/style-5-prod/output/output.mp4) (19 s, 1920x1080) | a typed mono intro line, then one large caption per beat |
+
+## Animation library
+
+`assets/gsap-3.14.2.min.js` is GSAP 3.14.2, copied byte for byte (sha256
+`c174bfce…8280`). Its own header keeps the copyright line and points to its
+licence, the GSAP Standard "no charge" License (https://gsap.com/standard-license).
+That licence allows commercial use, and it costs nothing.
