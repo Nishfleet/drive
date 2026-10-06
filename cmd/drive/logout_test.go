@@ -150,9 +150,15 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	if err == nil {
 		t.Fatal("logout must fail, not claim a clean sign-out, when the key is still live")
 	}
-	const sentence = "signed out here; the key is still live, run drive logout again when online"
+	const sentence = "signed out here; the key is still live"
 	if !strings.Contains(err.Error(), sentence) {
 		t.Errorf("error %q must say %q plainly", err, sentence)
+	}
+	// The state is one line and the retry is the next one: the table entry has
+	// to keep both, because "do X again" is the only useful half of the
+	// message for the person reading it.
+	if !strings.Contains(err.Error(), "Run `drive logout` again when you are online") {
+		t.Errorf("error %q must name the next step on its own line", err)
 	}
 	if strings.Contains(err.Error(), testStorage().SecretKey) {
 		t.Errorf("error %q carries the secret", err)
@@ -170,8 +176,11 @@ func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	if err == nil {
 		t.Fatal("a key that cannot be revoked must not read as a clean sign-out")
 	}
-	if !strings.Contains(err.Error(), "signed out here; the key is still live, run drive logout again when online") {
+	if !strings.Contains(err.Error(), "signed out here; the key is still live") {
 		t.Errorf("error %q must carry the plain sentence", err)
+	}
+	if !strings.Contains(err.Error(), "Run `drive logout` again when you are online") {
+		t.Errorf("error %q must name the retry on its own line", err)
 	}
 	if !strings.Contains(err.Error(), "DRIVE_API_URL") {
 		t.Errorf("error %q must name what to configure", err)
@@ -245,8 +254,11 @@ func TestLogoutBinaryExitsNonZeroWhenTheKeyCannotBeRevoked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want a non-zero exit when the key cannot be revoked, got 0 with output:\n%s", out)
 	}
-	if !strings.Contains(string(out), "signed out here; the key is still live, run drive logout again when online") {
+	if !strings.Contains(string(out), "signed out here; the key is still live") {
 		t.Errorf("output does not say the key is still live:\n%s", out)
+	}
+	if !strings.Contains(string(out), "next: Run `drive logout` again when you are online") {
+		t.Errorf("output does not name the next step:\n%s", out)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
 		t.Error("the local key must still be deleted on the failing path")
@@ -395,7 +407,10 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 // The issue's own advice is "run drive logout again when online". This proves
 // what that run does now: it cannot revoke (the secret went with the key), so
 // it must keep saying the key is live and must never print a clean sign-out
-// over it. A later logout that does have a key clears the receipt.
+// over it. A later logout that does have a key clears the receipt. The
+// sentence it keeps saying is revokeWarning, which is read straight out of
+// the message table so this test cannot pass on a wording the table no longer
+// carries.
 func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	home := configOnlyHome(t)
 	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
