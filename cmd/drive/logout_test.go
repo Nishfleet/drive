@@ -285,10 +285,14 @@ func TestLogoutBinaryExitsZeroWhenTheServerRevokesTheKey(t *testing.T) {
 // TestLogoutStopsALiveMount is the end-to-end proof: a real rclone mount, a
 // file written and uploaded, then `drive logout` — after which the mount is
 // down, the key is revoked on the stand-in key server and the config is gone.
-// It runs in the same namespace trick the mount proof uses, so it skips where
-// FUSE is refused rather than failing every PR.
+// Under CI=true a refused FUSE mount is a failure (drive#501). A local -short
+// run still skips it. The worker App cannot add a workflow step, so CI runs
+// this proof inside the go job's -short unit tests.
 func TestLogoutStopsALiveMount(t *testing.T) {
-	if testing.Short() {
+	// The worker App cannot add a workflow step (drive#392), so this proof
+	// runs in the go job's -short unit tests when CI is set, instead of as its
+	// own named step. A local -short run still skips it, and CI=false is not CI.
+	if testing.Short() && os.Getenv("CI") != "true" {
 		t.Skip("live-mount proof skipped in -short mode")
 	}
 
@@ -365,7 +369,7 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	}()
 
 	if !waitForMount(t, cmd, mountDir) {
-		t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+		skipNoMount(t, "this host does not permit an unprivileged FUSE mount on %s; "+
 			"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run TestLogoutStopsALiveMount", mountDir)
 	}
 
