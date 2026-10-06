@@ -268,12 +268,12 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
     ["restore.md", "src/files.js", "TRASH_PURGE_SCHEDULE"],
     ["secrets-rotation.md", "src/meter.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "src/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
-    ["secrets-rotation.md", "cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
+    ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];
-  for (const [runbook, source, readOnly, ...symbols] of claims) {
-    // readOnly marks a claim that the source must still carry the symbol it
-    // cites; the runbook text and the source text are both checked, so a
-    // rename in either fails here instead of misleading an operator.
+  for (const [runbook, source, ...symbols] of claims) {
+    // Both texts are checked: the runbook must still name the symbol, and the
+    // source must still carry it, so a rename in either fails here instead of
+    // misleading an operator.
     const sourceText = readRepo(source);
     const runbookText = readRepo("docs/runbooks/" + runbook);
     for (const symbol of symbols) {
