@@ -305,7 +305,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // The hourly trip carries both bindings (drive#655): the meter's own ledger
+  // and the drive database whose file_versions rows and cap keys the pre-charge
+  // sweep needs. An env with only METER_DB fails the trigger the same way a
+  // misconfigured Worker does, so the test proves nothing about the draw.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);

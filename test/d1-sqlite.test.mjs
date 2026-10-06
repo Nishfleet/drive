@@ -192,6 +192,43 @@ test("an INSERT ... RETURNING comes back as the row it wrote, under both adapter
   }
 });
 
+test("both stand-ins bind a value the way D1's conversion table does", async () => {
+  // One table, in one place (test/d1-sqlite.mjs `d1BindValue`), so the meter's
+  // adapter and the drive-side harness cannot bind one value two ways. The
+  // types node:sqlite takes on its own are the trap: it stores a `Date` as
+  // NULL, which is a write D1 refuses to send (drive#579).
+  /** @type {[string, D1Database][]} */
+  const adapters = [
+    ["harness", createTestD1()],
+    ["meter adapter", makeMeteredDB().db],
+  ];
+  for (const [name, db] of adapters) {
+    /**
+     * The value a bind comes back as, through one `SELECT ?1`.
+     * @param {unknown} value
+     */
+    const bound = async (value) => {
+      const row = await db.prepare("SELECT ?1 AS v").bind(value).first();
+      return /** @type {{v: unknown}} */ (row).v;
+    };
+    assert.equal(await bound(true), 1, `${name} did not cast a boolean to D1's INTEGER`);
+    assert.equal(await bound(false), 0, `${name} did not cast a boolean to D1's INTEGER`);
+    assert.equal(await bound("x"), "x", `${name} rebinding a string`);
+    assert.equal(await bound(42), 42, `${name} rebound a number`);
+    assert.equal(await bound(null), null, `${name} rebound null`);
+    await assert.rejects(
+      () => db.prepare("SELECT ?1 AS v").bind(undefined).first(),
+      /D1_TYPE_ERROR/,
+      `${name} must refuse an undefined bind the way D1 refuses it`,
+    );
+    await assert.rejects(
+      () => db.prepare("SELECT ?1 AS v").bind(new Date(1_800_000_000_000)).first(),
+      /D1_TYPE_ERROR/,
+      `${name} must refuse a Date bind the way D1 refuses it`,
+    );
+  }
+});
+
 test("the harness's default schema and the meter adapter's are the same schema", () => {
   /**
    * @param {{prepare(sql: string): {all(): Record<string, unknown>[]}}} sqlite

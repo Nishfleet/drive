@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
-import { applyMigrations, MIGRATION_FILES } from "./d1-sqlite.mjs";
+import { applyMigrations, d1BindValue, MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
  * Every migration in `migrations/drive/`, in the order the deploy applies them
@@ -48,46 +48,24 @@ export const TEST_BASE_URL = "https://drive.test";
 /** @typedef {import("node:sqlite").SQLInputValue} SQLInputValue */
 
 /**
- * The bind values D1 accepts, turned into what it stores, and everything else
- * refused the way D1 refuses it.
+ * D1's write conversion table, shared with the meter's adapter rather than
+ * written a second time here (test/d1-sqlite.mjs `d1BindValue`): null, a
+ * number, a string and a blob pass through, a boolean becomes the INTEGER 1 or
+ * 0 it reads back as, and `undefined` and every other type raise the
+ * D1_TYPE_ERROR the real binding raises.
  *
- * D1's own conversion table (developers.cloudflare.com/d1/worker-api/, "Type
- * conversion") is the whole contract, and this function is that table and
- * nothing else: null, a number, a string and a blob pass through, a boolean
- * becomes the INTEGER 1 or 0 it reads back as, and `undefined` and every other
- * type raise the D1_TYPE_ERROR the real binding raises.
- *
- * The two this adapter used to accept silently are the ones that cost a test
- * its meaning (drive#579). Coercing a `Date` to epoch millis let code that
- * binds an instant run green here and throw D1_TYPE_ERROR on every request in
- * production, and turning `undefined` into NULL let a statement write a NULL
- * into a NOT NULL column here that production refuses to send at all. A
- * harness that is stricter than the database it stands in for is safe; one
- * that is laxer is the bug.
+ * The two this adapter used to accept silently are the ones that cost a test its
+ * meaning (drive#579). Coercing a `Date` to epoch millis let code that binds an
+ * instant run green here and throw D1_TYPE_ERROR on every request in production
+ * — node:sqlite itself would have written a NULL — and turning `undefined` into
+ * NULL let a statement write a NULL into a NOT NULL column here that production
+ * refuses to send at all. A harness that is stricter than the database it stands
+ * in for is safe; one that is laxer is the bug.
  *
  * @param {unknown} value
  * @returns {SQLInputValue}
  */
-function sqliteValue(value) {
-  if (typeof value === "boolean") {
-    // Footnote 3 of that table: a boolean is cast to an INTEGER, 1 for true.
-    return value ? 1 : 0;
-  }
-  if (
-    value === null ||
-    typeof value === "number" ||
-    typeof value === "string" ||
-    value instanceof ArrayBuffer ||
-    ArrayBuffer.isView(value)
-  ) {
-    return /** @type {SQLInputValue} */ (value);
-  }
-  // The name D1 uses, so a test that trips this reads like the production
-  // error rather than like a helper's own wording.
-  throw new TypeError(
-    `D1_TYPE_ERROR: Type '${value instanceof Date ? "Date" : typeof value}' not supported for value '${String(value)}'`,
-  );
-}
+const sqliteValue = (value) => /** @type {SQLInputValue} */ (d1BindValue(value));
 
 /**
  * D1 numbered placeholders (`?1`, `?2`, …) as node:sqlite can bind them.

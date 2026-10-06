@@ -94,12 +94,52 @@ function expandBoundValues(sql, bound) {
 }
 
 /**
+ * D1's write conversion table (developers.cloudflare.com/d1/worker-api/, "Type
+ * conversion"), and nothing else: null, a number, a string and a blob pass
+ * through, a boolean becomes the INTEGER 1 or 0 it reads back as, and
+ * `undefined` and every other type raise the D1_TYPE_ERROR the real binding
+ * raises.
+ *
+ * BOTH stand-ins call this, so one value cannot bind one way through the meter's
+ * adapter and another way through test/harness.mjs. node:sqlite happily stores
+ * a `Date` as NULL, which is the "the stand-in accepts what D1 refuses" bargain
+ * this table removes (drive#579): the adapter answers in D1's own words instead
+ * of writing a NULL no production query would ever write.
+ *
+ * @param {unknown} value
+ * @returns {any}
+ */
+export function d1BindValue(value) {
+  if (typeof value === "boolean") {
+    // Footnote 3 of that table: a boolean is cast to an INTEGER, 1 for true.
+    return value ? 1 : 0;
+  }
+  if (
+    value === null ||
+    typeof value === "number" ||
+    typeof value === "string" ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  ) {
+    return value;
+  }
+  // The name D1 uses, so a test that trips this reads like the production error
+  // rather than like a helper's own wording.
+  throw new TypeError(
+    `D1_TYPE_ERROR: Type '${value instanceof Date ? "Date" : typeof value}' not supported for value '${String(value)}'`,
+  );
+}
+
+/**
  * @param {string} sql
  * @param {any[]} bound
  * @returns {{sql: string, bound: any[]}}
  */
 function bindForNodeSqlite(sql, bound) {
-  return { sql: anonymousPlaceholders(sql), bound: expandBoundValues(sql, bound) };
+  return {
+    sql: anonymousPlaceholders(sql),
+    bound: expandBoundValues(sql, bound).map(d1BindValue),
+  };
 }
 
 // The StatementSync methods that take bound values. The raw handle's wrapper
@@ -381,7 +421,8 @@ function makeMeteredDB(onQuery) {
         }
         if (typeof property === "string" && BOUND_METHODS.includes(property)) {
           /** @param {any[]} values */
-          return (...values) => member.apply(target, expandBoundValues(sql, values));
+          return (...values) =>
+            member.apply(target, expandBoundValues(sql, values).map(d1BindValue));
         }
         return member.bind(target);
       },
