@@ -30,9 +30,10 @@
 -- proposed: `wrangler d1 migrations apply` walks the directory in a
 -- full-filename sort (test/d1-sqlite.mjs `orderMigrationFiles`), so a file that
 -- sorts BEFORE one already applied makes the deploy refuse, which takes the
--- whole production deploy down. 0026_signin_address_sends.sql already owns
--- 0026, and 0027 through 0030 are taken (0027_device_queue_reports,
--- 0029_welcome_sent_at, 0030_branch_jobs). drive#619's gate
+-- whole production deploy down. 0026_signin_address_sends.sql owns 0026,
+-- 0027_device_queue_reports.sql owns 0027, 0029_welcome_sent_at.sql and
+-- 0030_branch_jobs.sql are on disk, and 0028 is a gap a new file must not
+-- fill (it would sort before already-applied 0029/0030). drive#619's gate
 -- (test/migrations.test.mjs) fails a new file that shares a prefix with
 -- another, so the marker takes 0031 and nothing else can race it.
 --

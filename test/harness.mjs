@@ -102,10 +102,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // on every row, so any test that writes a device row needs the migration
   // applied -- the harness runs the real migrations, so this is the whole fix.
   // Numbered 0031, not the 0022 the issue proposed: 0026_signin_address_sends
-  // already owns 0026, and 0027 through 0030 are taken. `wrangler d1 migrations
-  // apply` applies the directory in a full-filename sort, so a prefix that
-  // sorts before one already applied would refuse the deploy, and drive#619's
-  // duplicate-prefix gate fails any new file that shares a number.
+  // owns 0026, 0027_device_queue_reports owns 0027, and 0029_welcome_sent_at
+  // plus 0030_branch_jobs (already in this list, above) are on disk. 0028 is a
+  // gap. A new 0028 would sort before already-applied 0029/0030 and refuse the
+  // deploy. 0029 is not in this short list because put() and the cap path do
+  // not write welcome_sent_at. drive#619's gate fails a new shared prefix.
   "drive/0031_capped_reason.sql",
 ]);
 

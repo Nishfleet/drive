@@ -387,14 +387,13 @@ export async function applyCapSwap(plan, provider) {
         : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
-    // The reason this swap records, on the row the swap leaves live. A freeze
-    // names the cap that took the key down; a raise names nothing, and the
-    // store writes that as no reason recorded (drive#661). A hand-built plan
-    // that leaves the field out is the same as a raise's null here.
-    const reason = /** @type {{cappedReason?: string|null}} */ (swap).cappedReason;
+    // This module's freeze always names the spending cap. A hand-built plan
+    // cannot write a different word: the sweep's `pre-charge-limit` belongs
+    // with drive#655, and a raise names nothing (drive#661).
+    const reason = plan.state === "read_only" ? SPEND_CAP_REASON : null;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
-        // The provider's own swap is handed the keyId and the swap's own
+        // The provider's own swap is handed the keyId and this freeze's
         // reason, and it re-derives the scope from the row it is replacing
         // (core/devices.js `swapToReadOnly` mints in
         // `bucketForKeyPrefix(accountId, prefix)`), so the bucket the row was

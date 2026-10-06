@@ -332,9 +332,10 @@ test("a device row written before the column existed still reads with no reason"
   const [key] = await store.listCapKeys(account.id);
   assert.equal(key.keyId, "key_old");
   assert.deepEqual([...key.capabilities], ["list", "read", "write", "delete"]);
-  // Compared without a spread because `cappedFrom` is the one optional field on
-  // a row the cap reads: the old insert left it set, and if the schema read
-  // stopped carrying it the assert fails on `undefined` either way.
+  // Compared without a spread because `cappedFrom` and `cappedReason` are both
+  // optional on a row the cap reads: the old insert left cappedFrom set and
+  // named no cappedReason, and if the schema read stopped carrying either the
+  // assert fails on `undefined`.
   assert.deepEqual(key.cappedFrom, ["list", "read", "write", "delete"]);
   assert.equal(Object.hasOwn(key, "cappedReason"), false, "no reason, not an empty string");
   assert.equal(

@@ -23,9 +23,11 @@
  * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>}} AccountKeyProvider
  *
  * @typedef {object} KeyProvider
- * @property {(scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedCredential>} mint
+ * @property {(scope: KeyScope, options?: {expiresAt?: number|null, cappedReason?: string|null}) => Promise<MintedCredential>} mint
  *   `options.expiresAt` is the epoch second a credential bounded by a clock
- *   stops at, and a provider whose vendor expires keys takes it
+ *   stops at, and a provider whose vendor expires keys takes it.
+ *   `options.cappedReason` is ignored here: a raw storage provider persists
+ *   no rows. AccountKeyProvider writes the marker on the devices row.
  * @property {(keyId: string) => Promise<void>} [revoke] withdraws the
  *   credential at the provider, so a revoked row is also a key that stops
  *   working (drive#371). A provider whose credential is bounded anyway — an STS
