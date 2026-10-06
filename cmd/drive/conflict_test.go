@@ -501,21 +501,17 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("polling pass: %v", err)
 	}
-	// A win poll hashes once, then vfs/forget and hashes again so a stale
-	// VFS cache cannot hide an overwrite. The bound is still conflictPollMax
-	// paths; each path costs two hashsum calls.
-	const hashesPerWinPoll = 2
-	if f.hashCalls != hashesPerWinPoll*conflictPollMax {
-		t.Fatalf("the pass hashed %d times, want %d (%d paths × %d hashes)", f.hashCalls, hashesPerWinPoll*conflictPollMax, conflictPollMax, hashesPerWinPoll)
+	if f.hashCalls != conflictPollMax {
+		t.Fatalf("the pass polled %d paths, want the bound %d", f.hashCalls, conflictPollMax)
 	}
 	// The first hundred in first-sight order were polled; the tail was not.
 	for i, name := range g.order {
-		want := hashesPerWinPoll
+		want := 1
 		if i >= conflictPollMax {
 			want = 0
 		}
 		if got := f.pollCounts[name]; got != want {
-			t.Fatalf("save %d was hashed %d times after one pass, want %d", i, got, want)
+			t.Fatalf("save %d was polled %d times after one pass, want %d", i, got, want)
 		}
 	}
 	// The second pass resumes from where the first stopped: the tail gets
@@ -524,8 +520,8 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("second polling pass: %v", err)
 	}
-	if f.hashCalls != 2*hashesPerWinPoll*conflictPollMax {
-		t.Fatalf("two passes hashed %d times, want %d", f.hashCalls, 2*hashesPerWinPoll*conflictPollMax)
+	if f.hashCalls != 2*conflictPollMax {
+		t.Fatalf("two passes polled %d paths, want %d", f.hashCalls, 2*conflictPollMax)
 	}
 	// Every path has now been polled, each as often as its window says,
 	// and no path has been polled twice while another waited: the head's
@@ -535,11 +531,11 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 		if save == nil {
 			t.Fatalf("%s dropped early", name)
 		}
-		if save.winPolls*hashesPerWinPoll != f.pollCounts[name] {
+		if save.winPolls != f.pollCounts[name] {
 			t.Fatalf("save %d: %d win polls against %d remote hashes", i, save.winPolls, f.pollCounts[name])
 		}
-		if i >= conflictPollMax && f.pollCounts[name] != hashesPerWinPoll {
-			t.Fatalf("save %d in the tail was hashed %d times, want %d: the second pass resumed past the head instead of repeating it", i, f.pollCounts[name], hashesPerWinPoll)
+		if i >= conflictPollMax && f.pollCounts[name] != 1 {
+			t.Fatalf("save %d in the tail was polled %d times, want 1: the second pass resumed past the head instead of repeating it", i, f.pollCounts[name])
 		}
 	}
 }
@@ -690,10 +686,13 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 	}
 
 	// The rest: this device's files are gone from the machine and the other
-	// device's saves have landed on every one of them. Nothing can be
-	// written for them, so each is named once and dropped — and no pass
-	// errors, which is the point: the guard keeps up without ever failing.
+	// device's saves have landed on every one of them. The hold snapshots
+	// are dropped first so this is a true "nothing left to write", not a
+	// claim-from-hold. Each is named once and dropped — and no pass errors.
 	for i := wave; i < total; i++ {
+		if save := g.seen[name(i)]; save != nil {
+			save.dropHold()
+		}
 		if err := os.Remove(filepath.Join(mountDir, filepath.FromSlash(name(i)))); err != nil {
 			t.Fatal(err)
 		}
@@ -1595,6 +1594,7 @@ func TestConflictGuardNamesASaveGoneBeforeTheClaim(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
+	g.seen["report.txt"].dropHold()
 	if err := os.Remove(filepath.Join(mountDir, "report.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -1612,6 +1612,35 @@ func TestConflictGuardNamesASaveGoneBeforeTheClaim(t *testing.T) {
 	}
 	if len(g.seen) != 0 {
 		t.Errorf("still watches %v", g.seen)
+	}
+}
+
+// TestConflictGuardClaimsFromHoldAfterMountIsGone proves rclone dropping the
+// mount view is not a lost save: the hold snapshot taken at sight is copied.
+func TestConflictGuardClaimsFromHoldAfterMountIsGone(t *testing.T) {
+	g, mountDir, f := guardFor(t, "mac", map[string]string{"report.txt": "this device's save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	if g.seen["report.txt"] == nil || g.seen["report.txt"].holdPath == "" {
+		t.Fatal("the save was not snapshotted at sight")
+	}
+	if err := os.Remove(filepath.Join(mountDir, "report.txt")); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("the other device's save\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the mount path was gone: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if got := f.objects[want]; got != md5Hex("this device's save\n") {
+		t.Errorf("the conflict copy holds %q, want the bytes snapshotted at sight", got)
+	}
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
 	}
 }
 
