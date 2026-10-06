@@ -151,6 +151,7 @@ func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
 		Runner:   &recordingRunner{},
 		LookPath: func(name string) (string, error) { return "/fake/" + name, nil },
 	}.withDefaults()
+	stubAgentPath(t)
 	out := captureStdout(t, func() {
 		if err := initAgents(env); err != nil {
 			t.Fatal(err)

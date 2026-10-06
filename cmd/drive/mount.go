@@ -77,6 +77,11 @@ type MountPlan struct {
 	// SecretKey is the storage secret passed at mount time through
 	// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY, never written into rclone.conf.
 	SecretKey string
+	// EnvPath is the 0600 EnvironmentFile the login item reads. Empty means
+	// rclone.env beside ConfigPath, which is the device mount's own. The
+	// agent path writes a file of its own so systemd never loads the device
+	// secret into a process that must hold the agent key (drive#514).
+	EnvPath string
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
@@ -486,7 +491,14 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), systemdCommandLine(p))
+}
+
+func (p MountPlan) envFile() string {
+	if p.EnvPath != "" {
+		return p.EnvPath
+	}
+	return filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads

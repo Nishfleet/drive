@@ -30,9 +30,11 @@ func accessClaude(env Env) error {
 // inside the drive folder (see grantClaudeDrive below).
 const claudeSettingsPath = ".claude/settings.json"
 
-// grantClaudeDrive adds the drive folder to Claude Code's user-level
+// grantClaudeDrive adds the tool's agent path to Claude Code's user-level
 // permissions.additionalDirectories, creating the settings file when absent and
-// keeping every existing setting. It is idempotent: a second run changes nothing.
+// keeping every existing setting. A previously granted person's Drive folder is
+// dropped, because that mount holds the key that can delete (drive#514). It is
+// idempotent: a second run changes nothing.
 //
 // The additionalDirectories setting makes Claude's built-in file tools (Bash,
 // Read, Edit) treat the listed directories as allowed. However, it does NOT
@@ -60,12 +62,37 @@ func grantClaudeDrive(env Env) error {
 	if err != nil {
 		return fmt.Errorf("%s permissions.additionalDirectories: %w", path, err)
 	}
+	folder := env.AgentDir
+	if folder == "" {
+		folder = env.DriveDir
+	}
+	out := make([]string, 0, len(dirs)+1)
+	seen := false
 	for _, d := range dirs {
-		if d == env.DriveDir {
-			return nil // already granted, nothing to write
+		if d == env.DriveDir && env.DriveDir != folder {
+			continue
+		}
+		if d == folder {
+			seen = true
+		}
+		out = append(out, d)
+	}
+	if !seen {
+		out = append(out, folder)
+	}
+	if len(out) == len(dirs) {
+		same := true
+		for i := range out {
+			if out[i] != dirs[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return nil
 		}
 	}
-	perms["additionalDirectories"] = append(dirs, env.DriveDir)
+	perms["additionalDirectories"] = out
 	return writeJSONObject(path, doc)
 }
 
@@ -125,9 +152,7 @@ func noteBody(env Env) string {
 		"# This is the drive\n\n" +
 		"The user's drive is `" + env.DriveDir + "`, synced to every device and\n" +
 		"agent. The `drive` MCP server reads and writes `" + env.AgentDir + "`, the\n" +
-		"folder the mount for this tool serves, so work here. The storage key\n" +
-		"behind this folder cannot delete, and a delete asked for any other way\n" +
-		"is refused by storage, and start the\n" +
+		"folder the mount for this tool serves, so work here, and start the\n" +
 		"session in this folder so the server is allowed to serve it.\n\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve` when\n" +
 		"  the changes are ready to copy back.\n"

@@ -212,12 +212,15 @@ func initAgents(env Env, apiBase ...string) error {
 		}
 		// The tool's own path, mounted before Connect: the MCP server the
 		// command registers points at it, so it has to exist first.
-		if err := mountAgentPath(env, t); err != nil {
+		dir, err := startToolAgentPath(env, t)
+		if err != nil {
 			printToolFailure(t.Name, err)
 			failed++
 			continue
 		}
-		env.AgentDir = AgentMountDir(env.Home, t.Name)
+		if dir != "" {
+			env.AgentDir = dir
+		}
 		if err := t.Connect(env); err != nil {
 			printToolFailure(t.Name, err)
 			failed++
@@ -235,7 +238,7 @@ func initAgents(env Env, apiBase ...string) error {
 			// point - an agent key can never delete. The hour is the other
 			// half of that key's promise (issue #106): it is an instant the
 			// api Worker renews while the tool uses it.
-			fmt.Printf("  %-8s connected (key: %s, never delete, %s)\n",
+			fmt.Printf("  %-8s connected (key: %s, %s)\n",
 				t.Name, strings.Join(key.Capabilities, ", "), expiryLabel(key.ExpiresAt))
 		}
 		connected++
@@ -250,35 +253,53 @@ func initAgents(env Env, apiBase ...string) error {
 	return nil
 }
 
-// mountAgentPath starts the tool's agent path: its own rclone mount, holding
+// startToolAgentPath mounts the tool's agent path and returns the directory
+// Connect should point the tool at. An empty directory means keep DriveDir
+// (Windows, or a tool with no key). Tests replace this so they can prove the
+// connect wiring without a FUSE mount.
+var startToolAgentPath = startToolAgentPathLive
+
+func startToolAgentPathLive(env Env, t Tool) (string, error) {
+	return agentPathForGOOS(CurrentGOOS(), env, t)
+}
+
+// agentPathForGOOS starts the tool's agent path: its own rclone mount, holding
 // the tool's own key (agentmount.go, drive#514). It is called once the tool's
 // key is on disk and just before Connect, because Connect points the tool's
 // MCP server and its allowed folder at the path.
 //
 // A path that does not come up is a named failure printed for that tool alone,
 // never a fall back to the person's drive folder: the whole point of the path
-// is that the mount holds the key that cannot delete, and the person's folder
-// is mounted with the key that can.
-func mountAgentPath(env Env, t Tool) error {
+// is that the mount holds the key storage already bounds. Windows has no
+// proven agent mount, so the tool keeps working in the person's drive folder
+// and the named failure is printed as a note.
+func agentPathForGOOS(goos string, env Env, t Tool) (string, error) {
+	if goos == "windows" {
+		fmt.Println("note:", failf("agent-path-windows", t.Name).Error())
+		return "", nil
+	}
 	key, err := agentKeyFor(env.Home, t.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if key == nil {
-		return nil
+		return "", nil
 	}
 	device, err := LoadStorageConfig("", "", "", "", "", "", storageFromDisk(env.Home))
 	if err != nil {
-		return failDetail("missing-config", err)
+		return "", failDetail("missing-config", err)
 	}
 	if strings.TrimSpace(device.Endpoint) == "" || strings.TrimSpace(device.Bucket) == "" {
-		return fail("login-no-storage")
+		return "", failf("missing-config", "endpoint and bucket")
 	}
 	rclone, err := ResolveRclone("")
 	if err != nil {
-		return err
+		return "", err
 	}
-	return mountAgentPaths(CurrentGOOS(), env.Home, rclone, t.Name, device, *key, false)
+	if err := mountAgentPaths(goos, env.Home, rclone, t.Name, device, *key, false); err != nil {
+		return "", err
+	}
+	return AgentMountDir(env.Home, t.Name), nil
 }
 
 // printToolFailure prints one agent-tool failure the same way main prints
@@ -440,17 +461,30 @@ func agents(env Env, positional []string, apiBase ...string) error {
 				return err
 			}
 		}
-		if err := mountAgentPath(env, t); err != nil {
+		dir, err := startToolAgentPath(env, t)
+		if err != nil {
 			return err
 		}
-		env.AgentDir = AgentMountDir(env.Home, t.Name)
+		if dir != "" {
+			env.AgentDir = dir
+		}
 		if err := t.Connect(env); err != nil {
 			return err
 		}
-		fmt.Printf("%s connected to %s (%s)\n", t.Name, AgentMountDir(env.Home, t.Name), where)
+		wherePath := env.AgentDir
+		if wherePath == "" {
+			wherePath = env.DriveDir
+		}
+		fmt.Printf("%s connected to %s (%s)\n", t.Name, wherePath, where)
 		return nil
 	}
-	// Revoke the key server-side first: the local copy is only deleted once
+	// Stop the agent path first, then revoke the key: a revoked agent's path
+	// must stop being readable even if the withdrawal at the provider takes a
+	// moment (agentmount.go UnmountAgent).
+	if err := UnmountAgent(CurrentGOOS(), env.Home, t.Name); err != nil {
+		return err
+	}
+	// Then revoke the key server-side: the local copy is only deleted once
 	// the api Worker says the key is dead, so a failed revoke leaves a key
 	// that still works rather than a key nothing can revoke. A tool with no
 	// stored key (never connected with a signed-in device) has nothing to

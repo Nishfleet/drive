@@ -10,6 +10,8 @@ the live site.
 
 ## 2026-10-06
 
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states

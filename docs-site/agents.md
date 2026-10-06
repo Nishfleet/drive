@@ -17,13 +17,10 @@ drive init
 
 ## Each tool gets its own folder
 
-Every agent key has three permissions: list, read and write. There is no
-delete on it, so the storage itself refuses a delete an agent asks for.
-
 `drive init` mounts `~/Drive-agents/<tool>` for each tool on that tool's own
 key. The MCP server and the tool's allowed folders point at that folder, not at
-the folder you use, so the agent writes where the storage already bounds it and
-your own files are not in the way.
+the folder you use, so the agent works through its own credential and your own
+files are not in the way.
 
 ```sh
 ls ~/Drive-agents
@@ -76,8 +73,8 @@ An agent can create, change and rename anything in your Drive. {{AGENT_DELETE}}
 `drive branch <folder>` creates a server-side copy of that folder for an agent
 to work in. The branch takes the folder's name, or `--name <n>`. The agent gets a
 **branch key** made for the branch's own prefix:
-`u/<your-id>/.branches/<branch-name>/`. It can read and write, and it has no
-delete, so storage refuses its deletes. {{BRANCH_REACH}}
+`u/<your-id>/.branches/<branch-name>/`. It can read and write, and its deletes
+follow the same rule as a regular agent key. {{BRANCH_REACH}}
 
 Since a branch is a full copy, it counts against your storage until you
 discard or approve it. Measured branch times for large folders are on the

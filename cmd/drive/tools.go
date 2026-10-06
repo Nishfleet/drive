@@ -356,8 +356,8 @@ func (t Tool) Connect(env Env) error {
 	// tools run it on registration to report a live status: claude mcp get said
 	// "Failed to connect" until the folder existed (seen on this host
 	// 2026-09-30). Create it before the tool is pointed at it.
-	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
-		return failDetail("drive-folder", err, env.DriveDir)
+	if err := os.MkdirAll(env.AgentDir, 0o755); err != nil {
+		return failDetail("drive-folder", err, env.AgentDir)
 	}
 	// The skill note goes first. A note with no registration is recoverable
 	// (the next `drive init` finds the tool and registers it), while a tool
@@ -388,7 +388,7 @@ func (t Tool) Connect(env Env) error {
 // runAdd runs the tool's add command, replacing an existing entry when the
 // tool refuses to overwrite one (claude says "already exists in user config").
 func (t Tool) runAdd(env Env, keyArg string) error {
-	argv := expand(t.Add, env.DriveDir, keyArg)
+	argv := expand(t.Add, env.AgentDir, keyArg)
 	out, err := env.Runner.Run(t.Name, argv...)
 	if err == nil {
 		return nil

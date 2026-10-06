@@ -210,6 +210,27 @@ func TestConnectFailsLoudlyWhenAccessCannotBeGranted(t *testing.T) {
 	}
 }
 
+func TestGrantClaudeDriveDropsThePersonsDriveFolder(t *testing.T) {
+	env, _ := testEnv(t)
+	env.AgentDir = filepath.Join(env.Home, "Drive-agents", "claude")
+	settings := filepath.Join(env.Home, claudeSettingsPath)
+	writeFile(t, settings, `{
+  "permissions": {
+    "additionalDirectories": ["`+env.DriveDir+`"]
+  }
+}`)
+	if err := grantClaudeDrive(env); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, settings)
+	if strings.Contains(got, `"`+env.DriveDir+`"`) {
+		t.Fatalf("the person's drive is still granted:\n%s", got)
+	}
+	if !strings.Contains(got, `"`+env.AgentDir+`"`) {
+		t.Fatalf("the agent path is not granted:\n%s", got)
+	}
+}
+
 func TestConnectClaudeWritesBothAccessGrants(t *testing.T) {
 	// claude's Access is the only one that must do two things: the settings
 	// entry for its built-in file tools, and the CLAUDE.md note a session

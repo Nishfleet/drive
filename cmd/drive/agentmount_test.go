@@ -6,31 +6,66 @@ import (
 	"testing"
 )
 
-// TestAgentMountPlanCarriesTheAgentKey holds the agent path's plan to the
-// tool's own key and to nothing else (drive#514): the plan's remote carries the
-// agent key id, the device mount's credential files are never in argv, and
-// there is no remote control because the agent path runs no background loops.
-func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
-	_, _ = testEnv(t)
-	home := t.TempDir()
-	key := MintedKey{
+func stubAgentPath(t *testing.T) {
+	t.Helper()
+	orig := startToolAgentPath
+	startToolAgentPath = func(env Env, tool Tool) (string, error) {
+		return AgentMountDir(env.Home, tool.Name), nil
+	}
+	t.Cleanup(func() { startToolAgentPath = orig })
+}
+
+func testAgentKey() agentKey {
+	return agentKey{
 		KeyID:        "key-agent-1",
 		AccessKeyID:  "AKIACLAUDE",
 		Secret:       "s3cr3t-value",
 		Capabilities: []string{"list", "read", "write"},
 		Endpoint:     "https://s3.example.invalid",
 		Bucket:       "drive-standin",
+		Prefix:       "u/acct/",
+		Region:       "us-east-1",
 	}
-	device, err := LoadStorageConfig(key.Endpoint, key.Bucket, "", "", "", key.Secret, StorageConfig{AccessKey: key.AccessKeyID})
-	if err != nil {
-		t.Fatal(err)
+}
+
+func testDeviceConfig() StorageConfig {
+	return StorageConfig{
+		Endpoint:  "https://s3.example.invalid",
+		AccessKey: "DEVICEAK",
+		SecretKey: "devicesecret",
+		Bucket:    "drive-standin",
+		Prefix:    "u/acct/",
+		Region:    "us-east-1",
 	}
-	p := BuildAgentMountPlan("linux", home, "/usr/bin/rclone", "claude", device)
+}
+
+// TestAgentMountPlanCarriesTheAgentKey holds the agent path's plan to the
+// tool's own key and to nothing else (drive#514): the plan's remote carries the
+// agent key id, the device mount's credential files are never in argv, and
+// there is no remote control because the agent path runs no background loops.
+func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
+	home := t.TempDir()
+	key := testAgentKey()
+	p := BuildAgentMountPlan("linux", home, "/usr/bin/rclone", "claude", AgentMountConfig(testDeviceConfig(), key))
+	if p.err != nil {
+		t.Fatalf("plan: %v", p.err)
+	}
 	if p.RcloneBin != "/usr/bin/rclone" {
 		t.Errorf("rclone bin = %q", p.RcloneBin)
 	}
 	if p.MountDir != AgentMountDir(home, "claude") {
 		t.Errorf("mount dir = %q, want %q", p.MountDir, AgentMountDir(home, "claude"))
+	}
+	if p.ConfigPath != AgentRcloneConfigPath(home) {
+		t.Errorf("config path = %q", p.ConfigPath)
+	}
+	if p.EnvPath != AgentRcloneEnvPath(home) {
+		t.Errorf("env path = %q, want the agent env file", p.EnvPath)
+	}
+	if p.Remote != "drive:drive-standin/u/acct" && p.Remote != "drive:drive-standin/u/acct/" {
+		if !strings.Contains(p.Remote, "drive-standin") || !strings.Contains(p.Remote, "u/acct") {
+			t.Errorf("remote = %q, want the agent prefix", p.Remote)
+		}
 	}
 	args := strings.Join(p.Args(), " ")
 	if strings.Contains(args, key.Secret) || strings.Contains(args, key.AccessKeyID) {
@@ -41,6 +76,29 @@ func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
 	}
 	if strings.Contains(args, "/rclone.conf") {
 		t.Errorf("argv names the device mount's config: %s", args)
+	}
+	if !strings.Contains(args, "agent-rclone.conf") {
+		t.Errorf("argv does not name the agent config: %s", args)
+	}
+	unit := SystemdUnit(p)
+	if !strings.Contains(unit, "agent-rclone.env") {
+		t.Errorf("systemd unit does not load the agent env file:\n%s", unit)
+	}
+	if strings.Contains(unit, filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")+"\n") ||
+		strings.Contains(unit, "EnvironmentFile="+filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")) {
+		if !strings.Contains(unit, "agent-rclone.env") {
+			t.Errorf("systemd unit loads the device rclone.env:\n%s", unit)
+		}
+	}
+}
+
+func TestAgentRcloneEnvCarriesRcloneOwnSecretName(t *testing.T) {
+	got := agentRcloneEnv(StorageConfig{SecretKey: "s3cr3t-value"})
+	if !strings.Contains(got, rcloneSecretEnv+"=") {
+		t.Fatalf("agent env file does not use rclone's own secret name:\n%s", got)
+	}
+	if strings.Contains(got, secretEnvName+"=") {
+		t.Fatalf("agent env file still uses the CLI's own name rclone does not read:\n%s", got)
 	}
 }
 
@@ -67,5 +125,16 @@ func TestAgentStateReportsMissingKey(t *testing.T) {
 	}
 	if bad.ConfigPath != AgentRcloneConfigPath(env.Home) {
 		t.Fatalf("a failed plan carries no config path: %+v", bad)
+	}
+}
+
+func TestWindowsAgentPathLeavesTheToolInTheDrive(t *testing.T) {
+	env, _ := testEnv(t)
+	dir, err := agentPathForGOOS("windows", env, Tool{Name: "claude"})
+	if err != nil {
+		t.Fatalf("windows must still connect: %v", err)
+	}
+	if dir != "" {
+		t.Fatalf("windows agent dir = %q, want empty so Connect keeps DriveDir", dir)
 	}
 }

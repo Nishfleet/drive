@@ -31,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -173,6 +172,7 @@ func BuildAgentMountPlan(goos, home, rcloneBin string, tool string, c StorageCon
 		Remote:      RemoteFor(c),
 		MountDir:    AgentMountDir(home, tool),
 		ConfigPath:  AgentRcloneConfigPath(home),
+		EnvPath:     AgentRcloneEnvPath(home),
 		CacheDir:    AgentCacheDir(home, tool),
 		CacheMax:    vfsCacheMaxValue,
 		LogPath:     AgentLogPath(home, tool),
@@ -240,7 +240,7 @@ func mountAgentPaths(goos, home, rcloneBin, tool string, device StorageConfig, k
 // secret under the name rclone itself reads (config.go), and nothing else.
 func agentRcloneEnv(c StorageConfig) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s=%s\n", secretEnvName, c.SecretKey)
+	fmt.Fprintf(&b, "%s=%s\n", rcloneSecretEnv, systemdEnvQuote(c.SecretKey))
 	if c.SessionToken != "" {
 		fmt.Fprintf(&b, "RCLONE_CONFIG_DRIVE_SESSION_TOKEN=%s\n", c.SessionToken)
 	}
@@ -422,8 +422,3 @@ const agentMountTimeoutSeconds = "60"
 // given before a start is reported as a failure. It is the same order the
 // device mount allows and it is a number this file owns.
 var mountWaitTimeout = 60 * time.Second
-
-// strconv is used by nothing in this file today and is here because the agent
-// path's log line reports the tool's index no tool will ever read. It is
-// imported rather than deleted so a future count line has one obvious home.
-var _ = strconv.Itoa

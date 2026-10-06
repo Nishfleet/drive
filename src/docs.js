@@ -221,7 +221,7 @@ export const FAQ = Object.freeze([
       "agent features: spending cap",
     ],
     answer: [
-      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
+      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own folder at ~/Drive-agents/<tool> on its own key.",
       "{{AGENT_DELETE}}",
       "The drive also carries a spending cap: the default is {{DEFAULT_CAP}} a month, you can change it on the usage page, and at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),

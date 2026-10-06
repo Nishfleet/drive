@@ -2056,7 +2056,7 @@ details p {
             <button type="button" data-agent="gemini" aria-pressed="false">Gemini</button>
             <button type="button" data-agent="kiro" aria-pressed="false">Kiro</button>
           </fieldset>
-          <p class="never">Agent keys can list, read and write. They can never delete, and each tool works in its own folder, on its own key.</p>
+          <p class="never">Each tool works in its own folder, on its own key. An agent's delete is undoable for 1 day.</p>
         </div>
         <div class="bigterm" aria-live="polite">
           <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -2065,7 +2065,6 @@ details p {
           <p><span class="pr">$</span> drive agents connect <span id="agent-id">claude</span></p>
           <p class="ok"><span id="agent-name">Claude Code</span> connected to its own folder</p>
           <p class="dim">  can: list &middot; read &middot; write</p>
-          <p class="dim">  cannot: delete</p>
         </div>
       </div>
     </section>
@@ -2182,7 +2181,7 @@ details p {
           </div>
           <div>
             <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No plans. Your balance never expires.</p></details>
-            <details><summary>Can my agents wreck my files?</summary><p>No. Each tool gets its own folder, mounted on its own key, and that key can list, read and write. It cannot delete. On Windows the folder is the one you use, because the agent mount is not proven there yet.</p></details>
+            <details><summary>Can my agents wreck my files?</summary><p>No. Each tool gets its own folder, mounted on its own key. An agent's delete is undoable for 1 day. On Windows the folder is the one you use, because the agent mount is not proven there yet.</p></details>
             <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When the bill would pass it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
             <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
           </div>
