@@ -28,7 +28,8 @@ would rather you read it here than find out in week three.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
-- **Windows installs with an MSI, not a command.** Windows gets the
+- **Windows is not in version 1, and its installer is an unsigned MSI, not a
+  command.** Windows gets the
   same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,

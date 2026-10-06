@@ -27,6 +27,7 @@
 import { betterAuth } from "better-auth/minimal";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { d1Adapter } from "./auth-d1-adapter.js";
+import { sha256Hex } from "./db.js";
 import { sendEmail } from "./email-send.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
@@ -103,6 +104,83 @@ export function safeAfterSigninPath(raw) {
   return url.pathname + url.search;
 }
 
+// ---- the return path a device-approval sign-in lands on (drive issue #558) ----
+//
+// The approve page leaves its path in a cookie of the browser that opened it,
+// so a link opened on a phone (the second device, the one that signs in) lost
+// the code page and landed on the files list. The path now travels with the
+// sign-in token itself: the start step forwards it through Better Auth's own
+// `metadata` field (src/signin.js), `sendMagicLink` below stores one row keyed
+// by the link token before the mail goes out, and the verify step reads and
+// deletes the row on whichever device followed the link.
+
+/**
+ * How long a stored return path stays readable. Fifteen minutes, five minutes
+ * past the link's own life (SIGNIN_LINK_TTL_SECONDS), so a link followed near
+ * the end of it still finds its row, and the same bound the device code lives
+ * under (DEVICE_CODE_TTL_SECONDS). A row nobody consumed is swept at the next
+ * store, not by a timer: the table has no cron, and a stale row is inert
+ * because its token is spent.
+ */
+export const SIGNIN_RETURN_TTL_SECONDS = 15 * 60;
+
+/**
+ * Stores the return path one link token must land on. The key is the token's
+ * SHA-256 digest, never the raw token or the address, so two codes (or two
+ * starts) never overwrite each other and the table holds no secret a row
+ * could leak. The path must already have passed safeAfterSigninPath; the
+ * reader validates it again anyway.
+ * @param {D1Database} db
+ * @param {string} token the raw magic-link token this row belongs to
+ * @param {string} returnPath a path safeAfterSigninPath already returned
+ */
+export async function storeSigninReturn(db, token, returnPath) {
+  const at = Math.floor(Date.now() / 1000);
+  // Sweep-then-insert is one batch, the pattern the device-code store uses:
+  // rows nobody followed give their row up after the TTL, and a token re-sent
+  // (the library generates a fresh token per send, so this is belt and
+  // braces) replaces its own row rather than failing the unique key.
+  await db.batch([
+    db
+      .prepare("DELETE FROM signin_return WHERE created_at <= ?1")
+      .bind(at - SIGNIN_RETURN_TTL_SECONDS),
+    db
+      .prepare(
+        `INSERT INTO signin_return (token_hash, return_path, created_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT (token_hash) DO UPDATE SET return_path = ?2, created_at = ?3`,
+      )
+      .bind(await sha256Hex(token), returnPath, at),
+  ]);
+}
+
+/**
+ * Reads and deletes the return path one link token stored. Single use by
+ * construction: the row is deleted in the same breath it is read, so a spent
+ * link cannot hand out the path twice. Returns the path only if it still
+ * passes safeAfterSigninPath — the writer validated it, and this side
+ * validates again so a row nothing wrote can still not bounce the session
+ * elsewhere. An empty string means "no stored path", and the caller falls
+ * back to the after-signin cookie.
+ * @param {D1Database} db
+ * @param {string} token the raw magic-link token the link carried
+ * @returns {Promise<string>}
+ */
+export async function consumeSigninReturn(db, token) {
+  const row = await db
+    .prepare("SELECT return_path FROM signin_return WHERE token_hash = ?1")
+    .bind(await sha256Hex(token))
+    .first();
+  if (row === null || row === undefined) {
+    return "";
+  }
+  await db
+    .prepare("DELETE FROM signin_return WHERE token_hash = ?1")
+    .bind(await sha256Hex(token))
+    .run();
+  return safeAfterSigninPath(row.return_path);
+}
+
 /**
  * Builds a Better Auth instance over one D1 database.
  *
@@ -112,7 +190,7 @@ export function safeAfterSigninPath(raw) {
  * token and builds the link itself, so Better Auth never has to know the
  * drive's page layout.
  *
- * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null}) => Promise<unknown>}} options
+ * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} options
  */
 export function createAuth(options) {
   return betterAuth({
@@ -192,7 +270,25 @@ export function createAuth(options) {
         // returning one is found. Both are sign-in, which is why sign-up is
         // left on: the spec's screen has no separate registration step.
         disableSignUp: false,
-        sendMagicLink: async ({ email, token }, ctx) => {
+        // `metadata` is the library's own field for per-send state: the start
+        // step forwards the approve page's return path in it (src/signin.js,
+        // drive#558), and the mapping row is written here, before the mail
+        // goes out. A row that cannot be written is a sign-in that cannot
+        // keep its promise, so the failure propagates and the route answers
+        // 503 rather than mailing a link whose landing page is already lost.
+        sendMagicLink: async ({ email, token, metadata }, ctx) => {
+          const returnPath = safeAfterSigninPath(
+            metadata && typeof metadata === "object"
+              ? /** @type {{returnPath?: unknown}} */ (metadata).returnPath
+              : undefined,
+          );
+          if (returnPath !== "") {
+            await storeSigninReturn(
+              /** @type {D1Database} */ (options.database),
+              token,
+              returnPath,
+            );
+          }
           // Which browser or device asked, out of the library's own request
           // context: src/signin.js forwards this Worker request's user-agent
           // to the magic-link endpoint, so this is the header the person's
@@ -203,6 +299,7 @@ export function createAuth(options) {
             to: email,
             url: signinLink(token, options.baseURL),
             userAgent: ctx?.getHeader("user-agent") ?? null,
+            deviceApproval: returnPath !== "",
           });
         },
       }),
@@ -247,7 +344,7 @@ const AUTH_CACHE = new WeakMap();
  * the whole `Env`: a `Env &` intersection would make every caller carry a
  * binding a test never binds, and the closed-door tests below deliberately
  * hand in an env with no `DRIVE_DB`, no secret and no URL.
- * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>}} env
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
  * @returns {Auth|null}
  */
 export function authFor(env) {
@@ -290,8 +387,8 @@ export function authFor(env) {
  * be sent must fail the sign-in, and the route turns that failure into the
  * message table's sign-in error instead of telling a person to check an inbox
  * that will stay empty.
- * @param {{EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null}) => Promise<unknown>}} env
- * @param {{to: string, url: string, userAgent: string|null}} link
+ * @param {{EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @param {{to: string, url: string, userAgent: string|null, deviceApproval?: boolean}} link
  */
 async function sendSigninLink(env, link) {
   if (typeof env.SIGNIN_MAIL === "function") {
@@ -306,7 +403,7 @@ async function sendSigninLink(env, link) {
     to: link.to,
     kind: "signin-link",
     from: env.MAIL_FROM ?? "",
-    rendered: signinLinkEmail(link.url, link.userAgent),
+    rendered: signinLinkEmail(link.url, link.userAgent, undefined, link.deviceApproval === true),
   });
 }
 
@@ -434,20 +531,29 @@ function signinRequestedAt(when) {
  * request nobody made can be ignored (drive#550): a link mailed into an inbox
  * that was not expecting one is how a stranger learns the address is live,
  * and the two sentences are what let the reader act on it.
+ *
+ * A device-approval sign-in (the start carried the approve page's return path,
+ * drive#558) adds the sentence the issue asks the mail to carry: whichever
+ * device opens the link can finish the approval, so the person does not have
+ * to walk back to the laptop the code is showing on.
  * @param {string} url the absolute link, already built by signinLink
  * @param {unknown} [rawUserAgent] the requesting request's user-agent header
  * @param {Date} [when] when the link was asked for, for the line that says so
+ * @param {boolean} [deviceApproval] true when this sign-in started from the approve page
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function signinLinkEmail(url, rawUserAgent, when = new Date()) {
+export function signinLinkEmail(url, rawUserAgent, when = new Date(), deviceApproval = false) {
   const minutes = Math.round(SIGNIN_LINK_TTL_SECONDS / 60);
   const device = signinDeviceName(rawUserAgent) ?? UNKNOWN_DEVICE_NAME;
   const asked = `Requested from ${device} at ${signinRequestedAt(when)}.`;
   const ignoring = IGNORING_SENTENCE;
+  const approvalNote = deviceApproval
+    ? "Open this link on the computer you ran drive login on, or approve from any device. "
+    : "";
   return {
     subject: "Your drive sign-in link",
-    text: `Sign in to your drive: ${url}\n\nThe link is good for ${minutes} minutes and works once. ${asked} ${ignoring}`,
-    html: `<p><a href="${url}">Sign in to your drive</a></p><p>The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}</p>`,
+    text: `Sign in to your drive: ${url}\n\n${approvalNote}The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}`,
+    html: `<p><a href="${url}">Sign in to your drive</a></p><p>${approvalNote}The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}</p>`,
     saved: null,
   };
 }
