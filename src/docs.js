@@ -206,7 +206,7 @@ export const FAQ = Object.freeze([
     scoreboard: ["price at 1 TB"],
     answer: [
       "{{HEADLINE}}",
-      "{{SIZE30}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB.",
+      "{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
       "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
@@ -303,7 +303,7 @@ export function markerValues(extra = {}) {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
-    SIZE30: PRICE.size30Line,
+    SIZE_WINDOW: PRICE.size30Line,
     NO_PLANS: PRICE.noPlansLine,
     VERSION_MINIMUM: PRICE.versionMinimumLine,
     PRICE_RULE: PRICE.rule,

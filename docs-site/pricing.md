@@ -9,7 +9,7 @@ description: The rate, the maximum, downloads, and the bill worked out for four 
 
 ## The rate
 
-{{SIZE30}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB. {{NO_PLANS}}
+{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB. {{NO_PLANS}}
 
 ## Deleted files
 
@@ -43,10 +43,9 @@ version 1.
 
 ## The bill worked out
 
-Storage is counted for the part of the month you kept it, so a drive that grew
-pays only for the days each file was there. The meter is the rate on that; the
-maximum is {{MAX_PER_TB}} for each TB of that same average, and never less than
-one TB's worth; your bill is the smaller of the two.
+You pay for the biggest size your drive reached in the last 30 days. The meter
+is {{RATE}} on that size; the maximum is {{MAX_PER_TB}} for each TB of it, and
+never less than one TB's worth; your bill is the smaller of the two.
 
 {{BILL_TABLE}}
 

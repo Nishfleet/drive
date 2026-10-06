@@ -11,7 +11,6 @@ import {
   BILLING_CONFIG,
   GB_PER_TB,
   meteredMonthlyBillUsd,
-  minutesInMonth,
   monthBillCents,
   monthlyMaximumUsd,
 } from "../core/billing.js";
@@ -42,12 +41,6 @@ const siteDir = new URL("../public/docs/", import.meta.url);
 /** @param {string} name */
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
-// The price numbers, worked out the way the invoice works them out, for a
-// 31-day month (October), the month a fixed 43,800-minute divisor over-billed
-// (drive#531): a month that stored `tb` terabytes all of October is gb x
-// 44,640 GB-minutes, whose average is the same gb. Nothing in these tests
-// types a dollar figure.
-const OCTOBER_MINUTES = minutesInMonth("2026-10-15T00:00:00.000Z");
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
@@ -175,13 +168,13 @@ test("every worked example on the pricing page is the invoice's own arithmetic",
   for (const tb of [0.2, 0.8, 1.5, 3]) {
     const gb = tb * GB_PER_TB;
     const bill = billFor(tb);
-    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * OCTOBER_MINUTES, OCTOBER_MINUTES))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(Math.round(gb * 1e9)))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
     assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
   }
   // And the metered column is genuinely larger than the bill at the sizes the
   // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
-    meteredMonthlyBillUsd(2 * GB_PER_TB * OCTOBER_MINUTES, OCTOBER_MINUTES) >
+    meteredMonthlyBillUsd(Math.round(2 * GB_PER_TB * 1e9)) >
       billFor(2).totalCents / 100,
     "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
