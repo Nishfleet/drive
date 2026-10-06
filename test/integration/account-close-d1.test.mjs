@@ -154,16 +154,35 @@ test("the purge cursor is written mid-purge, read by a fresh store, and cleared 
   assert.equal(finished.purged_at, START_MS / 1000 + 60);
   assert.equal(finished.purge_cursor, null, "the stamp clears the cursor");
 
-  // A cancel inside the grace window clears the cursor along with the
-  // other stamps, so a re-close starts the purge from the top.
-  const reopener = { id: "acct_cursor2", email: "cursor2@example.com" };
-  await writer.closeAccount(reopener, START_MS / 1000);
-  await writer.markPurgeProgress(reopener.id, "/f-0500.txt");
-  await writer.cancelClose(reopener.id);
-  const reopened = sqlite
+  // A partially purged account cannot be reopened: its saved cursor means
+  // files are already gone, so the cancel is refused and the row stays
+  // closed with its cursor, and the next night resumes where it stopped.
+  const partial = { id: "acct_cursor2", email: "cursor2@example.com" };
+  await writer.closeAccount(partial, START_MS / 1000);
+  await writer.markPurgeProgress(partial.id, "/f-0500.txt");
+  await assert.rejects(writer.cancelClose(partial.id), {
+    name: "TypeError",
+    message: "close-already-purged",
+  });
+  const kept = sqlite
     .prepare("SELECT state, purge_cursor, purged_at FROM accounts WHERE id = ?")
-    .get(reopener.id);
+    .get(partial.id);
+  assert.equal(kept.state, "closed");
+  assert.equal(kept.purged_at, null);
+  assert.equal(kept.purge_cursor, "/f-0500.txt");
+
+  // Due but not yet started: the nightly pass may be deleting its first batch
+  // before it saves a cursor, so a cancel at or past the cutoff is refused.
+  const dueNow = { id: "acct_cursor3", email: "cursor3@example.com" };
+  await writer.closeAccount(dueNow, START_MS / 1000);
+  await assert.rejects(writer.cancelClose(dueNow.id, START_MS / 1000), {
+    message: "close-already-purged",
+  });
+
+  // Inside the window with no purge begun, the cancel still reopens.
+  const early = { id: "acct_cursor4", email: "cursor4@example.com" };
+  await writer.closeAccount(early, START_MS / 1000);
+  const reopened = await writer.cancelClose(early.id, START_MS / 1000 - 1);
   assert.equal(reopened.state, "active");
-  assert.equal(reopened.purged_at, null);
-  assert.equal(reopened.purge_cursor, null);
+  assert.equal(reopened.purgeCursor, null);
 });
