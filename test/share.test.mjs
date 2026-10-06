@@ -1,5 +1,5 @@
 // Tests for share links and upload requests (drive issue #19). Two halves, the
-// same split test/files.test.mjs uses for src/files.js:
+// same split test/files.test.mjs uses for core/files.js:
 //
 // 1. The logic in src/share.js against a real in-memory FileStore and the
 //    memory LinkStore: tokens, the 7-day window, revocation, the logged-out
@@ -24,9 +24,10 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
-} from "../src/files.js";
+} from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { failureMessage } from "../core/messages.js";
 import { createApp } from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
 import {
   base64url,
   createD1LinkStore,
@@ -68,7 +69,6 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createTestD1 } from "./harness.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 

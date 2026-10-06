@@ -19,14 +19,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore } from "../../src/files.js";
+import { createMemoryStore } from "../../core/files.js";
 import {
   createD1LinkStore,
   handleRequestUploadRequest,
   newRequestRecord,
   sendArrivalDigests,
 } from "../../src/share.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { createD1DeviceStore } from "../../core/devices.js";
 import { MIGRATION_FILES } from "../d1-sqlite.mjs";
 import { createTestD1, DRIVE_SCHEMA_MIGRATIONS } from "../harness.mjs";
 
@@ -49,8 +49,8 @@ function drop(name, body) {
 
 test("the real migrations add the two additive digest columns", () => {
   assert.ok(
-    MIGRATION_FILES.includes("0028_request_digest.sql"),
-    "0028_request_digest.sql is missing from the migration set",
+    MIGRATION_FILES.includes("0038_request_digest.sql"),
+    "0038_request_digest.sql is missing from the migration set",
   );
   const { sqlite } = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
 
@@ -69,7 +69,7 @@ test("the real migrations add the two additive digest columns", () => {
   assert.equal(pending.dflt_value, "'[]'", "the old code's INSERT needs the empty default");
 
   const migration = readFileSync(
-    new URL("../../migrations/drive/0028_request_digest.sql", import.meta.url),
+    new URL("../../migrations/drive/0038_request_digest.sql", import.meta.url),
     "utf8",
   );
   const sql = migration.replace(/--[^\n]*/g, "");

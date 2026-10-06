@@ -1,5 +1,5 @@
-import { storageVarsFromEnv } from "./files.js";
-import { meterFreshness } from "./meter.js";
+import { storageVarsFromEnv } from "../core/files.js";
+import { meterFreshness } from "../core/meter.js";
 
 // The health endpoint the outage alert watches (drive issue #96, north star
 // "Reliable": we hear about an outage before customers do). `GET /api/health`
@@ -104,9 +104,9 @@ import { meterFreshness } from "./meter.js";
 //   - Other secrets. Their presence is a deployment shape, not a reachability
 //     question, and a value cannot be probed without risking disclosure.
 //     A missing secret makes the one route that needs it answer 403/503 by
-//     name already (src/email-send.js, src/waitlist.js).
+//     name already (core/email-send.js, src/waitlist.js).
 //   - The email binding. Only the token-gated internal send route uses it
-//     (src/email-send.js); no customer request needs it, and its only
+//     (core/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
 //   - HEALTH_RATE_LIMITER. It is this route's own gate (handleHealthRequest
 //     runs enforceEdgeLimits before any probe), not a dependency another
@@ -121,8 +121,8 @@ import { meterFreshness } from "./meter.js";
 // A dependency that does not answer in its share reports itself by name, so
 // the alert says which dependency rather than "unhealthy".
 
-import { replyToFor } from "./email-send.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+import { replyToFor } from "../core/email-send.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
 /** The path the outside monitor (#36) polls. Public, and reads no account. */
 export const HEALTH_PATH = "/api/health";
@@ -162,13 +162,15 @@ const LIVENESS_QUERY = "SELECT 1";
  * public upload-request route fail closed without them (src/waitlist.js,
  * src/signin.js, src/share.js). METER_DB is on it because the
  * meter's event intake and the hourly rollup both fail closed without it
- * (src/meter.js), and a deploy that lost it would silently stop billing.
+ * (core/meter.js), and a deploy that lost it would silently stop billing.
  * DRIVE_DB is on it because a deploy that lost it
  * would serve every page and sign-up while every file, search and branch
  * request failed, which is exactly the outage this endpoint exists to catch
  * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
- * would really send mail.
+ * would really send mail. METER_JOBS and BRANCH_JOBS are producer
+ * bindings (drive#519, drive#563): without them the work runs in-process,
+ * and a health probe cannot exercise a queue without sending a real job.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
@@ -450,7 +452,9 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   // (src/files.js storageVarsFromEnv is the one reader this and storeFor use).
   // That drive forgets everything on redeploy, so it fails here by name
   // rather than serving a silently empty Files page.
-  const storageEnv = /** @type {import("./files.js").StorageEnv} */ (/** @type {unknown} */ (env));
+  const storageEnv = /** @type {import("../core/files.js").StorageEnv} */ (
+    /** @type {unknown} */ (env)
+  );
   if (storageVarsFromEnv(storageEnv).endpoint === undefined) {
     return { ok: false, failing: "storage" };
   }

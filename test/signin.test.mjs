@@ -26,10 +26,13 @@ import {
   SIGNIN_LINK_PATH,
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
-} from "../src/auth.js";
+  signinLinkEmail,
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -42,8 +45,6 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import {
   createTestAuth,
   DRIVE_MIGRATIONS,
@@ -465,7 +466,7 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   );
   assert.equal(response.status, 429, "the walk must hit the edge limit, not the mailer");
   assert.equal(response.headers.get("retry-after"), "60");
-  // The shared refusal's shape (src/rate-limit.js): exactly the header set the
+  // The shared refusal's shape (core/rate-limit.js): exactly the header set the
   // waitlist's own limiter answers with, so the two endpoints cannot differ.
   assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -1020,6 +1021,114 @@ test("a good link with the after-signin cookie returns to the approve page", asy
   );
 });
 
+test("a sign-in started on the approve page lands there from a second browser (drive#558)", async () => {
+  const made = dispatchEnv();
+  const next = "/v1/device/approve?user_code=BCDF-GHJK";
+  const started = await workerFetch(
+    post({ step: "start", method: "email", email: "second@example.com", next }),
+    made.env,
+  );
+  assert.equal(started.status, 202);
+  assert.equal(
+    made.sent[0].deviceApproval,
+    true,
+    "the start told the mailer this sign-in waits on a device approval",
+  );
+  assert.match(
+    signinLinkEmail(made.sent[0].url, null, undefined, true).text,
+    /Open this link on the computer you ran drive login on, or approve from any device\./,
+    "the rendered mail says the link works from any device",
+  );
+
+  // No cookie at all: this browser is a different device, and the return path
+  // still reaches the approve page because it travels with the link's token.
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  assert.equal(followed.headers.get("location"), next);
+
+  // The mapping row is spent with the link, so a replayed link cannot hand
+  // the path out again. The link itself is spent too (the test above pins
+  // that), and answers the screen.
+  const replay = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(replay.status, 302);
+  assert.match(String(replay.headers.get("location")), /error=invalid-link/);
+});
+
+test("a start whose next is not the approve page is a plain sign-in (drive#558)", async () => {
+  const badNexts = [
+    "https://evil.test/files",
+    "/files",
+    "//evil.test",
+    "/v1/device/approve?user_code=x&next=https://evil.test",
+  ];
+  for (const [index, next] of badNexts.entries()) {
+    // A fresh database each time: the D1-backed rate limiter (drive#200)
+    // would answer the second start from one test with a 429, and this test
+    // is about the return path, not the ceiling.
+    const made = dispatchEnv();
+    const started = await workerFetch(
+      post({ step: "start", method: "email", email: `plain-${index}@example.com`, next }),
+      made.env,
+    );
+    assert.equal(started.status, 202);
+    assert.equal(
+      made.sent[0].deviceApproval,
+      false,
+      "a dropped path mails the plain sign-in email, which promises nothing",
+    );
+    const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+    assert.equal(followed.status, 302);
+    assert.equal(followed.headers.get("location"), "/files", `${next} lands on the drive`);
+  }
+});
+
+test("the stored return path wins over a stale after-signin cookie (drive#558)", async () => {
+  const made = dispatchEnv();
+  await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "cookie@example.com",
+      next: "/v1/device/approve?user_code=AAAA-1111",
+    }),
+    made.env,
+  );
+  const followed = await workerFetch(
+    new Request(made.sent[0].url, {
+      headers: {
+        cookie: `${AFTER_SIGNIN_COOKIE}=${encodeURIComponent("/v1/device/approve?user_code=BBBB-2222")}`,
+      },
+    }),
+    made.env,
+  );
+  assert.equal(followed.status, 302);
+  assert.equal(
+    followed.headers.get("location"),
+    "/v1/device/approve?user_code=AAAA-1111",
+    "the path the start stored is the one this sign-in returns to",
+  );
+});
+
+test("the mail's device line and the page's device note are one sentence (drive#558)", () => {
+  const mail = signinLinkEmail(
+    "https://drive.test/api/signin/verify?token=t",
+    null,
+    undefined,
+    true,
+  );
+  assert.ok(
+    mail.text.includes(SIGNIN_COPY.deviceNote),
+    "the mail text carries the page's sentence",
+  );
+  assert.ok(
+    mail.html.includes(SIGNIN_COPY.deviceNote),
+    "the mail html carries the page's sentence",
+  );
+  const plain = signinLinkEmail("https://drive.test/api/signin/verify?token=t");
+  assert.ok(!plain.text.includes(SIGNIN_COPY.deviceNote), "a plain sign-in promises nothing");
+  assert.ok(!page.includes(plain.text), "the page's own copy is untouched by the mail");
+});
+
 test("sign-out through the route revokes the session the cookie names", async () => {
   const made = dispatchEnv();
   const { cookie } = await signIn(made, "leaver@example.com");
@@ -1311,7 +1420,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const env = made.env;
 
   // The first three sends from one IP land. Each one carries a different
-  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // x-forwarded-for: that header is not the key (core/auth.js consults only
   // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
   for (let i = 0; i < 3; i++) {
     const response = await workerFetch(

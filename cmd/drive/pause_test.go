@@ -462,19 +462,19 @@ func TestMountPlanCarriesThePausedRate(t *testing.T) {
 }
 
 // TestStatusWordsMatchThePageWords pins the CLI's transfer words to the ones
-// the first-run page and the usage page use (src/status.js UPLOAD_LABEL). The
+// the first-run page and the usage page use (core/status.js UPLOAD_LABEL). The
 // page is JavaScript and cannot import the Go, and the Go cannot import the
 // page, so this test is the join between the two copies, the same join
 // TestUploadLabelMatchesThePageWords runs for the queue words.
 func TestStatusWordsMatchThePageWords(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{pausedLabel, resumedLabel, `"Paused"`, `"Resumed"`} {
 		if !strings.Contains(html, want) {
-			t.Errorf("src/status.js no longer carries %q; the pages and the CLI must show the same word for the same state", want)
+			t.Errorf("core/status.js no longer carries %q; the pages and the CLI must show the same word for the same state", want)
 		}
 	}
 }

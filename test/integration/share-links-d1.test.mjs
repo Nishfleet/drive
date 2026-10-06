@@ -24,8 +24,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, handleFilesRequest, scopeStore } from "../../src/files.js";
-import { failureMessage } from "../../src/messages.js";
+import { createMemoryStore, handleFilesRequest, scopeStore } from "../../core/files.js";
+import { failureMessage } from "../../core/messages.js";
 import {
   createD1LinkStore,
   DAY_MS,

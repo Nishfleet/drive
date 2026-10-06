@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { createD1DeviceStore } from "../../core/devices.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 const START_MS = Date.parse("2026-10-04T12:00:00.000Z");

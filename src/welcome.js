@@ -13,7 +13,7 @@
 // so two concurrent sign-ins cannot both win it — the loser sees no rows
 // changed and sends nothing.
 
-import { sendEmail } from "./email-send.js";
+import { sendEmail } from "../core/email-send.js";
 
 /**
  * Sends the welcome email to an account that has never been sent one.

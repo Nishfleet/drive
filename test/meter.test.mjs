@@ -1,6 +1,6 @@
 // Tests for the meter (drive issue #6, build step 5). Two halves:
 //
-// 1. The arithmetic in src/meter.js: the GB-minutes a version books into
+// 1. The arithmetic in core/meter.js: the GB-minutes a version books into
 //    each hour, the 1-hour minimum, and the property the done-when
 //    measures - a full day of hourly rows has to add up to what the
 //    version actually cost, because that is the number compared with
@@ -18,10 +18,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CLOSE_SCHEDULE } from "../src/account-close.js";
-import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../src/billing.js";
-import { createS3Store, TRASH_PURGE_SCHEDULE } from "../src/files.js";
-import worker from "../src/index.js";
+import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../core/billing.js";
+import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
   EVENT_ACTIONS,
@@ -59,7 +57,9 @@ import {
   validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
+import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -147,8 +147,8 @@ test("an hour bucket is the UTC hour, and the minute inside it does not move it"
 // a price change moves the meter's month and the credit together, and a
 // mismatch between the two fails here.
 test("the meter's GB is decimal, and a month of the free credit's GB is exactly the credit's GB-minutes", () => {
-  // 2¢ per GB-month is the same rate the invoice charges (src/billing.js
-  // reads it from the same config src/pricing.js holds), and the free credit
+  // 2¢ per GB-month is the same rate the invoice charges (core/billing.js
+  // reads it from the same config core/pricing.js holds), and the free credit
   // is $1 a month. The GB that credit buys for a month is 1 / 0.02.
   const freeGb = BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth;
   assert.equal(freeGb, 50, "$1 at 2c per GB-month is 50 GB - the spec's 'about 50 GB'");
@@ -871,6 +871,97 @@ test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves dow
     () => recordTheHour(db, 1, 1.5, midnight()),
     TypeError,
     "a fractional byte count is refused: bytes are whole",
+  );
+});
+
+// The stored-bytes mark, driven the way a customer actually produces one: the
+// same path saved again and again inside a single hour (drive#535). A save is
+// a new version, so the hourly set grows - but only the last version is still
+// live when the hour closes, and that is the set the mark takes.
+/**
+ * One 10 GB file at one path, saved `saves` times inside one hour:
+ * `replaceEvery` minutes after midnight, each save creating the successor and
+ * hiding the version before it - the two events the storage server sends for
+ * a save. `grow` adds a byte to every save's size, which is what breaks the
+ * size-identical handoff waiver (drive#104).
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
+ * @param {{saves?: number, replaceEvery?: number, grow?: boolean}} [options]
+ */
+async function savedRepeatedly(db, { saves = 6, replaceEvery = 10, grow = false } = {}) {
+  const size = 10 * GB;
+  const path = "/u/abc123/notes.md";
+  for (let save = 0; save < saves; save += 1) {
+    const at = midnight() + save * replaceEvery * MINUTE_MS;
+    await storeCreate(db, "abc123", {
+      eventId: `evt-abc123-save-${save}`,
+      b2FileId: `file-save-${save}`,
+      path,
+      sizeBytes: grow ? size + save : size,
+      createdAt: at,
+    });
+    if (save === saves - 1) {
+      continue;
+    }
+    const hiddenAt = at + replaceEvery * MINUTE_MS;
+    const hide = validateEvent({
+      eventId: `evt-abc123-hide-${save}`,
+      keyName: "/u/abc123/",
+      path,
+      b2FileId: `file-save-${save}`,
+      action: "deleted",
+      hiddenAt,
+      eventTimestamp: hiddenAt,
+    });
+    assert.equal(hide.error, undefined, hide.error);
+    await recordEvent(db, hide, hiddenAt);
+  }
+}
+
+test("six saves of one file in an hour mark one file's size, and bill one file's minutes", async () => {
+  // drive#535, finish line 1: N saves of one file in one hour marked N times
+  // its size, which read as 60 GB stored for a 10 GB drive, as the month's
+  // peak, and - as the average of the marks - into the free download
+  // allowance. The mark is the live set at the hour's end, so one file marks
+  // once however many times it was saved.
+  const sameSize = makeMeteredDB().db;
+  await savedRepeatedly(sameSize);
+  const hour = midnight();
+  const rolled = await rollupHour(sameSize, hour, hour + 60 * MINUTE_MS);
+  assert.equal(
+    sameSize.tables.usage_minutes.get(`abc123|${hour}`).stored_bytes,
+    10 * GB,
+    "six saves of a 10 GB file mark 10 GB, the size the drive held at the hour's end",
+  );
+  // The minutes side: every handoff is same-size and to the millisecond, so the
+  // waiver applies to each pair and the hour bills the one file's 60 minutes.
+  assert.equal(rolled.gbMinutes, 600, "six saves of one 10 GB file bill 600 GB-minutes");
+  assert.equal(rolled.versions, 6, "all six version rows were live at some point of the hour");
+  // The same file saved with a size change on every save: the hour bills each
+  // save its own full hour, which is the minimum the pricing copy discloses
+  // (core/pricing.js versionMinimumLine, drive#535 finish line 2). The mark is
+  // still one file's size, because the marks follow what is live, not what was
+  // booked.
+  const growing = makeMeteredDB().db;
+  await savedRepeatedly(growing, { grow: true });
+  await rollupHour(growing, hour, hour + 60 * MINUTE_MS);
+  assert.equal(
+    growing.tables.usage_minutes.get(`abc123|${hour}`).stored_bytes,
+    10 * GB + 5,
+    "the last save's size is what the drive holds",
+  );
+  // Every save changed the file's size, so no handoff was a continuation: the
+  // five retired saves each bill the full 1-hour minimum and the save the hour
+  // closes on bills the ten minutes it held. This is the number the pricing
+  // copy has to disclose (src/pricing.js versionMinimumLine, finish line 2).
+  const sixSizes = [0, 1, 2, 3, 4, 5].map((save) => 10 * GB + save);
+  const expectedGbMinutes =
+    sixSizes.slice(0, 5).reduce((total, size) => total + size / GB, 0) * 60 +
+    (sixSizes[5] / GB) * 10;
+  assert.ok(
+    Math.abs(
+      growing.tables.usage_minutes.get(`abc123|${hour}`).gb_minutes_live - expectedGbMinutes,
+    ) < 1e-6,
+    "six saves that each change the size bill five hours of storage plus the live save's minutes",
   );
 });
 
@@ -2043,8 +2134,8 @@ test("a move whose successor event arrives late is corrected, not billed twice",
 // test as in production. The real provider's field mapping is #60's to
 // confirm; this fake is the listing the reconciler is defined against.
 /**
- * @param {Record<string, import("../src/files.js").StorageVersion[]>} versionsByPrefix
- * @returns {import("../src/files.js").FileStore}
+ * @param {Record<string, import("../core/files.js").StorageVersion[]>} versionsByPrefix
+ * @returns {import("../core/files.js").FileStore}
  */
 function providerStore(versionsByPrefix) {
   return {
@@ -2322,7 +2413,7 @@ test("the reconciler fails loudly without a database or a version listing", asyn
   await assert.rejects(() => reconcileMeter(undefined, providerStore({})), /METER_DB/);
   await assert.rejects(() => reconcileMeter(db, undefined), /list versions/);
   await assert.rejects(
-    () => reconcileMeter(db, /** @type {import("../src/files.js").FileStore} */ ({})),
+    () => reconcileMeter(db, /** @type {import("../core/files.js").FileStore} */ ({})),
     /list versions/,
   );
 });
@@ -2556,7 +2647,7 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
   // entry in `cf dev`, which makes Vite refuse to read that file - so an
-  // import of src/meter.js or src/search.js pulls the whole shared Worker
+  // import of core/meter.js or src/search.js pulls the whole shared Worker
   // graph behind it and `npm run dev` dies before it prints a route
   // (drive#432). The pin below is what keeps two spellings of one schedule
   // honest.

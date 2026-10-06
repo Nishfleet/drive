@@ -38,9 +38,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { createIdriveKeyProvider } from "../../workers/api/src/idrive-keys.js";
-import { bucketForAccount, scopeFor } from "../../workers/api/src/keyprovider.js";
-import { createS3Client, ok, provisionBucket } from "../../workers/api/src/s3.js";
+import { createIdriveKeyProvider } from "../../core/idrive-keys.js";
+import { bucketForAccount, scopeFor } from "../../core/keyprovider.js";
+import { createS3Client, ok, provisionBucket } from "../../core/s3.js";
 
 // Run it with the owner's credentials already in the environment, and with the
 // explicit go-ahead, because it spends real money on a real paid bucket:

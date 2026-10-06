@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { createAuth } from "../core/auth.js";
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
@@ -60,6 +60,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
   // state) primary key, and after 0012's snapshot pointer columns.
   "drive/0015_branch_row_id.sql",
+  // Branch jobs (drive#563): progress and stored counts, plus the unique
+  // index that covers in-flight approve/create states.
+  "drive/0030_branch_jobs.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.
@@ -96,8 +99,12 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // The per-link arrival digest (drive#684): upload_requests.digest_at and
   // pending_uploads. Expand only; the upload path and the info route read the
   // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
-  // Numbered 0028 because 0022–0026 are already taken.
-  "drive/0028_request_digest.sql",
+  // Numbered 0038, the next free prefix after the other open migrations.
+  "drive/0038_request_digest.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0031_signin_return.sql",
 ]);
 
 /**
@@ -323,10 +330,11 @@ export function createTestD1(options = {}) {
  * point of the flow.
  *
  * (drive#550): `userAgent` is the requesting request's own header, null when
- * there was none, so a test can read what the mail would name.
- * @typedef {{to: string, url: string, userAgent?: string|null}} SentLink
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);
