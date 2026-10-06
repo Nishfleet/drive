@@ -27,6 +27,7 @@ import {
   usageSummary,
 } from "../core/billing.js";
 import { CAP_ENDPOINT } from "../core/cap.js";
+import { EXPORT_ENDPOINT, EXPORT_FILENAME } from "../core/export.js";
 import { PRICE } from "../core/pricing.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
 import { UPLOAD_LABEL, uploadProgress } from "../core/status.js";
@@ -1345,4 +1346,50 @@ test("the usage read ignores the retired founding column on the account's row", 
     .bind(signedInAccount.id)
     .run();
   assert.deepEqual((await read()).billCents, noRow.billCents, "the column changes nothing");
+});
+
+test("the usage page links the export route with the module's words (drive#547)", () => {
+  assert.equal(EXPORT_ENDPOINT, "/api/export");
+  assert.ok(page.includes(USAGE_LABELS.exportHeading), "the heading is the module's word");
+  assert.ok(page.includes(USAGE_LABELS.exportWhat), "the purpose sentence is the module's word");
+  assert.ok(
+    page.includes(`href="${EXPORT_ENDPOINT}"`),
+    "the page must download from the endpoint the Worker routes",
+  );
+  assert.ok(
+    page.includes(`download="${EXPORT_FILENAME}"`),
+    "the link names the JSON file the route serves",
+  );
+  assert.ok(page.includes(`>${USAGE_LABELS.exportAction}</a>`), "the action is the module's word");
+});
+
+test("the export route answers 200 for a signed-in account with no api binding (drive#547)", async () => {
+  // The deploy shape today: the site Worker has DRIVE_DB and a session cookie,
+  // and no API service binding. GET /api/export must still answer 200, because
+  // that is the path the usage page downloads and /v1/export is 503 until the
+  // api Worker is bound.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account } = await signIn(made, "export@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const response = await workerFetch(
+    new Request(`https://drive.test${EXPORT_ENDPOINT}`, { headers: { cookie } }),
+    env,
+  );
+  assert.equal(response.status, 200, "a signed-in export must answer 200 without the api binding");
+  assert.match(
+    response.headers.get("content-disposition") ?? "",
+    new RegExp(`filename="${EXPORT_FILENAME}"`),
+  );
+  const body = await response.json();
+  assert.equal(body.account.id, account.id, "the document is this account's");
+  assert.equal(body.account.email, account.email);
+  assert.equal(body.complete, true);
+  assert.ok(Array.isArray(body.keys));
+  assert.ok(Array.isArray(body.files));
+  assert.ok(Array.isArray(body.versions));
 });
