@@ -89,6 +89,7 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import {
   handleFirstRunStatusRequest,
@@ -1193,6 +1194,16 @@ export default {
             throw new Error(`the account close cron failed: ${error.message}`);
           }),
         );
+        // Sign-in counter retention (drive#725): a row whose day window
+        // ended more than a day ago is deleted, so the public sign-in route
+        // cannot make this table keep every address anybody typed. It deletes
+        // counter rows only. Awaited like the link prune: a failed sweep is a
+        // failed run, retried the next night.
+        const signinSends = await purgeExpiredSigninSends(
+          env.DRIVE_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
+        console.log(`signin counter retention: pruned ${signinSends.purged} rows`);
       }
       // The nightly size row (drive issue #564): the growth numbers the
       // spec's decision watches, written to nightly_sizes and printed here,

@@ -22,7 +22,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import worker from "../../src/index.js";
+import { METER_RECONCILE_SCHEDULE } from "../../src/meter.js";
 import {
+  purgeExpiredSigninSends,
   SIGNIN_SEND_DAILY_MAX,
   SIGNIN_SEND_HOURLY_MAX,
   signinSendOutcome,
@@ -204,4 +207,91 @@ test("two addresses have two rows, and neither can spend the other's ceiling", a
       ["second@b.co", 1],
     ],
   );
+});
+
+// drive#725: the route is public, so anyone can make the table hold an
+// address. The nightly sweep deletes a row once its day window ended more
+// than 24 hours ago, and touches no other row and no other table.
+
+const DAY_MS = 86400_000;
+
+/** @param {import("../d1-sqlite.mjs").TestSqlite} sqlite */
+function addresses(sqlite) {
+  return sqlite
+    .prepare("SELECT address FROM signin_address_sends ORDER BY address")
+    .all()
+    .map((row) => row.address);
+}
+
+test("the sweep deletes a row whose day window ended over a day ago, and keeps a live one", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  // old@: its day window started 3 days ago, so it ended 2 days ago.
+  assert.equal(await spend(db, "old@b.co", NOW - 3 * DAY_MS), "allowed");
+  // edge@: its day window ended exactly 24 hours ago - not yet "more than".
+  assert.equal(await spend(db, "edge@b.co", NOW - 2 * DAY_MS), "allowed");
+  // ended@: its window ended 1 hour ago - still inside the grace day.
+  assert.equal(await spend(db, "ended@b.co", NOW - DAY_MS - 3600_000), "allowed");
+  // live@: spent half an hour ago, its windows still count.
+  for (let attempt = 0; attempt < SIGNIN_SEND_HOURLY_MAX; attempt += 1) {
+    assert.equal(await spend(db, "live@b.co", NOW - 1800_000), "allowed");
+  }
+  const before = sqlite.prepare("SELECT count(*) AS n FROM signin_address_sends").get();
+  assert.equal(before.n, 4);
+
+  const purged = await purgeExpiredSigninSends(db, NOW);
+  assert.equal(purged.purged, 1, "only the row past its window and a day is deleted");
+  assert.deepEqual(addresses(sqlite), ["edge@b.co", "ended@b.co", "live@b.co"]);
+  const live = sqlite
+    .prepare("SELECT hour_count, day_count FROM signin_address_sends WHERE address = ?")
+    .get("live@b.co");
+  assert.equal(live.hour_count, SIGNIN_SEND_HOURLY_MAX, "the live row's count is untouched");
+  assert.equal(live.day_count, SIGNIN_SEND_HOURLY_MAX);
+  // The ceiling still holds on the row the sweep kept.
+  assert.equal(await spend(db, "live@b.co", NOW), "refused");
+
+  // A second run finds nothing more to delete until time moves on.
+  assert.equal((await purgeExpiredSigninSends(db, NOW)).purged, 0);
+  assert.equal((await purgeExpiredSigninSends(db, NOW + 1000)).purged, 1, "edge@ is now past");
+  assert.deepEqual(addresses(sqlite), ["ended@b.co", "live@b.co"]);
+});
+
+test("a deleted row comes back as a fresh one, the same answer the expired row gave", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  assert.equal(await spend(db, "back@b.co", NOW - 3 * DAY_MS), "allowed");
+  await purgeExpiredSigninSends(db, NOW);
+  assert.deepEqual(addresses(sqlite), []);
+  assert.equal(await spend(db, "back@b.co", NOW), "allowed");
+  const row = sqlite
+    .prepare("SELECT hour_count, day_count FROM signin_address_sends WHERE address = ?")
+    .get("back@b.co");
+  assert.deepEqual({ ...row }, { hour_count: 1, day_count: 1 });
+});
+
+test("the sweep's statement deletes from the counter table only", () => {
+  const source = readFileSync(new URL("../../src/signin-send-limit.js", import.meta.url), "utf8");
+  const deletes = [...source.matchAll(/delete\s+from\s+"?(\w+)"?/gi)].map((match) => match[1]);
+  assert.deepEqual(deletes, ["signin_address_sends"]);
+});
+
+test("the nightly trip runs the sweep on the customer database", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  assert.equal(await spend(db, "old@b.co", NOW - 3 * DAY_MS), "allowed");
+  assert.equal(await spend(db, "live@b.co", NOW - 3600_000), "allowed");
+  /** @type {Promise<unknown>[]} */
+  const waited = [];
+  const store = {
+    list: async () => ({ objects: [], truncated: false }),
+  };
+  const trigger =
+    /** @type {{scheduled(event: unknown, env: unknown, context: unknown, store: unknown): Promise<unknown>}} */ (
+      /** @type {unknown} */ (worker)
+    );
+  await trigger.scheduled(
+    { cron: METER_RECONCILE_SCHEDULE, scheduledTime: NOW },
+    { METER_DB: db, DRIVE_DB: db },
+    { waitUntil: (/** @type {Promise<unknown>} */ promise) => waited.push(promise) },
+    store,
+  );
+  await Promise.allSettled(waited);
+  assert.deepEqual(addresses(sqlite), ["live@b.co"]);
 });
