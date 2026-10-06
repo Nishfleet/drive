@@ -44,6 +44,11 @@ const MIME = {
   ".xml": "application/xml",
 };
 
+// The one route the upload page needs before it will show the drop zone: a
+// good share link. Public/ has no api here, so the stand-in answers it the way
+// the Worker does, and the page follows its own open path (drive#546).
+const REQUEST_INFO_PATH = "/api/request/info";
+
 /**
  * Serve public/ the way the asset layer does: a directory path gets its
  * index.html, an extensionless path gets .html, everything else verbatim.
@@ -52,6 +57,11 @@ const MIME = {
 async function servePublic() {
   const server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
+    if (pathname === REQUEST_INFO_PATH) {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ open: true, folder: "Photos", expiresAtIso: null }));
+      return;
+    }
     let file = join(publicDir, pathname);
     if (pathname.endsWith("/")) file = join(file, "index.html");
     else if (!extname(file)) file = `${file}.html`;
@@ -166,7 +176,7 @@ test("the built home, upload and benchmarks pages carry no axe violation", {
   const site = await servePublic();
   t.after(site.close);
   const browser = await launch(t);
-  for (const path of ["/", "/upload.html", "/docs/benchmarks.html"]) {
+  for (const path of ["/", "/upload.html?k=a11y-gate", "/docs/benchmarks.html"]) {
     const chrome = await browser.newPage();
     chrome.setDefaultTimeout(120_000);
     try {
@@ -221,6 +231,45 @@ test("no docs page scrolls sideways at 375px", {
         `${name} scrolls sideways at 375px: scrollWidth ${width.scroll}, clientWidth ${width.client} (viewport ${width.viewport})`,
       );
     }
+  } finally {
+    await chrome.close();
+  }
+});
+
+test("the upload page's Choose files button still opens the file picker", {
+  timeout: 180_000,
+  skip: chromeSkip,
+}, async (t) => {
+  // drive#546: the file input is `hidden` now, because an unnamed 1px input
+  // is a keyboard stop with no name (axe's aria-input-field-name). Taken out of
+  // the tree with the wrong tool it would stop working instead: the button's
+  // handler calls the input's click(), and a reviewer read `display: none` as
+  // fatal for that. It is not — the click lands inside the handler's own user
+  // activation, which is the same gesture the signed-in files page has always
+  // used. This proves the picker opens, so a later edit that takes the input
+  // out of the tree a second way fails here.
+  const site = await servePublic();
+  t.after(site.close);
+  const browser = await launch(t);
+  const chrome = await browser.newPage();
+  chrome.setDefaultTimeout(120_000);
+  try {
+    await chrome.setViewport({ width: 390, height: 844 });
+    await chrome.goto(`${site.origin}/upload.html?k=a11y-gate`, { waitUntil: "networkidle0" });
+    // A good token reveals the drop zone; without one the page is the closed
+    // page and the picker has nothing to open.
+    await chrome.waitForSelector("#drop:not([hidden])", { visible: true });
+    const input = await chrome.evaluate(() => {
+      const element = /** @type {HTMLElement} */ (document.getElementById("file-input"));
+      return { hidden: element.hidden, display: getComputedStyle(element).display };
+    });
+    assert.equal(input.hidden, true, "the picker input stays out of the tree");
+    const chooser = chrome
+      .waitForFileChooser({ timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false);
+    await chrome.click("#choose");
+    assert.equal(await chooser, true, "Choose files must still open the file picker");
   } finally {
     await chrome.close();
   }
