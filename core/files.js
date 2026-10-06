@@ -69,6 +69,13 @@ export const CONTROL_OR_SLASH = new RegExp(
 /** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
 /**
+ * Per-file ceiling on an owner upload through `/api/files/upload` (drive#539).
+ * 100 MB stays under the isolate's 128 MB, so a declared size that would crash
+ * the Worker is refused from Content-Length before the body is read. The public
+ * upload-request path caps at 32 MB for the same isolate reason (src/share.js).
+ */
+export const UPLOAD_FILE_MAX_BYTES = 100_000_000;
+/**
  * Where the page's media elements read their bytes. It is the preview URL with
  * one difference: a picture is served inline here so the page can draw it, and
  * the direct-open preview URL serves the one type that can act as a document —
@@ -200,19 +207,59 @@ export function isPreviewable(kind) {
 }
 
 // What an inline preview may be served as. A file the customer uploaded is
-// never a page on our origin, so the served type follows the file's kind
-// rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
-// and media keeps its own type only when it matches its kind. Anything else is
-// octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest, and
-// previewDisposition() below takes the one type that can still act as a
-// document — an .svg, whose links navigate — out of the direct-open preview
-// and a share link, while the page's <img> reads it inline from the embed URL
-// (drive#657).
+// never a page on our origin, so the served type is an allowlist rather than a
+// decision: image/*, video/*, audio/*, application/pdf and text/plain are the
+// only types a preview may open with, and a type is one of those when the
+// file's kind says so, not when the upload claimed it. Every other type — the
+// XML family an XHTML, XSLT, RDF, MathML or multipart/related upload carries,
+// and every "file" kind that would otherwise pass its claimed type through —
+// is served as `application/octet-stream`, previewContentType()'s one value
+// that is not an inline type, which previewDisposition() turns into a
+// download (issue #548). The header pair in readRequest() (nosniff, and a
+// sandboxed preview) covers the rest, and previewDisposition() also takes the
+// one allowlisted type that can still act as a document — an .svg, whose
+// links navigate — out of the direct-open preview and a share link, while the
+// page's <img> reads it inline from the embed URL (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
 });
+
+/** The one served type that is not an inline type, so it never opens in a tab. */
+const PREVIEW_OCTET_STREAM = "application/octet-stream";
+
+/**
+ * The disposition an attachment leaves with: an ASCII `filename=` fallback
+ * plus the RFC 5987 `filename*` the real name rides on, so a name outside
+ * ASCII is a legal ByteString header in Node and the name the browser shows
+ * (drive#539). The name's quotes and backslashes are stripped, and
+ * safeFileName() strips a control character and a stray slash, so the
+ * filename cannot end the quoted-string early (drive#657); validatePath()
+ * already refuses those characters on the way in, and this keeps the function
+ * safe on its own.
+ * @param {string} name
+ * @returns {string}
+ */
+function attachmentDisposition(name) {
+  // An empty (or all-control-character) name still needs a legal disposition,
+  // and both halves must share it or a browser that reads `filename*` shows an
+  // empty name (drive#539).
+  const cleaned = safeFileName(String(name || "")) || "download";
+  // toWellFormed() repairs a lone surrogate before encodeURIComponent() sees
+  // it: half a surrogate pair would otherwise throw URIError and turn a
+  // download into a 500 (drive#539).
+  const wellFormed = cleaned.toWellFormed();
+  // A header value is a ByteString: a name outside ASCII is not a legal
+  // `filename=` value and Node's Response throws on it, so the fallback maps
+  // such a character to `_` and the real name rides on `filename*`, which
+  // browsers read.
+  const ascii = wellFormed.replace(/["\\]/g, "").replace(/[^\u0020-\u007E]/g, "_") || "download";
+  const encoded = encodeURIComponent(wellFormed).replace(
+    /[!'()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
 
 /**
  * The content type an inline preview is served as, never a document type.
@@ -230,41 +277,44 @@ export function previewContentType(name, storedContentType = "") {
   if (pinned) {
     return pinned;
   }
-  if (kind === "image" && !stored.startsWith("image/")) {
-    return "application/octet-stream";
+  if (kind === "image" && stored.startsWith("image/")) {
+    return stored;
   }
-  if (kind === "video" && !stored.startsWith("video/")) {
-    return "application/octet-stream";
+  if (kind === "video" && stored.startsWith("video/")) {
+    return stored;
   }
-  if (kind === "audio" && !stored.startsWith("audio/")) {
-    return "application/octet-stream";
+  if (kind === "audio" && stored.startsWith("audio/")) {
+    return stored;
   }
-  return stored || "application/octet-stream";
+  // An allowlist, not a pass-through: a type the file's kind did not claim as
+  // media, a PDF or text is octet-stream, and the disposition below makes it
+  // a download. This is what an XHTML, XSLT, RDF, MathML or multipart/related
+  // upload hits, because the kind is "file" and its claimed type is not in the
+  // allowlist (issue #548).
+  return PREVIEW_OCTET_STREAM;
 }
 
 /**
- * How an inline preview leaves: inline for every type a browser draws as a
- * picture, a player, a PDF or plain text, and an attachment for the one type
- * that can still act as a document — an SVG, which a browser renders as a
- * styled document whose links navigate. An SVG therefore leaves the
- * direct-open preview URL and a share link as a download, so a link can never
- * hand a stranger a rendered document on our address to phish a password
- * from; the page's own <img> reads the same bytes inline from the embed URL
- * (drive#657).
- * @param {string} name
+ * How a preview response leaves: inline for every allowlisted type a browser
+ * draws as a picture, a player, a PDF or plain text, and an attachment with
+ * the file's name for two cases. The first is octet-stream, every type that
+ * missed the allowlist (the XML document family, issue #548), because a
+ * browser downloads an attachment instead of rendering it as a page. The
+ * second is the one allowlisted type that can still act as a document — an
+ * SVG, which a browser renders as a styled document whose links navigate — so
+ * a direct-open preview URL or a share link can never hand a stranger a
+ * rendered document on our address to phish a password from; the page's own
+ * <img> reads the same bytes inline from the embed URL (drive#657).
+ * @param {string} name the file's own name, as the attachment's filename
  * @param {string} [storedContentType]
  * @returns {string}
  */
 export function previewDisposition(name, storedContentType = "") {
-  if (previewContentType(name, storedContentType) !== "image/svg+xml") {
+  const type = previewContentType(name, storedContentType);
+  if (type !== PREVIEW_OCTET_STREAM && type !== "image/svg+xml") {
     return "inline";
   }
-  // A header value cannot carry a control character or a backslash, and
-  // safeFileName() strips both (and a stray slash); the quotes go too, so the
-  // filename cannot end the quoted-string early. validatePath() already
-  // refuses those characters on the way in, and this keeps the function safe
-  // on its own (drive#657).
-  return `attachment; filename="${safeFileName(name).replace(/"/g, "")}"`;
+  return attachmentDisposition(name);
 }
 
 // ---------------------------------------------------------------- the words
@@ -540,7 +590,7 @@ export function trashStorePath(name) {
 /**
  * The parked name for a drive path, newest first, or null when that path is
  * not in Recently deleted.
- * @param {Array<{name: string}>} entries the trash listing
+ * @param {Array<{name: string, size?: number, etag?: string|null}>} entries the trash listing
  * @param {string} path the drive path to find
  */
 export function findTrashName(entries, path) {
@@ -548,7 +598,11 @@ export function findTrashName(entries, path) {
   for (const entry of entries) {
     const parsed = parseTrashName(entry.name);
     if (parsed && parsed.path === path && (!found || parsed.deletedAt > found.deletedAt)) {
-      found = { name: entry.name, ...parsed };
+      // The row's own size and ETag travel with the name. The move back a
+      // restore makes is a copy the storage does for itself, and it needs the
+      // size to pick the copy; the remove after it is conditional, and it needs
+      // the fingerprint the trash listing carried (drive issue #567).
+      found = { name: entry.name, size: entry.size, etag: entry.etag, ...parsed };
     }
   }
   return found;
@@ -565,49 +619,91 @@ export function isRestorable(deletedAt, now = Date.now()) {
 }
 
 /**
- * A time as a person reads it: today shows the clock, this year shows the day
- * and month, older shows the year too. `now` is injected so the tests pin one.
- * @param {string|number|Date} value
- * @param {number} now
+ * The instant a row stamps, as the browser reads it (drive#559). The Worker
+ * sends the instant and never words for it: a timestamp rendered here is a UTC
+ * timestamp, so a customer east of Greenwich reads the wrong clock and the
+ * wrong day, and a customer west of the line reads the wrong day too. The page
+ * formats it in the browser's own zone and locale instead.
+ * @param {number} at epoch milliseconds, from the entry or the storage listing
+ * @param {string} what names the entry in the failure, for the reader
+ * @returns {string} an ISO instant
  */
-export function formatWhen(value, now = Date.now()) {
-  // A Date's own epoch value; a number is already epoch milliseconds. Date.parse
-  // takes the string, so the union is narrowed to the form it can parse.
-  const time =
-    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
-  if (!Number.isFinite(time)) {
-    throw new TypeError(`formatWhen needs a date, got ${String(value)}`);
+function isoStamp(at, what) {
+  if (typeof at !== "number" || !Number.isFinite(at)) {
+    throw new TypeError(`${what} needs a date, got ${String(at)}`);
   }
-  const date = new Date(time);
-  const today = new Date(now);
-  const sameDay =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate();
-  if (sameDay) {
-    return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  }
-  if (date.getFullYear() === today.getFullYear()) {
-    return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  }
-  return date.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return new Date(at).toISOString();
+}
+
+// ------------------------------------------------------- the daily purge
+
+/**
+ * The cron string the nightly trash purge runs on. The trigger that fires it
+ * lives in cloudflare.config.ts, spelled out by hand there because the config
+ * cannot import this module (drive#432); test/meter.test.mjs's wiring pin
+ * reads both and fails when the two strings drift apart.
+ * @type {"0 5 * * *"}
+ */
+export const TRASH_PURGE_SCHEDULE = "0 5 * * *";
+
+/**
+ * Whether a parked file is past the window the page promises (drive issue
+ * #521): older than RECENTLY_DELETED_DAYS, the point where `isRestorable`
+ * has stopped saying yes and every copy on the page says it is gone. A name
+ * dated in the future — a skewed clock where the delete happened — is never
+ * expired, so it waits for now to catch up rather than vanishing a day
+ * before its own window opens.
+ * @param {number} deletedAt epoch milliseconds, from parseTrashName
+ * @param {number} now epoch milliseconds
+ */
+export function isTrashExpired(deletedAt, now = Date.now()) {
+  return now - deletedAt > RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
 }
 
 /**
- * The day a deleted file leaves Recently deleted, in words.
- * @param {number} deletedAt epoch milliseconds
- * @returns {string}
+ * Empty every account's Recently deleted of what the page no longer promises
+ * (drive issue #521): a parked file older than RECENTLY_DELETED_DAYS is
+ * removed from storage, so the 30-day promise the Files page makes is a
+ * promise about a window, not about a forever.
+ *
+ * Runs on TRASH_PURGE_SCHEDULE from the Worker's `scheduled` handler, so a
+ * scheduled run has no request and so no signed-in account: the accounts to
+ * walk are the rows in the `accounts` table, the same source the account
+ * close cron takes its due rows from. Every account has a bucket (provisioned
+ * at sign-up, drive#371), so a listing that fails is a real failure and this
+ * lets it throw — a purge that silently skipped an account would leave files
+ * past their promised removal day while the logs read success.
+ *
+ * Only entries whose name parses as a trash name are removed: a stray file
+ * or folder under .trash that the park path did not write is not ours to
+ * judge, and the next run sees it again.
+ *
+ * @param {D1Database} db the customer database (the `accounts` table)
+ * @param {FileStore} store the unscoped store; this function scopes it per
+ *   account, the same scoping every account-walking cron gets
+ * @param {number} now epoch milliseconds, injectable so the tests pin one
+ * @returns {Promise<{accounts: number, purged: number}>} how many accounts
+ *   were walked and how many parked files were removed
  */
-export function restorableUntil(deletedAt) {
-  const until = deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
-  return `Restorable until ${new Date(until).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}.`;
+export async function purgeExpiredTrash(db, store, now = Date.now()) {
+  const rows = await db.prepare("SELECT id FROM accounts").all();
+  const accounts = /** @type {{id: string}[]} */ (rows.results ?? []);
+  let purged = 0;
+  for (const row of accounts) {
+    const scoped = scopeStore(store, { id: row.id });
+    // The recursive walk, because a parked file nests under
+    // `.trash/<path>/<ts>` (drive#570): `list` is one folder deep and would
+    // see the folders and none of the files in them.
+    const entries = await scoped.listAll(TRASH_PATH);
+    for (const entry of entries) {
+      const parsed = parseTrashName(entry.name);
+      if (parsed && isTrashExpired(parsed.deletedAt, now)) {
+        await scoped.remove(trashStorePath(entry.name));
+        purged += 1;
+      }
+    }
+  }
+  return { accounts: accounts.length, purged };
 }
 
 // ---------------------------------------------------------------- the store
@@ -658,7 +754,9 @@ export function restorableUntil(deletedAt) {
  *   One object's headers without its bytes — what a HEAD answer needs, so a
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
- * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string, options?: {contentLength?: number}) => Promise<void>} write
+ *   `contentLength` is the size the caller already knows (an upload's
+ *   Content-Length): a stream PUT to S3 needs it or the endpoint answers 411.
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<boolean>} writeIfAbsent
  *   The create-only write: it stores the bytes only when the key is not there
  *   yet, and answers `true` when this call is the one that put them there and
@@ -675,7 +773,15 @@ export function restorableUntil(deletedAt) {
  *   to: see `createS3Store`'s `writeIfAbsent` for what the S3 path can
  *   honestly offer, and its `write` for the overwrite that remains its
  *   backstop.
- * @property {(path: string) => Promise<void>} remove
+ * @property {(path: string, options?: {ifMatch?: string|null}) => Promise<void>} remove
+ *   A delete the store makes, and optionally a conditional one. `ifMatch` is
+ *   the ETag the caller read from the listing before it decided to remove:
+ *   a key whose bytes are no longer that ETag is left alone and the store
+ *   throws `ChangedUnderUsError`, so a save that landed while a delete was
+ *   running survives instead of being removed (drive issue #567). A caller
+ *   that hands over no ETag asks for the delete it always got, and a store
+ *   whose provider answers no ETag removes as it always did: the option is
+ *   the tightening, not a new requirement every caller must meet.
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
  *   folders included, in the provider's own key order, at most `limit` keys
@@ -750,6 +856,62 @@ export function drivePathFromKey(key, account) {
     );
   }
   return `/${key.slice(prefix.length + 1)}`;
+}
+
+/**
+ * The refusal that means "the bytes changed under you": a move that read a
+ * file's ETag, asked the storage to copy it, and then found the key holding
+ * different bytes when it went to remove the original. A save that landed
+ * while the move ran is the case that produces it (drive issue #567), and the
+ * move stops rather than removing the newer bytes: a delete that loses the
+ * save the person made while it ran is the failure this exists to prevent.
+ * The route catches it and answers with the one sentence the page shows.
+ */
+export class ChangedUnderUsError extends Error {
+  /** @param {string} path the drive path, or the storage key in a store, whose bytes changed */
+  constructor(path) {
+    super(`${path} changed while it was being moved`);
+    this.name = "ChangedUnderUsError";
+    /** @type {string} the path whose bytes changed, as the caller knows it */
+    this.path = path;
+  }
+}
+
+/**
+ * The longest storage key this drive can hold, and the key is counted as bytes
+ * because every S3-shaped provider counts it that way and caps it at 1,024
+ * (Amazon S3, "Object key naming guidelines"): a longer one is answered with
+ * `400 KeyTooLong`, which is a storage error a person cannot act on. Bytes,
+ * not characters, because the two counts agree for ASCII and diverge as soon as
+ * a name is not ASCII.
+ */
+export const MAX_STORAGE_KEY_BYTES = 1024;
+
+/**
+ * The storage key one drive path lives at under an account's own prefix, and
+ * the sentence to show when that key is longer than the store can hold.
+ *
+ * `validatePath` above counts characters, and the trash name percent-encodes
+ * every byte of a path that is not ASCII into three characters. So a
+ * 400-character path in Japanese is a 1,200-byte path and a 2,400-character
+ * trash name, which is a key the store refuses: the file uploaded, the person
+ * could read it, and then the delete failed with a storage error (drive issue
+ * #567). Measuring the key here, in bytes, once, is what turns that into a
+ * 400 with a sentence the person can act on.
+ *
+ * The three routes that write a key for a person's file ask before they write
+ * it: an upload, a delete (which builds the trash key it will park under) and a
+ * restore (which builds the key it puts the file back at).
+ * @param {{id: string}} account the signed-in account
+ * @param {string} path a validated drive path, or the drive path a parked file has
+ * @returns {{key: string, error?: undefined}|{key: "", error: string}}
+ */
+export function accountStorageKey(account, path) {
+  const key = `${accountPrefix(account)}${path}`;
+  if (new TextEncoder().encode(key).byteLength > MAX_STORAGE_KEY_BYTES) {
+    return { key: "", error: failureMessage("path-too-long") };
+  }
+  return { key };
 }
 
 /**
@@ -849,8 +1011,8 @@ export function scopeStore(store, account) {
     async listAll(path) {
       return (await store.listAll(toKey(path))).map(toDriveEntry);
     },
-    async write(path, body, contentType) {
-      return store.write(toKey(path), body, contentType);
+    async write(path, body, contentType, options) {
+      return store.write(toKey(path), body, contentType, options);
     },
     // Scoped like every other write: the destination is rewritten to this
     // account's own key before the store sees it, so a create-only write can
@@ -858,8 +1020,11 @@ export function scopeStore(store, account) {
     async writeIfAbsent(path, body, contentType) {
       return store.writeIfAbsent(toKey(path), body, contentType);
     },
-    async remove(path) {
-      return store.remove(toKey(path));
+    async remove(path, options) {
+      // The conditional half of the delete passes through the scope untouched:
+      // the store is the one that can compare the ETag it was given with the
+      // bytes it is holding, so scoping never drops a guard.
+      return store.remove(toKey(path), options);
     },
     async copy(from, to, size) {
       const [source, dest] = toKeys(from, to);
@@ -902,6 +1067,38 @@ export function scopeStore(store, account) {
 async function memoryEtag(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Whether a stored ETag is not the one a conditional remove was given. An
+ * absent ETag on either side is no comparison to make: the caller had nothing
+ * to hold the file to, so there is nothing for the bytes to have changed from,
+ * and a store that answers no ETag for a version it keeps keeps removing as it
+ * always did (drive issue #567).
+ * @param {string|null|undefined} stored
+ * @param {string|null|undefined} expected
+ * @returns {boolean}
+ */
+function etagMismatch(stored, expected) {
+  if (typeof expected !== "string" || expected === "") {
+    return false;
+  }
+  if (typeof stored !== "string" || stored === "") {
+    return false;
+  }
+  return stored !== expected;
+}
+
+/**
+ * An ETag as S3 spells it in a header. A listing answers one in quotes and
+ * `parseListObjects` strips them so two stores' values compare in one form, so
+ * they are put back before an `If-Match` header is signed: a quote-free ETag
+ * in a conditional header is not the entity tag the vendor asked for.
+ * @param {string} etag
+ * @returns {string}
+ */
+function quotedEntityTag(etag) {
+  return etag.startsWith('"') ? etag : `"${etag}"`;
 }
 
 /**
@@ -1116,7 +1313,17 @@ export function createMemoryStore() {
       objects.set(path, { body: bytes, contentType, modified: now, etag });
       return true;
     },
-    async remove(path) {
+    async remove(path, { ifMatch } = {}) {
+      // The conditional half: a caller that read this key's ETag before it
+      // decided to remove it (a delete that parks the file first, drive issue
+      // #567) hands it back, and a key whose bytes changed under it is left
+      // alone rather than removed. A key with no ETag to compare against is
+      // removed as it always was, so a store that answers no ETag for a version
+      // it keeps never turns every delete into a refusal.
+      const value = objects.get(path);
+      if (value !== undefined && etagMismatch(value.etag, ifMatch)) {
+        throw new ChangedUnderUsError(path);
+      }
       // A delete hides the live version rather than forgetting it, exactly as
       // the drive's storage lifecycle does (build-spec.md "Old versions"), so
       // the bytes stay readable until the provider's own retention ends them.
@@ -1194,63 +1401,6 @@ export function createMemoryStore() {
       objects.set(to, { ...value, modified: now });
     },
   };
-}
-
-/**
- * The bytes of a request body a signer can hash, read from the four shapes
- * `write` is called with (`ReadableStream` from an upload, a `Blob` from the
- * starter template, a `Uint8Array` or a string from the CLI and the tests).
- * SigV4 signs the payload hash, so a stream must be in hand before the request
- * goes out; a body that is already bytes is passed through untouched.
- *
- * A signed write therefore reads the whole body. There is no size check here:
- * the FileStore interface has no multipart PUT, and the callers already hold
- * or bound those bytes (the upload handler from the incoming request, the
- * proof from an empty object). Inventing a second cap would be a second
- * number for the same body. Only a signed store reads a body this way: the
- * unsigned stand-in sends the stream as it is, which is what `rclone serve s3`
- * expects and what keeps the no-credential path free of a buffer it does not
- * need.
- * @param {BodyInit} body
- * @returns {Promise<Uint8Array>}
- */
-async function signableBody(body) {
-  if (typeof body === "string") {
-    return new TextEncoder().encode(body);
-  }
-  if (body instanceof Uint8Array) {
-    return body;
-  }
-  if (typeof Blob !== "undefined" && body instanceof Blob) {
-    return new Uint8Array(await body.arrayBuffer());
-  }
-  if (typeof ReadableStream === "undefined" || !(body instanceof ReadableStream)) {
-    throw new TypeError(
-      `cannot send a body of type ${Object.prototype.toString.call(body)}: a signed write hashes the payload, and only a stream, bytes, a Blob or a string can be read as one`,
-    );
-  }
-  /** @type {ReadableStream<Uint8Array>} */
-  const stream = /** @type {any} */ (body);
-  const chunks = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-  }
-  let total = 0;
-  for (const chunk of chunks) {
-    total += chunk.byteLength;
-  }
-  const bytes = new Uint8Array(total);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
 }
 
 /**
@@ -1424,17 +1574,20 @@ export function createS3Store(config) {
   const urlFor = (path) => `${baseFor(path)}/${path.split("/").map(encodeURIComponent).join("/")}`;
   /**
    * The one request path every method below uses, so a store is either fully
-   * signed or fully unsigned. A body is read into bytes first, because SigV4
-   * signs the payload hash and a stream cannot be hashed after it is sent.
-   * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
-   * uses, so a test can still inject fetch and a credentialed store never
-   * bypasses it through `aws.fetch`. Every caller below passes a string URL.
-   * The send carries the store's one timeout and one retry (core/fetch-retry.js):
-   * a stalled socket answers named after 15 s, and a 5xx gets exactly one
-   * retried call. The signing is inside the retry's per-attempt send, because
-   * a second attempt must sign again — the first attempt's signed Request has
-   * a body stream already consumed and its own x-amz-date, and replaying it
-   * is a SignatureDoesNotMatch, not a retry.
+   * signed or fully unsigned. A write body is sent as it is: aws4fetch signs
+   * S3 with `X-Amz-Content-Sha256: UNSIGNED-PAYLOAD` (it sets that header
+   * itself), so a stream is never read into isolate memory to hash it
+   * (drive#539). Fetch-retry already skips the 5xx retry on a stream, because
+   * the first attempt spends it. Signing is `aws.sign` then `fetchImpl`, the
+   * same path `createS3Client` uses, so a test can still inject fetch and a
+   * credentialed store never bypasses it through `aws.fetch`. Every caller
+   * below passes a string URL. The send carries the store's one timeout and
+   * one retry (core/fetch-retry.js): a stalled socket answers named after 15 s,
+   * and a 5xx on a replayable body gets exactly one retried call. The signing
+   * is inside the retry's per-attempt send, because a second attempt must sign
+   * again - the first attempt's signed Request has a body stream already
+   * consumed and its own x-amz-date, and replaying it is a SignatureDoesNotMatch,
+   * not a retry.
    *
    * @type {(input: string | URL | Request, init?: RequestInit) => Promise<Response>}
    */
@@ -1447,18 +1600,8 @@ export function createS3Store(config) {
           })
       : async (input, init = {}) => {
           const opts = /** @type {any} */ ({ ...init });
-          if (opts.body === undefined) {
-            // GET, DELETE and CopyObject send no payload to hash.
-          } else if (opts.body === null) {
+          if (opts.body === null) {
             delete opts.body;
-          } else {
-            const bytes = await signableBody(opts.body);
-            // The body is sent exactly as it was signed: a Uint8Array is copied
-            // into a plain view, the same copy createS3Client makes, because
-            // sending anything other than the signed bytes is SignatureDoesNotMatch.
-            const body = new Uint8Array(bytes.byteLength);
-            body.set(bytes);
-            opts.body = body;
           }
           const url =
             typeof input === "string"
@@ -1654,10 +1797,29 @@ export function createS3Store(config) {
         ...(status !== 200 ? { contentLength } : {}),
       };
     },
-    async write(path, body, contentType) {
+    async write(path, body, contentType, options = {}) {
+      /** @type {Record<string, string>} */
+      const headers = { "content-type": contentType };
+      if (typeof options.contentLength === "number" && Number.isFinite(options.contentLength)) {
+        // The caller knows the size (the owner upload carries the browser's
+        // Content-Length), so the body is sent as the stream it is and the
+        // header rides along: the bytes are never read into isolate memory
+        // (drive#539).
+        headers["content-length"] = String(options.contentLength);
+      } else if (aws !== null && body instanceof ReadableStream) {
+        // A signed S3 PUT cannot carry a stream with no declared size: an
+        // UNSIGNED-PAYLOAD upload with no aws-chunked framing has no length to
+        // send, and an endpoint answers 411 Length Required (the MinIO stand-in
+        // does, measured 2026-10-05). Buffering it here would put an unbounded
+        // body into isolate memory, the exact failure drive#539 exists to
+        // remove, so a caller that cannot declare a size is refused with a
+        // clear error. The owner upload reads a length-less body under its own
+        // ceiling and always passes a length.
+        throw new TypeError("a signed stream write needs a contentLength");
+      }
       const response = await request(urlFor(path), {
         method: "PUT",
-        headers: { "content-type": contentType },
+        headers,
         body,
       });
       if (!response.ok) {
@@ -1700,8 +1862,19 @@ export function createS3Store(config) {
       }
       return true;
     },
-    async remove(path) {
-      const response = await request(urlFor(path), { method: "DELETE" });
+    async remove(path, { ifMatch } = {}) {
+      // A conditional remove is the guard a delete needs. The ETag is what the
+      // bytes were when the delete listed them, and a key whose bytes changed
+      // since (a mount save that landed while the trash copy ran, drive issue
+      // #567) is answered 412 rather than removed.
+      const headers = {};
+      if (typeof ifMatch === "string" && ifMatch !== "") {
+        headers["if-match"] = quotedEntityTag(ifMatch);
+      }
+      const response = await request(urlFor(path), { method: "DELETE", headers });
+      if (response.status === 412) {
+        throw new ChangedUnderUsError(path);
+      }
       if (!response.ok && response.status !== 404) {
         throw new Error(`storage delete failed with ${response.status}`);
       }
@@ -2152,27 +2325,37 @@ function escapeXmlText(text) {
 }
 
 /**
- * The rows the file list renders: folders first, then files, each with the
- * words already formatted so the static page never repeats the arithmetic.
+ * The rows the file list renders: folders first, then files. A row carries
+ * only the instant an entry was written and no clock of its own: the browser
+ * writes the words, because a UTC row follows every customer west of
+ * Greenwich around the map (drive#559).
  * @param {FileEntry[]} entries
- * @param {number} now
  */
-export function fileRows(entries, now = Date.now()) {
+export function fileRows(entries) {
   const { folders, files } = splitEntries(entries);
   /** @param {{name: string, path?: string, kind?: string, size?: number, modified?: number|null, contentType?: string}} entry */
-  const row = (entry) => ({
-    name: entry.name,
-    path: entry.path || "",
-    kind:
-      entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
-    sizeLabel: entry.kind === "folder" ? "" : formatBytes(entry.size || 0),
-    whenLabel: entry.modified ? formatWhen(entry.modified, now) : "",
-  });
+  const row = (entry) => {
+    const folder = entry.kind === "folder";
+    return {
+      name: entry.name,
+      path: entry.path || "",
+      kind: folder ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
+      sizeLabel: folder ? "" : formatBytes(entry.size || 0),
+      // A folder has no write time, so it has no instant either. A file's
+      // `modified` is optional in S3's own listing, so a server that reports
+      // none is answering the spec and the row keeps its empty stamp; a
+      // `modified` that is there but is not a date is a bug, and isoStamp
+      // says so rather than rendering "Invalid Date" (drive#559).
+      modifiedIso: entry.modified ? isoStamp(entry.modified, `the file ${entry.name}`) : "",
+    };
+  };
   return [...folders.map(row), ...files.map(row)];
 }
 
 /**
- * The rows Recently deleted renders, newest first.
+ * The rows Recently deleted renders, newest first. The two dates are instants
+ * for the browser to write in its own zone: the delete time and the day the
+ * window closes are both UTC words if this Worker writes them (drive#559).
  * @param {FileEntry[]} entries
  * @param {number} [now]
  */
@@ -2192,8 +2375,11 @@ export function trashRows(entries, now = Date.now()) {
         path: parsed.path,
         deletedAt: parsed.deletedAt,
         sizeLabel: formatBytes(entry.size || 0),
-        deletedLabel: `Deleted ${formatWhen(parsed.deletedAt, now)}`,
-        untilLabel: restorableUntil(parsed.deletedAt),
+        deletedIso: isoStamp(parsed.deletedAt, `the file ${parsed.path}`),
+        untilIso: isoStamp(
+          parsed.deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000,
+          `the file ${parsed.path}`,
+        ),
         restorable,
         // Past the window the button is gone, and the one line says why.
         restoreLabel: restorable ? "Restore" : "Past the 30 days",
@@ -2379,10 +2565,10 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return uploadRequest(request, url, scoped, account, options);
   }
   if (route === `${FILES_ENDPOINT}/delete`) {
-    return deleteRequest(request, scoped, now);
+    return deleteRequest(request, scoped, account, now);
   }
   if (route === `${FILES_ENDPOINT}/restore`) {
-    return restoreRequest(request, scoped, now);
+    return restoreRequest(request, scoped, account, now);
   }
   return plain("Not found.", 404);
 }
@@ -2484,7 +2670,7 @@ async function listRequest(request, url, store, now) {
     return json({
       view: "folder",
       path: checked.path,
-      rows: fileRows(entries, now),
+      rows: fileRows(entries),
       folders: folders.length,
       files: files.length,
       // The page's More control. `cursor` on the way in, `nextCursor` on the
@@ -2559,7 +2745,7 @@ async function readRequest(request, url, store, download, embed = false) {
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
       "content-disposition": download
-        ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
+        ? attachmentDisposition(name)
         : embedded
           ? "inline"
           : previewDisposition(name || "", contentType),
@@ -2642,6 +2828,68 @@ async function readRequest(request, url, store, download, embed = false) {
 }
 
 /**
+ * Read a whole body stream, up to `limit` bytes, and answer its bytes and
+ * length. A stream longer than the limit is cancelled and answered `null`.
+ * This is the length-less upload fallback: a body that declares its size is
+ * streamed straight to storage and never read here (drive#539).
+ * @param {ReadableStream<Uint8Array>} stream
+ * @param {number} limit
+ * @returns {Promise<{bytes: Uint8Array<ArrayBuffer>, length: number}|null>}
+ */
+async function readWithin(stream, limit) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      length += value.byteLength;
+      if (length > limit) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, length };
+}
+
+/**
+ * The listing row for one drive path: its size and its ETag, which are the two
+ * facts a copy and a conditional remove need and the only two the drive has
+ * without reading the bytes. The parent folder is listed rather than the file
+ * read, because a read pulls every byte of the file through the Worker and a
+ * folder listing costs one request whatever the file weighs: a delete that
+ * moved 200 MB to park 200 MB was a download plus an upload, and a Worker has
+ * 128 MB of memory (drive issue #567).
+ *
+ * `null` is the answer for a path the folder does not list, which is how the
+ * callers tell a file that is not there from a folder that is not there: both
+ * are the same 404 to the person, and neither is worth a storage read.
+ * @param {FileStore} store a scoped store
+ * @param {string} path a validated drive path
+ * @returns {Promise<FileEntry|null>} the row, or null
+ */
+async function listingEntry(store, path) {
+  const cut = path.lastIndexOf("/");
+  const folder = cut <= 0 ? "/" : path.slice(0, cut);
+  const name = path.slice(cut + 1);
+  const rows = await store.list(folder);
+  return rows.find((row) => row.name === name && row.kind !== "folder") ?? null;
+}
+
+/**
  * @param {Request} request
  * @param {URL} url
  * @param {FileStore} store
@@ -2661,6 +2909,19 @@ async function uploadRequest(request, url, store, account, options = {}) {
   if (!name) {
     return json({ error: failureMessage("upload-needs-name") }, 400);
   }
+  const declared = request.headers.get("content-length");
+  /** @type {number|null} */
+  let incomingLength = null;
+  if (declared !== null) {
+    const length = Number(declared);
+    // A whole, safe byte count: "1000.5" and a value past the safe integer
+    // range are not a legal Content-Length, and forwarding one would turn the
+    // write into a 500 instead of a clean 413 (drive#539).
+    if (!Number.isSafeInteger(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
+      return json({ error: failureMessage("body-too-large") }, 413);
+    }
+    incomingLength = length;
+  }
   /** @type {number|null} bytes this upload may still add before the first charge */
   let allowance = null;
   if (options.db && options.prepaidPause && (await balanceCents(options.db, account.id)) <= 0) {
@@ -2671,13 +2932,12 @@ async function uploadRequest(request, url, store, account, options = {}) {
   }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
-    const header = Number(request.headers.get("content-length") ?? "");
     // A missing length is 0 while under the limit. At or past 1 TB it is 1
     // byte so an upload with no length cannot sneak past the exact-limit
     // edge (stored + 0 is not greater than the limit).
     const incomingBytes =
-      Number.isInteger(header) && header > 0
-        ? header
+      incomingLength !== null && incomingLength > 0
+        ? incomingLength
         : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
           ? 1
           : 0;
@@ -2691,6 +2951,15 @@ async function uploadRequest(request, url, store, account, options = {}) {
     }
   }
   const path = joinPath(checked.path, name);
+  // The key this file will live at is measured before a byte is read, because
+  // a key past the store's cap is answered 400 KeyTooLong mid-write: the file
+  // would land nowhere, the page would show a storage error, and the delete
+  // that followed it tried to park the file under a key that cannot exist
+  // (drive issue #567).
+  const keyed = accountStorageKey(account, path);
+  if (keyed.error) {
+    return json({ error: keyed.error }, 400);
+  }
   const contentType = request.headers.get("content-type") || "application/octet-stream";
   // A Worker request's body is a ReadableStream; a request with no body is
   // an upload that never carried one, refused above. Before the first charge
@@ -2699,7 +2968,22 @@ async function uploadRequest(request, url, store, account, options = {}) {
   const body = /** @type {ReadableStream} */ (request.body);
   const counted = allowance === null ? body : body.pipeThrough(preChargeLimitStream(allowance));
   try {
-    await store.write(path, counted, contentType);
+    /** @type {BodyInit} */
+    let payload = counted;
+    let contentLength = incomingLength;
+    if (contentLength === null) {
+      // The client declared no length, so there is no header to cap and no
+      // size for the signed PUT. The body is read once here, under the same
+      // ceiling, and the store is handed the size it needs; a browser upload
+      // always declares its length and streams untouched (drive#539).
+      const read = await readWithin(counted, UPLOAD_FILE_MAX_BYTES);
+      if (read === null) {
+        return json({ error: failureMessage("body-too-large") }, 413);
+      }
+      payload = read.bytes;
+      contentLength = read.length;
+    }
+    await store.write(path, payload, contentType, { contentLength });
   } catch (error) {
     if (error instanceof PreChargeLimitError) {
       return json({ error: error.message }, 403);
@@ -2712,10 +2996,11 @@ async function uploadRequest(request, url, store, account, options = {}) {
 /**
  * @param {Request} request
  * @param {FileStore} store
+ * @param {{id: string}} account
  * @param {number} now
  * @returns {Promise<Response>}
  */
-async function deleteRequest(request, store, now) {
+async function deleteRequest(request, store, account, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to delete.", 405);
   }
@@ -2733,23 +3018,42 @@ async function deleteRequest(request, store, now) {
   if (checked.error) {
     return json({ error: checked.error }, 400);
   }
+  // The key the file is parked under is measured before anything moves, because
+  // that key is the longest one the drive builds: the trash name
+  // percent-encodes the path, so a long path that is not ASCII becomes a key
+  // the store refuses, and a delete that cannot park its file is a delete that
+  // fails (drive issue #567).
+  const parkedAt = trashStorePath(trashName(checked.path, now));
+  const parked = accountStorageKey(account, parkedAt);
+  if (parked.error) {
+    return json({ error: parked.error }, 400);
+  }
   try {
-    const object = await store.read(checked.path);
-    if (!object || object.body === null) {
-      // A read that came back with no body is a 304/416 shape, which only a
-      // conditional request can produce and this one never sends, so a null
-      // body here is a store that found nothing. `body` is null (not absent)
-      // on those two statuses, so the check is the narrowed form of the one
-      // this function has always made.
+    // The parent folder is listed, not the file read: the row carries the size
+    // the copy needs and the ETag the conditional remove is held to, and a read
+    // would pull every byte of the file through the Worker to get two facts a
+    // listing already has. A Worker has 128 MB of memory, so a delete that
+    // read its file and re-uploaded it was a download plus an upload of the
+    // whole object, and anything past about 100 MB failed it.
+    const entry = await listingEntry(store, checked.path);
+    if (!entry) {
       return json({ error: failureMessage("file-not-found") }, 404);
     }
-    await store.write(
-      trashStorePath(trashName(checked.path, now)),
-      object.body,
-      object.contentType,
-    );
-    await store.remove(checked.path);
+    // A move the storage makes itself, in two steps: the copy parks the file
+    // under `.trash`, and only then is the original removed. A file over the
+    // single-copy ceiling is a multipart copy, the same one `drive branch`
+    // makes, so a 5 GB file is parked without 5 GB through the Worker.
+    await store.copy(checked.path, parkedAt, entry.size);
+    // Conditional on the ETag the listing carried: a save that landed while the
+    // copy ran changed the bytes, and removing them would lose the save. The
+    // trash holds the copy the storage made, and the live key is the one that
+    // is left alone when the bytes are no longer the ones the delete listed.
+    const etag = typeof entry.etag === "string" ? entry.etag : null;
+    await store.remove(checked.path, { ifMatch: etag });
   } catch (cause) {
+    if (cause instanceof ChangedUnderUsError) {
+      return json({ error: failureMessage("delete-file-changed") }, 409);
+    }
     return json({ error: `We could not delete that file: ${String(cause)}` }, 500);
   }
   return json({ ok: true, path: checked.path });
@@ -2758,10 +3062,11 @@ async function deleteRequest(request, store, now) {
 /**
  * @param {Request} request
  * @param {FileStore} store
+ * @param {{id: string}} account
  * @param {number} now
  * @returns {Promise<Response>}
  */
-async function restoreRequest(request, store, now) {
+async function restoreRequest(request, store, account, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to restore.", 405);
   }
@@ -2776,6 +3081,14 @@ async function restoreRequest(request, store, now) {
   if (checked.error) {
     return json({ error: checked.error }, 400);
   }
+  // The key the file goes back to is measured first, for the reason the delete
+  // measures the key it parks under: a file whose own key is past the store's
+  // cap cannot be put back, and the person is told that in words they can act
+  // on rather than shown a storage error (drive issue #567).
+  const back = accountStorageKey(account, checked.path);
+  if (back.error) {
+    return json({ error: back.error }, 400);
+  }
   try {
     // One narrow LIST: the parked versions of this one path all share the
     // prefix `.trash/<path>/` (drive#570), so the restore asks for exactly
@@ -2784,9 +3097,17 @@ async function restoreRequest(request, store, now) {
     // is not a bare number is a deeper path's own parked version (a folder
     // created later over the old file's name), not this file's.
     const parked = await store.list(`${TRASH_PATH}/${checked.path.slice(1)}`);
-    /** @type {{name: string, deletedAt: number}|null} */
+    // The row's size and ETag ride along: the move back is a storage copy that
+    // needs the size, and the remove after it is conditional on the ETag
+    // (drive issue #567).
+    /** @type {{name: string, deletedAt: number, size?: number, etag?: string|null}|null} */
     let found = parked
-      .map((entry) => ({ name: entry.name, deletedAt: Number(entry.name) }))
+      .map((entry) => ({
+        name: entry.name,
+        deletedAt: Number(entry.name),
+        size: entry.size,
+        etag: entry.etag,
+      }))
       .filter((version) => Number.isFinite(version.deletedAt) && version.deletedAt > 0)
       .sort((a, b) => b.deletedAt - a.deletedAt)[0];
     if (!found) {
@@ -2814,16 +3135,22 @@ async function restoreRequest(request, store, now) {
     const parkedAt = trashStorePath(
       found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
     );
-    const object = await store.read(parkedAt);
-    if (!object || object.body === null) {
-      // Same narrow as the delete path: a parked copy answers with bytes, so
-      // anything else is gone as far as this request is concerned.
-      return json({ error: "That file is no longer in Recently deleted." }, 404);
-    }
-    await store.write(checked.path, object.body, object.contentType);
-    await store.remove(parkedAt);
+    // The mirror of the delete: the copy is the storage's own, so the bytes
+    // never come through the Worker, and the remove is conditional on the ETag
+    // the trash listing carried. The listing above is what found the row, so
+    // the parked file is there unless a second restore ran in the same tick.
+    await store.copy(parkedAt, checked.path, found.size);
+    const etag = typeof found.etag === "string" ? found.etag : null;
+    // A copy that lands while this one runs changes the parked key, and the
+    // remove of it is refused: the file is back, the parked copy that changed is
+    // still parked, and the person is asked to try the restore again, which
+    // brings back the newer parked copy.
+    await store.remove(parkedAt, { ifMatch: etag });
     return json({ ok: true, path: checked.path });
   } catch (cause) {
+    if (cause instanceof ChangedUnderUsError) {
+      return json({ error: failureMessage("restore-file-changed") }, 409);
+    }
     return json({ error: `We could not put that file back: ${String(cause)}` }, 500);
   }
 }

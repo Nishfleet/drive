@@ -111,7 +111,7 @@ export function safeAfterSigninPath(raw) {
  * token and builds the link itself, so Better Auth never has to know the
  * drive's page layout.
  *
- * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string}) => Promise<unknown>}} options
+ * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null}) => Promise<unknown>}} options
  */
 export function createAuth(options) {
   return betterAuth({
@@ -189,8 +189,18 @@ export function createAuth(options) {
         // returning one is found. Both are sign-in, which is why sign-up is
         // left on: the spec's screen has no separate registration step.
         disableSignUp: false,
-        sendMagicLink: async ({ email, token }) => {
-          await options.sendLink({ to: email, url: signinLink(token, options.baseURL) });
+        sendMagicLink: async ({ email, token }, ctx) => {
+          // Which browser or device asked, out of the library's own request
+          // context: src/signin.js forwards this Worker request's user-agent
+          // to the magic-link endpoint, so this is the header the person's
+          // browser actually sent rather than one invented here (drive#550).
+          // Called outside a request, the library answers null and the mail
+          // says an unknown device.
+          await options.sendLink({
+            to: email,
+            url: signinLink(token, options.baseURL),
+            userAgent: ctx?.getHeader("user-agent") ?? null,
+          });
         },
       }),
     ],
@@ -277,8 +287,8 @@ export function authFor(env) {
  * be sent must fail the sign-in, and the route turns that failure into the
  * message table's sign-in error instead of telling a person to check an inbox
  * that will stay empty.
- * @param {{EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>}} env
- * @param {{to: string, url: string}} link
+ * @param {{EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null}) => Promise<unknown>}} env
+ * @param {{to: string, url: string, userAgent: string|null}} link
  */
 async function sendSigninLink(env, link) {
   if (typeof env.SIGNIN_MAIL === "function") {
@@ -293,8 +303,122 @@ async function sendSigninLink(env, link) {
     to: link.to,
     kind: "signin-link",
     from: env.MAIL_FROM ?? "",
-    rendered: signinLinkEmail(link.url),
+    rendered: signinLinkEmail(link.url, link.userAgent),
   });
+}
+
+/** The second sentence of the device and time line (drive#550): the words
+ * the issue asks the mail to say. One constant, so every mail this code
+ * sends carries it word for word.
+ * @type {string}
+ */
+export const IGNORING_SENTENCE = "If you did not ask for this, ignore it.";
+
+/** The device line's unknown half: the words a request without a readable
+ * user-agent gets, so the sentence still names a device. One string, so
+ * every mail this code sends carries the same words in the same place.
+ * @type {string}
+ */
+export const UNKNOWN_DEVICE_NAME = "an unknown device";
+
+/**
+ * Product names this repo spells out, in the order they win: Edge, Opera,
+ * Samsung Internet and Chromium all carry "Chrome" and "Safari" in their own
+ * user-agent, and Chrome and Firefox on iOS (CriOS, FxiOS) carry "Safari", so
+ * the browser run has to be found before the one it borrows the string from.
+ * The order is the whole rule the tables hold, which is why the last Opera
+ * row is where the plain "opera" name lands: the modern token comes first
+ * and the older one answers when the new one is not there.
+ * @type {readonly (readonly [string, string])[]}
+ */
+const BROWSER_NAMES = Object.freeze([
+  ["edg", "Edge"],
+  ["edga", "Edge"],
+  ["edgios", "Edge"],
+  ["edge", "Edge"],
+  ["opr", "Opera"],
+  ["samsungbrowser", "Samsung Internet"],
+  ["crios", "Chrome"],
+  ["fxios", "Firefox"],
+  ["chromium", "Chromium"],
+  ["firefox", "Firefox"],
+  ["chrome", "Chrome"],
+  ["safari", "Safari"],
+  ["opera", "Opera"],
+]);
+
+/** @type {readonly (readonly [string, string])[]} */
+const PLATFORM_NAMES = Object.freeze([
+  ["android", "Android"],
+  ["iphone", "iPhone"],
+  ["ipad", "iPad"],
+  ["ipod", "iPhone"],
+  ["cros", "ChromeOS"],
+  ["windows", "Windows"],
+  ["macintosh", "macOS"],
+  ["linux", "Linux"],
+]);
+
+/**
+ * What the sign-in mail calls the thing that asked, read from the user-agent
+ * the request carried (drive#550). A browser and a platform name is enough
+ * for a person to tell whether the sign-in was theirs, and a raw user-agent
+ * line would put their whole browser fingerprint in their inbox.
+ *
+ * Every word in the answer is out of the two tables above, and the header is
+ * only read as letter runs held against those tables whole, so a caller who
+ * puts anything else in `user-agent` gets it back as `null` rather than as
+ * words the mail echoes. `null` is also what no header at all answers, which
+ * is what a script that never set one sends; sendSigninLink then renders the
+ * unknown device, and the mail still names a time.
+ *
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+export function signinDeviceName(raw) {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const letterRuns = raw
+    .toLowerCase()
+    .replace(/[^a-z]/g, " ")
+    .split(/\s+/);
+  /**
+   * @param {readonly (readonly [string, string])[]} names
+   * @returns {string|null}
+   */
+  const firstOf = (names) => {
+    for (const [needle, name] of names) {
+      if (letterRuns.some((run) => run === needle)) {
+        return name;
+      }
+    }
+    return null;
+  };
+  const browser = firstOf(BROWSER_NAMES);
+  const platform = firstOf(PLATFORM_NAMES);
+  if (browser === null && platform === null) {
+    return null;
+  }
+  return [browser, platform].filter((part) => part !== null).join(" on ");
+}
+
+/**
+ * The minute the link was asked for, as the deployment's clock reads it in
+ * UTC (drive#550). The Worker never learns the reader's own time zone (the
+ * browser does not send it), so the name is honest about the zone instead:
+ * a fixed `UTC` after the timestamp, and a fixed `en-GB` clock so one read
+ * of the mail reads the same in every runtime the code is rendered in.
+ * @param {Date} when
+ * @returns {string}
+ */
+function signinRequestedAt(when) {
+  const rendered = new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(when);
+  return `${rendered} UTC`;
 }
 
 /**
@@ -302,15 +426,25 @@ async function sendSigninLink(env, link) {
  * the code email was: it carries a secret, and core/emails.js's table holds the
  * five templates the spec names for customers. A table that also held links
  * would be a place to leak one from.
+ *
+ * It also names the device that asked and the time, and says plainly that a
+ * request nobody made can be ignored (drive#550): a link mailed into an inbox
+ * that was not expecting one is how a stranger learns the address is live,
+ * and the two sentences are what let the reader act on it.
  * @param {string} url the absolute link, already built by signinLink
+ * @param {unknown} [rawUserAgent] the requesting request's user-agent header
+ * @param {Date} [when] when the link was asked for, for the line that says so
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function signinLinkEmail(url) {
+export function signinLinkEmail(url, rawUserAgent, when = new Date()) {
   const minutes = Math.round(SIGNIN_LINK_TTL_SECONDS / 60);
+  const device = signinDeviceName(rawUserAgent) ?? UNKNOWN_DEVICE_NAME;
+  const asked = `Requested from ${device} at ${signinRequestedAt(when)}.`;
+  const ignoring = IGNORING_SENTENCE;
   return {
     subject: "Your drive sign-in link",
-    text: `Sign in to your drive: ${url}\n\nThe link is good for ${minutes} minutes and works once. If you did not ask to sign in, ignore this email.`,
-    html: `<p><a href="${url}">Sign in to your drive</a></p><p>The link is good for ${minutes} minutes and works once. If you did not ask to sign in, ignore this email.</p>`,
+    text: `Sign in to your drive: ${url}\n\nThe link is good for ${minutes} minutes and works once. ${asked} ${ignoring}`,
+    html: `<p><a href="${url}">Sign in to your drive</a></p><p>The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}</p>`,
     saved: null,
   };
 }

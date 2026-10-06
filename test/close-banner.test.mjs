@@ -470,6 +470,20 @@ test("the shipped banner reveals a pending close with the endpoint's date and ca
     payload.copy.pendingWhat.replace("{purgeOn}", String(payload.purgeOn)),
     "the sentence is the module's, with the endpoint's purge date filled in",
   );
+  // drive#689: the day the banner shows is the day the cron acts on, and the
+  // zone came from purgeOnDate() through the endpoint's payload. The banner
+  // adds nothing and drops nothing, so the zone rides all the way to the
+  // reader without the sentence holding a copy of it.
+  assert.match(
+    String(payload.purgeOn),
+    / \(UTC\)$/,
+    "the endpoint's purge date names the zone the day is in",
+  );
+  assert.match(
+    String(what.textContent),
+    / \(UTC\)/,
+    "the sentence the reader sees states which zone the day is",
+  );
   assert.equal(cancel.textContent, payload.copy.pendingCancel, "the link's words are the module's");
   assert.equal(cancel.href, "/usage", "the cancel link points at the usage page's cancel form");
 });

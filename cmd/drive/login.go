@@ -53,6 +53,12 @@ func Login(home, apiBase string, out io.Writer) error {
 		return err
 	}
 	client.Token = token
+	previous, loadErr := LoadCredentials(home)
+	if loadErr != nil {
+		// An unreadable credentials file is not a previous key we can
+		// revoke. Login still mints; the new file replaces the broken one.
+		previous = Credentials{}
+	}
 	key, err := client.MintKey("device", deviceName())
 	if err != nil {
 		return err
@@ -103,6 +109,26 @@ func Login(home, apiBase string, out io.Writer) error {
 	}
 	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
 		return err
+	}
+	if previous.DeviceToken != "" && previous.DeviceToken != token {
+		// The queue row is keyed by the device token, so the old login's
+		// row would count this device twice for its freshness window.
+		base := previous.APIBase
+		if base == "" {
+			base = apiBase
+		}
+		old, err := NewAPIClient(base, previous.DeviceToken)
+		if err == nil {
+			err = old.ClearQueueReport()
+		}
+		if err != nil && !isAPIStatus(err, "401") && !isAPIStatus(err, "404") {
+			fmt.Fprintf(out, "note: the previous login's upload queue could not be cleared (%v); it ages out in 15 minutes\n", err)
+		}
+	}
+	if previous.KeyID != "" && previous.KeyID != key.KeyID {
+		if err := client.RevokeKey(previous.KeyID); err != nil && !isAPIStatus(err, "404") {
+			fmt.Fprintf(out, "note: the previous device key could not be revoked (%v); it is still live\n", err)
+		}
 	}
 	who := accountLabel(account)
 	if who == "" {

@@ -486,8 +486,13 @@ func TestStatusWordsMatchThePageWords(t *testing.T) {
 // still written.
 func TestRunPauseAndResumeWriteTheMarker(t *testing.T) {
 	home := t.TempDir()
-	if err := runPause([]string{"--home", home}); err != nil {
-		t.Fatalf("runPause: %v", err)
+	out := captureStdout(t, func() {
+		if err := runPause([]string{"--home", home}); err != nil {
+			t.Fatalf("runPause: %v", err)
+		}
+	})
+	if !strings.Contains(out, "slowed") {
+		t.Errorf("pause note = %q, want the words to say slowed", out)
 	}
 	if !Paused(home) {
 		t.Error("runPause did not leave the paused marker")

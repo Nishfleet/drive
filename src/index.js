@@ -1,8 +1,10 @@
+import { withSentry } from "@sentry/cloudflare";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
+import { runPreChargeLimitCron } from "../core/abuse-guards.js";
 import { authFor, SIGNIN_LINK_PATH } from "../core/auth.js";
 import {
   BILLING_CONFIG,
@@ -25,9 +27,11 @@ import {
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
+  purgeExpiredTrash,
   scopeStore,
   storageBucketForKey,
   storageVarsFromEnv,
+  TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
 import { bearerToken, errorResponse } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
@@ -36,8 +40,11 @@ import { failureMessage } from "../core/messages.js";
 import {
   HOUR_MS,
   handleStorageEventRequest,
+  hourStart,
+  listMeteredAccounts,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  monthStart,
   pruneHiddenVersions,
   reconcileMeter,
   recordNightlySizes,
@@ -46,7 +53,7 @@ import {
 } from "../core/meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
-  drawUsageHours,
+  drawPendingHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalances,
@@ -77,6 +84,19 @@ import {
 } from "./account-close.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import {
+  handleMeterJobs,
+  METER_JOB_KINDS,
+  meterJobHandlers,
+  meterJobsQueue,
+  sendMeterJobs,
+} from "./meter-jobs.js";
+import {
+  captureError,
+  reportBillingGap,
+  reportPurgeFailures,
+  withCronCheckIn,
+} from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
@@ -93,17 +113,26 @@ import {
   handleRequestUploadRequest,
   handleShareFileRequest,
   handleShareRequest,
+  purgeStaleLinks,
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (core/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
+
+// The api Worker's family (workers/api/src/routes.js API_PREFIX), the one path
+// this Worker forwards and never renders a page for. Spelled here the way the
+// /v1/* route is, rather than imported, so the site Worker does not pull the
+// whole api route registry into its bundle; test/deploy-assets.test.mjs pins
+// the error path against a browser Accept on this family.
+const API_PATH_PREFIX = "/v1";
 
 /**
  * The per-request value Hono's context carries. `account` is resolved once by
@@ -569,7 +598,8 @@ export function createApp() {
   // account gate so an anonymous request is its 401, not a 403: the gate is
   // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
   // Go CLI) is not a browser, so it passes this check and the account gate
-  // is what holds it.
+  // is what holds it. /api/starter is a write route under this one rule
+  // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
@@ -738,6 +768,14 @@ export function createApp() {
       { ...account, capUsd, cardOnFile, usage },
       await liveQueueFor(c.env, account),
       balance,
+      // The month these numbers belong to, sent as its first instant (drive#559):
+      // the one UTC month boundary the meter, the cap walk and the invoice read
+      // (src/meter.js monthStart). It rides on the answer so the page can write
+      // the month's name in the browser's own words and the customer can check
+      // their statement against it. It is not worked out here in billing.js:
+      // this file already owns the month, and a second boundary in the handler
+      // would be a second answer to the same question.
+      new Date(monthStart(Date.now())).toISOString(),
     );
   });
 
@@ -825,7 +863,11 @@ export function createApp() {
     handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549). The per-account
+      // open-link cap lives in the handler; this is the edge limit.
+      limiter: c.env.SHARE_MINT_RATE_LIMITER,
+    }),
   );
   // DELETE revokes a link (`drive share --revoke`); the handler answers it,
   // but a route that is not registered is a 405 before the handler runs.
@@ -836,7 +878,10 @@ export function createApp() {
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account"), {
+      // The mint route's own bound (drive issue #549).
+      limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+    }),
   );
   app.delete(REQUEST_ENDPOINT, (c) =>
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
@@ -917,7 +962,48 @@ export function createApp() {
   });
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
+    // A 500 that only reached console.error was invisible: the Worker shipped
+    // with `observability: null` and no error pipeline (issue #520). Sentry
+    // sees it now; the console line stays for Workers Logs, which
+    // `observability` in cloudflare.config.ts turns on.
+    captureError(err, `${c.req.method} ${c.req.path}`);
     console.error("[pricing] request failed:", err.message, err.stack, err);
+    // drive#584: a browser that asked for a page gets the site's own 5xx page,
+    // so a failure deep in the Worker still looks like the site. An API caller
+    // keeps the one failure table's JSON, so a CLI never has to parse HTML.
+    // The JSON answer keys off the route family, not the Accept header alone:
+    // Java's HttpURLConnection sends a text/html default, and /v1/* is the CLI.
+    const accept = c.req.header("accept") ?? "";
+    // The path family, not the Accept header (Java's HttpURLConnection sends a
+    // text/html default and /v1/* is the CLI). A bare "/api" or "/v1" cannot
+    // reach here: both are real routes (API_PATH_PREFIX's own handler and a
+    // sites route), so this sees only subpaths of either family.
+    const isApiPath =
+      c.req.path.startsWith("/api/") || c.req.path.startsWith(`${API_PATH_PREFIX}/`);
+    if (accept.includes("text/html") && !isApiPath && c.env.ASSETS) {
+      const errorUrl = new URL(c.req.url);
+      errorUrl.pathname = "/500.html";
+      errorUrl.search = "";
+      return c.env.ASSETS.fetch(new Request(errorUrl, { headers: c.req.raw.headers }))
+        .then(
+          (asset) =>
+            // The answer is built by hand, not by copying the asset's headers: an
+            // error response must never be cacheable, and a page request's
+            // headers (a cache modifier the browser sent) cannot ride onto a 500
+            // from an unrelated path. src/seo.js marks /500.html noindex, so a
+            // crawler that follows a broken link keeps the error out of its
+            // index too.
+            new Response(asset.body, {
+              status: 500,
+              headers: {
+                "content-type": asset.headers.get("content-type") ?? "text/html; charset=utf-8",
+                "cache-control": "no-store",
+                "x-robots-tag": "noindex",
+              },
+            }),
+        )
+        .catch(() => c.json({ error: failureMessage("unexpected") }, 500));
+    }
     return c.json({ error: failureMessage("unexpected") }, 500);
   });
 
@@ -931,10 +1017,23 @@ export function createApp() {
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
 /**
- * @type {ExportedHandler<Env>}
+ * The Sentry options, read off the environment per invocation: the DSN is a
+ * per-deployment var like the storage pair and EMAIL_SEND_TOKEN, never a
+ * declared binding (a declared one is required at deploy). With no DSN the
+ * SDK is disabled and every call in src/monitoring.js is a safe no-op, so a
+ * deployment that has not configured Sentry still runs every cron (issue
+ * #520).
+ * @param {Env} env
  */
-export default {
-  async fetch(request, env) {
+const sentryOptions = (env) => ({
+  dsn: /** @type {{SENTRY_DSN?: string}} */ (env).SENTRY_DSN,
+});
+
+/**
+ * @satisfies {ExportedHandler<Env>}
+ */
+const handler = {
+  async fetch(request, env, _context) {
     return createApp().fetch(request, env);
   },
 
@@ -946,7 +1045,11 @@ export default {
   //     records the trigger as failed and retries, and the catch-up takes
   //     the next one over - a failed rollup must never read as a quiet zero.
   //     The schedule string lives in cloudflare.config.ts, pinned to
-  //     core/meter.js's METER_CRON by test/meter.test.mjs.
+  //     core/meter.js's METER_CRON by test/meter.test.mjs. The same trip
+  //     also enforces the 1 TB pre-charge storage limit on mounts
+  //     (core/abuse-guards.js runPreChargeLimitCron, drive#536): an
+  //     over-limit unpaid account's keys are taken read-only through the
+  //     cap's own swap, the same answer the web upload path gives.
   //   - The meter's nightly reconciler (build-spec.md piece 6, drive issue
   //     #59): `reconcileMeter` walks each metered account's versions in the
   //     storage provider, fixes the rows the event stream missed, and rewinds
@@ -981,84 +1084,144 @@ export default {
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.
     if (event.cron === METER_CRON) {
-      // Awaited, so a D1 failure is Cloudflare's to record and retry: a
-      // rollup that returned early would read as a quiet zero.
-      const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
-      // The cap walk, right after the rollup and before the push (drive#496).
-      // The order is the whole point: the rollup is what makes the current
-      // hour count, so a walk that ran before it would enforce the previous
-      // hour's spend and then wait a full hour to catch up. The push is after
-      // it so the invoice for those hours is built from the same rows the cap
-      // was decided on.
-      //
-      // A cap that threw would be retried by Cloudflare with the whole
-      // trigger, rollup included, which is the same contract the rollup above
-      // has: an enforced cap that did not happen must be a failed trigger and
-      // not a quiet zero. The walk's own state saves are guarded and its
-      // notice stamps are written after the send, so a retry neither
-      // re-sends a notice that went nor un-swaps a swap that happened.
-      /** @type {ReadonlyArray<{id: string, error: unknown}>} */
-      let capFailures = [];
-      if (env.DRIVE_DB) {
-        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        const cap = await runCapEnforcement({
-          store: createD1DeviceStore(env.DRIVE_DB, {
-            keyProvider: keyProviderFor(env) ?? undefined,
-          }),
-          now: event.scheduledTime,
+      // The whole branch runs inside one Sentry Crons check-in (issue #520):
+      // `error` on any throw, rethrown so Cloudflare still records and
+      // retries the failed trigger.
+      return withCronCheckIn(event, "meter-hourly-rollup", async () => {
+        // Awaited, so a D1 failure is Cloudflare's to record and retry: a
+        // rollup that returned early would read as a quiet zero.
+        const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+        // The trip's clock, once, as epoch milliseconds: runMeterCron reads
+        // scheduledTime through toMillis, and the steps below take only a
+        // number, so they read the same normalised instant.
+        const now = toMillis(event.scheduledTime, "scheduledTime");
+        // The billing gap the catch-up cap can leave (issue #520): a run
+        // capped at MAX_CATCHUP_HOURS stops short of the last closed hour,
+        // and every hour between sits unbilled until later runs drain it.
+        // A healthy run always rolls through the last closed hour, so this
+        // fires only on real backlog.
+        const lastClosed = hourStart(now) - HOUR_MS;
+        if (rolled.through < lastClosed) {
+          reportBillingGap((lastClosed - rolled.through) / HOUR_MS, rolled.through, lastClosed);
+        }
+        // With the meter's queue bound (drive#519), the per-account steps below
+        // (cap, draw, settle) run as one message per account instead of one
+        // loop in this invocation (src/meter-jobs.js).
+        const jobs = meterJobsQueue(env);
+        if (jobs) {
+          const sent = await sendMeterJobs(
+            jobs,
+            METER_JOB_KINDS.hourly,
+            await listMeteredAccounts(env.METER_DB),
+            { at: now, through: rolled.through },
+          );
+          console.log(`meter: queued ${sent} hourly account job(s)`);
+          return;
+        }
+        // The cap walk, right after the rollup and before the push (drive#496).
+        // The order is the whole point: the rollup is what makes the current
+        // hour count, so a walk that ran before it would enforce the previous
+        // hour's spend and then wait a full hour to catch up. The push is after
+        // it so the invoice for those hours is built from the same rows the cap
+        // was decided on.
+        //
+        // A cap that threw would be retried by Cloudflare with the whole
+        // trigger, rollup included, which is the same contract the rollup above
+        // has: an enforced cap that did not happen must be a failed trigger and
+        // not a quiet zero. The walk's own state saves are guarded and its
+        // notice stamps are written after the send, so a retry neither
+        // re-sends a notice that went nor un-swaps a swap that happened.
+        /** @type {ReadonlyArray<{id: string, error: unknown}>} */
+        let capFailures = [];
+        if (env.DRIVE_DB) {
+          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+          const cap = await runCapEnforcement({
+            store: createD1DeviceStore(env.DRIVE_DB, {
+              keyProvider: keyProviderFor(env) ?? undefined,
+            }),
+            now: event.scheduledTime,
+            email: env.EMAIL,
+            mailFrom: secrets.MAIL_FROM ?? "",
+          });
+          if (cap.mailed > 0 || cap.readOnly > 0) {
+            console.log(
+              `cap: ${cap.readOnly} of ${cap.accounts} metered account(s) at their cap, ${cap.mailed} notice(s) sent`,
+            );
+          }
+          capFailures = cap.failures;
+        }
+        // The prepaid draw (drive#586): each account's usage is drawn from its
+        // balance, at most once per account per hour (src/prepaid.js). It works
+        // from each account's own draw mark through the newest rolled hour
+        // (drive#519), not from the hours this run rolled, so a run that failed
+        // here - for an hour or for days, across a month end or not - is caught
+        // up by the next one. A failed D1 write fails the trigger, and the
+        // idempotency key makes the retry draw nothing twice.
+        const drawn = await drawPendingHours(
+          env.METER_DB,
+          await listMeteredAccounts(env.METER_DB),
+          {
+            through: rolled.through,
+            now,
+          },
+        );
+        if (drawn.drawn > 0) {
+          console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
+        }
+        // The "$2 left" email and the auto top-up for the accounts just drawn.
+        // Each account's failure is logged inside and never fails the trigger:
+        // the draws above are written, and a retry must not wait on a mail
+        // outage.
+        const dodo = dodoEnv(env);
+        await settleBalances(env.METER_DB, drawn.accounts, {
           email: env.EMAIL,
-          mailFrom: secrets.MAIL_FROM ?? "",
+          mailFrom: dodo.MAIL_FROM ?? "",
+          apiKey: dodo.DODO_PAYMENTS_API_KEY,
+          productId: dodo.DODO_TOPUP_PRODUCT_ID,
+          baseUrl: dodo.DODO_BASE_URL,
+          fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+          now,
         });
-        if (cap.mailed > 0 || cap.readOnly > 0) {
-          console.log(
-            `cap: ${cap.readOnly} of ${cap.accounts} metered account(s) at their cap, ${cap.mailed} notice(s) sent`,
+        // The pre-charge limit's own trip (drive#536). The web upload path has
+        // held 1 TB free since drive#464, but a mount holds a storage key and
+        // writes past any page, so the same hourly run reads the over-limit
+        // unpaid accounts and takes their keys read-only, through the cap's
+        // own swap (src/abuse-guards.js). DRIVE_DB is a required binding on
+        // this trip - the sites Worker holds it - so a missing one fails the
+        // trigger the same way a failed read does: a run that capped nobody
+        // because the sweep never ran would be a quiet zero reporting the hour
+        // as guarded, and Cloudflare's retry is the honest answer to a
+        // misconfigured trip.
+        if (env.DRIVE_DB === undefined || env.DRIVE_DB === null) {
+          throw new Error(
+            "the pre-charge limit sweep needs the DRIVE_DB binding, so an over-limit " +
+              "unpaid account's keys can be taken read-only",
           );
         }
-        capFailures = cap.failures;
-      }
-      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
-      // scheduledTime through toMillis, and the draw and settle steps below
-      // take only a number, so they read the same normalised instant.
-      const now = toMillis(event.scheduledTime, "scheduledTime");
-      const hours = [];
-      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
-        hours.push(hour);
-      }
-      // The prepaid draw (drive#586): each account's usage for the hours this
-      // run rolled is drawn from its balance, at most once per account per
-      // hour (core/prepaid.js). This replaces the old after-the-fact usage push
-      // to the provider (#51, #334), whose billing_pushes table is retired by
-      // migration 0021. Awaited and not caught: a failed D1 write fails the
-      // trigger, Cloudflare retries it, and the idempotency key makes the
-      // retry draw nothing twice.
-      const drawn = await drawUsageHours(env.METER_DB, hours, { now });
-      if (drawn.drawn > 0) {
-        console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
-      }
-      // The "$2 left" email and the auto top-up for the accounts just drawn.
-      // Each account's failure is logged inside and never fails the trigger:
-      // the draws above are written, and a retry must not wait on a mail
-      // outage.
-      const dodo = dodoEnv(env);
-      await settleBalances(env.METER_DB, drawn.accounts, {
-        email: env.EMAIL,
-        mailFrom: dodo.MAIL_FROM ?? "",
-        apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        productId: dodo.DODO_TOPUP_PRODUCT_ID,
-        baseUrl: dodo.DODO_BASE_URL,
-        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
-        now,
+        const capped = await runPreChargeLimitCron({
+          db: env.DRIVE_DB,
+          devices: createD1DeviceStore(env.DRIVE_DB, {
+            keyProvider: keyProviderFor(env) ?? undefined,
+          }),
+        });
+        if (capped.capped > 0) {
+          console.log(
+            "pre-charge limit: capped",
+            `accounts=${capped.capped}`,
+            `over=${capped.overLimit}`,
+            `failures=${capped.failures}`,
+          );
+        }
+        // A cap step that failed for some accounts is raised last, after every
+        // other account was decided and the hours were drawn and settled, so Cloudflare
+        // records a failed trigger and the next run retries those accounts.
+        if (capFailures.length > 0) {
+          throw new AggregateError(
+            capFailures.map((failure) => failure.error),
+            `cap: enforcement failed for ${capFailures.length} account(s)`,
+          );
+        }
       });
-      // A cap step that failed for some accounts is raised last, after every
-      // other account was decided and the hours were drawn and settled, so Cloudflare
-      // records a failed trigger and the next run retries those accounts.
-      if (capFailures.length > 0) {
-        throw new AggregateError(
-          capFailures.map((failure) => failure.error),
-          `cap: enforcement failed for ${capFailures.length} account(s)`,
-        );
-      }
-      return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
     // failed must be a failed trigger, not a run that reported success having
@@ -1066,58 +1229,111 @@ export default {
     // `reconcileMeter` scopes it per account, so the provider listing never
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
-      // The account close cron is its own waitUntil (drive#565), registered
-      // before the reconcile runs: a reconcileMeter throw used to leave every
-      // close receipt, reminder and purge undone for that night, and the
-      // purge is resumable now, so the two trips have nothing to say to each
-      // other. Its own per-account catches mean only a whole-cron failure
-      // (D1 down) rejects here, and a failed trigger is the honest signal
-      // for that: the next night retries everything it did not finish.
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
-      // Retention (drive issue #564): the reconciler has finished its
-      // repairs, so the prune sees the row set the provider listings have
-      // already agreed with, and a version the provider still lists is never
-      // deleted from under it. A skipped prune is reported, not thrown: the
-      // hours the cutoff needs are still being booked by the hourly rollup,
-      // and the next nightly run tries again. The rows the prune would have
-      // deleted keep being summed into usage_minutes meanwhile, so skipping
-      // loses nothing but the space.
-      const pruned = await pruneHiddenVersions(env.METER_DB, event.scheduledTime);
-      if (pruned.skipped !== null) {
-        console.log(`meter retention: skipped, ${pruned.skipped}`);
-      } else {
+      // The whole branch shares one Sentry Crons check-in (issue #520): a
+      // failure in any of its trips marks the nightly monitor `error`.
+      return withCronCheckIn(event, "meter-nightly-reconcile", async () => {
+        // The account close cron is its own waitUntil (drive#565), registered
+        // before the reconcile runs: a reconcileMeter throw used to leave every
+        // close receipt, reminder and purge undone for that night, and the
+        // purge is resumable now, so the two trips have nothing to say to each
+        // other. Its own per-account catches mean only a whole-cron failure
+        // (D1 down) rejects here, and a failed trigger is the honest signal
+        // for that: the next night retries everything it did not finish.
+        // With the meter's queue bound (drive#519), one message per account
+        // does the reconcile (src/meter-jobs.js); without it, the same
+        // per-account step runs here, each account's failure kept and raised.
+        const jobs = meterJobsQueue(env);
+        if (jobs) {
+          const sent = await sendMeterJobs(
+            jobs,
+            METER_JOB_KINDS.reconcile,
+            await listMeteredAccounts(env.METER_DB),
+            { at: toMillis(event.scheduledTime, "scheduledTime") },
+          );
+          console.log(`meter: queued ${sent} reconcile account job(s)`);
+        } else {
+          await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+        }
+        // Retention (drive issue #564): the reconciler has finished its
+        // repairs, so the prune sees the row set the provider listings have
+        // already agreed with, and a version the provider still lists is never
+        // deleted from under it. A skipped prune is reported, not thrown: the
+        // hours the cutoff needs are still being booked by the hourly rollup,
+        // and the next nightly run tries again. The rows the prune would have
+        // deleted keep being summed into usage_minutes meanwhile, so skipping
+        // loses nothing but the space.
+        const pruned = await pruneHiddenVersions(env.METER_DB, event.scheduledTime);
+        if (pruned.skipped !== null) {
+          console.log(`meter retention: skipped, ${pruned.skipped}`);
+        } else {
+          console.log(
+            `meter retention: pruned=${pruned.pruned} hidden rows before ` +
+              `${new Date(pruned.cutoff).toISOString()}`,
+          );
+        }
+        if (env.DRIVE_DB) {
+          // Link retention (drive issue #549): expired and revoked rows older
+          // than 90 days are pruned nightly. A still-open row is never touched,
+          // so this cannot close a link a stranger is holding. Awaited, like
+          // the size row below: a purge that failed is a failed run, not a
+          // silent gap.
+          const purged = await purgeStaleLinks(
+            env.DRIVE_DB,
+            toMillis(event.scheduledTime, "scheduledTime"),
+          );
+          console.log(
+            `link retention: pruned ${purged.shares} share rows, ` +
+              `${purged.requests} upload-request rows`,
+          );
+          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+          context.waitUntil(
+            runAccountCloseCron({
+              db: env.DRIVE_DB,
+              devices: createD1DeviceStore(env.DRIVE_DB),
+              store,
+              email: env.EMAIL,
+              mailFrom: secrets.MAIL_FROM ?? "",
+              now: event.scheduledTime,
+            }).then(
+              // A purge that fails is caught inside the close cron so one
+              // account's failure never blocks the others; the resolved
+              // count is the only way that failure leaves the function, and
+              // without this branch the nightly check-in read success over
+              // it (issue #520 review). The failed purges resume next night.
+              (result) => reportPurgeFailures(result.purgeFailures, result.purged),
+              // A waitUntil rejection never reaches the caller, so without
+              // this the close cron's failures were invisible outside the
+              // platform logs (issue #520).
+              (error) => {
+                const failure = new Error(`the account close cron failed: ${error.message}`);
+                captureError(failure, "account close cron");
+                throw failure;
+              },
+            ),
+          );
+          // Sign-in counter retention (drive#725): a row whose day window
+          // ended more than a day ago is deleted, so the public sign-in route
+          // cannot make this table keep every address anybody typed. It deletes
+          // counter rows only. Awaited like the link prune: a failed sweep is a
+          // failed run, retried the next night.
+          const signinSends = await purgeExpiredSigninSends(
+            env.DRIVE_DB,
+            toMillis(event.scheduledTime, "scheduledTime"),
+          );
+          console.log(`signin counter retention: pruned ${signinSends.purged} rows`);
+        }
+        // The nightly size row (drive issue #564): the growth numbers the
+        // spec's decision watches, written to nightly_sizes and printed here,
+        // where an operator reading Worker logs sees one line a day. Awaited
+        // like everything else on this trip: a size row that failed must be a
+        // failed run, not a silent gap in the table.
+        const sizes = await recordNightlySizes(env.METER_DB, event.scheduledTime);
         console.log(
-          `meter retention: pruned=${pruned.pruned} hidden rows before ` +
-            `${new Date(pruned.cutoff).toISOString()}`,
+          `nightly sizes: day=${sizes.day} ` +
+            `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
+            `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
         );
-      }
-      if (env.DRIVE_DB) {
-        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        context.waitUntil(
-          runAccountCloseCron({
-            db: env.DRIVE_DB,
-            devices: createD1DeviceStore(env.DRIVE_DB),
-            store,
-            email: env.EMAIL,
-            mailFrom: secrets.MAIL_FROM ?? "",
-            now: event.scheduledTime,
-          }).catch((error) => {
-            throw new Error(`the account close cron failed: ${error.message}`);
-          }),
-        );
-      }
-      // The nightly size row (drive issue #564): the growth numbers the
-      // spec's decision watches, written to nightly_sizes and printed here,
-      // where an operator reading Worker logs sees one line a day. Awaited
-      // like everything else on this trip: a size row that failed must be a
-      // failed run, not a silent gap in the table.
-      const sizes = await recordNightlySizes(env.METER_DB, event.scheduledTime);
-      console.log(
-        `nightly sizes: day=${sizes.day} ` +
-          `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
-          `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
-      );
-      return;
+      });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
     // column is unread (#329/#338), and production D1 `drive-data` at
@@ -1125,17 +1341,126 @@ export default {
     // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
     // whose JSON the sweep could still move. Dropping the column is #339.
 
+    // The nightly trash purge (drive issue #521), wrapped in a Sentry Crons
+    // check-in like every scheduled branch (issue #520). Awaited for the same
+    // reason as the meter's trips: a purge that failed must be a failed
+    // trigger Cloudflare retries, not a run that logged success having removed
+    // nothing, because a parked file past 30 days is one the page has
+    // already told its person is gone. The store is scoped per account
+    // inside `purgeExpiredTrash`, so the listing never crosses accounts.
+    if (event.cron === TRASH_PURGE_SCHEDULE) {
+      return withCronCheckIn(event, "nightly-trash-purge", async () => {
+        if (!env.DRIVE_DB) {
+          throw new Error("the nightly trash purge needs the customer database");
+        }
+        const purged = await purgeExpiredTrash(env.DRIVE_DB, store, event.scheduledTime);
+        console.log(
+          `trash: removed ${purged.purged} expired file(s) across ${purged.accounts} account(s)`,
+        );
+      });
+    }
+
     context.waitUntil(
-      (async () => {
+      withCronCheckIn(event, "nightly-reindex", async () => {
         if (!env.DRIVE_DB) {
           throw new Error("the nightly reindex needs the file index database");
         }
         for (const account of await indexAccounts(env.DRIVE_DB)) {
           await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
         }
-      })().catch((error) => {
+      }).catch((error) => {
+        // Same as the close cron: a waitUntil rejection is invisible to the
+        // caller, so the reindex reports its own failure (issue #520) before
+        // the rethrow that keeps the platform's record honest.
+        captureError(error, "nightly reindex");
         throw new Error(`the nightly reindex failed: ${error.message}`);
       }),
     );
+  },
+
+  // The meter's queue consumer (drive#519): one message is one account's
+  // hourly step or nightly reconcile, sent by the crons above when the
+  // METER_JOBS queue is bound. A job that throws is retried by the platform,
+  // and after its retries it lands in the dead-letter queue (src/meter-jobs.js).
+  /**
+   * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+   * @param {Env} env
+   * @param {ExecutionContext} _context
+   * @param {import("../core/files.js").FileStore} [store] injectable like scheduled's
+   */
+  async queue(batch, env, _context, store = storeFor(env)) {
+    if (!env.METER_DB) {
+      throw new Error("meter jobs: METER_DB binding is not configured");
+    }
+    const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+    const dodo = dodoEnv(env);
+    await handleMeterJobs(
+      batch,
+      meterJobHandlers({
+        meterDb: env.METER_DB,
+        capStore: env.DRIVE_DB
+          ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
+          : undefined,
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        settle: {
+          email: env.EMAIL,
+          mailFrom: dodo.MAIL_FROM ?? "",
+          apiKey: dodo.DODO_PAYMENTS_API_KEY,
+          productId: dodo.DODO_TOPUP_PRODUCT_ID,
+          baseUrl: dodo.DODO_BASE_URL,
+          fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        },
+        store,
+      }),
+    );
+  },
+};
+
+// withSentry wraps every entrypoint of the object it is given in place, so it
+// gets a copy: `monitored` is the Sentry-instrumented handler, and `handler`
+// stays the plain one. Each entrypoint below runs the monitored copy only when
+// SENTRY_DSN is set and the runtime handed in its context, because the wrap
+// reads `context.waitUntil` to flush and `env` to build its options, and a
+// caller with neither (the tests, a deployment with no DSN) must run exactly
+// the code it ran before Sentry existed (issue #520). The injectable fourth
+// `store` argument passes through either way.
+const monitored = withSentry(sentryOptions, { ...handler });
+
+/**
+ * @param {Env | undefined} env
+ * @param {ExecutionContext | undefined} context
+ * @returns {typeof handler}
+ */
+const entrypoints = (env, context) =>
+  context && /** @type {{SENTRY_DSN?: string} | undefined} */ (env)?.SENTRY_DSN
+    ? /** @type {typeof handler} */ (monitored)
+    : handler;
+
+export default {
+  async fetch(
+    /** @type {Parameters<typeof handler.fetch>[0]} */ request,
+    /** @type {Env} */ env,
+    /** @type {ExecutionContext} */ context,
+  ) {
+    return entrypoints(env, context).fetch(request, env, context);
+  },
+  /**
+   * @param {ScheduledController} event
+   * @param {Env} env
+   * @param {ExecutionContext} context
+   * @param {import("../core/files.js").FileStore} [store]
+   */
+  async scheduled(event, env, context, store) {
+    return entrypoints(env, context).scheduled(event, env, context, store);
+  },
+  /**
+   * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+   * @param {Env} env
+   * @param {ExecutionContext} context
+   * @param {import("../core/files.js").FileStore} [store]
+   */
+  async queue(batch, env, context, store) {
+    return entrypoints(env, context).queue(batch, env, context, store);
   },
 };

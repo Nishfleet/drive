@@ -297,3 +297,24 @@ func TestQueueReportIntervalMatchesTheApiRoute(t *testing.T) {
 		t.Errorf("queueReportInterval = %v, want 10s, the number the api route enforces", queueReportInterval)
 	}
 }
+
+func TestQueueReportSendsOnChangeOrHeartbeat(t *testing.T) {
+	prev := QueueReport{Files: 1, TotalBytes: 10}
+	sent := time.Unix(1_000, 0)
+	now := sent.Add(time.Second)
+	if !queueReportDue(&prev, sent, now, QueueReport{Files: 2, TotalBytes: 10}, true) {
+		t.Error("a changed queue must be sent")
+	}
+	if queueReportDue(&prev, sent, now, prev, true) {
+		t.Error("an unchanged queue must wait for the heartbeat")
+	}
+	if !queueReportDue(&prev, sent, sent.Add(queueReportHeartbeat), prev, true) {
+		t.Error("the 5-minute heartbeat must send")
+	}
+	if !queueReportDue(&prev, time.Time{}, now, prev, false) {
+		t.Error("the first report must send")
+	}
+	if queueReportHeartbeat != 5*time.Minute {
+		t.Errorf("queueReportHeartbeat = %v, want 5m", queueReportHeartbeat)
+	}
+}

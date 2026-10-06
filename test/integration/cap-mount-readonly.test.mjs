@@ -85,11 +85,14 @@ const MOUNT_FLAGS = [
 
 // Usage that counts at $20 a month (2 TB on average), so a $12 cap is over it
 // and a $25 cap is under it: the same month flips the cap the way a real month does,
-// with no change to the usage itself. Verified against capStatus directly in
+// with no change to the usage itself. A 30-day month: the bill divides by the
+// month's own minutes (drive#531). Verified against capStatus directly in
 // the first test below, so the numbers here cannot drift into a month that
 // does not straddle the cap.
+const MONTH_MINUTES = 30 * 1440;
 const STRADDLING_MONTH = Object.freeze({
-  gbMinutes: 2000 * 43_800,
+  gbMinutes: 2000 * MONTH_MINUTES,
+  monthMinutes: MONTH_MINUTES,
   storedGb: 2000,
   storedDaily: [],
   downloadBytes: 0,
@@ -753,8 +756,8 @@ test("the straddling month really does straddle the cap", async () => {
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
   const { capStatus } = await import("../../core/billing.js");
-  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_BEFORE).state, "read_only");
-  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_AFTER).state, "active");
+  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, MONTH_MINUTES, CAP_BEFORE).state, "read_only");
+  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, MONTH_MINUTES, CAP_AFTER).state, "active");
 });
 
 test("the cap swap on a real mount: read-only, no file lost, writing again after the raise", async (t) => {

@@ -173,3 +173,47 @@ func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
 		t.Fatalf("defaultAPIBase %q is not the origin core/seo.js ships", defaultAPIBase)
 	}
 }
+
+func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.KeyID == "" {
+		t.Fatal("the first login wrote no key id")
+	}
+	// The real Worker issues a new device token per login; the stand-in
+	// issues one, so the first login's file is given its own.
+	const oldToken = "dtok_from_the_first_login"
+	first.DeviceToken = oldToken
+	if err := SaveCredentials(home, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.queueClears) != 1 || api.queueClears[0] != "Bearer "+oldToken {
+		t.Fatalf("queue clears %v, want one with the previous login's token", api.queueClears)
+	}
+	if len(api.revokedIDs) != 1 || api.revokedIDs[0] != first.KeyID {
+		t.Fatalf("revoked %v, want the previous key %q", api.revokedIDs, first.KeyID)
+	}
+	second, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.KeyID == "" || second.KeyID == first.KeyID {
+		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
+	}
+}

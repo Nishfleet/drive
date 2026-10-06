@@ -35,7 +35,7 @@
 // Worker. The caller (core/agent-caps.js) reads the row, counts the
 // request and hands the numbers here. That split is what lets the decision be
 // tested as plain data while the reading is tested against the real schema.
-import { BILLING_CONFIG, capStatus } from "./billing.js";
+import { BILLING_CONFIG, capStatus, minutesInMonth } from "./billing.js";
 import { capSwapPlan } from "./cap.js";
 
 // The ceilings an agent key gets when its row says nothing about its own.
@@ -172,12 +172,19 @@ export function agentCapStatus(agent) {
     throw new TypeError(`agentCapStatus needs usage {gbMinutes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
+  // The month the cap counts is the calendar month `at` falls in (drive#531).
   // The whole bill, downloads included, the same way the account's own cap
   // counts it (drive#496).
-  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd, BILLING_CONFIG, {
-    downloadBytes: usage.downloadBytes,
-    averageStoredGb: usage.averageStoredGb,
-  });
+  const counted = capStatus(
+    usage.gbMinutes,
+    minutesInMonth(agent.at),
+    caps.monthlyCapUsd,
+    BILLING_CONFIG,
+    {
+      downloadBytes: usage.downloadBytes,
+      averageStoredGb: usage.averageStoredGb,
+    },
+  );
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({

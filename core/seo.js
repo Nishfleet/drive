@@ -15,6 +15,7 @@
 //
 // So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
 // bills $30. No plans, and the prepaid balance never expires (drive#586).
+import { LEGAL_PAGES } from "./legal.js";
 import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
@@ -57,7 +58,9 @@ export const SITE = Object.freeze({
  * One shipped HTML page. `root` names the pages that ship as built Vite
  * entries from the repo root rather than as verbatim assets copied out of
  * public/ (drive issue #70). Every entry without it is a public/ asset.
- * @typedef {{ path: string, indexable: boolean, root?: boolean }} Page
+ * `file` names the public/ file a clean URL is served from (the asset layer
+ * serves /terms from terms.html); without it the file is the path itself.
+ * @typedef {{ path: string, indexable: boolean, root?: boolean, file?: string }} Page
  */
 
 // Every public HTML page, and whether a crawler should index it. The order is
@@ -75,6 +78,11 @@ export const PAGES = Object.freeze([
   // surface, and the crowd it is for finds it by search, so it is indexable and
   // in the sitemap. Its price line is PRICE's, like every other page's.
   Object.freeze({ path: "/starter.html", indexable: true }),
+  // The legal and trust pages (drive#523), at the clean URLs the footers link.
+  // core/legal.js is their one list; each is indexable and in the sitemap.
+  ...LEGAL_PAGES.map((page) =>
+    Object.freeze({ path: page.path, file: page.file, indexable: true }),
+  ),
   // The first-run page is a built Vite entry at the repo root, not a public/
   // asset: issue #70 moved it there so cf build compiles the module behind it
   // instead of shipping the page verbatim, and the `root` flag is what tells
@@ -105,6 +113,10 @@ export const PAGES = Object.freeze([
   // any path that is not an asset (notFoundHandling: 404-page). It is noindex
   // and out of the sitemap: a crawler should not treat a missing URL as a page.
   Object.freeze({ path: "/404.html", indexable: false }),
+  // The site's own 5xx page (drive#584). src/index.js serves this file from
+  // app.onError when a page request fails, so a browser gets the site's
+  // chrome instead of a bare JSON body. Noindex: an error is not a page.
+  Object.freeze({ path: "/500.html", indexable: false }),
 ]);
 
 // The pages that ship as built Vite entries from the repo root, not as verbatim

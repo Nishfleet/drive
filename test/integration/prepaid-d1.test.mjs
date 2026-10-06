@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { monthBillCents } from "../../core/billing.js";
+import { minutesInMonth, monthBillCents } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
@@ -89,6 +89,7 @@ async function billThrough(db, hour) {
   const usage = await monthUsageThrough(db, ACCOUNT, hour);
   return monthBillCents({
     gbMinutes: usage.gbMinutes,
+    monthMinutes: minutesInMonth(hour),
     downloadBytes: usage.downloadBytes,
     averageStoredGb: usage.averageStoredGb,
   }).totalCents;

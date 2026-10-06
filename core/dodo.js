@@ -36,7 +36,7 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { monthBillCents } from "./billing.js";
+import { minutesInMonth, monthBillCents } from "./billing.js";
 import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
@@ -336,6 +336,7 @@ export async function pushBillingHours(db, hours, options = {}) {
       const usage = await monthUsageThrough(db, accountId, hour);
       const bill = monthBillCents({
         gbMinutes: usage.gbMinutes,
+        monthMinutes: minutesInMonth(hour),
         downloadBytes: usage.downloadBytes,
         averageStoredGb: usage.averageStoredGb,
       });

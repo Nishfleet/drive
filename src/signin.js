@@ -70,6 +70,7 @@ import { failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
+import { signinSendOutcome } from "./signin-send-limit.js";
 
 /** @typedef {import("../core/auth.js").Auth} Auth */
 
@@ -518,6 +519,33 @@ export async function handleSigninRequest(request, env) {
       }
     }
   }
+  // drive#550: the per-IP and global limits above bound mail volume per IP,
+  // so a script spread across hosts still fills one inbox. This guard is
+  // keyed on the address instead: 5 links an hour and 20 a day per inbox,
+  // however many IPs the asks come from. The key is the lowercased address
+  // because that is the account key the user row is looked up by (the
+  // lower(email) query in emailHasUser), so Alice@, alice@ and ALICE@ share
+  // one ceiling. The check runs after validation and before the library is
+  // handed the send, so a refused address costs no link and no mail.
+  //
+  // The two answers differ on purpose. Over the limit the page still says
+  // "check your inbox": answering differently would tell a stranger that
+  // this is a real address that was signed up for recently, which is the
+  // enumeration the sign-in screen avoids everywhere else. A counter that
+  // failed to write is a deployment problem, not a caller over a ceiling, so
+  // it keeps drive#431's rule and answers that no link went out rather than
+  // the 202 a refused address gets — the caller gets the truth, and the
+  // failure travels to the log (src/signin-send-limit.js).
+  const sendOutcome = await signinSendOutcome(env.DRIVE_DB, email.toLowerCase());
+  if (sendOutcome === "broken") {
+    return json(signinEmailFailedBody(), 503);
+  }
+  if (sendOutcome === "refused") {
+    return json(
+      { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
+      202,
+    );
+  }
   try {
     // Hand the send to Better Auth's own handler so its rate limiter runs.
     // The in-process `auth.api` call bypasses the router's onRequest hook, so
@@ -707,6 +735,15 @@ function signinLinkRequest(auth, email, request) {
   const clientIp = request.headers.get("cf-connecting-ip");
   if (clientIp !== null) {
     headers.set("cf-connecting-ip", clientIp);
+  }
+  // The user-agent travels so the mail can name the browser or device
+  // that asked (drive#550): the library's own request context carries
+  // the forwarded headers into the magic-link callback, which is where
+  // the mail is built. It is a person's own string, not a key anything
+  // is bound to.
+  const userAgent = request.headers.get("user-agent");
+  if (userAgent !== null) {
+    headers.set("user-agent", userAgent);
   }
   // The body is the library's own shape, not the route's `step` wrapper.
   headers.set("content-type", "application/json");

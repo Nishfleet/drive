@@ -51,15 +51,20 @@ const workerFetch =
 
 // Minutes in an average month, so a test can say "2 TB held all month" and
 // mean the metered bill and the peak are the same number.
-const MINUTES_PER_MONTH = 43800;
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
+// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
+const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
-const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
+const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
 // past the $20 default cap (2600 GB meters $52, held to the $26 maximum) and
 // under it (1200 GB bills the $12 maximum).
 /** @param {number} gb */
 const monthUsage = (gb) => ({
+  monthMinutes: MONTH_MINUTES,
   gbMinutes: fullMonthGbMinutes(gb),
   storedGb: gb,
   storedDaily: [],
@@ -646,6 +651,7 @@ test("a key is write-capable when it can write or delete", () => {
 test("enforcement reads the month's numbers from core/billing.js capStatus()", async () => {
   /** @param {number} gb */
   const usage = (gb) => ({
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: fullMonthGbMinutes(gb),
     storedGb: gb,
     storedDaily: [],
@@ -677,8 +683,8 @@ test("enforcement reads the month's numbers from core/billing.js capStatus()", a
   // The same two conclusions the capStatus() tests pin, read through the
   // summary rule too: 2.6 TB at the default cap is read_only, 1 TB is active.
   const cap = BILLING_CONFIG.defaultCapUsd;
-  assert.equal(capStatus(fullMonthGbMinutes(2600), cap).state, "read_only");
-  assert.equal(capStatus(fullMonthGbMinutes(1000), cap).state, "active");
+  assert.equal(capStatus(fullMonthGbMinutes(2600), MONTH_MINUTES, cap).state, "read_only");
+  assert.equal(capStatus(fullMonthGbMinutes(1000), MONTH_MINUTES, cap).state, "active");
 });
 
 test("a card-less account goes read-only at the free $1, the same rule the usage page shows", async () => {
@@ -686,6 +692,7 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   // that from usageSummary(), not from a second copy of the rule.
   const account = {
     usage: {
+      monthMinutes: MONTH_MINUTES,
       gbMinutes: fullMonthGbMinutes(60),
       storedGb: 60,
       storedDaily: [],
@@ -758,10 +765,10 @@ test("drive cap takes a dollar amount and nothing else", () => {
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
-  const active = capLine(capStatus(fullMonthGbMinutes(300), 12));
+  const active = capLine(capStatus(fullMonthGbMinutes(300), MONTH_MINUTES, 12));
   assert.equal(active, "Cap $12.00: $6.00 counted this month, $6.00 left.");
 
-  const capped = capLine(capStatus(fullMonthGbMinutes(2000), 12));
+  const capped = capLine(capStatus(fullMonthGbMinutes(2000), MONTH_MINUTES, 12));
   const [what, numbers] = capped.split("\n");
   // The words for a read-only drive come from the one message table, so the
   // page, the CLI and the api cannot drift apart.
@@ -773,7 +780,7 @@ test("the cap line is one line while writing and two at the cap", () => {
   );
   // Raised again: the line goes back to one line and says there is room.
   assert.equal(
-    capLine(capStatus(fullMonthGbMinutes(2000), 25)),
+    capLine(capStatus(fullMonthGbMinutes(2000), MONTH_MINUTES, 25)),
     "Cap $25.00: $20.00 counted this month, $5.00 left.",
   );
   for (const bad of [
@@ -791,10 +798,16 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   // travel in the response for the CLI to print the same words. The handler is
   // behind the account gate (issue #73), so the line is proven by calling it
   // as a signed-in request until the sign-in flow lands (build step 4, #5).
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), {
-    id: "1",
-    name: "Your drive",
-  });
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      id: "1",
+      name: "Your drive",
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
@@ -808,6 +821,9 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     { id: "1", name: "Your drive" },
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
 });
@@ -909,6 +925,7 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
   // what the account already counted enforce at once (the finish line), and
   // without it `drive cap 0` on a live drive would swap nothing.
   const overCapMonth = {
+    monthMinutes: MONTH_MINUTES,
     gbMinutes: fullMonthGbMinutes(2000),
     storedGb: 2000,
     storedDaily: [],

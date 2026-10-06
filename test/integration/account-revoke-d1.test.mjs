@@ -110,6 +110,7 @@ async function linkAndRequest(db, accountId, suffix) {
     revokedAt: null,
     downloadCount: 0,
     downloadBytes: 0,
+    maxDownloadBytes: null,
   });
   await links.requests.create({
     token: requestToken,
@@ -121,6 +122,7 @@ async function linkAndRequest(db, accountId, suffix) {
     uploadCount: 0,
     uploadBytes: 0,
     maxBytes: 1_000_000,
+    maxFiles: 100,
   });
   return { shareToken, requestToken, links };
 }

@@ -86,7 +86,13 @@ func LogoutEveryDevice(goos, home string, force bool, revoker TokenRevoker, revo
 	if account == nil {
 		return fail("signout-everywhere-no-account")
 	}
+	// Stop this device's mount before counting dirty files, so a save in the
+	// window between the count and the stop cannot vanish with the cache.
+	if err := stopLogoutMount(goos, home); err != nil {
+		return err
+	}
 	if err := pendingUploadsRefusal(force, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the drive is unmounted; waiting files stay in the cache\n")
 		return err
 	}
 	if err := account.RevokeAllKeys(); err != nil {
@@ -142,35 +148,24 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	if revoke == nil {
 		revoke = noAPIKeyStore{}
 	}
-	// The same question `drive logout --all` asks before it revokes the account
-	// (pendingUploadsRefusal), asked through the one helper so the two answers
-	// cannot drift.
-	if err := pendingUploadsRefusal(force, home); err != nil {
+	// Stop the mount first, then count dirty files. A save that lands after
+	// the count and before the stop used to vanish with the cache. With the
+	// mount already down, the count is the whole remaining queue.
+	if err := stopLogoutMount(goos, home); err != nil {
 		return err
 	}
-	// Stop the mount before the key goes, so nothing is mid-upload when the
-	// config it reads disappears. Unmount stops the login item; stopMount then
-	// makes sure the mount point itself is down. Unmount can legitimately fail
-	// to disable a login item that was never installed (systemctl exits 1 with
-	// "Unit file ... does not exist"), and that failure is not fatal to
-	// logout: the login item file is deleted below, so it cannot come back at
-	// the next login, and stopMount proves the mount is gone. So the end state
-	// is measured, not the exit code: only a still-mounted drive fails.
-	stopErr := Unmount(goos, home)
-	if err := stopMount(goos, home); err != nil {
-		mountDir := DefaultMountDir(home)
-		if stopErr != nil {
-			return failDetail("unmount-failed",
-				fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err),
-				mountDir)
-		}
-		return failDetail("unmount-failed", err, mountDir)
+	// The same question `drive logout --all` asks before it revokes the account
+	// (pendingUploadsRefusal), asked through the one helper so the two answers
+	// cannot drift. A refusal here keeps the cache: the files are still queued
+	// and the key is still live, so the person can mount again and let them up.
+	if err := pendingUploadsRefusal(force, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the drive is unmounted; waiting files stay in the cache\n")
+		return err
 	}
-	if stopErr != nil {
-		// The mount is down and the login item is about to be deleted, so the
-		// only thing the disable error could have been protecting (a login
-		// item restarting the drive) is already handled. Note it and continue.
-		fmt.Fprintf(os.Stderr, "note: the login item could not be disabled; it is deleted below, so the drive will not start at the next login\n")
+	if clearer, ok := revoker.(interface{ ClearQueueReport() error }); ok {
+		if err := clearer.ClearQueueReport(); err != nil {
+			fmt.Fprintf(os.Stderr, "note: the live queue report could not be cleared: %v\n", err)
+		}
 	}
 	// The server is asked while the config still holds the key. A missing
 	// config is no key at all, and a receipt from an earlier run that could
@@ -363,6 +358,34 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 		return nil, fmt.Errorf("%s: the [%s] remote needs both an access key id and a secret key to be revoked", path, RcloneRemoteName)
 	}
 	return &KeyPair{AccessKeyID: c.AccessKey, SecretKey: c.SecretKey}, nil
+}
+
+// stopLogoutMount brings the login item and the mount point down before logout
+// counts dirty files or deletes anything. Unmount stops the login item;
+// stopMount then makes sure the mount point itself is down. Unmount can
+// legitimately fail to disable a login item that was never installed
+// (systemctl exits 1 with "Unit file ... does not exist"), and that failure is
+// not fatal to logout: the login item file is deleted later, so it cannot come
+// back at the next login, and stopMount proves the mount is gone. So the end
+// state is measured, not the exit code: only a still-mounted drive fails.
+func stopLogoutMount(goos, home string) error {
+	stopErr := Unmount(goos, home)
+	if err := stopMount(goos, home); err != nil {
+		mountDir := DefaultMountDir(home)
+		if stopErr != nil {
+			return failDetail("unmount-failed",
+				fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err),
+				mountDir)
+		}
+		return failDetail("unmount-failed", err, mountDir)
+	}
+	if stopErr != nil {
+		// The mount is down and the login item is about to be deleted, so the
+		// only thing the disable error could have been protecting (a login
+		// item restarting the drive) is already handled. Note it and continue.
+		fmt.Fprintf(os.Stderr, "note: the login item could not be disabled; it is deleted below, so the drive will not start at the next login\n")
+	}
+	return nil
 }
 
 // stopMount brings the mount point itself down and reports success only once

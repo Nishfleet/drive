@@ -69,6 +69,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Ship only an agent score above the pass bar
+        # drive#526: agent-eval.yml records the held-out score on a schedule.
+        # A release ships only while the newest completed eval run on main is
+        # green; a red score stops the deploy here. The gate arms itself with
+        # the first completed run: until then it warns instead of failing, so
+        # merging the gate itself never wedges deploys. A run in progress is
+        # also a pass here — the next deploy after it completes reads its
+        # score. A run by hand (workflow_dispatch) records a fresh score for
+        # a release that cannot wait for Monday.
+        run: |
+          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion,createdAt --jq '.[0] // empty | "\(.status) \(.createdAt) \(.conclusion // "none")"')
+          if [ -z "$latest" ]; then
+            echo "::warning::no agent eval run has completed yet; the score gate is not armed"
+          else
+            read -r status created conclusion <<<"$latest"
+            if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
+              echo "::error::the newest agent eval run on main concluded $conclusion (a score under the pass bar, or a run that could not score); its run summary says which, and the release stops here (drive#526)"
+              exit 1
+            fi
+            # A green score goes stale when the weekly clock stops (a runner
+            # offline, the schedule disabled): fail loud after two missed
+            # Mondays instead of shipping on an old score.
+            age_days=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
+            if [ "$age_days" -gt 14 ]; then
+              echo "::error::the newest agent eval run on main is $age_days days old; run agent-eval.yml by hand (workflow_dispatch) for a fresh score (drive#526)"
+              exit 1
+            fi
+            echo "agent eval gate: newest run on main is $status/$conclusion"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
@@ -88,6 +119,32 @@ jobs:
           test -n "$vid" || { echo "::error::no live Worker version at 100%"; exit 1; }
           echo "live Worker version: $vid"
           echo "version_id=$vid" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Record the D1 restore point
+        # A migration is one-way: D1 has no down-migrations, and the databases
+        # sit outside the Worker version a rollback restores (drive#520). So
+        # before the first `cf d1 migrations apply` this captures each
+        # database's Time Travel bookmark and prints it on the run and the
+        # step summary — the point a `cf d1 time-travel restore --bookmark`
+        # returns to (docs/runbook.md has the steps; running one is Nish's).
+        # A failed capture fails the deploy here, before any migration ran:
+        # no restore point, no migration.
+        id: bookmark
+        run: |
+          headers="$RUNNER_TEMP/d1-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e"; do
+            read -r name db <<<"$pair"
+            json=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/time_travel/bookmark") \
+              || { echo "::error::no restore point for $name: the bookmark request failed"; exit 1; }
+            bm=$(printf '%s' "$json" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));if(r.success!==true||typeof r.result?.bookmark!=="string"||!r.result.bookmark)process.exit(1);process.stdout.write(r.result.bookmark)') \
+              || { echo "::error::no restore point for $name: the bookmark is missing in the API answer"; exit 1; }
+            echo "restore point for $name (bookmark): $bm" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

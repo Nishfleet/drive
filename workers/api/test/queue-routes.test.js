@@ -280,7 +280,7 @@ test("a report needs the queue fields, not a default", () => {
   assert.deepEqual(parseQueueReport(withoutPaused), { report: { ...QUEUE, paused: false } });
 });
 
-test("the route names the one method it serves", async () => {
+test("the route names the methods it serves", async () => {
   const clock = fixedClock();
   const { ctx, token } = await signedIn({ clock });
   const wrong = await dispatch(
@@ -288,7 +288,11 @@ test("the route names the one method it serves", async () => {
     ctx,
   );
   assert.equal(wrong.status, 405);
-  assert.equal(wrong.headers.get("allow"), "POST");
+  const allow = (wrong.headers.get("allow") ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .sort();
+  assert.deepEqual(allow, ["DELETE", "POST"]);
 });
 
 test("a deployment with no database refuses rather than answering as though it had", async () => {
@@ -332,4 +336,21 @@ test("one device's report is never read as another's", async () => {
     totalBytes: 4096,
     paused: true,
   });
+});
+
+test("DELETE /v1/queue drops this device's report", async () => {
+  const clock = fixedClock();
+  const { ctx, token, queues } = await signedIn({ clock });
+  assert.ok(queues, "the test needs the queue store");
+  assert.equal((await dispatch(postQueue(QUEUE, token), ctx)).status, 200);
+  assert.deepEqual(await queues.latest("acct_1"), QUEUE);
+  const cleared = await dispatch(
+    new Request("https://api.test/v1/queue", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    ctx,
+  );
+  assert.equal(cleared.status, 200);
+  assert.equal(await queues.latest("acct_1"), null);
 });

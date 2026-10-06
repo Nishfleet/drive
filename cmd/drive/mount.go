@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -610,6 +611,30 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return failDetail("drive-folder", err, p.MountDir)
 	}
+	// A folder that is already a mount holds the drive itself, not stray
+	// local files, so nothing is moved out of it.
+	var holding string
+	var strays []string
+	if on, _ := MountedDir(goos, p.MountDir); !on {
+		var err error
+		holding, strays, err = parkStrayMountFiles(p.MountDir)
+		if err != nil {
+			return err
+		}
+	} else if err := reclaimStrayHoldings(p.MountDir); err != nil {
+		// A holding folder an earlier run could not empty goes into the
+		// drive that is up now.
+		fmt.Fprintf(os.Stderr, "note: local files beside %s could not be copied into the drive (%v); copy them by hand\n", p.MountDir, err)
+	}
+	if len(strays) > 0 {
+		fmt.Fprintf(os.Stderr, "note: %s already had local files; they were moved to %s so the drive can mount, and they will be copied into the drive once it is up\n", p.MountDir, holding)
+	}
+	placed := false
+	defer func() {
+		if !placed && holding != "" {
+			_ = restoreStrayMountFiles(holding, p.MountDir)
+		}
+	}()
 	config := []byte(RcloneConfig(c))
 	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
 		return err
@@ -621,7 +646,28 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if foreground {
-		return mountForeground(p, home)
+		// The files go into the drive once it is up. If it never comes up,
+		// they go back into the plain folder once rclone has exited, so a
+		// failed mount does not leave them in the hidden holding folder.
+		placed = true
+		var once sync.Once
+		restore := func() {
+			once.Do(func() {
+				if err := restoreStrayMountFiles(holding, p.MountDir); err != nil {
+					fmt.Fprintf(os.Stderr, "note: local files at %s could not be copied into the drive (%v); copy them by hand from that folder\n", holding, err)
+				}
+			})
+		}
+		if holding != "" {
+			go func() {
+				if waitMounted(goos, home) == nil {
+					restore()
+				}
+			}()
+		}
+		err := mountForeground(p, home)
+		restore()
+		return err
 	}
 	if goos == "darwin" {
 		if err := bootstrapLaunchd(itemPath); err != nil {
@@ -649,6 +695,10 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := waitMounted(goos, home); err != nil {
 		return err
 	}
+	if err := restoreStrayMountFiles(holding, p.MountDir); err != nil {
+		fmt.Fprintf(os.Stderr, "note: local files at %s could not be copied into the drive (%v); copy them by hand from that folder\n", holding, err)
+	}
+	placed = true
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}

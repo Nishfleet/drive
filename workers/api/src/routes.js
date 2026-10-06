@@ -23,7 +23,7 @@ import {
   storageListRoute,
   storageWriteRoute,
 } from "./key-routes.js";
-import { reportUploadQueueRoute } from "./queue-routes.js";
+import { clearUploadQueueRoute, reportUploadQueueRoute } from "./queue-routes.js";
 import {
   createTeamRoute,
   inviteMemberRoute,
@@ -182,6 +182,12 @@ export const routes = [
     path: "/v1/queue",
     auth: "account",
     handler: reportUploadQueueRoute,
+  },
+  {
+    method: "DELETE",
+    path: "/v1/queue",
+    auth: "account",
+    handler: clearUploadQueueRoute,
   },
 
   // ---- own-data export (account lifecycle, drive#34) ----

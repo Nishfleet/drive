@@ -62,6 +62,9 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
 // shaped (`u/<id>/...`) and deliberately different lengths, so a prefix that
 // is not cut at a segment boundary would show up.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 /** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
@@ -188,6 +191,7 @@ function anonymous(request) {
       DRIVE_DB: createTestD1(),
       REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      HEALTH_RATE_LIMITER: makeLimiter(),
       SHARE_DOWNLOAD_RATE_LIMITER: makeLimiter(),
     },
     ctx,
@@ -520,10 +524,10 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   //
   // The mailer is how this test reads the link that left by email: the token is
   // never in a reply, so the mail is the only place it can be seen, which is
-  // the whole point of the flow.
-  // The full schema, not the harness's default short list: /api/usage now
-  // reads the account's metered month (drive#496), and a month lives in
-  // 0005_meter's usage_minutes. On the short list the route 500s on a table
+  // the whole point of the flow. The whole schema, not the harness's short
+  // list: /api/usage reads the account's metered month (drive#496), and the
+  // month's read needs `usage_minutes.stored_bytes`, which a later migration
+  // than the short list carries. On the short list the route 500s on a column
   // production has, which is the gap the full list exists to close.
   const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const emailed = made.sent;
@@ -1027,7 +1031,13 @@ test("one CSRF middleware refuses a cross-site write on every account POST", asy
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
-  const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
+  const signedIn = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    ACCOUNT_A,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0, "an empty month bills $0: no minimum");
 });

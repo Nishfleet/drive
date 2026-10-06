@@ -27,7 +27,6 @@ import { validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
-import { agentCannotDeleteSentence } from "./docs.js";
 
 // The page itself is public/starter.html, served by the asset layer's HTML
 // handling (/starter serves /starter.html, the same way /get-started serves
@@ -103,8 +102,8 @@ date: {{date:YYYY-MM-DD}}
 These notes are in the user's Drive folder. Treat them as their files.
 
 - Read and write freely in this folder, and anywhere else on the drive.
-- ${agentCannotDeleteSentence()} If you decide a file is finished, leave it in
-  place. A person decides what leaves the drive.
+- Do not delete files. If you decide a file is finished, leave it in place.
+  A person decides what leaves the drive.
 - Before a large edit, take a branch: \`drive branch\` copies the folder, and
   \`drive approve\` or \`drive discard\` decides what happens to the copy.
 - One note per idea, in Markdown, with the note's own filename as its title.
@@ -280,10 +279,11 @@ function describeFailed(cause) {
  * module or the Worker that does so on its own.
  *
  * The account gate and the browser CSRF check are the Worker's (src/index.js
- * registers this under `/api/*` with `accountGate` and `csrfWhenBrowser`), so
- * an anonymous caller is answered 401 before this function runs and a
- * cross-site POST is answered by the middleware, not by a hand-rolled rule
- * here. `store` is the account's own scoped store.
+ * registers this under `/api/*` with `accountGate`, and the CSRF check on
+ * every non-GET `/api/*` route with `csrfWhenBrowser`), so an anonymous
+ * caller is answered 401 before this function runs and a cross-site POST is
+ * answered by the middleware, not by a hand-rolled rule here. `store` is the
+ * account's own scoped store.
  *
  * @param {Request} request
  * @param {import("../core/files.js").FileStore|null} store

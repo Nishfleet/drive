@@ -60,19 +60,23 @@ export default defineConfig({
       runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
-    // Three Cron Triggers: the meter's hourly rollup (drive issue #6), the
-    // meter's nightly reconciler (drive issue #59), and the file index's
-    // nightly reconciler (drive issue #18). `scheduled` in src/index.js tells
+    // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // meter's nightly reconciler (drive issue #59), the file index's
+    // nightly reconciler (drive issue #18), and the nightly trash purge
+    // (drive issue #521). `scheduled` in src/index.js tells
     // them apart by the cron string the platform hands it, so no trigger
     // spends another's work. The reindex schedule is the only way a rebuild
     // starts, so no web request can spend the walk (the safety review: reindex
     // is not a public route). 03:00 UTC is the spec's quiet hour, before the
     // meter's first hourly run; the meter's reconciler runs at 04:00 UTC, an
-    // hour later, so the two nightly walks do not share a trip.
+    // hour later, so the two nightly walks do not share a trip; the trash
+    // purge runs at 05:00 UTC, after the reconciler, so a parked file's last
+    // hour is re-rolled before its bytes leave the bucket.
     //
     // Each schedule is the string the module that owns it exports:
-    // core/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE, and
-    // src/search.js's REINDEX_SCHEDULE. test/meter.test.mjs reads these three
+    // core/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
+    // src/search.js's REINDEX_SCHEDULE, and core/files.js's
+    // TRASH_PURGE_SCHEDULE. test/meter.test.mjs reads these four
     // out of this file and asserts they equal those exports, so a changed
     // schedule cannot drift from the trigger that runs it. They are not
     // imported from those modules - see the note at the top of this file for
@@ -81,7 +85,19 @@ export default defineConfig({
       triggers.scheduled({ schedule: "5 * * * *" }),
       triggers.scheduled({ schedule: "0 4 * * *" }),
       triggers.scheduled({ schedule: "0 3 * * *" }),
+      triggers.scheduled({ schedule: "0 5 * * *" }),
     ],
+    // Issue #520: failures were invisible because this key was absent — the
+    // Worker shipped with observability off, so `console.error` in the cron
+    // branches and `app.onError` went nowhere a human looks. Workers Logs
+    // collects every invocation's console lines for 14 days (the default
+    // sampling here is 1, everything), which is the floor; the pipeline that
+    // pages a human is Sentry, wired in src/monitoring.js off the
+    // per-deployment SENTRY_DSN var (the docs runbook has the setup).
+    observability: {
+      enabled: true,
+      headSamplingRate: 1,
+    },
     env: {
       ASSETS: bindings.assets(),
       // Two databases, one purpose each (drive issue #170). The waitlist's
@@ -205,6 +221,17 @@ export default defineConfig({
         namespace: "1005",
         simple: { limit: 10, period: 60 },
       }),
+      // drive#539: GET /api/health fans out to every D1, five other rate-limit
+      // bindings, KV and ASSETS. The route itself sits behind this limiter so
+      // an anonymous loop cannot spend those billed ops at will. 10 a minute
+      // per IP is the sign-in figure: far above a monitor that polls once a
+      // minute, far below a script. Namespace 1009, because 1006/1007 are the
+      // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
+      // the share-download limiter below.
+      HEALTH_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1009",
+        simple: { limit: 10, period: 60 },
+      }),
       // GET /s/<token> (drive issue #506): a logged-out share download has no
       // account gate, so the stock rate-limit binding is the bound. Per IP it
       // sits at 60 a minute: far above a person opening a handful of links,
@@ -215,6 +242,24 @@ export default defineConfig({
       SHARE_DOWNLOAD_RATE_LIMITER: bindings.rateLimit({
         namespace: "1008",
         simple: { limit: 60, period: 60 },
+      }),
+      // The two mint routes (drive issue #549): POST /api/share and POST
+      // /api/request each get their own bound, on top of the per-account cap
+      // of 50 open links the handlers enforce. 30 a minute per IP is far
+      // above an owner clicking "Share" and far below a script minting tokens
+      // to walk. Namespaces 1010/1011 continue the 1001-1009 series; a reused
+      // namespace fails the deploy with 10021. 1010/1011 were free because the
+      // HEALTH_RATE_LIMITER above took 1009, so test/deploy-api-worker.test.mjs
+      // (which reads both this file and the api Worker's, and fails on the
+      // first duplicate it finds) caught the SHARE_MINT_RATE_LIMITER reusing
+      // it here.
+      SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1010",
+        simple: { limit: 30, period: 60 },
+      }),
+      REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1011",
+        simple: { limit: 30, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in core/email-send.js. No options: the
