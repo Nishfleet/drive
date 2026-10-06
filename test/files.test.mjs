@@ -1883,6 +1883,71 @@ test("a copy whose destination cannot be read fails loudly", async () => {
   );
 });
 
+test("an oversize fallback keeps the empty-destination guard and aborts the upload", async () => {
+  // No size is passed, so the single CopyObject goes first and S3 refuses it as
+  // too large. The multipart copy that follows is still held to an empty
+  // destination: the HEAD before completion finds a save, so the copy throws and
+  // the upload is aborted (drive issue #605).
+  /** @type {string[]} */
+  const requests = [];
+  let destinationHeads = 0;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = String(request.url);
+    requests.push(`${request.method} ${new URL(url).search}`);
+    if (request.method === "HEAD") {
+      if (url.endsWith("/parked.txt")) {
+        return new Response(null, { status: 200, headers: { "content-length": "6442450944" } });
+      }
+      destinationHeads += 1;
+      return destinationHeads === 1
+        ? new Response(null, { status: 404 })
+        : new Response(null, { status: 200, headers: { etag: '"saved"' } });
+    }
+    if (request.method === "PUT" && !url.includes("partNumber=")) {
+      return new Response(
+        "<Error><Code>InvalidRequest</Code><Message>The specified copy source is larger than the maximum allowable size for a copy source</Message></Error>",
+        { status: 400 },
+      );
+    }
+    if (url.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (url.includes("partNumber=")) {
+      return new Response("<CopyPartResult><ETag>&#34;p&#34;</ETag></CopyPartResult>");
+    }
+    if (request.method === "DELETE") return new Response(null, { status: 204 });
+    return new Response(
+      "<CompleteMultipartUploadResult><ETag>whole</ETag></CompleteMultipartUploadResult>",
+    );
+  };
+  const scoped = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  await assert.rejects(
+    scoped.copy("/parked.txt", "/notes.md", undefined, { ifAbsent: true }),
+    (error) => error instanceof ChangedUnderUsError,
+  );
+  assert.ok(
+    requests.some((entry) => entry.startsWith("DELETE ?uploadId=")),
+    "the upload was aborted",
+  );
+  assert.ok(!requests.some((entry) => entry.startsWith("POST ?uploadId=")), "never completed");
+});
+
+test("a memory copy of a missing source reports the missing source, not a changed destination", async () => {
+  const store = createMemoryStore();
+  await store.write("u/1/there.txt", "x", "text/plain");
+  await assert.rejects(
+    store.copy("u/1/missing.txt", "u/1/there.txt", undefined, { ifAbsent: true }),
+    /not in the drive/,
+  );
+});
+
 test("a path too long for a storage key is refused with its own message", async () => {
   // `validatePath` counts characters and a storage key is counted in bytes, and
   // a trash name percent-encodes every byte of a path that is not ASCII into

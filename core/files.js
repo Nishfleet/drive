@@ -1395,17 +1395,17 @@ export function createMemoryStore() {
       return found.sort((a, b) => a.path.localeCompare(b.path) || a.createdAt - b.createdAt);
     },
     async copy(from, to, _size, options = {}) {
-      // Nothing is awaited between this check and the write below, so in this
-      // stand-in no save can land between them (drive issue #605).
-      if (options.ifAbsent && objects.has(to)) {
-        throw new ChangedUnderUsError(to);
-      }
       const value = objects.get(from);
       if (!value) {
         // A copy of a file that is not there is a real failure (S3 answers
         // 404), not a silent no-op: `drive branch` must never report success
         // for a folder it did not copy.
         throw new Error(`cannot copy ${from}: that file is not in the drive`);
+      }
+      // Nothing is awaited between this check and the write below, so in this
+      // stand-in no save can land between them (drive issue #605).
+      if (options.ifAbsent && objects.has(to)) {
+        throw new ChangedUnderUsError(to);
       }
       // The bytes and their fingerprint move together; only the modified time
       // is the copy's own, exactly as S3's CopyObject behaves.
@@ -2038,7 +2038,8 @@ export function createS3Store(config) {
         (code === "InvalidRequest" &&
           /larger than the maximum|too large/i.test(tagValue(body, "Message")));
       if (oversize) {
-        return multipartCopy(request, urlFor, source, to, await sourceSize(request, urlFor, from));
+        const size = await sourceSize(request, urlFor, from);
+        return multipartCopy(request, urlFor, source, to, size, options);
       }
       if (!response.ok) {
         throw new Error(`storage copy failed with ${response.status}`);
