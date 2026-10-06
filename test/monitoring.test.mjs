@@ -131,7 +131,7 @@ test("captureError reports the error with the job that failed, for the fingerpri
 // a duplicate slug would fold two schedules into one monitor and a missed
 // run of one could pass as the other's.
 test("every scheduled branch runs in its own check-in with a unique slug", () => {
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/index-cron.js", import.meta.url), "utf8");
   const branches = [
     ["METER_CRON", "meter-hourly-rollup"],
     ["METER_RECONCILE_SCHEDULE", "meter-nightly-reconcile"],
@@ -193,7 +193,7 @@ test("reportPurgeFailures raises an error naming the failed purges, and none whe
 test("the nightly close cron reports its resolved purge failures, not only rejections", () => {
   // The waitUntil's .then pair: the rejection half was already pinned by the
   // captureError rethrow, the success half is the part that was silent.
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/index-cron.js", import.meta.url), "utf8");
   const start = src.indexOf("runAccountCloseCron({");
   assert.ok(start !== -1, "the nightly branch runs the close cron");
   const block = src.slice(start, src.indexOf("recordNightlySizes", start));
