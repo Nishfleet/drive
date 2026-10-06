@@ -249,6 +249,17 @@ document.getElementById("closed-body").textContent = UPLOAD_PAGE_COPY.closedBody
 choose.textContent = UPLOAD_PAGE_COPY.choose;
 document.getElementById("hint").textContent = UPLOAD_PAGE_COPY.hint;
 
+// The day a link stops working, in the zone of the browser showing it
+// (drive#559). The api Worker sends the instant and never words for it, because
+// a date rendered on a server in the UTC zone reads the wrong day at both ends
+// of a month.
+function untilLabel(iso) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  return `Until ${at.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+}
+
 function say(message, kind) {
   status.textContent = message || "";
   status.className = kind ? `status ${kind}` : "status";
@@ -291,7 +302,7 @@ async function open() {
   }
   folderEl.textContent = info.folder;
   drop.hidden = false;
-  say(info.expiresLabel || "", "");
+  say(untilLabel(info.expiresAtIso), "");
 }
 
 async function uploadFiles(files) {

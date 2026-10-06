@@ -691,6 +691,53 @@ func TestVfsRefreshReplyError(t *testing.T) {
 	}
 }
 
+func TestFillTargetsHonoursCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reads := 0
+	targets := fillTargets{
+		ctx:     ctx,
+		offline: []string{"keep.bin"},
+		recent:  []string{"a.bin"},
+		readFile: func(string) (int64, error) {
+			reads++
+			return 1, nil
+		},
+	}
+	if _, err := targets.read(true, 1<<20); err == nil {
+		t.Fatal("a cancelled fill read returned no error")
+	}
+	if reads != 0 {
+		t.Errorf("a cancelled fill still read %d files", reads)
+	}
+}
+
+func TestFillTargetsSkipsUnpinnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("pin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var read []string
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"other.bin"},
+		readFile: func(p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			return 4, nil
+		},
+	}
+	if _, err := targets.read(false, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 0 {
+		t.Errorf("an unpinned file was filled: %v", read)
+	}
+}
+
 // hasArg reports whether args contains flag at all.
 func hasArg(args []string, flag string) bool {
 	for _, a := range args {

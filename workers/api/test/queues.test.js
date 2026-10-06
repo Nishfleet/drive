@@ -7,13 +7,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createTestD1, DRIVE_MIGRATIONS } from "../../../test/harness.mjs";
 import {
   createD1QueueStore,
   QUEUE_FRESHNESS_SECONDS,
   QUEUE_REPORT_INTERVAL_SECONDS,
   uploadQueueFromRow,
-} from "../src/queues.js";
+} from "../../../core/queues.js";
+import { createTestD1, DRIVE_MIGRATIONS } from "../../../test/harness.mjs";
 
 // A clock the test owns, so the interval and the freshness window can be
 // crossed without sleeping. It is the same shape the other api stores' tests
@@ -42,6 +42,10 @@ test("the queue table ships in the drive migrations the tests apply", () => {
   assert.ok(
     DRIVE_MIGRATIONS.includes("drive/0014_device_queues.sql"),
     "the queue table's migration is not in the list the tests apply",
+  );
+  assert.ok(
+    DRIVE_MIGRATIONS.includes("drive/0027_device_queue_reports.sql"),
+    "the per-device queue table's migration is not in the list the tests apply",
   );
 });
 
@@ -150,7 +154,7 @@ test("one account's report is never another's", async () => {
 
 test("a paused queue round-trips as paused", async () => {
   // `drive pause` holds rclone's own queue, and the pages read the hold as a
-  // state rather than as a stalled number (src/status.js UPLOAD_LABEL.paused).
+  // state rather than as a stalled number (core/status.js UPLOAD_LABEL.paused).
   const clock = fixedClock();
   const store = createD1QueueStore(createTestD1(), { now: clock.now });
   await store.record("acct_1", { files: 2, uploadedBytes: 100, totalBytes: 200, paused: true });
@@ -167,7 +171,7 @@ test("the sweep drops the rows no read can answer from", async () => {
   await store.record("acct_1", QUEUE);
   assert.equal(await store.sweep(), 0, "a live row is not swept");
   clock.advance(QUEUE_FRESHNESS_SECONDS + 1);
-  assert.equal(await store.sweep(), 1);
+  assert.equal(await store.sweep(), 2, "the live row and its dual-write both go");
   assert.equal(await store.latest("acct_1"), null);
 });
 
@@ -206,4 +210,43 @@ test("a row that cannot be a queue is refused rather than rendered", async () =>
   // An absent row and a row with no clock are both "no queue", not an error.
   assert.equal(uploadQueueFromRow(null, at), null);
   assert.equal(uploadQueueFromRow({}, at), null);
+});
+
+test("two devices on one account each store a report", async () => {
+  const clock = fixedClock();
+  const store = createD1QueueStore(createTestD1(), { now: clock.now });
+  assert.equal((await store.record("acct_1", QUEUE, "device-a")).stored, true);
+  assert.equal(
+    (
+      await store.record(
+        "acct_1",
+        { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true },
+        "device-b",
+      )
+    ).stored,
+    true,
+    "the second device stores its own row rather than 429 against the first",
+  );
+  const latest = await store.latest("acct_1");
+  assert.equal(latest?.files, 4);
+  assert.equal(latest?.paused, true);
+});
+
+test("remove drops one device's report and leaves the other", async () => {
+  const clock = fixedClock();
+  const store = createD1QueueStore(createTestD1(), { now: clock.now });
+  assert.equal((await store.record("acct_1", QUEUE, "device-a")).stored, true);
+  assert.equal(
+    (
+      await store.record(
+        "acct_1",
+        { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: false },
+        "device-b",
+      )
+    ).stored,
+    true,
+  );
+  await store.remove("acct_1", "device-a");
+  const latest = await store.latest("acct_1");
+  assert.equal(latest?.files, 1);
 });

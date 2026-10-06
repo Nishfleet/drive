@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createIdriveKeyProvider, IdriveKeyError } from "../src/idrive-keys.js";
+import { createIdriveKeyProvider, IdriveKeyError } from "../../../core/idrive-keys.js";
 import {
   ACCOUNT_BUCKET_PREFIX,
   bucketForAccount,
@@ -8,8 +8,8 @@ import {
   scopeFor,
   TEAM_BUCKET_PREFIX,
   teamScopeFor,
-} from "../src/keyprovider.js";
-import { createS3Client, provisionBucket, readBucketEncryption } from "../src/s3.js";
+} from "../../../core/keyprovider.js";
+import { createS3Client, provisionBucket, readBucketEncryption } from "../../../core/s3.js";
 
 /**
  * One reseller API call as it was made.
@@ -224,7 +224,7 @@ test("a scope with no bucket is refused, not minted against everything", async (
   });
   // A scope from a provider that scopes to a prefix only: the STS path, where
   // the boundary is the session policy rather than a bucket.
-  const prefixOnly = /** @type {import("../src/keyprovider.js").KeyScope} */ (
+  const prefixOnly = /** @type {import("../../../core/keyprovider.js").KeyScope} */ (
     /** @type {unknown} */ ({ prefix: "u/a1/", capabilities: ["list", "read"] })
   );
   await assert.rejects(() => provider.mint(prefixOnly), /names its bucket/);

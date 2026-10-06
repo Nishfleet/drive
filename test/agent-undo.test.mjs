@@ -26,14 +26,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
   createBranch,
   createKvSnapshotStore,
   handleBranchesRequest,
   snapshotKey,
 } from "../src/branches.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
   handleRewindRequest,
   REWIND_ENDPOINT,
@@ -84,6 +84,7 @@ function makeD1() {
     "drive/0004_agent_undo.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    "drive/0030_branch_jobs.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -251,7 +252,7 @@ function makeD1() {
  * The bytes a scoped store holds at `path`, as text. A read that answers null
  * is a real miss, so it throws rather than resolving an empty string the
  * assertions below could not tell from a genuinely empty file.
- * @param {import("../src/files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {string} path
  * @returns {Promise<string>}
  */
@@ -318,7 +319,7 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // Attribution is on the same row the rewind reads, so the screen can say
   // whose work this is with no second store.
   assert.equal(preview.changedBy, "k-claude");
-  // The window is the drive's own 30 days, read from src/files.js rather than
+  // The window is the drive's own 30 days, read from core/files.js rather than
   // declared here, so the two promises are one number.
   assert.equal(REWIND_WINDOW_DAYS, 30);
   assert.equal(preview.windowDays, 30);
@@ -477,6 +478,7 @@ test("the rewind route lists, previews, rewinds and refuses the rest", async () 
 
   // Then the one click.
   const done = await call("/fix", { method: "POST" });
+  assert.equal(done.status, 202);
   const body = await done.json();
   assert.equal(body.state, "discarded");
   assert.equal(body.rewound, 2);
@@ -523,7 +525,7 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
 /**
  * @param {D1Database} db
  * @param {import("../src/branches.js").SnapshotStore|null} snapshots
- * @param {import("../src/files.js").FileStore} raw
+ * @param {import("../core/files.js").FileStore} raw
  * @param {string} name
  * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
  */

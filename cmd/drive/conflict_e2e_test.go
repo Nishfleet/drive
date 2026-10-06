@@ -106,27 +106,44 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// The rule is decided after the uploads have landed: give the mount's
 	// write-back (5s) and the guard its interval. The deadline is generous
 	// on purpose — the proof is what was kept, not how fast.
+	// Whichever save lands last is the plain file; the other is the conflict
+	// copy, named for the device that lost it. Either device can lose: the
+	// write-back timers are independent, so write order is not land order.
+	// The rule is checked by what is kept rather than by who won.
+	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
 	deadline := time.Now().Add(90 * time.Second)
-	var conflictOnA string
+	var kept string
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(mountA, ConflictName(name, deviceA))); err == nil {
-			conflictOnA = filepath.Join(mountA, ConflictName(name, deviceA))
+		for _, n := range candidates {
+			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
+				kept = n
+				break
+			}
+		}
+		if kept != "" {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if conflictOnA == "" {
-		t.Fatalf("neither save survived: %s never appeared on device A", ConflictName(name, deviceA))
+	if kept == "" {
+		t.Fatalf("neither save survived: none of %v appeared on device A", candidates)
 	}
 
-	// The later save is the one the plain path holds. Both devices read the
-	// same bytes there, because there is one object and both mounts see it.
-	gotB, err := os.ReadFile(filepath.Join(mountB, name))
+	plain, err := os.ReadFile(filepath.Join(mountB, name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotB) != bodyB {
-		t.Errorf("the plain file is %q, want the save that landed later (%q)", gotB, bodyB)
+	conflict, err := os.ReadFile(filepath.Join(mountA, kept))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{bodyA, bodyB} {
+		if string(plain) != want && string(conflict) != want {
+			t.Errorf("the save %q survived nowhere: plain=%q conflict=%q", want, plain, conflict)
+		}
+	}
+	if string(plain) == string(conflict) {
+		t.Errorf("both saves are the same bytes (%q): the other device's save was overwritten", plain)
 	}
 
 	// The earlier save is the conflict copy, on both devices. This is the
@@ -146,13 +163,12 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatalf("device B never saw %s after the fill loop's vfs/refresh", ConflictName(name, deviceA))
 	}
 	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
-		got, err := os.ReadFile(filepath.Join(m.dir, ConflictName(name, deviceA)))
+		got, err := os.ReadFile(filepath.Join(m.dir, kept))
 		if err != nil {
 			t.Fatalf("device %s cannot read the conflict copy: %v", m.label, err)
 		}
-		if string(got) != bodyA {
-			t.Errorf("the conflict copy on device %s is %q, want the earlier save (%q)",
-				m.label, got, bodyA)
+		if string(got) != string(conflict) {
+			t.Errorf("the conflict copy on device %s is %q, want %q", m.label, got, conflict)
 		}
 	}
 
@@ -170,7 +186,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Errorf("device A's drive lists %v, want the plain file and the conflict copy", names)
 	}
 	t.Logf("two devices, one save window: storage=stand-in, plain=%q, conflict=%q, A's listing=%v",
-		name, ConflictName(name, deviceA), names)
+		name, kept, names)
 
 	// -- the offline arm ---------------------------------------------------
 	// The storage goes away and both devices save the same file while it is
@@ -196,9 +212,9 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// Whichever save lands last is the plain file; the other is the conflict
 	// copy, named for the device that lost it. Either device can lose, so the
 	// rule is checked by what is kept rather than by who won.
-	candidates := []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
+	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
 	deadline = time.Now().Add(90 * time.Second)
-	var kept string
+	kept = ""
 	for time.Now().Before(deadline) {
 		for _, n := range candidates {
 			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
@@ -215,11 +231,11 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatalf("the offline save never uploaded under the conflict rule: neither %v "+
 			"appeared on device A after the storage came back", candidates)
 	}
-	plain, err := os.ReadFile(filepath.Join(mountA, offlineName))
+	plain, err = os.ReadFile(filepath.Join(mountA, offlineName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	conflict, err := os.ReadFile(filepath.Join(mountA, kept))
+	conflict, err = os.ReadFile(filepath.Join(mountA, kept))
 	if err != nil {
 		t.Fatal(err)
 	}
