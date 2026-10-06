@@ -128,8 +128,9 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   // The whole verify job, steps included: the header-only slice the test above
   // takes stops at `steps:`, which is before any step lives.
   const start = CI.search(/^ {2}verify:\n/m);
+  assert.notEqual(start, -1, "ci.yml has a verify job");
   const rest = CI.slice(start);
-  const next = /^ {2}\w+:/m.exec(rest.slice(1));
+  const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   const step = /- name: Typecheck and Biome\n {8}run: npm run check\n/.exec(body)?.[0];
   assert.ok(step, "the verify job runs npm run check as a named step");
@@ -137,17 +138,22 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   // first: the point of the step is that the cheap gate fails before the
   // expensive suite runs.
   assert.ok(
-    CI.indexOf("- name: Typecheck and Biome") < CI.indexOf("- run: npm test"),
+    body.indexOf("- name: Typecheck and Biome") < body.indexOf("- run: npm test"),
     "check runs before npm test",
   );
   // The step is a report, never a rewrite: a CI run that fixes the diff and
-  // passes would hide the error from the merge it was supposed to stop. The
-  // flags are read off the run commands, not the whole job, so a comment may
-  // still name the rule.
-  const commands = [...body.matchAll(/^ {8}run: (.*)$/gm)].map((m) => m[1]);
-  assert.ok(commands.includes("npm run check"), "the step runs npm run check");
-  for (const command of commands) {
-    assert.doesNotMatch(command, /--(write|fix)\b/, `ci.yml never runs \`${command}\``);
+  // passes would hide the error from the merge it was supposed to stop. Every
+  // non-comment line of the job is read, so a `run: |` block's continuation
+  // lines count too, while a comment may still name the rule.
+  const lines = body.split("\n").filter((line) => !/^\s*#/.test(line));
+  for (const line of lines) {
+    assert.doesNotMatch(line, /--(write|fix)\b/, `ci.yml verify never runs \`${line.trim()}\``);
+  }
+  // The step runs whatever `npm run check` means, so the scripts it reaches
+  // are held to the same rule.
+  const { scripts } = JSON.parse(read("package.json"));
+  for (const name of ["check", "precheck", "typecheck", "pretypecheck", "lint"]) {
+    assert.doesNotMatch(scripts[name] ?? "", /--(write|fix)\b/, `npm run ${name} never fixes`);
   }
   // Same gate as `npm test`: the step carries no `if:`, so it runs whenever
   // the job runs, and the job-level `if:` is the paths filter above it.
