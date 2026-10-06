@@ -307,6 +307,73 @@ test("a folder that grows after the claim copies the claimed listing only", asyn
   assert.equal(await readText(scoped, "/.branches/again/c.txt"), "c");
 });
 
+test("a create queued before the freeze existed copies its whole source", async () => {
+  // The regression the freeze's marker exists for: a row claimed before the
+  // claim froze a listing writes its snapshot a batch at a time, so after the
+  // first batch the row already carries bytes. Reading `only` off those bytes
+  // would make batch two copy only what batch one had copied, and the branch
+  // would open missing every file past the first batch.
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  // More than one batch of files, so the copy cannot finish in a single pass.
+  const total = BRANCH_JOB_BATCH_FILES + 5;
+  const pending = [];
+  for (let index = 0; index < total; index += 1) {
+    pending.push(scoped.write(`/Photos/${index}.txt`, new Blob(["a"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending.splice(0, 200));
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const snapshots = createKvSnapshotStore(createTestKv());
+  const key = snapshotKey(ACCOUNT, "legacy");
+  // The row exactly as the Worker before this issue wrote it: claimed with an
+  // empty snapshot pointer value and no frozen marker key, so the copy job
+  // takes its legacy path and walks the source as it is. It is written
+  // directly rather than through `createBranch`, because that call is what
+  // freezes the listing now — a row from it would carry the frozen listing and
+  // would prove nothing about the old Worker.
+  const claimed = await db
+    .prepare(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
+        "snapshot_key, snapshot_bytes, state, created_at, job_kind) " +
+        "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,'create')",
+    )
+    .bind(
+      ACCOUNT.id,
+      "legacy",
+      "/Photos",
+      "/.branches/legacy",
+      key,
+      new Date(Date.now()).toISOString(),
+    )
+    .run();
+  assert.ok(claimed.success);
+  const id = Number(claimed.meta.last_row_id);
+  assert.equal(await snapshots.get(`${key}/frozen`), null, "no marker: this is a pre-freeze row");
+
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let copied = { done: false };
+  let batches = 0;
+  for (let steps = 0; steps < 20 && copied.done !== true; steps += 1) {
+    copied = await processBranchJob(db, snapshots, scoped, ACCOUNT, id);
+    batches += 1;
+  }
+  assert.ok(!("error" in copied) && copied.done, JSON.stringify(copied));
+  // More than one batch, which is what makes a partial snapshot read as a
+  // frozen one the case this covers.
+  assert.ok(batches > 2, `the copy took ${batches} batches, more than the clear plus one copy`);
+  const done = await getBranch(db, snapshots, ACCOUNT, "legacy");
+  assert.equal(done?.state, "open");
+  // Every source file is in the branch: nothing past the first batch was lost
+  // to a partial snapshot being read as a frozen one.
+  assert.equal(Object.keys(done?.snapshot ?? {}).length, total);
+  assert.equal(done?.jobDone, total);
+  assert.equal(done?.jobTotal, total);
+  assert.equal(await readText(scoped, `/.branches/legacy/${total - 1}.txt`), "a");
+});
+
 test("approve of 1,000 changes issues one LIST per parent folder", async () => {
   const raw = createMemoryStore();
   const scoped = scopeStore(raw, ACCOUNT);

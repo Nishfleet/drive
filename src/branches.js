@@ -178,6 +178,21 @@ function approveWalkKey(key) {
   return `${key}/approve-walk`;
 }
 
+/** KV key that marks a snapshot as the listing the claim froze (drive#802).
+ * The marker is what tells the copy job the snapshot it reads is the whole
+ * claim-time listing and not a batch's partial one. `snapshot_bytes` cannot say
+ * that on its own: a create queued before this shipped writes its snapshot one
+ * batch at a time, so after its first batch the row also carries bytes, and
+ * reading `only` off those bytes would make batch two copy only what batch one
+ * had already copied and open a branch with everything after it missing. A row
+ * claimed before this shipped has no marker key at all and copies the whole
+ * source as before.
+ * @param {string} key the branch's snapshot key
+ */
+function frozenSnapshotKey(key) {
+  return `${key}/frozen`;
+}
+
 /**
  * The size cap one Workers KV namespace puts on one value: 25 MiB. One
  * snapshot entry measured ~117 bytes (test/branches-snapshot.test.mjs), so
@@ -1249,13 +1264,15 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     }
   }
   // What the claim froze (drive#802): the source listing as of claim time,
-  // stored under the row's own snapshot pointer. The copy writes exactly it. A
-  // row claimed before that shipped wrote no snapshot until the job finished,
-  // so its byte length is still zero and it copies the whole source as before.
-  const only =
-    Object.keys(branch.snapshot).length > 0 || branch.snapshotBytes > 0
-      ? branch.snapshot
-      : undefined;
+  // stored under the row's own snapshot pointer, and marked by the claim with
+  // its own key. The marker is the test, not the snapshot's byte length: a
+  // create queued before that shipped has no marker and keeps copying the
+  // source as it is, which is what its bytes already on the row must not turn
+  // off. Its own snapshot is written a batch at a time, so reading `only` off
+  // `snapshot_bytes` would have made batch two copy batch one's files again and
+  // open a branch missing everything after the first 80.
+  const frozenMarker = await snapshots.get(frozenSnapshotKey(branch.snapshotKey));
+  const only = frozenMarker !== null && frozenMarker !== undefined ? branch.snapshot : undefined;
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
@@ -1284,6 +1301,11 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   if (copied.done) {
     try {
       await clearScratch(snapshots, walkKey);
+      // The frozen listing is the branch's snapshot from here on, so the marker
+      // has done its job and goes with the walk's scratch (drive#802). It is
+      // only read while the copy runs, and a finished branch's copy never
+      // resumes, so leaving it would be a key that outlives its job.
+      await clearScratch(snapshots, frozenSnapshotKey(branch.snapshotKey));
     } catch (error) {
       console.error?.(`create walk cleanup failed for ${branch.id}: ${errorText(error)}`);
     }
@@ -1945,6 +1967,11 @@ export async function createBranch(
       }
       return { error: failureMessage("unexpected"), status: 500 };
     }
+    // Marked after the snapshot lands, never before: a marker whose listing
+    // failed to write would send the copy after bytes the claim never measured,
+    // which is the leak this issue closes. A claim that fails here abandons, so
+    // no row is ever left claimed with a frozen listing nobody copies.
+    await snapshots.put(frozenSnapshotKey(snapKey), JSON.stringify({ frozen: true }));
   } catch (error) {
     console.error?.(`branch listing failed for ${account.id}/${name}: ${errorText(error)}`);
     if (!(await abandonClaim())) {

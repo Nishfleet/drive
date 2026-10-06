@@ -10,9 +10,10 @@ the live site.
 
 ## 2026-10-06
 
-- A branch holds the folder as it was when you made the branch, not as it was
-  when the copy ran. A file added in between is not in the branch. The next
-  branch takes it.
+- A branch copies the files your folder held when you made the branch, not the
+  files it holds when the copy runs. A file added in between is not in the
+  branch, and the next branch takes it. A file that grew in between is copied in
+  full, and `drive diff` reports it as changed in the original.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
