@@ -13,7 +13,7 @@
 // schema the drive database will actually have.
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { BYTES_PER_GB } from "../src/meter.js";
+import { BYTES_PER_GB } from "../core/meter.js";
 
 const migrationsDir = new URL("../migrations/drive/", import.meta.url);
 // The drive database's migration files in the order `wrangler d1 migrations
@@ -182,7 +182,7 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  * A D1Database stand-in over a real SQLite database.
  *
  * It runs the meter's real SQL against the real migrations, so the statements
- * src/meter.js sends are exercised here exactly as D1 would run them: the
+ * core/meter.js sends are exercised here exactly as D1 would run them: the
  * ON CONFLICT upserts, the MIN() watermark, the hour predicate and the
  * NOT IN subquery are SQLite's, not a second implementation of them in JS.
  * Only the two shapes D1 adds on top of a statement are adapted: reads come

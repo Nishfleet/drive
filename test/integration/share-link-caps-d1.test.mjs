@@ -1,6 +1,6 @@
 // Integration test for drive#549's per-link caps: the real migration files
 // under migrations/drive/, applied to a real SQLite database with the whole
-// schema (test/harness.mjs DRIVE_MIGRATIONS). A mocked binding cannot
+// schema (test/harness.mjs DRIVE_SCHEMA_MIGRATIONS). A mocked binding cannot
 // see the schema, so this file proves both directions through the store the
 // routes use:
 //
@@ -26,7 +26,7 @@ import {
   purgeStaleLinks,
 } from "../../src/share.js";
 import { MIGRATION_FILES } from "../d1-sqlite.mjs";
-import { createTestD1, DRIVE_MIGRATIONS } from "../harness.mjs";
+import { createTestD1, DRIVE_SCHEMA_MIGRATIONS } from "../harness.mjs";
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 const TOKEN = "cap-share-token-aaaaaa";
@@ -37,7 +37,7 @@ test("the real migrations add the two additive cap columns", () => {
     MIGRATION_FILES.includes("0025_link_caps.sql"),
     "0025_link_caps.sql is missing from the migration set",
   );
-  const { sqlite } = createTestD1({ migrations: DRIVE_MIGRATIONS });
+  const { sqlite } = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
 
   const files = sqlite
     .prepare("SELECT * FROM pragma_table_info('upload_requests') WHERE name = ?1")
@@ -68,7 +68,7 @@ test("the real migrations add the two additive cap columns", () => {
 });
 
 test("a capped share and request write the real columns, and a second store reads them", async () => {
-  const db = createTestD1({ migrations: DRIVE_MIGRATIONS });
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   await db
     .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
     .bind("acct-cap", "cap@example.com")
@@ -130,7 +130,7 @@ test("a capped share and request write the real columns, and a second store read
 });
 
 test("the real schema lets the nightly purge drop only the rows that ended long ago", async () => {
-  const db = createTestD1({ migrations: DRIVE_MIGRATIONS });
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   await db
     .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
     .bind("acct-purge", "purge@example.com")

@@ -76,16 +76,15 @@ A delete made anywhere else — `rm` in the mounted folder, an rclone command,
 or an S3 client with a storage key — does not pass through Recently deleted.
 The storage keeps the previous copy for one day and removes it after. To get
 such a file back, leave your email in the form on the [landing page](/)
-within that day; we reply and put it back. An agent cannot delete at all, so
-an agent's mistake cannot cost you a file. See [Agents](/agents) for what a
-key can and cannot do.
+within that day; we reply and put it back. {{AGENT_DELETE}} See
+[Agents](/agents) for what a key can and cannot do.
 
 ## How the bill is counted
 
 The meter counts every GB you keep, by the minute. At the end of the month the
 rate is {{RATE}} on the month's GB-months, and the bill is never more than
-{{MAX_PER_TB}} for each TB. {{NO_PLANS}} Downloads are counted
-separately. The numbers worked out for four sizes are on
+{{MAX_PER_TB}} for each TB. {{NO_PLANS}} {{VERSION_MINIMUM}} Downloads are
+counted separately. The numbers worked out for four sizes are on
 [Pricing and your bill](/pricing).
 
 ## Next

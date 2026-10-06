@@ -10,10 +10,10 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { platform } from "node:os";
 import { test } from "node:test";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { createS3Client, readBucketConfig } from "../core/s3.js";
 import worker from "../src/index.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { createS3Client, readBucketConfig } from "../workers/api/src/s3.js";
-import { createTestAuth, DRIVE_MIGRATIONS, signIn, TEST_BASE_URL } from "./harness.mjs";
+import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_BASE_URL } from "./harness.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 
 const workerFetch =
@@ -101,7 +101,7 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
   // below reads every table a key mint writes, and the meter's
   // `file_versions`, which an upload reads for the account's stored bytes
   // (drive#536).
-  const made = createTestAuth({ migrations: DRIVE_MIGRATIONS });
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const env = storageEnv(made, standin.endpoint);
   const root = createS3Client({
     endpoint: standin.endpoint,
@@ -181,7 +181,11 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
     const upload = await workerFetch(
       new Request(
         `${TEST_BASE_URL}/api/files/upload?path=${encodeURIComponent("/")}&name=${encodeURIComponent("hello.txt")}`,
-        { method: "POST", headers: { origin: TEST_BASE_URL, cookie }, body: "hello drive" },
+        {
+          method: "POST",
+          headers: { origin: TEST_BASE_URL, cookie, "content-length": "11" },
+          body: "hello drive",
+        },
       ),
       env,
     );
@@ -257,7 +261,7 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
       // seam, so no Worker verify route runs and no bucket is created. Its own
       // database: the module-level store cache binds this walk to the stand-in
       // this outer test started, which is the point.
-      const legacy = createTestAuth({ migrations: DRIVE_MIGRATIONS });
+      const legacy = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
       const legacyEnv = storageEnv(legacy, standin.endpoint);
       const { cookie: legacyCookie } = await signIn(legacy, "legacy@example.com");
       const row = await legacy.db

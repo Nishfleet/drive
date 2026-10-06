@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
 import { MIGRATION_FILES, orderMigrationFiles } from "./d1-sqlite.mjs";
-import { DRIVE_MIGRATIONS } from "./harness.mjs";
+import { DRIVE_SCHEMA_MIGRATIONS } from "./harness.mjs";
 
 /**
  * The four leading digits are a migration's identity: production tracks a file
@@ -39,7 +39,7 @@ const ALLOWED_DUPLICATES = new Map([
   // 0017_drop_branches_snapshot
   ["0020", 2], // 0020_account_purge_cursor.sql, 0020_balance_ledger.sql
   ["0021", 2], // 0021_agent_caps_nullable_cap.sql, 0021_prepaid_draws.sql (#591)
-  ["0025", 2], // 0025_link_caps.sql (#549), 0025_meter_scale.sql (#681)
+  ["0025", 2], // 0025_link_caps.sql (#682), 0025_meter_scale.sql (#681)
 ]);
 
 test("the migration directory is read in full-filename order, like wrangler", () => {
@@ -82,15 +82,15 @@ test("the migration directory is read in full-filename order, like wrangler", ()
   );
 });
 
-test("DRIVE_MIGRATIONS is generated from the folder, not hand-kept", () => {
+test("DRIVE_SCHEMA_MIGRATIONS is generated from the folder, not hand-kept", () => {
   const fromFolder = readdirSync(new URL("../migrations/drive/", import.meta.url))
     .filter((name) => name.endsWith(".sql"))
     .sort()
     .map((name) => `drive/${name}`);
   assert.deepEqual(
-    [...DRIVE_MIGRATIONS],
+    [...DRIVE_SCHEMA_MIGRATIONS],
     fromFolder,
-    "DRIVE_MIGRATIONS must be the folder's list in apply order, not a hand-kept copy",
+    "DRIVE_SCHEMA_MIGRATIONS must be the folder's list in apply order, not a hand-kept copy",
   );
 });
 

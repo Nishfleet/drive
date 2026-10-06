@@ -151,7 +151,11 @@ a {
   line-height: 1;
 }
 
+/* The tagline sits on the orange hero field. The shared --ink-soft from
+   site.css reads at 2.4:1 there and fails the accessibility budget, so it
+   takes the same ink as the masthead links (about 6:1). */
 .tagline {
+  color: var(--drive-ink);
   font-size: 14px;
   font-weight: 600;
 }
@@ -2191,7 +2195,7 @@ details p {
         <section class="business" aria-labelledby="business-heading">
           <h2 id="business-heading">Business</h2>
           <div>
-            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support.</p>
+            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support. The teams API is the only way to manage a company drive in version 1, and the company screens come later.</p>
             <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
             <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
             <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
@@ -2202,7 +2206,8 @@ details p {
                 <input type="hidden" name="source" value="pricing-page">
                 <button type="submit">Send</button>
               </div>
-              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email and we add it to the waitlist.</p>
+              <p class="form-note">We use this address to send one email when sign-in opens. Send means you agree to that email. Read the <a href="/privacy">privacy policy</a>.</p>
+              <p class="form-note" id="form-note" role="status" aria-live="polite"></p>
             </form>
             <noscript><p class="form-note">The form sends without JavaScript too.</p></noscript>
           </div>
@@ -2228,6 +2233,8 @@ details p {
           <a href="/refunds">Refunds</a>
           <a href="/acceptable-use">Acceptable use</a>
           <a href="/support">Support</a>
+          <a href="/accessibility">Accessibility</a>
+          <a href="/status">Status</a>
         </nav>
         <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
       </div>

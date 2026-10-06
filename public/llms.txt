@@ -8,14 +8,16 @@
 Drive is a mounted folder (macOS and Linux) where your files live in object
 storage; what is on your disk is the parts you have opened, held in a cache
 capped at 20G with 1G of your disk always kept free. Libraries bigger than the
-laptop open on demand. Agents read and write the same files through the folder, the
-MCP filesystem server, or the S3 API, each with its own scoped key.
+laptop open on demand. Agents read and write the same files through the folder
+and the stock MCP filesystem server; `drive init` connects each tool it finds
+and gives that tool its own key.
 
 ## Pricing
 
 - Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
 - The rule: You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.
 - No plans. Your balance never expires. Storage is metered by the minute and averaged over the month.
+- Each save is billed for at least one hour, so a file saved again and again inside one hour bills more than that hour.
 - We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
 - Version history is not in version 1.

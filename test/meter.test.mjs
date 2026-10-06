@@ -1,6 +1,6 @@
 // Tests for the meter (drive issue #6, build step 5). Two halves:
 //
-// 1. The arithmetic in src/meter.js: the GB-minutes a version books into
+// 1. The arithmetic in core/meter.js: the GB-minutes a version books into
 //    each hour, the 1-hour minimum, and the property the done-when
 //    measures - a full day of hourly rows has to add up to what the
 //    version actually cost, because that is the number compared with
@@ -18,9 +18,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
-import { createS3Store, TRASH_PURGE_SCHEDULE } from "../src/files.js";
-import worker from "../src/index.js";
+import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../core/billing.js";
+import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
   EVENT_ACTIONS,
@@ -30,6 +29,7 @@ import {
   folderAccount,
   gbMinutesInHour,
   HOUR_GB_MINUTES_SQL,
+  HOUR_MS,
   handleStorageEventRequest,
   hourStart,
   isTrashPath,
@@ -38,8 +38,10 @@ import {
   MAX_CATCHUP_HOURS,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  METER_STALE_AFTER_HOURS,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
+  meterFreshness,
   monthUsageRollup,
   notificationRecord,
   notificationRecords,
@@ -55,7 +57,9 @@ import {
   validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
+import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -63,7 +67,7 @@ import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 // optional on the runtime's handler type and take an execution context the
 // tests have no use for, so the two calls made here are typed as made.
 const meterWorker =
-  /** @type {{fetch(request: Request, env?: unknown): Promise<Response>, scheduled(event: unknown, env?: unknown): Promise<unknown>}} */ (
+  /** @type {{fetch(request: Request, env?: unknown): Promise<Response>, scheduled(event: unknown, env?: unknown, context?: {waitUntil: (promise: Promise<unknown>) => void}): Promise<unknown>}} */ (
     /** @type {unknown} */ (worker)
   );
 
@@ -143,8 +147,8 @@ test("an hour bucket is the UTC hour, and the minute inside it does not move it"
 // a price change moves the meter's month and the credit together, and a
 // mismatch between the two fails here.
 test("the meter's GB is decimal, and a month of the free credit's GB is exactly the credit's GB-minutes", () => {
-  // 2¢ per GB-month is the same rate the invoice charges (src/billing.js
-  // reads it from the same config src/pricing.js holds), and the free credit
+  // 2¢ per GB-month is the same rate the invoice charges (core/billing.js
+  // reads it from the same config core/pricing.js holds), and the free credit
   // is $1 a month. The GB that credit buys for a month is 1 / 0.02.
   const freeGb = BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth;
   assert.equal(freeGb, 50, "$1 at 2c per GB-month is 50 GB - the spec's 'about 50 GB'");
@@ -152,21 +156,24 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
 
   // A month of whole minutes at that size: ONE version of the credit's GB,
   // written at the month's first instant and live to the end of it, so its
-  // GB-minutes are the credit's GB x 43,800 and the bill for them is the $1.
-  const monthEnd = midnight() + MINUTES_PER_MONTH * MINUTE_MS;
+  // GB-minutes are the credit's GB x the month's minutes and the bill for
+  // them is the $1. A 30-day month here: the bill divides by the calendar
+  // month's own minutes (drive#531).
+  const MONTH_MINUTES = 30 * 1440;
+  const monthEnd = midnight() + MONTH_MINUTES * MINUTE_MS;
   const version = { sizeBytes: freeGb * GB, createdAt: midnight(), hiddenAt: null };
-  const hours = Math.round(MINUTES_PER_MONTH / 60);
+  const hours = Math.round(MONTH_MINUTES / 60);
   // The meter's whole-minute total for that month, summed hour by hour, is
-  // the credit's GB x 43,800 with no rounding drift (each hour books 60 whole
-  // minutes, and 43,800 of them is the average month the spec divides by).
+  // the credit's GB x the month's minutes with no rounding drift (each hour
+  // books 60 whole minutes, and the month's minutes are what the bill divides by).
   let total = 0;
   for (let h = 0; h < hours; h += 1) {
     total += versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, monthEnd);
   }
-  assert.equal(total, freeGb * MINUTES_PER_MONTH, "a whole month of whole minutes is exact");
+  assert.equal(total, freeGb * MONTH_MINUTES, "a whole month of whole minutes is exact");
   // And that total, through the ONE function the invoice reads, is the $1
   // free credit: the meter and the bill cannot disagree about the free month.
-  assert.equal(meteredMonthlyBillUsd(total), BILLING_CONFIG.freeMonthlyUsd);
+  assert.equal(meteredMonthlyBillUsd(total, MONTH_MINUTES), BILLING_CONFIG.freeMonthlyUsd);
   // The rolled-up total for the same month (the integer-unit sum the SQL
   // stores, one version at a time) agrees, so a month's billing is the same
   // whether the invoice reads the rollup or the per-version arithmetic.
@@ -864,6 +871,97 @@ test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves dow
     () => recordTheHour(db, 1, 1.5, midnight()),
     TypeError,
     "a fractional byte count is refused: bytes are whole",
+  );
+});
+
+// The stored-bytes mark, driven the way a customer actually produces one: the
+// same path saved again and again inside a single hour (drive#535). A save is
+// a new version, so the hourly set grows - but only the last version is still
+// live when the hour closes, and that is the set the mark takes.
+/**
+ * One 10 GB file at one path, saved `saves` times inside one hour:
+ * `replaceEvery` minutes after midnight, each save creating the successor and
+ * hiding the version before it - the two events the storage server sends for
+ * a save. `grow` adds a byte to every save's size, which is what breaks the
+ * size-identical handoff waiver (drive#104).
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
+ * @param {{saves?: number, replaceEvery?: number, grow?: boolean}} [options]
+ */
+async function savedRepeatedly(db, { saves = 6, replaceEvery = 10, grow = false } = {}) {
+  const size = 10 * GB;
+  const path = "/u/abc123/notes.md";
+  for (let save = 0; save < saves; save += 1) {
+    const at = midnight() + save * replaceEvery * MINUTE_MS;
+    await storeCreate(db, "abc123", {
+      eventId: `evt-abc123-save-${save}`,
+      b2FileId: `file-save-${save}`,
+      path,
+      sizeBytes: grow ? size + save : size,
+      createdAt: at,
+    });
+    if (save === saves - 1) {
+      continue;
+    }
+    const hiddenAt = at + replaceEvery * MINUTE_MS;
+    const hide = validateEvent({
+      eventId: `evt-abc123-hide-${save}`,
+      keyName: "/u/abc123/",
+      path,
+      b2FileId: `file-save-${save}`,
+      action: "deleted",
+      hiddenAt,
+      eventTimestamp: hiddenAt,
+    });
+    assert.equal(hide.error, undefined, hide.error);
+    await recordEvent(db, hide, hiddenAt);
+  }
+}
+
+test("six saves of one file in an hour mark one file's size, and bill one file's minutes", async () => {
+  // drive#535, finish line 1: N saves of one file in one hour marked N times
+  // its size, which read as 60 GB stored for a 10 GB drive, as the month's
+  // peak, and - as the average of the marks - into the free download
+  // allowance. The mark is the live set at the hour's end, so one file marks
+  // once however many times it was saved.
+  const sameSize = makeMeteredDB().db;
+  await savedRepeatedly(sameSize);
+  const hour = midnight();
+  const rolled = await rollupHour(sameSize, hour, hour + 60 * MINUTE_MS);
+  assert.equal(
+    sameSize.tables.usage_minutes.get(`abc123|${hour}`).stored_bytes,
+    10 * GB,
+    "six saves of a 10 GB file mark 10 GB, the size the drive held at the hour's end",
+  );
+  // The minutes side: every handoff is same-size and to the millisecond, so the
+  // waiver applies to each pair and the hour bills the one file's 60 minutes.
+  assert.equal(rolled.gbMinutes, 600, "six saves of one 10 GB file bill 600 GB-minutes");
+  assert.equal(rolled.versions, 6, "all six version rows were live at some point of the hour");
+  // The same file saved with a size change on every save: the hour bills each
+  // save its own full hour, which is the minimum the pricing copy discloses
+  // (core/pricing.js versionMinimumLine, drive#535 finish line 2). The mark is
+  // still one file's size, because the marks follow what is live, not what was
+  // booked.
+  const growing = makeMeteredDB().db;
+  await savedRepeatedly(growing, { grow: true });
+  await rollupHour(growing, hour, hour + 60 * MINUTE_MS);
+  assert.equal(
+    growing.tables.usage_minutes.get(`abc123|${hour}`).stored_bytes,
+    10 * GB + 5,
+    "the last save's size is what the drive holds",
+  );
+  // Every save changed the file's size, so no handoff was a continuation: the
+  // five retired saves each bill the full 1-hour minimum and the save the hour
+  // closes on bills the ten minutes it held. This is the number the pricing
+  // copy has to disclose (src/pricing.js versionMinimumLine, finish line 2).
+  const sixSizes = [0, 1, 2, 3, 4, 5].map((save) => 10 * GB + save);
+  const expectedGbMinutes =
+    sixSizes.slice(0, 5).reduce((total, size) => total + size / GB, 0) * 60 +
+    (sixSizes[5] / GB) * 10;
+  assert.ok(
+    Math.abs(
+      growing.tables.usage_minutes.get(`abc123|${hour}`).gb_minutes_live - expectedGbMinutes,
+    ) < 1e-6,
+    "six saves that each change the size bill five hours of storage plus the live save's minutes",
   );
 });
 
@@ -2036,8 +2134,8 @@ test("a move whose successor event arrives late is corrected, not billed twice",
 // test as in production. The real provider's field mapping is #60's to
 // confirm; this fake is the listing the reconciler is defined against.
 /**
- * @param {Record<string, import("../src/files.js").StorageVersion[]>} versionsByPrefix
- * @returns {import("../src/files.js").FileStore}
+ * @param {Record<string, import("../core/files.js").StorageVersion[]>} versionsByPrefix
+ * @returns {import("../core/files.js").FileStore}
  */
 function providerStore(versionsByPrefix) {
   return {
@@ -2315,7 +2413,7 @@ test("the reconciler fails loudly without a database or a version listing", asyn
   await assert.rejects(() => reconcileMeter(undefined, providerStore({})), /METER_DB/);
   await assert.rejects(() => reconcileMeter(db, undefined), /list versions/);
   await assert.rejects(
-    () => reconcileMeter(db, /** @type {import("../src/files.js").FileStore} */ ({})),
+    () => reconcileMeter(db, /** @type {import("../core/files.js").FileStore} */ ({})),
     /list versions/,
   );
 });
@@ -2510,7 +2608,19 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.equal(METER_RECONCILE_SCHEDULE, "0 4 * * *");
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *");
   assert.equal(TRASH_PURGE_SCHEDULE, "0 5 * * *");
-  const schedules = [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE];
+  // The account close cron runs on its own trip (drive#522). It used to share
+  // the reconciler's trigger, so one metering failure could leave every close
+  // receipt, reminder and purge undone behind it; the trash purge (drive#521)
+  // took 05:00 in the same nightly window, so the close cron runs at 06:00,
+  // after the purge.
+  assert.equal(CLOSE_SCHEDULE, "0 6 * * *");
+  const schedules = [
+    METER_CRON,
+    METER_RECONCILE_SCHEDULE,
+    REINDEX_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    CLOSE_SCHEDULE,
+  ];
   assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
   assert.notEqual(
@@ -2526,14 +2636,18 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.notEqual(TRASH_PURGE_SCHEDULE, REINDEX_SCHEDULE, "the trash purge is not the reindex");
   assert.notEqual(TRASH_PURGE_SCHEDULE, METER_CRON, "the trash purge is not the hourly rollup");
-  // The config spells the same four strings the modules export, so a changed
+  assert.notEqual(CLOSE_SCHEDULE, METER_RECONCILE_SCHEDULE, "the close cron is not the reconciler");
+  assert.notEqual(CLOSE_SCHEDULE, TRASH_PURGE_SCHEDULE, "the close cron is not the trash purge");
+  assert.notEqual(CLOSE_SCHEDULE, REINDEX_SCHEDULE, "the close cron is not the reindex");
+  assert.notEqual(CLOSE_SCHEDULE, METER_CRON, "the close cron is not the hourly rollup");
+  // The config spells the same five strings the modules export, so a changed
   // schedule cannot drift from the trigger that runs it: src/index.js tells
-  // the four trips apart by the cron string the platform hands it.
+  // the five trips apart by the cron string the platform hands it.
   //
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
   // entry in `cf dev`, which makes Vite refuse to read that file - so an
-  // import of src/meter.js or src/search.js pulls the whole shared Worker
+  // import of core/meter.js or src/search.js pulls the whole shared Worker
   // graph behind it and `npm run dev` dies before it prints a route
   // (drive#432). The pin below is what keeps two spellings of one schedule
   // honest.
@@ -2542,8 +2656,8 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.deepEqual(
     declared,
-    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE],
-    "cloudflare.config.ts declares the schedules the meter and the index export",
+    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE, CLOSE_SCHEDULE],
+    "cloudflare.config.ts declares the schedules the meter, the index, the purge and the close cron export",
   );
 
   // The gate that stops drive#432 coming back: an import of the Worker's own
@@ -2584,13 +2698,21 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   // (the reindex half has always returned nothing). What the trigger did is
   // read back out of the tables it wrote: the mark moved to the hour it
   // rolled, and that hour holds the create's 1-hour minimum.
+  // The entrypoint is wrapped by withSentry (issue #520), which parks its own
+  // flush on the context, so the trigger gets a context the way the runtime
+  // hands one over. The waitUntil work is awaited so the asserts below read
+  // tables the trigger has finished writing.
+  /** @type {Promise<unknown>[]} */
+  const pending = [];
   assert.equal(
     await meterWorker.scheduled(
       { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
       { METER_DB: db, DRIVE_DB: db },
+      { waitUntil: (p) => pending.push(p) },
     ),
     undefined,
   );
+  await Promise.all(pending);
   assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
   const rolled = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(rolled.gb_minutes_live, 60);
@@ -2637,4 +2759,116 @@ test("the migration creates exactly the tables and indexes the meter writes", ()
     assert.ok(migration.includes(column), `migration is missing: ${column}`);
   }
   assert.equal(/DROP\s+(COLUMN|TABLE)/i.test(migration), false);
+});
+
+// --- The health check's freshness read (drive issue #520) -----------------
+
+test("the freshness read is the watermark beside the oldest version, in one statement", async () => {
+  // The health check polls the meter on every probe, so the read is one
+  // round trip carrying the two columns the staleness decision needs. The
+  // statement runs against the real schema here — the same SQL D1 answers.
+  const { db } = makeMeteredDB();
+  const readFreshness = async () =>
+    (await db
+      .prepare(
+        "SELECT (SELECT rolled_through FROM meter_rollup_state WHERE id = 1) AS rolled_through, " +
+          "(SELECT MIN(created_at) FROM file_versions) AS earliest",
+      )
+      .first()) ?? {};
+  const row = await readFreshness();
+  assert.equal(row.rolled_through, null);
+  assert.equal(row.earliest, null);
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const afterEvent = await readFreshness();
+  assert.equal(afterEvent.earliest, midnight());
+  assert.equal(afterEvent.rolled_through, null);
+});
+
+test("meterFreshness: a fresh install is not stale", async () => {
+  const { db } = makeMeteredDB();
+  const answer = await meterFreshness(db, midnight() + 2 * MINUTE_MS);
+  assert.deepEqual(answer, { stale: false, detail: "nothing to bill yet" });
+});
+
+test("meterFreshness: a watermark inside the bound is not stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const rolled = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(rolled.through, midnight());
+  // Just under METER_STALE_AFTER_HOURS past the last closed hour: one missed
+  // trigger made up by the next run, not an outage.
+  const now = midnight() + METER_STALE_AFTER_HOURS * HOUR_MS - 30 * MINUTE_MS;
+  const answer = await meterFreshness(db, now);
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /inside the bound/);
+});
+
+test("meterFreshness: a watermark METER_STALE_AFTER_HOURS behind is stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const rolled = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(rolled.through, midnight());
+  // At the bound exactly it is stale: the closed hours past the mark are
+  // sitting unbilled, and no single missed run gets this far behind. The lag
+  // is measured to the last CLOSED hour (the one before now), so now must be
+  // one hour past the bound for the lag to reach it.
+  const now = midnight() + (METER_STALE_AFTER_HOURS + 1) * HOUR_MS;
+  const answer = await meterFreshness(db, now);
+  assert.equal(answer.stale, true);
+  assert.match(answer.detail, /3h behind/);
+});
+
+test("meterFreshness: a first upload before its first rollup is not stale", async () => {
+  // A new account's first version can land any time before the :05 trigger
+  // that would roll its hour. The watermark does not exist until that first
+  // trigger succeeds, so a missing mark in the meantime is the meter's normal
+  // state, not an outage — health must not 503 on it (review finding on PR
+  // #697: the old read called this stale and failed every deploy smoke of a
+  // brand-new deployment).
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  // The oldest version's hour closed at midnight; 01:05 is the first trigger
+  // that could have rolled it, and it is firing now.
+  const answer = await meterFreshness(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /watermark/);
+});
+
+test("meterFreshness: a first upload in the hour still open is not stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  // Half past midnight: the version's hour has not even closed, so no run
+  // could be behind on anything yet.
+  const answer = await meterFreshness(db, midnight() + 30 * MINUTE_MS);
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /not closed yet/);
+});
+
+test("meterFreshness: versions with no watermark and hours waiting is stale", async () => {
+  // With no mark the clock starts at the oldest version's hour, and it is
+  // only an outage once METER_STALE_AFTER_HOURS closed hours have piled up
+  // behind it — every trigger since has come and gone without setting a
+  // mark. The wait is counted one hour stricter than a real watermark's lag,
+  // because a mark proves at least one run succeeded and no mark at all
+  // proves nothing has.
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  // Midnight's hour is the oldest waiting one; the 01:05, 02:05 and 03:05
+  // triggers have all come and gone by 04:05.
+  const answer = await meterFreshness(db, at("2026-09-30T04:05:00.000Z"));
+  assert.equal(answer.stale, true);
+  assert.match(answer.detail, /no rollup watermark/);
+});
+
+test("meterFreshness: a watermark ahead of the last closed hour is not stale", async () => {
+  // A run in the future, or a clock moved backwards, can leave the mark ahead
+  // of what hourStart(now) says. runMeterCron self-corrects that (its from is
+  // min(from, lastClosed)), so the health check must not page anyone.
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const future = await runMeterCron(db, at("2026-10-02T01:05:00.000Z"));
+  assert.ok(future.through > midnight());
+  const answer = await meterFreshness(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /self-corrects/);
 });

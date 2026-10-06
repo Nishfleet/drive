@@ -7,7 +7,7 @@
 //      ships, so deleting one, or adding one that nobody owns, fails.
 //   2. It can drift from the code. The five price rows are computed, not typed:
 //      each us cell is parsed for its single customer-price figure and compared
-//      with monthBillCents() in src/billing.js, so a stale or contradictory
+//      with monthBillCents() in core/billing.js, so a stale or contradictory
 //      number fails rather than passing on a substring match.
 //   3. It can leave a losing or unmeasured row unowned. Every losing or
 //      unmeasured row must name #NN, or be listed under "Rows with no issue yet".
@@ -17,17 +17,18 @@
 //      out from.
 //
 // The money the price rows are compared against is the month's bill for that
-// size held all month, after the membership floor monthBillCents() already
-// applies: what the customer actually pays. The issue named src/pricing.js; that
+// size held all month, as monthBillCents() works it out: what the customer
+// actually pays. The issue named core/pricing.js; that
 // module still holds the superseded per-TB caps and is issue #23's to fix, so
 // the scoreboard reads the one billing function AGENTS.md's money gate names.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { monthBillCents } from "../core/billing.js";
 
-const MINUTES_PER_MONTH = 43800;
+// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
+const MONTH_MINUTES = 30 * 1440;
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const scoreboard = read("docs/scoreboard.md");
@@ -124,7 +125,7 @@ test("the price rows are computed from monthBillCents, not typed", () => {
   for (const [metric, gb] of cases) {
     const cells = row(metric);
     // The month's bill for that size held all month (drive#463).
-    const bill = monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH });
+    const bill = monthBillCents({ monthMinutes: MONTH_MINUTES, gbMinutes: gb * MONTH_MINUTES });
     const dollars = `$${(bill.totalCents / 100).toFixed(2)}`;
     // Every dollar figure the cell states, parsed out: exactly one, and it is
     // the computed one. A cell carrying a stale figure beside the right one

@@ -14,9 +14,9 @@ import {
   refundKey,
   topUpKey,
   usageKey,
-} from "../src/ledger.js";
-import { PREPAID } from "../src/pricing.js";
-import { formatCents, parseTopUpCents, signWebhook, verifyWebhook } from "../src/topup.js";
+} from "../core/ledger.js";
+import { PREPAID } from "../core/pricing.js";
+import { formatCents, parseTopUpCents, signWebhook, verifyWebhook } from "../core/topup.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 const SECRET = `whsec_${Buffer.from("drive-webhook-test-key-not-real").toString("base64")}`;

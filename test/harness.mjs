@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { createAuth } from "../core/auth.js";
 import { applyMigrations, d1BindValue, MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
@@ -40,6 +40,19 @@ import { applyMigrations, d1BindValue, MIGRATION_FILES } from "./d1-sqlite.mjs";
  * reads the real column or fails.
  */
 export const DRIVE_MIGRATIONS = Object.freeze(MIGRATION_FILES.map((name) => `drive/${name}`));
+
+/**
+ * The same folder, under the name the sign-in, cap and a11y tests ask for it
+ * by, so no test has to be rewritten to read the same list under a new name
+ * (drive#579). It is built from `MIGRATION_FILES` like `DRIVE_MIGRATIONS`
+ * above, so the two cannot drift apart from each other or from the folder, and
+ * test/migrations.test.mjs asserts both against the folder read off disk.
+ *
+ * A test that asserts a cap really is stored reads the row back through one of
+ * these names rather than through a list it wrote out itself (drive issue
+ * #421).
+ */
+export const DRIVE_SCHEMA_MIGRATIONS = DRIVE_MIGRATIONS;
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 /** The address every test's links are built on. */
@@ -261,9 +274,12 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
+ * (drive#550): `userAgent` is the requesting request's own header, null when
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);

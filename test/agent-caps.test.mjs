@@ -15,24 +15,25 @@ import {
   DEFAULT_AGENT_CAPS,
   dayKey,
   monthKey,
-} from "../src/agentcaps.js";
-import { BILLING_CONFIG, capStatus } from "../src/billing.js";
-import { READ_ONLY_CAPABILITIES } from "../src/cap.js";
+} from "../core/agentcaps.js";
+import { BILLING_CONFIG, capStatus } from "../core/billing.js";
+import { READ_ONLY_CAPABILITIES } from "../core/cap.js";
 
 // One pinned instant, so a day boundary is a fact of the test. Midday UTC,
 // comfortably clear of either midnight.
 const AT = Date.parse("2026-09-30T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MINUTES_PER_MONTH = 43800;
+// A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
+const MONTH_MINUTES = 30 * 1440;
 /**
  * A whole month of a given size, so a test says "2 TB this month" and means
  * that size held for the whole month.
  * @param {number} gb
  */
-const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
+const fullMonthGbMinutes = (gb) => gb * MONTH_MINUTES;
 
 /**
- * An agent key row in the shape src/cap.js reads, so an agent cap that bites
+ * An agent key row in the shape core/cap.js reads, so an agent cap that bites
  * produces the identical key swap an account cap produces.
  * @param {Record<string, unknown>} [overrides]
  */
@@ -60,7 +61,7 @@ const agent = (gb, overrides = {}) => ({
 
 test("a fresh agent key is capped by default, and the default is the account's", () => {
   // The default is the account's own $20 cap (drive#464, read from
-  // src/billing.js), so an agent inherits the number a customer already reads
+  // core/billing.js), so an agent inherits the number a customer already reads
   // on the usage page rather than a second number to learn.
   const defaults = agentCaps();
   assert.equal(defaults.monthlyCapUsd, BILLING_CONFIG.defaultCapUsd);
@@ -79,7 +80,7 @@ test("the monthly cap asks the account cap's own function, so the number is the 
   // say a different number from the account cap for identical usage because it
   // never works one out: `capStatus` does it and this keeps the answer beside
   // the verdict.
-  const counted = capStatus(fullMonthGbMinutes(3000), 20);
+  const counted = capStatus(fullMonthGbMinutes(3000), MONTH_MINUTES, 20);
   const status = agentCapStatus(agent(3000));
   assert.equal(status.monthly.usedUsd, counted.countedUsd);
   assert.equal(status.monthly.capUsd, counted.capUsd);
@@ -107,7 +108,7 @@ test("an agent key counts the account's one bill, and agrees with the account ca
   assert.equal(over.state, "read_only", "$30 is past the default $20 cap");
   // The same count the account cap makes for the same month, so a key and its
   // drive agree on what has been spent.
-  const accountCap = capStatus(fullMonthGbMinutes(3000), 20, BILLING_CONFIG);
+  const accountCap = capStatus(fullMonthGbMinutes(3000), MONTH_MINUTES, 20, BILLING_CONFIG);
   assert.equal(over.monthly.usedUsd, accountCap.countedUsd);
   assert.equal(over.monthly.over, accountCap.state === "read_only");
   assert.equal(agentCapStatus(agent(2000)).monthly.usedUsd, 20);
