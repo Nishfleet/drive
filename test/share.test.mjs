@@ -445,6 +445,47 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
   assert.equal(record.uploadCount, 0);
 });
 
+test("a share minted before etag pinning still serves after a replace", async () => {
+  const { upload, files, links } = drive();
+  await upload("/", "notes.txt", "benign");
+  await links.shares.create(
+    newShareRecord({ accountId: account.id, path: "/notes.txt", now, token: TOKEN }),
+  );
+  await upload("/", "notes.txt", "replaced");
+  const opened = await handleShareFileRequest(
+    new Request(`https://drive.test${SHARE_LINK_PREFIX}/${TOKEN}`),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), "replaced");
+});
+
+test("a quoted stored etag still matches the live object", async () => {
+  const { upload, files, links } = drive();
+  await upload("/", "notes.txt", "benign");
+  const live = await scopeStore(files, account).read("/notes.txt");
+  assert.ok(live?.etag);
+  await links.shares.create(
+    newShareRecord({
+      accountId: account.id,
+      path: "/notes.txt",
+      now,
+      token: TOKEN,
+      etag: `"${live.etag}"`,
+    }),
+  );
+  const opened = await handleShareFileRequest(
+    new Request(`https://drive.test${SHARE_LINK_PREFIX}/${TOKEN}`),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), "benign");
+});
+
 test("GET /api/share lists the account's links, newest first", async () => {
   const { upload, share, shareList } = drive();
   await upload("/", "a.txt", "a");

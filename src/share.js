@@ -908,10 +908,11 @@ function storedShareEtag(etag) {
  * @returns {boolean}
  */
 function shareContentChanged(minted, live) {
-  if (typeof minted !== "string" || minted === "") {
+  const pin = storedShareEtag(minted);
+  if (pin === "") {
     return false;
   }
-  return storedShareEtag(live) !== minted;
+  return storedShareEtag(live) !== pin;
 }
 
 // A store or storage failure: the cause is logged with the route that hit it
@@ -1070,13 +1071,16 @@ export async function handleShareRequest(request, files, links, account, options
     if (!object) {
       return json({ error: failureMessage("file-not-found") }, 404);
     }
-    let bytes;
-    try {
-      bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
-    } catch (cause) {
-      return serverFailure(`minting a share: ${String(cause)}`);
-    }
-    if (await isMalwareBody(bytes)) {
+    // Hashing copies the body into this isolate. A file larger than the
+    // public-upload cap (the size this Worker already buffers on a drop)
+    // is still pinned by etag; the stream is cancelled so a multi-GB
+    // object is not pulled in to be hashed.
+    const tooLarge = Number.isFinite(object.size) && object.size > REQUEST_FILE_MAX_BYTES;
+    if (tooLarge) {
+      if (object.body) {
+        await object.body.cancel();
+      }
+    } else if (object.body && (await isMalwareBody(object.body))) {
       return json({ error: failureMessage("malware-refused") }, 403);
     }
     const record = newShareRecord({
@@ -1560,6 +1564,8 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
   }
+  // sized.body is the Uint8Array takeUploadBody already copied from the
+  // request, so hashing it does not consume the bytes writeIfAbsent stores.
   if (await isMalwareBody(sized.body)) {
     return json({ error: failureMessage("malware-refused") }, 403);
   }
