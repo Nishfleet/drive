@@ -7,11 +7,13 @@
 // only path: the Talk-to-us box on the pricing page, the Business tier row in
 // docs/spec.md, and the Company tier row in docs/build-spec.md.
 //
-// This file pins that, and pins the price those surfaces carry to
+// This file pins that, and guards the price those surfaces carry against
 // core/pricing.js (PRICE), so a later run cannot reintroduce #20's retired
 // $15 per TB ceiling or a screen the API does not back. The route test reads
 // the api Worker's own route registry, not just the reference, so "the API is
-// the path" points at routes the Worker registers.
+// the path" points at routes the Worker registers; the anonymous-401 proof
+// for them already lives beside that Worker, in workers/api/test/teams.test.js,
+// and is not repeated here.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -89,19 +91,32 @@ test("both spec rows say the company UI is later and name the API as the only v1
 
 test("the api Worker registers every team operation the copy points at", () => {
   const registered = routes.filter((route) => route.path.startsWith("/v1/teams"));
+  // docs/api.md writes the same routes; a document that spells a parameter
+  // {teamId} rather than :teamId still names the route, so fold both forms.
+  const documented = apiDoc.replaceAll(/\{(\w+)\}/g, ":$1");
   for (const { method, path } of TEAM_OPERATIONS) {
     const found = registered.find((route) => route.method === method && route.path === path);
     assert.ok(found, `the api Worker must register ${method} ${path}`);
-    assert.equal(found.auth, "account", `${method} ${path} must sit behind the account gate`);
-    assert.ok(apiDoc.includes(`${method} ${path}`), `docs/api.md must document ${method} ${path}`);
+    assert.ok(
+      documented.includes(`${method} ${path}`),
+      `docs/api.md must document ${method} ${path}`,
+    );
   }
+  // The count is a deliberate lock: a team route added without a place in the
+  // reference makes this red, so the copy that says "only through the teams
+  // API" cannot quietly go stale.
   assert.equal(
     registered.length,
     TEAM_OPERATIONS.length,
-    "a team route outside this list needs its place in the reference and this gate",
+    "a new team route needs its place in docs/api.md and in this gate",
   );
 });
 
+// A guard for a price line this change does not add: #775's price duty is a
+// no-op today, because no teams surface names a per-TB amount at all and the
+// page's live price lines are already gated against PRICE by
+// test/pricing-copy.test.mjs. The guard is what stops a later run from writing
+// a teams price line that drifts, starting with #20's retired $15/TB.
 test("no teams surface carries a per-TB price but the shipped one", () => {
   for (const [name, text] of [
     ["the Business box", businessBox],
