@@ -35,6 +35,7 @@ export const USAGE_LABELS = Object.freeze({
   gbMonths: "GB-months so far",
   downloads: "Downloads",
   downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
+  openPublicLinks: "Open public links",
   cost: "Cost so far",
   cap: "Your cap",
   // The cap's own sentence. The accounts store is live (drive issue #2), so

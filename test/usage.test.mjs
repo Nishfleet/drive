@@ -353,6 +353,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   ]);
   assert.equal(body.labels.storedNow, "0 B");
   assert.equal(body.cardOnFile, false);
+  assert.equal(body.openPublicLinks, 0);
   // drive#417: an account with no card on file has had no charge taken, so the
   // page and the CLI are told that rather than presented with a bill. The cap
   // line is the account's own, unchanged by the card flag: only the charge
@@ -433,6 +434,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "maximumUsd",
     "meteredUsd",
     "monthIso",
+    "openPublicLinks",
     "saved",
     "storedDaily",
     "storedGb",
@@ -609,6 +611,7 @@ const PAGE_IDS = Object.freeze([
   "cost",
   "bill-lines",
   "downloads-line",
+  "open-public-links",
   "upload-line",
   "cap-amount",
   "cap-slider",
@@ -898,6 +901,7 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /<dd id="gb-months"><\/dd>/);
   assert.match(page, /<dd id="cost"><\/dd>/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
+  assert.match(page, /<dd id="open-public-links"><\/dd>/);
   assert.match(page, /<p class="cap-value" id="cap-value"><\/p>/);
   assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
   // A noscript reader is told why, instead of a page with nothing on it.
@@ -933,6 +937,17 @@ test("no bill is shown as if charged while no card is on file", async () => {
   await settle();
   assert.equal(elementOf(charged.elements, "cost").textContent, "$0.00");
   assert.equal(elementOf(charged.elements, "bill-lines").hidden, false);
+});
+
+test("the usage page shows the count of open public links", async () => {
+  assert.ok(page.includes(USAGE_LABELS.openPublicLinks));
+  const shown = runPage({
+    ...emptyMonth(),
+    uploadLine: null,
+    openPublicLinks: 3,
+  });
+  await settle();
+  assert.equal(elementOf(shown.elements, "open-public-links").textContent, "3");
 });
 
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {

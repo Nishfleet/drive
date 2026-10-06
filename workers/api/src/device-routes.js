@@ -38,6 +38,7 @@ import { escapeHtml } from "../../../core/escape-html.js";
 import { bearerToken, errorResponse, json } from "../../../core/http.js";
 import { failureMessage } from "../../../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
+import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
 import { signedInAccount } from "../../../core/status.js";
 
 /** The stand-in key store (core/keystore.js `createMemoryStore`), the same one
@@ -505,5 +506,19 @@ export async function revokeDeviceTokenRoute(request, ctx) {
     // caller sent is not one this drive knows.
     return errorResponse(404, "That token is not one this drive knows.");
   }
+  const mail = mailFromEnv(ctx.env);
+  await notifySecurityEvent({
+    email: mail.email,
+    mailFrom: mail.mailFrom,
+    to:
+      typeof ctx.account === "object" &&
+      ctx.account !== null &&
+      typeof ctx.account.email === "string"
+        ? ctx.account.email
+        : "",
+    event: "device-logged-out",
+    deviceName: "a signed-in device",
+    happenedAt: new Date().toISOString(),
+  });
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }

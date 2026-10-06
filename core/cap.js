@@ -49,6 +49,7 @@ import { capLine, minutesInMonth, usageSummary } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 import { failureMessage } from "./messages.js";
+import { notifySecurityEvent } from "./security-event.js";
 import { unauthorizedResponse } from "./status.js";
 
 // The capability that makes a key able to change storage. `delete` is a write
@@ -802,8 +803,9 @@ export async function capStateForAccount(store, accountId) {
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
  * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
+ * @param {{email?: unknown, mailFrom?: string, deviceName?: string}|null} [mail]
  */
-export async function handleCapRequest(request, account, capStore) {
+export async function handleCapRequest(request, account, capStore, mail = null) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -865,6 +867,16 @@ export async function handleCapRequest(request, account, capStore) {
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
+  const mailer = mail !== null && typeof mail === "object" ? mail : {};
+  await notifySecurityEvent({
+    email: mailer.email,
+    mailFrom: mailer.mailFrom,
+    to: typeof account.email === "string" ? account.email : "",
+    event: "cap-changed",
+    deviceName: mailer.deviceName,
+    happenedAt: new Date().toISOString(),
+    detail: `The new cap is $${usd.toFixed(2)}.`,
+  });
   return new Response(
     JSON.stringify({
       ...summary,
