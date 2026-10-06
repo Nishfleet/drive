@@ -11,6 +11,14 @@ import {
   newUserCode,
 } from "./device-signin.js";
 
+/** @typedef {import("./device-signin.js").DeviceSigninStore} DeviceSigninStore */
+/** @typedef {import("./device-signin.js").DeviceCodeResult} DeviceCodeResult */
+/** @typedef {import("./device-signin.js").PendingDeviceApproval} PendingDeviceApproval */
+/** @typedef {import("./device-signin.js").ApproveResult} ApproveResult */
+/** @typedef {import("./device-signin.js").PollResult} PollResult */
+/** @typedef {import("./device-signin.js").RevokeResult} RevokeResult */
+/** @typedef {import("./device-signin.js").RevokeAllResult} RevokeAllResult */
+
 /**
  * The in-memory device sign-in store: the same four methods as the D1 one,
  * over Maps, for the tests and a deployment with no database binding. One

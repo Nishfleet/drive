@@ -5,6 +5,8 @@
 import { parseTrashName, RECENTLY_DELETED_DAYS, TRASH_PATH, trashStorePath } from "./file-paths.js";
 import { scopeStore } from "./file-store.js";
 
+/** @typedef {import("./file-store.js").FileStore} FileStore */
+
 // ------------------------------------------------------- the daily purge
 
 /**

@@ -84,6 +84,11 @@ export {
   snapshotKey,
 } from "./branch-snapshots.js";
 
+/** @typedef {import("./files.js").FileStore} FileStore */
+/** @typedef {import("./branch-snapshots.js").Fingerprint} Fingerprint */
+/** @typedef {import("./branch-snapshots.js").Branch} Branch */
+/** @typedef {import("./branch-snapshots.js").SnapshotStore} SnapshotStore */
+
 // ---------------------------------------------------------------- the route
 
 /**

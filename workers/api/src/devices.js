@@ -129,6 +129,8 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
  * @param {{now?: () => number, keyProvider?: import("./keyprovider.js").KeyProvider}} [options]
  */
 export function createD1DeviceStore(db, options = {}) {
+  /** @type {ReturnType<typeof bindD1DeviceStore>} */
+  let store;
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
   // Whether this deployment's provider mints credentials that die on their
@@ -683,7 +685,7 @@ export function createD1DeviceStore(db, options = {}) {
     );
   }
 
-  return bindD1DeviceStore({
+  store = bindD1DeviceStore({
     db,
     now,
     put,
@@ -707,5 +709,7 @@ export function createD1DeviceStore(db, options = {}) {
     markPurgeProgress,
     markPurged,
     deviceFromRow,
+    renewKeyRow,
   });
+  return store;
 }

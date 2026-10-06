@@ -10,10 +10,45 @@ import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
-const _CLOSE_CRON_LIMIT = 100;
+/** @typedef {import("./keystore.js").Device} Device */
+/** @typedef {import("./keyprovider.js").KeyScope} KeyScope */
+/**
+ * @typedef {{id: string, email: string, state: string, closedAt: number|null,
+ *   reminderSentAt: number|null, closeMailSentAt: number|null,
+ *   purgedAt: number|null, purgeCursor: string|null}} CloseState
+ */
+/**
+ * @typedef {{
+ *   db: D1Database,
+ *   now: () => number,
+ *   put: (device: Device) => Promise<void>,
+ *   providerNamesSessions: boolean,
+ *   liveDevices: (accountId: string) => Promise<Device[]>,
+ *   mintCredential: (scope: KeyScope) => Promise<{accessKeyId: string, secret: string,
+ *     sessionToken: string|null, expiresIn: number|null}>,
+ *   revokeCredentialAtProvider: (accessKeyId: string) => Promise<void>,
+ *   enforceAgentCaps: (device: Device) => Promise<{device: Device, capped: boolean}>,
+ *   upsertCapCents: (accountId: string, email: string, capCents: number) => Promise<void>,
+ *   readCardAdded: (accountId: string) => Promise<boolean>,
+ *   setAccountState: (accountId: string, state: "active"|"read_only"|"closed") => Promise<void>,
+ *   getCloseState: (accountId: string) => Promise<CloseState|null>,
+ *   revokeAccountCredentials: (accountId: string) => Promise<number>,
+ *   closeAccountRow: (account: {id: string, email?: string}, atSeconds: number) => Promise<CloseState & {alreadyClosed: boolean}>,
+ *   cancelClose: (accountId: string) => Promise<CloseState>,
+ *   listDueReminder: (atSeconds: number) => Promise<CloseState[]>,
+ *   listDuePurge: (atSeconds: number) => Promise<CloseState[]>,
+ *   listDueCloseMail: () => Promise<CloseState[]>,
+ *   markReminderSent: (accountId: string, atSeconds: number) => Promise<void>,
+ *   markCloseMailSent: (accountId: string, atSeconds: number) => Promise<void>,
+ *   markPurgeProgress: (accountId: string, cursor: string) => Promise<void>,
+ *   markPurged: (accountId: string, atSeconds: number) => Promise<void>,
+ *   deviceFromRow: (row: unknown) => Device|null,
+ *   renewKeyRow: (db: D1Database, device: {id: string}, expiresAt: number|null, lastSeenAt: number) => Promise<unknown>,
+ * }} D1DeviceStoreBind
+ */
 
 /**
- * @param {Record<string, unknown>} ctx
+ * @param {D1DeviceStoreBind} ctx
  */
 export function bindD1DeviceStore(ctx) {
   const {
@@ -40,6 +75,7 @@ export function bindD1DeviceStore(ctx) {
     markPurgeProgress,
     markPurged,
     deviceFromRow,
+    renewKeyRow,
   } = ctx;
   const store = {
     put,

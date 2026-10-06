@@ -3,6 +3,8 @@
 
 import { CAPABILITIES_BY_KIND, keyTtlSeconds, renewTtlSeconds } from "./keyprovider.js";
 
+/** @typedef {import("./keystore.js").Device} Device */
+
 /**
  * The hour, restarted: the expiry a live credential carries after a request at
  * `at`. This is the one renewal rule, written once so the in-memory stand-in

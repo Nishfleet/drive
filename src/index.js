@@ -708,7 +708,7 @@ export function createApp() {
 
 export default {
   async fetch(
-    /** @type {Parameters<typeof handler.fetch>[0]} */ request,
+    /** @type {Parameters<ReturnType<typeof entrypoints>["fetch"]>[0]} */ request,
     /** @type {Env} */ env,
     /** @type {ExecutionContext} */ context,
   ) {

@@ -1,6 +1,8 @@
 // Sign-in HTTP helpers. Extracted from src/signin.js (drive issue #617)
 // with no behaviour change; src/signin.js keeps the handlers and imports these.
 
+/** @typedef {import("./auth.js").Auth} Auth */
+
 /**
  * The internal Better Auth request that the start step forwards a send to.
  *

@@ -20,6 +20,10 @@ import {
 import { validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
 
+/** @typedef {import("./branch-snapshots.js").Fingerprint} Fingerprint */
+/** @typedef {import("./branch-snapshots.js").Branch} Branch */
+/** @typedef {import("./branch-snapshots.js").SnapshotStore} SnapshotStore */
+
 // ---------------------------------------------------------------- the table
 
 /** A row as this module uses it: camelCase names, and the snapshot already

@@ -110,6 +110,7 @@ export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-l
  * @typedef {import("./file-store.js").FileRead} FileRead
  * @typedef {import("./file-store.js").StorageVersion} StorageVersion
  * @typedef {import("./file-store.js").FileStore} FileStore
+ * @typedef {import("./file-store.js").StorageEnv} StorageEnv
  */
 
 export const FILES_PATH = "/files";

@@ -72,6 +72,7 @@ export {
   createD1LinkStore,
   DAY_MS,
   DEFAULT_LINK_DAYS,
+  expiresAtIso,
   folderDisplayName,
   LINK_RETENTION_DAYS,
   linkExpiry,
@@ -108,6 +109,10 @@ export {
   handleRequestUploadRequest,
   handleShareFileRequest,
 } from "./share-public.js";
+
+/** @typedef {import("./share-links.js").ShareRecord} ShareRecord */
+/** @typedef {import("./share-links.js").RequestRecord} RequestRecord */
+/** @typedef {import("./share-links.js").LinkStore} LinkStore */
 
 // ---------------------------------------------------------------- the words
 

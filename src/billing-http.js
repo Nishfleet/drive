@@ -24,6 +24,8 @@ import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 
+/** @typedef {import("./billing.js").BillingConfig} BillingConfig */
+
 /**
  * Everything the usage page and `drive usage` show for one month, read from
  * the same numbers in one call so the page cannot show a bill the invoice

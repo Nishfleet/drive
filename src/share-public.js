@@ -32,6 +32,9 @@ import {
   validateToken,
 } from "./share-links.js";
 
+/** @typedef {import("./share-links.js").LinkStore} LinkStore */
+/** @typedef {import("./share-links.js").RequestRecord} RequestRecord */
+
 /**
  * @param {string} message
  * @param {number} status
