@@ -301,6 +301,58 @@ test("searchSql answers a normal query from the trigram index (drive#571)", () =
   assert.ok(!sql.includes("report"), "no user text in the SQL");
 });
 
+test("searchSql ranks a whole-name match with the name as written (drive#571)", () => {
+  // The trigram query joins its words, and a name holding % or _ must still
+  // rank 0 for an exact match. ?3 is `name =` (string equality) so it is bound
+  // the name as written; only ?4, the prefix LIKE, is escaped. Binding the
+  // escaped string to both left those names unable to rank as a whole match.
+  const { sql, params, engine } = searchSql(["50%_done"], { accountId: "1", limit: 50 });
+  assert.equal(engine, "fts");
+  assert.equal(params[2], "50%_done", "the whole-name rank compares the name as written");
+  assert.equal(params[3], "50\\%\\_done%", "only the prefix pattern is escaped");
+  assert.ok(sql.includes("name = ?3"), "the whole-name rank is the equality test");
+  assert.ok(sql.includes("name LIKE ?4 ESCAPE"), "the prefix rank is the pattern test");
+
+  // The LIKE path carries the same split: its ?3 is the whole query (the
+  // words joined), bound as written, and its ?4 the escaped prefix.
+  const short = searchSql(["ab", "50%_done"], { accountId: "1", limit: 50 });
+  assert.equal(short.engine, "like");
+  assert.equal(short.params[3], "ab 50%_done", "the whole-name rank is unescaped here too");
+  assert.equal(short.params[4], "ab 50\\%\\_done%", "only the prefix pattern is escaped");
+});
+
+test("the trigram search ranks exact, prefix then middle (drive#571)", async () => {
+  const db = makeD1();
+  const at = "2026-09-30T00:00:00.000Z";
+  // A name that must rank 0 even though it is a superset of the prefix match,
+  // and one whose characters are LIKE wildcards so a rank driven by an escaped
+  // string would place it last.
+  const names = ["report", "report-2.txt", "50%_done", "report-final.txt", "a-report"];
+  await db.batch(
+    names.map((name) =>
+      db
+        .prepare(
+          "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(ACCOUNT.id, `/${name}`, name, "/", 10, at, at),
+    ),
+  );
+  /** @param {string} q */
+  const rank = async (q) => (await searchDrive(db, ACCOUNT, q)).results?.map((row) => row.name) ?? [];
+  // Exact first, then prefix matches in name order, then a match in the middle.
+  assert.deepEqual(await rank("report"), [
+    "report",
+    "report-2.txt",
+    "report-final.txt",
+    "a-report",
+  ]);
+  assert.deepEqual(
+    await rank("50%_done"),
+    ["50%_done"],
+    "a name of wildcards ranks as an exact match",
+  );
+});
+
 test("searchSql keeps the LIKE shape for a word the trigram tokenizer cannot hold", () => {
   // A trigram tokenizer indexes three-character windows, so a one- or
   // two-character word matches nothing in FTS5. A query carrying one falls
@@ -673,7 +725,11 @@ test("1,000,000 files: a search returns in under one second and reads only its m
   const started = performance.now();
   await db.batch([
     db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(ACCOUNT.id),
-    db.prepare("DELETE FROM file_index_fts WHERE account_id = ?1").bind(ACCOUNT.id),
+    db
+      .prepare(
+        "DELETE FROM file_index_fts WHERE rowid IN (SELECT rowid FROM file_index WHERE account_id = ?1)",
+      )
+      .bind(ACCOUNT.id),
   ]);
   for (let start = 0; start < TOTAL; start += BATCH) {
     const end = Math.min(start + BATCH, TOTAL);
@@ -710,15 +766,9 @@ test("1,000,000 files: a search returns in under one second and reads only its m
     }
     await db.batch(statements);
   }
-  // Mirror into the trigram table exactly as the migration's backfill and the
-  // write path do: rowid-for-rowid, so a delete finds the right row.
-  await db.batch([
-    db
-      .prepare(
-        "INSERT INTO file_index_fts (rowid, name, account_id, path) SELECT rowid, name, account_id, path FROM file_index WHERE account_id = ?1",
-      )
-      .bind(ACCOUNT.id),
-  ]);
+  // No second pass mirrors these rows into the trigram table: the AFTER
+  // INSERT trigger writes each one inside the insert itself, so the build time
+  // above is the trigram build time too.
   const indexMs = performance.now() - started;
   assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get()?.c, TOTAL);
   assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index_fts").get()?.c, TOTAL);

@@ -1,9 +1,9 @@
 -- Search reads only matching rows (drive issue #571). Phase 1, additive: a
--- new FTS5 table beside `file_index`, no column dropped, renamed or made
--- NOT NULL, and nothing in the old table touched, so the previous version of
--- the code the instant this lands keeps working (fleet D1 expand/contract
--- rule). Rollback would be a DROP TABLE, but D1 has no down-migrations, so
--- this file is one-way.
+-- new FTS5 table beside `file_index` and three triggers on `file_index` that
+-- keep it in step. No column is dropped, renamed or made NOT NULL, nothing in
+-- the old table is touched, so the previous version of the code the instant
+-- this lands keeps working (fleet D1 expand/contract rule). Rollback would be
+-- a DROP TABLE, but D1 has no down-migrations, so this file is one-way.
 --
 -- Why a second table: `name LIKE '%word%'` cannot use a B-tree index, because
 -- a leading wildcard is a match against every value. Cloudflare's own D1 index
@@ -29,10 +29,6 @@
 -- instead made the sorter that orders the matches carry two more columns and
 -- measured 1,554 ms against 862 ms for the worst case (a term every name in a
 -- million-row account contains), so the leaner shape is the one that ships.
---
--- The table's implicit rowid mirrors `file_index`'s, so one file's row is
--- found by rowid on a delete instead of a scan (FTS5 has no unique
--- constraint, so a write is a delete-then-insert).
 --
 -- `account_id` is UNINDEXED, so the trigram tokenizer does not spend index
 -- space on it and a search filters the account on a bound parameter. The
@@ -62,23 +58,83 @@ CREATE VIRTUAL TABLE IF NOT EXISTS file_index_fts USING fts5(
 --
 -- A D1 migration file is not atomic across statements. If the CREATE commits
 -- and the INSERT then fails, a retry must not hit duplicate rowids: the
--- CREATE is IF NOT EXISTS (a no-op the second time) and this INSERT skips
--- rowids the trigram table already holds, so a partial backfill continues
--- rather than failing for good. D1 has no down-migration, so the file has
--- to be safe to run twice.
+-- CREATE is IF NOT EXISTS (a no-op the second time) and every window below
+-- skips rowids the trigram table already holds, so a partial backfill
+-- continues rather than failing for good. D1 has no down-migration, so the
+-- file has to be safe to run twice.
 --
--- The reconciler is what makes this table complete, not this statement: it
+-- The backfill runs in rowid windows rather than as one statement, because
+-- one statement's work is bounded by what D1 will run in it, and an account
+-- larger than a window would put that bound on every account's migration. The
+-- last window is open-ended so the file always completes.
+--
+-- The reconciler is what makes this table complete, not these statements: it
 -- walks an account and rewrites every one of its rows nightly
--- (src/search.js reconcileIndex), chunked, so it is not bound by the row
--- ceiling one statement has. This backfill is the arrival window only - it
--- makes a search correct between this migration and the first nightly run -
--- and an account whose row count is past one statement's write ceiling is
--- brought up to date by that first run instead. That is the same contract
--- `file_index` itself has always had: the write path keeps it current and the
--- reconciler is what repairs anything it missed.
+-- (src/search.js reconcileIndex), chunked, so it is not bound by the ceiling
+-- one statement has. This backfill is the arrival window only - it makes a
+-- search correct between this migration and the first nightly run - and an
+-- account whose row count is past these windows is brought up to date by that
+-- first run instead. That is the same contract `file_index` itself has always
+-- had: the write path keeps it current and the reconciler is what repairs
+-- anything it missed.
 INSERT INTO file_index_fts (rowid, name, account_id, path)
   SELECT fi.rowid, fi.name, fi.account_id, fi.path
   FROM file_index fi
-  WHERE NOT EXISTS (
-    SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid
-  );
+  WHERE fi.rowid <= 250000
+    AND NOT EXISTS (SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid);
+INSERT INTO file_index_fts (rowid, name, account_id, path)
+  SELECT fi.rowid, fi.name, fi.account_id, fi.path
+  FROM file_index fi
+  WHERE fi.rowid > 250000 AND fi.rowid <= 500000
+    AND NOT EXISTS (SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid);
+INSERT INTO file_index_fts (rowid, name, account_id, path)
+  SELECT fi.rowid, fi.name, fi.account_id, fi.path
+  FROM file_index fi
+  WHERE fi.rowid > 500000 AND fi.rowid <= 750000
+    AND NOT EXISTS (SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid);
+INSERT INTO file_index_fts (rowid, name, account_id, path)
+  SELECT fi.rowid, fi.name, fi.account_id, fi.path
+  FROM file_index fi
+  WHERE fi.rowid > 750000 AND fi.rowid <= 1000000
+    AND NOT EXISTS (SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid);
+INSERT INTO file_index_fts (rowid, name, account_id, path)
+  SELECT fi.rowid, fi.name, fi.account_id, fi.path
+  FROM file_index fi
+  WHERE fi.rowid > 1000000
+    AND NOT EXISTS (SELECT 1 FROM file_index_fts fts WHERE fts.rowid = fi.rowid);
+
+-- The mirror, in the database rather than in the code that writes the index.
+--
+-- A trigger runs inside the statement that changed `file_index`, so a row and
+-- its trigram row are written or fail together: there is no window in which a
+-- save lands the index row and loses the trigram one, which is what would make
+-- a three-character search silently miss a file until the nightly rebuild.
+--
+-- It is also why no application code writes `file_index_fts`. Every writer of
+-- `file_index` is mirrored, including the two this file does not name:
+-- `src/account-close.js` purgeAccountRecords, which deletes an account's whole
+-- index on closure and must leave no names in the trigram table either, and
+-- any future writer of the table.
+--
+-- The rowid is `file_index`'s own, and it does not change on update, so the
+-- update trigger replaces the trigram row in place rather than appending a
+-- second one. FTS5 has no unique constraint and no ON CONFLICT, so each write
+-- is a delete followed by an insert.
+--
+-- Every trigger is IF NOT EXISTS, so a re-run of this file is a no-op for all
+-- three.
+CREATE TRIGGER IF NOT EXISTS file_index_fts_ai AFTER INSERT ON file_index
+BEGIN
+  INSERT INTO file_index_fts (rowid, name, account_id, path)
+    VALUES (new.rowid, new.name, new.account_id, new.path);
+END;
+CREATE TRIGGER IF NOT EXISTS file_index_fts_au AFTER UPDATE ON file_index
+BEGIN
+  DELETE FROM file_index_fts WHERE rowid = new.rowid;
+  INSERT INTO file_index_fts (rowid, name, account_id, path)
+    VALUES (new.rowid, new.name, new.account_id, new.path);
+END;
+CREATE TRIGGER IF NOT EXISTS file_index_fts_ad AFTER DELETE ON file_index
+BEGIN
+  DELETE FROM file_index_fts WHERE rowid = old.rowid;
+END;

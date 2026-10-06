@@ -19,6 +19,12 @@
 // The trigram index reads the words a search names and the rows they match,
 // and the bar in test/search.test.mjs is measured on a million-file account.
 //
+// Nothing here writes the trigram table. Three triggers on `file_index`
+// (migration 0032) mirror every row change into it inside the statement that
+// made the change, so the index row and its search row are written, deleted or
+// fail together, and every writer of `file_index` — including
+// src/account-close.js's purge — is mirrored without knowing the table exists.
+//
 // Plain data and functions, no Worker-only import: node --test exercises the
 // query, the feeds and every route against a real SQLite engine (the D1
 // adapter in test/search.test.mjs), so the number the issue asks for is
@@ -67,14 +73,6 @@ const ROWS_PER_STATEMENT = 14;
 /** Statements per db.batch call, so a 100,000-file drive does not build one
  * giant batch. */
 const STATEMENTS_PER_BATCH = 64;
-/**
- * The most bound parameters one D1 statement may carry. D1 refuses a query
- * with more, so any statement this module builds that binds one value per row
- * (the trigram index's rowid lookup) is chunked to this. The account id and
- * the two ranking values are bound alongside the row values, so a caller
- * leaves one slot spare.
- */
-const D1_MAX_BOUND_PARAMS = 100;
 /**
  * The shortest word the FTS5 trigram index can find. The trigram tokenizer
  * indexes every three-character window of a name, so a word of one or two
@@ -179,11 +177,18 @@ export function searchSql(words, { accountId, limit }) {
   if (!Array.isArray(words) || words.length === 0) {
     throw new Error("searchSql needs at least one word");
   }
-  const joined = escapeLike(words.join(" "));
+  const whole = words.join(" ");
+  const escaped = escapeLike(whole);
   if (ftsCanAnswer(words)) {
     // Params are [accountId (?1), the MATCH expression (?2), the whole query
     // (?3), the whole query as a prefix (?4), the limit (?5)], so the two
     // ranking parameters are ?3 and ?4 and the limit is ?5.
+    //
+    // ?3 is bound clean and ?4 is LIKE-escaped, because they are different
+    // comparisons: `name = ?3` is string equality, so a name holding % or _
+    // must be compared against the name as written, while `name LIKE ?4` takes
+    // a pattern, where the same characters mean something. Binding the escaped
+    // string to both left those names unable to rank as a whole-name match.
     const exact = 3;
     const prefix = exact + 1;
     return {
@@ -192,14 +197,13 @@ export function searchSql(words, { accountId, limit }) {
         // The two facts the trigram table does not carry are read back from
         // file_index by its (account_id, path) primary key, and the EXISTS
         // in the WHERE is what keeps the two tables in step from the reader's
-        // side. A write upserts file_index and then the trigram table, so a
-        // failure between the two leaves a trigram row whose file_index row is
-        // gone (a file deleted mid-write, or the FTS write lost). Without this
-        // gate such a row would answer a search with NULL size and date for a
-        // file that no longer exists; with it the row is dropped at read time
-        // and the next reconciler run removes it. The EXISTS is a seek on the
-        // same primary key SQLite already uses for the two subqueries, so it
-        // adds no scan and reads no row the search did not already read.
+        // side. The triggers that maintain the trigram table (migration 0032)
+        // write both rows inside one statement, so they cannot drift; the
+        // EXISTS is the reader's own assertion of the same invariant, and it
+        // costs one seek on the primary key SQLite already uses for the two
+        // subqueries, so it reads no row the search did not already read. A
+        // file the drive stopped having must never answer a search with
+        // NULL size and date.
         `(SELECT size_bytes FROM file_index ` +
         `WHERE account_id = ?1 AND path = file_index_fts.path) AS size_bytes, ` +
         `(SELECT modified_at FROM file_index ` +
@@ -210,7 +214,7 @@ export function searchSql(words, { accountId, limit }) {
         `ORDER BY CASE WHEN name = ?${exact} THEN 0 ` +
         `WHEN name LIKE ?${prefix} ESCAPE '\\' THEN 1 ELSE 2 END, name ` +
         `LIMIT ?${prefix + 1}`,
-      params: [accountId, ftsQuery(words), joined, `${joined}%`, limit + 1],
+      params: [accountId, ftsQuery(words), whole, `${escaped}%`, limit + 1],
       engine: "fts",
     };
   }
@@ -219,7 +223,9 @@ export function searchSql(words, { accountId, limit }) {
   const clauses = words.map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`).join(" AND ");
   const exact = params.length + 1;
   const prefix = exact + 1;
-  params.push(joined, `${joined}%`, limit + 1);
+  // Same split as the trigram shape: the whole-name rank compares two strings,
+  // and only the prefix test is a pattern.
+  params.push(whole, `${escaped}%`, limit + 1);
   return {
     sql:
       `SELECT path, name, size_bytes, modified_at FROM file_index ` +
@@ -328,86 +334,6 @@ const UPSERT_UPDATE =
 // Seven placeholders a row, reused row by row inside one statement.
 const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
 
-// The trigram table's rowid mirrors file_index's own rowid, so one row is
-// found by that integer and a delete is a rowid seek rather than a scan of
-// the whole table. FTS5 has no unique constraint and no ON CONFLICT, so a
-// write is a delete followed by an insert, both keyed to the rowid the
-// upsert into file_index kept or took.
-const FTS_COLUMNS = "(rowid, name, account_id, path)";
-
-/**
- * The delete and insert pair that replaces one file_index row in the trigram
- * table, keyed to the rowid that row holds. A row is never left in one table
- * and not the other.
- * @param {D1Database} db
- * @param {{rowid: number, account_id: string, name: string, path: string}} row
- * @returns {D1PreparedStatement[]}
- */
-function ftsReplaceStatements(db, row) {
-  return [
-    db.prepare("DELETE FROM file_index_fts WHERE rowid = ?").bind(row.rowid),
-    db
-      .prepare(`INSERT INTO file_index_fts ${FTS_COLUMNS} VALUES (?1, ?2, ?3, ?4)`)
-      .bind(row.rowid, row.name, row.account_id, row.path),
-  ];
-}
-
-/**
- * Resolve the rowids for a chunk of rows and build every delete+insert pair.
- * The SELECT is a separate batch (it must see the upsert) and the pairs are
- * returned in the caller's order. A path with no row (never here: the caller
- * upserts first) is skipped rather than bound with a null rowid.
- *
- * The lookup is chunked. D1 caps a statement at 100 bound parameters, and one
- * caller chunk is up to `STATEMENTS_PER_BATCH * ROWS_PER_STATEMENT` rows (896
- * by default), so a single IN list of 896 paths plus the account id would be
- * refused by the database on any real rebuild. Each lookup therefore carries
- * at most `D1_MAX_BOUND_PARAMS - 1` paths — the account id is the other bound
- * value — which is the same chunking shape `upsertStatements` already uses for
- * the upsert itself.
- * @param {D1Database} db
- * @param {FileRow[]} rows
- * @returns {Promise<D1PreparedStatement[]>}
- */
-async function ftsReplaceForRows(db, rows) {
-  if (rows.length === 0) {
-    return [];
-  }
-  const accountId = rows[0].account_id;
-  /** @type {Map<string, Record<string, unknown>>} */
-  const byPath = new Map();
-  for (let start = 0; start < rows.length; start += D1_MAX_BOUND_PARAMS - 1) {
-    const paths = rows.slice(start, start + D1_MAX_BOUND_PARAMS - 1).map((row) => row.path);
-    const inList = paths.map(() => "?").join(", ");
-    const found = await db
-      .prepare(
-        `SELECT rowid, path, name FROM file_index WHERE account_id = ? AND path IN (${inList})`,
-      )
-      .bind(accountId, ...paths)
-      .all();
-    for (const row of /** @type {Array<Record<string, unknown>>} */ (found?.results ?? [])) {
-      byPath.set(String(row.path), row);
-    }
-  }
-  /** @type {D1PreparedStatement[]} */
-  const statements = [];
-  for (const row of rows) {
-    const hit = byPath.get(row.path);
-    if (!hit) {
-      continue;
-    }
-    statements.push(
-      ...ftsReplaceStatements(db, {
-        rowid: Number(hit.rowid),
-        account_id: accountId,
-        name: String(hit.name),
-        path: row.path,
-      }),
-    );
-  }
-  return statements;
-}
-
 /** The prepared statements that write a chunk of rows. Exported so the test
  * can run them through the D1 shape, and the caller cannot build SQL.
  * @param {D1Database} db
@@ -444,37 +370,17 @@ export function upsertStatements(db, rows) {
   return statements;
 }
 
-/** The one prepared statement that drops one row, in both tables. The trigram
- * table is keyed by file_index's rowid, and a DELETE ... RETURNING gives that
- * rowid back in the same statement, so the search row goes with the index row
- * and a scan of the trigram table is never needed. D1 answers RETURNING
- * through `.all()` (the same method a SELECT uses); `withIndex.remove` is
- * the only caller and reads `.results[0]`.
+/** The one prepared statement that drops one row. The trigram table is keyed
+ * by file_index's rowid and a trigger on file_index drops that row inside this
+ * same DELETE (migration 0032), so the index row and the search row go
+ * together and nothing here has to know the trigram table exists.
  * @param {D1Database} db
  * @param {{id: string}} account
  * @param {string} path */
 export function deleteStatement(db, account, path) {
   return db
-    .prepare(
-      `DELETE FROM file_index WHERE account_id = ?1 AND path = ?2 ` +
-        `RETURNING rowid, name, account_id, path`,
-    )
+    .prepare("DELETE FROM file_index WHERE account_id = ?1 AND path = ?2")
     .bind(account.id, path);
-}
-
-/**
- * The statements that remove one file's row from the trigram table, given the
- * row a DELETE ... RETURNING handed back. Called with nothing when the file
- * had no index row, so a remove of a file that was never indexed is a no-op.
- * @param {D1Database} db
- * @param {Record<string, unknown>|null} row the RETURNING row, or null
- * @returns {D1PreparedStatement[]}
- */
-export function deleteFtsStatements(db, row) {
-  if (!row) {
-    return [];
-  }
-  return [db.prepare("DELETE FROM file_index_fts WHERE rowid = ?").bind(Number(row.rowid))];
 }
 
 /**
@@ -526,26 +432,13 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  // The trigram table is rebuilt with the index, not left stale: the rows it
-  // holds mirror file_index's rowids, and this rebuild re-creates those rows,
-  // so the old rowids are dropped first or a search would answer from rows
-  // the store no longer has. `account_id` on the trigram table is UNINDEXED,
-  // so a `DELETE ... WHERE account_id = ?` would scan every account's FTS
-  // rows. Deleting by the rowids `file_index` already has (a seek on its
-  // account_id index, then a rowid seek in FTS) stays O(this account).
-  await db.batch([
-    db
-      .prepare(
-        "DELETE FROM file_index_fts WHERE rowid IN " +
-          "(SELECT rowid FROM file_index WHERE account_id = ?1)",
-      )
-      .bind(account.id),
-    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id),
-  ]);
+  // One statement drops every row of the account, and a trigger on file_index
+  // (migration 0032) drops each row's trigram row inside the same DELETE, so a
+  // rebuild can never answer a search from rows the store no longer has.
+  await db.batch([db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id)]);
   for (let start = 0; start < rows.length; start += batchSize * ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * ROWS_PER_STATEMENT);
     await db.batch(upsertStatements(db, slice));
-    await db.batch(await ftsReplaceForRows(db, slice));
   }
   return { indexed: rows.length, folders, tookMs: now() - at };
 }
@@ -701,16 +594,17 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       // wrapper gets without a second request for a HEAD — the same second a
       // folder listing renders.
       const at = now();
-      const row = fileRow(account, path, { size: counted.bytes(), modified: at }, at);
-      await db.batch(upsertStatements(db, [row]));
-      await db.batch(await ftsReplaceForRows(db, [row]));
+      // One batch, one statement pair: the row and its trigram row are written
+      // inside the upsert itself by the AFTER INSERT/UPDATE triggers (migration
+      // 0032), so a save cannot land the index row and lose the search row.
+      await db.batch(
+        upsertStatements(db, [fileRow(account, path, { size: counted.bytes(), modified: at }, at)]),
+      );
     },
     /** @param {string} key */
     async remove(key) {
       await remove(key);
-      const dropped = await deleteStatement(db, account, drivePathFromKey(key, account)).all();
-      const row = /** @type {Array<Record<string, unknown>>} */ (dropped?.results ?? [])[0] ?? null;
-      await db.batch(deleteFtsStatements(db, row));
+      await db.batch([deleteStatement(db, account, drivePathFromKey(key, account))]);
     },
   };
 }

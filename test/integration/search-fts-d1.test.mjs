@@ -236,15 +236,15 @@ test("0032 still finds a two-character name, on the LIKE path trigram cannot hol
   );
 });
 
-test("0032's rowid lookup stays inside D1's 100 bound parameters", async () => {
+test("0032 mirrors every row past the statement's bound-parameter limit", async () => {
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
-  // D1 refuses a statement with more than 100 bound parameters, and the
-  // trigram table's rowid lookup binds one per path. A rebuild therefore has
-  // to chunk its lookup; this walks more rows than one statement can bind, so
-  // the chunking is exercised rather than assumed. 150 rows crosses 100 in the
-  // first chunk, and the reconciler's own default chunk is 896 rows, so this is
-  // the same shape a real account hits.
+  // One upsert statement binds 7 values a row, and D1 refuses a statement with
+  // more than 100, so the reconciler writes a chunk in several statements and
+  // the chunk is 896 rows by default. A rebuild therefore has to mirror 896
+  // rows in one pass; this walks 150 (crossing 100 in the first statement,
+  // and further than 14 rows, one statement) so the boundary is exercised
+  // rather than assumed.
   for (let i = 0; i < 150; i++) {
     await store.write(
       `/bulk/report-${String(i).padStart(3, "0")}.txt`,
@@ -255,12 +255,28 @@ test("0032's rowid lookup stays inside D1's 100 bound parameters", async () => {
   const rebuilt = await reconcileIndex(db, store, ACCOUNT);
   assert.equal(rebuilt.indexed, 150);
 
-  // Every row landed in the trigram table, so the chunked lookup found every
-  // path's rowid rather than stopping at the first statement's limit.
+  // Every row is in the trigram table, so nothing was lost at a statement or a
+  // chunk boundary, and the last row written is the one that would be missing.
   assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index_fts").get()?.c, 150);
   const found = await searchDrive(db, ACCOUNT, "report-149");
   assert.equal(found.count, 1, "the last row of the last chunk is searchable");
   assert.equal(found.results[0].name, "report-149.txt");
+});
+
+test("0032 mirrors a delete that never goes through the write path", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/kept.txt", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/gone.txt", new Blob(["x"]).stream(), "text/plain");
+  await reconcileIndex(db, store, ACCOUNT);
+
+  // The shape src/account-close.js purgeAccountRecords runs: a DELETE of the
+  // account's whole index that no application code in this file issues. The
+  // trigger is what mirrors it, so a closed account's names leave the trigram
+  // table in the same statement and never answer a search.
+  await db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(ACCOUNT.id).run();
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index_fts").get()?.c, 0);
+  assert.equal((await searchDrive(db, ACCOUNT, "txt")).count, 0);
 });
 
 test("a search drops a trigram row whose file_index row is gone (drive#571)", async () => {
@@ -274,8 +290,14 @@ test("a search drops a trigram row whose file_index row is gone (drive#571)", as
   // The state a failure between the file_index write and the trigram write
   // leaves behind: the file is gone from file_index but its trigram row is
   // still there. A search must not answer with a row whose size and date are
-  // NULL for a file that no longer exists.
+  // NULL for a file that no longer exists. The row is planted after the delete
+  // rather than left behind by one, because migration 0032's AFTER DELETE
+  // trigger mirrors the delete itself and this guard is the reader's own
+  // assertion of the same rule.
   await db.batch([db.prepare("DELETE FROM file_index WHERE path = ?").bind("/stale.txt")]);
+  db.sqlite
+    .prepare("INSERT INTO file_index_fts (rowid, name, account_id, path) VALUES (?, ?, ?, ?)")
+    .run(11_048_576, "stale.txt", ACCOUNT.id, "/stale.txt");
   const staleCount = db.sqlite
     .prepare("SELECT count(*) c FROM file_index_fts WHERE path = ?")
     .get("/stale.txt");
