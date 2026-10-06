@@ -116,7 +116,7 @@ const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} }
       ? body
       : JSON.stringify(
           typeof body === "object" && body !== null && !Array.isArray(body)
-            ? { card: true, ...body }
+            ? { card: true, age: true, ...body }
             : body,
         );
   return new Request(url, {
@@ -245,6 +245,7 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
         method: "email",
         email: "you@example.com",
         card: "on",
+        age: "on",
       }),
     }),
     made.env,
@@ -336,6 +337,100 @@ test("every new-account path requires the card step (drive#417)", async () => {
   assert.equal(form.status, 400, "the form path is refused with no card step");
   assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
   assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
+});
+
+test("sign-up without the age box is refused and mails nothing (drive#781)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "young@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
+});
+
+test("every new-account path requires the age box (drive#781)", async () => {
+  // Owned by drive#781, the age gate's own proof, mirroring the card gate's
+  // (drive#417 above): no path opens a new account without the age box, and
+  // the answer comes from the server. The two boxes are separate — a start
+  // with the card but no age box is refused on the age box, in the page's
+  // own words — and a first-time address with both boxes still signs up.
+  const made = dispatchEnv();
+  for (const body of [
+    { step: "start", method: "email", email: "new@example.com", age: false },
+    { step: "start", method: "email", email: "new@example.com", age: "off" },
+  ]) {
+    const response = await workerFetch(post(body), made.env);
+    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
+    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  }
+  // A body that names no age field at all fails closed, the same way a body
+  // with no card field does above. The card is present here, so the refusal
+  // is the age's and the two gates are not the same check.
+  const noAgeField = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com", card: true })),
+    made.env,
+  );
+  assert.equal(noAgeField.status, 400, "a start with no age field is refused");
+  assert.deepEqual(await noAgeField.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "a refused sign-up path mails nothing");
+  const row = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.equal(row, null, "no user row was written for a refused sign-up");
+  // With both boxes the account opens: the same first-time address signs up
+  // and the link leaves by email.
+  const withBoth = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", card: true, age: true }),
+    made.env,
+  );
+  assert.equal(withBoth.status, 202, "the two boxes are what open the new account");
+  assert.equal((await withBoth.json()).ok, true);
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+  // The no-JavaScript form is the page's own path, so it is held to the same
+  // gate: an unchecked age box posts no age field.
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "form@example.com",
+        card: "on",
+      }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 400, "the form path is refused with no age box");
+  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
+});
+
+test("a returning address signs in with neither box (drive#781)", async () => {
+  // The age box gates opening an account, not an existing one — the same rule
+  // the card gate follows (drive#387). The person is keyed by the user row
+  // the first sign-in wrote, so a later start is a sign-in and the route
+  // never asks either box again.
+  const made = dispatchEnv();
+  await signIn(made, "returning@example.com");
+  const response = await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "returning@example.com",
+      card: false,
+      age: false,
+    }),
+    made.env,
+  );
+  assert.equal(response.status, 202, "an existing account signs in without the two boxes");
+  assert.equal((await response.json()).ok, true);
 });
 
 test("a second sign-up with the same card fingerprint is refused in plain words", async () => {
@@ -1681,6 +1776,33 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     assert.equal(words.includes(banned), false, `the sign-in page must not say "${banned}"`);
   }
   assert.equal(/\d+\s*¢\s*per minute/.test(page), false, "no per-minute price on the sign-in page");
+});
+
+test("the page states the age rule and labels the age box in short (drive#781)", () => {
+  // The terms carry the rule (public/terms.html, drive#547); this page must
+  // show it once and carry the box that agrees to it. The server refuses a
+  // start without the box with the same sentence, so the page and the route
+  // cannot drift.
+  assert.ok(page.includes(SIGNIN_COPY.needAge), "the page must say the age rule");
+  assert.equal(
+    page.split(SIGNIN_COPY.needAge).length - 1,
+    1,
+    "the age sentence appears exactly once on the page",
+  );
+  const ageLabel = page.match(/<label[^>]*for="age"[^>]*>([\s\S]*?)<\/label>/)?.[1];
+  assert.ok(ageLabel, "the page carries a label for the age checkbox");
+  const labelText = ageLabel
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  assert.equal(labelText, SIGNIN_COPY.ageConsent, "the age box is labelled in short");
+  // The box posts the field name the route reads, and it is required, so a
+  // browser cannot send the form without it (the server is the real gate).
+  const ageInput = page.match(/<input[^>]*id="age"[^>]*>/)?.[0];
+  assert.ok(ageInput, "the page carries the age input");
+  assert.match(ageInput, /name="age"/);
+  assert.match(ageInput, /type="checkbox"/);
+  assert.match(ageInput, /required/);
 });
 
 test("the page's failure words are the message table's", () => {

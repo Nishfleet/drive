@@ -211,6 +211,15 @@ button:disabled {
           <input id="card" name="card" type="checkbox" value="on" required>
           I understand a card is required
         </label>
+        <!-- drive#781: the terms say an account holder must be 18 or older
+             (public/terms.html, drive#547). The sentence above the box is
+             SIGNIN_COPY.needAge and the route refuses a start without the
+             box with those same words; the label is the short consent line. -->
+        <p class="hint">You must be 18 or older to open an account.</p>
+        <label class="hint" for="age">
+          <input id="age" name="age" type="checkbox" value="on" required>
+          I am 18 or older
+        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
@@ -259,6 +268,7 @@ const METHODS = ["email"];
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
 const cardInput = document.getElementById("card");
+const ageInput = document.getElementById("age");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
 
@@ -302,7 +312,12 @@ async function start(method, email) {
       body: JSON.stringify(
         email === undefined
           ? { method }
-          : { method, email, card: cardInput !== null && cardInput.checked },
+          : {
+              method,
+              email,
+              card: cardInput !== null && cardInput.checked,
+              age: ageInput !== null && ageInput.checked,
+            },
       ),
     });
   } catch (networkError) {

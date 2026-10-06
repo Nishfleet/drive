@@ -74,9 +74,10 @@ const post = (body, url = `${TEST_BASE_URL}/api/signin`) =>
   new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", origin: TEST_BASE_URL },
-    // The card step the page's checkbox stands for (drive#387): a sign-up
-    // without it is refused before any link is mailed.
-    body: JSON.stringify({ card: true, ...body }),
+    // The two boxes the page's checkboxes stand for: the card step
+    // (drive#387) and the 18+ agreement (drive#781). A sign-up without
+    // either is refused before any link is mailed.
+    body: JSON.stringify({ card: true, age: true, ...body }),
   });
 
 test("a fresh web sign-up gets a working drive with no device key", async (t) => {

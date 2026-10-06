@@ -150,6 +150,13 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
+  // drive#781: the terms say an account holder must be 18 or older
+  // (public/terms.html, drive#547), and this page is where the person agrees.
+  // The label is short the way cardConsent is; needAge is the sentence the
+  // page shows above the box, and it is also the route's own refusal, so a
+  // start with no age box gets the words the page already showed.
+  needAge: "You must be 18 or older to open an account.",
+  ageConsent: "I am 18 or older",
   noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
@@ -220,7 +227,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}
+ * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, age?: unknown}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -276,6 +283,29 @@ export function refuseSignupWithoutCard(card) {
 }
 
 /**
+ * Whether a posted field is an age yes. The page's checkbox posts "on"; JSON
+ * posts true. Anything else is not an age confirmation. The same four values
+ * hasSignupCard reads, because both are a required tick the page and the
+ * route must agree on (drive#781).
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function hasAgeConfirm(value) {
+  return value === true || value === "true" || value === "on" || value === "1";
+}
+
+/**
+ * Opening an account without the age box is refused (drive#781). Returning
+ * the need-age sentence, or null when the box is ticked. The terms carry the
+ * rule (public/terms.html, drive#547); this is the route's refusal.
+ * @param {unknown} age
+ * @returns {string|null}
+ */
+export function refuseSignupWithoutAge(age) {
+  return hasAgeConfirm(age) ? null : SIGNIN_COPY.needAge;
+}
+
+/**
  * True when Better Auth already holds this address, so this start is sign-in
  * rather than sign-up.
  * @param {SigninEnv} env
@@ -297,7 +327,7 @@ async function emailHasUser(env, email) {
 /**
  * The start step: the method and, for the email method, the address.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, age?: unknown}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -320,6 +350,7 @@ function readStart(body) {
     email,
     card: body.card,
     cardFingerprint: body.cardFingerprint,
+    age: body.age,
   };
 }
 
@@ -510,6 +541,13 @@ export async function handleSigninRequest(request, env) {
     const refused = refuseSignupWithoutCard(read.card);
     if (refused !== null) {
       return json({ error: refused }, 400);
+    }
+    // drive#781: the age box is the second required tick on a new account.
+    // It is checked after the card, the order the page shows the two boxes
+    // in, so a start that carries neither is answered with the card's words.
+    const ageRefused = refuseSignupWithoutAge(read.age);
+    if (ageRefused !== null) {
+      return json({ error: ageRefused }, 400);
     }
     fingerprint = signupCardFingerprint({
       card: read.card,
