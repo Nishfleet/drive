@@ -134,6 +134,7 @@ type fakeConflictBackend struct {
 	// guard must give up rather than claim another writer's save.
 	alwaysClobber bool
 	hashErr       map[string]error
+	listErr       error
 	// versions is the size and mtime operations/stat reports per object.
 	versions map[string]objectVersion
 }
@@ -204,6 +205,9 @@ func (f *fakeConflictBackend) remoteHash(_ context.Context, name string) (string
 func (f *fakeConflictBackend) parentContents(_ context.Context, dir string) (map[string]bool, error) {
 	if f.failWith != nil {
 		return nil, f.failWith
+	}
+	if f.listErr != nil {
+		return nil, f.listErr
 	}
 	f.listCalls++
 	present := map[string]bool{}
@@ -365,6 +369,30 @@ func TestConflictGuardSkipsTheRemoteHashForAPathThatNeverExisted(t *testing.T) {
 	}
 	if got := f.objects[want]; got != md5Hex("brand new\n") {
 		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
+	}
+}
+
+func TestConflictGuardFallsBackToAHashWhenTheListingFails(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"new.txt": "brand new\n"})
+	f.listErr = errors.New("directory not found")
+	f.pending = []queueEntry{{Name: "new.txt", Size: 10}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("a listing that fails is not a failed pass: %v", err)
+	}
+	if g.seen["new.txt"] == nil {
+		t.Fatal("the save was not watched")
+	}
+	if g.seen["new.txt"].previous != "" {
+		t.Errorf("previous = %q, want empty: the hashsum said the path never existed", g.seen["new.txt"].previous)
+	}
+	f.listErr = nil
+	f.pending = nil
+	f.objects["new.txt"] = md5Hex("the other device's save\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.copied) != 1 {
+		t.Fatalf("copied %v, want the conflict copy after a listing that failed at first sight", f.copied)
 	}
 }
 
@@ -1482,6 +1510,67 @@ func TestHashMountFileHashesTheBytesTheMountServes(t *testing.T) {
 	}
 }
 
+func TestHashMountFilePrefersTheVFSCacheFile(t *testing.T) {
+	g, mountDir, _ := guardFor(t, "mac", map[string]string{"notes.txt": "from the mount\n"})
+	g.cacheDir = t.TempDir()
+	g.fs = "drive:bucket/u/me"
+	cached := filepath.Join(g.cacheDir, "vfs", "drive", "bucket", "u", "me", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte("from the cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := g.hashMountFile("notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != md5Hex("from the cache\n") {
+		t.Errorf("hash = %q, want the VFS cache bytes, not %q on the mount", hash, mountDir)
+	}
+}
+
+func TestHashMountFileFindsRcloneConfigHashCacheDir(t *testing.T) {
+	g, _, _ := guardFor(t, "mac", map[string]string{"notes.txt": "from the mount\n"})
+	g.cacheDir = t.TempDir()
+	g.fs = "drive:bucket/u/me"
+	cached := filepath.Join(g.cacheDir, "vfs", "drive{i9Otv}", "bucket", "u", "me", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte("from the hashed cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := g.hashMountFile("notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != md5Hex("from the hashed cache\n") {
+		t.Errorf("hash = %q, want the drive{config} VFS cache bytes", hash)
+	}
+}
+
+func TestCacheFileIsEmptyWhenTheCacheHasNotBeenCreatedYet(t *testing.T) {
+	g := newConflictGuard("mac", t.TempDir())
+	g.cacheDir = filepath.Join(t.TempDir(), "missing")
+	g.fs = "drive:bucket/u/conflict"
+	if p := g.cacheFile("report.txt"); p != "" {
+		t.Errorf("cacheFile = %q, want empty: a missing cache is not a panic", p)
+	}
+}
+
+func TestIsRemoteMissing(t *testing.T) {
+	if !isRemoteMissing(errors.New("rclone rc operations/list: directory not found: exit status 1")) {
+		t.Error("a listing of a prefix that is not in storage yet is missing")
+	}
+	if isRemoteMissing(errors.New("rclone rc operations/list: connection refused")) {
+		t.Error("a dead remote control is not a missing prefix")
+	}
+	if isRemoteMissing(nil) {
+		t.Error("nil is not missing")
+	}
+}
+
 // TestHashMountFileRefusesASaveThatGrewPastTheCap proves a save that grows
 // past the cap while it is hashed is a named skip rather than a hash of
 // truncated bytes: a conflict copy made of those would be a corrupt version
@@ -1603,7 +1692,7 @@ func TestRunConflictLoopWritesTheBacklogStateFile(t *testing.T) {
 	statePath := filepath.Join(root, "conflict-guard.json")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	msgs := RunConflictLoop(ctx, "mac", mountDir, statePath, f)
+	msgs := RunConflictLoop(ctx, "mac", mountDir, "", "", statePath, f)
 	defer func() {
 		cancel()
 		for range msgs {

@@ -267,6 +267,8 @@ type ConflictCopy struct {
 type conflictGuard struct {
 	device   string
 	mountDir string
+	cacheDir string
+	fs       string
 	seen     map[string]*pendingSave
 	order    []string
 	cursor   int
@@ -741,7 +743,11 @@ func (g *conflictGuard) claim(ctx context.Context, b conflictBackend, path strin
 		if err != nil {
 			return ConflictCopy{}, fmt.Errorf("conflict: %w", err)
 		}
-		if err := b.copyLocalToRemote(ctx, g.mountDir, path, name); err != nil {
+		src := g.sourceFile(path)
+		if src == "" {
+			return ConflictCopy{}, errClaimSourceChanged
+		}
+		if err := b.copyLocalToRemote(ctx, filepath.Dir(src), filepath.Base(src), name); err != nil {
 			return ConflictCopy{}, fmt.Errorf("conflict: copy %s to %s: %w", path, name, err)
 		}
 		kept, err := b.remoteHash(ctx, name)
@@ -825,7 +831,15 @@ func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, nam
 	}
 	present, err := g.parentListing(ctx, b, parentDir(name), listings)
 	if err != nil {
-		return "", false, err
+		// A prefix that is not in storage yet (the first save into a new
+		// drive) makes rclone's listing fail. That is not a failed pass:
+		// fall back to one hashsum, which answers "no object" the same
+		// way it did before the listing existed.
+		hash, herr := b.remoteHash(ctx, name)
+		if herr != nil {
+			return "", true, nil
+		}
+		return hash, false, nil
 	}
 	if !present[remoteBase(name)] {
 		return "", false, nil
@@ -871,6 +885,59 @@ func dirLabel(dir string) string {
 	return dir
 }
 
+// sourceFile is the bytes this device saved at name: rclone's VFS cache
+// file when the guard knows where that cache is, otherwise the mount
+// path. The cache file is this device's own write, so a claim can copy
+// it after the mount path has already been overwritten by another
+// device's save. No second copy is made.
+func (g *conflictGuard) sourceFile(name string) string {
+	if p := g.cacheFile(name); p != "" {
+		return p
+	}
+	if g.cacheDir != "" {
+		// A mount path open can make rclone replace this device's dirty
+		// bytes with a download of whatever is at the plain path now.
+		return ""
+	}
+	return filepath.Join(g.mountDir, filepath.FromSlash(name))
+}
+
+// cacheFile is rclone's VFS cache file for a mount-relative path, or "".
+// rclone stores it at <cache-dir>/vfs/<remote-name>[ {config} ]/<root>/<name>:
+// extra backend options (the S3 endpoint, the keys) make the folder
+// drive{XXXX} rather than drive, so a lookup that only tries "drive" misses
+// the bytes this device just saved.
+func (g *conflictGuard) cacheFile(name string) string {
+	if g.cacheDir == "" {
+		return ""
+	}
+	rel := filepath.FromSlash(name)
+	rest := ""
+	if _, after, ok := strings.Cut(g.fs, ":"); ok {
+		rest = filepath.FromSlash(after)
+	}
+	var candidates []string
+	if rest != "" {
+		candidates = append(candidates, filepath.Join(g.cacheDir, "vfs", RcloneRemoteName, rest, rel))
+		if matches, err := filepath.Glob(filepath.Join(g.cacheDir, "vfs", RcloneRemoteName+"*", rest, rel)); err == nil {
+			candidates = append(candidates, matches...)
+		}
+	}
+	candidates = append(candidates,
+		filepath.Join(g.cacheDir, "vfs", RcloneRemoteName, rel),
+		filepath.Join(g.cacheDir, RcloneRemoteName, rel),
+	)
+	for _, p := range candidates {
+		if p == "" {
+			continue
+		}
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
 // hashMountFile is the md5 of the bytes the mount serves at path,
 // read straight out of the VFS cache file those bytes live in: the
 // same bytes the write-back will upload, with no second copy written
@@ -878,7 +945,11 @@ func dirLabel(dir string) string {
 // grows while it is hashed is named (errProtectTooLarge) rather than
 // hashed as a truncation.
 func (g *conflictGuard) hashMountFile(path string) (string, error) {
-	in, err := os.Open(filepath.Join(g.mountDir, filepath.FromSlash(path)))
+	src := g.sourceFile(path)
+	if src == "" {
+		return "", fmt.Errorf("no VFS cache file for %s", path)
+	}
+	in, err := os.Open(src)
 	if err != nil {
 		return "", err
 	}
@@ -975,6 +1046,9 @@ func (c *rcClient) remoteHas(ctx context.Context, name string) (bool, error) {
 		Item json.RawMessage `json:"item"`
 	}
 	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
+		if isRemoteMissing(err) {
+			return false, nil
+		}
 		return false, err
 	}
 	return string(reply.Item) != "null", nil
@@ -992,6 +1066,9 @@ func (c *rcClient) parentContents(ctx context.Context, dir string) (map[string]b
 			Item json.RawMessage `json:"item"`
 		}
 		if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": dir}, &statReply); err != nil {
+			if isRemoteMissing(err) {
+				return map[string]bool{}, nil
+			}
 			return nil, err
 		}
 		if string(statReply.Item) == "null" {
@@ -1005,6 +1082,9 @@ func (c *rcClient) parentContents(ctx context.Context, dir string) (map[string]b
 		} `json:"list"`
 	}
 	if err := c.call(ctx, "operations/list", map[string]string{"fs": c.fs, "remote": dir}, &reply); err != nil {
+		if isRemoteMissing(err) {
+			return map[string]bool{}, nil
+		}
 		return nil, err
 	}
 	present := make(map[string]bool, len(reply.List))
@@ -1176,13 +1256,31 @@ func remoteBase(name string) string {
 // to write to storage. srcRemote is relative to srcRoot, which for a
 // conflict copy is this device's own mount.
 func (c *rcClient) copyLocalToRemote(ctx context.Context, srcRoot, srcRemote, dstRemote string) error {
+	srcFs := srcRoot
+	if filepath.IsAbs(srcRoot) {
+		// Force the local backend. rclone's cache folder is named
+		// drive{XXXX} when the remote has extra config, and `{XXXX}`
+		// is also rclone's connection-string config syntax.
+		srcFs = ":local:" + srcRoot
+	}
 	var reply map[string]any
 	return c.call(ctx, "operations/copyfile", map[string]string{
-		"srcFs":     srcRoot,
+		"srcFs":     srcFs,
 		"srcRemote": srcRemote,
 		"dstFs":     c.fs,
 		"dstRemote": dstRemote,
 	}, &reply)
+}
+
+// isRemoteMissing reports a path rclone does not have yet: a listing or
+// stat of a prefix that has never been written is "no files", not a
+// failed pass.
+func isRemoteMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not found") || strings.Contains(s, "notexist")
 }
 
 // ConflictGuardStatePath is where the running guard reports how far
@@ -1254,11 +1352,12 @@ func conflictGuardBehind(path string, now time.Time) int {
 // file for `drive status`. The channel is buffered so a busy loop never
 // blocks on a reader, and the same message is reported at most once per
 // conflictReportEvery.
-func RunConflictLoop(ctx context.Context, device, mountDir, statePath string, c conflictBackend) <-chan error {
+func RunConflictLoop(ctx context.Context, device, mountDir, cacheDir, fs, statePath string, c conflictBackend) <-chan error {
 	msgs := make(chan error, 64)
 	go func() {
 		defer close(msgs)
 		guard := newConflictGuard(device, mountDir)
+		guard.cacheDir, guard.fs = cacheDir, fs
 		ticker := time.NewTicker(conflictInterval)
 		defer ticker.Stop()
 		lastReport := make(map[string]time.Time)

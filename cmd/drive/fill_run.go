@@ -117,9 +117,13 @@ func (c *rcClient) call(ctx context.Context, method string, params map[string]st
 	// method name and the loop's own constants.
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, c.binary, args...)
-	cmd.Stderr = nil
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	b, err := cmd.Output()
 	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("rclone rc %s: %s: %w", method, msg, err)
+		}
 		return fmt.Errorf("rclone rc %s: %w", method, err)
 	}
 	if err := json.Unmarshal(b, out); err != nil {

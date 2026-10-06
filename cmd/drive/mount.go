@@ -822,7 +822,7 @@ func mountForeground(p MountPlan, home string) error {
 		// the guard's fourth argument is the state file it writes so `drive
 		// status` can report how far behind the guard is (issue #569).
 		c := rcClientForMount(p)
-		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, ConflictGuardStatePath(home), c) {
+		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.CacheDir, p.Remote, ConflictGuardStatePath(home), c) {
 			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()
