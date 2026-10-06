@@ -290,9 +290,9 @@ func TestLogoutBinaryExitsZeroWhenTheServerRevokesTheKey(t *testing.T) {
 // this proof inside the go job's -short unit tests.
 func TestLogoutStopsALiveMount(t *testing.T) {
 	// The worker App cannot add a workflow step (drive#392), so this proof
-	// runs in the go job's -short unit tests when CI=true, instead of as its
-	// own named step. A local -short run still skips it.
-	if testing.Short() && os.Getenv("CI") == "" {
+	// runs in the go job's -short unit tests when CI is set, instead of as its
+	// own named step. A local -short run still skips it, and CI=false is not CI.
+	if testing.Short() && os.Getenv("CI") != "true" {
 		t.Skip("live-mount proof skipped in -short mode")
 	}
 
