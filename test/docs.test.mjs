@@ -534,6 +534,95 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   }
 });
 
+// The docs count public/llms.txt states (drive#814). The links above are gated
+// but the sentence that tells an answer engine how many pages there are is
+// prose, so drive#562 could add a page, add its link, and leave the sentence
+// counting the old nine with nothing failing. The count is read out of the file
+// and compared with DOC_PAGES, the same list the link gate walks, so the two
+// cannot disagree.
+//
+// The sentence is found by shape and never by a typed figure, so the count is
+// stated once, in one place: a reword that drops the count, spells it
+// differently or states it a second time fails here rather than shipping a
+// figure nobody checked.
+const COUNT_SENTENCE = /holds all ([\w-]+) in one file/gi;
+
+// The counts the sentence may spell, so "nine" is read as nine rather than as a
+// word the gate cannot compare. A page list past twenty is a rewrite of this
+// table, which is a louder change than editing a sentence.
+/** @type {Readonly<Record<string, number>>} */
+const COUNT_WORDS = Object.freeze({
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+});
+
+/**
+ * The docs count a file states, in the one sentence that states it. The file
+ * is folded to one line first, because the sentence is hard-wrapped in the
+ * source and a reader reads it as the one sentence it is.
+ * @param {string} text
+ * @returns {Array<{sentence: string, said: string, count: number | undefined}>}
+ */
+function statedCounts(text) {
+  return [...text.replace(/\r?\n/g, " ").matchAll(COUNT_SENTENCE)].map((match) => {
+    const said = match[1].toLowerCase();
+    const digits = Number(said);
+    return {
+      sentence: match[0],
+      said,
+      count: said === String(digits) ? digits : COUNT_WORDS[said],
+    };
+  });
+}
+
+test("public/llms.txt states the docs page count DOC_PAGES has, and states it once", () => {
+  const llms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
+  const stated = statedCounts(llms);
+  assert.equal(
+    stated.length,
+    1,
+    `public/llms.txt must state the docs page count in exactly one sentence of the shape "holds all <count> in one file", and it states it in ${stated.length}`,
+  );
+  const { said, count, sentence } = stated[0];
+  assert.ok(
+    count !== undefined,
+    `public/llms.txt states "${sentence}", and this gate cannot read "${said}" as a count`,
+  );
+  assert.equal(
+    count,
+    DOC_PAGES.length,
+    `public/llms.txt says there are ${said} docs pages, and DOC_PAGES (core/seo.js) has ${DOC_PAGES.length}`,
+  );
+  // The other two places that advertise the docs list are prose about the list,
+  // not a count of it. A count added to either would be a second figure to keep
+  // in step, so the sentence shape is held to the one file that states it.
+  for (const name of ["../README.md", "../docs-site/index.md"]) {
+    assert.deepEqual(
+      statedCounts(readFileSync(new URL(name, import.meta.url), "utf8")),
+      [],
+      `${name} must not state a docs page count: the count is stated once, in public/llms.txt`,
+    );
+  }
+});
+
 test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
