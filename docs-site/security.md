@@ -16,9 +16,8 @@ only do what its kind of key is allowed to do. Keys are yours to revoke.
 
 {{KEY_TABLE}}
 
-Read and write come from the capability table the server grants
-(workers/api/src/keyprovider.js). Delete and reach come from what the storage
-provider enforces on the key it mints (workers/api/src/idrive-keys.js), because
+Read and write come from the capability table the server grants. Delete and
+reach come from what the storage provider enforces on the key it mints, because
 a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
 
 ## The spending cap

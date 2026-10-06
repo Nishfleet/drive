@@ -30,7 +30,7 @@ DRIVE_BENCH_SCALE=quick go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x
 
 The public page injects the two sections below. A loss is labelled `lose`.
 File open, the 64 MiB small edit, the 10 000-file rename and both small-file
-puts are losses against Space's published figures.
+puts are losses against a rival's published figures.
 
 Cold and warm file-open times (issue #194: the 1 MB document, the
 500 MB video's play start and the 10 GB file, five runs each, median

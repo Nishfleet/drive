@@ -143,6 +143,11 @@ const TEXT_EXT = new Set([
   ".txt",
   ".xml",
 ]);
+// Built docs a person or agent reads. VitePress also emits JS/CSS/JSON under
+// public/docs/assets (the theme, the search map). Those are not customer copy,
+// and scanning them for short rival words ("pin", "Space") fails the moment
+// the theme minifier happens to emit one.
+const BUILT_DOCS_EXT = new Set([".html", ".htm", ".md", ".txt"]);
 const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
 // The rival's name lives in these two modules as internal data (scoreboard
 // figures, PRICE.rival). Nowhere else in src/ may a "Space" string pass.
@@ -348,9 +353,9 @@ function builtDocsFiles() {
     throw new Error("public/docs was not built; run `npm run docs:build` first (npm test does)");
   }
   // Not walkFiles(): walkFiles skips the generated public/docs tree, which is
-  // exactly the tree this list needs. A local walk that keeps TEXT_EXT and
-  // recurses, so a nested build output (assets, subpages) is scanned too and
-  // a rival name in it fails the scan like a top-level one would.
+  // exactly the tree this list needs. Recurse so a nested .md/.txt/.html
+  // (assets, subpages) is scanned too. Skip theme JS/CSS/JSON: those are not
+  // customer copy.
   /** @type {{rel: string, text: string}[]} */
   const files = [];
   /** @param {string} dir */
@@ -364,7 +369,7 @@ function builtDocsFiles() {
         walk(full);
         continue;
       }
-      if (!ent.isFile() || !TEXT_EXT.has(extname(ent.name))) {
+      if (!ent.isFile() || !BUILT_DOCS_EXT.has(extname(ent.name))) {
         continue;
       }
       const raw = readFileSync(full, "utf8");

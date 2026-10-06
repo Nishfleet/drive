@@ -268,3 +268,22 @@ test("the download charge is marked planned, not sold as live", () => {
     "the built pricing page must keep the planned marker next to the download price",
   );
 });
+
+test("customer docs do not point at repository files or issue numbers", () => {
+  // drive#545: limits.md named (#154), the FAQ named docs/scoreboard.md, the
+  // security page named workers/api paths, the pricing page named
+  // monthBillCents. Those are repo internals, not customer copy.
+  const leak = /(?:workers\/api\/|cmd\/drive\/[a-z]|docs\/scoreboard\.md|monthBillCents|\(issue #\d+\)|\(#\d+\))/;
+  for (const surface of [
+    "docs-site/faq.md",
+    "docs-site/limits.md",
+    "docs-site/security.md",
+    "docs-site/pricing.md",
+    "docs-site/how-it-works.md",
+    "docs-site/quickstart.md",
+    "docs-site/index.md",
+    "public/llms.txt",
+  ]) {
+    assert.doesNotMatch(read(surface), leak, `${surface} points at a repository file or issue`);
+  }
+});

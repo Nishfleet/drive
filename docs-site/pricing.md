@@ -55,8 +55,7 @@ The last column is the whole month. An empty drive bills nothing.
 
 The pricing page has a public savings calculator: enter how many TB you keep
 all month, and it shows this month's bill beside our maximum and a usual 1 TB
-plan. The numbers come from the same function the invoice uses
-(`monthBillCents` via `GET /api/quote`).
+plan. The numbers come from the same function the invoice uses.
 
 ## Honest notes
 
