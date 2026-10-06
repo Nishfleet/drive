@@ -1043,6 +1043,65 @@ func TestMountRepairsAModeThatDrifted(t *testing.T) {
 	}
 }
 
+// A probe that cannot answer is not proof that the drive is up: with
+// unchanged files, Mount must not exit 0 on that.
+func TestMountDoesNotClaimAMountItCouldNotCheck(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	orig := mountState
+	mountState = func(string, string) (bool, error) { return false, errors.New("probe timed out") }
+	t.Cleanup(func() { mountState = orig })
+	err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, "")
+	if err == nil {
+		t.Fatal("Mount returned nil when it could not tell whether the drive is mounted")
+	}
+	if !strings.Contains(err.Error(), "probe timed out") {
+		t.Fatalf("error = %v, want the probe's cause", err)
+	}
+	if *starts != 1 {
+		t.Fatalf("an inconclusive probe took %d start actions in total, want 1: a wedged mount must not be restarted", *starts)
+	}
+}
+
+// A rclone.env that cannot be read (a stray line, a loose mode) is treated
+// as absent and rewritten, as before the pair was reused.
+func TestMountRegeneratesADamagedRcloneEnv(t *testing.T) {
+	home := t.TempDir()
+	mountTestSeams(t, true)
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(RcloneEnvPath(home), []byte("garbage without equals\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatalf("a damaged rclone.env failed the mount: %v", err)
+	}
+	if auth, err := ReadRCAuth(home); err != nil || auth.User == "" || auth.Pass == "" {
+		t.Fatalf("rclone.env after the repair = (%+v, %v), want a fresh pair", auth, err)
+	}
+}
+
+// --dry-run writes nothing: no cache tag, no login item, no tmutil.
+func TestMountDryRunWritesNoCacheTag(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+	captureStdout(t, func() {
+		if err := Mount("linux", home, "/fake/rclone", testStorage(), false, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err == nil {
+		t.Fatal("--dry-run wrote CACHEDIR.TAG")
+	}
+	if *starts != 0 {
+		t.Fatalf("--dry-run took %d start actions", *starts)
+	}
+}
+
 func TestMountRestartsWhenThePlanChanged(t *testing.T) {
 	home := t.TempDir()
 	starts, _ := mountTestSeams(t, true)

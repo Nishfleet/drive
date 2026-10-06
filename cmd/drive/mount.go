@@ -214,9 +214,11 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 // secret arrives through the config and makes the bytes differ, which the
 // caller counts as a changed plan.
 func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
+	// A rclone.env that cannot be read (a stray line, a loose mode) is
+	// treated as absent: the write below replaces it with a fresh pair.
 	auth, err := ReadRCAuth(home)
 	if err != nil {
-		return err
+		auth = RCAuth{}
 	}
 	if auth.User == "" || auth.Pass == "" {
 		user, pass, err := generateRCAuth()
@@ -698,16 +700,16 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	// reason to leave a mount down.
 	if !envChanged && mountWritesUnchanged(writes) {
 		up, probeErr := mountState(goos, home)
+		if probeErr != nil {
+			// A probe that cannot answer is not an answer, and the drive
+			// is only called up once the kernel says so. A wedged FUSE
+			// mount is what makes the probe fail, and a restart would
+			// unmount a live mount under open files, so the run neither
+			// restarts nor reports success: it fails and names the cause.
+			return fmt.Errorf("could not check whether the drive is mounted at %s: %w; run `drive status`, then `drive mount` again", p.MountDir, probeErr)
+		}
 		skipRestart := false
-		switch {
-		case probeErr != nil:
-			// A probe that cannot answer is not an answer. A wedged FUSE
-			// mount is exactly what makes the probe time out, and a restart
-			// would unmount that live mount under open files, so an
-			// inconclusive probe leaves the mount alone rather than risk it.
-			fmt.Fprintf(os.Stderr, "note: could not check whether the drive is mounted (%v); leaving the mount alone\n", probeErr)
-			skipRestart = true
-		case up:
+		if up {
 			fmt.Printf("Mount already running at %s\n", p.MountDir)
 			skipRestart = true
 		}
