@@ -2,6 +2,15 @@
 -- tables, nothing existing is changed and nothing here depends on data the
 -- code that ships after it writes. D1 has no down-migrations; the rollback is
 -- rolling the code back, and the old code reads none of these.
+--
+-- Numbered 0025 on drive#519's own PR, which shared the prefix with
+-- 0025_link_caps.sql. Applied in filename order, that left the order between
+-- the two up to whatever the filesystem returned, so this one moved to the
+-- next free number (0026) to be deterministic again (drive#728). The two touch
+-- nothing of each other's, so the order between them was never load-bearing.
+-- Renumbering makes `wrangler d1 migrations apply` see an unapplied filename
+-- and re-run this file, which is why every statement here is idempotent
+-- (IF NOT EXISTS on all three): the re-run is a no-op, not a second table.
 
 -- The live rows the hourly rollup reads every hour. The hourly statements
 -- read live rows (`hidden_at IS NULL`) from this index and recently hidden
