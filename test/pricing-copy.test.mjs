@@ -283,9 +283,9 @@ test("the per-save hour the copy states is the meter's own floor", () => {
   // makes the minute-counting copy honest, so its hour and the meter's floor
   // are pinned together here - if the floor ever moves, this fails rather than
   // shipping a page that promises an hour and bills two.
-  const meter = readFileSync(new URL("../core/meter.js", import.meta.url), "utf8");
+  const meter = readFileSync(new URL("../core/meter-math.js", import.meta.url), "utf8");
   const floor = meter.match(/MINIMUM_MINUTES_PER_VERSION\s*=\s*(\d+)/);
-  assert.ok(floor, "src/meter.js must state its per-version floor as a number");
+  assert.ok(floor, "core/meter-math.js must state its per-version floor as a number");
   assert.equal(Number(floor[1]), 60, "the meter's smallest booking is the hour the copy states");
   assert.match(PRICE.versionMinimumLine, /at least one hour/);
   assert.match(PRICE.versionMinimumLine, /billed for at least/);

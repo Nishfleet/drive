@@ -1,8 +1,8 @@
 // Nightly version prune, size marks and provider reconcile. Extracted from core/meter.js (drive#617).
 
 import { accountPrefix, scopeStore } from "./files.js";
-import { hourStart, HOUR_MS, isTrashPath, stampMillis, toMillis } from "./meter-math.js";
-import { listMeteredAccounts, ROLLED_THROUGH_READ_SQL, REROLL_QUEUE_SQL } from "./meter-rollup.js";
+import { HOUR_MS, hourStart, stampMillis, toMillis } from "./meter-math.js";
+import { listMeteredAccounts, REROLL_QUEUE_SQL, ROLLED_THROUGH_READ_SQL } from "./meter-rollup.js";
 
 // --- Retention: hidden versions leave the ledger (drive issue #564) -----
 
