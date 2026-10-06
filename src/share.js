@@ -51,7 +51,6 @@
 
 import {
   accountFirstChargedAt,
-  accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
@@ -59,6 +58,7 @@ import { sendEmail } from "../core/email-send.js";
 import {
   etagMatches,
   joinPath,
+  preChargeStoredBytes,
   previewContentType,
   previewDisposition,
   safeFileName,
@@ -1869,12 +1869,19 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (await isMalwareBody(sized.body)) {
     return json({ error: failureMessage("malware-refused") }, 403);
   }
+  const contentType = request.headers.get("content-type") || "application/octet-stream";
+  // The request row names the owner, so that is the prefix the write lands
+  // under — the same scopeStore /api/files/upload writes through. The guard
+  // reads the same store, so this is built before it.
+  const scoped = scopeStore(files, { id: record.accountId, name: "" });
   if (options.db) {
     // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
     // not on the length header a stranger's client sent. An empty body counts
     // as 1 byte once the drive is at 1 TB, the same edge core/files.js holds.
-    const stored = await accountStoredBytes(options.db, record.accountId);
+    // The branch copies count too (drive#800), through the same shared read
+    // the owner's own upload route uses: the sum is one number, not two.
     const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
+    const stored = await preChargeStoredBytes(options.db, scoped, record.accountId, firstChargedAt);
     const blocked = preChargeUploadBlocked({
       firstChargedAt,
       storedBytes: stored,
@@ -1884,10 +1891,6 @@ export async function handleRequestUploadRequest(request, files, links, capState
       return json({ error: blocked }, 403);
     }
   }
-  const contentType = request.headers.get("content-type") || "application/octet-stream";
-  // The request row names the owner, so that is the prefix the write lands
-  // under — the same scopeStore /api/files/upload writes through.
-  const scoped = scopeStore(files, { id: record.accountId, name: "" });
   // This stat is the ordinary-duplicate answer: a drop of a name that is
   // already stored gets the same 409 on every backend, before any bytes are
   // reserved or written. It is NOT the race answer — the gap between this
