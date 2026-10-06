@@ -305,7 +305,10 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // DRIVE_DB rides along since the pre-charge limit sweep became part of the
+  // hourly trip (drive#536): the sweep reads this same store, finds no device
+  // keys to swap, and leaves the billing rows this test measures alone.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -327,12 +330,14 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    const monthMinutes = minutesInMonth(hour);
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes,
       downloadBytes: usage.downloadBytes,
       // The same average the draw passes (drive#535): derived from the
       // GB-minutes, not read off the hours.
-      averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
+      averageStoredGb: gbMonths(usage.gbMinutes, monthMinutes),
     }).totalCents;
   };
   /** @param {number} from @param {number} to */
