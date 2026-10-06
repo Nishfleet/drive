@@ -21,10 +21,12 @@ import {
   signupCardFingerprint,
 } from "../core/abuse-guards.js";
 import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
+import { applyCapSwap, capSwapPlan, PRE_CHARGE_LIMIT_REASON } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
 import { failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
+import { writesPaused } from "../core/prepaid.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
 import { hasSignupCard } from "../src/signin.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
@@ -634,7 +636,7 @@ test("the hourly cron takes an over-limit unpaid account's key read-only", async
   const report = await runPreChargeLimitCron({ db, devices: store });
   // "paid" carries a first charge and "gone" is closed, so neither is over
   // the limit that applies to them; "under" is simply under.
-  assert.deepEqual(report, { overLimit: 1, capped: 1, failures: 0 });
+  assert.deepEqual(report, { overLimit: 1, capped: 1, failures: 0, givenBack: 0 });
 
   const swapped = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(overKey.keyId);
   assert.deepEqual(JSON.parse(String(swapped.capabilities)), ["list", "read"]);
@@ -671,11 +673,11 @@ test("the cron's second hourly run plans no swap on an already capped account", 
     capabilities: ["list", "read", "write", "delete"],
   });
   const first = await runPreChargeLimitCron({ db, devices: store });
-  assert.deepEqual(first, { overLimit: 1, capped: 1, failures: 0 });
+  assert.deepEqual(first, { overLimit: 1, capped: 1, failures: 0, givenBack: 0 });
   const afterFirst = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(minted.keyId);
 
   const second = await runPreChargeLimitCron({ db, devices: store });
-  assert.deepEqual(second, { overLimit: 1, capped: 0, failures: 0 });
+  assert.deepEqual(second, { overLimit: 1, capped: 0, failures: 0, givenBack: 0 });
   const afterSecond = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(minted.keyId);
   assert.deepEqual(afterSecond, afterFirst, "the second run churned nothing");
 });
@@ -719,7 +721,7 @@ test("the cron logs one account's failed swap and still caps the next", async (t
       },
     },
   });
-  assert.deepEqual(report, { overLimit: 2, capped: 1, failures: 1 });
+  assert.deepEqual(report, { overLimit: 2, capped: 1, failures: 1, givenBack: 0 });
   const capped = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(overKey.keyId);
   assert.deepEqual(JSON.parse(String(capped.capabilities)), ["list", "read"]);
   const untouched = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(brokeKey.keyId);
@@ -780,4 +782,175 @@ test("the hourly trip fails when the binding the sweep needs is gone", async () 
       ),
     /DRIVE_DB/,
   );
+});
+
+const WRITE_CAPS = /** @type {const} */ (["list", "read", "write", "delete"]);
+
+/**
+ * @param {import("./d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} keyId
+ */
+function deviceRow(sqlite, keyId) {
+  return sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(keyId);
+}
+
+test("the sweep marks its freeze 'pre-charge-limit', and the give-back clears it when the account is under 1 TB", async () => {
+  // drive#656: the marker names who froze the key, so the give-back widens only
+  // this sweep's freeze. The bytes are the live versions the sweep counts.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "over");
+  db.insertVersion({
+    accountId: "over",
+    fileId: "file-over",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 8,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("over")
+    .mint({ prefix: "u/over/", capabilities: WRITE_CAPS });
+
+  assert.deepEqual(await runPreChargeLimitCron({ db, devices: store }), {
+    overLimit: 1,
+    capped: 1,
+    failures: 0,
+    givenBack: 0,
+  });
+  const frozen = deviceRow(sqlite, key.keyId);
+  assert.equal(frozen.capped_reason, "pre-charge-limit", "the sweep says it did this");
+  assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read"]);
+
+  // Still over: the give-back leaves the key frozen.
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).givenBack, 0);
+  assert.deepEqual(deviceRow(sqlite, key.keyId), frozen);
+
+  // The account frees its space: the live version is hidden.
+  sqlite.prepare("UPDATE file_versions SET hidden_at = ?1 WHERE account_id = 'over'").run(NOW);
+  db.insertVersion({ accountId: "over", fileId: "file-small", sizeBytes: 100, createdAt: NOW });
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 1 });
+  const keys = await store.listCapKeys("over");
+  assert.equal(keys.length, 1);
+  // Back at the powers the record held, held to the key kind's own scope.
+  assert.ok(keys[0].capabilities.includes("write"), "the write power is back");
+  const back = sqlite
+    .prepare("SELECT * FROM devices WHERE account_id = 'over' AND revoked_at IS NULL")
+    .get();
+  assert.equal(back.capped_from, null, "the record is spent");
+  assert.equal(back.capped_reason, null, "the marker is cleared");
+
+  // And a further run changes nothing.
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).givenBack, 0);
+});
+
+test("the give-back leaves a spending-cap freeze, an agent-cap freeze and a customer's read-only key alone", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "spend", { state: "read_only" });
+  await insertAccount(db, "agent");
+  await insertAccount(db, "mixed");
+  for (const id of ["spend", "agent", "mixed"]) {
+    db.insertVersion({ accountId: id, fileId: `file-${id}`, sizeBytes: 100, createdAt: NOW });
+  }
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const freeze = async (
+    /** @type {string} */ id,
+    /** @type {{reason?: string}} */ options = {},
+  ) => {
+    const key = await store
+      .keyProviderFor(id)
+      .mint({ prefix: `u/${id}/`, capabilities: WRITE_CAPS });
+    const plan = capSwapPlan(await store.listCapKeys(id), { state: "read_only" }, options);
+    await applyCapSwap(plan, store.keyProviderFor(id));
+    return key.keyId;
+  };
+  // The owner's money cap, which also holds the account's state read_only.
+  await freeze("spend");
+  // An agent cap: the same plan, no sweep word, account still active.
+  await freeze("agent");
+  // A sweep freeze next to a key the customer made read-only and a key an
+  // agent cap froze: only the sweep's own key may widen.
+  await freeze("mixed", { reason: PRE_CHARGE_LIMIT_REASON });
+  const readOnly = await store
+    .keyProviderFor("mixed")
+    .mint({ prefix: "u/mixed/", capabilities: ["list", "read"] });
+
+  const rowsFor = (/** @type {string} */ id) =>
+    sqlite.prepare("SELECT * FROM devices WHERE account_id = ?1 ORDER BY id").all(id);
+  const spendBefore = rowsFor("spend");
+  const agentBefore = rowsFor("agent");
+  assert.equal(
+    spendBefore[0].capped_reason,
+    "spend-cap",
+    "the spending cap still writes spend-cap",
+  );
+  assert.equal(agentBefore[0].capped_reason, "spend-cap");
+
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 1 });
+  assert.deepEqual(rowsFor("spend"), spendBefore, "the spending cap's freeze stays");
+  assert.deepEqual(rowsFor("agent"), agentBefore, "an agent cap's freeze stays");
+  const mixed = await store.listCapKeys("mixed");
+  const widened = mixed.filter((key) => key.capabilities.includes("write"));
+  assert.equal(widened.length, 1, "the sweep's own key is given back");
+  const stillReadOnly = mixed.find((key) => key.keyId === readOnly.keyId);
+  assert.deepEqual([...(stillReadOnly?.capabilities ?? [])], ["list", "read"]);
+});
+
+test("an agent-capped key on an account the sweep never froze is not widened by the give-back", async () => {
+  // Same as above for a key whose reason is absent: a row from before the
+  // marker existed reads as no reason and is nobody's to give back.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "old");
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("old")
+    .mint({ prefix: "u/old/", capabilities: WRITE_CAPS });
+  sqlite
+    .prepare("UPDATE devices SET capabilities = ?1, capped_from = ?2 WHERE id = ?3")
+    .run(JSON.stringify(["list", "read"]), JSON.stringify(WRITE_CAPS), key.keyId);
+  const before = deviceRow(sqlite, key.keyId);
+  assert.equal(before.capped_reason, null);
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).givenBack, 0);
+  assert.deepEqual(deviceRow(sqlite, key.keyId), before);
+});
+
+test("the prepaid $0 pause caps no key, and the give-back neither reads nor changes it", async () => {
+  // writesPaused refuses writes on its own; no key is frozen, so no
+  // 'pre-charge-limit' row exists and the account's keys keep their powers.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "paused");
+  db.insertVersion({ accountId: "paused", fileId: "file-p", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("paused")
+    .mint({ prefix: "u/paused/", capabilities: WRITE_CAPS });
+  assert.equal(await writesPaused(db, "paused"), true, "no balance: writes are paused");
+  const before = deviceRow(sqlite, key.keyId);
+  assert.equal(before.capped_reason, null, "the pause marks nothing");
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  assert.deepEqual(deviceRow(sqlite, key.keyId), before);
+  assert.equal(await writesPaused(db, "paused"), true, "the give-back leaves the pause as it was");
+});
+
+test("an account still over 1 TB with no first charge never gets its key back", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "over");
+  db.insertVersion({
+    accountId: "over",
+    fileId: "file-over",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("over")
+    .mint({ prefix: "u/over/", capabilities: WRITE_CAPS });
+  for (let run = 0; run < 3; run += 1) {
+    const report = await runPreChargeLimitCron({ db, devices: store });
+    assert.equal(report.givenBack, 0, `run ${run} gives nothing back`);
+  }
+  const row = deviceRow(sqlite, key.keyId);
+  assert.deepEqual(JSON.parse(String(row.capabilities)), ["list", "read"]);
+  assert.equal(row.capped_reason, "pre-charge-limit");
 });

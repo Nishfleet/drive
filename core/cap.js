@@ -81,9 +81,24 @@ export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
 // down because the account's spending cap was reached (drive#661). It is
 // exported so the store, the tests and the give-back pass that reads it back
 // (drive#656) name the same word instead of three literals that can drift. The
-// sweep's `pre-charge-limit` is drive#655's to set, and the prepaid $0-balance
-// pause marks nothing at all because it freezes no key.
+// prepaid $0-balance pause marks nothing at all because it freezes no key.
 export const SPEND_CAP_REASON = "spend-cap";
+
+// The other word: the hourly pre-charge sweep (core/abuse-guards.js) froze the
+// key because the unpaid account passed 1 TB of live bytes. Only this word lets
+// the give-back pass (drive#656) widen a key, so the sweep's freeze is never
+// confused with the owner's money cap.
+export const PRE_CHARGE_LIMIT_REASON = "pre-charge-limit";
+
+/**
+ * The reason a freeze may carry: the spending cap's by default, or the sweep's.
+ * Any other word reads as the spending cap, so a hand-built plan cannot invent one.
+ * @param {unknown} reason
+ * @returns {string}
+ */
+function freezeReason(reason) {
+  return reason === PRE_CHARGE_LIMIT_REASON ? PRE_CHARGE_LIMIT_REASON : SPEND_CAP_REASON;
+}
 
 /**
  * A key row as the cap reads it, after checkedKey() has validated its shape.
@@ -266,9 +281,11 @@ function targetCapabilities(key, state) {
  *
  * @param {unknown} keys the account's key rows
  * @param {unknown} cap a capStatus() result
+ * @param {{reason?: string}} [options] the word a freeze records; defaults to
+ *   the spending cap's (`PRE_CHARGE_LIMIT_REASON` is the hourly sweep's)
  * @returns {CapSwapPlan}
  */
-export function capSwapPlan(keys, cap) {
+export function capSwapPlan(keys, cap, options = {}) {
   if (!Array.isArray(keys)) {
     throw new TypeError(`capSwapPlan needs the account's keys as an array, got ${String(keys)}`);
   }
@@ -307,7 +324,7 @@ export function capSwapPlan(keys, cap) {
           // the read-only state is this module's freeze, so it names the
           // spending cap. The raise carries null, which the store writes as
           // "no reason recorded" and a give-back pass may widen.
-          cappedReason: state === "read_only" ? SPEND_CAP_REASON : null,
+          cappedReason: state === "read_only" ? freezeReason(options.reason) : null,
         }),
       );
     }
@@ -388,10 +405,10 @@ export async function applyCapSwap(plan, provider) {
         : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
-    // This module's freeze always names the spending cap. A hand-built plan
-    // cannot write a different word: the sweep's `pre-charge-limit` belongs
-    // with drive#655, and a raise names nothing (drive#661).
-    const reason = plan.state === "read_only" ? SPEND_CAP_REASON : null;
+    // A freeze names the spending cap unless the plan came from the sweep, and
+    // a raise names nothing (drive#661). A hand-built plan cannot write any
+    // other word: freezeReason() maps it to the spending cap's.
+    const reason = plan.state === "read_only" ? freezeReason(swap.cappedReason) : null;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
         // The provider's own swap is handed the keyId and this freeze's

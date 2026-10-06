@@ -17,7 +17,7 @@
 // equalling another person's stand-in, so nobody can lock an address out.
 
 import { GB_PER_TB } from "./billing.js";
-import { applyCapSwap, capSwapPlan } from "./cap.js";
+import { applyCapSwap, capSwapPlan, PRE_CHARGE_LIMIT_REASON } from "./cap.js";
 import { failureMessage } from "./messages.js";
 
 /** @typedef {ReturnType<typeof import("./devices.js").createD1DeviceStore>} DeviceStore */
@@ -418,12 +418,17 @@ export async function preChargeOverLimitAccounts(db) {
  * Only a key's powers change. The account row is not touched: `accounts.state`
  * is the spending cap's word (setAccountState, src/cap.js), and this guard's
  * answer is the key, so the api's write check - which reads the key's
- * capabilities, not the account state - refuses the write at once. Nothing
- * here gives a key back either: a first charge lifts the limit and the next
- * mint (`drive init`) hands out a fresh write key, while a restore from this
- * sweep could un-freeze an account the spending cap froze on purpose
- * (src/cap.js enforceCap) or that the prepaid $0 balance paused
- * (src/prepaid.js).
+ * capabilities, not the account state - refuses the write at once. The freeze
+ * is recorded as `capped_reason = 'pre-charge-limit'` (PRE_CHARGE_LIMIT_REASON).
+ *
+ * The give-back pass (drive#656) runs in the same trip, after the sweep: an
+ * open account holding a key with that reason, and fewer live bytes than the
+ * limit (counted by accountStoredBytes, the sweep's own fragments), gets those
+ * keys, and only those, back at the powers in `capped_from`. A key marked
+ * `spend-cap` (the owner's cap, or an agent cap), a key with no reason, and an
+ * account the spending cap holds (`accounts.state` read_only) are never
+ * widened here, and the prepaid $0 pause caps no key, so it is not touched. An
+ * account that has since paid is given back too: the limit no longer holds it.
  *
  * One account's failure is logged and the sweep moves on, the shape
  * runAccountCloseCron uses: the next account is still capped and the next
@@ -434,7 +439,7 @@ export async function preChargeOverLimitAccounts(db) {
  *   db: D1Database,
  *   devices: Pick<DeviceStore, "listCapKeys" | "keyProviderFor">,
  * }} input
- * @returns {Promise<{overLimit: number, capped: number, failures: number}>}
+ * @returns {Promise<{overLimit: number, capped: number, failures: number, givenBack: number}>}
  */
 export async function runPreChargeLimitCron(input) {
   if (typeof input !== "object" || input === null) {
@@ -455,7 +460,13 @@ export async function runPreChargeLimitCron(input) {
   let failures = 0;
   for (const row of overLimit) {
     try {
-      const plan = capSwapPlan(await devices.listCapKeys(row.accountId), { state: "read_only" });
+      const plan = capSwapPlan(
+        await devices.listCapKeys(row.accountId),
+        { state: "read_only" },
+        {
+          reason: PRE_CHARGE_LIMIT_REASON,
+        },
+      );
       if (plan.swaps.length === 0) {
         // Already where the sweep put it: a second hourly run plans no swap,
         // so an account capped once is not churned every hour.
@@ -478,7 +489,61 @@ export async function runPreChargeLimitCron(input) {
       );
     }
   }
-  return { overLimit: overLimit.length, capped, failures };
+  const back = await givePreChargeKeysBack(input.db, devices);
+  return {
+    overLimit: overLimit.length,
+    capped,
+    failures: failures + back.failures,
+    givenBack: back.givenBack,
+  };
+}
+
+/**
+ * The give-back half of the hourly trip (drive#656): widen the keys the sweep
+ * froze once their account is back under the limit. See runPreChargeLimitCron.
+ * @param {D1Database} db
+ * @param {Pick<DeviceStore, "listCapKeys" | "keyProviderFor">} devices
+ * @returns {Promise<{givenBack: number, failures: number}>}
+ */
+async function givePreChargeKeysBack(db, devices) {
+  const frozen = await db
+    .prepare(
+      `SELECT DISTINCT d.account_id AS account_id
+         FROM devices d
+         JOIN accounts a ON a.id = d.account_id AND a.state = 'active'
+        WHERE d.capped_reason = ?1
+          AND d.revoked_at IS NULL`,
+    )
+    .bind(PRE_CHARGE_LIMIT_REASON)
+    .all();
+  let givenBack = 0;
+  let failures = 0;
+  for (const row of frozen.results ?? []) {
+    const accountId = String(row.account_id);
+    try {
+      if ((await accountStoredBytes(db, accountId)) >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
+        continue;
+      }
+      const keys = (await devices.listCapKeys(accountId)).filter(
+        (key) => key.cappedReason === PRE_CHARGE_LIMIT_REASON,
+      );
+      const plan = capSwapPlan(keys, { state: "active" });
+      if (plan.swaps.length === 0) {
+        continue;
+      }
+      await applyCapSwap(plan, devices.keyProviderFor(accountId));
+      givenBack += 1;
+    } catch (error) {
+      failures += 1;
+      console.error(
+        "pre-charge limit: account %s is under the limit, but its keys could not be " +
+          "given their write powers back: %s",
+        accountId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return { givenBack, failures };
 }
 
 /**
