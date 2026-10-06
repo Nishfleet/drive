@@ -31,6 +31,16 @@ import { createTestD1, createTestKv } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 
+/** Tests drive the queue consumer directly. The ExportedHandler type makes
+ * `queue` optional and types `env` as the generated Env, which a stand-in
+ * object cannot express. Same wrapper as test/health.test.mjs's workerFetch.
+ * @type {(batch: {messages: readonly {body: unknown, ack(): void, retry(): void}[]}, env?: unknown, ctx?: {waitUntil(): void}) => Promise<unknown>}
+ */
+const workerQueue =
+  /** @type {(batch: {messages: readonly {body: unknown, ack(): void, retry(): void}[]}, env?: unknown, ctx?: {waitUntil(): void}) => Promise<unknown>} */ (
+    /** @type {unknown} */ (worker.queue)
+  );
+
 /**
  * @param {import("../core/files.js").FileStore} inner
  */
@@ -372,7 +382,9 @@ test("create walk pending lives in KV, not in the D1 job_cursor", async () => {
   assert.ok(walkJson);
   const walk = JSON.parse(walkJson);
   assert.ok(Array.isArray(walk.pending));
-  assert.ok(walk.pending.some((path) => String(path).endsWith("/sub")));
+  assert.ok(
+    walk.pending.some(/** @param {unknown} path */ (path) => String(path).endsWith("/sub")),
+  );
 });
 
 test("approve plan lives in KV, not in the D1 job_cursor", async () => {
@@ -511,6 +523,7 @@ test("the Worker queue consumer runs a branch.create batch", async () => {
   let steps = 0;
   while (queue.sent.length > 0 && steps < 8) {
     const next = queue.sent.shift();
+    assert.ok(next, `batch ${steps} must have a queued message`);
     /** @type {{body: unknown, ack(): void, retry(): void, acked?: boolean, retried?: boolean}} */
     const message = {
       body: next.body,
@@ -521,7 +534,7 @@ test("the Worker queue consumer runs a branch.create batch", async () => {
         message.retried = true;
       },
     };
-    await worker.queue({ messages: [message] }, env, context);
+    await workerQueue({ messages: [message] }, env, context);
     assert.equal(message.acked, true, `batch ${steps} must ack`);
     steps += 1;
   }
@@ -547,7 +560,7 @@ test("a branch message without DRIVE_DB is retried and does not throw", async ()
       message.retried = true;
     },
   };
-  await worker.queue({ messages: [message] }, {}, { waitUntil() {} });
+  await workerQueue({ messages: [message] }, {}, { waitUntil() {} });
   assert.equal(message.retried, true);
   assert.equal(message.acked, undefined);
 });

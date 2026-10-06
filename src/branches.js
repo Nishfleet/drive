@@ -1177,7 +1177,9 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     try {
       const parsed = JSON.parse(walkJson);
       if (parsed !== null && typeof parsed === "object" && Array.isArray(parsed.pending)) {
-        pending = parsed.pending.filter((item) => typeof item === "string");
+        pending = parsed.pending.filter(
+          /** @param {unknown} item */ (item) => typeof item === "string",
+        );
       }
     } catch (error) {
       console.error?.(`create walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
@@ -1308,10 +1310,14 @@ async function processApproveBatch(db, snapshots, store, branch) {
                 ? /** @type {Record<string, Fingerprint>} */ (parsed.sourceFiles)
                 : {},
             branchPending: Array.isArray(parsed.branchPending)
-              ? parsed.branchPending.filter((item) => typeof item === "string")
+              ? parsed.branchPending.filter(
+                  /** @param {unknown} item */ (item) => typeof item === "string",
+                )
               : [branch.branchPrefix],
             sourcePending: Array.isArray(parsed.sourcePending)
-              ? parsed.sourcePending.filter((item) => typeof item === "string")
+              ? parsed.sourcePending.filter(
+                  /** @param {unknown} item */ (item) => typeof item === "string",
+                )
               : [branch.sourcePrefix],
           };
         }
