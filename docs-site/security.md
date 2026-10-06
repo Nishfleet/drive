@@ -55,7 +55,7 @@ Each agent tool is revoked on its own with `drive agents revoke <tool>`.
 ## The second factor
 
 You can turn on a second factor for your account: a rotating six-digit code
-from an authentication app, or a passkey. While it is on, approving a new
+from an authentication app. While it is on, approving a new
 device — the "Approve `drive` on this Mac?" page — asks for that code after
 the code from the terminal. A code thief who has the terminal output but not
 your authentication app approves nothing.
@@ -71,6 +71,15 @@ lose both the app and the codes, the sessions already signed in on your
 devices are what you have left. We cannot reset a factor for you in version 1:
 there is no support path that overrides it, by design — a second factor that
 support can switch off is not a second factor.
+
+A passkey is a way to sign in. It is not the second factor, and approving a
+new device does not accept it in place of the authentication-app code or a
+recovery code. An account that has a passkey and no authentication app is
+asked for no second factor when it approves a device.
+
+Approving a device with a device token alone, with no browser session, is
+refused for an account that has the second factor on, because only a browser
+session can present the code.
 
 Passkeys and the second factor are set up over the account api; there is no
 settings page for either in version 1.

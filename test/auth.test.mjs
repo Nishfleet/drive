@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
+import { getAuthTables } from "better-auth/db";
 import { getMigrations } from "better-auth/db/migration";
 import { magicLink, twoFactor } from "better-auth/plugins";
 import {
@@ -56,6 +57,81 @@ const headers = () => new Headers({ origin: TEST_BASE_URL });
 
 // --------------------------------------------------------------- the schema
 
+/** The planner instance both schema pins read: the shipped files, the plugin set. */
+function schemaPinInstance() {
+  const database = createTestD1({
+    // The two files that hold the sign-in flow's schema, plus the
+    // second-factor file: 0005 has the core tables (already applied by every
+    // deployment, so the two-factor columns land as an ALTER in 0028), 0011
+    // the rateLimit table, and 0028 what the second-factor and passkey
+    // plugins read.
+    migrations: [
+      "drive/0005_better_auth.sql",
+      "drive/0011_rate_limit.sql",
+      "drive/0028_two_factor_passkey.sql",
+    ],
+  });
+  const instance = betterAuth({
+    database,
+    secret: SECRET,
+    baseURL: TEST_BASE_URL,
+    emailAndPassword: { enabled: false },
+    appName: "drive",
+    // Mirrors the option in core/auth.js: the rate-limit counters are stored
+    // in D1, so the planner expects the rateLimit table too.
+    rateLimit: { storage: "database" },
+    // The whole plugin set core/auth.js mounts, in the same order: a drift in
+    // this list makes the planner expect a schema the migration files do not
+    // carry, which is exactly what these tests exist to catch.
+    plugins: [
+      magicLink({ sendMagicLink: async () => {} }),
+      twoFactor({ allowPasswordless: true }),
+      passkey({ rpID: "drive.test", rpName: "drive", origin: TEST_BASE_URL }),
+    ],
+  });
+  return { database, instance };
+}
+
+test("no shipped table or column sits outside the planner's model", async () => {
+  // The reverse of the pin below: the planner finding nothing to create proves
+  // the files carry everything the library needs, not that they carry nothing
+  // else. A table or column a migration adds that no plugin reads (a plugin
+  // dropped from core/auth.js, a column renamed in the library) fails here.
+  const { database, instance } = schemaPinInstance();
+  const model = getAuthTables(
+    /** @type {Parameters<typeof getAuthTables>[0]} */ (/** @type {unknown} */ (instance.options)),
+  );
+  /** @type {Map<string, Set<string>>} */
+  const expected = new Map();
+  for (const [key, table] of Object.entries(model)) {
+    const columns = new Set(["id"]);
+    for (const [fieldKey, field] of Object.entries(table.fields)) {
+      columns.add(/** @type {{fieldName?: string}} */ (field).fieldName ?? fieldKey);
+    }
+    expected.set(table.modelName ?? key, columns);
+  }
+  const db = /** @type {any} */ (database);
+  const tables = (
+    await db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all()
+  ).results.map((/** @type {{name: string}} */ row) => row.name);
+  assert.ok(tables.length > 0, "the shipped files created tables");
+  for (const name of tables) {
+    const columns = expected.get(name);
+    assert.ok(columns, `shipped table ${name} is not in the planner's model`);
+    const shipped = (await db.prepare(`PRAGMA table_info("${name}")`).all()).results.map(
+      (/** @type {{name: string}} */ row) => row.name,
+    );
+    for (const column of shipped) {
+      assert.ok(
+        columns.has(column),
+        `shipped column ${name}.${column} is not in the planner's model`,
+      );
+    }
+  }
+});
+
 test("the shipped migrations are the schema Better Auth's own planner expects", async () => {
   // Better Auth resolves the schema its plugins demand against the database's
   // own tables — a Kysely introspection of the real SQLite file the shim holds
@@ -67,36 +143,7 @@ test("the shipped migrations are the schema Better Auth's own planner expects", 
   // sign-in or the first rate-limited send (drive#200: the rateLimit table
   // when storage is "database"; drive#524: `twoFactor` and `passkey`, and the
   // user.twoFactorEnabled column).
-  const instance = betterAuth({
-    database: createTestD1({
-      // The two files that hold the sign-in flow's schema, plus the
-      // second-factor file, are the set the library's model covers: 0005 has
-      // the core tables (already applied by every deployment, so the
-      // two-factor columns land as an ALTER in 0028 instead), 0011 the
-      // rateLimit table, and 0028 what the second-factor and passkey plugins
-      // read.
-      migrations: [
-        "drive/0005_better_auth.sql",
-        "drive/0011_rate_limit.sql",
-        "drive/0028_two_factor_passkey.sql",
-      ],
-    }),
-    secret: SECRET,
-    baseURL: TEST_BASE_URL,
-    emailAndPassword: { enabled: false },
-    appName: "drive",
-    // Mirrors the option in core/auth.js: the rate-limit counters are stored
-    // in D1, so the planner expects the rateLimit table too.
-    rateLimit: { storage: "database" },
-    // The whole plugin set core/auth.js mounts, in the same order: a drift in
-    // this list makes the planner expect a schema the migration files do not
-    // carry, which is exactly what this test exists to catch.
-    plugins: [
-      magicLink({ sendMagicLink: async () => {} }),
-      twoFactor({ allowPasswordless: true }),
-      passkey({ rpID: "drive.test", rpName: "drive", origin: TEST_BASE_URL }),
-    ],
-  });
+  const { instance } = schemaPinInstance();
   const plan = await getMigrations(
     /** @type {Parameters<typeof getMigrations>[0]} */ (/** @type {unknown} */ (instance.options)),
   );

@@ -395,6 +395,31 @@ test("the site worker mounts the auth family and keeps cross-site posts out", as
   assert.equal(cross.status, 403);
 });
 
+// Review C: the public /api/auth/* mount serves only the second-factor and
+// passkey routes. The magic-link send (and verify) stay on /api/signin, which
+// carries the site's own limits, so an anonymous POST here mails nothing.
+test("the public auth mount refuses the magic-link send and verify", async () => {
+  const made = createTestAuth();
+  /** @type {string[]} */
+  const sent = [];
+  const env = {
+    ...siteEnv(made),
+    EMAIL: { send: async (/** @type {unknown} */ m) => sent.push(String(m)) },
+  };
+  for (const path of ["/api/auth/sign-in/magic-link", "/api/auth/magic-link/verify"]) {
+    const response = await workerFetch(
+      new Request(`${TEST_BASE_URL}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: TEST_BASE_URL },
+        body: JSON.stringify({ email: "anon@example.com" }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 404, `${path} is not served on the public mount`);
+  }
+  assert.equal(sent.length, 0, "no mail left");
+});
+
 test("arming two-factor does not change the email sign-in", async () => {
   const made = createTestAuth();
   await armTwoFactor(made, "armed@example.com");

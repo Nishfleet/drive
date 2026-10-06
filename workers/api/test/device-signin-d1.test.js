@@ -77,7 +77,7 @@ function accountsFor(token, options = {}) {
 // TTL between a read and the write that follows it; `options.failOn` names a
 // statement prefix that throws, which is how a half-written pair is tested.
 /**
- * @typedef {{onRead?: () => void, failOn?: string}} FakeD1Options
+ * @typedef {{onRead?: () => void, failOn?: string, armedUsers?: Set<string>, userReadFails?: boolean}} FakeD1Options
  * @typedef {{codes: Map<string, any>, byUserCode: Map<string, any>, tokens: Map<string, any>}} FakeD1Snapshot
  * @typedef {D1Database & {codes: Map<string, any>, byUserCode: Map<string, any>, tokens: Map<string, any>}} FakeD1
  */
@@ -233,6 +233,11 @@ function makeFakeD1(options = {}) {
           params,
           async first() {
             options.onRead?.();
+            if (s.includes('FROM "user" WHERE id')) {
+              if (options.userReadFails === true) throw new Error("fake D1: user read failed");
+              const armed = options.armedUsers?.has(/** @type {string} */ (params[0]));
+              return armed === undefined ? null : { twoFactorEnabled: armed ? 1 : null };
+            }
             if (s.includes("FROM device_codes WHERE user_code")) {
               return byUserCode.get(/** @type {string} */ (params[0])) ?? null;
             }
@@ -1044,6 +1049,95 @@ test("an account that claims a second factor but cannot verify one approves noth
   );
   assert.doesNotMatch(await page.text(), /is connected/);
   assert.deepEqual(await store.pollDeviceCode(started.deviceCode), { status: "pending" });
+});
+
+// drive#524 review B: armed-ness is read from the user row by the account id
+// the gate resolved, so an approval carried by a bearer device token (no
+// cookie for getSession to read) is gated like a cookie approval, and a user
+// row that cannot be read refuses instead of approving.
+test("a bearer-token approval of an armed account is refused, and so is an unreadable user row", async () => {
+  const armedUsers = new Set();
+  const db = makeFakeD1({ armedUsers });
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => 0 }),
+  });
+  const ctx = {
+    env: {
+      DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    },
+    db,
+    store,
+    // Like the library, the verify endpoints need the browser session: a
+    // bearer-only request has no cookie, so it can never present a factor.
+    accounts: (() => {
+      const stub = accountsFor("sess_ok", { armed: false, verify: true });
+      /** @param {{body: {code: string}, headers: Headers}} args */
+      const needsSession = async ({ body, headers }) => {
+        if (!headers.get("cookie")) throw new Error("no session");
+        if (body.code !== STAND_IN_CODE) throw new Error("invalid code");
+        return {};
+      };
+      return { api: { ...stub.api, verifyTOTP: needsSession, verifyBackupCode: needsSession } };
+    })(),
+    account: null,
+    now: () => 0,
+  };
+  // The first device is approved while the account has no factor, to get a token.
+  const first = await store.requestDeviceCode({ name: "first" });
+  await store.approveDeviceCode(first.userCode, ACCOUNT);
+  const polled = await store.pollDeviceCode(first.deviceCode);
+  assert.equal(polled.status, "approved");
+  const bearer = polled.status === "approved" ? polled.deviceToken : "";
+  /** @param {string} userCode */
+  const approveByBearer = (userCode) =>
+    dispatch(
+      new Request("https://api.test/v1/device/approve", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization: `Bearer ${bearer}`,
+        },
+        body: new URLSearchParams({ user_code: userCode, second_factor: STAND_IN_CODE }).toString(),
+      }),
+      ctx,
+    );
+
+  // Control: no factor on the account, so the bearer approval goes through.
+  const open = await store.requestDeviceCode({ name: "open" });
+  assert.match(await (await approveByBearer(open.userCode)).text(), /is connected/);
+
+  // The account turns the factor on: the same bearer approval is refused.
+  armedUsers.add(ACCOUNT.id);
+  const second = await store.requestDeviceCode({ name: "second" });
+  const refused = await approveByBearer(second.userCode);
+  assert.doesNotMatch(await refused.text(), /is connected/);
+  assert.deepEqual(await store.pollDeviceCode(second.deviceCode), { status: "pending" });
+
+  // The user row cannot be read: refused, not waved through.
+  armedUsers.delete(ACCOUNT.id);
+  const failing = makeFakeD1({ userReadFails: true });
+  const failStore = createMemoryStore({
+    signin: createD1DeviceSigninStore(failing, { now: () => 0 }),
+  });
+  const seed = await failStore.requestDeviceCode({ name: "seed" });
+  await failStore.approveDeviceCode(seed.userCode, ACCOUNT);
+  const seedPoll = await failStore.pollDeviceCode(seed.deviceCode);
+  const failBearer = seedPoll.status === "approved" ? seedPoll.deviceToken : "";
+  const third = await failStore.requestDeviceCode({ name: "third" });
+  const unreadable = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: `Bearer ${failBearer}`,
+      },
+      body: new URLSearchParams({ user_code: third.userCode }).toString(),
+    }),
+    { ...ctx, db: failing, store: failStore },
+  );
+  assert.doesNotMatch(await unreadable.text(), /is connected/);
+  assert.deepEqual(await failStore.pollDeviceCode(third.deviceCode), { status: "pending" });
 });
 
 test("the approve page asks for the second factor only when the account has one", async () => {

@@ -62,7 +62,7 @@ import { signedInAccount } from "../../../core/status.js";
  * route in this module. Declared structurally rather than as the dispatcher's
  * full `Ctx` so a handler names exactly what it uses, the same shape the key
  * routes use.
- * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, account?: {id: string, name?: string, email?: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string, twoFactorEnabled?: unknown}} | null>, verifyTOTP?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>, verifyBackupCode?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>}}|null}} DeviceCtx
+ * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, db?: D1Database|null, account?: {id: string, name?: string, email?: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string, twoFactorEnabled?: unknown}} | null>, verifyTOTP?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>, verifyBackupCode?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>}}|null}} DeviceCtx
  */
 
 // The two edge-limit bindings the device flow answers behind (drive issue #147,
@@ -311,19 +311,36 @@ async function readUserCode(request) {
  * flag is the library's `twoFactorEnabled` on the user row, set the moment
  * the first correct code confirms enrollment — so an account that armed the
  * factor and never confirmed is not asked here, and an account that never
- * armed it is not asked at all. No sign-in flow on this request means no
- * factor: the bearer-token approvals (a device token from `drive cap`) carry
- * no browser session, and that token is already a live credential for the
- * account it names. A read that errors instead of answering counts as
+ * armed it is not asked at all. The flag is read from the user row by the
+ * authenticated account id, so a bearer-token approval (a device token, no
+ * browser cookie) is gated as well. The verify endpoints need the browser
+ * session, so a bearer-only approval of an armed account is refused: it has
+ * no way to present the factor. A read that errors instead of answering counts as
  * armed: the account gate has already resolved a live session to reach this
  * point, so "no session" and "cannot tell" are different answers, and the one
  * that cannot tell asks for the factor rather than let a stolen cookie plus a
  * transient library or database error approve a device.
  * @param {Request} request
  * @param {DeviceCtx} ctx
+ * @param {{id: string}|null|undefined} account the authenticated account, by cookie or bearer token
  * @returns {Promise<boolean>}
  */
-async function approveNeedsSecondFactor(request, ctx) {
+async function approveNeedsSecondFactor(request, ctx, account) {
+  // Armed-ness comes from the authenticated account id first, so every way to
+  // an approval is gated: a cookie session, and a bearer device token too
+  // (which carries no cookie for getSession to read). A read of the user row
+  // that errors counts as armed.
+  if (ctx.db && account?.id) {
+    try {
+      const row = await ctx.db
+        .prepare('SELECT "twoFactorEnabled" FROM "user" WHERE id = ?1')
+        .bind(account.id)
+        .first();
+      if (row && Number(row.twoFactorEnabled) === 1) return true;
+    } catch {
+      return true;
+    }
+  }
   if (!ctx.accounts) return false;
   try {
     const found = await ctx.accounts.api.getSession({ headers: request.headers });
@@ -557,7 +574,7 @@ export async function approvePageRoute(request, ctx) {
     });
   }
   const pending = userCode === "" ? null : await ctx.store.pendingDeviceApproval(userCode);
-  const secondFactor = await approveNeedsSecondFactor(request, ctx);
+  const secondFactor = await approveNeedsSecondFactor(request, ctx, account);
   return approvePage({ ...pendingPageFields(pending), secondFactor });
 }
 
@@ -609,7 +626,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   // call for a value already in hand.
   const approval = await ctx.store.pendingDeviceApproval(userCode);
   const fields = pendingPageFields(approval);
-  const armed = await approveNeedsSecondFactor(request, ctx);
+  const armed = await approveNeedsSecondFactor(request, ctx, account);
   /** @type {string[]} */
   let setCookie = [];
   if (armed) {

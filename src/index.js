@@ -602,7 +602,21 @@ const csrfWhenBrowser = async (c, next) => {
 // the library sees one. Better Auth applies its own trusted-origin rule on
 // top of that. With no sign-in configuration the family answers the same
 // closed door the /api/signin forward answers (src/signin.js).
+//
+// Only the second-factor and passkey surface is served here. The magic-link
+// send, its verify and every other stock route stay on the site's own
+// /api/signin forward, which carries the per-IP edge limits, the per-address
+// send ceiling (purgeExpiredSigninSends) and the sign-up rules; this mount
+// would otherwise be a second, anonymous way to mail a link and make an
+// account around those. Anything off the list is a 404 before the library
+// sees it.
+const AUTH_FAMILY_ALLOWED =
+  /^\/api\/auth\/(?:get-session|two-factor\/[a-z-]+|passkey\/[a-z-]+)\/?$/;
+
 const authApiHandler = async (/** @type {DriveContext} */ c) => {
+  if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
+    return c.json({ error: "Not found." }, 404);
+  }
   const auth = authFor(c.env);
   if (!auth) {
     return c.json(signinClosedBody(), 503);

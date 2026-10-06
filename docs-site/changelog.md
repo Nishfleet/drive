@@ -18,9 +18,10 @@ the live site.
 ## 2026-10-05
 
 - Your account can carry a second factor: a rotating six-digit code from an
-  authentication app, or a passkey. Approving a new device asks for that code
-  after the code from the terminal, and ten one-time recovery codes are shown
-  once when you turn it on. The security page has the recovery rule.
+  authentication app. Approving a new device asks for that code after the code
+  from the terminal, and ten one-time recovery codes are shown once when you
+  turn it on. You can also add a passkey, which is a way to sign in and is not
+  asked for when you approve a device. The security page has the recovery rule.
 - The stored-bytes mark for one hour is what your drive held at the end of
   that hour, so a file you replace several times inside an hour counts once, not
   once per save. Each save is still billed for at least one hour, and the
