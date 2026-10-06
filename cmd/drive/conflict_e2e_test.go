@@ -342,7 +342,7 @@ func waitForBothSavesInStorage(t *testing.T, root string, cfg StorageConfig, mou
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	dumpStandinAndMounts(t, root, cfg, mounts)
+	dumpStandinAndMounts(t, root, mounts)
 	if len(lastPlain) > 0 || len(lastConflict) > 0 {
 		t.Fatalf("%s: storage still had one save: plain=%q conflict=%q kept=%q",
 			missing, lastPlain, lastConflict, kept)
@@ -379,7 +379,7 @@ func findStandinConflict(root string, cfg StorageConfig, candidates []string) (k
 	return kept, path
 }
 
-func dumpStandinAndMounts(t *testing.T, root string, cfg StorageConfig, mounts []string) {
+func dumpStandinAndMounts(t *testing.T, root string, mounts []string) {
 	t.Helper()
 	var files []string
 	_ = filepath.WalkDir(filepath.Join(root, "data"), func(p string, d os.DirEntry, err error) error {

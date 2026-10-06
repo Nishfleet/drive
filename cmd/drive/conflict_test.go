@@ -1698,6 +1698,45 @@ func TestConflictGuardClaimsAfterTheVFSCacheFileIsGone(t *testing.T) {
 	}
 }
 
+// TestPinKeepsTheHoldWhenTheCacheFileIsGone proves rehash/pin after
+// eviction cannot drop the hold: pin used to Remove the hold then
+// fail the re-link, which deleted the last link to this device's bytes.
+func TestPinKeepsTheHoldWhenTheCacheFileIsGone(t *testing.T) {
+	const body = "A-this-device-saved\n"
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": body})
+	g.cacheDir = t.TempDir()
+	g.fs = "drive:bucket/u/conflict"
+	cached := filepath.Join(g.cacheDir, "vfs", "drive", "bucket", "u", "conflict", "report.txt")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = []queueEntry{{Name: "report.txt", Size: int64(len(body))}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("sight: %v", err)
+	}
+	if err := os.Remove(cached); err != nil {
+		t.Fatal(err)
+	}
+	g.pin("report.txt")
+	if _, err := os.Stat(g.holdPath("report.txt")); err != nil {
+		t.Fatalf("pin after eviction dropped the hold: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v Claimed=%+v Skipped=%+v, want the conflict copy after pin-on-eviction",
+			f.copied, res.Claimed, res.Skipped)
+	}
+}
+
 // TestConflictGuardClaimsAfterTheVFSCacheFileIsReplaced is the same
 // lost-save case as TestConflictGuardClaimsAfterTheVFSCacheFileIsGone,
 // except rclone wrote a new cache file (a download of the other

@@ -600,10 +600,11 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 	}
 	if !save.byFingerprint && landed == save.hash {
 		fresh, ferr := b.remoteHashFresh(ctx, name)
-		if ferr != nil {
-			return g.hashFailed(name, save, "the remote hash for this file could not be read")
+		if ferr == nil {
+			landed = fresh
 		}
-		landed = fresh
+		// A failed double-check leaves the cheap hash: this device
+		// already matched, and a missed GET must not skip the save.
 	}
 	switch {
 	case save.byFingerprint && landed != "" && landed != save.previous:
@@ -959,24 +960,37 @@ func (g *conflictGuard) holdPath(name string) string {
 // is the same inode, so rclone unlinking the cache file does not drop
 // the bytes, and no second copy is written. A cache file whose inode
 // is no longer the hold's is a download of the remote: the hold is
-// kept. Link failures are ignored: the next sourceFile still falls
-// through to the cache file or the mount.
+// kept. The link is created at a temp name and renamed onto the hold,
+// so a failed link never deletes the existing hold.
 func (g *conflictGuard) pin(name string) {
 	src := g.cacheFile(name)
 	dst := g.holdPath(name)
 	if src == "" || dst == "" {
 		return
 	}
-	if fi, err := os.Stat(dst); err == nil && !fi.IsDir() {
-		if cfi, err := os.Stat(src); err == nil && !os.SameFile(fi, cfi) {
+	sfi, err := os.Stat(src)
+	if err != nil || sfi.IsDir() {
+		return
+	}
+	if dfi, err := os.Stat(dst); err == nil && !dfi.IsDir() {
+		if os.SameFile(sfi, dfi) {
 			return
 		}
+		// Cache was replaced with a different inode (a download of
+		// the remote). Keep the hold of the bytes this device saved.
+		return
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return
 	}
-	_ = os.Remove(dst)
-	_ = os.Link(src, dst)
+	tmp := dst + ".tmp"
+	_ = os.Remove(tmp)
+	if err := os.Link(src, tmp); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 // unpin drops the hardlink for a save that is no longer watched.
