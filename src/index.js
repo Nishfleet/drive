@@ -1474,10 +1474,10 @@ const handler = {
    *
    * @param {{queue?: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
-   * @param {ExecutionContext} context
+   * @param {ExecutionContext} _context
    * @param {import("../core/files.js").FileStore} [store]
    */
-  async queue(batch, env, context, store = storeFor(env) ?? undefined) {
+  async queue(batch, env, _context, store = storeFor(env) ?? undefined) {
     if (batch.queue === REINDEX_QUEUE_NAME) {
       // One message per invocation (`maxBatchSize: 1`). The walk is the slow,
       // fallible part, and one account per invocation is what keeps a
@@ -1494,37 +1494,38 @@ const handler = {
       // that died before the swap left the account's rows as the last good
       // rebuild left them, so retrying re-walks and swaps again, never
       // re-deletes-then-dies (drive#566).
-      context.waitUntil(
-        Promise.all(
-          batch.messages.map(async (message) => {
-            const body = /** @type {{accountId?: unknown}} */ (message.body);
-            const accountId = typeof body?.accountId === "string" ? body.accountId : "";
-            if (accountId === "") {
-              console.error("search: a reindex message carried no account id");
-              message.ack();
-              return;
-            }
-            if (!env.DRIVE_DB) {
-              console.error("search: the reindex queue ran without the file index database");
-              message.retry();
-              return;
-            }
-            if (!store) {
-              console.error("search: the reindex queue ran without a storage store");
-              message.retry();
-              return;
-            }
-            const account = { id: accountId };
-            try {
-              await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
-              message.ack();
-            } catch (error) {
-              const reason = error instanceof Error ? error.message : String(error);
-              console.error(`search: the reindex for account ${accountId} failed: ${reason}`);
-              message.retry();
-            }
-          }),
-        ),
+      //
+      // Awaited, not handed to waitUntil: the platform settles the batch when
+      // this handler resolves, so every ack or retry has to be called first.
+      await Promise.all(
+        batch.messages.map(async (message) => {
+          const body = /** @type {{accountId?: unknown}} */ (message.body);
+          const accountId = typeof body?.accountId === "string" ? body.accountId : "";
+          if (accountId === "") {
+            console.error("search: a reindex message carried no account id");
+            message.ack();
+            return;
+          }
+          if (!env.DRIVE_DB) {
+            console.error("search: the reindex queue ran without the file index database");
+            message.retry();
+            return;
+          }
+          if (!store) {
+            console.error("search: the reindex queue ran without a storage store");
+            message.retry();
+            return;
+          }
+          const account = { id: accountId };
+          try {
+            await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+            message.ack();
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            console.error(`search: the reindex for account ${accountId} failed: ${reason}`);
+            message.retry();
+          }
+        }),
       );
       return;
     }

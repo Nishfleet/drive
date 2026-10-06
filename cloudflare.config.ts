@@ -118,12 +118,9 @@ export default defineConfig({
       // and a message is lost for at most a day (#519 tracks the meter crons'
       // dead-letter queues; the reindex can join them).
       // The queue is created once, out of band, like the branch-snapshot
-      // namespace below: a deploy cannot provision one, and `ensureQueuesExistByConfig`
-      // fails the deploy with
-      //   Queue "drive-reindex" does not exist. To create it, run:
-      //   wrangler queues create <queue-id>
-      // so:
-      //   cf queues create drive-reindex
+      // namespace below: a deploy cannot provision one, and fails when the
+      // queue is missing, so create it first with:
+      //   cf queues create --queue-name drive-reindex (done 2026-10-06)
       triggers.queue({
         name: "drive-reindex",
         maxBatchSize: 1,
@@ -196,7 +193,7 @@ export default defineConfig({
       // account's own prefix, so a message can name no file and no other
       // account's bytes. Like the namespace above it, the queue is created
       // once, out of band:
-      //   cf queues create drive-reindex
+      //   cf queues create --queue-name drive-reindex (done 2026-10-06)
       REINDEX_QUEUE: bindings.queue<{ accountId: string }>({ name: "drive-reindex" }),
       // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
       // from a Worker secret. The secret binding declares the name so the
