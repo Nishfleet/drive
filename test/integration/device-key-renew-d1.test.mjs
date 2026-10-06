@@ -169,7 +169,7 @@ test("a device renewal re-mints under the same row id, on the real rows", async 
 });
 
 test("a renewal after the session died brings the key back", async () => {
-  const { sqlite, db } = makeMeteredDB();
+  const { db } = makeMeteredDB();
   const clock = fixedClock();
   const provider = sessionProvider(900);
   const store = storeOver(db, clock, provider);
