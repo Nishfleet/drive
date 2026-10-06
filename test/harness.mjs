@@ -92,14 +92,18 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Expand only, one nullable column on `devices`. `put()` writes the column
   // on every row, so any test that writes a device row needs the migration
   // applied -- the harness runs the real migrations, so this is the whole fix.
-  // Numbered 0024, not the 0022 the issue proposed: 0022_nightly_sizes.sql is
-  // already on the drive database, and a second 0022 sorts before it in the
-  // full-filename sort wrangler uses. This file is 0024, so wrangler's
-  // filename sort applies it before any 0025+ sweep migration (drive#655)
+  // Numbered 0026, not the 0022 the issue proposed: 0022_nightly_sizes.sql is
+  // the sort point that matters here. `wrangler d1 migrations apply` applies
+  // the directory in a full-filename sort, so a second 0022 would sort before a
+  // migration already applied to the drive database and the deploy would be
+  // refused. Every prefix up to 0025 is taken on this branch (0025 twice, by
+  // 0025_link_caps.sql and 0025_meter_scale.sql), and drive#619's duplicate
+  // prefix gate (test/migrations.test.mjs) fails any new file that shares one,
+  // so this file takes 0026 and sits after every sweep migration (drive#655)
   // that may write on this column. The array order here differs from
   // wrangler's sort (0025_link_caps.sql is listed first), but the two
   // migrations touch different tables so array order is harmless in tests.
-  "drive/0024_capped_reason.sql",
+  "drive/0026_capped_reason.sql",
 ]);
 
 /**

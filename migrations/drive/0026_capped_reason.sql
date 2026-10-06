@@ -26,16 +26,17 @@
 -- itself on every write -- so it marks nothing, and a row with no reason is a
 -- key nothing has capped by reason.
 --
--- Numbered 0024 rather than the 0022 this issue first proposed:
--- 0022_nightly_sizes.sql and 0023_file_versions_hidden_at.sql are already on
--- the drive database, and `wrangler d1 migrations apply` walks the directory in
--- a full-filename sort (test/d1-sqlite.mjs `orderMigrationFiles`). A second
--- 0022 sorts BEFORE the one already applied, and a deploy that hands wrangler an
--- unapplied migration in front of an applied one is refused outright, which
--- takes the whole production deploy down. This file takes the next prefix past
--- 0023 instead, and 0024 is unique, so it is last under either sort.
+-- Numbered 0026, the next free prefix, rather than the 0022 this issue first
+-- proposed: `wrangler d1 migrations apply` walks the directory in a
+-- full-filename sort (test/d1-sqlite.mjs `orderMigrationFiles`), so a file that
+-- sorts BEFORE one already applied makes the deploy refuse, which takes the
+-- whole production deploy down. Every prefix up to 0025 is taken on this branch
+-- (0022_nightly_sizes, 0023_file_versions_hidden_at, 0024_cap_notices,
+-- 0025_link_caps and 0025_meter_scale), and drive#619's gate
+-- (test/migrations.test.mjs) fails a new file that shares a prefix with
+-- another, so the marker takes 0026 and nothing else can race it.
 --
--- The new statement depends on nothing 0022 or 0023 wrote: it adds one column
--- to `devices`, and both of those files touch other tables.
+-- The new statement depends on nothing before it wrote: it adds one column to
+-- `devices`, and every earlier file touches another table or another column.
 
 ALTER TABLE devices ADD COLUMN capped_reason TEXT;
