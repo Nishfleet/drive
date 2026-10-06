@@ -39,6 +39,9 @@ const ALLOWED_DUPLICATES = new Map([
   // 0017_drop_branches_snapshot
   ["0020", 2], // 0020_account_purge_cursor.sql, 0020_balance_ledger.sql
   ["0021", 2], // 0021_agent_caps_nullable_cap.sql, 0021_prepaid_draws.sql (#591)
+  ["0025", 2], // 0025_link_caps.sql (#682), 0025_meter_scale.sql (#681): both are
+  // applied in production under those filenames, so neither is renamed and the
+  // full-filename order below is the tie-break.
 ]);
 
 test("the migration directory is read in full-filename order, like wrangler", () => {

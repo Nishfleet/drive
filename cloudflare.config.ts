@@ -214,11 +214,15 @@ export default defineConfig({
       // bindings, KV and ASSETS. The route itself sits behind this limiter so
       // an anonymous loop cannot spend those billed ops at will. 10 a minute
       // per IP is the sign-in figure: far above a monitor that polls once a
-      // minute, far below a script. Namespace 1009, because 1006/1007 are the
-      // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
-      // the share-download limiter below.
+      // minute, far below a script. Namespace 1011: 1001–1005 are this
+      // Worker's earlier limits, 1008/1009 are the share pair, 1010 is the
+      // request mint, and 1006/1007 are the api Worker's device pair
+      // (workers/api/cloudflare.config.ts). Health first shipped as 1009,
+      // which the share-mint binding took first (drive#549): two bindings on
+      // one namespace fail the deploy with 10021, so health moves to the next
+      // free number.
       HEALTH_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1009",
+        namespace: "1011",
         simple: { limit: 10, period: 60 },
       }),
       // GET /s/<token> (drive issue #506): a logged-out share download has no
