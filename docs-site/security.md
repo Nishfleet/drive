@@ -49,9 +49,8 @@ useful:
 - **A key, and a session running as you, can read your files.** That is the
   product: the point is that your agents can read them.
 - **We cannot keep your secrets for you.** They do not live in the Drive
-  repository or on this site. The CLI stores them in its own config
-  directory, as files only your user can read, never inside the Drive
-  folder.
+  repository or on this site. The CLI keeps them on this machine as files
+  only your user can read, never inside the Drive folder.
 
 ## Not claimed
 

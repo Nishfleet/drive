@@ -388,6 +388,22 @@ test("a receipt without its number is refused, never sent without one", () => {
   }
 });
 
+test("a receipt number cannot split the mail Subject", () => {
+  // The number is printed into the Subject. A newline would let a caller
+  // inject a Bcc header; a long blob is the same class of abuse.
+  for (const receiptNumber of [
+    "R-42\nBcc: attacker@example.com",
+    "R-42\rFrom: x",
+    "x".repeat(65),
+  ]) {
+    assert.throws(
+      () => monthlyReceiptTemplate({ ...receiptData(), receiptNumber }),
+      TypeError,
+      `receiptNumber: ${JSON.stringify(receiptNumber).slice(0, 40)}`,
+    );
+  }
+});
+
 test("the receipt never shows a per-minute price", () => {
   // build-spec.md: "Never advertise a per-minute price". The receipt is the
   // one mail a customer keeps and forwards to their accountant.
@@ -665,6 +681,8 @@ test("the route sends an authorised request", async () => {
   assert.equal(body.to, "person@example.com");
   assert.equal(typeof body.messageId, "string");
   assert.equal(env.EMAIL.sent.length, 1);
+  const sent = /** @type {{subject: string}} */ (env.EMAIL.sent[0]);
+  assert.equal(sent.subject, monthlyReceiptTemplate(receiptData()).subject);
 });
 
 test("the route refuses a request with no token", async () => {

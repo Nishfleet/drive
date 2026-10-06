@@ -94,9 +94,10 @@ test("the main action is Get drive, to the waitlist while sign-up is closed, wit
   assert.doesNotMatch(html, /<a class="btn" href="\/signin">Get drive/);
   const buttons =
     html.match(/<a class="btn" href="#waitlist" data-waitlist-source="[^"]+">Get drive/g) ?? [];
-  assert.ok(
-    buttons.length >= 3,
-    `the page carries the Get drive buttons to the waitlist, found ${buttons.length}`,
+  assert.equal(
+    buttons.length,
+    3,
+    `the page carries three Get drive buttons to the waitlist, found ${buttons.length}`,
   );
   for (const source of ["nav", "hero", "footer"]) {
     assert.match(

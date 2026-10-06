@@ -251,10 +251,12 @@ export function monthlyReceiptTemplate(data = {}) {
   const ceiling = requireMoney(ceilingUsd, "ceilingUsd");
   // drive#545: a receipt a customer can point at. The number is the ledger
   // entry the month's draw created (src/ledger.js gives every entry one),
-  // passed by the caller that sends the statement, so every receipt names
-  // the one ledger row it bills. Required, never defaulted: a receipt without
-  // a number is exactly the gap the issue found.
-  const receipt = requireText(receiptNumber, "receiptNumber");
+  // passed by the POST /send-email caller (the only send path in this repo),
+  // so every receipt names the one ledger row it bills. Required, never
+  // defaulted: a receipt without a number is exactly the gap the issue found.
+  // A newline in the Subject would split the mail headers, so the number is
+  // a single short line.
+  const receipt = requireReceiptNumber(receiptNumber);
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a
   // receipt that guessed the baseline would state the wrong saving.
@@ -460,6 +462,26 @@ function requireText(value, name) {
     throw new TypeError(`${name} must be a non-empty string, got ${String(value)}`);
   }
   return value;
+}
+
+/**
+ * ASCII controls and DEL. Spelled with fromCharCode so a control range is not
+ * typed into a regex literal (same reason as src/files.js CONTROL_OR_BACKSLASH).
+ */
+const CONTROL_CHARS = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`,
+);
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function requireReceiptNumber(value) {
+  const receipt = requireText(value, "receiptNumber");
+  if (CONTROL_CHARS.test(receipt) || receipt.length > 64) {
+    throw new TypeError(`receiptNumber must be a short line of text, got ${JSON.stringify(value)}`);
+  }
+  return receipt;
 }
 
 /**

@@ -15,6 +15,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { BILLING_CONFIG } from "../src/billing.js";
 import { monthlyReceiptTemplate } from "../src/emails.js";
 import {
   NOT_OPEN,
@@ -238,6 +239,8 @@ test("the download charge is marked planned, not sold as live", () => {
   // the download worker cannot run (#517), so nothing records download
   // bytes. Until it can, the charge is stated as the plan, marked planned,
   // on every surface that names it.
+  const rate = `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`;
+  const multiple = `${BILLING_CONFIG.freeDownloadMultiplier}×`;
   const surfaces = /** @type {const} */ ([
     ["docs-site/pricing.md", /not metered yet.*?planned/s],
     ["public/llms.txt", /not metered yet, so they are free today/],
@@ -245,21 +248,21 @@ test("the download charge is marked planned, not sold as live", () => {
   ]);
   for (const [surface, pattern] of surfaces) {
     assert.match(read(surface), pattern, `${surface} must mark the download charge planned`);
+    // A period right after the rate, with no "(planned)", is the live sell.
     assert.doesNotMatch(
       read(surface),
-      /then 1¢ per GB\.(?!.)/,
+      /then \d+¢ per GB\./,
       `${surface} sells the download charge as live`,
     );
   }
-  // The negative above cannot bite on an authored page: the price reaches a
-  // reader through the {{DOWNLOAD_RATE}} marker, so the literal "then 1¢ per
-  // GB." is absent from the source whether the sentence ships or not. The
-  // built page is where the marker is resolved, so the sell-it-as-live guard
-  // is asserted there, where a regression would really be customer text.
+  assert.ok(
+    read("public/llms.txt").includes(`${multiple} your stored size free, then ${rate} (planned)`),
+    "llms.txt must print the download plan from the billing config",
+  );
   const builtPricing = read("public/docs/pricing.html");
   assert.doesNotMatch(
     builtPricing,
-    /then 1¢ per GB\.(?!.)/,
+    /then \d+¢ per GB\./,
     "the built pricing page sells the download charge as live",
   );
   assert.match(
@@ -287,4 +290,18 @@ test("customer docs do not point at repository files or issue numbers", () => {
   ]) {
     assert.doesNotMatch(read(surface), leak, `${surface} points at a repository file or issue`);
   }
+});
+
+test("the security page's key-storage claim matches the CLI", () => {
+  // drive#545: the page used to name workers/api paths. The customer claim
+  // is that secrets stay on the machine as files only that user can read.
+  // cmd/drive/config.go's checkSecretFileMode is the 0600 gate that makes
+  // that true for the config file the CLI writes.
+  assert.match(
+    read("docs-site/security.md"),
+    /The CLI keeps them on this machine as files\s+only your user can read, never inside the Drive\s+folder/,
+  );
+  const config = read("cmd/drive/config.go");
+  assert.match(config, /func checkSecretFileMode/);
+  assert.match(config, /perm&0o077 != 0/);
 });
