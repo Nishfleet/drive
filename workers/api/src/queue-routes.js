@@ -30,7 +30,8 @@
 // deliberately NOT the one user-facing table in src/messages.js.
 
 import { failureMessage } from "../../../src/messages.js";
-import { errorResponse, json, readJsonObject } from "./http.js";
+import { sha256Hex } from "./db.js";
+import { bearerToken, errorResponse, json, readJsonObject } from "./http.js";
 
 /** The queue-report body, as the mount sends it. JSON names, so the Go CLI and
  * the Worker agree on the wire without a second name list.
@@ -98,7 +99,7 @@ export function parseQueueReport(body) {
 /**
  * POST /v1/queue — one device's live upload queue.
  * @param {Request} request
- * @param {{account?: {id: string, name?: string}|null, queues?: {record: (accountId: string, queue: QueueReportBody) => Promise<{stored: true, reportedAt: number}|{stored: false, retryAfter: number}>}|null}} ctx
+ * @param {{account?: {id: string, name?: string}|null, queues?: {record: (accountId: string, queue: QueueReportBody, deviceId?: string) => Promise<{stored: true, reportedAt: number}|{stored: false, retryAfter: number}>}|null}} ctx
  * @returns {Promise<Response>}
  */
 export async function reportUploadQueueRoute(request, ctx) {
@@ -129,7 +130,9 @@ export async function reportUploadQueueRoute(request, ctx) {
     // refuses rather than answering as though it had stored one.
     return errorResponse(503, "This deployment cannot hold a queue report.");
   }
-  const answer = await queues.record(account.id, parsed.report);
+  const token = bearerToken(request);
+  const deviceId = token ? await sha256Hex(token) : account.id;
+  const answer = await queues.record(account.id, parsed.report, deviceId);
   if (!answer.stored) {
     // Inside the interval: the report is refused, not stored, and the caller is
     // told when to send the next one.
@@ -138,4 +141,30 @@ export async function reportUploadQueueRoute(request, ctx) {
     });
   }
   return json({ reported: true, reportedAt: answer.reportedAt });
+}
+
+/**
+ * DELETE /v1/queue — drop this device's live report.
+ * @param {Request} request
+ * @param {{account?: {id: string, name?: string}|null, queues?: {remove?: (accountId: string, deviceId: string) => Promise<void>}|null}} ctx
+ * @returns {Promise<Response>}
+ */
+export async function clearUploadQueueRoute(request, ctx) {
+  if (request.method !== "DELETE") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "DELETE, POST" });
+  }
+  const account = ctx.account ?? null;
+  if (account === null) {
+    return errorResponse(401, failureMessage("unauthorized"), {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+  const queues = ctx.queues ?? null;
+  if (queues === null || typeof queues.remove !== "function") {
+    return errorResponse(503, "This deployment cannot hold a queue report.");
+  }
+  const token = bearerToken(request);
+  const deviceId = token ? await sha256Hex(token) : account.id;
+  await queues.remove(account.id, deviceId);
+  return json({ cleared: true });
 }

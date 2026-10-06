@@ -382,8 +382,9 @@ func transfersLine(home string, on bool) string {
 // rclone is asked about nothing and no file format is invented here: the
 // queue is read where rclone itself records it.
 type VFSMeta struct {
-	Dirty bool  `json:"Dirty"`
-	Size  int64 `json:"Size"`
+	Dirty       bool   `json:"Dirty"`
+	Size        int64  `json:"Size"`
+	Fingerprint string `json:"Fingerprint"`
 }
 
 // PendingUploads counts the files rclone has in its VFS cache and has not
