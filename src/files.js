@@ -2462,7 +2462,8 @@ async function assertCopyDestinationUnchanged(fetchImpl, urlFor, to, options = {
 /**
  * The ETag a copy's destination holds right now, from the one call a HEAD
  * answers it with — the same call `stat` makes, so the guard on a copy reads
- * the destination exactly as a preview does and no new request shape is
+ * the destination exactly as a preview does, inventing no new request shape
+ * for it.
  * The answer has to keep three cases apart, because a guard that confuses two
  * of them is a guard that quietly passes. `null` is "there is no object at
  * that key", which is what a restore copying onto an empty path expects. `""`
