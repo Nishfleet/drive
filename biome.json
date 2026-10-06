@@ -47,6 +47,74 @@
           }
         }
       }
+    },
+    {
+      "includes": ["src/**/*.js"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/workers/**"],
+                    "importNamePattern": ".*",
+                    "message": "a module in src/ must not import a Worker directory. Move what is shared into core/ and import it from there (drive#616)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["core/**/*.js"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/workers/**"],
+                    "importNamePattern": ".*",
+                    "message": "a module in core/ must not import a Worker directory. Move what is shared into core/ and import it from there (drive#616)."
+                  },
+                  {
+                    "group": ["**/src/**"],
+                    "importNamePattern": ".*",
+                    "message": "a module in core/ must not import the site Worker's src/. core/ is shared by both Workers, so it imports only core/ (drive#616)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["workers/*/src/**/*.js"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/src/**"],
+                    "importNamePattern": ".*",
+                    "message": "a Worker must not import the site Worker's src/. Move what is shared into core/ and import it from there (drive#616)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "assist": {

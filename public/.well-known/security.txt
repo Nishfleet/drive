@@ -1,7 +1,7 @@
 # drive#523. RFC 9116. The contact is the support page, which carries the one
 # contact address (src/legal.js), so the address is typed once.
 Contact: https://drive-pricing.nishant345.workers.dev/support
-Expires: 2027-10-06T00:00:00.000Z
+Expires: 2027-10-01T00:00:00.000Z
 Preferred-Languages: en
 Canonical: https://drive-pricing.nishant345.workers.dev/.well-known/security.txt
 Policy: https://drive-pricing.nishant345.workers.dev/acceptable-use#report

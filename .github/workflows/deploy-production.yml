@@ -42,7 +42,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    runs-on: ubuntu-latest
     # A job with an environment gets a GitHub Deployment and deployment_status
     # events for free. No `url` while the site has no public address.
     environment:
@@ -103,11 +103,38 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          # No cache on own runners: npm's cache is already on this disk, and
-          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
-          package-manager-cache: false
+          cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Warn when there is no sender (drive#522)
+        # Every customer email goes through MAIL_FROM (src/email-send.js). With
+        # it unset, close receipts, reminders and the welcome failed at the
+        # customer's click while every deploy stayed green (drive#522). This
+        # step makes that loud on every run, before any migration or ship. It
+        # reads the secret NAMES the Worker has, never a value.
+        # Until launch a missing sender is a ::warning:: and the deploy goes
+        # on, because drive is pre-launch and a block would stop every deploy
+        # until drive#667 sets MAIL_FROM. drive#752 turns it back into a block
+        # before the first paying customer. /api/health reports the same gap
+        # as "email":"not-ready", and the close and sign-in routes still
+        # report the missing sender by name rather than fail silently.
+        # A CLI or parse failure is still an error, reported as itself, never
+        # as a missing sender: the name check exits 3 only when the list read
+        # fine.
+        run: |
+          names=$(npx cf workers secrets list --worker drive-pricing --quiet) ||
+            { echo "::error::could not list the secret names on drive-pricing; the cf error is above"; exit 1; }
+          rc=0
+          printf '%s' "$names" |
+            node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.exit(s.some((x)=>x.name==="MAIL_FROM")?0:3)' || rc=$?
+          case $rc in
+            0) echo "MAIL_FROM is set on drive-pricing" ;;
+            3) echo "::warning title=No sender address::MAIL_FROM is not set on drive-pricing, so every customer email fails (close receipts, reminders, the welcome, sign-in links). Set it per drive#667. This deploy goes on only because drive is pre-launch; drive#752 makes this a block before the first paying customer." ;;
+            *) echo "::error::the secret list from drive-pricing was not the JSON array this check reads"; exit 1 ;;
+          esac
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Remember the live Worker version
         # The rollback target. The first deployment in the list is the one
         # serving traffic. D1 sits outside the Worker version, so a rollback
@@ -119,6 +146,32 @@ jobs:
           test -n "$vid" || { echo "::error::no live Worker version at 100%"; exit 1; }
           echo "live Worker version: $vid"
           echo "version_id=$vid" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Record the D1 restore point
+        # A migration is one-way: D1 has no down-migrations, and the databases
+        # sit outside the Worker version a rollback restores (drive#520). So
+        # before the first `cf d1 migrations apply` this captures each
+        # database's Time Travel bookmark and prints it on the run and the
+        # step summary — the point a `cf d1 time-travel restore --bookmark`
+        # returns to (docs/runbook.md has the steps; running one is Nish's).
+        # A failed capture fails the deploy here, before any migration ran:
+        # no restore point, no migration.
+        id: bookmark
+        run: |
+          headers="$RUNNER_TEMP/d1-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e"; do
+            read -r name db <<<"$pair"
+            json=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/time_travel/bookmark") \
+              || { echo "::error::no restore point for $name: the bookmark request failed"; exit 1; }
+            bm=$(printf '%s' "$json" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));if(r.success!==true||typeof r.result?.bookmark!=="string"||!r.result.bookmark)process.exit(1);process.stdout.write(r.result.bookmark)') \
+              || { echo "::error::no restore point for $name: the bookmark is missing in the API answer"; exit 1; }
+            echo "restore point for $name (bookmark): $bm" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -180,6 +233,11 @@ jobs:
           printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
             { echo "::error::/api/health is not ok: $body"; exit 1; }
           echo "health ok"
+          # The email part is reported beside ok, never as it (drive#522), so
+          # a live drive that cannot send mail is a warning here, not a rollback.
+          if printf '%s' "$body" | node -e 'process.exit(JSON.parse(require("fs").readFileSync(0,"utf8")).email==="not-ready"?0:1)'; then
+            echo "::warning title=Email not ready::/api/health reports email not-ready: customer email fails until MAIL_FROM is set (drive#667, drive#752)"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

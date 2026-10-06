@@ -33,7 +33,7 @@ import {
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../../src/meter.js";
+} from "../../core/meter.js";
 import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 // Migration files and order come from test/d1-sqlite.mjs (`MIGRATION_FILES`),

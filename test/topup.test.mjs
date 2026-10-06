@@ -4,8 +4,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DODO_TEST_BASE_URL } from "../src/dodo.js";
-import { failureMessage } from "../src/messages.js";
+import { DODO_TEST_BASE_URL } from "../core/dodo.js";
+import { failureMessage } from "../core/messages.js";
 import {
   balanceLine,
   DODO_CHECKOUT_PATH,
@@ -14,7 +14,7 @@ import {
   isDodoCheckoutUrl,
   TOPUP_ENDPOINT,
   TOPUP_PURPOSE,
-} from "../src/topup.js";
+} from "../core/topup.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 const ACCOUNT = { id: "acc-topup", email: "topup@example.com" };

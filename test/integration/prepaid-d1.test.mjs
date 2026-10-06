@@ -6,17 +6,19 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { gbMonths, minutesInMonth, monthBillCents } from "../../src/billing.js";
-import { createMemoryStore, handleFilesRequest } from "../../src/files.js";
+import { gbMonths, minutesInMonth, monthBillCents } from "../../core/billing.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
+import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
 import {
   appendLedgerEntry,
   balanceCents,
   creditTopUp,
   LOW_BALANCE_CENTS,
   usageKey,
-} from "../../src/ledger.js";
-import { failureMessage } from "../../src/messages.js";
-import { BYTES_PER_GB, MINUTE_MS, monthUsageThrough, recordUsage } from "../../src/meter.js";
+} from "../../core/ledger.js";
+import { failureMessage } from "../../core/messages.js";
+import { BYTES_PER_GB, MINUTE_MS, monthUsageThrough, recordUsage } from "../../core/meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
@@ -25,16 +27,14 @@ import {
   prepaidPauseOn,
   settleBalance,
   writesPaused,
-} from "../../src/prepaid.js";
+} from "../../core/prepaid.js";
 import {
   balanceSummary,
   handleBillingWebhook,
   signWebhook,
   TOPUP_PURPOSE,
-} from "../../src/topup.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+} from "../../core/topup.js";
 import { storageWriteRoute } from "../../workers/api/src/key-routes.js";
-import { createMemoryStore as createKeyStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
