@@ -820,6 +820,102 @@ func TestConflictGuardHoldsAHashErrorOnThatEntryOnly(t *testing.T) {
 	}
 }
 
+// TestConflictGuardDoesNotClaimAnUnreadBaseline proves a save whose baseline
+// hash could not be read at first sight is not claimed as a conflict against
+// the version it was always going to replace, and that the baseline is read
+// again on the next pass.
+func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
+	f.objects["report.txt"] = md5Hex("the version before the save\n")
+	f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
+	f.hashErr["report.txt"] = errors.New("hashsum timed out")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if !g.seen["report.txt"].baselineUnknown {
+		t.Fatal("a failed baseline read is not marked unknown")
+	}
+	// The upload leaves the queue without landing, and the read works again.
+	delete(f.hashErr, "report.txt")
+	f.pending = nil
+	for i := 0; i < conflictClaimPolls+1; i++ {
+		res, err := g.pass(context.Background(), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Claimed) != 0 {
+			t.Fatalf("claimed %v against the version the save replaces", res.Claimed)
+		}
+	}
+	if len(f.copied) != 0 {
+		t.Errorf("copied %v", f.copied)
+	}
+}
+
+// TestConflictGuardRereadsTheBaselineWhileQueued proves the baseline is read
+// again on the next pass while the save is still queued.
+func TestConflictGuardRereadsTheBaselineWhileQueued(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
+	before := md5Hex("the version before the save\n")
+	f.objects["report.txt"] = before
+	f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
+	f.hashErr["report.txt"] = errors.New("hashsum timed out")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.hashErr, "report.txt")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	save := g.seen["report.txt"]
+	if save.baselineUnknown || save.previous != before {
+		t.Errorf("baselineUnknown=%v previous=%q, want the re-read baseline %q", save.baselineUnknown, save.previous, before)
+	}
+}
+
+// TestConflictGuardNamesALargeFileWhoseVersionCannotBeRead proves a failing
+// version read on a large file is named after conflictHashFailPolls passes
+// rather than retried silently for ever.
+func TestConflictGuardNamesALargeFileWhoseVersionCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := &versionFailBackend{fakeConflictBackend: newFakeBackend()}
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	f.pending = nil
+	f.objects["movie.mov"] = "etag:new"
+	var named []ConflictSkip
+	for i := 0; i < conflictHashFailPolls; i++ {
+		res, err := g.pass(context.Background(), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		named = append(named, res.Skipped...)
+	}
+	if len(named) != 1 || named[0].Remote != "movie.mov" {
+		t.Errorf("Skipped = %+v, want the unreadable large save named once", named)
+	}
+}
+
+type versionFailBackend struct{ *fakeConflictBackend }
+
+func (versionFailBackend) remoteVersion(context.Context, string) (int64, time.Time, bool, error) {
+	return 0, time.Time{}, false, errors.New("stat timed out")
+}
+
 func TestConflictGuardUsesLastSyncedAsBaseline(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "newer save\n"})
 	g.synced["report.txt"] = "last-synced-hash"

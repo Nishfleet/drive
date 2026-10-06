@@ -146,6 +146,11 @@ type pendingSave struct {
 	// hashFails is how many remote-hash errors this path has seen
 	// since its upload left the queue.
 	hashFails int
+	// baselineUnknown is set when the remote hash could not be read at
+	// first sight, so previous is not the version the save replaces. It
+	// is read again on later passes, and until it is known a version that
+	// is not this device's is not claimed as a conflict.
+	baselineUnknown bool
 }
 
 // conflictBackend is what one guard pass needs from a running mount.
@@ -260,6 +265,11 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	// other saves in the same queue from being protected.
 	for name := range inFlight {
 		if save, ok := g.seen[name]; ok {
+			if save.baselineUnknown {
+				if previous, err := b.remoteHash(ctx, name); err == nil {
+					save.previous, save.baselineUnknown = previous, false
+				}
+			}
 			// A path already recorded is not staged again from scratch, but it
 			// is re-staged when this device has written it again, so the bytes
 			// protected are the ones the upload will carry rather than the ones
@@ -316,11 +326,12 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 				// pass still runs, and the next pass retries this path.
 				info := g.mountStat(name)
 				g.seen[name] = &pendingSave{
-					hash:          hash,
-					staged:        staged,
-					stagedMtime:   info.modTime,
-					stagedSize:    info.size,
-					byFingerprint: staged == "" && hash != "",
+					hash:            hash,
+					staged:          staged,
+					stagedMtime:     info.modTime,
+					stagedSize:      info.size,
+					byFingerprint:   staged == "" && hash != "",
+					baselineUnknown: true,
 				}
 				continue
 			}
@@ -353,15 +364,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 		landed, err := b.remoteHash(ctx, name)
 		if err != nil {
-			save.hashFails++
-			if save.hashFails >= conflictHashFailPolls && !save.reported {
-				res.Skipped = append(res.Skipped, ConflictSkip{
-					Remote: name,
-					Reason: "the remote hash for this file could not be read",
-				})
-				save.reason = "the remote hash for this file could not be read"
-				save.reported = true
-			}
+			g.hashFailed(&res, name, save)
 			continue
 		}
 		save.polls++
@@ -374,7 +377,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// and another device's save does not.
 			size, modTime, ok, err := b.remoteVersion(ctx, name)
 			if err != nil {
-				save.hashFails++
+				g.hashFailed(&res, name, save)
 				continue
 			}
 			if ok && sameVersion(size, modTime, save.stagedSize, save.stagedMtime) {
@@ -409,6 +412,13 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// decided conflict. The queue released the path on an
 			// error, or the upload is still on its way, so it is
 			// watched a little longer.
+			if save.polls >= conflictClaimPolls {
+				g.drop(name, save)
+			}
+		case save.baselineUnknown:
+			// The version that preceded the save was never read, so a
+			// version that is not this device's may be that one and is
+			// not claimed as a conflict. It is watched a little longer.
 			if save.polls >= conflictClaimPolls {
 				g.drop(name, save)
 			}
@@ -447,6 +457,20 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 	}
 	return res, nil
+}
+
+// hashFailed counts one failed read of a landed save's remote version and,
+// after conflictHashFailPolls of them, names the save once. The next pass
+// drops a named save, so a path whose remote cannot be read is not watched
+// for ever.
+func (g *conflictGuard) hashFailed(res *ConflictResult, name string, save *pendingSave) {
+	save.hashFails++
+	if save.hashFails >= conflictHashFailPolls && !save.reported {
+		const reason = "the remote hash for this file could not be read"
+		res.Skipped = append(res.Skipped, ConflictSkip{Remote: name, Reason: reason})
+		save.reason = reason
+		save.reported = true
+	}
 }
 
 // claim writes the staged bytes under the conflict name and stops

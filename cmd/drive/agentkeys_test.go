@@ -31,6 +31,7 @@ type fakeAPI struct {
 	mintedKinds  []string
 	mintedNames  []string
 	revokedIDs   []string
+	queueClears  []string // the authorization header of each DELETE /v1/queue
 	renewedIDs   []string
 	lastAuthHdr  string
 	lastPath     string
@@ -156,6 +157,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && r.Method == http.MethodDelete:
 		f.revokedIDs = append(f.revokedIDs, strings.TrimPrefix(r.URL.Path, keysPath+"/"))
 		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == queueReportPath && r.Method == http.MethodDelete:
+		f.queueClears = append(f.queueClears, r.Header.Get("authorization"))
+		writeTestJSON(w, 200, map[string]any{"cleared": true})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}

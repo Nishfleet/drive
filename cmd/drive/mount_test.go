@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1031,5 +1032,74 @@ func TestParkStrayMountFilesReclaimsALeftoverHolding(t *testing.T) {
 	}
 	if string(got) != "keep me" {
 		t.Errorf("restored %q, want the leftover bytes", got)
+	}
+}
+
+// TestRestoreStrayMountFilesCopiesAcrossFilesystems proves the parked files
+// reach a mounted drive: the holding folder is on the local disk and the
+// mount is another filesystem, where a rename fails with EXDEV, so each entry
+// is copied (folders too) and then removed from the holding folder.
+func TestRestoreStrayMountFilesCopiesAcrossFilesystems(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	holding := filepath.Join(dir, "Drive.drive-local-1")
+	if err := os.MkdirAll(filepath.Join(holding, "photos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "photos", "a.jpg"), []byte("jpg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	renameFile = func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	}
+	t.Cleanup(func() { renameFile = orig })
+	if err := restoreStrayMountFiles(holding, mount); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"notes.txt": "keep me", "photos/a.jpg": "jpg"} {
+		got, err := os.ReadFile(filepath.Join(mount, filepath.FromSlash(name)))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v, want %q", name, got, err, want)
+		}
+	}
+	if _, err := os.Stat(holding); !os.IsNotExist(err) {
+		t.Errorf("the holding folder is still there: %v", err)
+	}
+}
+
+// TestRestoreStrayMountFilesKeepsTheDrivesVersion proves a parked file never
+// overwrites a file of the same name already in the drive.
+func TestRestoreStrayMountFilesKeepsTheDrivesVersion(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	holding := filepath.Join(dir, "Drive.drive-local-1")
+	for _, d := range []string{mount, holding} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mount, "notes.txt"), []byte("the drive's"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreStrayMountFiles(holding, mount); err == nil {
+		t.Fatal("a name clash returned no error, so nobody is told the local copy stayed")
+	}
+	got, _ := os.ReadFile(filepath.Join(mount, "notes.txt"))
+	if string(got) != "the drive's" {
+		t.Errorf("drive copy = %q, want it untouched", got)
+	}
+	got, _ = os.ReadFile(filepath.Join(holding, "notes.txt"))
+	if string(got) != "local" {
+		t.Errorf("local copy = %q, want it kept in the holding folder", got)
 	}
 }
