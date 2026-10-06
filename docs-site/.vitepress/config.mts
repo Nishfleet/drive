@@ -15,7 +15,11 @@
 import { defineConfig } from "vitepress";
 import llmstxt from "vitepress-plugin-llms";
 
-const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
+// The one site address (drive#527). site.json holds it, so a domain move is
+// one edit and the CLI reads the same file (cmd/drive/login.go embeds it).
+import site from "../../cmd/drive/site.json" with { type: "json" };
+
+const SITE_ORIGIN = site.origin as string;
 
 export default defineConfig({
   // The rendered pages: authored Markdown with {{MARKER}}s lives in the parent
@@ -28,10 +32,10 @@ export default defineConfig({
   // One canonical address per page, so /docs/quickstart is the page and
   // /docs/quickstart.html is not a second one.
   cleanUrls: true,
-  // Two links leave the docs on purpose: the agent-facing files sit at the
-  // site root next to the pricing page, not under /docs/. Nothing else may be
-  // dead, so the check stays on for every real page.
-  ignoreDeadLinks: ["/llms.txt", "/llms-full.txt", `${SITE_ORIGIN}/`],
+  // The llms plugin writes llms.txt and llms-full.txt into the docs outDir,
+  // so both sit under /docs/ and both resolve (drive#527). Nothing is exempt
+  // any more, so the check stays on for every real page.
+  ignoreDeadLinks: [`${SITE_ORIGIN}/`],
   title: "Drive docs",
   description:
     "A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.",
@@ -42,7 +46,10 @@ export default defineConfig({
   // The pricing page is the canonical entry point; the docs are the reference
   // behind it. Cross-linking keeps the two reading as one product.
   head: [
-    ["link", { rel: "alternate", type: "text/markdown", href: `${SITE_ORIGIN}/llms-full.txt` }],
+    [
+      "link",
+      { rel: "alternate", type: "text/markdown", href: `${SITE_ORIGIN}/docs/llms-full.txt` },
+    ],
     [
       "link",
       {

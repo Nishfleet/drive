@@ -15,10 +15,10 @@ import {
   monthlyMaximumUsd,
   QUOTE_ENDPOINT,
   quoteForStoredTb,
-} from "../src/billing.js";
+} from "../core/billing.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");

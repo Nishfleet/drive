@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// CAP_PATH is the pricing Worker's spending-cap write (src/cap.js
+// CAP_PATH is the pricing Worker's spending-cap write (core/cap.js
 // `handleCapRequest`). `drive cap` posts here so the amount is parsed by
 // parseCapUsd() on the Worker, not rebuilt in Go: a bad amount prints that
 // function's own reason.
@@ -16,7 +16,7 @@ const CAP_PATH = "/api/cap"
 // CapAnswer is POST /api/cap's body: the new cap line `drive status` will
 // print, whether the mount has to restart so rclone picks up a swapped key,
 // and — when a key was actually swapped — the credential that replaced it.
-// Mount.Restart is src/cap.js `capSwapPlan().mount.restart`.
+// Mount.Restart is core/cap.js `capSwapPlan().mount.restart`.
 //
 // Credential is the swap's own key, minted server-side (the api holds the
 // storage master credential), so it exists on this device only in this answer.
@@ -56,7 +56,7 @@ func runCap(args []string) error {
 	amount := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	// An empty argument list is all that is refused here. The amount itself
 	// goes to the Worker as typed, because parseCapUsd() is the one parser
-	// (src/cap.js): a Go copy of it would refuse an amount the Worker accepts
+	// (core/cap.js): a Go copy of it would refuse an amount the Worker accepts
 	// — "$20" is one, the dollar sign is stripped there — and a fast-fail
 	// before the POST would answer a different question than the api does.
 	if amount == "" {

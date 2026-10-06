@@ -20,8 +20,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
-import { createMemoryStore } from "../../workers/api/src/keystore.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 // A fixed clock, so the revocation timestamp written is the one asserted.

@@ -6,7 +6,7 @@
 // inlines much of its own layout. The tokens in this theme's site.css are
 // the --drive-* values, and test/docs.test.mjs checks each one against the
 // shared stylesheet, so the two cannot drift apart. The docs' own numbers
-// come from src/billing.js through src/render-docs.js, never from here.
+// come from core/billing.js through src/render-docs.js, never from here.
 
 import type { Theme } from "vitepress";
 import DefaultTheme from "vitepress/theme";
