@@ -14,6 +14,8 @@ the live site.
   the owner's name above the folder, and once a day the owner gets one email
   listing the files that arrived through that link since the last one, rather
   than one email per file.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".

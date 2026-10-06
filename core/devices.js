@@ -63,6 +63,22 @@ function parseCappedFrom(raw) {
 }
 
 /**
+ * The one word a freeze wrote naming which cap took the key down (drive#661), or
+ * null when no reason is recorded. Null and blank mean the same thing: a row
+ * written before `capped_reason` existed, and a key nothing capped by reason,
+ * both read "no reason recorded" -- which is the answer a give-back pass must
+ * not mistake for the spending cap's own freeze.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function parseCappedReason(raw) {
+  if (raw === null || raw === undefined || raw === "") {
+    return null;
+  }
+  return String(raw);
+}
+
+/**
  * @param {unknown} row
  * @returns {Device|null}
  */
@@ -98,6 +114,13 @@ function deviceFromRow(row) {
     ...(parseCappedFrom(r.capped_from) === null
       ? {}
       : { cappedFrom: parseCappedFrom(r.capped_from) }),
+    // The reason this key went read-only, when a freeze wrote one: the
+    // spending cap's own freeze is 'spend-cap', and the sweep's
+    // 'pre-charge-limit' is drive#655's to set. A row with no reason leaves
+    // the field out, so a caller tests one shape rather than an empty string.
+    ...(parseCappedReason(r.capped_reason) === null
+      ? {}
+      : { cappedReason: parseCappedReason(r.capped_reason) }),
   };
 }
 
@@ -179,12 +202,21 @@ export function createD1DeviceStore(db, options = {}) {
       device.cappedFrom === undefined || device.cappedFrom === null
         ? null
         : JSON.stringify(device.cappedFrom);
+    // The reason a freeze wrote, or null. Null is written as null and never as
+    // a blank, because the read below hands an absent reason back as absent and
+    // a blank is not the same claim to make twice.
+    const cappedReason =
+      device.cappedReason === undefined ||
+      device.cappedReason === null ||
+      device.cappedReason === ""
+        ? null
+        : String(device.cappedReason);
     await run(
       db,
       `INSERT INTO devices (
          id, account_id, name, kind, b2_key_id, secret_hash, capabilities,
-         prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         prefix, capped_from, capped_reason, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
        ON CONFLICT(id) DO UPDATE SET
          account_id = excluded.account_id,
          name = excluded.name,
@@ -194,6 +226,7 @@ export function createD1DeviceStore(db, options = {}) {
          capabilities = excluded.capabilities,
          prefix = excluded.prefix,
          capped_from = excluded.capped_from,
+         capped_reason = excluded.capped_reason,
          last_seen_at = excluded.last_seen_at,
          revoked_at = excluded.revoked_at,
          expires_at = excluded.expires_at,
@@ -207,6 +240,7 @@ export function createD1DeviceStore(db, options = {}) {
       JSON.stringify(device.capabilities),
       device.prefix,
       cappedFrom,
+      cappedReason,
       device.createdAt,
       device.lastSeenAt,
       device.revokedAt,
@@ -834,6 +868,11 @@ export function createD1DeviceStore(db, options = {}) {
           bucket: bucketForKeyPrefix(accountId, device.prefix),
           capabilities: Object.freeze([...device.capabilities]),
           ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
+          // Which cap took the key down, beside the powers it took, so a caller
+          // planning a swap -- or a give-back pass (drive#656) -- can tell the
+          // spending cap's freeze from something else's. A row with no reason
+          // leaves the field out rather than answering with an empty string.
+          ...(device.cappedReason ? { cappedReason: device.cappedReason } : {}),
         }),
       );
     },
@@ -1421,8 +1460,14 @@ export function createD1DeviceStore(db, options = {}) {
       return {
         /**
          * @param {KeyScope} scope
+         * @param {{cappedReason?: string|null}} [options] the reason the freeze
+         *   that asked for this row recorded, on the one path that has one:
+         *   a cap swap that mints the replacement itself revokes the write
+         *   key and mints the read-only one here (drive#661). A mint with no
+         *   option is a person's own key, which carries no reason and writes
+         *   null.
          */
-        async mint(scope) {
+        async mint(scope, options = {}) {
           const sibling = deviceFromRow(
             await first(
               db,
@@ -1453,6 +1498,13 @@ export function createD1DeviceStore(db, options = {}) {
             expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
             lastSeenAt: null,
             revokedAt: null,
+            // The freeze's reason, or null. This row is the one the swap that
+            // mints its own replacement leaves live, so it is the one that
+            // carries the marker; a person's own key and the raise's
+            // replacement both leave it null, which is "no reason recorded".
+            ...(options.cappedReason === undefined || options.cappedReason === null
+              ? {}
+              : { cappedReason: String(options.cappedReason) }),
           };
           await put(device);
           return {
@@ -1496,9 +1548,17 @@ export function createD1DeviceStore(db, options = {}) {
         },
 
         /**
+         * The cap's own freeze of one key (drive#661): it narrows the row and
+         * records the reason that named the cap, so a give-back pass (drive#656)
+         * can tell this freeze from one another cap made.
          * @param {string} keyId
+         * @param {{cappedReason?: string|null}} [options] the freeze's reason,
+         *   carried from the swap plan so the word is decided once in
+         *   core/cap.js. A swap that names none records no reason, which reads
+         *   "no reason recorded" -- the safe answer, because a give-back pass
+         *   then leaves the key as it is rather than widening it.
          */
-        async swapToReadOnly(keyId) {
+        async swapToReadOnly(keyId, options = {}) {
           const row = await first(
             db,
             "SELECT * FROM devices WHERE id = ?1 AND account_id = ?2 AND revoked_at IS NULL",
@@ -1534,6 +1594,12 @@ export function createD1DeviceStore(db, options = {}) {
             secretHash: await sha256Hex(credential.secret),
             cappedFrom: [...device.capabilities],
             capabilities: [...READ_ONLY_CAPABILITIES],
+            // The freeze's own reason, on the row it froze. The swap plan
+            // names it once (drive#661) and this is the write that stores it;
+            // a caller that names nothing leaves the row with no reason.
+            ...(options.cappedReason === undefined || options.cappedReason === null
+              ? {}
+              : { cappedReason: String(options.cappedReason) }),
             expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
           };
           await put(updated);
