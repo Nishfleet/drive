@@ -660,4 +660,3 @@ export async function handleHealthRequest(request, env) {
     headers: JSON_HEADERS,
   });
 }
-export const brokenOnPurpose = notDefinedAnywhere.length; // drive#759 red-run proof, reverted next commit
