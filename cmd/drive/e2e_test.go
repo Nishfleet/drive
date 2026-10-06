@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -184,6 +185,130 @@ func TestStandinMountProof(t *testing.T) {
 	if string(written) != "saved through the mount\n" {
 		t.Errorf("written-through.txt = %q", written)
 	}
+}
+
+// TestStandinMountProofStrayFile is drive#744: `drive mount` (the Mount
+// function) parks a local file already in the drive folder, prints the note,
+// copies the file into the mounted drive, and the bytes land in storage.
+// The stand-in mount-proof CI job runs -run TestStandinMountProof, which
+// matches this name, so the real FUSE path is the same job as the original
+// proof (drive#501).
+func TestStandinMountProofStrayFile(t *testing.T) {
+	if CurrentGOOS() == "windows" {
+		t.Skip("stray-file park is the unix mount-folder path")
+	}
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone is not installed")
+	}
+	if testing.Short() {
+		t.Skip("stand-in proof skipped in -short mode")
+	}
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	mountDir := filepath.Join(home, "Drive")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const strayBody = "keep me"
+	if err := os.WriteFile(filepath.Join(mountDir, "notes.txt"), []byte(strayBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _ := standinOn(t, root, "u/stray")
+	rcAddr := "127.0.0.1:" + freePort(t)
+	var note bytes.Buffer
+	cmd := exec.Command(driveBin(t), "mount",
+		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
+		"--prefix", cfg.Prefix, "--foreground")
+	cmd.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
+		"DRIVE_DEVICE=stray-proof",
+		"DRIVE_RC_ADDR="+rcAddr,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = io.MultiWriter(os.Stderr, &note)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stop := func() { stopStandinProcess(cmd, mountDir) }
+	t.Cleanup(stop)
+	if !waitForMount(t, cmd, mountDir) {
+		log, _ := os.ReadFile(filepath.Join(DefaultConfigDir(home), "mount.log"))
+		t.Logf("stderr:\n%s\nmount.log:\n%s", note.Bytes(), log)
+		stop()
+		if bytes.Contains(log, []byte("CRITICAL")) || bytes.Contains(log, []byte("Failed to start")) {
+			t.Fatalf("rclone failed to start the mount, not a FUSE skip")
+		}
+		skipNoMount(t, "this host will not bring up the mount on %s (%s): the stray-file proof needs "+
+			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
+			"NFS mount", mountDir, mountSkipReason())
+	}
+
+	copiedDeadline := time.Now().Add(15 * time.Second)
+	var got []byte
+	var err error
+	for time.Now().Before(copiedDeadline) {
+		got, err = os.ReadFile(filepath.Join(mountDir, "notes.txt"))
+		if err == nil && string(got) == strayBody {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if string(got) != strayBody {
+		log, _ := os.ReadFile(filepath.Join(DefaultConfigDir(home), "mount.log"))
+		t.Fatalf("drive notes.txt = %q, %v, want the parked bytes copied into the mount\nstderr:\n%s\nmount.log:\n%s",
+			got, err, note.Bytes(), log)
+	}
+
+	logged := note.String()
+	if !strings.Contains(logged, "already had local files") {
+		t.Errorf("stderr is missing the stray-file note:\n%s", logged)
+	}
+	if !strings.Contains(logged, "moved to") || !strings.Contains(logged, strayHoldingDir(mountDir)) {
+		t.Errorf("stderr does not name the holding folder the files were parked in:\n%s", logged)
+	}
+
+	matches, err := filepath.Glob(strayHoldingDir(mountDir) + "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, holding := range matches {
+		entries, readErr := os.ReadDir(holding)
+		if readErr == nil && len(entries) > 0 {
+			t.Errorf("holding folder %s still has %v after the copy into the drive", holding, namesOf(entries))
+		}
+	}
+
+	seedEnv := append(os.Environ(),
+		"RCLONE_CONFIG="+RcloneConfigPath(home),
+		rcloneSecretEnv+"="+cfg.SecretKey,
+	)
+	storageDeadline := time.Now().Add(20 * time.Second)
+	var stored []byte
+	var storeErr error
+	for time.Now().Before(storageDeadline) {
+		cat := exec.Command("rclone", "cat", RemoteFor(cfg)+"/notes.txt")
+		cat.Env = seedEnv
+		stored, storeErr = cat.Output()
+		if storeErr == nil && string(stored) == strayBody {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if string(stored) != strayBody {
+		t.Fatalf("storage notes.txt = %q, %v, want the stray file to have uploaded", stored, storeErr)
+	}
+}
+
+func namesOf(entries []os.DirEntry) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	return names
 }
 
 // TestStandinPauseProof is the drive issue #100 done-when proof, run against a
