@@ -117,6 +117,8 @@ export const BRANCH_ACTIVE_STATES = Object.freeze([
  *   snapshot JSON and answers its byte length.
  * @property {(key: string) => Promise<string|null>} get Reads the snapshot
  *   JSON back, or null when the key holds nothing.
+ * @property {(key: string) => Promise<void>} [delete] Removes the value and
+ *   any parts it was split into, so a job's scratch keys do not outlive it.
  */
 
 /** The prefix every snapshot key carries, so one account's snapshot is never
@@ -146,6 +148,19 @@ export function snapshotKey(account, name) {
  */
 function approvePlanKey(key) {
   return `${key}/approve-plan`;
+}
+
+/** Remove a job's scratch key once the job is done; a store without delete
+ * gets an empty object, which every reader treats as "nothing pending".
+ * @param {SnapshotStore} snapshots
+ * @param {string} key
+ */
+async function clearScratch(snapshots, key) {
+  if (typeof snapshots.delete === "function") {
+    await snapshots.delete(key);
+    return;
+  }
+  await snapshots.put(key, "{}");
 }
 
 /** KV key for the create walk's pending folder list. The list of a wide tree
@@ -450,6 +465,28 @@ export function createKvSnapshotStore(kv, options = {}) {
       }
       return json;
     },
+    async delete(key) {
+      const raw = await kv.get(key);
+      await kv.delete(key);
+      if (raw === null) {
+        return;
+      }
+      try {
+        const manifest = JSON.parse(raw);
+        const parts = Number(manifest?.parts);
+        if (
+          manifest?.fmt === CHUNKED_MANIFEST_FORMAT &&
+          typeof manifest.gen !== "object" &&
+          Number.isSafeInteger(parts)
+        ) {
+          for (let index = 0; index < parts; index += 1) {
+            await kv.delete(`${key}.p${String(manifest.gen)}.${index}`);
+          }
+        }
+      } catch {
+        // A plain value has no parts to delete.
+      }
+    },
   };
 }
 
@@ -472,6 +509,10 @@ export function createMemorySnapshotStore(values = new Map()) {
     /** @param {string} key */
     async get(key) {
       return values.has(key) ? /** @type {string} */ (values.get(key)) : null;
+    },
+    /** @param {string} key */
+    async delete(key) {
+      values.delete(key);
     },
   };
 }
@@ -1208,7 +1249,7 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   }
   if (copied.done) {
     try {
-      await snapshots.put(walkKey, "{}");
+      await clearScratch(snapshots, walkKey);
     } catch (error) {
       console.error?.(`create walk cleanup failed for ${branch.id}: ${errorText(error)}`);
     }
@@ -1362,7 +1403,7 @@ async function processApproveBatch(db, snapshots, store, branch) {
       fingerprintMapFromObject(walk.sourceFiles),
     );
     try {
-      await snapshots.put(walkKey, "{}");
+      await clearScratch(snapshots, walkKey);
     } catch (error) {
       console.error?.(`approve walk cleanup failed for ${branch.id}: ${errorText(error)}`);
     }
@@ -1534,7 +1575,7 @@ async function processApproveBatch(db, snapshots, store, branch) {
  */
 async function finishApprove(db, store, snapshots, branch, applied) {
   try {
-    await snapshots.put(approvePlanKey(branch.snapshotKey), "{}");
+    await clearScratch(snapshots, approvePlanKey(branch.snapshotKey));
   } catch (error) {
     console.error?.(`approve plan cleanup failed for ${branch.id}: ${errorText(error)}`);
   }
