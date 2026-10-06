@@ -747,7 +747,9 @@ func unquoteEnvValue(v string) string {
 		b.WriteByte('\\')
 	}
 	return b.String()
-} // syncFile puts the bytes on the disk before the file is renamed into
+}
+
+// syncFile puts the bytes on the disk before the file is renamed into
 // place. It is a variable so a test can observe the call that a power-cut
 // proof rests on: the rename is a directory operation, so without this the
 // machine can lose a write the file system already answered "done" to, and
