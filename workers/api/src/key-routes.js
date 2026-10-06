@@ -19,6 +19,37 @@ import { enforceEdgeLimits } from "../../../core/rate-limit.js";
  * (workers/api/cloudflare.config.ts) declares it on its own namespace. */
 export const KEYS_LIMIT = "KEYS_RATE_LIMITER";
 
+import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
+
+/** Kinds drive#551 mails on: an agent, team or branch key, not a device key. */
+const KEY_SECURITY_EVENTS = Object.freeze({
+  agent: "agent-key-minted",
+  team: "team-key-minted",
+  branch: "branch-key-minted",
+});
+
+/**
+ * @param {{env?: unknown, account?: unknown, now?: () => number}} ctx
+ * @param {string} event
+ * @param {string} [deviceName]
+ */
+async function notifyFromCtx(ctx, event, deviceName) {
+  const mail = mailFromEnv(ctx.env);
+  const at = typeof ctx.now === "function" ? ctx.now() : Date.now();
+  const account =
+    typeof ctx.account === "object" && ctx.account !== null
+      ? /** @type {{email?: unknown}} */ (ctx.account)
+      : null;
+  await notifySecurityEvent({
+    email: mail.email,
+    mailFrom: mail.mailFrom,
+    to: account !== null && typeof account.email === "string" ? account.email : "",
+    event,
+    deviceName,
+    happenedAt: new Date(at).toISOString(),
+  });
+}
+
 /** The stand-in store: what core/keystore.js `createMemoryStore` returns and
  * what D1's adapter will have to match (drive#2). */
 /** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
@@ -125,6 +156,12 @@ export async function mintKeyRoute(request, ctx) {
     }
     throw error;
   }
+  const event = Object.hasOwn(KEY_SECURITY_EVENTS, kind)
+    ? KEY_SECURITY_EVENTS[/** @type {keyof typeof KEY_SECURITY_EVENTS} */ (kind)]
+    : undefined;
+  if (event !== undefined) {
+    await notifyFromCtx(ctx, event, typeof name === "string" ? name : "a signed-in device");
+  }
   return json(minted, 201);
 }
 
@@ -190,6 +227,7 @@ export async function revokeAllKeysRoute(request, ctx) {
   // credential that opens the storage API, so if the call fails only partway
   // the keys are already dead and nothing is left holding a way in.
   await ctx.store.revokeAllKeys(ctx.account);
+  await notifyFromCtx(ctx, "signed-out-everywhere", "this device");
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
 

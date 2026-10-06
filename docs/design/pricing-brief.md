@@ -99,11 +99,11 @@ ledger tone that the buyer's comparison actually needs.
    steps 1.25, body 17px, price `clamp(44px, 7.6vw, 92px)` (92px at 1440,
    44px at 360), the price is the only thing allowed to be large.
    (Issue #23's rework changed what the headline says: it was "about $20 per
-   TB a month", which is Space's price, not ours. Rule 6 below bars unsourced
+   TB a month", which is the competitor's price, not ours. Rule 6 below bars unsourced
    claims and rival figures in our own voice, and that number was one. The
-   Space figures in the worked-example rows are different: build-spec.md's
+   The competitor figures in the worked-example rows are different: build-spec.md's
    "Bill ceiling" decision fixes them at $27 and $63, and they are labelled
-   `(Space $…)` beside ours, cited there.)
+   `(the competitor $…)` beside ours, cited there.)
 4. **One accent.** Ink blue `#1f3a5f`, used for the filled 40%, the focus ring
    and the form's submit. No second accent anywhere.
 5. **CTA hierarchy.** One filled button ("Join the waitlist"), one text link
@@ -151,12 +151,12 @@ device scale 2:
 | Phone 390x844 | 200, `scrollWidth == clientWidth == 390`, 0 overflowing elements, 0 console errors |
 | Small phone 360x780 | 200, `scrollWidth == clientWidth == 360`, 0 overflowing elements, 0 console errors |
 | Headline reads as one line | "2¢ per GB, billed by the minute" |
-| Example rows, as a reader sees them | 500 GB for 3 days: "about $1 → $0 after the free $1"; 800 GB: "$12 → $11 after the free $1"; 2 TB: "$16 → $15 after the free $1 (Space $27)"; 5 TB: "$40 → $39 after the free $1 (Space $63)" |
+| Example rows, as a reader sees them | 500 GB for 3 days: "about $1 → $0 after the free $1"; 800 GB: "$12 → $11 after the free $1"; 2 TB: "$16 → $15 after the free $1 (the competitor $27)"; 5 TB: "$40 → $39 after the free $1 (the competitor $63)" |
 | Strip | "60% full · $11" |
-| Contrast, WCAG AA normal text (>= 4.5) | headline 15.13, sub 15.13, free line 10.65, strip label 9.66, strip caption 7.29, example 15.13, the billed figure (bold) 15.13, Space comparison 4.99, examples note 7.29 |
+| Contrast, WCAG AA normal text (>= 4.5) | headline 15.13, sub 15.13, free line 10.65, strip label 9.66, strip caption 7.29, example 15.13, the billed figure (bold) 15.13, the competitor comparison 4.99, examples note 7.29 |
 
 The example rows overflowed 1440px on the first pass of the rework (`$16 → $15
-after the free $1 (Space $27)` is one unbreakable run in a nowrap cell,
+after the free $1 (the competitor $27)` is one unbreakable run in a nowrap cell,
 `scrollWidth 1476`); `white-space: normal` on the figure cell and a stacked row
 under 520px fixed it, and the three viewports above are the re-measure.
 
