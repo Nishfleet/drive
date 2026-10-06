@@ -601,3 +601,21 @@ test("handleBranchJobs acks and runs onExhausted after max retries", async () =>
   assert.equal(message.retried, undefined);
   assert.equal(exhausted.length, 1);
 });
+
+test("approve of a branch still being created answers 409, not 500", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    fakeQueue(),
+  );
+  assert.equal(started.state, "creating");
+  const approved = await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
+  assert.equal(/** @type {{status?: number}} */ (approved).status, 409);
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "creating");
+});

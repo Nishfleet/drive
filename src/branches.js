@@ -1602,8 +1602,9 @@ async function finishApprove(db, store, snapshots, branch, applied) {
     )
     .bind(branch.id, branch.name)
     .first();
-  const nextState = successor && typeof successor.state === "string" ? successor.state : "";
-  if (nextState !== "open") {
+  // Any active successor (open or mid-job) owns the prefix now; removing its
+  // files here would delete what that job is copying or reading.
+  if (!successor) {
     await removeBranchFiles(store, branch);
   }
   const appliedCount = applied.added.length + applied.changed.length + applied.removed.length;
@@ -1715,7 +1716,9 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
  * @returns {Promise<BranchJobResult>}
  */
 export async function runBranchJobToEnd(db, snapshots, store, account, branchId) {
-  const cap = Math.ceil(BRANCH_FILE_LIMIT / BRANCH_JOB_BATCH_FILES) + 200;
+  // Every batch moves at least one file or one folder, and a branch holds at
+  // most BRANCH_FILE_LIMIT of each, so a folder-heavy tree still finishes.
+  const cap = 2 * BRANCH_FILE_LIMIT + 200;
   for (let step = 0; step < cap; step += 1) {
     const result = await processBranchJob(db, snapshots, store, account, branchId);
     if (result.error || result.done) {
@@ -2026,6 +2029,10 @@ export async function approveBranch(db, snapshots, store, account, name, queue =
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
   }
+  const resuming = branch.state === "approving" && branch.jobKind === "approve";
+  if (!resuming && branch.state !== "open") {
+    return { error: failureMessage("branch-not-open"), status: 409 };
+  }
   if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
     // drive#329: the snapshot has one source. An empty pointer, a missing KV
     // value, or JSON that is not an object would make every copy file look
@@ -2035,11 +2042,8 @@ export async function approveBranch(db, snapshots, store, account, name, queue =
     console.error?.(`approve refused unavailable snapshot for row ${branch.id}`);
     return { error: failureMessage("unexpected"), status: 500 };
   }
-  if (branch.state === "approving" && branch.jobKind === "approve") {
+  if (resuming) {
     return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
-  }
-  if (branch.state !== "open") {
-    return { error: failureMessage("branch-not-open"), status: 409 };
   }
   const claimed = await db
     .prepare(
