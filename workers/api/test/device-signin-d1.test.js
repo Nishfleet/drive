@@ -24,8 +24,17 @@ const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 // `signedInAccount` asks it for the session the cookie names, so a stand-in
 // here speaks `api.getSession`. One token is signed in; every other value the
 // browser could have invented has no session.
-/** @param {string} token */
-function accountsFor(token) {
+// The second factor (drive#524) is read off the same session: `armed` puts
+// the library's `user.twoFactorEnabled` on the account, and `verify` adds the
+// two stock verify endpoints, which answer only the one code below. A surface
+// that says armed but has no verify endpoints must not be able to approve.
+const STAND_IN_CODE = "123456";
+/**
+ * @param {string} token
+ * @param {{armed?: boolean, verify?: boolean}} [options]
+ */
+function accountsFor(token, options = {}) {
+  const user = options.armed === true ? { ...ACCOUNT, twoFactorEnabled: true } : ACCOUNT;
   return {
     api: {
       /** @param {{headers: Headers}} options */
@@ -36,8 +45,22 @@ function accountsFor(token) {
           .map((part) => part.trim())
           .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
         const value = found?.slice(SESSION_COOKIE.length + 1);
-        return value === token ? { user: ACCOUNT } : null;
+        return value === token ? { user } : null;
       },
+      ...(options.verify === true
+        ? {
+            /** @param {{body: {code: string}}} args */
+            async verifyTOTP({ body }) {
+              if (body.code !== STAND_IN_CODE) throw new Error("invalid code");
+              return {};
+            },
+            /** @param {{body: {code: string}}} args */
+            async verifyBackupCode({ body }) {
+              if (body.code !== STAND_IN_CODE) throw new Error("invalid backup code");
+              return {};
+            },
+          }
+        : {}),
     },
   };
 }
@@ -54,7 +77,7 @@ function accountsFor(token) {
 // TTL between a read and the write that follows it; `options.failOn` names a
 // statement prefix that throws, which is how a half-written pair is tested.
 /**
- * @typedef {{onRead?: () => void, failOn?: string}} FakeD1Options
+ * @typedef {{onRead?: () => void, failOn?: string, armedUsers?: Set<string>, userReadFails?: boolean}} FakeD1Options
  * @typedef {{codes: Map<string, any>, byUserCode: Map<string, any>, tokens: Map<string, any>}} FakeD1Snapshot
  * @typedef {D1Database & {codes: Map<string, any>, byUserCode: Map<string, any>, tokens: Map<string, any>}} FakeD1
  */
@@ -219,6 +242,11 @@ function makeFakeD1(options = {}) {
           params,
           async first() {
             options.onRead?.();
+            if (s.includes('FROM "user" WHERE id')) {
+              if (options.userReadFails === true) throw new Error("fake D1: user read failed");
+              const armed = options.armedUsers?.has(/** @type {string} */ (params[0]));
+              return armed === undefined ? null : { twoFactorEnabled: armed ? 1 : null };
+            }
             if (s.includes("FROM device_codes WHERE user_code")) {
               return byUserCode.get(/** @type {string} */ (params[0])) ?? null;
             }
@@ -1004,4 +1032,221 @@ test("a code started by the route is approvable from a fresh instance (drive#136
   // A fifth instance resolves the token it never minted in memory.
   const fifth = createD1DeviceSigninStore(db, { now: () => 0 });
   assert.deepEqual(await fifth.accountForDeviceToken(token.deviceToken), ACCOUNT);
+});
+
+// The approval page with a second factor on the account (drive#524). The
+// stand-in `accountsFor` reads the library's own flag and answers the two
+// stock verify endpoints, so this walks the route's rule: an armed account
+// cannot approve a device code without a correct second factor, the code
+// stays pending, and a surface that claims the account is armed but cannot
+// verify a code approves nothing at all (fail closed).
+test("an armed account needs the second factor, and the code stays pending without it", async () => {
+  const db = makeFakeD1();
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => 0 }),
+  });
+  /** @param {ReturnType<typeof accountsFor>} accounts */
+  const ctxFor = (accounts) => ({
+    env: {
+      DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    },
+    db,
+    store,
+    accounts,
+    account: null,
+    now: () => 0,
+  });
+  const ctx = ctxFor(accountsFor("sess_ok", { armed: true, verify: true }));
+  const started = await store.requestDeviceCode({ name: "laptop" });
+  /** @param {string} userCode @param {string} [secondFactor] */
+  const approve = (userCode, secondFactor = "") =>
+    dispatch(
+      new Request("https://api.test/v1/device/approve", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: `${SESSION_COOKIE}=sess_ok`,
+        },
+        body: new URLSearchParams({ user_code: userCode, second_factor: secondFactor }).toString(),
+      }),
+      ctx,
+    );
+
+  // No code typed: refused, nothing consumed.
+  const blank = await approve(started.userCode);
+  assert.equal(blank.status, 200, "the page comes back, not a server error");
+  assert.doesNotMatch(await blank.text(), /is connected/);
+  assert.deepEqual(await store.pollDeviceCode(started.deviceCode), { status: "pending" });
+
+  // Wrong code: refused the same way.
+  const wrong = await approve(started.userCode, "000000");
+  assert.doesNotMatch(await wrong.text(), /is connected/);
+  assert.deepEqual(await store.pollDeviceCode(started.deviceCode), { status: "pending" });
+
+  // Correct code: approved, and the CLI's poll gets the key.
+  const right = await approve(started.userCode, STAND_IN_CODE);
+  assert.match(await right.text(), /is connected/);
+  const polled = await store.pollDeviceCode(started.deviceCode);
+  assert.equal(polled.status, "approved");
+  assert.ok(polled.status === "approved" && polled.deviceToken.length > 0);
+});
+
+test("an account that claims a second factor but cannot verify one approves nothing", async () => {
+  const db = makeFakeD1();
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => 0 }),
+  });
+  const ctx = {
+    env: {
+      DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    },
+    db,
+    store,
+    // Armed, but no verify endpoints: the route must fail closed rather than
+    // fall through to approving on the flag alone.
+    accounts: accountsFor("sess_ok", { armed: true }),
+    account: null,
+    now: () => 0,
+  };
+  const started = await store.requestDeviceCode({ name: "laptop" });
+  const page = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=sess_ok`,
+      },
+      body: new URLSearchParams({
+        user_code: started.userCode,
+        second_factor: STAND_IN_CODE,
+      }).toString(),
+    }),
+    ctx,
+  );
+  assert.doesNotMatch(await page.text(), /is connected/);
+  assert.deepEqual(await store.pollDeviceCode(started.deviceCode), { status: "pending" });
+});
+
+// drive#524 review B: armed-ness is read from the user row by the account id
+// the gate resolved, so an approval carried by a bearer device token (no
+// cookie for getSession to read) is gated like a cookie approval, and a user
+// row that cannot be read refuses instead of approving.
+test("a bearer-token approval of an armed account is refused, and so is an unreadable user row", async () => {
+  const armedUsers = new Set();
+  const db = makeFakeD1({ armedUsers });
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => 0 }),
+  });
+  const ctx = {
+    env: {
+      DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    },
+    db,
+    store,
+    // Like the library, the verify endpoints need the browser session: a
+    // bearer-only request has no cookie, so it can never present a factor.
+    accounts: (() => {
+      const stub = accountsFor("sess_ok", { armed: false, verify: true });
+      /** @param {{body: {code: string}, headers: Headers}} args */
+      const needsSession = async ({ body, headers }) => {
+        if (!headers.get("cookie")) throw new Error("no session");
+        if (body.code !== STAND_IN_CODE) throw new Error("invalid code");
+        return {};
+      };
+      return { api: { ...stub.api, verifyTOTP: needsSession, verifyBackupCode: needsSession } };
+    })(),
+    account: null,
+    now: () => 0,
+  };
+  // The first device is approved while the account has no factor, to get a token.
+  const first = await store.requestDeviceCode({ name: "first" });
+  await store.approveDeviceCode(first.userCode, ACCOUNT);
+  const polled = await store.pollDeviceCode(first.deviceCode);
+  assert.equal(polled.status, "approved");
+  const bearer = polled.status === "approved" ? polled.deviceToken : "";
+  /** @param {string} userCode */
+  const approveByBearer = (userCode) =>
+    dispatch(
+      new Request("https://api.test/v1/device/approve", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization: `Bearer ${bearer}`,
+        },
+        body: new URLSearchParams({ user_code: userCode, second_factor: STAND_IN_CODE }).toString(),
+      }),
+      ctx,
+    );
+
+  // Control: no factor on the account, so the bearer approval goes through.
+  const open = await store.requestDeviceCode({ name: "open" });
+  assert.match(await (await approveByBearer(open.userCode)).text(), /is connected/);
+
+  // The account turns the factor on: the same bearer approval is refused.
+  armedUsers.add(ACCOUNT.id);
+  const second = await store.requestDeviceCode({ name: "second" });
+  const refused = await approveByBearer(second.userCode);
+  assert.doesNotMatch(await refused.text(), /is connected/);
+  assert.deepEqual(await store.pollDeviceCode(second.deviceCode), { status: "pending" });
+
+  // The user row cannot be read: refused, not waved through.
+  armedUsers.delete(ACCOUNT.id);
+  const failing = makeFakeD1({ userReadFails: true });
+  const failStore = createMemoryStore({
+    signin: createD1DeviceSigninStore(failing, { now: () => 0 }),
+  });
+  const seed = await failStore.requestDeviceCode({ name: "seed" });
+  await failStore.approveDeviceCode(seed.userCode, ACCOUNT);
+  const seedPoll = await failStore.pollDeviceCode(seed.deviceCode);
+  const failBearer = seedPoll.status === "approved" ? seedPoll.deviceToken : "";
+  const third = await failStore.requestDeviceCode({ name: "third" });
+  const unreadable = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: `Bearer ${failBearer}`,
+      },
+      body: new URLSearchParams({ user_code: third.userCode }).toString(),
+    }),
+    { ...ctx, db: failing, store: failStore },
+  );
+  assert.doesNotMatch(await unreadable.text(), /is connected/);
+  assert.deepEqual(await failStore.pollDeviceCode(third.deviceCode), { status: "pending" });
+});
+
+test("the approve page asks for the second factor only when the account has one", async () => {
+  const db = makeFakeD1();
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => 0 }),
+  });
+  const started = await store.requestDeviceCode({ name: "laptop" });
+  const page = async (/** @type {ReturnType<typeof accountsFor>} */ accounts) => {
+    const response = await dispatch(
+      new Request(`https://api.test/v1/device/approve?user_code=${started.userCode}`, {
+        headers: { cookie: `${SESSION_COOKIE}=sess_ok` },
+      }),
+      {
+        env: {
+          DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+          DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+        },
+        db,
+        store,
+        accounts,
+        account: null,
+        now: () => 0,
+      },
+    );
+    assert.equal(response.status, 200);
+    return response.text();
+  };
+  assert.doesNotMatch(await page(accountsFor("sess_ok")), /name="second_factor"/);
+  assert.match(
+    await page(accountsFor("sess_ok", { armed: true, verify: true })),
+    /name="second_factor"/,
+  );
 });
