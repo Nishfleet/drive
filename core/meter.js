@@ -2069,6 +2069,7 @@ const VERSION_RETENTION_MS = VERSION_RETENTION_DAYS * 24 * HOUR_MS;
 
 const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
   WHERE hidden_at IS NOT NULL AND hidden_at < ?1`;
+const FAIR_USE_DECISIONS_PRUNE_SQL = "DELETE FROM fair_use_decisions WHERE decided_at < ?1";
 // The partial index that predicate reads (migrations/drive/
 // 0023_file_versions_hidden_at.sql), so the nightly delete is a range read
 // over hidden rows and not a full-table scan on the meter's fastest grower
@@ -2136,6 +2137,10 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
   if (typeof result.meta?.changes !== "number") {
     throw new TypeError("the retention delete reported no change count");
   }
+  // Fair-use decisions (drive#364) are kept for the same window the ghosts
+  // they describe can still exist, then dropped so the table cannot grow
+  // forever. A would-refuse older than the stay has already opened uploads.
+  await db.prepare(FAIR_USE_DECISIONS_PRUNE_SQL).bind(cutoff).run();
   return { pruned: result.meta.changes, cutoff, skipped: null };
 }
 
@@ -2221,20 +2226,24 @@ export function ghostFromVersions(versions, now, storage = STORAGE) {
 }
 
 export const GHOST_BYTES_SQL = `SELECT
-    COALESCE(SUM(v.size_bytes), 0) AS ghost_bytes,
-    MIN(v.created_at) AS oldest_created_at
-  FROM file_versions v
-  WHERE v.account_id = ?1
-    AND v.hidden_at IS NOT NULL
-    AND (v.hidden_at - v.created_at) < ?2
-    AND (v.created_at + ?2) > ?3
-    AND NOT EXISTS (
-      SELECT 1 FROM file_versions s
-       WHERE s.account_id = v.account_id
-         AND s.size_bytes = v.size_bytes
-         AND s.created_at = v.hidden_at
-         AND s.b2_file_id != v.b2_file_id
-    )`;
+    COALESCE(SUM(g.size_bytes), 0) AS ghost_bytes,
+    MIN(g.created_at) AS oldest_created_at
+  FROM (
+    SELECT v.b2_file_id, v.size_bytes, v.created_at
+      FROM file_versions v
+     WHERE v.account_id = ?1
+       AND v.hidden_at IS NOT NULL
+       AND (v.hidden_at - v.created_at) < ?2
+       AND (v.created_at + ?2) > ?3
+       AND NOT EXISTS (
+         SELECT 1 FROM file_versions s
+          WHERE s.account_id = v.account_id
+            AND s.size_bytes = v.size_bytes
+            AND s.created_at = v.hidden_at
+            AND s.b2_file_id != v.b2_file_id
+       )
+     GROUP BY v.b2_file_id
+  ) g`;
 
 export const SIZE30_BYTES_SQL = `SELECT COALESCE(MAX(stored_bytes), 0) AS size30_bytes
   FROM usage_minutes
@@ -2262,6 +2271,15 @@ export async function fairUseSnapshot(db, accountId, now = Date.now(), storage =
   }
   if (!Number.isSafeInteger(now) || now < 0) {
     throw new TypeError(`now must be 0 or more whole milliseconds, got ${String(now)}`);
+  }
+  if (
+    typeof storage.minimumStayDays !== "number" ||
+    !Number.isInteger(storage.minimumStayDays) ||
+    storage.minimumStayDays < 0
+  ) {
+    throw new TypeError(
+      `storage.minimumStayDays must be 0 or more whole days, got ${String(storage.minimumStayDays)}`,
+    );
   }
   const stayMs = storage.minimumStayDays * DAY_MS;
   const liveRow = await db.prepare(LIVE_BYTES_SQL).bind(accountId).first();

@@ -511,7 +511,9 @@ function breakEvenBytes(payAfterFee, costCentsPerTb) {
   const den = BigInt(costCentsPerTb);
   const limit = (num + den - 1n) / den;
   if (limit > BigInt(Number.MAX_SAFE_INTEGER)) {
-    return Number.MAX_SAFE_INTEGER;
+    throw new TypeError(
+      `break-even bytes ${String(limit)} is past the safe integer range; the pause cannot guess a smaller limit`,
+    );
   }
   return Number(limit);
 }

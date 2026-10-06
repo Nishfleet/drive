@@ -1034,6 +1034,41 @@ test("upload: a failed fair-use check fails open and reports", async () => {
   assert.match(String(reported), /meter down/);
 });
 
+test("upload: a missing Content-Length is checked again after the body is read", async () => {
+  const store = createMemoryStore();
+  /** @type {number[]} */
+  const sizes = [];
+  const line = {
+    copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+  };
+  const response = await handleFilesRequest(
+    new Request(`${api("/upload")}?path=%2F&name=big.bin`, {
+      method: "POST",
+      // `duplex` is a Node/undici RequestInit field the Workers RequestInit type
+      // does not carry; a streamed body needs it set or the constructor throws.
+      ...{ duplex: "half" },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("twelve-bytes"));
+          controller.close();
+        },
+      }),
+    }),
+    store,
+    account,
+    now,
+    {
+      fairUseRefuse: true,
+      fairUseForUpload: async (_id, bytes) => {
+        sizes.push(bytes);
+        return bytes > 0 ? { wouldRefuse: true, line } : { wouldRefuse: false, line };
+      },
+    },
+  );
+  assert.equal(response.status, 429);
+  assert.deepEqual(sizes, [0, 12]);
+});
+
 test("upload: a 200 MB declared size is refused before the body is read", async () => {
   const { call, scoped } = drive();
   const response = await call(

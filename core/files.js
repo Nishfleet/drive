@@ -2922,6 +2922,45 @@ async function listingEntry(store, path) {
 }
 
 /**
+ * The fair-use pause for one upload size (drive#364). Null means write on.
+ * A missing Content-Length is checked as 0 first, then again with the real
+ * size once the body has been read, so a headerless body cannot sneak past.
+ * @param {{id: string}} account
+ * @param {number} uploadBytes
+ * @param {{fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} options
+ * @returns {Promise<Response|null>}
+ */
+async function fairUseRefuseResponse(account, uploadBytes, options) {
+  if (typeof options.fairUseForUpload !== "function") {
+    return null;
+  }
+  try {
+    const result = await options.fairUseForUpload(account.id, uploadBytes);
+    if (result === null || result === undefined) {
+      return null;
+    }
+    if (typeof result !== "object" || typeof result.wouldRefuse !== "boolean") {
+      throw new TypeError("fairUseForUpload must return a fairUseCheck result or null");
+    }
+    if (result.wouldRefuse === true && options.fairUseRefuse === true) {
+      if (
+        typeof result.line !== "object" ||
+        result.line === null ||
+        typeof result.line.copy !== "string"
+      ) {
+        throw new TypeError("fairUseCheck result needs line.copy");
+      }
+      return json({ error: failureMessage("fair-use-pause"), fairUseLine: result.line.copy }, 429);
+    }
+  } catch (error) {
+    if (typeof options.onFairUseError === "function") {
+      options.onFairUseError(error);
+    }
+  }
+  return null;
+}
+
+/**
  * @param {Request} request
  * @param {URL} url
  * @param {FileStore} store
@@ -2962,35 +3001,13 @@ async function uploadRequest(request, url, store, account, options = {}) {
     // 402, so a client can tell "add money" from every other refusal.
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
   }
-  const incomingForFairUse = incomingLength === null ? 0 : incomingLength;
-  if (typeof options.fairUseForUpload === "function") {
-    try {
-      const result = await options.fairUseForUpload(account.id, incomingForFairUse);
-      if (result !== null && result !== undefined) {
-        if (typeof result !== "object" || typeof result.wouldRefuse !== "boolean") {
-          throw new TypeError("fairUseForUpload must return a fairUseCheck result or null");
-        }
-        if (result.wouldRefuse === true && options.fairUseRefuse === true) {
-          if (
-            typeof result.line !== "object" ||
-            result.line === null ||
-            typeof result.line.copy !== "string"
-          ) {
-            throw new TypeError("fairUseCheck result needs line.copy");
-          }
-          return json(
-            { error: failureMessage("fair-use-pause"), fairUseLine: result.line.copy },
-            429,
-          );
-        }
-      }
-    } catch (error) {
-      // Missing meter data fails open and loud (drive#364): the upload goes
-      // through, and the caller reports the throw so it is not a quiet skip.
-      if (typeof options.onFairUseError === "function") {
-        options.onFairUseError(error);
-      }
-    }
+  const paused = await fairUseRefuseResponse(
+    account,
+    incomingLength === null ? 0 : incomingLength,
+    options,
+  );
+  if (paused) {
+    return paused;
   }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
@@ -3044,6 +3061,10 @@ async function uploadRequest(request, url, store, account, options = {}) {
       }
       payload = read.bytes;
       contentLength = read.length;
+      const pausedAfterRead = await fairUseRefuseResponse(account, contentLength, options);
+      if (pausedAfterRead) {
+        return pausedAfterRead;
+      }
     }
     await store.write(path, payload, contentType, { contentLength });
   } catch (error) {
