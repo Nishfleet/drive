@@ -855,11 +855,17 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // and the reindex queue is only produced on by the nightly cron (drive#566),
   // whose failure is a failed trigger rather than a customer request that
   // could answer 503; a probe would have to enqueue a real walk to find out.
+  // The meter's queue (drive#519) and the branch-jobs producer (drive#563)
+  // are optional on purpose: without them the work runs in-process, and a
+  // producer binding cannot be probed without sending a real job. Both
+  // currently send onto drive-meter-jobs.
   const NOT_CHECKED = new Set([
     "EMAIL",
     "METER_EVENT_TOKEN",
     "HEALTH_RATE_LIMITER",
     "REINDEX_QUEUE",
+    "METER_JOBS",
+    "BRANCH_JOBS",
   ]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(

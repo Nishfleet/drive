@@ -178,7 +178,10 @@ const LIVENESS_QUERY = "SELECT 1";
  * a walk (drive#566). A cron that cannot send is a failed trigger in
  * Cloudflare's logs, which is its own alert; the queue's consumer does fail
  * the search-reindex trip, and that shows as accounts not being reindexed,
- * which the reindex's own log line names.
+ * which the reindex's own log line names. METER_JOBS and BRANCH_JOBS are
+ * producer bindings (drive#519, drive#563): without them the work runs
+ * in-process, and a health probe cannot exercise a queue without sending a
+ * real job.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",

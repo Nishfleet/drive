@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Drive launch video</title>
+    <style>
+      @font-face {
+        font-family: "Big Shoulders Display";
+        src: url("assets/fonts/big-shoulders-display-latin-900-normal.woff2") format("woff2");
+        font-weight: 900;
+        font-display: block;
+      }
+      @font-face {
+        font-family: "Instrument Sans";
+        src: url("assets/fonts/instrument-sans-latin-400-normal.woff2") format("woff2");
+        font-weight: 400;
+        font-display: block;
+      }
+      @font-face {
+        font-family: "Instrument Sans";
+        src: url("assets/fonts/instrument-sans-latin-600-normal.woff2") format("woff2");
+        font-weight: 600;
+        font-display: block;
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: url("assets/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+        font-weight: 400;
+        font-display: block;
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: url("assets/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+        font-weight: 700;
+        font-display: block;
+      }
+
+      :root {
+        --drive-orange: #ff4f12;
+        --drive-orange-soft: #ff8a5b;
+        --drive-ink: #1b1712;
+        --paper: #faf6ee;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #1b1712;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #1b1712;
+        font-family: "Instrument Sans", system-ui, sans-serif;
+      }
+
+      .wordmark {
+        position: absolute;
+        top: 40px;
+        left: 48px;
+        z-index: 40;
+        font-family: "Big Shoulders Display", "Instrument Sans", sans-serif;
+        font-weight: 900;
+        font-size: 40px;
+        line-height: 1;
+        letter-spacing: 0.42em;
+        text-transform: lowercase;
+        color: var(--paper);
+        background: #1b1712;
+        padding: 12px 22px 12px 30px;
+        border-radius: 6px;
+      }
+
+      .shot {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 1;
+        width: 1920px;
+        height: 756px;
+        object-fit: cover;
+        object-position: top center;
+      }
+
+      /* These two captures put their point low on the page: the agent key's
+         "cannot: delete" line, and the calculator's drive bar with both bar
+         labels. Cropped from the top, the band hid them and left a lone,
+         unlabelled "$15" beside "1 TB" (drive#651). */
+      #shot-s3,
+      #shot-s4 {
+        object-position: bottom center;
+      }
+
+      .band {
+        position: absolute;
+        top: 756px;
+        left: 0;
+        z-index: 5;
+        width: 1920px;
+        height: 324px;
+        background: #1b1712;
+      }
+
+      .band-rule {
+        position: absolute;
+        top: 756px;
+        left: 0;
+        z-index: 6;
+        width: 1920px;
+        height: 6px;
+        background: var(--drive-orange);
+      }
+
+      .kick {
+        position: absolute;
+        top: 806px;
+        left: 112px;
+        z-index: 8;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        font-size: 26px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--drive-orange-soft);
+      }
+
+      .head {
+        position: absolute;
+        top: 856px;
+        left: 108px;
+        z-index: 8;
+        width: 1704px;
+        font-family: "Instrument Sans", sans-serif;
+        font-weight: 600;
+        font-size: 58px;
+        line-height: 1.16;
+        color: var(--paper);
+      }
+
+      .intro-bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 0;
+        width: 1920px;
+        height: 1080px;
+        background: radial-gradient(circle at 22% 30%, #2a2118 0%, #1b1712 62%);
+      }
+
+      .intro-wordmark {
+        position: absolute;
+        top: 286px;
+        left: 0;
+        z-index: 8;
+        width: 1920px;
+        text-align: center;
+        font-family: "Big Shoulders Display", "Instrument Sans", sans-serif;
+        font-weight: 900;
+        font-size: 210px;
+        line-height: 1;
+        letter-spacing: 0.16em;
+        text-transform: lowercase;
+        color: var(--paper);
+      }
+
+      .intro-kick {
+        position: absolute;
+        top: 560px;
+        left: 0;
+        z-index: 8;
+        width: 1920px;
+        text-align: center;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        font-size: 32px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: var(--drive-orange-soft);
+      }
+
+      .intro-head {
+        position: absolute;
+        top: 640px;
+        left: 220px;
+        z-index: 8;
+        width: 1480px;
+        text-align: center;
+        font-family: "Instrument Sans", sans-serif;
+        font-weight: 600;
+        font-size: 76px;
+        line-height: 1.14;
+        color: var(--paper);
+      }
+
+      .intro-sub {
+        position: absolute;
+        top: 852px;
+        left: 260px;
+        z-index: 8;
+        width: 1400px;
+        text-align: center;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 400;
+        font-size: 30px;
+        line-height: 1.4;
+        color: #d9d0c2;
+      }
+
+      .cta-bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 0;
+        width: 1920px;
+        height: 1080px;
+        background: radial-gradient(circle at 50% 38%, #2a2118 0%, #1b1712 66%);
+      }
+
+      .cta-wordmark {
+        position: absolute;
+        top: 232px;
+        left: 0;
+        z-index: 8;
+        width: 1920px;
+        text-align: center;
+        font-family: "Big Shoulders Display", "Instrument Sans", sans-serif;
+        font-weight: 900;
+        font-size: 150px;
+        line-height: 1;
+        letter-spacing: 0.16em;
+        text-transform: lowercase;
+        color: var(--paper);
+      }
+
+      .cta-head {
+        position: absolute;
+        top: 486px;
+        left: 0;
+        z-index: 8;
+        width: 1920px;
+        text-align: center;
+        font-family: "Instrument Sans", sans-serif;
+        font-weight: 600;
+        font-size: 62px;
+        color: var(--paper);
+      }
+
+      .cta-body {
+        position: absolute;
+        top: 596px;
+        left: 0;
+        z-index: 8;
+        width: 1920px;
+        text-align: center;
+        font-family: "Instrument Sans", sans-serif;
+        font-weight: 400;
+        font-size: 38px;
+        color: #e7ddce;
+      }
+
+      .cta-url {
+        position: absolute;
+        top: 740px;
+        left: 0;
+        z-index: 8;
+        width: 1920px;
+        text-align: center;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        font-size: 34px;
+        letter-spacing: 0.04em;
+        color: var(--drive-orange-soft);
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="drive-launch"
+      data-width="1920"
+      data-height="1080"
+      data-fps="30"
+      data-duration="75"
+    >
+      <div id="wordmark" class="clip wordmark" data-start="6" data-duration="69" data-track-index="30">
+        drive
+      </div>
+
+      <!-- scene: intro -->
+      <div id="intro-bg" class="clip intro-bg" data-start="0" data-duration="6" data-track-index="1"></div>
+      <div id="intro-wordmark" class="clip intro-wordmark" data-start="0" data-duration="6" data-track-index="2">
+        drive
+      </div>
+      <div id="intro-kick" class="clip intro-kick" data-start="0" data-duration="6" data-track-index="3">
+        FOR PEOPLE AND THEIR AGENTS
+      </div>
+      <div id="intro-head" class="clip intro-head" data-start="0" data-duration="6" data-track-index="4">
+        A drive that holds more than your laptop.
+      </div>
+      <div id="intro-sub" class="clip intro-sub" data-start="0" data-duration="6" data-track-index="5">
+        Plain files in object storage, opened by the apps you already use.
+      </div>
+
+      <!-- scene 1: homepage hero -->
+      <img
+        id="shot-s1"
+        class="clip shot"
+        data-layout-allow-overflow
+        src="assets/home_hero.png"
+        alt=""
+        data-start="6"
+        data-duration="11"
+        data-track-index="10"
+      />
+      <div id="band-s1" class="clip band" data-start="6" data-duration="11" data-track-index="11"></div>
+      <div id="rule-s1" class="clip band-rule" data-start="6" data-duration="11" data-track-index="12"></div>
+      <div id="kick-s1" class="clip kick" data-start="6" data-duration="11" data-track-index="13">THE DRIVE</div>
+      <div id="head-s1" class="clip head" data-start="6" data-duration="11" data-track-index="14">
+        Plain files, opened by the apps you already use.
+      </div>
+
+      <!-- scene 2: huge files -->
+      <img
+        id="shot-s2"
+        class="clip shot"
+        data-layout-allow-overflow
+        src="assets/home_finder.png"
+        alt=""
+        data-start="17"
+        data-duration="11"
+        data-track-index="20"
+      />
+      <div id="band-s2" class="clip band" data-start="17" data-duration="11" data-track-index="21"></div>
+      <div id="rule-s2" class="clip band-rule" data-start="17" data-duration="11" data-track-index="22"></div>
+      <div id="kick-s2" class="clip kick" data-start="17" data-duration="11" data-track-index="23">HUGE FILES</div>
+      <div id="head-s2" class="clip head" data-start="17" data-duration="11" data-track-index="24">
+        A 5 GB video starts without a 5 GB download.
+      </div>
+
+      <!-- scene 3: agents -->
+      <img
+        id="shot-s3"
+        class="clip shot"
+        data-layout-allow-overflow
+        src="assets/home_agents.png"
+        alt=""
+        data-start="28"
+        data-duration="12"
+        data-track-index="40"
+      />
+      <div id="band-s3" class="clip band" data-start="28" data-duration="12" data-track-index="41"></div>
+      <div id="rule-s3" class="clip band-rule" data-start="28" data-duration="12" data-track-index="42"></div>
+      <div id="kick-s3" class="clip kick" data-start="28" data-duration="12" data-track-index="43">EVERY AGENT</div>
+      <div id="head-s3" class="clip head" data-start="28" data-duration="12" data-track-index="44">
+        Agent keys can list, read and write. They can never delete.
+      </div>
+
+      <!-- scene 4: price -->
+      <img
+        id="shot-s4"
+        class="clip shot"
+        data-layout-allow-overflow
+        src="assets/home_calculator.png"
+        alt=""
+        data-start="40"
+        data-duration="12"
+        data-track-index="50"
+      />
+      <div id="band-s4" class="clip band" data-start="40" data-duration="12" data-track-index="51"></div>
+      <div id="rule-s4" class="clip band-rule" data-start="40" data-duration="12" data-track-index="52"></div>
+      <div id="kick-s4" class="clip kick" data-start="40" data-duration="12" data-track-index="53">ONE PRICE</div>
+      <div id="head-s4" class="clip head" data-start="40" data-duration="12" data-track-index="54">
+        2&cent; per GB a month. Never more than $10 per TB.
+      </div>
+
+      <!-- scene 5: cap -->
+      <img
+        id="shot-s5"
+        class="clip shot"
+        data-layout-allow-overflow
+        src="assets/home_cap.png"
+        alt=""
+        data-start="52"
+        data-duration="12"
+        data-track-index="60"
+      />
+      <div id="band-s5" class="clip band" data-start="52" data-duration="12" data-track-index="61"></div>
+      <div id="rule-s5" class="clip band-rule" data-start="52" data-duration="12" data-track-index="62"></div>
+      <div id="kick-s5" class="clip kick" data-start="52" data-duration="12" data-track-index="63">THE CAP</div>
+      <div id="head-s5" class="clip head" data-start="52" data-duration="12" data-track-index="64">
+        At the cap, writes stop. Every file stays.
+      </div>
+
+      <!-- scene: cta -->
+      <div id="cta-bg" class="clip cta-bg" data-start="64" data-duration="11" data-track-index="70"></div>
+      <div id="cta-wordmark" class="clip cta-wordmark" data-start="64" data-duration="11" data-track-index="71">
+        drive
+      </div>
+      <div id="cta-head" class="clip cta-head" data-start="64" data-duration="11" data-track-index="72">
+        Get drive.
+      </div>
+      <div id="cta-body" class="clip cta-body" data-start="64" data-duration="11" data-track-index="73">
+        The drive is not open yet. Sign-ups go to the waitlist.
+      </div>
+      <!-- No host is printed here. The live site sits behind Cloudflare Access,
+           so a printed URL sends every viewer to a login page instead of the
+           waitlist (drive#651). The video says where to go in words instead. -->
+      <div id="cta-url" class="clip cta-url" data-start="64" data-duration="11" data-track-index="74">
+        Join the waitlist on the drive site.
+      </div>
+    </div>
+
+    <!-- GSAP 3.14.2, vendored under assets/ so the render needs no network and
+         no CDN. The bytes are the ones jsdelivr served for
+         `gsap@3.14.2/dist/gsap.min.js`; sha256
+         c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280,
+         sha384 sG0Hv1tP1lZCk9KQmrIbY/XNwi+OY84GQqhMscbnsoBFqAz8KNCil1kvfL3Hbbk2. -->
+    <script src="assets/gsap-3.14.2.min.js"></script>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+
+      // intro: text is up from frame 0, then a slow drift
+      tl.fromTo("#intro-bg", { scale: 1 }, { scale: 1.04, duration: 6, ease: "none" }, 0);
+      tl.fromTo("#intro-wordmark", { y: 14 }, { y: 0, duration: 0.8, ease: "power2.out" }, 0);
+      tl.fromTo("#intro-kick", { y: 10 }, { y: 0, duration: 0.8, ease: "power2.out" }, 0.05);
+      tl.fromTo("#intro-head", { y: 12 }, { y: 0, duration: 0.9, ease: "power2.out" }, 0.1);
+      tl.fromTo("#intro-sub", { y: 10 }, { y: 0, duration: 0.9, ease: "power2.out" }, 0.2);
+
+      // One source of truth: each shot's own data-start/data-duration, so a
+      // timing edit in the markup can never drift from the animation timeline.
+      const scenes = [...document.querySelectorAll("[id^='shot-s']")].map((shot) => {
+        const start = Number(shot.dataset.start);
+        return [shot.id.slice("shot-".length), start, start + Number(shot.dataset.duration)];
+      });
+
+      for (const [id, start, end] of scenes) {
+        const d = end - start;
+        tl.fromTo("#shot-" + id, { scale: 1 }, { scale: 1.06, duration: d, ease: "none" }, start);
+        tl.fromTo("#kick-" + id, { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, start + 0.15);
+        tl.fromTo(
+          "#head-" + id,
+          { opacity: 0, y: 14 },
+          { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" },
+          start + 0.3,
+        );
+      }
+
+      tl.fromTo("#cta-wordmark", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 64.1);
+      tl.fromTo("#cta-head", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 64.2);
+      tl.fromTo("#cta-body", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 64.3);
+      tl.fromTo("#cta-url", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 64.4);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["drive-launch"] = tl;
+    </script>
+  </body>
+</html>

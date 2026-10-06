@@ -49,8 +49,8 @@ agents.
   can see your files
 - [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —
   one line per shipped thing
-- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/llms.txt) and
-  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/llms-full.txt)
+- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms.txt) and
+  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
   — the same words, for an agent
 
 The docs pages are authored in [`docs-site/`](docs-site/) and built by VitePress

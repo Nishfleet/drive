@@ -26,7 +26,7 @@ import {
   scoreboardVerdict,
 } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
-import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
+import { applyMarkers, cliSubcommands, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
@@ -145,9 +145,18 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The headline, the rule, no minimum and the cap, each
-  // read from the one config the invoice reads.
-  for (const line of [PRICE.headline, PRICE.rule, PRICE.noPlansLine]) {
+  // The headline, the rule, the prepaid lines, the cap, and the per-save hour:
+  // each read from the one config the invoice reads.
+  for (const line of [
+    PRICE.headline,
+    PRICE.rule,
+    PRICE.noPlansLine,
+    // The per-save hour, drive#535 finish line 2: the page that says billing
+    // is "counted by the minute" has to say the smallest unit that minute
+    // counting bills, or a file saved six times in an hour reads as an hour's
+    // worth of storage when the meter billed six.
+    PRICE.versionMinimumLine,
+  ]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);
   }
   assert.ok(
@@ -368,6 +377,21 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
   );
 });
 
+test("the FAQ states the one-hour minimum on a saved version", () => {
+  // drive#535, finish line 2 - the FAQ half. The cost answer used to say "Files
+  // are billed for at least one hour.", which is true of a FILE and reads as a
+  // floor on what you keep. The meter bills a full hour for every SAVED VERSION
+  // (core/meter.js's MINIMUM_MINUTES_PER_VERSION), and a customer who saves
+  // six times inside an hour is billed six hours, so the answer carries the
+  // pricing page's own sentence rather than a shorter one.
+  const faq = shipped("faq.md");
+  assert.ok(
+    faq.includes(PRICE.versionMinimumLine),
+    "the FAQ must state the per-save hour the meter bills",
+  );
+  assert.equal(faq.includes("Files are billed for at least one hour."), false);
+});
+
 test("the shipped FAQ is exactly the answers the data publishes", () => {
   const faq = shipped("faq.md");
   const headings = [...faq.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
@@ -547,10 +571,7 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // agent notes and the help text to it), and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
-  const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
-  const tableStart = mainGo.indexOf("var commands = map[string]func([]string) error{");
-  const tableBody = mainGo.slice(tableStart, mainGo.indexOf("}", tableStart));
-  const subcommands = new Set([...tableBody.matchAll(/"([a-z]+)":/g)].map((m) => m[1]));
+  const subcommands = cliSubcommands();
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",
@@ -598,20 +619,33 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
 });
 
 test("the docs config and the site's own config agree on the origin", () => {
-  // The VitePress config cannot import core/seo.js (it is outside the docs
-  // project, and VitePress's Vite will not load from there), so it repeats the
-  // origin. This is the gate that keeps the repeat honest: a base or an origin
-  // edited in one place fails here rather than shipping a docs site on a
-  // different host from the pricing page.
+  // The one site address lives in cmd/drive/site.json (drive#527). The docs
+  // config and core/seo.js both import it, so this gate checks the docs config
+  // reads that file and writes no address of its own, and that core/seo.js
+  // carries the same value.
   const config = readFileSync(
     new URL("../docs-site/.vitepress/config.mts", import.meta.url),
     "utf8",
   );
   assert.match(
     config,
-    new RegExp(`const SITE_ORIGIN = "${SITE.origin}";`),
-    "the docs config must use the canonical origin from core/seo.js",
+    /import site from "\.\.\/\.\.\/cmd\/drive\/site\.json" with \{ type: "json" \};/,
+    "the docs config must import the one site address from cmd/drive/site.json",
   );
+  assert.match(
+    config,
+    /const SITE_ORIGIN = site\.origin/,
+    "the docs config must take its origin from site.json",
+  );
+  assert.doesNotMatch(
+    config,
+    /https:\/\/[a-z0-9.-]+\.(dev|com|in|app)/,
+    "the docs config must not write a site address of its own",
+  );
+  const siteFile = JSON.parse(
+    readFileSync(new URL("../cmd/drive/site.json", import.meta.url), "utf8"),
+  );
+  assert.equal(SITE.origin, siteFile.origin, "core/seo.js must read the same site address");
   assert.match(
     config,
     /base: "\/docs\/"/,

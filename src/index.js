@@ -22,6 +22,7 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
   createS3Store,
   FILES_ENDPOINT,
@@ -83,7 +84,14 @@ import {
   handleCloseStatusRequest,
   runAccountCloseCron,
 } from "./account-close.js";
-import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
+import { BRANCH_QUEUE_KINDS, branchJob, branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
+import {
+  BRANCHES_ENDPOINT,
+  createKvSnapshotStore,
+  failJob,
+  handleBranchesRequest,
+  processBranchJob,
+} from "./branches.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -105,6 +113,7 @@ import {
   handleSearchRequest,
   indexAccounts,
   REINDEX_QUEUE_NAME,
+  REINDEX_SCHEDULE,
   REINDEX_SEND_BATCH,
   reconcileIndex,
   SEARCH_ENDPOINT,
@@ -739,6 +748,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -756,6 +767,8 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
+      () => Date.now(),
+      branchJobsQueue(c.env),
     );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
@@ -782,8 +795,8 @@ export function createApp() {
       capUsd = await store.getCapUsd(account.id);
       // The card on file is the accounts row's own stamp, read the same way as
       // the cap (drive#417). Until it is really on file the usage page says no
-      // charge has been made and shows no bill, instead of the $10 membership
-      // line a card-less account would look like it had been charged. It is
+      // charge has been made and shows no bill, instead of a balance line a
+      // card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
       usage = /** @type {Record<string, unknown>} */ (
@@ -818,6 +831,25 @@ export function createApp() {
       // would be a second answer to the same question.
       new Date(monthStart(Date.now())).toISOString(),
     );
+  });
+
+  // Own-data export (drive#547): the same handler GET /v1/export runs, served
+  // here so a signed-in browser can download it before the api Worker is bound.
+  // The account gate already answered 401 for a stranger. No DRIVE_DB means
+  // no keys and no file rows, which is a truthful empty export, not a 503.
+  app.get(EXPORT_ENDPOINT, (c) => {
+    const account = c.get("account");
+    if (!account) return unauthorizedResponse();
+    const db = c.env.DRIVE_DB;
+    return exportRoute(c.req.raw, {
+      store: {
+        listKeys: (acct) => (db ? createD1DeviceStore(db).listPublic(acct) : Promise.resolve([])),
+      },
+      db: db ?? null,
+      account,
+      now: Date.now,
+      url: new URL(c.req.url),
+    });
   });
 
   // The prepaid balance (drive#586): the balance and recent ledger lines, and
@@ -1068,6 +1100,13 @@ export function createApp() {
   return app;
 }
 
+// One app per isolate, built on the first fetch: createApp takes no env and
+// closes over no request, so the compiled router is safe to share across
+// fetches (the api Worker's appFor cache, minus the table key), and a
+// construction failure fails that request, not the isolate's boot.
+/** @type {ReturnType<typeof createApp> | undefined} */
+let app;
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
 // Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
@@ -1092,7 +1131,8 @@ const sentryOptions = (env) => ({
  */
 const handler = {
   async fetch(request, env, _context) {
-    return createApp().fetch(request, env);
+    if (app === undefined) app = createApp();
+    return app.fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string
@@ -1130,6 +1170,18 @@ const handler = {
    * @returns {Promise<void>}
    */
   async scheduled(event, env, context, store) {
+    // Every string cloudflare.config.ts declares has a branch below.
+    // Anything else used to fall through to the nightly reindex, so a
+    // mistyped trigger silently walked every account's store.
+    if (
+      event.cron !== METER_CRON &&
+      event.cron !== METER_RECONCILE_SCHEDULE &&
+      event.cron !== CLOSE_SCHEDULE &&
+      event.cron !== TRASH_PURGE_SCHEDULE &&
+      event.cron !== REINDEX_SCHEDULE
+    ) {
+      throw new Error(`unknown cron: ${event.cron}`);
+    }
     // The meter's trip. The controller carries the schedule string the
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.
@@ -1466,23 +1518,26 @@ const handler = {
   },
 
   /**
-   * Consumes bound queues. Two producers share this one export, and
-   * `batch.queue` tells them apart:
+   * Consumes bound queues. `batch.queue` tells them apart:
    *   - `drive-reindex` (drive#566): one account's nightly search rebuild.
-   *   - `drive-meter-jobs` (drive#519): one account's hourly step or nightly
-   *     meter reconcile.
+   *   - `drive-meter-jobs` (drive#519, drive#563): one account's hourly meter
+   *     step, nightly meter reconcile, or a branch job (`branch.*` kinds).
    *
    * @param {{queue?: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
    * @param {ExecutionContext} context
    * @param {import("../core/files.js").FileStore} [store]
    */
-  async queue(batch, env, context, store = storeFor(env) ?? undefined) {
+  async queue(batch, env, _context, store = storeFor(env) ?? undefined) {
     if (batch.queue === REINDEX_QUEUE_NAME) {
       // One message per invocation (`maxBatchSize: 1`). The walk is the slow,
       // fallible part, and one account per invocation is what keeps a
       // 100,000-file drive inside the invocation's budget and a broken account
       // from spending a sibling's retry budget.
+      //
+      // Awaited, not waitUntil: the platform holds the invocation until this
+      // handler returns, which is also how the meter and branch consumers
+      // work. A waitUntil would let the handler return before the walk acked.
       //
       // Every message is answered by name — `ack()` or `retry()` — rather than
       // by a throw: with per-message acknowledgement a throw after the first
@@ -1494,47 +1549,97 @@ const handler = {
       // that died before the swap left the account's rows as the last good
       // rebuild left them, so retrying re-walks and swaps again, never
       // re-deletes-then-dies (drive#566).
-      context.waitUntil(
-        Promise.all(
-          batch.messages.map(async (message) => {
-            const body = /** @type {{accountId?: unknown}} */ (message.body);
-            const accountId = typeof body?.accountId === "string" ? body.accountId : "";
-            if (accountId === "") {
-              console.error("search: a reindex message carried no account id");
-              message.ack();
-              return;
-            }
-            if (!env.DRIVE_DB) {
-              console.error("search: the reindex queue ran without the file index database");
-              message.retry();
-              return;
-            }
-            if (!store) {
-              console.error("search: the reindex queue ran without a storage store");
-              message.retry();
-              return;
-            }
-            const account = { id: accountId };
-            try {
-              await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
-              message.ack();
-            } catch (error) {
-              const reason = error instanceof Error ? error.message : String(error);
-              console.error(`search: the reindex for account ${accountId} failed: ${reason}`);
-              message.retry();
-            }
-          }),
-        ),
+      await Promise.all(
+        batch.messages.map(async (message) => {
+          const body = /** @type {{accountId?: unknown}} */ (message.body);
+          const accountId = typeof body?.accountId === "string" ? body.accountId : "";
+          if (accountId === "") {
+            console.error("search: a reindex message carried no account id");
+            message.ack();
+            return;
+          }
+          if (!env.DRIVE_DB) {
+            console.error("search: the reindex queue ran without the file index database");
+            message.retry();
+            return;
+          }
+          if (!store) {
+            console.error("search: the reindex queue ran without a storage store");
+            message.retry();
+            return;
+          }
+          const account = { id: accountId };
+          try {
+            await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+            message.ack();
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            console.error(`search: the reindex for account ${accountId} failed: ${reason}`);
+            message.retry();
+          }
+        }),
       );
       return;
     }
 
     // The meter's queue consumer (drive#519): one message is one account's
     // hourly step or nightly reconcile, sent by the crons above when the
-    // METER_JOBS queue is bound. A job that throws is retried by the platform,
-    // and after its retries it lands in the dead-letter queue (src/meter-jobs.js).
+    // METER_JOBS queue is bound. Branch jobs share this same queue
+    // (drive#563). A job that throws is retried by the platform, and after
+    // its retries it lands in the dead-letter queue (src/meter-jobs.js).
     if (batch.queue !== METER_JOBS_QUEUE) {
       throw new Error(`unknown queue ${String(batch.queue)}`);
+    }
+    const branchMessages = [];
+    const meterMessages = [];
+    for (const message of batch.messages) {
+      const kind =
+        message.body !== null && typeof message.body === "object"
+          ? /** @type {{kind?: unknown}} */ (message.body).kind
+          : "";
+      if (typeof kind === "string" && kind.startsWith("branch.")) {
+        branchMessages.push(message);
+      } else {
+        meterMessages.push(message);
+      }
+    }
+    if (branchMessages.length > 0) {
+      const snapshots = snapshotsFor(env);
+      if (!env.DRIVE_DB || !snapshots || !store) {
+        // A missing branch dependency must not fail the meter's messages in
+        // the same batch: both producers currently share drive-meter-jobs.
+        for (const message of branchMessages) {
+          message.retry();
+        }
+      } else {
+        await handleBranchJobs(
+          { messages: branchMessages },
+          async (job) => {
+            const scoped = scopeStore(store, { id: job.accountId });
+            const result = await processBranchJob(
+              env.DRIVE_DB,
+              snapshots,
+              scoped,
+              { id: job.accountId },
+              job.branchId,
+            );
+            return { continue: result.done === false };
+          },
+          branchJobsQueue(env),
+          async (body, error) => {
+            const job = branchJob(body);
+            const nextState = job.kind === BRANCH_QUEUE_KINDS.approve ? "open" : "discarded";
+            const sentence =
+              error instanceof Error && error.message
+                ? error.message
+                : failureMessage("unexpected");
+            await failJob(env.DRIVE_DB, job.branchId, nextState, sentence);
+          },
+        );
+      }
+    }
+    if (meterMessages.length === 0) {
+      return;
     }
     if (!env.METER_DB) {
       throw new Error("meter jobs: METER_DB binding is not configured");
@@ -1542,7 +1647,7 @@ const handler = {
     const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
     const dodo = dodoEnv(env);
     await handleMeterJobs(
-      batch,
+      { messages: meterMessages },
       meterJobHandlers({
         meterDb: env.METER_DB,
         capStore: env.DRIVE_DB

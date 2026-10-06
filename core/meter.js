@@ -460,43 +460,42 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 // to record the size and not only for how long, which
 // usage_minutes.gb_minutes_live never could.
 //
-// The window is the hours' own window, and that is a deliberate answer about
-// what an hourly mark can mean:
+// The window is the hour's END, and that is a deliberate answer about what an
+// hourly mark can mean:
 //
-//   `hidden_at > ?1` keeps a version hidden AT any point in the hour, not one
-//   hidden after it - so a version replaced mid-hour is still live at the
-//   hour's start, and its successor may be live after. Both are in the set, and
-//   the SUM is their combined size.
+//   `created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?2)` is the set of
+//   versions still live when the hour closes - the size the drive held at that
+//   instant, summed per account.
 //
-// That makes the mark an UPPER BOUND on the drive's concurrent stored bytes
-// over the hour (the set of versions live at any instant is always a subset of
-// the set live at some point in the hour), and it is exact whenever no version
-// is written AND hidden inside a single hour - the ordinary case, where the
-// hours' set is the drive's own set. Where a customer rewrites and replaces
-// files faster than once an hour, the mark counts a version and its successor
-// that never coexisted, so the month's peak can exceed what was ever held at
-// one instant.
+// Saving a file again inside one hour replaces the version before it, so that
+// one file is in the live set once, however many times it was saved. The older
+// window (`hidden_at > ?1`, every version live at ANY point in the hour)
+// multiplied the mark by the number of saves: six saves of one 10 GB file in a
+// single hour marked 60 GB (drive#535), a mark then read as the month's peak,
+// as the usage page's "stored now", and - as the average of the marks - into
+// the free download allowance, so a customer saving fast was treated as a
+// drive six times bigger than the one they had.
 //
-// The bound is the SAFE direction: the customer is never charged less than
-// what they stored, only more, and only inside an hour in which they replaced
-// something. A window that instead excluded mid-hour hides (`hidden_at < ?1`,
-// the set live at the hour's first instant) understates exactly when a drive
-// grew, which is when the ceiling must be true. A minute-boundary snapshot
-// belongs to the nightly reconciler (#59), which can re-derive any hour from
-// the stored versions; this statement is the hourly trigger's, and it is the
-// ceiling's source of truth between reconciliations.
+// What the hour's end gives up is the biggest size the drive held at some
+// instant INSIDE the hour: a version hidden at 00:20 and not replaced is not
+// in the 00:00 mark, so a drive that shrank mid-hour and never grew back
+// marks 0. That is the right trade for this number, because the mark is a
+// display figure and not a price: the money reads only GB-minutes (#463), the
+// ceiling follows the month's average, and the average is derived from those
+// minutes rather than from the marks (billing.js gbMonths). What the marks
+// give up cannot understate a bill, and the bill still charges every version
+// this set no longer counts - each save is at least an hour, which is why the
+// pricing copy says so (#535, core/pricing.js versionMinimumLine).
 //
-// A version hidden at exactly ?2 is not in the mark, because it held no minute
-// of this hour - the same half-open window the minutes statement bills on, so
-// the two answers describe the same set of versions.
+// ?1 = hour start, ?2 = hour end. This statement reads ?2 only; its other half
+// (the minutes statement this joins to) bills on ?1, so the two still answer
+// about the same hour.
 //
 // Sizes are summed as integers inside SQL and scaled nowhere, so a mark is
 // exact whole bytes, and an account's mark never drifts in a float.
-// ?1 = hour start, ?2 = hour end.
-// So the statement sums the sizes of every version live at some point in the
-// hour, per account - one statement, one row per account, however many
-// versions exist, which is the property the GB-minutes statement above was
-// built for.
+// So the statement sums the sizes of every version live at the hour's end, per
+// account - one statement, one row per account, however many versions exist,
+// which is the property the GB-minutes statement above was built for.
 // --- The trash billing rule (drive issue #521) -----------------------
 
 /**
@@ -562,7 +561,7 @@ function hourStoredBytesSql(scoped) {
   return `SELECT account_id,
     SUM(size_bytes) AS stored_bytes,
     COUNT(*) AS versions
-  FROM ${hourRows("> ?1", scoped)} AS v
+  FROM ${hourRows(">= ?2", scoped)} AS v
   GROUP BY account_id
   ORDER BY account_id`;
 }
@@ -826,22 +825,62 @@ export const MONTH_PEAK_BYTES_SQL = `SELECT
     AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
     AND hour <  strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`;
 
-// Whether the account has a version live at any point in the month - the fact
-// that makes an all-zero peak "unmeasured" rather than "empty". A version
-// created inside the month, or still live across its start, is the difference
-// between the two readings. The window is half-open like every other window in
-// this module: a version hidden at EXACTLY the month's first instant held no
-// time in the month (hidden_at > monthStart, strict), so it does not make the
-// month look measured-or-not. This matches the hour overlap (hidden_at >
-// hourStart) so a version is counted the same way at both granularities.
-const MONTH_HAS_VERSIONS_SQL = `SELECT EXISTS(
-    SELECT 1 FROM file_versions
-    WHERE account_id = ?1
-      AND created_at < strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000
-      AND (hidden_at IS NULL
-           OR hidden_at > strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000)
-      AND ${NOT_TRASH_SQL}
-  ) AS has_versions`;
+// The two facts that tell an all-zero peak "unmeasured" from "empty", asked in
+// one read so the refusal below sees one snapshot of the month. A version of a
+// size over 0 bytes is what either fact is about: a 0-byte version can hold no
+// peak and bills no cents, so a month of empty files is a measured $0 month and
+// never an error (drive#535).
+//
+// `live_version` is the month's own window: a version created inside the
+// month, or still live across its start, was stored in it. That is the fact for
+// the month the cron never rolled at all - no hour rows, so there is no hour to
+// ask about, and a missing measurement is not an empty month.
+//
+// `unmarked_hour` is the other shape, and it is the hour the meter DID roll:
+// whether some hour END in the month had a version over 0 bytes live at it,
+// because that is the set the hour's mark is taken from (HOUR_STORED_BYTES_SQL,
+// drive#535). A rolled hour whose end held real bytes left a 0 mark only if the
+// rollup did not write the column, which is the deploy window where the hours
+// before migration 0006 landed carry its 0 default.
+//
+// What neither fact covers is the month whose every version was hidden before
+// an hour's end - a file written and deleted inside one hour. Its marks are 0
+// because the drive really held nothing at any hour's end, its GB-minutes
+// measured that hour, and its peak is 0. That is a measured month, and it reads
+// 0 rather than failing every route that opens on the month.
+//
+// Both facts read what the mark reads, so both exclude the account's trash
+// folder (NOT_TRASH_SQL): a parked file is not stored bytes, so a month whose
+// only live versions are in the trash is measured, not missing a measurement.
+//
+// Both windows are half-open like every other window in this module: a version
+// hidden at EXACTLY the month's first instant held no time in the month
+// (hidden_at > monthStart, strict), so it does not make the month look
+// measured-or-not. An hour ends at hour + HOUR_MS, and a version live there
+// (hidden_at >= that instant) is in that hour's mark - the same inclusive edge
+// the mark's own window uses.
+const MONTH_UNMEASURED_SQL = `SELECT
+    EXISTS(
+      SELECT 1 FROM file_versions
+      WHERE account_id = ?1
+        AND size_bytes > 0
+        AND created_at < strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000
+        AND (hidden_at IS NULL
+             OR hidden_at > strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000)
+        AND ${NOT_TRASH_SQL}
+    ) AS live_version,
+    EXISTS(
+      SELECT 1 FROM usage_minutes u
+      JOIN file_versions v
+        ON v.account_id = u.account_id
+       AND v.size_bytes > 0
+       AND v.created_at < u.hour + ${HOUR_MS}
+       AND (v.hidden_at IS NULL OR v.hidden_at >= u.hour + ${HOUR_MS})
+       AND ${NOT_TRASH_SQL}
+      WHERE u.account_id = ?1
+        AND u.hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
+        AND u.hour < strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000
+    ) AS unmarked_hour`;
 
 /**
  * The start of the UTC calendar month an instant falls in, epoch milliseconds.
@@ -873,9 +912,13 @@ export function monthStart(at) {
  * An account with no rows in the month reads 0: no account stored anything it
  * can be charged for, which is the same $0 an empty month bills. A month whose
  * hours are all metered but none marked (rows written by a rollup from a
- * version that did not write the column) is REFUSED when the account had a
- * version live in it - an unreadable peak is said so, never billed - and the
- * check below is where.
+ * version that did not write the column, or a month the cron never rolled for a
+ * drive that was holding one) is REFUSED when the read below finds a version
+ * over 0 bytes that an hour end should have marked - an unreadable peak is said
+ * so, never billed - and the check itself is where. Two shapes are NOT that
+ * failure and read 0: a month of empty files (every version is 0 bytes, so 0
+ * is the measured peak and the measured bill) and a month whose every version
+ * was deleted before an hour's end (drive#535). Both are answers, not errors.
  *
  * The window is half-open: the hour that starts 00:00:00 on the 1st belongs to
  * THAT month, because an hour is keyed by the instant it starts. A file
@@ -897,17 +940,27 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
   const markedHours = Number(row?.marked_hours ?? 0);
   const peakBytes = Number(row?.peak_bytes ?? 0);
   const hours = Number(row?.hours ?? 0);
-  // A month whose every hour reads 0 - or that has no hours at all - while the
-  // account had versions live in it is a month the meter did not measure, not a
-  // month the account stored nothing: its peak is not readable, and billing it
-  // from those zeros would charge for storage nobody recorded - or, read the
-  // other way, silently bill $0 for a month that held data. That is refused
-  // here, by name. The check does NOT require hours > 0: a month with no usage
-  // rows at all but a live version is the same failure (the cron never ran) and
-  // must fail closed the same way, never return 0 and bill as an empty month.
-  // A month of genuinely empty hours (the account stored nothing, so no hour
-  // marked a byte) is a real $0 month and reads as one: it has no live version
-  // either, which is what the second read confirms.
+  // A month whose every hour reads 0 is one of three shapes, and only one of
+  // them is a failure:
+  //
+  //   1. The meter never measured it - a version over 0 bytes was live at an
+  //      hour end the rollup rolled and left unmarked (the deploy window where
+  //      the hours before migration 0006 landed carry the column's 0 default),
+  //      or there are no hour rows at all while such a version was live (the
+  //      cron never ran). Its peak is not readable, and reading it as 0 would
+  //      bill $0 for storage nobody recorded, so it is refused by name.
+  //   2. A month of empty files: every version is 0 bytes, no hour can mark a
+  //      byte, and the meter did measure - 0 GB-minutes and a 0 peak are that
+  //      month's real numbers (drive#535).
+  //   3. A month whose every version was hidden before an hour's end: the
+  //      drive really held nothing at any hour's end, the GB-minutes still
+  //      billed every minute the versions existed, and the peak is 0
+  //      (drive#535).
+  //
+  // MONTH_UNMEASURED_SQL takes the two facts that pick (1) out of the three:
+  // `unmarked_hour` for the rolled hours, `live_version` for the month that was
+  // never rolled at all. Neither asks about the month's hours versus 0-byte
+  // versions, which is what leaves (2) and (3) as answers.
   //
   // A PARTIALLY marked month is deliberately not refused: the only way one
   // arises is the deploy window, where the hours before 0006 landed have the
@@ -917,8 +970,8 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
   // of it. The unmeasurable case is the no-positive-mark one above, which is the
   // only shape in which no hour measured anything at all.
   if (markedHours === 0 && peakBytes === 0) {
-    const live = await db.prepare(MONTH_HAS_VERSIONS_SQL).bind(accountId, at).first();
-    if (live?.has_versions) {
+    const unmeasured = await db.prepare(MONTH_UNMEASURED_SQL).bind(accountId, at).first();
+    if (hours === 0 ? unmeasured?.live_version : unmeasured?.unmarked_hour) {
       throw new RangeError(
         `month ${label} has no stored-bytes mark on ${hours} metered ${hours === 1 ? "hour" : "hours"}, so the meter never measured the peak`,
       );
@@ -933,28 +986,39 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
 }
 
 // The Dodo push's as-of-this-hour read (drive issue #51): the month's
-// GB-minutes, peak, downloads and average stored size from the hour rows
-// that already exist, through the closed hour being pushed. This is a SUM
-// over stored rows, not a generate_series over missing hours, so a gap the
-// meter has not rolled yet is not invented as a $0 hour.
+// GB-minutes, peak and downloads from the hour rows that already exist,
+// through the closed hour being pushed. This is a SUM over stored rows, not a
+// generate_series over missing hours, so a gap the meter has not rolled yet is
+// not invented as a $0 hour.
+//
+// There is no average in this read. The month's average stored size is the
+// month's GB-minutes over the month's minutes - one conversion, made once in
+// billing.js (`gbMonths`, the avg_GB both halves of the price read) - and
+// averaging the hour's stored-bytes marks instead was a second, different
+// answer: a drive whose files were replaced faster than once an hour had every
+// save counted again in that average (drive#535), and no two callers could be
+// held to the same figure. The caller divides, in the one place the price's
+// divisor lives (MINUTES_PER_MONTH); this read stays the meter's own numbers.
 export const MONTH_USAGE_THROUGH_SQL = `SELECT
     COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
-    COALESCE(SUM(download_bytes), 0) AS download_bytes,
-    COALESCE(AVG(stored_bytes), 0) AS average_stored_bytes
+    COALESCE(SUM(download_bytes), 0) AS download_bytes
   FROM usage_minutes
   WHERE account_id = ?1
     AND hour >= ?2
     AND hour <= ?3`;
 
 /**
- * The month's usage as of one closed hour, for the Dodo push. The peak is
- * still MAX(stored_bytes); the GB-minutes are SUM of the hours actually
- * rolled through `through`, so the bill for hour N cannot see hour N+1.
+ * The month's usage as of one closed hour, for the Dodo push: the GB-minutes
+ * and downloads the bill reads, and the peak the page shows. The GB-minutes
+ * are the SUM of the hours actually rolled through `through`, so the bill for
+ * hour N cannot see hour N+1. The month's average stored size is deliberately
+ * NOT here: it is `gbMonths(gbMinutes)` (billing.js), the one conversion, and
+ * the caller makes it rather than reading an average of the hour's marks.
  * @param {D1Database} db
  * @param {unknown} accountId
  * @param {number|Date|string} through the closed hour being billed
- * @returns {Promise<{gbMinutes: number, peakBytes: number, downloadBytes: number, averageStoredGb: number}>}
+ * @returns {Promise<{gbMinutes: number, peakBytes: number, downloadBytes: number}>}
  */
 export async function monthUsageThrough(db, accountId, through) {
   if (typeof accountId !== "string" || accountId === "") {
@@ -965,7 +1029,6 @@ export async function monthUsageThrough(db, accountId, through) {
   const gbMinutes = Number(row?.gb_minutes ?? 0);
   const peakBytes = Number(row?.peak_bytes ?? 0);
   const downloadBytes = Number(row?.download_bytes ?? 0);
-  const averageStoredBytes = Number(row?.average_stored_bytes ?? 0);
   if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
     throw new TypeError(`the month's gb_minutes must be 0 or more, got ${row?.gb_minutes}`);
   }
@@ -979,16 +1042,10 @@ export async function monthUsageThrough(db, accountId, through) {
       `the month's download_bytes must be 0 or more whole bytes, got ${row?.download_bytes}`,
     );
   }
-  if (!Number.isFinite(averageStoredBytes) || averageStoredBytes < 0) {
-    throw new TypeError(
-      `the month's average stored bytes must be 0 or more, got ${row?.average_stored_bytes}`,
-    );
-  }
   return Object.freeze({
     gbMinutes,
     peakBytes,
     downloadBytes,
-    averageStoredGb: averageStoredBytes / BYTES_PER_GB,
   });
 }
 

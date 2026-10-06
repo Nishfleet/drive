@@ -119,6 +119,16 @@ export default defineConfig({
         maxBatchSize: 1,
         maxRetries: 2,
       }),
+      // One message per account from the meter crons (drive#519). Both
+      // queues were created on the account on 2026-10-06; see the note at
+      // the top of src/meter-jobs.js. Remove this and METER_JOBS to go back
+      // to the in-process loop.
+      triggers.queue({
+        name: "drive-meter-jobs",
+        deadLetterQueue: "drive-meter-jobs-dlq",
+        maxRetries: 5,
+        maxBatchSize: 10,
+      }),
     ],
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron
@@ -133,6 +143,14 @@ export default defineConfig({
     },
     env: {
       ASSETS: bindings.assets(),
+      METER_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
+      // Branch copy/approve/discard/rewind (drive#563). The producer rides the
+      // meter queue that already exists, because a deploy that names a queue
+      // which does not exist fails. Message kinds are `branch.*` vs `meter.*`,
+      // and src/index.js's queue handler splits the batch. A dedicated
+      // `drive-branch-jobs` queue is a later bind-name change once it is
+      // created out of band (`src/branch-jobs.js`).
+      BRANCH_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
       // Two databases, one purpose each (drive issue #170). The waitlist's
       // table lives alone in the waitlist database: the sign-up list is
       // public data and can be exported, reset or handed on without
@@ -166,8 +184,15 @@ export default defineConfig({
       // branch records one `{size, etag, modified}` entry per file it copied;
       // that is ~117 bytes a file, so a 100,000-file branch is ~11 MiB of JSON
       // — twelve times D1's 1 MiB row limit, which is why phase 1 refused it
-      // and why the snapshot now lives here instead. The `branches` row keeps
-      // a pointer to the key and the value's byte length
+      // and why the snapshot now lives here instead. drive#563 runs copy,
+      // approve, discard and rewind as queued jobs in file batches so the
+      // 10,000-subrequest ceiling is no longer the cap; 100,000 files is still
+      // the remaining size limit (`BRANCH_FILE_LIMIT` in src/branches.js)
+      // because that snapshot has to sit in memory. BRANCH_JOBS produces onto
+      // the existing `drive-meter-jobs` queue (kinds `branch.*`) until a
+      // dedicated queue is created out of band (`src/branch-jobs.js`). The
+      // `branches` row
+      // keeps a pointer to the key and the value's byte length
       // (migrations/drive/0012_branch_snapshot_kv.sql). Since drive#329 the
       // leftover column is unread and unwritten: `readSnapshot` takes the
       // pointer only, and a missing namespace is a 503 on every branch and

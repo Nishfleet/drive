@@ -12,7 +12,10 @@ import {
   FILES_ENDPOINT,
   handleFilesRequest,
   scopeStore,
+  TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
+import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
@@ -1070,6 +1073,32 @@ test("the published worker really declares the reindex queue halves", async () =
   // off that deploy concern (docs/build-spec.md runbook).
 });
 
+test("scheduled throws on an unknown cron and does not start the reindex", async () => {
+  /** @type {Promise<unknown>[]} */
+  const waits = [];
+  const workerScheduled =
+    /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
+  await assert.rejects(
+    () =>
+      workerScheduled(
+        /** @type {ScheduledController} */ (
+          /** @type {unknown} */ ({ cron: "1 2 3 4 5", scheduledTime: Date.now() })
+        ),
+        { DRIVE_DB: makeD1() },
+        {
+          /** @param {Promise<unknown>} promise */
+          waitUntil(promise) {
+            waits.push(promise);
+          },
+        },
+      ),
+    /unknown cron/,
+  );
+  assert.equal(waits.length, 0, "an unknown cron must not queue the reindex");
+});
+
 test("the nightly walk's account list is the accounts table, versions or not", async () => {
   // The list once read the index's own DISTINCT account ids, which grew with
   // every row ever indexed and was blind to an account whose files are all
@@ -1140,6 +1169,23 @@ test("the deployed cron schedule is the one the module names", () => {
     declared.includes(REINDEX_SCHEDULE),
     `cloudflare.config.ts runs the reindex on ${REINDEX_SCHEDULE}; it declares ${declared.join(", ") || "no schedule"}`,
   );
+  // Every cron string the platform fires must have a branch in scheduled()
+  // that names it: since the unknown-cron guard, a declared string with no
+  // branch is a nightly failure, not a silent no-op. Set equality in both
+  // directions, so a trigger the handler dropped or a branch nothing fires
+  // are both caught.
+  const handled = [
+    METER_CRON,
+    METER_RECONCILE_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    REINDEX_SCHEDULE,
+    CLOSE_SCHEDULE,
+  ];
+  assert.deepEqual(
+    [...declared].sort(),
+    [...handled].sort(),
+    `cloudflare.config.ts declares ${declared.join(", ")}; scheduled() handles ${handled.join(", ")}`,
+  );
 });
 
 test("the search route answers 405 with the one allowed method named", async () => {
@@ -1188,9 +1234,26 @@ test("the worker serves /api/search behind the account gate and file writes keep
   assert.equal(body.results[0].path, "/warren-buffet.txt");
 });
 
+test("the cached app still reads each fetch's own env", async () => {
+  // createApp is built once per isolate. Env is passed into app.fetch, so a
+  // second fetch with a different ASSETS binding must not see the first's.
+  const first = await workerFetch(
+    new Request("https://drive.test/not-an-api"),
+    { ASSETS: { fetch: () => new Response("first-isolate-env") } },
+    ctx,
+  );
+  const second = await workerFetch(
+    new Request("https://drive.test/not-an-api"),
+    { ASSETS: { fetch: () => new Response("second-isolate-env") } },
+    ctx,
+  );
+  assert.equal(await first.text(), "first-isolate-env");
+  assert.equal(await second.text(), "second-isolate-env");
+});
+
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  for (const name of ["0002_file_index.sql", "0030_file_index_staging.sql"]) {
+  for (const name of ["0002_file_index.sql", "0032_file_index_staging.sql"]) {
     const sql = readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8");
     const withoutComments = sql.replace(/--.*$/gm, "");
     assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), `${name}: no drops`);
@@ -1210,7 +1273,7 @@ test("the migration is additive: one new table, no drops, every column defaulted
   );
   assert.ok(
     readFileSync(
-      new URL("../migrations/drive/0030_file_index_staging.sql", import.meta.url),
+      new URL("../migrations/drive/0032_file_index_staging.sql", import.meta.url),
       "utf8",
     ).includes("CREATE TABLE IF NOT EXISTS file_index_staging"),
   );
