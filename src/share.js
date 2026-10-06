@@ -43,21 +43,24 @@
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
+import { json, readJsonObject } from "../workers/api/src/http.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
 import {
+  etagMatches,
   joinPath,
   previewContentType,
+  previewDisposition,
   safeFileName,
   scopeStore,
   TRASH_PATH,
   validatePath,
 } from "./files.js";
+import { balanceCents } from "./ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -87,6 +90,30 @@ export const REQUEST_FILE_MAX_BYTES = 32_000_000;
 // on top of the owner's spending cap. The owner may set a different total
 // when they mint the page (POST /api/request {folder, maxBytes}).
 export const REQUEST_TOTAL_MAX_BYTES = 1_000_000_000;
+// The most open links one account may hold (drive issue #549): 50 share links
+// and 50 upload pages. A script with one account cannot mint unbounded tokens
+// to walk, and an owner with a burst of links revokes one to make room.
+export const MAX_OPEN_LINKS = 50;
+// The per-link file-count cap (drive issue #549): a link takes 100 files by
+// default. The reservation UPDATE enforces it in the same statement that
+// counts the bytes, so a link cannot be filled by a script that drops files
+// faster than the count is written.
+export const REQUEST_MAX_FILES = 100;
+// The longest file name an upload page accepts (drive issue #549): the same
+// 255 the owner's own Files page lives with, checked before the body is read.
+export const REQUEST_NAME_MAX_LENGTH = 255;
+// A per-link total above this is a number the owner cannot mean (drive issue
+// #549): 1 TB is the pre-charge storage ceiling, so a link promising more
+// could never be honoured anyway.
+export const REQUEST_TOTAL_MAX_CEILING_BYTES = 1_000_000_000_000;
+// How many times a shared file's own size a link may serve before it stops
+// (drive issue #549): a share is for showing a file, not for hosting it as a
+// seed, and 30x a file is far above the handful of opens a person makes.
+export const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
+// A link whose row is this old and no longer open can be pruned (drive issue
+// #549): expired and revoked rows are kept 90 days so the owner's list still
+// shows what they did, then removed.
+export const LINK_RETENTION_DAYS = 90;
 // 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.
@@ -275,11 +302,23 @@ export function validateRequestMaxBytes(value) {
     typeof value !== "number" ||
     !Number.isInteger(value) ||
     value < 1 ||
-    value > Number.MAX_SAFE_INTEGER
+    value > REQUEST_TOTAL_MAX_CEILING_BYTES
   ) {
     return { maxBytes: 0, error: failureMessage("request-max-bytes") };
   }
   return { maxBytes: value };
+}
+
+/**
+ * The per-link byte cap for a shared file of `size` bytes: the file's size
+ * times SHARE_DOWNLOAD_CAP_MULTIPLIER. A zero-byte file caps at zero served
+ * bytes, which is no limit at all on a file that carries no bytes.
+ * @param {number} size
+ * @returns {number}
+ */
+export function shareDownloadCapFor(size) {
+  const bytes = Number.isFinite(size) && size > 0 ? Math.floor(size) : 0;
+  return bytes * SHARE_DOWNLOAD_CAP_MULTIPLIER;
 }
 
 /** The word the owner's list shows for each state. */
@@ -306,18 +345,19 @@ export function linkStateLabel(state) {
   return label;
 }
 
-/** The day a link stops working, in words, for the owner's list.
- *
+/**
+ * The instant a link stops working (drive#559). The Worker sends the instant
+ * and never words for it: a UTC timestamp reads the wrong day at both ends of
+ * the month for a customer in another zone. The upload page writes it in the
+ * browser's own zone, and `drive` writes it in the machine's.
  * @param {number} expiresAt
+ * @returns {string} an ISO instant
  */
-export function expiresLabel(expiresAt) {
+export function expiresAtIso(expiresAt) {
   if (!Number.isFinite(expiresAt)) {
-    throw new TypeError(`expiresLabel needs an expiry time, got ${String(expiresAt)}`);
+    throw new TypeError(`expiresAtIso needs an expiry time, got ${String(expiresAt)}`);
   }
-  return `Until ${new Date(expiresAt).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}`;
+  return new Date(expiresAt).toISOString();
 }
 
 /**
@@ -339,7 +379,7 @@ export function shareRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     downloads: count,
     downloadsLabel:
       count === 0
@@ -367,7 +407,7 @@ export function requestRow(record, now, base) {
     state,
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
     uploads: count,
     uploadBytes: bytes,
     maxBytes: max,
@@ -413,32 +453,35 @@ export const UPLOAD_PAGE_LINE =
  *
  * @typedef {{token: string, accountId: string, path: string, name: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
- *   downloadCount: number, downloadBytes: number}} ShareRecord
+ *   downloadCount: number, downloadBytes: number, maxDownloadBytes: number|null}} ShareRecord
  * @typedef {{token: string, accountId: string, folder: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
- *   uploadCount: number, uploadBytes: number, maxBytes: number}} RequestRecord
+ *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number}} RequestRecord
  * @typedef {object} LinkStore
  * @property {object} shares
  * @property {(record: ShareRecord) => Promise<ShareRecord>} shares.create
  * @property {(token: string) => Promise<ShareRecord|null>} shares.get
  * @property {(accountId: string) => Promise<ShareRecord[]>} shares.list
+ * @property {(accountId: string, now: number) => Promise<number>} shares.countOpen
  * @property {(token: string, accountId: string, at: number) => Promise<ShareRecord|null>} shares.revoke
- * @property {(token: string, bytes: number) => Promise<void>} shares.addDownload
+ * @property {(token: string, bytes: number) => Promise<ShareRecord|null>} shares.addDownload
  * @property {object} requests
  * @property {(record: RequestRecord) => Promise<RequestRecord>} requests.create
  * @property {(token: string) => Promise<RequestRecord|null>} requests.get
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
+ * @property {(accountId: string, now: number) => Promise<number>} requests.countOpen
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
 // a record written cannot drift: the record fields are the same words the
 // handlers already use, and the SQL spells them in snake_case.
 const SHARE_COLUMNS =
-  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes";
+  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes";
 const REQUEST_COLUMNS =
-  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes";
+  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files";
 
 /**
  * A share row as the ShareRecord the handlers read. A column that is NULL is
@@ -460,6 +503,10 @@ function toShareRecord(row) {
       row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
     downloadCount: Number(row.download_count ?? 0),
     downloadBytes: Number(row.download_bytes ?? 0),
+    maxDownloadBytes:
+      row.max_download_bytes === null || row.max_download_bytes === undefined
+        ? null
+        : Number(row.max_download_bytes),
   };
 }
 
@@ -480,6 +527,7 @@ function toRequestRecord(row) {
     uploadCount: Number(row.upload_count ?? 0),
     uploadBytes: Number(row.upload_bytes ?? 0),
     maxBytes: Number(row.max_bytes ?? REQUEST_TOTAL_MAX_BYTES),
+    maxFiles: Number(row.max_files ?? REQUEST_MAX_FILES),
   };
 }
 
@@ -537,7 +585,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO shares (${SHARE_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
           )
           .bind(
             record.token,
@@ -549,6 +597,7 @@ export function createD1LinkStore(db) {
             record.revokedAt,
             record.downloadCount,
             record.downloadBytes,
+            record.maxDownloadBytes,
           )
           .run();
         return { ...record };
@@ -563,6 +612,14 @@ export function createD1LinkStore(db) {
           [accountId],
         );
         return rows.map(toShareRecord);
+      },
+      async countOpen(accountId, now) {
+        const row = await one(
+          "SELECT COUNT(*) AS n FROM shares " +
+            "WHERE account_id = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+          [accountId, now],
+        );
+        return Number(row?.n ?? 0);
       },
       async revoke(token, accountId, at) {
         // A second revoke is the same answer, and the first time stands: the
@@ -583,17 +640,23 @@ export function createD1LinkStore(db) {
       },
       async addDownload(token, bytes) {
         const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-        // Counted on the row the link resolves to, in one statement, so two
-        // concurrent downloads both land rather than one reading the other's
-        // count first. An unknown token writes nothing, which is the same
-        // answer the resolver's own 404 already gave the caller.
-        await db
-          .prepare(
-            "UPDATE shares SET download_count = download_count + 1, " +
-              "download_bytes = download_bytes + ?1 WHERE token = ?2",
-          )
-          .bind(size, token)
-          .run();
+        // The reservation and the per-link byte cap are the same statement
+        // (drive issue #549): two concurrent downloads that would together
+        // pass the cap cannot both succeed, because the WHERE clause sees the
+        // other's increment. A NULL cap is a link minted before the cap
+        // existed: it keeps serving. A miss is an unknown token or a full
+        // link, and the route refuses both. ?1 and ?3 are the same size, so
+        // each placeholder number appears once in textual order for the
+        // node:sqlite test adapter (the same rule the upload reservation
+        // follows).
+        const row = await one(
+          "UPDATE shares SET download_count = download_count + 1, " +
+            "download_bytes = download_bytes + ?1 " +
+            "WHERE token = ?2 AND (max_download_bytes IS NULL OR download_bytes + ?3 <= max_download_bytes) " +
+            `RETURNING ${SHARE_COLUMNS}`,
+          [size, token, size],
+        );
+        return row === null || row === undefined ? null : toShareRecord(row);
       },
     },
     requests: {
@@ -601,7 +664,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
           )
           .bind(
             record.token,
@@ -613,6 +676,7 @@ export function createD1LinkStore(db) {
             record.uploadCount,
             record.uploadBytes,
             record.maxBytes,
+            record.maxFiles,
           )
           .run();
         return { ...record };
@@ -629,6 +693,14 @@ export function createD1LinkStore(db) {
           [accountId],
         );
         return rows.map(toRequestRecord);
+      },
+      async countOpen(accountId, now) {
+        const row = await one(
+          "SELECT COUNT(*) AS n FROM upload_requests " +
+            "WHERE account_id = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+          [accountId, now],
+        );
+        return Number(row?.n ?? 0);
       },
       async revoke(token, accountId, at) {
         const row = await one(
@@ -652,13 +724,62 @@ export function createD1LinkStore(db) {
         const row = await one(
           "UPDATE upload_requests SET upload_count = upload_count + 1, " +
             "upload_bytes = upload_bytes + ?1 " +
-            "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes " +
+            "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes AND upload_count < max_files " +
             `RETURNING ${REQUEST_COLUMNS}`,
           [size, token, size],
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
+      async releaseUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = MAX(upload_count - 1, 0), " +
+            "upload_bytes = MAX(upload_bytes - ?1, 0) " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
     },
+  };
+}
+
+/**
+ * Removes link rows that can never open again and are older than the
+ * retention window (drive issue #549): expired and revoked rows are kept 90
+ * days so the owner's list still shows what they did, then pruned. A row that
+ * is still open is never touched, however old, so pruning cannot close a link
+ * a stranger is still holding — the daily job only ever deletes what
+ * linkState() already calls expired or revoked.
+ *
+ * Both tables are pruned in one call, each as one statement. A D1 statement
+ * reports the rows it changed in `meta.changes`, so the returned counts are
+ * the rows actually removed. The cutoff is computed once from `now`, so both
+ * tables and every run agree on the boundary.
+ * @param {D1Database} db
+ * @param {number} now
+ * @returns {Promise<{shares: number, requests: number}>}
+ */
+export async function purgeStaleLinks(db, now) {
+  const cutoff = now - LINK_RETENTION_DAYS * DAY_MS;
+  const shares = await db
+    .prepare(
+      "DELETE FROM shares WHERE (revoked_at IS NOT NULL OR expires_at <= ?1) " +
+        "AND COALESCE(revoked_at, expires_at) <= ?2",
+    )
+    .bind(now, cutoff)
+    .run();
+  const requests = await db
+    .prepare(
+      "DELETE FROM upload_requests WHERE (revoked_at IS NOT NULL OR expires_at <= ?1) " +
+        "AND COALESCE(revoked_at, expires_at) <= ?2",
+    )
+    .bind(now, cutoff)
+    .run();
+  return {
+    shares: Number(shares?.meta?.changes ?? 0),
+    requests: Number(requests?.meta?.changes ?? 0),
   };
 }
 
@@ -669,10 +790,17 @@ export function createD1LinkStore(db) {
  * links with a pinned token and clock, and so nothing but the store persists
  * it.
  *
- * @param {{accountId: string, path: string, now: number, token: string, days?: number}} input
+ * @param {{accountId: string, path: string, now: number, token: string, days?: number, maxDownloadBytes?: number|null}} input
  * @returns {ShareRecord}
  */
-export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LINK_DAYS }) {
+export function newShareRecord({
+  accountId,
+  path,
+  now,
+  token,
+  days = DEFAULT_LINK_DAYS,
+  maxDownloadBytes = null,
+}) {
   return {
     token,
     accountId,
@@ -683,13 +811,14 @@ export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LIN
     revokedAt: null,
     downloadCount: 0,
     downloadBytes: 0,
+    maxDownloadBytes,
   };
 }
 
 /**
  * The record for a new upload request.
  *
- * @param {{accountId: string, folder: string, now: number, token: string, days?: number, maxBytes?: number}} input
+ * @param {{accountId: string, folder: string, now: number, token: string, days?: number, maxBytes?: number, maxFiles?: number}} input
  * @returns {RequestRecord}
  */
 export function newRequestRecord({
@@ -699,6 +828,7 @@ export function newRequestRecord({
   token,
   days = DEFAULT_LINK_DAYS,
   maxBytes = REQUEST_TOTAL_MAX_BYTES,
+  maxFiles = REQUEST_MAX_FILES,
 }) {
   return {
     token,
@@ -710,23 +840,11 @@ export function newRequestRecord({
     uploadCount: 0,
     uploadBytes: 0,
     maxBytes,
+    maxFiles,
   };
 }
 
 // ---------------------------------------------------------------- handlers
-
-const LINK_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: LINK_HEADERS });
-}
 
 /**
  * @param {string} message
@@ -786,38 +904,6 @@ async function capStateFor(resolver, accountId) {
   return state;
 }
 
-// The one refusal for a state-changing link request that came from another
-// origin. A specific line rather than the table's generic fallback: "try
-// again in a moment" would be advice to retry a request that will always be
-// refused, and the one next step is to do it from the drive page — the same
-// shape src/files.js answers its cross-site upload, delete and restore with.
-function crossSiteRefused() {
-  return json(
-    { error: "Sharing and upload requests are only accepted from your drive page." },
-    403,
-  );
-}
-
-/**
- * The POST body every owner route reads: one JSON object, or the sentence to
- * show. The two arms are named so the `if (error)` check is the narrowing.
- *
- * @param {Request} request
- * @returns {Promise<{body: Record<string, unknown>, error?: undefined}|{error: string, body?: undefined}>}
- */
-async function readJsonObject(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return { error: "The request body is not valid JSON." };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
-  }
-  return { body };
-}
-
 /** The request's own origin: the links are absolute so they can be copied.
  *
  * @param {Request} request
@@ -869,13 +955,14 @@ export function folderDisplayName(folder) {
  * the account prefix is applied, so a share can only ever name a path inside
  * the account that minted it.
  *
- * Reading is safe to repeat, so only the two that change the drive — minting
- * and revoking — carry the cross-site rule src/files.js already uses.
+ * Reading is safe to repeat. Cross-site writes are the Worker's CSRF
+ * middleware (src/index.js csrfWhenBrowser), not a second copy of the
+ * same-origin rule here.
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
- * @param {{now?: number, token?: string}} [options]
+ * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 export async function handleShareRequest(request, files, links, account, options = {}) {
   if (!account) {
@@ -885,9 +972,6 @@ export async function handleShareRequest(request, files, links, account, options
   const base = baseFromRequest(request);
   const store = links.shares;
   const scoped = scopeStore(files, account);
-  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
-    return crossSiteRefused();
-  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -895,16 +979,39 @@ export async function handleShareRequest(request, files, links, account, options
     return json({ shares: rows });
   }
   if (request.method === "POST") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    // The mint route's own edge limit (drive issue #549): a script cannot
+    // spin the token-minting endpoint, on top of the per-account cap below.
+    // The binding is required, so a deployment missing it is the same
+    // fail-closed 503 every other guarded route gives.
+    const limited = await enforceEdgeLimits(
+      [
+        {
+          binding: options.limiter,
+          key: clientIpKey(request, "share-mint"),
+          name: "SHARE_MINT_RATE_LIMITER",
+        },
+      ],
+      "share-mint",
+    );
+    if (limited) {
+      return limited;
     }
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
+    }
+    const { body } = read;
     const checked = validateShareFile(body.path);
     if (checked.error) {
       return json({ error: checked.error }, 400);
+    }
+    // The per-account cap (drive issue #549): 50 open share links. The check
+    // is at mint time, so a script cannot walk the token space by minting
+    // links it never uses. An owner at the cap revokes one to make room.
+    if ((await store.countOpen(account.id, now)) >= MAX_OPEN_LINKS) {
+      return json({ error: failureMessage("too-many-links") }, 403);
     }
     let object;
     try {
@@ -924,18 +1031,19 @@ export async function handleShareRequest(request, files, links, account, options
       path: checked.path,
       now,
       token: options.token ?? newLinkToken(),
+      maxDownloadBytes: shareDownloadCapFor(object.size),
     });
     await store.create(record);
     return json({ ok: true, share: shareRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateToken(body.token);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -974,12 +1082,25 @@ export async function handleShareRequest(request, files, links, account, options
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{now?: number}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 export async function handleShareFileRequest(request, files, links, options = {}) {
   const now = options.now ?? Date.now();
   if (request.method !== "GET" && request.method !== "HEAD") {
     return methodNotAllowed("GET", "GET this link to open the file.");
+  }
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: options.ipLimiter,
+        key: clientIpKey(request, "share-download"),
+        name: "SHARE_DOWNLOAD_RATE_LIMITER",
+      },
+    ],
+    "share-download",
+  );
+  if (limited) {
+    return limited;
   }
   const token = new URL(request.url).pathname.slice(SHARE_LINK_PREFIX.length + 1);
   const checked = validateToken(token);
@@ -993,46 +1114,133 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // The one scoping place: the share row names the owner, so the row is what
   // the read is scoped to, not whatever the request carried.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  const range = request.headers.get("range");
+  const ifNoneMatch = request.headers.get("if-none-match");
+
+  // A HEAD answer needs the headers, not the bytes (drive#570): storage is
+  // asked with a HEAD, and the whole object is never fetched to be dropped.
+  if (request.method === "HEAD") {
+    let stat;
+    try {
+      stat = await scoped.stat(record.path);
+    } catch (cause) {
+      return serverFailure(`reading a shared file: ${String(cause)}`);
+    }
+    if (!stat) {
+      return plain(failureMessage("link-not-found"), 404);
+    }
+    // An open is counted, no bytes: the same rule the old HEAD path kept.
+    // A link that has served its byte cap is refused instead (issue #549),
+    // so an open cannot outrun the owner's limit.
+    const counted = await links.shares.addDownload(checked.token, 0);
+    if (!counted) {
+      return plain(failureMessage("download-link-cap"), 429);
+    }
+    return new Response(null, {
+      status: 200,
+      headers: shareHeaders(record.path, stat.contentType, {
+        length: String(stat.size),
+        etag: stat.etag,
+      }),
+    });
+  }
+
   let object;
   try {
-    object = await scoped.read(record.path);
+    object = await scoped.read(record.path, { range, ifNoneMatch });
   } catch (cause) {
     return serverFailure(`reading a shared file: ${String(cause)}`);
   }
   if (!object) {
     return plain(failureMessage("link-not-found"), 404);
   }
-  // Count the download the way this route can honestly count it: the object
-  // the store reported, once, for a link that opened. A client that stops
-  // mid-stream still holds a working link; the dl Worker's byte rollup
-  // (#58) is what measures the bytes actually served. A HEAD is counted as an
-  // open but carries no bytes, so it cannot inflate the owner's allowance for
-  // a body nobody received.
-  await links.shares.addDownload(checked.token, request.method === "HEAD" ? 0 : object.size);
-  // The served type is the file's own kind, never the claim the uploader made
-  // of it, through the same previewContentType() /api/files/preview uses: text
-  // leaves as text/plain, an unknown type as octet-stream, and an .html named
-  // as text/html does not come back as a page. The header pair is the same one
-  // the preview path carries: nosniff honors the type above, and the sandbox
-  // policy gives a document an opaque origin with no script of its own — which
-  // is what keeps an uploaded .svg from acting as a page on our origin when
-  // the link is opened directly. A picture or a PDF still opens in the tab,
-  // which is what "a link that opens the file" means.
-  return new Response(request.method === "HEAD" ? null : object.body, {
-    status: 200,
-    headers: {
-      "content-type": previewContentType(record.path, object.contentType),
-      "content-disposition": "inline",
-      "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "sandbox",
-      // The token is in the URL, so a page opened from a link must not hand
-      // the address bar's contents to whatever it loads next: no-referrer is
-      // the one header that keeps a capability URL from leaking sideways
-      // through Referer.
-      "referrer-policy": "no-referrer",
-    },
+  const status = object.status ?? 200;
+  // The client's own validator, still good: no byte moves, no download is
+  // counted, and the etag rides back so the client keeps its cached copy.
+  if (status === 304 || (ifNoneMatch && etagMatches(ifNoneMatch, object.etag))) {
+    return new Response(null, {
+      status: 304,
+      headers: shareHeaders(record.path, object.contentType, {
+        etag: object.etag,
+        bare: true,
+      }),
+    });
+  }
+  // Count the download the way this route can honestly count it: the bytes
+  // THIS response is about to carry — the whole object on a 200, the one
+  // slice on a 206 (drive#570). A client that stops mid-stream still holds a
+  // working link; the dl Worker's byte rollup (#58) is what measures the
+  // bytes actually served.
+  const served = object.contentLength ?? object.size;
+  const counted = await links.shares.addDownload(checked.token, served);
+  if (!counted) {
+    // The reservation and the cap are the same statement (issue #549), so a
+    // full link refuses here instead of serving more bytes it cannot count.
+    return plain(failureMessage("download-link-cap"), 429);
+  }
+  return new Response(object.body, {
+    status,
+    headers: shareHeaders(record.path, object.contentType, {
+      length: typeof object.contentLength === "number" ? String(object.contentLength) : undefined,
+      etag: object.etag,
+      contentRange: object.contentRange,
+    }),
   });
+}
+
+/**
+ * The headers a shared-file answer carries: the served type is the file's own
+ * kind, never the claim the uploader made of it, through the same
+ * previewContentType() /api/files/preview uses: text leaves as text/plain, an
+ * unknown type as octet-stream, and an .html named as text/html does not come
+ * back as a page. The header pair is the same one the preview path carries:
+ * nosniff honors the type above, and the sandbox policy gives a document an
+ * opaque origin with no script of its own. The disposition is
+ * previewDisposition()'s: a picture, a PDF and plain text still open in the
+ * tab, which is what "a link that opens the file" means, while the one type
+ * that can still act as a document — an .svg, whose links navigate — leaves as
+ * an attachment, so a link can never hand a stranger a rendered document on
+ * our address to phish a password from (drive#657). Every type the preview
+ * allowlist refuses — the XML document family (XHTML, XSLT, RDF, MathML and
+ * multipart/related uploads, issue #548) — is octet-stream, and leaves as an
+ * attachment for the same reason.
+ * @param {string} path the shared file's drive path, for the type's kind
+ * @param {string} contentType the type the store reported
+ * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
+ *   bare?: boolean}} [extra] `length` sets Content-Length; `etag` rides on
+ *   every answer, the bare 304 included; `contentRange` rides on a 206;
+ *   `bare` (a 304) carries only validators and the no-referrer rule.
+ * @returns {Record<string, string>}
+ */
+function shareHeaders(path, contentType, extra = {}) {
+  /** @type {Record<string, string>} */
+  const headers = {
+    "content-type": previewContentType(path, contentType),
+    "content-disposition": previewDisposition(path.split("/").pop() || "", contentType),
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    // The token is in the URL, so a page opened from a link must not hand
+    // the address bar's contents to whatever it loads next: no-referrer is
+    // the one header that keeps a capability URL from leaking sideways
+    // through Referer.
+    "referrer-policy": "no-referrer",
+    "accept-ranges": "bytes",
+  };
+  if (!extra.bare) {
+    if (extra.length) {
+      headers["content-length"] = extra.length;
+    }
+    if (extra.contentRange) {
+      headers["content-range"] = extra.contentRange;
+    }
+  }
+  // The etag rides on every answer, the 304 included: RFC 9110 says a 304
+  // carries the validators the 200 would have, so the client keeps using it.
+  if (extra.etag) {
+    headers.etag = extra.etag;
+  }
+  return headers;
 }
 
 /**
@@ -1050,7 +1258,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
- * @param {{now?: number, token?: string}} [options]
+ * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 export async function handleRequestRequest(request, files, links, account, options = {}) {
   if (!account) {
@@ -1060,9 +1268,6 @@ export async function handleRequestRequest(request, files, links, account, optio
   const base = baseFromRequest(request);
   const store = links.requests;
   const scoped = scopeStore(files, account);
-  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
-    return crossSiteRefused();
-  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -1070,13 +1275,28 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ requests: rows });
   }
   if (request.method === "POST") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    // The mint route's own edge limit (drive issue #549): a script cannot
+    // spin the upload-page minting endpoint, on top of the per-account cap.
+    const limited = await enforceEdgeLimits(
+      [
+        {
+          binding: options.limiter,
+          key: clientIpKey(request, "request-mint"),
+          name: "REQUEST_MINT_RATE_LIMITER",
+        },
+      ],
+      "request-mint",
+    );
+    if (limited) {
+      return limited;
     }
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
+    }
+    const { body } = read;
     const checked = validateRequestFolder(body.folder);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -1084,6 +1304,10 @@ export async function handleRequestRequest(request, files, links, account, optio
     const sized = validateRequestMaxBytes(body.maxBytes);
     if (sized.error) {
       return json({ error: sized.error }, 400);
+    }
+    // The per-account cap (drive issue #549): 50 open upload pages.
+    if ((await store.countOpen(account.id, now)) >= MAX_OPEN_LINKS) {
+      return json({ error: failureMessage("too-many-links") }, 403);
     }
     let exists;
     try {
@@ -1105,13 +1329,13 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ ok: true, request: requestRow(record, now, base) }, 201);
   }
   if (request.method === "DELETE") {
-    const { body, error } = await readJsonObject(request);
-    if (body === undefined) {
-      // The `if` is the narrowing: readJsonObject's error arm is the only one
-      // without a body, so error is a string here and there is nothing to
-      // fall back to (the same shape src/files.js reads its POST bodies with).
-      return json({ error }, 400);
+    const read = await readJsonObject(request);
+    if ("error" in read) {
+      // The `if` is the narrowing: the error arm is the only one with a
+      // sentence, and the reader (drive#618) already wrote it.
+      return json({ error: read.error }, 400);
     }
+    const { body } = read;
     const checked = validateToken(body.token);
     if (checked.error) {
       return json({ error: checked.error }, 400);
@@ -1172,7 +1396,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
   return json({
     open: true,
     folder: folderDisplayName(record.folder),
-    expiresLabel: expiresLabel(record.expiresAt),
+    expiresAtIso: expiresAtIso(record.expiresAt),
   });
 }
 
@@ -1195,7 +1419,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1232,14 +1456,38 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (!name) {
     return json({ error: failureMessage("upload-needs-name") }, 400);
   }
+  // The name cap (drive issue #549): the name must stay under the same length
+  // the owner's own Files page lives with, checked before the body is read or
+  // a byte is reserved.
+  if (safeFileName(name).length > REQUEST_NAME_MAX_LENGTH) {
+    return json({ error: failureMessage("upload-name-too-long") }, 400);
+  }
   const record = await links.requests.get(checked.token);
   if (record === null || !linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
+  }
+  // The same path rule /api/files applies, run on the joined name before the
+  // body is read (drive issue #549, ref #518): a dropped file cannot name a
+  // path the owner's own upload would refuse.
+  const path = joinPath(record.folder, name);
+  const pathChecked = validatePath(path);
+  if (pathChecked.error) {
+    return json({ error: pathChecked.error }, 400);
   }
   if ((await capStateFor(capState, record.accountId)) === "read_only") {
     // The owner's cap is the owner's rule; a stranger gets the table's words
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
+  }
+  if (
+    options.db &&
+    options.prepaidPause &&
+    (await balanceCents(options.db, record.accountId)) <= 0
+  ) {
+    // The owner's prepaid balance is empty (drive#586). The stranger cannot
+    // top up someone else's drive, so they are told who can act, and the body
+    // is never read.
+    return json({ error: failureMessage("upload-paused-balance") }, 403);
   }
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
@@ -1260,22 +1508,59 @@ export async function handleRequestUploadRequest(request, files, links, capState
       return json({ error: blocked }, 403);
     }
   }
-  const path = joinPath(record.folder, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  // This stat is the ordinary-duplicate answer: a drop of a name that is
+  // already stored gets the same 409 on every backend, before any bytes are
+  // reserved or written. It is NOT the race answer — the gap between this
+  // check and the write below is where drive#644's race lived, two uploads
+  // both seeing a free name and both landing. The create-only write is what
+  // decides the winner; on a backend whose PUT honors If-None-Match the
+  // race closes in the storage itself, and on one that does not, this
+  // pre-check still catches every duplicate that is not mid-race. The one
+  // observable a non-honoring backend leaves open: a true mid-race pair both
+  // answer 201, both reservations stay counted (conservative — the link
+  // fills sooner, never past its cap), and the last PUT's bytes stand, which
+  // the provider's hide-not-delete versioning keeps recoverable.
+  if ((await scoped.stat(path)) !== null) {
+    return json({ error: failureMessage("upload-name-taken") }, 409);
+  }
   const reserved = await links.requests.addUpload(checked.token, sized.bytes);
   if (!reserved) {
     return json({ error: failureMessage("upload-link-full") }, 413);
   }
+  // The create-only write, not a bare write: two uploads that got past the
+  // check above within the same instant cannot both win — the store itself
+  // decides whether the key was still free when the bytes arrived. The bytes
+  // are reserved first so a stranger cannot outrun the link total; a lost
+  // race or a failed write releases them, the same release either way.
+  let won;
   try {
-    // sized.body is a Uint8Array (or empty). FileStore.write already accepts
-    // any BodyInit: the memory store does `new Response(body).arrayBuffer()`,
-    // and the S3 stand-in PUTs the same body fetch accepts.
-    await scoped.write(path, sized.body, contentType);
+    // sized.body is a Uint8Array (or empty). FileStore.writeIfAbsent already
+    // accepts any BodyInit: the memory store does `new Response(body)
+    // .arrayBuffer()`, and the S3 stand-in PUTs the same body fetch accepts.
+    won = await scoped.writeIfAbsent(path, sized.body, contentType);
   } catch (cause) {
+    await links.requests.releaseUpload(checked.token, sized.bytes);
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
+  }
+  if (!won) {
+    // The name was taken while this upload was in flight: the winner's bytes
+    // stand, this upload stored nothing, and its reservation comes back. A
+    // release that itself fails is a 500 with the cause logged, not a clean
+    // 409 that hides a counter now reading fuller than the link's truth.
+    try {
+      await links.requests.releaseUpload(checked.token, sized.bytes);
+    } catch (cause) {
+      // No token in the log: it is a stranger's capability, and the log
+      // outlives the link. The folder and the drop's size name the event.
+      return serverFailure(
+        `releasing a lost-race reservation for a ${sized.bytes}-byte drop into ${record.folder}: ${String(cause)}`,
+      );
+    }
+    return json({ error: failureMessage("upload-name-taken") }, 409);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

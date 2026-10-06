@@ -15,7 +15,7 @@
 //   3. Downloads and previews can never render script from our own origin:
 //      an uploaded .html and .svg come back as attachments with a safe type
 //      and nosniff.
-//   4. Upload, delete and restore refuse a cross-site request.
+//   4. One CSRF middleware refuses a cross-site write on every account POST.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -29,11 +29,14 @@ import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } fro
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { PORTAL_ENDPOINT } from "../src/portal.js";
+import { AUTO_TOPUP_ENDPOINT } from "../src/prepaid.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
@@ -54,6 +57,9 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
 // shaped (`u/<id>/...`) and deliberately different lengths, so a prefix that
 // is not cut at a segment boundary would show up.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 /** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
@@ -95,6 +101,10 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/`,
   `${FILES_ENDPOINT}/download?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/preview?path=%2Fa.txt`,
+  // drive#657: the page's media URL. It names files in the account's own
+  // drive like the preview URL, so the walk requires it to answer 401
+  // anonymously too.
+  `${FILES_ENDPOINT}/embed?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/upload?path=%2F&name=a.txt`,
   `${FILES_ENDPOINT}/delete`,
   `${FILES_ENDPOINT}/restore`,
@@ -136,6 +146,19 @@ const ACCOUNT_ROUTES = [
   `${CLOSE_ENDPOINT}/`,
   `${CLOSE_CANCEL_ENDPOINT}`,
   `${CLOSE_CANCEL_ENDPOINT}/`,
+  // drive#586: the prepaid balance and a top-up's checkout. Money on the
+  // account, so the same gate as the usage read.
+  `${BALANCE_ENDPOINT}`,
+  `${BALANCE_ENDPOINT}/`,
+  `${TOPUP_ENDPOINT}`,
+  `${TOPUP_ENDPOINT}/`,
+  `${AUTO_TOPUP_ENDPOINT}`,
+  // drive#575: the billing portal, where the account's card is updated. It
+  // names the account's own customer and billing page, so it is behind the
+  // account gate exactly like the balance read beside it, and the walk
+  // requires the same 401 for a stranger.
+  `${PORTAL_ENDPOINT}`,
+  `${PORTAL_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -163,6 +186,8 @@ function anonymous(request) {
       DRIVE_DB: createTestD1(),
       REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      HEALTH_RATE_LIMITER: makeLimiter(),
+      SHARE_DOWNLOAD_RATE_LIMITER: makeLimiter(),
     },
     ctx,
   );
@@ -242,6 +267,9 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
         route.startsWith(CAP_ENDPOINT) ||
+        route.startsWith(BALANCE_ENDPOINT) ||
+        route.startsWith(TOPUP_ENDPOINT) ||
+        route.startsWith(PORTAL_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
@@ -491,8 +519,12 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   //
   // The mailer is how this test reads the link that left by email: the token is
   // never in a reply, so the mail is the only place it can be seen, which is
-  // the whole point of the flow.
-  const made = createTestAuth();
+  // the whole point of the flow. The whole schema, not the harness's short
+  // list: /api/usage reads the account's metered month (drive#496), and the
+  // month's read needs `usage_minutes.stored_bytes`, which a later migration
+  // than the short list carries. On the short list the route 500s on a column
+  // production has, which is the gap the full list exists to close.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const emailed = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -699,6 +731,22 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
       return [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
     },
     /** @param {string} path */
+    async listPage(path) {
+      seen.push(["listPage", path]);
+      const entries = [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
+      return { entries, nextCursor: null };
+    },
+    /** @param {string} path */
+    async listAll(path) {
+      seen.push(["listAll", path]);
+      return [];
+    },
+    /** @param {string} path */
+    async stat(path) {
+      seen.push(["stat", path]);
+      return null;
+    },
+    /** @param {string} path */
     async read(path) {
       seen.push(["read", path]);
       return null;
@@ -707,10 +755,21 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     async write(path, _body, _contentType) {
       seen.push(["write", path]);
     },
+    /** @param {string} path @param {BodyInit} _body @param {string} _contentType */
+    async writeIfAbsent(path, _body, _contentType) {
+      seen.push(["writeIfAbsent", path]);
+      return true;
+    },
     /** @param {string} path */
     async remove(path) {
       seen.push(["remove", path]);
     },
+    /** @param {{startAfter?: string, limit?: number}} [_options] @returns {Promise<string[]>} */
+    async listKeys(_path, _options) {
+      return [];
+    },
+    /** @param {string[]} _paths @returns {Promise<void>} */
+    async removeBatch(_paths) {},
     /** @param {string} from @param {string} to @returns {Promise<void>} */
     async copy(from, to) {
       seen.push(["copy", from, to]);
@@ -734,11 +793,13 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
   await scoped.list("/");
   await scoped.read("/notes.txt");
   await scoped.write("/docs/a b.txt", new Blob([""]).stream(), "text/plain");
+  await scoped.writeIfAbsent("/docs/a b.txt", new Blob([""]).stream(), "text/plain");
   await scoped.remove("/.trash/1__%2Fnotes.txt");
   assert.deepEqual(seen, [
     ["list", "u/acct-9/"],
     ["read", "u/acct-9/notes.txt"],
     ["write", "u/acct-9/docs/a b.txt"],
+    ["writeIfAbsent", "u/acct-9/docs/a b.txt"],
     ["remove", "u/acct-9/.trash/1__%2Fnotes.txt"],
   ]);
   // Versions go through the scope too: the store is asked under this
@@ -912,63 +973,66 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
 
 // ----------------------------------------------------------------- cross-site
 
-test("upload, delete and restore refuse a cross-site request", async () => {
-  const store = createMemoryStore();
-  /** @param {Request} request @returns {Promise<Response>} */
-  const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
-  /** @param {string|undefined} origin @returns {Promise<Response>} */
-  const upload = (origin) =>
-    call(
-      new Request(`${api("/upload")}?path=%2F&name=a.txt`, {
+test("one CSRF middleware refuses a cross-site write on every account POST", async () => {
+  // Branch, rewind, starter, files, cap and top-up used to rely on per-handler
+  // copies of isSameOriginRequest, or had no Origin check at all. The one
+  // middleware on /api/* (src/index.js) is the rule now; these posts go
+  // through the Worker's own dispatch so that is what is proved.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "csrfmw@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+    BRANCH_SNAPSHOTS: {
+      get: async () => null,
+      put: async () => {},
+      delete: async () => {},
+    },
+  };
+  const paths = [
+    `${FILES_ENDPOINT}/upload?path=%2F&name=a.txt`,
+    STARTER_ENDPOINT,
+    BRANCHES_ENDPOINT,
+    REWIND_ENDPOINT,
+    CAP_ENDPOINT,
+    TOPUP_ENDPOINT,
+    AUTO_TOPUP_ENDPOINT,
+    PORTAL_ENDPOINT,
+    CLOSE_ENDPOINT,
+  ];
+  for (const path of paths) {
+    const forged = await workerFetch(
+      new Request(`https://drive.test${path}`, {
         method: "POST",
-        headers: { "content-type": "text/plain", ...(origin ? { origin } : {}) },
-        body: "bytes",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          origin: "https://evil.example",
+          "sec-fetch-site": "cross-site",
+        },
+        body: JSON.stringify({}),
       }),
+      env,
+      ctx,
     );
-  /** @param {string} path @param {unknown} body @param {string|undefined} origin @returns {Promise<Response>} */
-  const stateChange = (path, body, origin) =>
-    call(
-      new Request(api(path), {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(origin ? { origin } : {}) },
-        body: JSON.stringify(body),
-      }),
-    );
-
-  assert.equal((await upload("https://evil.example")).status, 403);
-  assert.equal(
-    (await stateChange("/delete", { path: "/a.txt" }, "https://evil.example")).status,
-    403,
-  );
-  assert.equal(
-    (await stateChange("/restore", { path: "/a.txt" }, "https://evil.example")).status,
-    403,
-  );
-  // The refusal names the one next step rather than the table's generic
-  // "try again in a moment", which is advice to retry a request that is always
-  // refused.
-  const refused = await upload("https://evil.example");
-  const refusedBody = await refused.json();
-  assert.match(refusedBody.error, /only accepted from the drive page/);
-  assert.doesNotMatch(refusedBody.error, /try again/i);
-  // Nothing was written: a refused cross-site upload is refused before the
-  // store is touched.
-  const after = await (await call(new Request(api("?path=%2F")))).json();
-  assert.deepEqual(after.rows, [], "a refused cross-site upload must store nothing");
-  // Our own page, and a caller with no Origin at all (curl, the CLI), pass:
-  // the check is the extra browser-facing rule, not the whole gate.
-  assert.equal((await upload("https://drive.test")).status, 201);
-  const deleted = await stateChange("/delete", { path: "/a.txt" }, "https://drive.test");
-  assert.equal(deleted.status, 200);
-  const restored = await stateChange("/restore", { path: "/a.txt" }, undefined);
-  assert.equal(restored.status, 200);
+    assert.equal(forged.status, 403, `${path} must be refused by the CSRF middleware`);
+    assert.deepEqual(await forged.json(), { error: failureMessage("cross-site") });
+  }
 });
 
 // ---------------------------------------------------------------- the read
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
-  const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
+  const signedIn = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    ACCOUNT_A,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0, "an empty month bills $0: no minimum");
 });
@@ -1037,7 +1101,7 @@ test("a signed-in browser's cap write passes; a forged cross-site one is refused
   // The words are the one message table's, and the next step names the page
   // the write is allowed from rather than a retry that always fails.
   assert.deepEqual(await forged.json(), {
-    error: failureMessage("cap-from-page"),
+    error: failureMessage("cross-site"),
   });
   // Nothing moved: the cap the person set is still the cap in force.
   assert.equal(storedCapCents(), 2000, "a refused cross-site write must leave the cap alone");

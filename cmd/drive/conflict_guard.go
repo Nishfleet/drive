@@ -80,6 +80,11 @@ const conflictClaimPolls = 20
 // margin for rclone's own scheduling.
 const conflictWinPolls = 20
 
+// conflictHashFailPolls is how many remote-hash failures one path may
+// take after it leaves the queue before the skip is named. Holding
+// forever with no line would hide a save that never decides.
+const conflictHashFailPolls = 10
+
 // conflictReportEvery is the least time between two reports of the
 // same cause, so a persistent failure keeps a named heartbeat on the
 // mount's log rather than one line and then silence.
@@ -133,6 +138,20 @@ type pendingSave struct {
 	// version than the one that gets overwritten.
 	stagedMtime time.Time
 	stagedSize  int64
+	// byFingerprint is a save too large to stage: it is compared by
+	// ETag or version, not by a local md5, so a new remote is this
+	// device's landing rather than a skip that would alarm on every
+	// ordinary large upload.
+	byFingerprint bool
+	// hashFails is how many remote-hash errors this path has seen
+	// since its upload left the queue.
+	hashFails int
+	// baselineUnknown is set when the remote hash could not be read at
+	// first sight, so previous is not the version the save replaces. It
+	// is read again on later passes while the save is queued. Until it is
+	// known, a version that is not this device's is not claimed as a
+	// conflict, and a save that leaves the queue still unknown is named.
+	baselineUnknown bool
 }
 
 // conflictBackend is what one guard pass needs from a running mount.
@@ -149,6 +168,12 @@ type conflictBackend interface {
 	// an error: a save that lands where nothing was is exactly the
 	// case the rule has to name.
 	remoteHash(ctx context.Context, name string) (string, error)
+	// remoteVersion is the size and modification time of the object at
+	// the plain path, and ok is false when there is no object there. A
+	// save too large to stage has no local md5 to set against the
+	// remote ETag, so its version is what tells this device's landing
+	// from another device's.
+	remoteVersion(ctx context.Context, name string) (size int64, modTime time.Time, ok bool, err error)
 	// copyLocalToRemote uploads one staged file into the mount's
 	// own remote, under dstRemote, with rclone's own copy operation.
 	copyLocalToRemote(ctx context.Context, stagingRoot, srcRemote, dstRemote string) error
@@ -176,7 +201,8 @@ type ConflictResult struct {
 
 // ConflictSkip is one save the rule did not protect, and the reason:
 // the save was not in the drive any more, it was not a regular file,
-// or it was larger than the staging cap.
+// it grew past the staging cap while it was copied, or a fingerprint
+// watch had no staged bytes to copy when another version landed.
 type ConflictSkip struct {
 	Remote string
 	Reason string
@@ -197,6 +223,7 @@ type conflictGuard struct {
 	mountDir    string
 	stagingRoot string
 	seen        map[string]*pendingSave
+	synced      map[string]string // last-synced fingerprint per path
 }
 
 // newConflictGuard builds the guard for one mount. The staging root
@@ -210,6 +237,7 @@ func newConflictGuard(device, mountDir, stagingRoot string) *conflictGuard {
 		mountDir:    mountDir,
 		stagingRoot: stagingRoot,
 		seen:        map[string]*pendingSave{},
+		synced:      map[string]string{},
 	}
 }
 
@@ -238,6 +266,11 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	// other saves in the same queue from being protected.
 	for name := range inFlight {
 		if save, ok := g.seen[name]; ok {
+			if save.baselineUnknown {
+				if previous, err := b.remoteHash(ctx, name); err == nil {
+					save.previous, save.baselineUnknown = previous, false
+				}
+			}
 			// A path already recorded is not staged again from scratch, but it
 			// is re-staged when this device has written it again, so the bytes
 			// protected are the ones the upload will carry rather than the ones
@@ -250,9 +283,13 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 					return res, err
 				}
 				if reason == "" {
+					if staged != save.staged {
+						g.releaseStaged(save.staged)
+					}
 					info := g.mountStat(name)
 					save.staged, save.hash = staged, hash
 					save.stagedMtime, save.stagedSize = info.modTime, info.size
+					save.byFingerprint = staged == "" && hash != ""
 				} else {
 					// The save can no longer be staged (it grew past
 					// the cap, or it stopped being a regular file), so
@@ -282,17 +319,32 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			res.Skipped = append(res.Skipped, ConflictSkip{Remote: name, Reason: reason})
 			continue
 		}
-		previous, err := b.remoteHash(ctx, name)
-		if err != nil {
-			return res, fmt.Errorf("conflict: read %s before the save lands: %w", name, err)
+		previous := g.synced[name]
+		if previous == "" {
+			previous, err = b.remoteHash(ctx, name)
+			if err != nil {
+				// A hash error holds this entry only: the rest of the
+				// pass still runs, and the next pass retries this path.
+				info := g.mountStat(name)
+				g.seen[name] = &pendingSave{
+					hash:            hash,
+					staged:          staged,
+					stagedMtime:     info.modTime,
+					stagedSize:      info.size,
+					byFingerprint:   staged == "" && hash != "",
+					baselineUnknown: true,
+				}
+				continue
+			}
 		}
 		info := g.mountStat(name)
 		g.seen[name] = &pendingSave{
-			hash:        hash,
-			previous:    previous,
-			staged:      staged,
-			stagedMtime: info.modTime,
-			stagedSize:  info.size,
+			hash:          hash,
+			previous:      previous,
+			staged:        staged,
+			stagedMtime:   info.modTime,
+			stagedSize:    info.size,
+			byFingerprint: staged == "" && hash != "",
 		}
 	}
 
@@ -311,12 +363,43 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			g.drop(name, save)
 			continue
 		}
-		save.polls++
 		landed, err := b.remoteHash(ctx, name)
 		if err != nil {
-			return res, fmt.Errorf("conflict: read %s after the save landed: %w", name, err)
+			g.hashFailed(&res, name, save, "the remote hash for this file could not be read")
+			continue
 		}
+		save.polls++
 		switch {
+		case save.byFingerprint && landed != "" && landed != save.previous:
+			// A fingerprint-watched save has no local md5 that could
+			// equal the remote ETag, so the object's size and mtime say
+			// whose version it is: rclone carries the file's mtime to
+			// storage, so this device's landing matches what it staged
+			// and another device's save does not.
+			size, modTime, ok, err := b.remoteVersion(ctx, name)
+			if err != nil {
+				g.hashFailed(&res, name, save, "the size and time of this file in storage could not be read")
+				continue
+			}
+			if !ok {
+				// The object went between the two reads: nothing has
+				// landed, so the next pass looks again.
+				continue
+			}
+			if sameVersion(size, modTime, save.stagedSize, save.stagedMtime) {
+				save.winPolls++
+				if save.winPolls >= conflictWinPolls {
+					g.synced[name] = landed
+					g.drop(name, save)
+				}
+				continue
+			}
+			res.Skipped = append(res.Skipped, ConflictSkip{
+				Remote: name,
+				Reason: "another version landed on a file too large to keep a copy of",
+			})
+			g.synced[name] = landed
+			g.drop(name, save)
 		case landed == save.hash:
 			// This device's save is the one that landed. An overwrite can
 			// still land on top of it for the whole sync window after it,
@@ -326,6 +409,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// then drops the entry and its staged copy.
 			save.winPolls++
 			if save.winPolls >= conflictWinPolls {
+				g.synced[name] = landed
 				g.drop(name, save)
 			}
 		case landed == "" || landed == save.previous:
@@ -337,15 +421,38 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			if save.polls >= conflictClaimPolls {
 				g.drop(name, save)
 			}
+		case save.baselineUnknown:
+			// The version that preceded the save was never read, so a
+			// version that is not this device's may be that one and is
+			// not claimed as a conflict. It is watched a little longer,
+			// then named: an overwrite in that window cannot be told
+			// from the version the save replaced.
+			if save.polls >= conflictClaimPolls {
+				res.Skipped = append(res.Skipped, ConflictSkip{
+					Remote: name,
+					Reason: "the version before this save could not be read, so an overwrite could not be told apart",
+				})
+				g.drop(name, save)
+			}
 		default:
 			// The plain path holds a version that is neither this
 			// device's bytes nor the version that preceded the save:
 			// the other device's save landed. This device's bytes
-			// survive as the conflict copy.
+			// survive as the conflict copy when they were staged.
+			if save.staged == "" {
+				res.Skipped = append(res.Skipped, ConflictSkip{
+					Remote: name,
+					Reason: "the file is compared by ETag or version and a copy could not be kept",
+				})
+				g.synced[name] = landed
+				g.drop(name, save)
+				continue
+			}
 			claim, err := g.claim(ctx, b, name, save)
 			if err != nil {
 				return res, err
 			}
+			g.synced[name] = landed
 			res.Claimed = append(res.Claimed, claim)
 		}
 	}
@@ -362,6 +469,19 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 	}
 	return res, nil
+}
+
+// hashFailed counts one failed read of a landed save's remote version and,
+// after conflictHashFailPolls of them, names the save once. The next pass
+// drops a named save, so a path whose remote cannot be read is not watched
+// for ever.
+func (g *conflictGuard) hashFailed(res *ConflictResult, name string, save *pendingSave, reason string) {
+	save.hashFails++
+	if save.hashFails >= conflictHashFailPolls && !save.reported {
+		res.Skipped = append(res.Skipped, ConflictSkip{Remote: name, Reason: reason})
+		save.reason = reason
+		save.reported = true
+	}
 }
 
 // claim writes the staged bytes under the conflict name and stops
@@ -473,8 +593,10 @@ func freeConflictName(ctx context.Context, b conflictBackend, path, device strin
 // staging root), the md5 of what it copied and a skip reason.
 //
 // A non-empty reason is a save the rule leaves alone, named: the save
-// is not in the drive any more, it is not a regular file, or it is
-// over the staging cap. None of those is a failure of the pass, and
+// is not in the drive any more, it is not a regular file, or it grew
+// past the staging cap while it was copied. A file already over the
+// cap is watched by fingerprint instead. None of those is a failure of
+// the pass, and
 // none of them may be silent, so the caller reports them once and
 // protects the saves it can. Only a real failure (a staging
 // directory that cannot be made, a read that fails) is an error.
@@ -493,7 +615,11 @@ func (g *conflictGuard) stage(path string) (staged, hash, reason string, err err
 		return "", "", fmt.Sprintf("it is a %s, not a regular file", info.Mode().Type()), nil
 	}
 	if info.Size() > conflictStageMax {
-		return "", "", fmt.Sprintf("%d bytes is over the %d-byte staging cap", info.Size(), conflictStageMax), nil
+		// Large files are compared by size and mtime (and the remote ETag
+		// via remoteHash) rather than copied: a 64 MiB staging cap would
+		// skip them entirely and a late overwrite would go unnoticed.
+		fp := fmt.Sprintf("size:%d:mtime:%d", info.Size(), info.ModTime().UnixNano())
+		return "", fp, "", nil
 	}
 	dest := filepath.Join(g.stagingRoot, filepath.FromSlash(path))
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
@@ -641,12 +767,79 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 	var reply struct {
 		Hashsum []string `json:"hashsum"`
 	}
-	if err := c.call(ctx, "operations/hashsum", map[string]string{
+	hashErr := c.call(ctx, "operations/hashsum", map[string]string{
 		"fs": c.fs, "remote": name, "hashType": "md5",
+	}, &reply)
+	if hashErr == nil {
+		hash, err := matchHashSum(reply.Hashsum, name)
+		if err == nil && hash != "" {
+			return hash, nil
+		}
+		hashErr = err
+	}
+	fp, fpErr := c.remoteFingerprint(ctx, name)
+	if fpErr != nil {
+		if hashErr != nil {
+			return "", hashErr
+		}
+		return "", fpErr
+	}
+	return fp, nil
+}
+
+// remoteVersion is the object's size and mtime from operations/stat, and
+// ok is false when there is no object at the plain path.
+func (c *rcClient) remoteVersion(ctx context.Context, name string) (int64, time.Time, bool, error) {
+	var reply struct {
+		Item *struct {
+			Size    int64     `json:"Size"`
+			ModTime time.Time `json:"ModTime"`
+		} `json:"item"`
+	}
+	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
+		return 0, time.Time{}, false, err
+	}
+	if reply.Item == nil {
+		return 0, time.Time{}, false, nil
+	}
+	return reply.Item.Size, reply.Item.ModTime, true, nil
+}
+
+// sameVersion reports whether an object is the file this device staged.
+// The mtime is compared to the second because a backend may keep less
+// precision than the local filesystem does.
+func sameVersion(size int64, modTime time.Time, stagedSize int64, stagedMtime time.Time) bool {
+	if size != stagedSize || stagedMtime.IsZero() {
+		return false
+	}
+	d := modTime.Sub(stagedMtime)
+	return d < time.Second && d > -time.Second
+}
+
+// remoteFingerprint is the object's ETag or version when MD5 is missing
+// (multipart S3 uploads, web uploads). rclone's operations/stat ID is the
+// S3 ETag; size and modtime are the fallback when even that is empty.
+func (c *rcClient) remoteFingerprint(ctx context.Context, name string) (string, error) {
+	var reply struct {
+		Item struct {
+			ID      string            `json:"ID"`
+			Size    int64             `json:"Size"`
+			ModTime string            `json:"ModTime"`
+			Hashes  map[string]string `json:"Hashes"`
+		} `json:"item"`
+	}
+	if err := c.call(ctx, "operations/stat", map[string]string{
+		"fs": c.fs, "remote": name,
 	}, &reply); err != nil {
 		return "", err
 	}
-	return matchHashSum(reply.Hashsum, name)
+	if md5 := reply.Item.Hashes["MD5"]; md5 != "" {
+		return md5, nil
+	}
+	if reply.Item.ID != "" {
+		return "etag:" + reply.Item.ID, nil
+	}
+	return fmt.Sprintf("ver:%d:%s", reply.Item.Size, reply.Item.ModTime), nil
 }
 
 // matchHashSum picks the one hash of name out of a hashsum reply. The
@@ -685,9 +878,16 @@ func matchHashSum(lines []string, name string) (string, error) {
 // a path may contain spaces: "report (conflict, mac).txt" is one name, not
 // the word after the hash.
 func splitHashLine(line string) (hash, path string, ok bool) {
-	trimmed := strings.TrimSpace(line)
+	// rclone prints "hash  path" with two spaces. An empty MD5 (multipart
+	// ETag without md5 metadata) is "  path", which TrimSpace would turn
+	// into a path-only line and then into an error. Keep the two-space
+	// split so an empty hash is still a hash.
+	trimmed := strings.TrimRight(line, " \t\n")
 	if trimmed == "" {
 		return "", "", false
+	}
+	if i := strings.Index(trimmed, "  "); i >= 0 {
+		return strings.TrimSpace(trimmed[:i]), strings.TrimSpace(trimmed[i+2:]), true
 	}
 	i := strings.IndexAny(trimmed, " \t")
 	if i <= 0 {

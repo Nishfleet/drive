@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MINUTES_PER_MONTH } from "../../src/billing.js";
+import { minutesInMonth } from "../../src/billing.js";
 import {
   dollarsToCapCents,
   enforceCap,
@@ -82,8 +82,10 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   });
   const minted = { keyId: "key_device" };
 
+  // 2 TB held all of a 30-day month (drive#531: the month's own minutes).
   const month = {
-    gbMinutes: 2000 * 43800,
+    gbMinutes: 2000 * 30 * 1440,
+    monthMinutes: 30 * 1440,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,
@@ -181,7 +183,7 @@ test("drive cap below the month already counted swaps on the real rows", async (
          (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
        VALUES (?, ?, ?, ?, 0, ?)`,
     )
-    .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+    .run(account.id, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
 
   const swapped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -208,23 +210,18 @@ test("drive cap below the month already counted swaps on the real rows", async (
   );
 });
 
-test("a founding account's cap counts the half, on the real schema", async () => {
-  // The cap read must carry the account's founding flag (drive#488): a
-  // founding account at 2 TB bills $10, under a $15 cap, while the same 2 TB
-  // at full price bills $20, past it. Without the flag both would be one
-  // number, and the founding account would be stopped at twice its spend.
+test("the cap read counts the one bill for every account, on the real schema", async () => {
+  // Two accounts with the same 2 TB for the same month read the same number:
+  // $20 at the one rate, past a $15 cap, so both are stopped.
   const at = Date.parse("2026-09-30T12:00:00.000Z");
   const { sqlite, db } = makeMeteredDB();
   const store = createD1DeviceStore(db, { now: () => at });
-  const founder = { id: "acct-founder", email: "founder@example.com" };
-  const full = { id: "acct-full", email: "full@example.com" };
-  sqlite
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
-    .run(founder.id, founder.email);
-  sqlite
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 0)")
-    .run(full.id, full.email);
-  for (const account of [founder, full]) {
+  const first = { id: "acct-first", email: "first@example.com" };
+  const second = { id: "acct-second", email: "second@example.com" };
+  for (const account of [first, second]) {
+    sqlite
+      .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+      .run(account.id, account.email);
     await store.setCapCents(account, dollarsToCapCents(15));
     await store.put({
       id: `key_${account.id}`,
@@ -245,24 +242,16 @@ test("a founding account's cap counts the half, on the real schema", async () =>
            (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
          VALUES (?, ?, ?, ?, 0, ?)`,
       )
-      .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+      .run(account.id, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
   }
 
-  const founderMonth = await store.monthUsage(founder.id, { capUsd: 15 });
-  const fullMonth = await store.monthUsage(full.id, { capUsd: 15 });
-  assert.equal(founderMonth.foundingMember, true, "the cap read carries the flag");
-  assert.equal(fullMonth.foundingMember, false);
-
-  const founderReport = await enforceCap(
-    { usage: founderMonth, keys: await store.listCapKeys(founder.id) },
-    store.keyProviderFor(founder.id),
-  );
-  assert.equal(founderReport.state, "active", "2 TB founding is $10, under the $15 cap");
-  assert.equal(founderReport.applied.length, 0);
-
-  const fullReport = await enforceCap(
-    { usage: fullMonth, keys: await store.listCapKeys(full.id) },
-    store.keyProviderFor(full.id),
-  );
-  assert.equal(fullReport.state, "read_only", "2 TB at full price is $20, past the $15 cap");
+  for (const account of [first, second]) {
+    const month = await store.monthUsage(account.id, { capUsd: 15 });
+    assert.equal("foundingMember" in month, false, "the cap read carries no founding flag");
+    const report = await enforceCap(
+      { usage: month, keys: await store.listCapKeys(account.id) },
+      store.keyProviderFor(account.id),
+    );
+    assert.equal(report.state, "read_only", "2 TB is $20, past the $15 cap");
+  }
 });

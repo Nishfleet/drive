@@ -60,6 +60,9 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if creds.DeviceToken != testDeviceToken {
 		t.Fatalf("credentials token = %q", creds.DeviceToken)
 	}
+	if creds.TokenExpiresAt != testDeviceTokenExpiry {
+		t.Fatalf("credentials expiry = %d, want the poll's expiresAt so the CLI knows the window", creds.TokenExpiresAt)
+	}
 	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
 		t.Fatalf("credentials missing storage location: %+v", creds)
 	}
@@ -68,8 +71,15 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AccessKey == "" || cfg.SecretKey == "" || cfg.Endpoint == "" {
-		t.Fatalf("rclone.conf missing keys or endpoint: %+v", cfg)
+	if cfg.AccessKey == "" || cfg.Endpoint == "" {
+		t.Fatalf("rclone.conf missing access key or endpoint: %+v", cfg)
+	}
+	secret, err := ReadSecretKey(RcloneConfigPath(home), false, strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret == "" {
+		t.Fatal("login did not write the storage secret to rclone.env")
 	}
 
 	t.Setenv("DRIVE_S3_ENDPOINT", "")
@@ -81,7 +91,7 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init/mount must work after login with no pasted keys: %v", err)
 	}
-	if loaded.AccessKey != cfg.AccessKey || loaded.SecretKey != cfg.SecretKey {
+	if loaded.AccessKey != cfg.AccessKey || loaded.SecretKey != secret {
 		t.Fatalf("loaded %+v, want the key login wrote", loaded)
 	}
 	if loaded.Endpoint != creds.Endpoint || loaded.Bucket != creds.Bucket {
@@ -164,5 +174,49 @@ func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
 	}
 	if !strings.Contains(string(src), defaultAPIBase) {
 		t.Fatalf("defaultAPIBase %q is not the origin src/seo.js ships", defaultAPIBase)
+	}
+}
+
+func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.KeyID == "" {
+		t.Fatal("the first login wrote no key id")
+	}
+	// The real Worker issues a new device token per login; the stand-in
+	// issues one, so the first login's file is given its own.
+	const oldToken = "dtok_from_the_first_login"
+	first.DeviceToken = oldToken
+	if err := SaveCredentials(home, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := Login(home, server.URL, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.queueClears) != 1 || api.queueClears[0] != "Bearer "+oldToken {
+		t.Fatalf("queue clears %v, want one with the previous login's token", api.queueClears)
+	}
+	if len(api.revokedIDs) != 1 || api.revokedIDs[0] != first.KeyID {
+		t.Fatalf("revoked %v, want the previous key %q", api.revokedIDs, first.KeyID)
+	}
+	second, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.KeyID == "" || second.KeyID == first.KeyID {
+		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
 	}
 }

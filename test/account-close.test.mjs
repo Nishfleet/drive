@@ -28,7 +28,7 @@ import worker from "../src/index.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { createMemoryStore as createKeyStore } from "../workers/api/src/keystore.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, DRIVE_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 const MAIL_FROM = "notifications@drive.example";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -88,7 +88,7 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
   const closed = renderEmail("account-closed", {
     graceDays: CLOSE_GRACE_DAYS,
     reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: "3 Nov",
+    purgeOn: "3 Nov (UTC)",
   });
   assert.match(closed.subject, /closed/i);
   assert.match(closed.text, /30 days/);
@@ -98,7 +98,7 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
   const reminder = renderEmail("account-close-reminder", {
     graceDays: CLOSE_GRACE_DAYS,
     reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: "3 Nov",
+    purgeOn: "3 Nov (UTC)",
   });
   assert.match(reminder.subject, /5 days/);
   assert.match(reminder.text, /5 days/);
@@ -138,43 +138,142 @@ test("the shipped usage page states the 30-day grace period in the module's word
   assert.ok(page.includes(`const CLOSE_CANCEL_ENDPOINT = "${CLOSE_CANCEL_ENDPOINT}";`));
 });
 
-test("the purge date reads like 3 Nov, a day number and the month's short name", () => {
+test("the purge date reads like 3 Nov (UTC): a day, a short month, and the zone it is in", () => {
   // drive#422: the walkthrough found the account-close box showing
   // "2026-11-03", which is correct but unreadable to a person. The window is
   // 30 days, so a year in the sentence adds nothing and only confuses.
-  assert.equal(purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000), "3 Nov");
-  assert.equal(purgeOnDate(Date.parse("2026-10-31T23:59:59.000Z") / 1000), "30 Nov");
-  assert.equal(purgeOnDate(Date.parse("2026-11-30T00:00:00.000Z") / 1000), "30 Dec");
+  assert.equal(purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000), "3 Nov (UTC)");
+  assert.equal(purgeOnDate(Date.parse("2026-10-31T23:59:59.000Z") / 1000), "30 Nov (UTC)");
+  assert.equal(purgeOnDate(Date.parse("2026-11-30T00:00:00.000Z") / 1000), "30 Dec (UTC)");
   // A year boundary does not leave a year on the sentence.
-  assert.equal(purgeOnDate(Date.parse("2026-12-31T00:00:00.000Z") / 1000), "30 Jan");
+  assert.equal(purgeOnDate(Date.parse("2026-12-31T00:00:00.000Z") / 1000), "30 Jan (UTC)");
   assert.throws(() => purgeOnDate(Number.NaN), /unix seconds/);
   // @ts-expect-error the guard is under test — the function expects a number
   assert.throws(() => purgeOnDate("yesterday"), /unix seconds/);
+
+  // drive#689: the day is a UTC day and has to stay one, because the cron
+  // picks the account to purge against the Worker's own UTC clock. What was
+  // wrong was the silence about it, so the sentence names the zone.
+  for (const closedAt of [
+    Date.parse("2026-10-04T12:00:00.000Z") / 1000,
+    Date.parse("2026-12-31T00:00:00.000Z") / 1000,
+  ]) {
+    assert.match(purgeOnDate(closedAt), / \(UTC\)$/, "the sentence states which zone the day is");
+  }
+  // The day itself is still worked out in UTC: an account closed at 23:30 UTC
+  // on 3 November purges on the UTC 3 December, not on the 2nd a reader west
+  // of Greenwich would count to.
+  assert.equal(purgeOnDate(Date.parse("2026-11-03T23:30:00.000Z") / 1000), "3 Dec (UTC)");
 });
 
-test("the close emails carry the short date and refuse an ISO one", () => {
+test("every surface that shows the purge day states the zone with it", async () => {
+  // drive#689 makes the zone part of the value rather than of each sentence,
+  // so this reads the places the date reaches a person and requires the zone
+  // beside it. The zone is not typed into any of them, so this is a real run
+  // over the close path rather than a copy of the expected words: closing a
+  // real account writes the real row, the real mail goes out through the real
+  // sender, and purgeOnDate() is the only thing that put the date in it.
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_zone", email: "nish@example.com", name: "Nish" };
+  await world.keys.mintKey(account, { kind: "device", name: "mac" });
+  const closedAt = clock.now();
+  const closesOn = purgeOnDate(closedAt / 1000);
+
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "nish@example.com",
+    now: closedAt,
+  });
+
+  assert.equal(world.email.sent.length, 1, "the day-0 mail went out through the real sender");
+  const mailed = /** @type {{subject: string, text: string}} */ (world.email.sent[0]);
+  assert.match(mailed.subject, /closed/i);
+  // Every day the close text writes has the zone beside it. The predicate is
+  // the day itself, not a word like "30 days": "You have 30 days to cancel"
+  // is a sentence with no day in it, and a gate keyed on the window word
+  // would demand a zone of a sentence that has none to name. So the day is
+  // the shape to find, and a day without its zone is what fails.
+  const month = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+  // The two shapes this gates on: a day with its zone beside it, and a day
+  // written bare. Neither is typed out as words, so the mail's own sentences
+  // are what is measured.
+  assert.match(mailed.text, new RegExp(`\\d{1,2} ${month} \\(UTC\\)`), "the day carries its zone");
+  assert.doesNotMatch(
+    mailed.text,
+    new RegExp(`\\d{1,2} ${month}(?! \\()`),
+    "no day is written without its zone beside it",
+  );
+  // The sentence that carries the date never carries the ISO form either:
+  // the unreadable shape this is all about.
+  assert.doesNotMatch(mailed.text, /\d{4}-\d{2}-\d{2}/);
+
+  // The five close kinds are asserted through the template the same way, so a
+  // kind whose sentence does not carry the zone fails here rather than only in
+  // the email a customer reads.
+  for (const kind of ["account-closed", "account-close-reminder"]) {
+    const mail = renderEmail(kind, {
+      graceDays: CLOSE_GRACE_DAYS,
+      reminderDays: CLOSE_REMINDER_DAYS,
+      purgeOn: closesOn,
+    });
+    assert.match(mail.text, / \(UTC\)/, `${kind} states the zone its day is in`);
+    assert.doesNotMatch(mail.text, /2026-11-03/);
+  }
+
+  // The banner's sentence is one shared placeholder: the zone arrives inside
+  // the value it fills, so the page needs no second copy of the words. Pinned
+  // as source for the same reason the banner test above pins it — the page's
+  // script is the only half of the close flow that has no node entry point.
+  const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+  // The sentence the value lands in, taken from the copy itself rather than
+  // typed out again, so the page's words and the banner's words cannot differ.
+  const sentence = `${CLOSE_COPY.pendingWhat.split(".")[0]}.`;
+  assert.match(page, /Files are deleted on \$\{status\.purgeOn\}\./);
+  // The sentence itself holds no zone: if it ever grows one, the four places
+  // drift again and this fails.
+  assert.doesNotMatch(sentence, /\(UTC\)/);
+  assert.equal(sentence, "This account closes on {purgeOn}.");
+});
+
+test("the close emails carry the short date with its zone and refuse a bare one", () => {
   // The template's own guard: the day arrives from purgeOnDate(), so a value
-  // that is not "3 Nov" is a payload the sender did not build.
+  // that is not "3 Nov (UTC)" is a payload the sender did not build.
   for (const kind of ["account-closed", "account-close-reminder"]) {
     assert.throws(
       () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "2026-11-03" }),
-      /must be a short date \(3 Nov\)/,
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
     );
     assert.throws(
       () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 November" }),
-      /must be a short date \(3 Nov\)/,
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
       "the short month name, not the long one",
     );
     assert.throws(
       () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "03 Nov" }),
-      /must be a short date \(3 Nov\)/,
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
+      "en-GB's numeric day never pads",
+    );
+    // drive#689: a bare day is refused too, so the silence cannot come back.
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" }),
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
+      "the zone is required",
+    );
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (EST)" }),
+      /must be a short date with its zone \(3 Nov \(UTC\)\)/,
+      "the one zone the day is worked out in",
     );
     const mailed = renderEmail(kind, {
       graceDays: 30,
       reminderDays: 25,
-      purgeOn: "3 Nov",
+      purgeOn: "3 Nov (UTC)",
     });
-    assert.match(mailed.text, /3 Nov/);
+    assert.match(mailed.text, /3 Nov \(UTC\)/);
     assert.doesNotMatch(mailed.text, /2026-11-03/);
   }
 });
@@ -428,7 +527,13 @@ test("GET /api/account/close is account-gated, and a signed-in close writes the 
   );
   assert.equal(anonymous.status, 401);
 
-  const made = createTestAuth();
+  const made = createTestAuth({
+    // Close now revokes the account's device tokens in the same store call
+    // (drive#497), so the real schema this route runs against carries the
+    // device-token table too; the default harness subset stops at the cap and
+    // account tables and would fail `no such table: device_tokens`.
+    migrations: [...DRIVE_MIGRATIONS, "drive/0007_device_codes.sql"],
+  });
   const { cookie, account } = await signIn(made, "close@example.com");
   const email = makeFakeEmail();
   const env = {
@@ -667,4 +772,281 @@ test("a close POST that is not JSON is refused before the body is parsed", async
   );
   assert.equal(res.status, 400);
   assert.equal(world.email.sent.length, 0);
+});
+
+/**
+ * A store that counts batch deletes (and can refuse them), so the tests
+ * below prove the batch shape, not just the end state.
+ * @param {ReturnType<typeof createFileStore>} store
+ */
+function countingStore(store) {
+  /** @type {number[]} */
+  const batches = [];
+  /** @type {(string | undefined)[]} */
+  const startAfters = [];
+  let refuseAfterBatches = Number.POSITIVE_INFINITY;
+  return {
+    batches,
+    startAfters,
+    /** @param {number} count */
+    refuseAfter(count) {
+      refuseAfterBatches = count;
+    },
+    ...store,
+    /**
+     * @param {string} path
+     * @param {{startAfter?: string, limit?: number}} [options]
+     */
+    async listKeys(path, options) {
+      startAfters.push(options?.startAfter);
+      return store.listKeys(path, options);
+    },
+    /** @param {string[]} paths */
+    async removeBatch(paths) {
+      if (batches.length >= refuseAfterBatches) {
+        throw new Error("storage batch delete refused: the provider is having a bad night");
+      }
+      batches.push(paths.length);
+      return store.removeBatch(paths);
+    },
+  };
+}
+
+test("a 3,000-file account purges in three batch delete calls", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_big", email: "big@example.com", name: "Big" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "big@example.com",
+    now: clock.now(),
+  });
+  const scoped = scopeStore(world.files, account);
+  for (let i = 0; i < 3_000; i += 1) {
+    await scoped.write(`/f-${String(i).padStart(4, "0")}.txt`, `file ${i}`, "text/plain");
+  }
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const counting = countingStore(world.files);
+  const result = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: counting,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  // Three full batches: the 100,000-delete month is a 100-batch night, not
+  // a run that hits its subrequest ceiling one account in (drive#565).
+  assert.deepEqual(counting.batches, [1_000, 1_000, 1_000]);
+  assert.equal(result.purged, 1);
+  assert.equal(result.purgeFailures, 0);
+  assert.equal(await scoped.read("/f-0000.txt"), null);
+  assert.equal(await scoped.read("/f-2999.txt"), null);
+  const state = await world.devices.getCloseState(account.id);
+  assert.ok(state && state.purgedAt !== null);
+  assert.equal(state.purgeCursor, null);
+});
+
+test("one account's purge failure leaves the next account's purge and mail intact", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const broken = { id: "acct_a", email: "a@example.com", name: "A" };
+  const neighbour = { id: "acct_b", email: "b@example.com", name: "B" };
+  for (const account of [broken, neighbour]) {
+    await closeAccount({
+      devices: world.devices,
+      email: world.email,
+      mailFrom: MAIL_FROM,
+      account,
+      typedEmail: account.email,
+      now: clock.now(),
+    });
+  }
+  const scopedA = scopeStore(world.files, broken);
+  const scopedB = scopeStore(world.files, neighbour);
+  await scopedA.write("/a.txt", "survives the night", "text/plain");
+  await scopedB.write("/b.txt", "goes tonight", "text/plain");
+  world.email.sent.length = 0;
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  // Only A's batch deletes are refused, the way one stuck object prefix (or
+  // one provider outage on one bucket) would be.
+  const counting = {
+    ...world.files,
+    /** @param {string[]} paths */
+    async removeBatch(paths) {
+      if (paths.some((path) => path.startsWith("u/acct_a/"))) {
+        throw new Error("storage batch delete refused: the provider is having a bad night");
+      }
+      return world.files.removeBatch(paths);
+    },
+  };
+  /** @type {string[]} */
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => {
+    logged.push(args.map((a) => String(a)).join(" | "));
+  };
+  let result;
+  try {
+    result = await runAccountCloseCron({
+      db: world.db,
+      devices: world.devices,
+      store: counting,
+      email: world.email,
+      mailFrom: MAIL_FROM,
+      now: clock.now(),
+    });
+  } finally {
+    console.error = original;
+  }
+  // A is logged and left for the next night, and neither B's purge nor the
+  // night's reminders depend on A's purge going well.
+  assert.equal(result.purgeFailures, 1);
+  assert.equal(result.purged, 1);
+  assert.equal(result.reminded, 2);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /acct_a/);
+  assert.ok(await scopedA.read("/a.txt"));
+  assert.equal(await scopedB.read("/b.txt"), null);
+  const stateA = await world.devices.getCloseState(broken.id);
+  assert.ok(stateA && stateA.purgedAt === null);
+  const stateB = await world.devices.getCloseState(neighbour.id);
+  assert.ok(stateB && stateB.purgedAt !== null);
+  // Both reminders went out: the mail pass ran to the end with A's purge
+  // failed, which is the whole point.
+  assert.equal(world.email.sent.length, 2);
+  for (const mail of world.email.sent) {
+    assert.match(/** @type {{text: string}} */ (mail).text, /5 days/);
+  }
+});
+
+test("a purge that stops midway resumes from the saved cursor", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_resume", email: "resume@example.com", name: "Resume" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "resume@example.com",
+    now: clock.now(),
+  });
+  const scoped = scopeStore(world.files, account);
+  for (let i = 0; i < 1_500; i += 1) {
+    await scoped.write(`/f-${String(i).padStart(4, "0")}.txt`, `file ${i}`, "text/plain");
+  }
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const first = countingStore(world.files);
+  first.refuseAfter(1);
+  const stopped = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: first,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  // Night one: batch one landed and its boundary is in the row before the
+  // second batch refused, so nothing after the boundary is re-listed.
+  assert.equal(stopped.purged, 0);
+  assert.equal(stopped.purgeFailures, 1);
+  assert.deepEqual(first.batches, [1_000]);
+  const state = await world.devices.getCloseState(account.id);
+  assert.ok(state);
+  assert.equal(state.purgedAt, null);
+  assert.equal(state.purgeCursor, "/f-0999.txt");
+  assert.equal(await scoped.read("/f-0000.txt"), null);
+  assert.ok(await scoped.read("/f-1499.txt"));
+
+  // Night two: the listing starts after the saved cursor and the remaining
+  // 500 files are the only work left.
+  const second = countingStore(world.files);
+  const finished = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: second,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  assert.equal(second.startAfters[0], "u/acct_resume/f-0999.txt");
+  assert.deepEqual(second.batches, [500]);
+  assert.equal(finished.purged, 1);
+  assert.equal(finished.purgeFailures, 0);
+  assert.equal(await scoped.read("/f-1499.txt"), null);
+  const done = await world.devices.getCloseState(account.id);
+  assert.ok(done && done.purgedAt !== null);
+  assert.equal(done.purgeCursor, null);
+});
+
+test("a cancel after the purge began is refused and the account stays closed", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_halfgone", email: "half@example.com", name: "Half" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: account.email,
+    now: clock.now(),
+  });
+  const scoped = scopeStore(world.files, account);
+  for (let i = 0; i < 1_500; i += 1) {
+    await scoped.write(`/f-${String(i).padStart(4, "0")}.txt`, `file ${i}`, "text/plain");
+  }
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const night = countingStore(world.files);
+  night.refuseAfter(1);
+  await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: night,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  const partial = await world.devices.getCloseState(account.id);
+  assert.ok(partial && partial.purgedAt === null && partial.purgeCursor !== null);
+
+  // Reopening now would hand back an active account with a thousand files
+  // missing, so the cancel is refused in the table's words.
+  await assert.rejects(
+    cancelClose({
+      devices: world.devices,
+      account,
+      typedEmail: account.email,
+      now: clock.now(),
+    }),
+    { name: "TypeError" },
+  );
+  const after = await world.devices.getCloseState(account.id);
+  assert.ok(after);
+  assert.equal(after.state, "closed");
+  assert.equal(after.purgeCursor, partial.purgeCursor, "the next night resumes from it");
+});
+
+test("a cancel at the purge cutoff is refused even before a cursor is saved", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_due", email: "due@example.com", name: "Due" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: account.email,
+    now: clock.now(),
+  });
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  await assert.rejects(
+    cancelClose({ devices: world.devices, account, typedEmail: account.email, now: clock.now() }),
+    { name: "TypeError" },
+  );
+  const after = await world.devices.getCloseState(account.id);
+  assert.equal(after?.state, "closed");
 });

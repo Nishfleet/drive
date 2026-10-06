@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,9 @@ func configOnlyHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(testStorage())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRcloneEnv(home, testStorage(), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return home
@@ -45,6 +49,9 @@ func storageWithKey(accessKey, secret string) StorageConfig {
 func writeDeviceKey(t *testing.T, home, accessKey, secret string) {
 	t.Helper()
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(storageWithKey(accessKey, secret))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRcloneEnv(home, storageWithKey(accessKey, secret), "", ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -186,6 +193,47 @@ func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	}
 }
 
+func TestLogoutAfterExpiredSignInStillRevokesTheStorageKey(t *testing.T) {
+	t.Setenv("DRIVE_API_URL", "")
+	home := configOnlyHome(t)
+	var revokeCalls, tokenCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == deviceTokenPath:
+			tokenCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.Method == http.MethodPost && r.URL.Path == RevokePath:
+			revokeCalls++
+			id, pass, ok := r.BasicAuth()
+			if !ok || id != testStorage().AccessKey || pass != testStorage().SecretKey {
+				http.Error(w, "unknown key", http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok_expired"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runLogout([]string{"--home", home}); err != nil {
+		t.Fatalf("logout after an expired sign-in: %v", err)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("device-token revoke ran %d times, want 1", tokenCalls)
+	}
+	if revokeCalls != 1 {
+		t.Fatalf("storage-key revoke ran %d times, want 1 so the key is not left live", revokeCalls)
+	}
+	for _, gone := range []string{RcloneConfigPath(home), CredentialsPath(home)} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after logout", gone)
+		}
+	}
+}
+
 // A malformed config is not a silent "no key": logout must not claim the key
 // is gone when it never learned which key it held.
 func TestLogoutNamesAnUnreadableConfigInsteadOfSkippingTheRevoke(t *testing.T) {
@@ -210,12 +258,24 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
 	ks := testRevoker(t, home)
 
-	err := Logout("linux", home, false, nil, ks)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	err = Logout("linux", home, false, nil, ks)
+	os.Stderr = saved
+	_ = w.Close()
+	note, _ := io.ReadAll(r)
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
 	if !strings.Contains(err.Error(), "waiting to upload") {
 		t.Errorf("got %q, want the pending count named", err)
+	}
+	if !strings.Contains(string(note), "the drive is unmounted") {
+		t.Errorf("stderr = %q, want the unmount note on a refused logout", note)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); statErr != nil {
 		t.Errorf("the refusal must not delete the key: %v", statErr)
@@ -296,16 +356,9 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 
 	port := freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port,
 		"--log-level", "INFO")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
 
 	// Seed the stand-in so there is something in the drive to read. The seed
 	// runs after the server is up and writes through the rclone config the
@@ -324,6 +377,7 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	}
 	seedEnv := append(os.Environ(),
 		"RCLONE_CONFIG="+RcloneConfigPath(home),
+		rcloneSecretEnv+"="+secretKey,
 	)
 	seed := exec.Command("rclone", "copy", filepath.Join(dataDir, "seed.bin"),
 		"drive:"+cfg.Bucket+"/"+cfg.Prefix+"/")

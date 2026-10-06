@@ -15,7 +15,7 @@ import {
   handleBranchesRequest,
 } from "../src/branches.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { FAILURE_MESSAGES, failureMessage, SIGN_IN_COMMAND } from "../src/messages.js";
 import { readSigninRequest } from "../src/signin.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -262,4 +262,28 @@ test("no module under src/ carries a second copy of a table sentence", () => {
       }
     }
   }
+});
+
+test("drive init is never presented as the sign-in step", () => {
+  // drive#557: drive init mounts and connects tools. It cannot sign anyone in.
+  // A sentence that still points at it as the sign-in step is the bug this
+  // issue exists to close. The surfaces a person actually reads are the ones
+  // named here; comments in tests and docs are out of this scan.
+  const asSignIn = /(?:^|[^\w])drive init(?:`|'|")?(?: again)? to sign(?:s|ing)? in/i;
+  const files = [
+    "src/messages.js",
+    "src/emails.js",
+    "src/status.js",
+    "public/index.html",
+    "get-started.html",
+    "workers/api/src/device-routes.js",
+    "cmd/drive/messages.go",
+  ];
+  for (const rel of files) {
+    const text = readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+    const hit = text.match(asSignIn);
+    assert.equal(hit, null, `${rel} presents drive init as the sign-in step: ${hit?.[0]}`);
+  }
+  assert.equal(SIGN_IN_COMMAND, "drive login");
+  assert.match(FAILURE_MESSAGES["key-revoked"].next, new RegExp(SIGN_IN_COMMAND));
 });

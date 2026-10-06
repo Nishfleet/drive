@@ -36,6 +36,14 @@
  *   Optional because the api's own store mints the replacement itself and only
  *   needs the provider's mint: the boundary a swap keeps is the bucket, which
  *   the store rebuilds from the account id rather than asking the vendor.
+ * @property {true} [namesSession] Whether this provider's mints are
+ *   credentials that die on their own: the STS path (s3-keys.js) mints a
+ *   session of `sessionSeconds` that the vendor itself ends, so a credential
+ *   whose api row says "never expires" is a dead session wearing an immortal
+ *   label. Absent means the mints do not die on their own (iDrive key pairs,
+ *   the stand-in), and a null `expires_at` on a row is a deliberate permanent
+ *   key. The stores read this when refusing rows minted before drive#544
+ *   started recording the session on the row (drive#713).
  */
 
 /** @typedef {"device"|"agent"|"s3"|"branch"} KeyKind */
@@ -355,9 +363,15 @@ export function teamScopeFor(role, teamId) {
  * @returns {string}
  */
 export function checkedBranchName(name) {
-  if (typeof name !== "string" || !BRANCH_NAME_SAFE.test(name) || name.includes("..")) {
+  if (
+    typeof name !== "string" ||
+    name === "." ||
+    name === ".." ||
+    !BRANCH_NAME_SAFE.test(name) ||
+    name.includes("..")
+  ) {
     throw new TypeError(
-      `A branch name is 1 to 64 characters of letters, digits, dot, dash or underscore, without "..", got ${JSON.stringify(name)}.`,
+      `A branch name is 1 to 64 characters of letters, digits, dot, dash or underscore, without "." or "..", got ${JSON.stringify(name)}.`,
     );
   }
   return name;

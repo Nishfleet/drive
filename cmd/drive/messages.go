@@ -30,6 +30,11 @@ import (
 	"strings"
 )
 
+// signInCommand is the one command that signs this machine in. The web
+// table's same string is src/messages.js SIGN_IN_COMMAND. The two cannot
+// import each other. drive#557: drive init does not sign anyone in.
+const signInCommand = "drive login"
+
 // failure is one entry of the message table, bound to a failure site. detail
 // is the underlying error, kept for DRIVE_DEBUG and for errors.As callers;
 // it is never printed by default (north star "Safe": no raw error text).
@@ -80,7 +85,7 @@ var messageTable = map[string][2]string{
 	},
 	"key-revoked": {
 		"This device's key was revoked, so it can't reach the drive.",
-		"Run `drive login` to get a new key; your files are untouched.",
+		"Run `" + signInCommand + "` to get a new key; your files are untouched.",
 	},
 	"storage-down": {
 		"We can't reach storage right now.",
@@ -156,6 +161,10 @@ var messageTable = map[string][2]string{
 		"The drive folder {1} could not be created.",
 		"Check that the disk has room and that {1} is writable, then run the command again.",
 	},
+	"cache-clear-mounted": {
+		"The cache cannot be cleared while the drive is mounted.",
+		"Run `drive unmount`, then `drive cache --clear`, then `drive mount`.",
+	},
 	"mount-failed": {
 		"rclone exited before the drive mounted.",
 		"Read {1} for the exact cause, fix it, then run `drive mount` again.",
@@ -182,7 +191,7 @@ var messageTable = map[string][2]string{
 	},
 	"key-still-live": {
 		"signed out here; the key is still live, run drive logout again when online",
-		"Run `drive login`, then `drive logout` again, to turn it off.",
+		"Run `" + signInCommand + "`, then `drive logout` again, to turn it off.",
 	},
 	"key-still-live-elsewhere": {
 		"signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app, then run drive logout --forget-pending",
@@ -191,6 +200,14 @@ var messageTable = map[string][2]string{
 	"queue-unreadable": {
 		"The upload queue could not be read ({1}).",
 		"Leave the mount running so queued files keep uploading, then run `drive status` again in a moment.",
+	},
+	"upload-failing": {
+		"A save has failed to upload {1} times and is still retrying.",
+		"Read the storage error in {2}, fix it, then the save goes up on its own; nothing already saved is lost.",
+	},
+	"cache-over-cap": {
+		"Unsent saves have filled the local cache past its {1} limit, because {2}.",
+		"Let the uploads finish, or run `drive resume` if the drive is paused; nothing already saved is lost.",
 	},
 	"folder-silent": {
 		"The drive folder did not answer within {1}.",
@@ -230,7 +247,7 @@ var messageTable = map[string][2]string{
 	},
 	"signout-everywhere-no-account": {
 		"There is no signed-in account on this device to sign out everywhere.",
-		"Run `drive login`, then run `drive logout --all --yes`.",
+		"Run `" + signInCommand + "`, then run `drive logout --all --yes`.",
 	},
 	"import-source": {
 		"That is not an rclone remote this command can import from.",
@@ -243,6 +260,14 @@ var messageTable = map[string][2]string{
 	"import-failed": {
 		"rclone could not copy those files into the drive.",
 		"Run `rclone config` to check the remote, then run `drive import` again.",
+	},
+	"import-cache-full": {
+		"The import did not start: the drive's cache is full, so new saves can't upload.",
+		"Run `drive status` to see what is waiting and why, then import again once the uploads catch up.",
+	},
+	"import-cache-unknown": {
+		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
+		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
 	},
 }
 

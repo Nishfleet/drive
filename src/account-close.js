@@ -7,8 +7,9 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
+import { json } from "../workers/api/src/http.js";
 import { sendEmail } from "./email-send.js";
-import { BRANCHES_PATH, scopeStore, TRASH_PATH } from "./files.js";
+import { scopeStore } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 
 /** @typedef {import("./files.js").FileStore} FileStore */
@@ -45,19 +46,6 @@ export const CLOSE_COPY = Object.freeze({
   pendingCancel: "Cancel closing",
 });
 
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} status
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
-
 /**
  * @param {unknown} value
  * @returns {string}
@@ -70,13 +58,29 @@ export function normalizeEmail(value) {
 }
 
 /**
- * The day a closed account's files are deleted, in words: "3 Nov"
+ * The day a closed account's files are deleted, in words: "3 Nov (UTC)"
  * (drive#422). The ISO stamp the Worker used to send was correct but
  * unreadable to a person, and the walkthrough named it.
  *
- * `en-GB` with a numeric day and a short month is the same pair
- * src/files.js formatWhen uses for the same-year dates in the file list, so
- * every customer-facing day drive shows reads one way.
+ * The words are written here on the Worker because this day is fixed by the
+ * clock the account closed on and is stated inside an email and the close
+ * banner, not rendered by a page (drive#559 moved every page's date to the
+ * browser). `en-GB` with a numeric day and a short month, namespaced to UTC
+ * so the day is the same one for every reader.
+ *
+ * The zone rides in the value, and this is the one place the reason is
+ * written (drive#689). The day is a UTC day and it has to stay one: the
+ * nightly cron picks the account to purge by comparing
+ * `closed_at + 30 days` against the Worker's own UTC clock, so the day the
+ * reader's calendar would show is not the day the files go. What was wrong
+ * was not the day but the silence about it — a bare "3 Nov" let a reader
+ * west of Greenwich believe they had their files until the end of their own
+ * 3 November. Naming the zone here rather than in each of the four sentences
+ * that show the date (the two close emails, the close banner and the usage
+ * page) means the four sentences hold no zone of their own, so there is no
+ * sentence that can drift from the day. The email guard's shape is pinned
+ * against this function by test/account-close.test.mjs, which is what catches
+ * the guard and the day moving apart.
  * @param {number} closedAtSeconds
  * @returns {string}
  */
@@ -86,10 +90,10 @@ export function purgeOnDate(closedAtSeconds) {
       `purgeOnDate needs closed_at in unix seconds, got ${String(closedAtSeconds)}`,
     );
   }
-  return new Date((closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000).toLocaleDateString(
-    "en-GB",
-    { day: "numeric", month: "short", timeZone: "UTC" },
-  );
+  const day = new Date(
+    (closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000,
+  ).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  return `${day} (UTC)`;
 }
 
 /**
@@ -135,7 +139,6 @@ export async function closeAccount(input) {
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
-  await input.devices.releaseFoundingReservation(input.account.id);
   if (closed.closeMailSentAt === null) {
     await sendEmail(input.email, {
       to: expected,
@@ -159,7 +162,8 @@ export async function cancelClose(input) {
   const expected = input.account.email ?? "";
   requireMatchingEmail(expected, input.typedEmail);
   try {
-    return await input.devices.cancelClose(input.account.id);
+    const purgeDueAt = Math.floor(input.now / 1000) - CLOSE_GRACE_DAYS * DAY_SECONDS;
+    return await input.devices.cancelClose(input.account.id, purgeDueAt);
   } catch (error) {
     if (error instanceof TypeError && typeof error.message === "string") {
       const key = error.message;
@@ -171,17 +175,42 @@ export async function cancelClose(input) {
   }
 }
 
+/** How many keys one purge batch deletes: the provider's own per-call ceiling. */
+export const PURGE_BATCH = 1000;
+
 /**
- * Delete every object under one account's storage prefix, including the
- * hidden `.trash` and `.branches` folders a scoped listing of `/` skips.
+ * Delete every object under one account's storage prefix, in batches of
+ * `PURGE_BATCH` keys (drive#565): one flat listing and one batch delete per
+ * batch, so a 100,000-file account is about 100 calls of each instead of
+ * 100,000 single-object deletes. The hidden `.trash` and `.branches` folders
+ * are reached the same way — a flat listing hides nothing — so the three
+ * walks the old tree recursion made are one pass here.
+ *
+ * Resumable: `startAfter` is the drive path the previous run's last batch
+ * ended on (the row's `purge_cursor`), and `saveProgress` records each new
+ * boundary the moment its batch is deleted, so a run that stops — a ceiling,
+ * a provider error, a killed isolate — loses at most the batch it was on.
+ * Returns the path the last completed batch ended on, or null when there was
+ * nothing left to delete.
  * @param {FileStore} store
  * @param {{id: string}} account
+ * @param {{startAfter?: string, saveProgress?: (cursor: string) => Promise<void>}} [options]
+ * @returns {Promise<string|null>}
  */
-export async function purgeAccountFiles(store, account) {
+export async function purgeAccountFiles(store, account, options = {}) {
   const scoped = scopeStore(store, account);
-  await removeTree(scoped, "/");
-  await removeTree(scoped, TRASH_PATH);
-  await removeTree(scoped, BRANCHES_PATH);
+  let cursor = options.startAfter;
+  for (;;) {
+    const paths = await scoped.listKeys("/", { startAfter: cursor, limit: PURGE_BATCH });
+    if (paths.length === 0) {
+      return cursor ?? null;
+    }
+    await scoped.removeBatch(paths);
+    cursor = paths[paths.length - 1];
+    if (options.saveProgress !== undefined) {
+      await options.saveProgress(cursor);
+    }
+  }
 }
 
 /**
@@ -196,23 +225,11 @@ export async function purgeAccountRecords(db, accountId) {
 }
 
 /**
- * @param {FileStore} store
- * @param {string} path
- */
-async function removeTree(store, path) {
-  const entries = await store.list(path);
-  for (const entry of entries) {
-    if (entry.kind === "folder") {
-      await removeTree(store, entry.path);
-    } else {
-      await store.remove(entry.path);
-    }
-  }
-}
-
-/**
  * Nightly pass: day-25 reminder, then day-30 file delete. Only rows whose
- * person asked to close are touched.
+ * person asked to close are touched. One account's purge failure is logged
+ * and the pass moves on (drive#565): the next account still purges and the
+ * mails still go out, and the failed account resumes from the cursor its
+ * last completed batch saved.
  * @param {{
  *   db: D1Database,
  *   devices: DeviceStore,
@@ -275,13 +292,29 @@ export async function runAccountCloseCron(input) {
     reminded += 1;
   }
   let purged = 0;
+  let purgeFailures = 0;
   for (const row of duePurge) {
-    await purgeAccountFiles(input.store, { id: row.id });
-    await purgeAccountRecords(input.db, row.id);
-    await input.devices.markPurged(row.id, at);
-    purged += 1;
+    try {
+      await purgeAccountFiles(
+        input.store,
+        { id: row.id },
+        {
+          startAfter: row.purgeCursor ?? undefined,
+          saveProgress: (cursor) => input.devices.markPurgeProgress(row.id, cursor),
+        },
+      );
+      await purgeAccountRecords(input.db, row.id);
+      await input.devices.markPurged(row.id, at);
+      purged += 1;
+    } catch (error) {
+      purgeFailures += 1;
+      console.error(
+        `account close: the purge of account ${row.id} failed after its saved cursor; it resumes next night`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
-  return { mailed, reminded, purged };
+  return { mailed, reminded, purged, purgeFailures };
 }
 
 /**

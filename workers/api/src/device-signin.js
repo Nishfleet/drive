@@ -42,6 +42,7 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  *        only the in-memory store holds one, for a test that models a
  *        lost account row
  * @property {(request?: {name?: string}) => Promise<DeviceCodeResult>} requestDeviceCode
+ * @property {(userCode: string) => Promise<PendingDeviceApproval|null>} pendingDeviceApproval
  * @property {(userCode: string, account?: {id: string, name?: string, email?: string}) => Promise<ApproveResult>} approveDeviceCode
  * @property {(deviceCode: string) => Promise<PollResult>} pollDeviceCode
  * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
@@ -54,6 +55,12 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  * A freshly started device code: the CLI's secret and the short code a person
  * types on the approval page.
  * @typedef {{deviceCode: string, userCode: string, expiresIn: number, interval: number}} DeviceCodeResult
+ */
+
+/**
+ * A pending device code the approval page can name without putting the code
+ * in the form. `createdAt` and `expiresAt` are epoch seconds.
+ * @typedef {{name: string, createdAt: number, expiresAt: number}} PendingDeviceApproval
  */
 
 /**
@@ -267,6 +274,25 @@ export function createMemoryDeviceSigninStore(options = {}) {
         expiresIn: DEVICE_CODE_TTL_SECONDS,
         interval: DEVICE_CODE_INTERVAL_SECONDS,
       };
+    },
+
+    /**
+     * The pending code a person is about to approve, or null. The approval
+     * page names the device and the time from this, and never copies the
+     * user code into the form (drive#518).
+     * @param {string} userCode
+     * @returns {Promise<PendingDeviceApproval|null>}
+     */
+    async pendingDeviceApproval(userCode) {
+      const deviceCode = byUserCode.get(userCode);
+      const code = deviceCode === undefined ? undefined : byDeviceCode.get(deviceCode);
+      if (code === undefined || code.status !== "pending") {
+        return null;
+      }
+      if (code.expiresAt < nowSeconds(now())) {
+        return null;
+      }
+      return { name: code.name, createdAt: code.createdAt, expiresAt: code.expiresAt };
     },
 
     /**
@@ -541,6 +567,37 @@ export function createD1DeviceSigninStore(db, options = {}) {
     },
 
     /**
+     * The pending code a person is about to approve, or null. The approval
+     * page names the device and the time from this, and never copies the
+     * user code into the form (drive#518).
+     * @param {string} userCode
+     * @returns {Promise<PendingDeviceApproval|null>}
+     */
+    async pendingDeviceApproval(userCode) {
+      const row = await first(
+        db,
+        "SELECT name, created_at, expires_at, status FROM device_codes WHERE user_code = ?1",
+        userCode,
+      );
+      if (row === null || typeof row !== "object") {
+        return null;
+      }
+      const r = /** @type {Record<string, unknown>} */ (row);
+      if (String(r.status) !== "pending") {
+        return null;
+      }
+      const expiresAt = Number(r.expires_at);
+      if (expiresAt < nowSeconds(now())) {
+        return null;
+      }
+      return {
+        name: String(r.name ?? ""),
+        createdAt: Number(r.created_at),
+        expiresAt,
+      };
+    },
+
+    /**
      * @param {string} userCode
      * @param {{id: string, name?: string, email?: string}} [account]
      * @returns {Promise<ApproveResult>}
@@ -710,7 +767,12 @@ export function createD1DeviceSigninStore(db, options = {}) {
       if (!winner) {
         return { status: "expired" };
       }
-      return { status: "approved", deviceToken: token, expiresAt: minted + DEVICE_TOKEN_TTL_SECONDS, account: row.account };
+      return {
+        status: "approved",
+        deviceToken: token,
+        expiresAt: minted + DEVICE_TOKEN_TTL_SECONDS,
+        account: row.account,
+      };
     },
 
     /**
@@ -726,10 +788,19 @@ export function createD1DeviceSigninStore(db, options = {}) {
       // caller could forget: a dead row is the same answer as a row that was
       // never written, so there is one way for a token to fail and one place it
       // can happen.
+      //
+      // The close state is joined in for the same reason: a token minted
+      // before the account closed must stop signing the CLI in the moment the
+      // account closes (drive#497), and the accounts row is where close is
+      // written. It is a LEFT JOIN because a person can hold a device token
+      // with no accounts row yet — the site Worker's sign-in mints the Better
+      // Auth user first — and that state is not closed.
       const row = await first(
         db,
-        `SELECT account_id, account_name, account_email, expires_at FROM device_tokens
-          WHERE token_hash = ?1 AND revoked_at IS NULL AND expires_at > ?2`,
+        `SELECT t.account_id, t.account_name, t.account_email, t.expires_at, a.state AS account_state
+          FROM device_tokens t
+          LEFT JOIN accounts a ON a.id = t.account_id
+          WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND t.expires_at > ?2`,
         hash,
         at,
       );
@@ -759,6 +830,9 @@ export function createD1DeviceSigninStore(db, options = {}) {
         );
       }
       const r = /** @type {Record<string, unknown>} */ (row);
+      if (r.account_state === "closed") {
+        return null;
+      }
       return {
         id: String(r.account_id ?? ""),
         name: String(r.account_name ?? ""),

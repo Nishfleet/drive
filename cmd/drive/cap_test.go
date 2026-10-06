@@ -167,12 +167,19 @@ func TestRunCapRestartWritesTheResolvedSecretIntoTheMountConfig(t *testing.T) {
 	// satisfy. The config file, not the error, is the proof.
 	_ = runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "$20"})
 
-	got, err := os.ReadFile(RcloneConfigPath(home))
+	conf, err := os.ReadFile(RcloneConfigPath(home))
 	if err != nil {
 		t.Fatalf("the restart never wrote the mount config: %v", err)
 	}
-	if !strings.Contains(string(got), "secret_access_key = "+secret) {
-		t.Errorf("mount config does not carry the resolved secret:\n%s", got)
+	if strings.Contains(string(conf), secret) || strings.Contains(string(conf), "secret_access_key") {
+		t.Errorf("rclone.conf still carries the storage secret:\n%s", conf)
+	}
+	got, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatalf("the restart never wrote rclone.env: %v", err)
+	}
+	if !strings.Contains(string(got), secret) {
+		t.Errorf("rclone.env does not carry the resolved secret:\n%s", got)
 	}
 }
 
@@ -250,13 +257,22 @@ func TestRunCapRestartWritesTheWorkersSwappedCredential(t *testing.T) {
 	config := string(got)
 	for _, want := range []string{
 		"access_key_id = ro-access-key-id",
-		"secret_access_key = ro-secret",
 		"session_token = ro-session-token",
 		"no_check_bucket = true",
 	} {
 		if !strings.Contains(config, want) {
 			t.Errorf("mount config missing %q:\n%s", want, config)
 		}
+	}
+	if strings.Contains(config, "secret_access_key") || strings.Contains(config, "ro-secret") {
+		t.Errorf("rclone.conf still carries the storage secret:\n%s", config)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatalf("the restart never wrote rclone.env: %v", err)
+	}
+	if !strings.Contains(string(env), "ro-secret") {
+		t.Errorf("rclone.env missing the swapped secret:\n%s", env)
 	}
 	if strings.Contains(config, "stale-write-secret") ||
 		strings.Contains(config, "stale-write-access-key") ||
@@ -300,8 +316,15 @@ func TestRunCapRestartWritesNoSessionTokenWhenTheSwappedKeyHasNone(t *testing.T)
 		t.Fatalf("the restart never wrote the mount config: %v", err)
 	}
 	config := string(got)
-	if !strings.Contains(config, "secret_access_key = write-secret") {
-		t.Errorf("mount config does not carry the raised key:\n%s", config)
+	if strings.Contains(config, "secret_access_key") || strings.Contains(config, "write-secret") {
+		t.Errorf("rclone.conf still carries the storage secret:\n%s", config)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatalf("the restart never wrote rclone.env: %v", err)
+	}
+	if !strings.Contains(string(env), "write-secret") {
+		t.Errorf("rclone.env does not carry the raised key:\n%s", env)
 	}
 	if strings.Contains(config, "session_token") {
 		t.Errorf("a key with no session token must add no session_token line:\n%s", config)

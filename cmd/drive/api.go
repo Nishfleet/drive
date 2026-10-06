@@ -375,10 +375,6 @@ func (c *APIClient) pollToken(deviceCode string) (pollResult, error) {
 	return result, failDetail(apiFailureKind(err), err)
 }
 
-// SignIn runs the device flow on the terminal: ask for a code, print it and
-// the page to approve it on, then poll until the person approves or the code
-// expires. It returns the device token and the account it belongs to; the
-// caller keeps both.
 // SignedIn is what one device flow ends with: the token, the epoch second its
 // window ends at, and the account it names. The expiry is carried out of the
 // flow rather than looked up later because the api Worker states it exactly
@@ -519,6 +515,12 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive init` again in a moment")
 	}
 	return renewed, nil
+}
+
+// ClearQueueReport drops this device's live upload-queue row so a 15-minute
+// freshness window cannot show a ghost queue after logout.
+func (c *APIClient) ClearQueueReport() error {
+	return c.do(http.MethodDelete, queueReportPath, nil, nil)
 }
 
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE
