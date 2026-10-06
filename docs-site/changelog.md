@@ -10,7 +10,7 @@ the live site.
 
 ## 2026-10-06
 
-- A share link pins the file's version at the moment you make it. If that
+- A share link fixes on the file's version at the moment you make it. If that
   file is replaced afterwards, the link refuses with a short page instead of
   handing out the new bytes. A file on the stock known-bad hash list is
   refused when you share it and when someone drops it on an upload page.
