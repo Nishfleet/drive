@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { minutesInMonth, monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../core/billing.js";
 import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
@@ -23,15 +23,15 @@ import {
   pushBillingHours,
   resolveIngestUrl,
   unpushedBillingHours,
-} from "../src/dodo.js";
-import workerModule from "../src/index.js";
+} from "../core/dodo.js";
 import {
   BYTES_PER_GB,
   METER_CRON,
   MINUTE_MS,
   monthUsageThrough,
   recordUsage,
-} from "../src/meter.js";
+} from "../core/meter.js";
+import workerModule from "../src/index.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 // The Worker entrypoint as this file drives it: `scheduled` is optional on the
@@ -96,7 +96,7 @@ function recordingFetch(opts = {}) {
 }
 
 /**
- * @param {import("../test/d1-sqlite.mjs").MeteredD1} db
+ * @param {import("./d1-sqlite.mjs").MeteredD1} db
  * @param {string} accountId
  * @param {string} customerId
  */
@@ -526,7 +526,7 @@ test("a 5xx ingest is retried once (drive#570), and the retry's push is the one 
 //
 // #586 replaced the after-the-fact usage push with a prepaid draw: the meter's
 // hourly trip now draws each account's usage from its balance
-// (src/prepaid.js drawUsageHours) and sends Dodo nothing. pushBillingHours and
+// (core/prepaid.js drawUsageHours) and sends Dodo nothing. pushBillingHours and
 // billingPushGap above stay pinned as functions, but the cron must not call
 // them, or a customer who prepaid would also be billed in arrears. These
 // tests drive the real scheduled() wiring and pin that switch.

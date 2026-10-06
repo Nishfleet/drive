@@ -8,6 +8,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +31,7 @@ type fakeAPI struct {
 	mintedKinds  []string
 	mintedNames  []string
 	revokedIDs   []string
+	queueClears  []string // the authorization header of each DELETE /v1/queue
 	renewedIDs   []string
 	lastAuthHdr  string
 	lastPath     string
@@ -103,8 +105,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			at := time.Now().Add(agentKeyTTL).Unix()
 			expiresAt = &at
 		}
+		keyID := "key_" + body.Name
+		if _, exists := f.keys[keyID]; exists {
+			keyID = fmt.Sprintf("key_%s_%d", body.Name, len(f.keys)+1)
+		}
 		key := MintedKey{
-			KeyID:        "key_" + body.Name,
+			KeyID:        keyID,
 			AccessKeyID:  "ak_" + body.Name,
 			Secret:       "sk_" + body.Name,
 			Prefix:       "u/acct_1/",
@@ -113,6 +119,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Endpoint:     "http://127.0.0.1:39181",
 			Bucket:       "drive-standin",
 			Region:       "us-east-1",
+			DownloadURL:  "https://dl.example.test/k/grant_" + body.Name + "/",
 		}
 		f.keys[key.KeyID] = key
 		writeTestJSON(w, 201, key)
@@ -151,6 +158,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && r.Method == http.MethodDelete:
 		f.revokedIDs = append(f.revokedIDs, strings.TrimPrefix(r.URL.Path, keysPath+"/"))
 		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == queueReportPath && r.Method == http.MethodDelete:
+		f.queueClears = append(f.queueClears, r.Header.Get("authorization"))
+		writeTestJSON(w, 200, map[string]any{"cleared": true})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}

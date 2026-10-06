@@ -1,7 +1,7 @@
 // The home page redesign (drive #152). The page is hand-written HTML, so every
 // figure it prints before the slider first asks /api/quote is typed into the
 // markup. This gate ties each one to the one price source, so a price change
-// in src/pricing.js or src/billing.js fails CI until the page moves with it:
+// in core/pricing.js or core/billing.js fails CI until the page moves with it:
 //
 // 1. The calculator's first view (1 TB) and the receipt print the bill that
 //    quoteForStoredTb() returns for 1 TB, the same function /api/quote serves.
@@ -18,9 +18,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthlyBillForStoredTb, quoteForStoredTb } from "../src/billing.js";
-import { DEFAULT_CAP_USD } from "../src/cap-default.js";
-import { PREPAID, PRICE, usualPlanMonthlyUsd } from "../src/pricing.js";
+import { monthlyBillForStoredTb, quoteForStoredTb } from "../core/billing.js";
+import { DEFAULT_CAP_USD } from "../core/cap-default.js";
+import { PREPAID, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../public/site.css", import.meta.url), "utf8");
@@ -73,7 +73,7 @@ test("the slider asks /api/quote and works out no bill itself", () => {
   assert.match(script, /quote\.billUsd/);
   assert.match(script, /quote\.planUsd/);
   // No price constants in the script: the rate, the ceiling and the slope
-  // live in src/pricing.js only.
+  // live in core/pricing.js only.
   for (const constant of [/0\.02\b/, /\b12\s*\*/, /\*\s*8\b/, /\bMath\.max\(\s*12/]) {
     assert.doesNotMatch(script, constant);
   }

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -64,6 +65,10 @@ type MintedKey struct {
 	Endpoint     string   `json:"endpoint,omitempty"`
 	Bucket       string   `json:"bucket,omitempty"`
 	Region       string   `json:"region,omitempty"`
+	// DownloadURL is the dl Worker base URL with this key's download grant
+	// (drive#517), or empty when the deployment has no dl host. The mount
+	// reads through it so reads are checked and counted.
+	DownloadURL string `json:"downloadUrl,omitempty"`
 }
 
 // Account is the account a device token belongs to.
@@ -93,10 +98,22 @@ func NewAPIClient(apiBase, token string) (*APIClient, error) {
 	return &APIClient{Base: base, Token: token, HTTP: &http.Client{Timeout: apiTimeout}}, nil
 }
 
-// post sends a JSON body and decodes a JSON answer. An api Worker error is
-// {error: <sentence>} (docs/api.md), so that sentence is kept in the detail
-// (DRIVE_DEBUG); the person sees the message table's words for the failure
-// class instead of raw text from the service (drive#117).
+// userAgent is what every drive request to the api names itself with:
+// drive/<version> (<os>/<arch>). The api Worker reads the version out
+// of it and answers 426 with the update sentence when the version is
+// below the deployment's configured minimum (drive#560), so an api
+// shape change under an old CLI names the fix instead of surfacing as
+// an unreadable answer. Go's own default ("Go-http-client/1.1")
+// carries no version, which is why the header is set by hand on every
+// request this client sends.
+func userAgent() string {
+	return fmt.Sprintf("drive/%s (%s/%s)", versionText(), runtime.GOOS, runtime.GOARCH)
+}
+
+// post sends a JSON body and decodes a JSON answer. An api Worker error
+// is {error: <sentence>} (docs/api.md), so that sentence is kept in the
+// detail (DRIVE_DEBUG); the person sees the message table's words for
+// the failure class instead of raw text from the service (drive#117).
 func (c *APIClient) post(path string, body, out any) error {
 	return c.do(http.MethodPost, path, body, out)
 }
@@ -122,6 +139,7 @@ func (c *APIClient) do(method, path string, body, out any) error {
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: apiTimeout}
@@ -362,6 +380,12 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 	return renewed, nil
 }
 
+// ClearQueueReport drops this device's live upload-queue row so a 15-minute
+// freshness window cannot show a ghost queue after logout.
+func (c *APIClient) ClearQueueReport() error {
+	return c.do(http.MethodDelete, queueReportPath, nil, nil)
+}
+
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE
 // /v1/device/token). The Authorization header carries the token, so the
 // caller revokes exactly its own credential. A 401 from the Worker means the
@@ -442,6 +466,7 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: apiTimeout}

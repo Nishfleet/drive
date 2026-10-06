@@ -18,6 +18,8 @@ stop paying for what you delete. {{NO_PLANS}}
 deleted, where it stays 30 days and you can restore it yourself; the meter
 stops counting it the same hour. [See how deletes and restores work](/how-it-works).
 
+{{VERSION_MINIMUM}}
+
 ## The maximum
 
 {{PRICE_RULE}} A drive that grows never bills less.
@@ -31,9 +33,9 @@ We need a card at sign-up because there is no free tier.
 
 ## Downloads
 
-Downloads are not metered yet, so nothing is charged for them today. The plan
-is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
-{{DOWNLOAD_RATE}} (planned).
+Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
+{{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
+for.
 
 ## Version history
 

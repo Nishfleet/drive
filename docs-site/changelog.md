@@ -10,12 +10,41 @@ the live site.
 
 ## 2026-10-06
 
-- The pages now say only what version 1 does. Downloads are not metered yet, so
-  there is no charge to describe, and macOS and Linux are the ready platforms.
-  While sign-up stays by invite, the "Get drive" buttons open the waitlist.
+- The conflict guard hashes a save where it already lives instead of keeping a
+  second copy, works through a large drop a hundred files at a time, and
+  `drive status` names a backlog as "conflict guard behind by N saves".
+- A public status page that reads the Worker's own health route, an
+  accessibility statement, and the site's own 5xx page (a browser that hits an
+  error now sees the site instead of a JSON body). The security page states
+  where files are stored and what each key can do.
+- Customer pages now say only what version 1 does: no $5 roll-over, no live
+  team bill, Get drive opens the waitlist while sign-up is invite-only, and
+  get-started names Mac and Linux.
 
 ## 2026-10-05
 
+- Your drive never works on an old copy: the app says which build it is when
+  it talks to the server, and the server tells an old build to run
+  `drive update` instead of failing in some other way.
+- `drive status` says when a newer drive is available, once a day, so you
+  learn about the update without running `drive update` to find out.
+- `drive update` now puts the drive back on the new build for you, and tells
+  you when the tool it uses to talk to the drive is too old for the new
+  mount.
+- The stored-bytes mark for one hour is what your drive held at the end of
+  that hour, so a file you replace several times inside an hour counts once, not
+  once per save. Each save is still billed for at least one hour, and the
+  pricing page, the how-it-works page, the FAQ and llms.txt now say so.
+- The free download allowance follows the average your GB-minutes work out to,
+  not the biggest single hour mark, so an hour where two versions were both
+  live no longer raises the allowance on its own.
+- A month whose files are all empty bills $0 through the usage and cap routes
+  instead of failing them.
+- The last-sync time on the Get started page is written in the time zone your
+  own computer is in, with the day first and the month short, the order the
+  site's other dates use.
+- The day a closing account's files are deleted now says which time zone that
+  day is in.
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
   from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
   balance never expires. Nothing is charged to your card after use. The

@@ -210,6 +210,24 @@ h2 {
   background: var(--paper-raised);
 }
 
+.cap label {
+  display: block;
+  margin: 10px 0 6px;
+}
+
+.cap input[type="number"] {
+  display: block;
+  width: 8rem;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: clamp(18px, 2.6vw, 22px);
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .cap input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
@@ -515,6 +533,12 @@ h2 {
 
     <section aria-labelledby="month-heading">
       <h2 id="month-heading" tabindex="-1">This month</h2>
+      <!-- The month the section is about, named (drive#559): /api/usage carries
+           the month's first instant and this slot is filled from it, with the
+           zone the rollup is measured in. "This month" is what a browser with
+           no script reads; the slot under it is the sentence that says which
+           month a UTC rollup means, and it is readable with no script too. -->
+      <p class="hint" id="month-note">Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>
       <p class="saved" id="saved" hidden></p>
       <!-- The reserved slot (drive#225): the status is hidden until a read
            lands, and this holds the box it will land in, so nothing below it
@@ -630,18 +654,26 @@ h2 {
       <section aria-labelledby="cap-heading">
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
-          <label for="cap-slider">Monthly cap, in dollars</label>
-          <input type="range" id="cap-slider" min="0" max="12" step="0.01" value="12" aria-describedby="cap-note">
+          <label for="cap-amount">Monthly cap, in whole dollars</label>
+          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note">
+          <label for="cap-slider">Or move the slider</label>
+          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note">
           <p class="cap-value" id="cap-value"></p>
           <button type="button" id="cap-save" hidden>Save cap</button>
         </div>
         <div class="empty" id="cap-note">
           <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
-          <p class="next" id="cap-note-next">Move the slider, then choose Save cap.</p>
+          <p class="next" id="cap-note-next">Type the cap or move the slider, then choose Save cap.</p>
         </div>
         <p class="hint" id="cap-saved" role="status" hidden></p>
         <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
         <p class="hint" id="card-portal-line"><a id="card-portal-link" href="/api/billing/portal">Update your card in the billing portal</a></p>
+      </section>
+
+      <section aria-labelledby="export-heading" id="export-section">
+        <h2 id="export-heading">Your data</h2>
+        <p class="lede" id="export-what">Download a JSON file of this account's records: the account, keys, file names and version history. Your files stay in the drive folder.</p>
+        <p class="hint" id="export-line"><a id="export-download" href="/api/export" download="drive-export.json">Download your data as JSON</a></p>
       </section>
 
       <section aria-labelledby="close-heading" id="close-section">
@@ -673,6 +705,8 @@ h2 {
       <a href="/refunds">Refunds</a>
       <a href="/acceptable-use">Acceptable use</a>
       <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
     </nav>
     <p>Pay from your balance, metered by the minute. <a href="/">See the price</a>.</p>
   </footer>
@@ -692,6 +726,25 @@ const CAP_ENDPOINT = "/api/cap";
 const CLOSE_ENDPOINT = "/api/account/close";
 const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 const POLL_INTERVAL_MS = 60000;
+
+// The month the section is about, named (drive#559). /api/usage carries the
+// month's first instant, and the name is written here in the browser's own
+// words: a month rendered on the server is a UTC month, so the gateway a
+// browser sits behind does not decide when the month a customer is billed for
+// turned over. The zone is spelled out beside it, because "October 2026" on
+// its own is the month of the reader's calendar too.
+const MONTH_ZONE = "UTC";
+
+function monthName(iso) {
+  if (typeof iso !== "string") {
+    return "";
+  }
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) {
+    return "";
+  }
+  return at.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+}
 
 // One sentence and one next step for a read that could not reach the Worker,
 // the same pair src/usage.js pins as USAGE_LABELS.unreachable.
@@ -725,6 +778,7 @@ const MONTH_EMPTY = {
 };
 
 const savedEl = document.getElementById("saved");
+const monthHeadingEl = document.getElementById("month-heading");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
 const chartEl = document.getElementById("chart");
@@ -737,6 +791,7 @@ const costEl = document.getElementById("cost");
 const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
 const uploadLineEl = document.getElementById("upload-line");
+const capAmount = document.getElementById("cap-amount");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
 const capSaveEl = document.getElementById("cap-save");
@@ -774,6 +829,13 @@ function showCapNote(note) {
   capNoteEl.querySelector(".next").textContent = note.next;
 }
 
+// The two cap controls move together: the typed number and the slider are
+// one cap, so they disable and wake as a pair (drive#527).
+function setCapControlsDisabled(disabled) {
+  capAmount.disabled = disabled;
+  capSlider.disabled = disabled;
+}
+
 // A save that failed. The Worker's sentence is the one that answers what went
 // wrong, so it is shown as it arrived, with no second sentence of ours next to
 // it -- the same shape the signed-out state uses. The button stays, so the
@@ -781,7 +843,7 @@ function showCapNote(note) {
 function sayCapError(note) {
   capSavedEl.hidden = true;
   showCapNote(note);
-  capSlider.disabled = false;
+  setCapControlsDisabled(false);
   capSaveEl.disabled = false;
   capSaveEl.hidden = false;
 }
@@ -794,8 +856,9 @@ function sayCapError(note) {
 // read that follows paints the cap now in force. No money is worked out here
 // and no sentence is written here.
 async function saveCap() {
-  const amount = capSlider.value;
-  capSlider.disabled = true;
+  if (!capAmountIsWholeDollar()) return;
+  const amount = capAmount.value;
+  setCapControlsDisabled(true);
   capSaveEl.disabled = true;
   capSavingEl.hidden = false;
   let response;
@@ -807,7 +870,7 @@ async function saveCap() {
     });
   } catch (_error) {
     capSavingEl.hidden = true;
-    capSlider.disabled = false;
+    setCapControlsDisabled(false);
     capSaveEl.hidden = false;
     capSaveEl.disabled = false;
     sayCapError(UNREACHABLE);
@@ -816,7 +879,7 @@ async function saveCap() {
   const payload = await response.json().catch(() => null);
   const error = payload && typeof payload.error === "string" ? payload.error : "";
   capSavingEl.hidden = true;
-  capSlider.disabled = false;
+  setCapControlsDisabled(false);
   if (!response.ok) {
     capSaveEl.hidden = false;
     capSaveEl.disabled = false;
@@ -857,7 +920,7 @@ function saySignedOut(message) {
   // cannot move a cap: the slider and the button that saves it both sleep, and
   // a save that was in flight when the session ended has no answer left to
   // wait for, so its two hints sleep with them.
-  capSlider.disabled = true;
+  setCapControlsDisabled(true);
   capSaveEl.hidden = true;
   capSavingEl.hidden = true;
   capSavedEl.hidden = true;
@@ -871,9 +934,9 @@ function sayReachable() {
   // so only this call's own state — a fresh `sayMonthEmpty` when the month is
   // empty, nothing at all when it has history — is what the markup carries.
   statusEl.dataset.state = "";
-  // A read that succeeded proves the account is there, so the slider the
-  // signed-out state disabled is usable again.
-  capSlider.disabled = false;
+  // A read that succeeded proves the account is there, so the cap controls
+  // the signed-out state disabled are usable again.
+  setCapControlsDisabled(false);
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
@@ -943,7 +1006,12 @@ function render(summary) {
   }
   const labels = summary.labels;
   const cap = summary.cap;
+  // The month these numbers belong to, named (drive#559). A payload that
+  // carries no readable month instant is as unusable as no answer, so it takes
+  // the unreachable state rather than a heading with nothing under it.
+  const month = monthName(summary.monthIso);
   if (
+    month === "" ||
     typeof labels !== "object" ||
     labels === null ||
     LABEL_KEYS.some((key) => typeof labels[key] !== "string") ||
@@ -980,6 +1048,7 @@ function render(summary) {
     return;
   }
   sayReachable();
+  monthHeadingEl.textContent = `${month}, ${MONTH_ZONE}`;
 
   // A month with no stored day has no chart to draw and no saving to report, so
   // without this the "This month" area is blank for every new account (drive
@@ -1030,13 +1099,42 @@ function render(summary) {
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
   // month's maximum or the cap, whichever is larger, in whole dollars.
-  capSlider.max = String(Math.ceil(Math.max(summary.maximumUsd, cap.capUsd)));
+  capCeiling(Math.max(summary.maximumUsd, cap.capUsd));
   // A person who has moved the slider is not moved back: the minute's read
   // would otherwise throw away the amount they just picked, so it paints the
   // value only while no save is waiting.
   if (capSaveEl.hidden) {
-    capSlider.value = String(cap.capUsd);
+    capWhole(cap.capUsd);
   }
+}
+
+// The cap is whole dollars on this page (drive#527). Both controls carry the
+// same number: cap-amount is what a person types, cap-slider is the same
+// number they can drag, and whichever one they touch becomes the other. The
+// old slider alone could never reach above the month's maximum, because that
+// maximum was its ceiling; the typed number carries the ceiling with it, so
+// the page can now ask for any cap the person names.
+//
+// A cap with cents in force (say $12.50) reads as its next whole dollar in the
+// two controls. The exact amount is the sentence above them — the endpoint's
+// own `capLine`, painted as cap-value — and neither control is armed until a
+// person touches one, so a cents cap is never quietly rounded up.
+function capCeiling(usd) {
+  // The slider's max follows the typed number. The number field itself has
+  // no max, so a person can type above the month's maximum (drive#527).
+  const whole = Math.max(0, Math.ceil(Number(usd)));
+  capSlider.max = String(whole);
+  return whole;
+}
+
+function capWhole(usd) {
+  // Value only. Calling capCeiling here would shrink the slider's range to
+  // the cap in force, and a $2 cap on a $10 month would then be undraggable
+  // upward.
+  const whole = Math.max(0, Math.ceil(Number(usd)));
+  capAmount.value = String(whole);
+  capSlider.value = String(whole);
+  return whole;
 }
 
 function showCloseError(el, message) {
@@ -1115,19 +1213,37 @@ closeFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
   postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
 });
-capSlider.addEventListener("input", () => {
-  // A chosen number is not a saved number: the button is there to make it one,
-  // so it appears the moment the slider leaves the cap in force and stays
-  // until the save lands or this page's own read catches up with it.
-  //
-  // The note goes back to its own words at the same time. A worker's sentence
-  // left sitting under the slider after it was read would answer a number the
-  // person has since changed, and it is the one line on this page that names
-  // an amount the person did not choose.
-  capSaveEl.hidden = false;
-  capNoteWhatEl.textContent = CAP_NOTE.what;
-  capNoteNextEl.textContent = CAP_NOTE.next;
+capAmount.addEventListener("input", () => {
+  // The typed number is the ceiling: the slider follows it up so the drag can
+  // reach what was typed, and an empty or half-typed field leaves the slider
+  // alone rather than snapping it to a number nobody chose.
+  const typed = Number(capAmount.value);
+  if (capAmount.value !== "" && Number.isFinite(typed)) {
+    capCeiling(typed);
+    capSlider.value = String(typed);
+  }
+  showCapSave();
 });
+capSlider.addEventListener("input", () => {
+  capAmount.value = capSlider.value;
+  showCapSave();
+});
+// The two controls share one note, because there is one unsaved cap between
+// them and one sentence that describes it.
+function capAmountIsWholeDollar() {
+  const typed = Number(capAmount.value);
+  return capAmount.value !== "" && Number.isFinite(typed) && typed >= 0 && Number.isInteger(typed);
+}
+
+function showCapSave() {
+  // A chosen number is not a saved number: the button is there to make it one.
+  // An empty, negative or fractional field is not a cap, so the button stays
+  // hidden until the field holds a whole dollar.
+  capSaveEl.hidden = !capAmountIsWholeDollar();
+  if (capSaveEl.hidden) return;
+  capNoteEl.querySelector(".what").textContent = CAP_NOTE.what;
+  capNoteEl.querySelector(".next").textContent = CAP_NOTE.next;
+}
 capSaveEl.addEventListener("click", () => {
   saveCap();
 });

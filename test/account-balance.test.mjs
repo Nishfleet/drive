@@ -13,10 +13,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
-import { TOP_UP_PAGE } from "../src/ledger.js";
-import { AUTO_TOPUP_ENDPOINT } from "../src/prepaid.js";
-import { PREPAID } from "../src/pricing.js";
-import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
+import { TOP_UP_PAGE } from "../core/ledger.js";
+import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
+import { PREPAID } from "../core/pricing.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
 const OPEN_TAG = '<script data-part="balance">';
@@ -80,7 +80,7 @@ function stubElement(id) {
   return el;
 }
 
-/** One summary as GET /api/balance sends it (src/topup.js balanceSummary). */
+/** One summary as GET /api/balance sends it (core/topup.js balanceSummary). */
 function summary(overrides = {}) {
   return {
     auto_topup_usd: null,

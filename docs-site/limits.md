@@ -30,7 +30,8 @@ would rather you read it here than find out in week three.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
-- **Windows installs with an MSI, not a command.** Windows gets the
+- **Windows is not in version 1, and its installer is an unsigned MSI, not a
+  command.** Windows gets the
   same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,
@@ -79,6 +80,11 @@ would rather you read it here than find out in week three.
   so a branch counts against your storage until you `discard` it or `approve`
   it, and `approve` stops with a list of conflicting files instead of a
   silent overwrite.
+- **A branch still has a size cap.** Copy, approve, discard and rewind now run
+  as a queued job in file batches, so they stay inside one Worker's request
+  budget. A folder with more than 100,000 files still cannot be branched: the
+  snapshot for that many files is about 11 MiB in memory, and that is the
+  remaining limit.
 
 ## Honest notes on the numbers
 
