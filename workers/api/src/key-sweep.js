@@ -91,7 +91,8 @@ export async function runKeySweep({ devices, provider, now }) {
     }
   }
 
-  const vendorKeys = typeof provider.list === "function" ? await countVendorKeys(provider) : null;
+  const list = /** @type {(() => Promise<unknown>)|undefined} */ (provider.list);
+  const vendorKeys = typeof list === "function" ? await countVendorKeys({ list }) : null;
   console.log(
     `key-sweep: ${dead.length} dead key row(s) considered, ${removed} accounted for, ${failed} failed; the vendor holds ${vendorKeys === null ? "unknown" : vendorKeys} key(s)`,
   );
@@ -116,7 +117,7 @@ function isVendorKeyMissing(error) {
  * How many access keys the vendor answers with, once. A failed list is null
  * rather than thrown: the removals above are done, and the count is a record,
  * not a gate (drive#371 proved the vendor's answer shape).
- * @param {import("./keyprovider.js").KeyProvider} provider
+ * @param {{list: () => Promise<unknown>}} provider
  * @returns {Promise<number|null>}
  */
 async function countVendorKeys(provider) {

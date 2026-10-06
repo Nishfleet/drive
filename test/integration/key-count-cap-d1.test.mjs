@@ -40,6 +40,7 @@ const AGENT_TTL = 3600;
  * @returns {{mints: string[], mint: (scope: unknown) => Promise<{accessKeyId: string, secret: string, sessionToken: null, expiresIn: null}>}}
  */
 function recordingProvider() {
+  /** @type {string[]} */
   const mints = [];
   return {
     mints,
@@ -53,8 +54,9 @@ function recordingProvider() {
 /**
  * The live Worker's composition over the real schema, with a movable clock
  * and a recording vendor.
+ * @param {import("../d1-sqlite.mjs").MeteredD1} db
  * @param {{second: number}} clock advanced by the tests
- * @param {ReturnType<recordingProvider>} provider
+ * @param {ReturnType<typeof recordingProvider>} provider
  */
 function storeOver(db, clock, provider) {
   const now = () => clock.second * 1000;
@@ -69,7 +71,7 @@ function storeOver(db, clock, provider) {
 
 /**
  * Sign a device in and hand back its bearer token, the way the CLI does.
- * @param {ReturnType<createMemoryStore>} store
+ * @param {ReturnType<typeof createMemoryStore>} store
  * @param {string} name
  */
 async function signIn(store, name) {
@@ -85,7 +87,7 @@ async function signIn(store, name) {
 
 /**
  * Mint through the real route with the env a caller names.
- * @param {ReturnType<createMemoryStore>} store
+ * @param {ReturnType<typeof createMemoryStore>} store
  * @param {string} deviceToken
  * @param {Record<string, unknown>} env
  * @param {{kind?: string, name?: string}} request

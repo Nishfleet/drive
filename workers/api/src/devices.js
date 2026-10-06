@@ -618,14 +618,16 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<number>}
      */
     async countLiveKeys(accountId, atSeconds) {
-      const row = await first(
-        db,
-        `SELECT COUNT(*) AS n FROM devices
-          WHERE account_id = ?1
-            AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?2)`,
-        accountId,
-        atSeconds,
+      const row = /** @type {{n?: number}|null|undefined} */ (
+        await first(
+          db,
+          `SELECT COUNT(*) AS n FROM devices
+            WHERE account_id = ?1
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?2)`,
+          accountId,
+          atSeconds,
+        )
       );
       return typeof row?.n === "number" ? row.n : 0;
     },

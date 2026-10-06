@@ -43,7 +43,7 @@ export async function listKeysRoute(request, ctx) {
  * POST /v1/keys — mint a key. The secret is in this response and nowhere
  * else: the store keeps a hash, so it cannot be re-read later.
  * @param {Request} request
- * @param {{store: KeyStore, account: {id: string, name: string}, env?: Record<string, unknown>}} ctx
+ * @param {{store: KeyStore, account: {id: string, name: string}, env?: Record<string, any>}} ctx
  */
 export async function mintKeyRoute(request, ctx) {
   if (request.method !== "POST") {

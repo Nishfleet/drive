@@ -84,7 +84,7 @@ function fakeVendor() {
  * The live Worker's key store over the real schema.
  * @param {import("../d1-sqlite.mjs").MeteredD1} db
  * @param {{second: number}} clock advanced by the tests
- * @param {ReturnType<fakeVendor>} vendor
+ * @param {ReturnType<typeof fakeVendor>} vendor
  */
 function storeOver(db, clock, vendor) {
   const now = () => clock.second * 1000;

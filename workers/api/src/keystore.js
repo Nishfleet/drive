@@ -108,7 +108,9 @@ function liveKeyCountInMap(devices, accountId, atSeconds) {
   let live = 0;
   for (const device of devices.values()) {
     if (device.accountId !== accountId || device.revokedAt !== null) continue;
-    if (device.expiresAt !== null && device.expiresAt <= atSeconds) continue;
+    // A null expiry never dies (a device key), so it counts as live: only a
+    // real expiry at or before `at` makes the row dead here.
+    if ((device.expiresAt ?? Number.POSITIVE_INFINITY) <= atSeconds) continue;
     live += 1;
   }
   return live;
