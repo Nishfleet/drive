@@ -34,20 +34,23 @@ import { IdriveKeyError } from "./idrive-keys.js";
  * The most rows one sweep takes. The nightly cron is the only caller, so a
  * limit is how a backlog (a sweep skipped while a deployment was down) drains
  * a hundred keys a night instead of one unbounded vendor walk. Mirrors the
- * account-close batch (src/account-close.js).
+ * account-close batch (src/account-close.js): a per-row vendor failure does
+ * not stop the rows behind it in the same 100, and a row that fails stays in
+ * the next night's batch the way a failed close purge does.
  */
 export const KEY_SWEEP_LIMIT = 100;
 
 /** The vendor's own words for "there is no such key". Their error body's
- * code, which reaches this module inside the error's detail (idrive-keys.js
- * keeps the raw answer text when the vendor nests its fields). */
+ * code (`access_key_non_existant`) and the prose they also return. Both land
+ * in IdriveKeyError's message (the constructor bakes `detail` into it) and
+ * on `error.detail`. */
 const VENDOR_KEY_MISSING = /access_key_non_existant|does not exist/i;
 
 /**
  * Run one sweep. `devices` must be the D1 device store (the sweep's reads are
  * SQL over the rows, devices.js); `provider` the key provider the deployment
  * mints with (core/keyprovider-env.js `keyProviderFor`).
- * @param {{devices: ReturnType<typeof import("./devices.js").createD1DeviceStore>, provider: import("./keyprovider.js").KeyProvider, now?: number|(() => number)}} input
+ * @param {{devices: ReturnType<typeof import("./devices.js").createD1DeviceStore>, provider: import("./keyprovider.js").KeyProvider|null|undefined, now?: number|(() => number)}} input
  * @returns {Promise<{considered: number, removed: number, failed: number, vendorKeys: number|null}>}
  *   `considered` the dead rows this pass looked at; `removed` the rows whose
  *   vendor key is now accounted for (removed at the vendor, or already gone
@@ -57,6 +60,22 @@ const VENDOR_KEY_MISSING = /access_key_non_existant|does not exist/i;
  */
 export async function runKeySweep({ devices, provider, now }) {
   const at = nowSeconds(typeof now === "function" ? now() : (now ?? Date.now()));
+  if (provider == null) {
+    // The site Worker reads the same undeclared IDRIVE token cap/close already
+    // read (closed-door inheritance, not a second bindings.secret() that
+    // would fail drive-pricing deploys). Dead vendor rows with no provider
+    // are a failed trigger, not a successful no-op.
+    const leftover = await devices.listSweepableKeys(at, 1);
+    if (leftover.length > 0) {
+      throw new Error(
+        "key-sweep: dead vendor keys need a provider on this Worker, and this deployment has none",
+      );
+    }
+    console.log(
+      "key-sweep: this deployment mints no vendor keys, so there is nothing to sweep",
+    );
+    return { considered: 0, removed: 0, failed: 0, vendorKeys: null };
+  }
   if (typeof provider.revoke !== "function") {
     console.log(
       "key-sweep: this deployment's provider cannot remove a vendor key, so there is nothing to sweep",
@@ -106,11 +125,11 @@ export async function runKeySweep({ devices, provider, now }) {
  * @param {unknown} error
  */
 function isVendorKeyMissing(error) {
-  return (
-    error instanceof IdriveKeyError &&
-    error.operation === "remove_access_key" &&
-    VENDOR_KEY_MISSING.test(error.message)
-  );
+  if (!(error instanceof IdriveKeyError) || error.operation !== "remove_access_key") {
+    return false;
+  }
+  const detail = typeof error.detail === "string" ? error.detail : "";
+  return VENDOR_KEY_MISSING.test(`${error.message} ${detail}`);
 }
 
 /**
@@ -133,7 +152,7 @@ async function countVendorKeys(provider) {
     ) {
       return /** @type {{keys: unknown[]}} */ (answer).keys.length;
     }
-    return 0;
+    return null;
   } catch (error) {
     console.error(
       "key-sweep: the vendor's key count failed",

@@ -66,7 +66,6 @@ export async function mintKeyRoute(request, ctx) {
     console.error(
       "keys: the key-mint limiter is not configured; the live-key count cap is the only bound",
       KEYS_LIMIT,
-      "keys",
     );
   }
   const limits =
@@ -113,7 +112,6 @@ export async function mintKeyRoute(request, ctx) {
       console.error(
         "keys: the mint was refused at the live-key count cap",
         String(error.live),
-        "keys",
         error.accountId,
       );
       return errorResponse(409, failureMessage("key-count-cap"));
