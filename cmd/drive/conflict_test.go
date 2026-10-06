@@ -491,6 +491,80 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	}
 }
 
+func TestRetireFinishedKeepsTheCursorOnTheNextSurvivingName(t *testing.T) {
+	kept, cursor := retireFinished([]string{"a", "b", "c", "d"}, []string{"b"}, 1)
+	if strings.Join(kept, ",") != "a,c,d" {
+		t.Fatalf("kept = %v, want a,c,d", kept)
+	}
+	if cursor != 1 || kept[cursor] != "c" {
+		t.Fatalf("cursor = %d (%q), want c", cursor, kept[cursor])
+	}
+	kept, cursor = retireFinished([]string{"a", "b", "c"}, []string{"a", "b"}, 0)
+	if strings.Join(kept, ",") != "c" || cursor != 0 {
+		t.Fatalf("kept=%v cursor=%d, want c at 0", kept, cursor)
+	}
+}
+
+func TestConflictGuardRefreshesALargeFingerprintOnRewrite(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictProtectMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir)
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictProtectMax + 1}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	first := g.seen["movie.mov"].stat
+	if err := os.Truncate(big, conflictProtectMax+2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	save := g.seen["movie.mov"]
+	if save.stat.size != conflictProtectMax+2 {
+		t.Fatalf("fingerprint size = %d, want the rewritten size", save.stat.size)
+	}
+	if save.stat.size == first.size && save.stat.modTime.Equal(first.modTime) {
+		t.Fatal("the rewritten large save kept its first fingerprint")
+	}
+	f.pending = nil
+	f.landAs(t, "movie.mov", "etag-of-rewrite", big)
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want none for this device's own rewritten large upload", res.Skipped)
+	}
+}
+
+func TestConflictGuardNamesWhenClaimSourceChanged(t *testing.T) {
+	g, mountDir, f := guardFor(t, "mac", map[string]string{"report.txt": "this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mountDir, "report.txt"), []byte("changed under the mount\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.clobber = true
+	_, err := g.claim(context.Background(), f, "report.txt", g.seen["report.txt"])
+	if !errors.Is(err, errClaimSourceChanged) {
+		t.Fatalf("claim = %v, want the named skip for a source that changed", err)
+	}
+}
+
 // TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses is the finish
 // line's own case: a drop of 10,000 small files cannot be sighted, decided
 // and drained in one pass, and no pass may error while the guard works

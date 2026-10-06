@@ -323,13 +323,34 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 					save.previous, save.baselineUnknown = previous, unknown
 				}
 			}
-			if save.reason == "" && !save.byFingerprint && g.mountChanged(e.Name, save) {
-				reason, err := g.rehash(e.Name, save)
-				if err != nil {
-					return res, err
-				}
-				if reason != "" {
-					save.reason = reason
+			if save.reason == "" && g.mountChanged(e.Name, save) {
+				if save.byFingerprint {
+					info, err := g.mountStat(e.Name)
+					if err != nil {
+						save.reason = fmt.Sprintf("the save is not in the drive any more: %v", err)
+					} else if reason := statReason(info); reason != "" && info.size <= conflictProtectMax {
+						save.reason = reason
+					} else if info.size > conflictProtectMax {
+						save.stat = info
+						save.hash = fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
+					} else {
+						save.byFingerprint = false
+						reason, err := g.rehash(e.Name, save)
+						if err != nil {
+							return res, err
+						}
+						if reason != "" {
+							save.reason = reason
+						}
+					}
+				} else {
+					reason, err := g.rehash(e.Name, save)
+					if err != nil {
+						return res, err
+					}
+					if reason != "" {
+						save.reason = reason
+					}
 				}
 			}
 			if save.reason != "" && !save.reported {
@@ -404,13 +425,13 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			i = 0
 		}
 	}
-	g.cursor = i
+	next := 0
+	if len(g.order) > 0 {
+		next = i
+	}
+	g.order, g.cursor = retireFinished(g.order, finished, next)
 	for _, name := range finished {
 		delete(g.seen, name)
-		g.removeFromOrder(name)
-	}
-	if g.cursor > len(g.order) {
-		g.cursor = 0
 	}
 	if len(res.Claimed) > 0 {
 		// The conflict copies are objects in storage now. rclone's
@@ -427,16 +448,58 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	return res, nil
 }
 
-// removeFromOrder removes one name from the watch list. Finishes are
-// a handful per pass, so a linear scan each is work bounded by the
-// pass, not by the drop.
-func (g *conflictGuard) removeFromOrder(name string) {
-	for i, n := range g.order {
-		if n == name {
-			g.order = append(g.order[:i], g.order[i+1:]...)
-			return
+// retireFinished takes finished names out of the watch list and returns
+// the list that remains plus the cursor of the name the walk was about
+// to visit next. Removals shift the slice, so the cursor is found by
+// name: a path that finished is skipped, and a path that did not keeps
+// its place so the next pass resumes there instead of jumping.
+func retireFinished(order, finished []string, next int) ([]string, int) {
+	if len(finished) == 0 {
+		if next > len(order) {
+			return order, 0
+		}
+		return order, next
+	}
+	drop := make(map[string]bool, len(finished))
+	for _, name := range finished {
+		drop[name] = true
+	}
+	want := ""
+	if len(order) > 0 {
+		if next >= len(order) {
+			next = 0
+		}
+		want = order[next]
+	}
+	kept := make([]string, 0, len(order))
+	for _, name := range order {
+		if !drop[name] {
+			kept = append(kept, name)
 		}
 	}
+	if want == "" || len(kept) == 0 {
+		return kept, 0
+	}
+	if !drop[want] {
+		for i, name := range kept {
+			if name == want {
+				return kept, i
+			}
+		}
+		return kept, 0
+	}
+	for k := 0; k < len(order); k++ {
+		name := order[(next+k)%len(order)]
+		if drop[name] {
+			continue
+		}
+		for i, keptName := range kept {
+			if keptName == name {
+				return kept, i
+			}
+		}
+	}
+	return kept, 0
 }
 
 // sight takes one save the guard has never seen: hash the bytes the
@@ -611,15 +674,12 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 			return false, nil, nil, fmt.Errorf("conflict: read %s from the mount: %w", name, err)
 		}
 		if mountHash != save.hash {
-			// The mount serves different bytes than the ones hashed at
-			// first sight and re-hashed on every change since: the
-			// bytes this device saved are not the bytes the mount
-			// holds, and a conflict copy of them would be a version
-			// nobody saved.
-			skip := "the save's bytes are no longer the ones this device saved, so they cannot be kept"
-			return true, &ConflictSkip{Remote: name, Reason: skip}, nil, nil
+			return true, &ConflictSkip{Remote: name, Reason: conflictSkipSourceChanged}, nil, nil
 		}
 		claim, err := g.claim(ctx, b, name, save)
+		if errors.Is(err, errClaimSourceChanged) {
+			return true, &ConflictSkip{Remote: name, Reason: conflictSkipSourceChanged}, nil, nil
+		}
 		if err != nil {
 			return false, nil, nil, err
 		}
@@ -629,9 +689,8 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 }
 
 // hashFailed counts one failed read of a landed save's remote version and,
-// after conflictHashFailPolls of them, names the save once. The next pass
-// drops a named save, so a path whose remote cannot be read is not watched
-// for ever.
+// after conflictHashFailPolls of them, names the save and drops it in the
+// same pass, so a path whose remote cannot be read is not watched for ever.
 func (g *conflictGuard) hashFailed(name string, save *pendingSave, reason string) (bool, *ConflictSkip, *ConflictCopy, error) {
 	save.hashFails++
 	if save.hashFails >= conflictHashFailPolls && !save.reported {
@@ -691,6 +750,14 @@ func (g *conflictGuard) claim(ctx context.Context, b conflictBackend, path strin
 		}
 		if kept == save.hash {
 			return ConflictCopy{Remote: name, LosingPath: path, Device: g.device}, nil
+		}
+		srcHash, srcErr := g.hashMountFile(path)
+		if srcErr != nil || srcHash != save.hash {
+			// The name holds another writer's bytes, and this device
+			// no longer serves the save it hashed: retrying would
+			// copy the other device's bytes under this device's
+			// conflict names. Name the loss instead.
+			return ConflictCopy{}, errClaimSourceChanged
 		}
 		if index >= conflictCopyLimit {
 			return ConflictCopy{}, fmt.Errorf("conflict: every conflict name for %s holds another writer's bytes", path)
@@ -839,6 +906,10 @@ func (g *conflictGuard) hashMountFile(path string) (string, error) {
 // errProtectTooLarge is a save that grew past the protection cap while
 // it was being hashed. It is a named skip, not a failure of the pass.
 var errProtectTooLarge = errors.New("the save grew past the protection cap while it was hashed")
+
+const conflictSkipSourceChanged = "the save's bytes are no longer the ones this device saved, so they cannot be kept"
+
+var errClaimSourceChanged = errors.New(conflictSkipSourceChanged)
 
 // freeConflictName is the conflict name for path, starting at index: The index is where the search starts rather
 // than the first name tried, because a caller that just found a name

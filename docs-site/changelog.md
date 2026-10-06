@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-06
 
+- The conflict guard hashes a save where it already lives instead of keeping a
+  second copy, works through a large drop a hundred files at a time, and
+  `drive status` names a backlog as "conflict guard behind by N saves".
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states
