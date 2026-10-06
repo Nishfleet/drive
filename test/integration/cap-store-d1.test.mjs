@@ -23,16 +23,16 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { minutesInMonth } from "../../src/billing.js";
+import { minutesInMonth } from "../../core/billing.js";
 import {
   dollarsToCapCents,
   enforceCap,
   handleCapRequest,
   READ_ONLY_CAPABILITIES,
   SPEND_CAP_REASON,
-} from "../../src/cap.js";
-import { monthStart } from "../../src/meter.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+} from "../../core/cap.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { MINUTE_MS, monthStart } from "../../core/meter.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**
@@ -45,6 +45,66 @@ function rowIn(sqlite, sql, ...params) {
   assert.notEqual(row, undefined, "the store answered from memory: the row is not in D1");
   return /** @type {Record<string, unknown>} */ (row);
 }
+
+test("an account of empty files gets a real answer from POST /api/cap", async () => {
+  // drive#535, finish line 3 and the crash it names. An account whose only file
+  // is a 0-byte README.txt held all September: every hour of the month is
+  // metered and every mark is 0, so monthUsage used to refuse the month as
+  // unmeasured, monthUsage threw inside handleCapRequest with no catch, and
+  // `drive cap` and POST /api/cap answered 500 for a healthy account.
+  //
+  // The month is measured - $0.00, with nothing to cap - and the route says so.
+  const at = Date.parse("2026-09-30T12:00:00.000Z");
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => at });
+  const account = { id: "acct-empty", email: "empty@example.com" };
+  sqlite
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .run(account.id, account.email);
+  db.insertVersion({
+    accountId: account.id,
+    fileId: "file-empty",
+    path: `/${account.id}/README.txt`,
+    sizeBytes: 0,
+    createdAt: monthStart(at),
+    hiddenAt: null,
+  });
+  for (let hour = 0; hour < 24; hour += 1) {
+    sqlite
+      .prepare(
+        `INSERT INTO usage_minutes
+           (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
+         VALUES (?, ?, 0, 0, 0, ?)`,
+      )
+      .run(account.id, monthStart(at) + hour * 60 * MINUTE_MS, at);
+  }
+
+  const month = await store.monthUsage(account.id, { capUsd: 8 });
+  assert.equal(month.gbMinutes, 0, "a 0-byte file holds zero GB-minutes");
+  assert.equal(month.storedGb, 0, "a 0-byte file holds no peak");
+  assert.equal(
+    month.averageStoredGb,
+    0,
+    "and its month average is 0 - the 3x free download allowance follows it",
+  );
+
+  const answered = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "8" }),
+    }),
+    account,
+    store,
+  );
+  assert.equal(answered.status, 200);
+  const body = await answered.json();
+  assert.equal(body.cap.state, "active", "a $0 month is nowhere near the cap");
+  assert.equal(
+    rowIn(sqlite, "SELECT cap_cents FROM accounts WHERE id = ?", account.id).cap_cents,
+    dollarsToCapCents(8),
+  );
+});
 
 test("the key store writes cap_cents and device rows the real schema holds", async () => {
   const { sqlite, db } = makeMeteredDB();
@@ -221,7 +281,7 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
   // one argument is a legal call, and it must not put a blank in the column
   // where a give-back pass (drive#656) would later read "no reason recorded"
   // as an empty word. The method is optional on the type because a raw storage
-  // provider has none, so it is narrowed the way src/cap.js narrows it.
+  // provider has none, so it is narrowed the way core/cap.js narrows it.
   const provider = store.keyProviderFor(account.id);
   if (typeof provider.swapToReadOnly !== "function") {
     throw new Error("unreachable: the api's own store always has swapToReadOnly");

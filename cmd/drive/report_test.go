@@ -279,21 +279,42 @@ func TestRunQueueReportLoopNamesAWorkerThatDoesNotAnswer(t *testing.T) {
 
 // TestQueueReportIntervalMatchesTheApiRoute pins the CLI's report interval to
 // the server's minimum spacing between two accepted reports
-// (workers/api/src/queues.js QUEUE_REPORT_INTERVAL_SECONDS). The api route
+// (core/queues.js QUEUE_REPORT_INTERVAL_SECONDS). The api route
 // refuses a report inside that interval, so a CLI that ticked faster than it
 // would be refused every time and the pages would fall silent. The Go cannot
 // import the page and the page cannot import the Go, so this test is the join
 // the same way TestStatusWordsMatchThePageWords is.
 func TestQueueReportIntervalMatchesTheApiRoute(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "workers", "api", "src", "queues.js"))
+	source, err := os.ReadFile(filepath.Join("..", "..", "core", "queues.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const interval = "QUEUE_REPORT_INTERVAL_SECONDS = 10"
 	if !strings.Contains(string(source), interval) {
-		t.Errorf("workers/api/src/queues.js no longer carries %q; the CLI's interval and the server's minimum spacing must be the same number", interval)
+		t.Errorf("core/queues.js no longer carries %q; the CLI's interval and the server's minimum spacing must be the same number", interval)
 	}
 	if queueReportInterval != 10*time.Second {
 		t.Errorf("queueReportInterval = %v, want 10s, the number the api route enforces", queueReportInterval)
+	}
+}
+
+func TestQueueReportSendsOnChangeOrHeartbeat(t *testing.T) {
+	prev := QueueReport{Files: 1, TotalBytes: 10}
+	sent := time.Unix(1_000, 0)
+	now := sent.Add(time.Second)
+	if !queueReportDue(&prev, sent, now, QueueReport{Files: 2, TotalBytes: 10}, true) {
+		t.Error("a changed queue must be sent")
+	}
+	if queueReportDue(&prev, sent, now, prev, true) {
+		t.Error("an unchanged queue must wait for the heartbeat")
+	}
+	if !queueReportDue(&prev, sent, sent.Add(queueReportHeartbeat), prev, true) {
+		t.Error("the 5-minute heartbeat must send")
+	}
+	if !queueReportDue(&prev, time.Time{}, now, prev, false) {
+		t.Error("the first report must send")
+	}
+	if queueReportHeartbeat != 5*time.Minute {
+		t.Errorf("queueReportHeartbeat = %v, want 5m", queueReportHeartbeat)
 	}
 }

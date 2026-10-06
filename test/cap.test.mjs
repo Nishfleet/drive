@@ -7,7 +7,7 @@
 // "a capped account goes read-only with no file lost and starts writing again
 // once the cap is raised". The last two tests below walk exactly that: a
 // default account past 1.5 TB goes read-only through enforceCap() reading
-// src/billing.js's usageSummary(), nothing but the storage key is touched, and
+// core/billing.js's usageSummary(), nothing but the storage key is touched, and
 // a raised cap puts the write capability back.
 //
 // The plan and its execution are pure data and an injected provider, so the
@@ -23,7 +23,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../src/billing.js";
+import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../core/billing.js";
 import {
   applyCapSwap,
   capSwapPlan,
@@ -34,9 +34,9 @@ import {
   READ_ONLY_CAPABILITIES,
   SPEND_CAP_REASON,
   WRITE_SCOPE_BY_KIND,
-} from "../src/cap.js";
+} from "../core/cap.js";
+import { failureMessage as tableMessage } from "../core/messages.js";
 import worker from "../src/index.js";
-import { failureMessage as tableMessage } from "../src/messages.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -52,6 +52,9 @@ const workerFetch =
 
 // Minutes in an average month, so a test can say "2 TB held all month" and
 // mean the metered bill and the peak are the same number.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 // A 30-day calendar month: the bill divides by the month's own minutes (drive#531).
 const MONTH_MINUTES = 30 * 1440;
 /** @param {number} gb */
@@ -571,7 +574,7 @@ test("the provider call order keeps the write key from outliving the cap", async
   assert.deepEqual(provider.calls, [
     { call: "revoke", keyId: "k-device" },
     // The freeze's reason rides on the mint that leaves the replacement row
-    // live (drive#661), so the store has one value to write and src/cap.js
+    // live (drive#661), so the store has one value to write and core/cap.js
     // names the word once.
     {
       call: "mint",
@@ -619,7 +622,7 @@ test("the provider call order keeps the write key from outliving the cap", async
 });
 
 test("a provider's own swapToReadOnly is used for the cap swap, never for a restore", async () => {
-  // workers/api/src/keyprovider.js names swapToReadOnly for exactly this call;
+  // core/keyprovider.js names swapToReadOnly for exactly this call;
   // when a provider has it, enforcement must not re-do revoke-then-mint by hand.
   const provider = recordingProvider({ swapToReadOnly: true });
   await applyCapSwap(capSwapPlan([deviceKey], { state: "read_only" }), provider);
@@ -696,7 +699,7 @@ test("a key is write-capable when it can write or delete", () => {
   assert.equal(isWriteCapable(null), false);
 });
 
-test("enforcement reads the month's numbers from src/billing.js capStatus()", async () => {
+test("enforcement reads the month's numbers from core/billing.js capStatus()", async () => {
   /** @param {number} gb */
   const usage = (gb) => ({
     monthMinutes: MONTH_MINUTES,
@@ -847,14 +850,20 @@ test("the cap line is one line while writing and two at the cap", () => {
 });
 
 test("the usage response carries the cap line, and the Worker routes it", async () => {
-  // `drive status` is Go: it cannot import src/billing.js, so the line has to
+  // `drive status` is Go: it cannot import core/billing.js, so the line has to
   // travel in the response for the CLI to print the same words. The handler is
   // behind the account gate (issue #73), so the line is proven by calling it
   // as a signed-in request until the sign-in flow lands (build step 4, #5).
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), {
-    id: "1",
-    name: "Your drive",
-  });
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      id: "1",
+      name: "Your drive",
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
@@ -868,6 +877,9 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     { id: "1", name: "Your drive" },
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
 });
