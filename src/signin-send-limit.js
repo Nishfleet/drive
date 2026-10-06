@@ -116,8 +116,9 @@ export async function signinSendOutcome(db, address, now = Math.floor(Date.now()
  * How long a row is kept after its day window ends (drive#725). A row whose
  * day window ended is already a reset waiting to happen: the next send for
  * that address rewrites both windows in place, so deleting the row changes no
- * answer the guard gives. The extra day only keeps a row near its boundary
- * from being deleted under a send that is resetting it.
+ * answer the guard gives. The extra day is the issue's own rule ("ended more
+ * than 24 hours ago"), so a row is deleted once its day window started more
+ * than 48 hours ago.
  */
 export const SIGNIN_SEND_ROW_GRACE_SECONDS = SIGNIN_SEND_DAY_SECONDS;
 
