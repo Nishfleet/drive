@@ -642,14 +642,14 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 	}
 
 	// A wave of 300 lands as this device's own wins: each needs its
-	// conflictWinPolls polls, a hundred per pass, so the wave takes about
-	// sixty passes.
+	// conflictWinPolls polls, a hundred per pass, so the wave takes
+	// wave*conflictWinPolls/conflictPollMax passes.
 	const wave = 300
 	for i := 0; i < wave; i++ {
 		f.objects[name(i)] = md5Hex(body)
 	}
 	f.pending = f.pending[wave:]
-	for range 80 {
+	for range wave*conflictWinPolls/conflictPollMax + 20 {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("pass %d in the win wave: %v", passes, err)
 		}
@@ -733,7 +733,7 @@ func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 			f.objects[name(i)] = md5Hex(body)
 		}
 	}
-	for range 60 {
+	for range total*conflictWinPolls/conflictPollMax + 20 {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("deciding pass: %v", err)
 		}
@@ -937,6 +937,43 @@ func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
 	}
 	if len(g.seen) != 0 {
 		t.Errorf("the guard still watches %v", g.seen)
+	}
+}
+
+// TestConflictGuardKeepsASaveWhoseObjectAnotherDevicesFailedUploadRemoved is
+// drive#813. Two devices upload one path at the same instant. The other
+// device's upload fails rclone's size check, rclone removes the object that
+// is there (this device's save) and retries 10s later. This device's guard
+// sees an empty plain path for longer than the claim budget used to be, and
+// the retry that lands on top must still be claimed as a conflict.
+func TestConflictGuardKeepsASaveWhoseObjectAnotherDevicesFailedUploadRemoved(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	// This device's upload landed and the other device removed the object
+	// before the guard read it: the plain path is empty from the first poll.
+	f.pending = nil
+	delete(f.objects, "report.txt")
+	for i := range int(15 * time.Second / conflictInterval) {
+		if _, err := g.pass(context.Background(), f); err != nil {
+			t.Fatalf("pass %d while the other upload waits to retry: %v", i, err)
+		}
+		if len(f.copied) != 0 {
+			t.Fatalf("pass %d claimed a conflict while the plain path was empty", i)
+		}
+	}
+	f.objects["report.txt"] = md5Hex("B-the-retried-upload\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the retried upload landed: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]: the save was lost with no copy kept", f.copied, want)
+	}
+	if got := f.objects[want]; got != md5Hex("A-this-device-saved\n") {
+		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
 	}
 }
 
