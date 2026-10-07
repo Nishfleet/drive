@@ -35,6 +35,7 @@ import {
   isKnownBadHash,
   KNOWN_BAD_FEED_SCHEDULE,
   KNOWN_BAD_FEED_URL,
+  KNOWN_BAD_MAX_FEED_BYTES,
   lastKnownBadFeedLoad,
   loadKnownBadFeed,
   malwareHashOf,
@@ -81,7 +82,7 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
-import { createTestD1 } from "./harness.mjs";
+import { createTestD1, knownBadHashRows } from "./harness.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
@@ -477,20 +478,6 @@ const FEED_HASH_A = "8fb460478a744bba5a2e64f8f75ef9cd808c703ca216f1617e0a95b9821
 const FEED_HASH_B = "e6577a39a2118414775c912dcb73b9ad41ce7610d836faae79060393437cc977";
 const FEED_HASH_C = "bc42463821051d086010c9ba1fb0a478606dcd8715adde6ec958567cba39e0df";
 
-/**
- * Every row the known-bad table holds, read off the database itself. This is
- * the check that proves a load landed as real data rather than as a value a
- * helper handed back.
- * @param {import("./harness.mjs").TestD1} db
- * @returns {Array<{sha256: string, seenAt: number}>}
- */
-function readHashRows(db) {
-  return db.sqlite
-    .prepare("SELECT sha256, seen_at AS seenAt FROM known_bad_hashes ORDER BY sha256")
-    .all()
-    .map((row) => ({ sha256: String(row.sha256), seenAt: Number(row.seenAt) }));
-}
-
 test("the feed's own shape is the shape the loader takes", () => {
   const text = [
     "# MalwareBazaar recent malware samples (SHA256 hashes)",
@@ -547,9 +534,9 @@ test("a feed load writes every hash it carried and stamps the load", async () =>
   });
   assert.equal(again.rows, 3);
   assert.equal(again.hashes, 1);
-  const rows = readHashRows(db);
+  const rows = knownBadHashRows(db);
   assert.deepEqual(
-    rows.map((row) => row.sha256),
+    knownBadHashRows(db).map((row) => row.sha256),
     [FEED_HASH_A, FEED_HASH_B, FEED_HASH_C].sort(),
   );
   const seenAt = new Map(rows.map((row) => [row.sha256, row.seenAt]));
@@ -596,7 +583,7 @@ test("a feed that is not a feed fails the load and keeps the rows it had", async
     hashCount: 1,
   });
   assert.deepEqual(
-    readHashRows(db).map((row) => row.sha256),
+    knownBadHashRows(db).map((row) => row.sha256),
     [FEED_HASH_A],
   );
 });
@@ -649,7 +636,70 @@ test("a load the size of the real export writes in batches, and a 5xx is asked f
   assert.equal(retried.hashes, 1);
 });
 
-test("the two routes that can hit the list bind everything a refusal needs", () => {
+test("a feed download stops at its byte ceiling and writes nothing", async () => {
+  // The ceiling bounds a download, not a hash list: the real export is about
+  // 100 KB, so the ceiling is forty times the thing it bounds and leaves room
+  // for a feed that grows without a shape change. What it buys is the failure
+  // a cron can report — a host that answers a page of ads where the export used
+  // to be would otherwise stream into the Worker's 128 MB isolate until the
+  // Worker died on its own memory. Both halves of the bound are proved here,
+  // because one check on its own can be lied to.
+
+  // The header half: a declared size over the ceiling is refused before the
+  // body is read at all, so the transfer is never started. The stand-in counts
+  // the reads: `text()` is the one way the body is taken, and a count of zero
+  // is the proof the header check came first. (A real Response cannot carry
+  // this proof, because its stream is pulled in the background by the runtime
+  // whether the loader wants it or not.)
+  let reads = 0;
+  const declared = /** @type {Response} */ (
+    /** @type {unknown} */ ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-length": String(KNOWN_BAD_MAX_FEED_BYTES + 1) }),
+      body: null,
+      async text() {
+        reads += 1;
+        return FEED_HASH_A;
+      },
+    })
+  );
+  await assert.rejects(
+    () => loadKnownBadFeed(createTestD1(), { fetch: async () => declared, now }),
+    /over the \d+-byte ceiling/,
+  );
+  assert.equal(reads, 0, "a declared size over the ceiling is refused before the body is read");
+
+  // The stream half: no declared size at all, so the header check has nothing
+  // to refuse and the only bound left is the count while the bytes arrive. The
+  // last chunk is the one byte that puts the body over, which is the half the
+  // header check cannot see, and the rows the load already wrote keep standing.
+  const db = createTestD1();
+  await loadKnownBadFeed(db, { fetch: async () => new Response(FEED_HASH_A), now });
+  const lyingBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("a".repeat(KNOWN_BAD_MAX_FEED_BYTES)));
+      controller.enqueue(new Uint8Array([0x61]));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    () => loadKnownBadFeed(db, { fetch: async () => new Response(lyingBody), now: now + 1000 }),
+    /over the \d+-byte ceiling/,
+    "a stream that declares nothing still stops at the ceiling",
+  );
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+    hashCount: 1,
+  });
+  assert.deepEqual(
+    knownBadHashRows(db).map((row) => row.sha256),
+    [FEED_HASH_A],
+  );
+});
+
+test("every route that can hit the list binds everything a refusal needs", () => {
   // Every other pin here drives the handler directly, which is the right way
   // to prove the behaviour and the wrong way to prove the route wired it: a
   // mint route that dropped `db: c.env.DRIVE_DB` would pass this whole file
@@ -658,32 +708,47 @@ test("the two routes that can hit the list bind everything a refusal needs", () 
   // in the style test/monitoring.test.mjs already uses for its crons.
   const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   /**
-   * One `app.<verb>(...)` registration, from its line to the next one, with its
-   * comment lines stripped. The strip is the point: a route that dropped a
-   * binding and kept a comment naming it must fail here, so the pins below
-   * cannot be satisfied by prose. The blocks are matched by their registration
-   * line rather than by a handler call, because three routes share
-   * handleShareRequest and the upload route spells its own path as a template.
-   * @param {RegExp} opens
-   * @returns {string}
+   * Every `app.<verb>(...)` registration in src/index.js, as its own block
+   * with the comment lines stripped. The strip is the point: a route that
+   * dropped a binding and kept a comment naming it must fail here, so the pins
+   * below cannot be satisfied by prose. Built from the file rather than from a
+   * named handler, because the pin's job is the route that lands next: a third
+   * route registered after today is inside this list the day it lands.
+   * @returns {Array<string>}
    */
-  const block = (opens) => {
-    const line = src.split("\n").find((it) => opens.test(it));
-    assert.ok(line !== undefined, `src/index.js registers ${opens.source}`);
-    const start = src.indexOf(line);
-    const rest = src.slice(start + line.length).split("\n");
-    const end = rest.findIndex((it) => /^\s*app\.\w+\(/.test(it));
-    const block = end === -1 ? rest : rest.slice(0, end);
-    return [line, ...block].filter((it) => !/^\s*\/\//.test(it)).join("\n");
+  const routes = () => {
+    const lines = src.split("\n");
+    /** @type {number[]} */
+    const starts = [];
+    for (const [at, line] of lines.entries()) {
+      if (/^\s*app\.\w+\(/.test(line)) {
+        starts.push(at);
+      }
+    }
+    return starts.map((start, index) => {
+      const stop = index + 1 < starts.length ? starts[index + 1] : lines.length;
+      return lines
+        .slice(start, stop)
+        .filter((it) => !/^\s*\/\//.test(it))
+        .join("\n");
+    });
   };
-  const mint = block(/^\s*app\.post\(SHARE_ENDPOINT,/);
-  assert.match(mint, /db: c\.env\.DRIVE_DB/, "the mint reads the feed half of the list");
-  assert.match(mint, /\.\.\.mailFromEnv\(c\.env\)/, "the mint can mail the refusals");
-  assert.match(mint, /deviceName: sessionLabel\(c\.req\.raw\)/, "the mint names the device");
-  const upload = block(/^\s*app\.post\([^\n]*\/upload`,/);
-  assert.match(upload, /db: c\.env\.DRIVE_DB/, "the drop reads the feed half of the list");
-  assert.match(upload, /owner: ownerFor\(c\.env\)/, "the drop knows which account owns the link");
-  assert.match(upload, /\.\.\.mailFromEnv\(c\.env\)/, "the drop can mail the refusals");
+  // A share mint and an upload-request drop are the two places the check runs
+  // (src/share.js), and both are reached by a route that creates something: a
+  // POST. The same handler behind a GET or a DELETE reads or removes a link
+  // somebody already made, so it carries no options and is not on the list.
+  const creates = /^\s*app\.(post|put|patch)\(/;
+  const reaches = /(handleShareRequest|handleRequestUploadRequest)\(/;
+  const onTheList = routes().filter((route) => creates.test(route) && reaches.test(route));
+  assert.ok(onTheList.length > 0, "src/index.js registers a mint or a drop");
+  for (const route of onTheList) {
+    assert.match(route, /db: c\.env\.DRIVE_DB/, "the known-bad list's D1 half is bound");
+    assert.match(route, /\.\.\.mailFromEnv\(c\.env\)/, "a known-bad refusal can mail the owner");
+  }
+  const mint = onTheList.find((it) => /deviceName:/.test(it));
+  assert.ok(mint !== undefined, "the mint names the device in its mail");
+  const drop = onTheList.find((it) => /owner: ownerFor\(c\.env\)/.test(it));
+  assert.ok(drop !== undefined, "the drop names the owner its mail goes to");
 });
 
 test("a hash the feed loaded is refused with the feed untouched", async () => {
@@ -1100,7 +1165,7 @@ test("the cron trigger loads the feed into D1, and the list answers from it", as
     loadedAt: Math.floor(now / 1000),
     hashCount: 2,
   });
-  const rows = readHashRows(db);
+  const rows = knownBadHashRows(db);
   assert.deepEqual(rows, [
     { sha256: FEED_HASH_A, seenAt: Math.floor(now / 1000) },
     { sha256: FEED_HASH_B, seenAt: Math.floor(now / 1000) },

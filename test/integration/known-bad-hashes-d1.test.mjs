@@ -26,7 +26,7 @@ import {
   loadKnownBadFeed,
   parseKnownBadFeed,
 } from "../../src/malware.js";
-import { createTestD1, DRIVE_MIGRATIONS } from "../harness.mjs";
+import { createTestD1, DRIVE_MIGRATIONS, knownBadHashRows } from "../harness.mjs";
 
 /** The instant every load in this file is stamped with (epoch millis). */
 const NOW = 1_794_000_000_000;
@@ -85,13 +85,18 @@ const feedBody = (count, digestOf = digest) =>
  */
 const feedResponse = (text, options = {}) => {
   const calls = options.calls;
-  // The shape `fetch` answers with, narrowed to the two fields the loader reads
+  // The shape `fetch` answers with, narrowed to the fields the loader reads
   // and then widened back to Response through one documented cast: the loader
-  // takes `response.ok`, `response.status` and `response.text()` off it and
-  // nothing else, and the cast is the honest description of that.
+  // takes `response.ok`, `response.status`, `response.headers`,
+  // `response.body` and `response.text()` off it and nothing else, and the
+  // cast is the honest description of that. `body` is null because a stand-in
+  // answers with no stream to read in pieces, which is the one case
+  // readKnownBadFeedBody takes as a whole through `text()`.
   const answer = {
     ok: options.ok ?? true,
     status: options.status ?? 200,
+    headers: new Headers(),
+    body: null,
     async text() {
       calls?.push(1);
       return text;
@@ -99,15 +104,6 @@ const feedResponse = (text, options = {}) => {
   };
   return /** @type {Response} */ (/** @type {unknown} */ (answer));
 };
-
-/** The rows the real schema wrote, read off the engine D1 runs.
- * @param {ReturnType<typeof createTestD1>} db
- * @returns {{sha256: string, seenAt: number}[]} */
-const rows = (db) =>
-  db.sqlite
-    .prepare("SELECT sha256, seen_at FROM known_bad_hashes ORDER BY sha256")
-    .all()
-    .map((row) => ({ sha256: String(row.sha256), seenAt: Number(row.seen_at) }));
 
 test("0041 makes the WRITE path write every hash and stamp the load", async () => {
   // The drive as production is the moment 0041 lands: every migration up to it
@@ -133,7 +129,7 @@ test("0041 makes the WRITE path write every hash and stamp the load", async () =
     "the state row names the source, the instant and the count",
   );
   assert.deepEqual(
-    rows(db).map((row) => row.seenAt),
+    knownBadHashRows(db).map((row) => row.seenAt),
     [nowSeconds(NOW), nowSeconds(NOW), nowSeconds(NOW)],
     "and every row carries that same first-sighting stamp",
   );
@@ -217,7 +213,7 @@ test("0041 can be applied twice without failing or duplicating a row", async () 
   db.sqlite.exec(migration0041());
   await loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(2)), now: NOW });
   await loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(2)), now: LATER });
-  assert.equal(rows(db).length, 2, "one row a digest, however many loads run");
+  assert.equal(knownBadHashRows(db).length, 2, "one row a digest, however many loads run");
   assert.equal((await lastKnownBadFeedLoad(db))?.hashCount, 2);
 });
 
@@ -258,19 +254,19 @@ test("a hash that cycles out of the feed stays refused, and keeps its first sigh
     now: LATER,
   });
 
-  assert.equal(rows(db).length, 4, "the new digest joined, the gone one stayed");
+  assert.equal(knownBadHashRows(db).length, 4, "the new digest joined, the gone one stayed");
   assert.equal(
     await isKnownBadHash(db, digest(2)),
     true,
     "a hash that left the feed is still refused",
   );
   assert.equal(
-    rows(db).find((row) => row.sha256 === digest(2))?.seenAt,
+    knownBadHashRows(db).find((row) => row.sha256 === digest(2))?.seenAt,
     nowSeconds(NOW),
     "and its seen_at is still the first sighting, never the latest load",
   );
   assert.equal(
-    rows(db).find((row) => row.sha256 === "f".repeat(64))?.seenAt,
+    knownBadHashRows(db).find((row) => row.sha256 === "f".repeat(64))?.seenAt,
     nowSeconds(LATER),
     "while the new row carries the instant it arrived",
   );
@@ -310,7 +306,7 @@ test("the load writes across the batch boundary, nothing lost at the end", async
   });
   assert.equal(loaded.hashes, 250);
   assert.equal(loaded.rows, 250, "nothing is lost at a statement or a batch boundary");
-  assert.equal(rows(db).length, 250);
+  assert.equal(knownBadHashRows(db).length, 250);
   assert.equal(
     await isKnownBadHash(db, digest(249)),
     true,
