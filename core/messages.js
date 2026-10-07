@@ -31,6 +31,9 @@ export const INSTALL_COMMAND = "drive init";
 // The one top-up prompt (drive#586): the $0 pause, the low balance line, the
 // "$2 left" email and the CLI all say it in these words.
 export const TOP_UP_PROMPT = "Top up to keep adding files.";
+// Most branches one account may hold at once (drive#553). The cap counts every
+// state that still holds a copy. src/branches.js imports this same number.
+export const MAX_OPEN_BRANCHES = 10;
 
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
@@ -247,6 +250,12 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-exists": Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
+  }),
+  // Cap on branches one account may hold at once (drive#553). It says
+  // "branches", not "open branches", because a copy still held counts.
+  "branch-limit": Object.freeze({
+    what: `You have ${MAX_OPEN_BRANCHES} branches.`,
+    next: "Approve or discard one first.",
   }),
   // An upload-request drop named a file the owner already has. Overwriting
   // that file from a public link is the bug drive#518 closes.

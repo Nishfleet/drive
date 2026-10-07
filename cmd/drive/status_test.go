@@ -275,6 +275,22 @@ func TestParseAPIBaseRejectsAValueThatWouldBreakTheLine(t *testing.T) {
 	}
 }
 
+func TestNewAPIClientRefusesTheSameBrokenURLsAsParseAPIBase(t *testing.T) {
+	broken := []string{
+		"https://drive.example\nGET /elsewhere",
+		"https://drive.example\x00",
+		"https://user:pass@example.com",
+		"http://example.com",
+	}
+	for _, raw := range broken {
+		_, parseErr := parseAPIBase(raw)
+		_, newErr := NewAPIClient(raw, "")
+		if parseErr == nil || newErr == nil {
+			t.Errorf("%q: parseAPIBase=%v NewAPIClient=%v, want both refused", raw, parseErr, newErr)
+		}
+	}
+}
+
 func TestQueueWhySaysWhatIsWaitingAndWhy(t *testing.T) {
 	waiting := Pending{Files: 1, Bytes: 1024, Names: []string{"cut-off.bin"}}
 	got := queueWhy(false, false, false, waiting)
@@ -328,8 +344,8 @@ func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{}`))
 	}))
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if !cacheIsFull(home, true) {
 		t.Fatal("cacheIsFull = false, want true when rclone vfs/stats says outOfSpace")
 	}
@@ -348,8 +364,8 @@ func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{}`))
 	}))
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	capBytes, usedBytes, ok := cacheState(home, true)
 	if !ok {
 		t.Fatal("cacheState did not read vfs/stats")

@@ -68,7 +68,7 @@ import { createTestD1, createTestKv } from "./harness.mjs";
 // the namespace the pointer names is the only source), and that rule has to hold
 // for a row written before the drop.
 const LEFTOVER_COLUMN_DROP = "0017_drop_branches_snapshot.sql";
-const READER_DEPENDS_ON = ["0030_branch_jobs.sql"];
+const READER_DEPENDS_ON = ["0019_abuse_guards.sql", "0030_branch_jobs.sql"];
 const leftoverDropAt = MIGRATION_FILES.indexOf(LEFTOVER_COLUMN_DROP);
 if (leftoverDropAt < 0) {
   throw new Error(

@@ -23,17 +23,17 @@ func TestMountRCClientReadsTheStoredAddressAndChecksVersion(t *testing.T) {
 	})
 	home := t.TempDir()
 	cfg := testStorage()
-	if err := WriteRcloneEnv(home, cfg, "rcuserhex", "rcpasshex", c.addr); err != nil {
+	if err := WriteRcloneEnv(home, cfg, "rcuserhex", "rcpasshex", c.Addr); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("DRIVE_RCLONE", c.binary)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
 	t.Setenv("DRIVE_RC_ADDR", "")
 	got, err := mountRCClient(home)
 	if err != nil {
 		t.Fatalf("mountRCClient: %v", err)
 	}
-	if got.addr != c.addr {
-		t.Errorf("client addr = %q, want the stored %q", got.addr, c.addr)
+	if got.Addr != c.Addr {
+		t.Errorf("client addr = %q, want the stored %q", got.Addr, c.Addr)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -47,8 +47,8 @@ func TestMountRCClientRefusesAnEmptyVersion(t *testing.T) {
 		_, _ = w.Write([]byte(`{"version":""}`))
 	})
 	home := t.TempDir()
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	_, err := mountRCClient(home)
 	if err == nil {
 		t.Fatal("mountRCClient accepted an empty core/version, want a named failure")
@@ -63,8 +63,8 @@ func TestMountRCClientRefusesAStrangerOnThePort(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	home := t.TempDir()
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	_, err := mountRCClient(home)
 	if err == nil {
 		t.Fatal("mountRCClient accepted a listener that is not rclone, want a named failure")
