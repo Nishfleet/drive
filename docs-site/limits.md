@@ -19,9 +19,11 @@ would rather you read it here than find out in week three.
   `goreleaser release --snapshot --clean` and install the file under `dist/`.
   The [Quickstart](/quickstart) leads with the released commands and
   keeps the details in its Other ways section.
-- **macOS is read-only for us.** We can prove the drive on a Mac only on a
-  GitHub macOS runner or by hand, so what we have measured end to end is
-  Linux.
+- **We cannot yet prove the drive end to end on a Mac.** We can test a Mac
+  only on a GitHub macOS runner or by hand, so what we have measured end to
+  end is Linux. The Mac mount is in the CLI and is built for macOS, but we
+  have not run the measured suite on a Mac, so treat read-write on a Mac as
+  untested.
 - **No `restore` command yet.** A delete from the Files page is restorable for
   30 days in Recently deleted; a delete made any other way is recoverable for
   one day by asking us. `drive restore` is not in the CLI.
@@ -40,7 +42,7 @@ would rather you read it here than find out in week three.
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,
   never a vendored copy. Builds are unsigned until a signing certificate is
-  bought, so no published release exists yet (#154).
+  bought, so no published release exists yet.
 - **No second person on the account.** There is one account, your devices and
   your agents, so sharing a folder with a colleague is not a version 1 thing.
   When someone leaves there is no access of theirs to take away: revoke that

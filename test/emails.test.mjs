@@ -513,12 +513,38 @@ test("the receipt refuses a month that is not a month's first instant", () => {
   }
 });
 
-test("the receipt explains the bill is the capped meter", () => {
-  // The one line that stops "why is my bill less than my usage" tickets:
-  // the bill is min(metered, ceiling), and the ceiling is never charged.
-  const { text } = monthlyReceiptTemplate(receiptData());
-  assert.match(text, /min\(metered, ceiling\)/);
-  assert.match(text, /never charged/);
+test("the receipt explains the bill in the customer's words", () => {
+  // drive#545: "min(metered, ceiling)" is code jargon on a customer mail.
+  // The receipt says the same fact in the reader's words, with the two
+  // numbers it already has.
+  const { text, html } = monthlyReceiptTemplate(receiptData());
+  assert.doesNotMatch(text, /min\(|ceiling\)|metered, ceiling/);
+  assert.doesNotMatch(html, /min\(|ceiling\)|metered, ceiling/);
+  assert.match(
+    text,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  assert.match(
+    html,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  const { saved } = monthlyReceiptTemplate(receiptData());
+  assert.equal(saved, "Our price cap saved you $4.00");
+  assert.doesNotMatch(saved, /min\(|metered, ceiling|\bceiling\b/);
+});
+
+test("the receipt refuses a meter or ceiling that is not money", () => {
+  // The two numbers now print on the mail. A missing or negative one is a
+  // caller bug, not a $0 that hides it (requireMoney in core/emails.js).
+  for (const bad of [
+    { meteredUsd: undefined, ceilingUsd: 12 },
+    { meteredUsd: -1, ceilingUsd: 12 },
+    { meteredUsd: 16, ceilingUsd: "12" },
+    { meteredUsd: Number.NaN, ceilingUsd: 12 },
+    { meteredUsd: 16, ceilingUsd: Number.POSITIVE_INFINITY },
+  ]) {
+    assert.throws(() => monthlyReceiptTemplate(receiptData(bad)), TypeError);
+  }
 });
 
 test("the receipt never shows a per-minute price", () => {
@@ -801,6 +827,8 @@ test("the route sends an authorised request", async () => {
   assert.equal(body.to, "person@example.com");
   assert.equal(typeof body.messageId, "string");
   assert.equal(env.EMAIL.sent.length, 1);
+  const sent = /** @type {{subject: string}} */ (env.EMAIL.sent[0]);
+  assert.equal(sent.subject, monthlyReceiptTemplate(receiptData()).subject);
 });
 
 test("the route refuses a request with no token", async () => {

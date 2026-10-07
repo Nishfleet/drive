@@ -13,7 +13,7 @@ minute, never more than {{MAX_PER_TB}} for each TB.
 
 ## Start here
 
-- [Quickstart](/quickstart) — five steps from nothing to a mounted drive.
+- [Quickstart](/quickstart) — six steps from nothing to a mounted drive.
 - [How it works](/how-it-works) — plain files, the cache, restore, the bill.
 - [Agents](/agents) — `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](/pricing) — the rate, the maximum and four
