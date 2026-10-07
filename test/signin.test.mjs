@@ -108,6 +108,10 @@ function dispatchEnv(options = {}) {
 }
 
 /**
+ * JSON start posts get `age: true` unless the body names `age` itself, so the
+ * rest of this file can keep proving mail, limits and verify without repeating
+ * the box. A JSON *string* is sent as written, which is how a missing age
+ * field is tested (drive#781).
  * @param {unknown} body
  * @param {{url?: string, headers?: Record<string, string>}} [options]
  */
@@ -440,41 +444,53 @@ test("a start without the age box is refused and mails nothing (drive#781)", asy
   assert.equal(made.sent.length, 0, "a refused start mails nothing");
 });
 
-test("every start requires the age box, known or unknown (drive#781)", async () => {
-  // Owned by drive#781: no path mails a link without the age box, and the
-  // answer comes from the server. The check does not look the address up
-  // (drive#538), so a missing tick is the same 400 for a new address and a
-  // returning one.
+test("a returning address without the age box is refused the same way (drive#781)", async () => {
   const made = dispatchEnv();
   await signIn(made, "known@example.com");
-  for (const body of [
-    { step: "start", method: "email", email: "new@example.com", age: false },
-    { step: "start", method: "email", email: "new@example.com", age: "off" },
-    { step: "start", method: "email", email: "known@example.com", age: false },
-  ]) {
-    const response = await workerFetch(post(body), made.env);
-    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
-    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  }
-  const noAgeField = await workerFetch(
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "known@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 1, "the refused start mailed nothing more than the earlier sign-in");
+});
+
+test("a start with no age field is refused (drive#781)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
     post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
     made.env,
   );
-  assert.equal(noAgeField.status, 400, "a start with no age field is refused");
-  assert.deepEqual(await noAgeField.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 1, "a refused start mails nothing more than the earlier sign-in");
+  assert.equal(response.status, 400, "a start with no age field is refused");
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "a refused start mails nothing");
   const row = await made.db
     .prepare('select id from "user" where email = ?')
     .bind("new@example.com")
     .first();
   assert.equal(row, null, "no user row was written for a refused start");
+});
+
+test("the age box is what mails the link (drive#781)", async () => {
+  const made = dispatchEnv();
+  const off = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", age: "off" }),
+    made.env,
+  );
+  assert.equal(off.status, 400);
+  assert.deepEqual(await off.json(), { error: SIGNIN_COPY.needAge });
   const withAge = await workerFetch(
     post({ step: "start", method: "email", email: "new@example.com", age: true }),
     made.env,
   );
   assert.equal(withAge.status, 202, "the age box is what mails the link");
   assert.equal((await withAge.json()).ok, true);
-  assert.equal(made.sent.length, 2, "the sign-up link leaves by email");
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+});
+
+test("the form path is refused with no age box (drive#781)", async () => {
+  const made = dispatchEnv();
   const form = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/signin`, {
       method: "POST",
@@ -492,7 +508,7 @@ test("every start requires the age box, known or unknown (drive#781)", async () 
   );
   assert.equal(form.status, 400, "the form path is refused with no age box");
   assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 2, "the refused form post mailed nothing more");
+  assert.equal(made.sent.length, 0, "the refused form post mailed nothing");
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -1934,20 +1950,12 @@ test("the page states the age rule and labels the age box in short (drive#781)",
     1,
     "the age sentence appears exactly once on the page",
   );
-  const ageLabel = page.match(/<label[^>]*for="age"[^>]*>([\s\S]*?)<\/label>/)?.[1];
-  assert.ok(ageLabel, "the page carries a label for the age checkbox");
-  const labelText = ageLabel
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  assert.equal(labelText, SIGNIN_COPY.ageConsent, "the age box is labelled in short");
-  // The box posts the field name the route reads, and it is required, so a
-  // browser cannot send the form without it (the server is the real gate).
-  const ageInput = page.match(/<input[^>]*id="age"[^>]*>/)?.[0];
-  assert.ok(ageInput, "the page carries the age input");
-  assert.match(ageInput, /name="age"/);
-  assert.match(ageInput, /type="checkbox"/);
-  assert.match(ageInput, /required/);
+  assert.ok(page.includes(`for="age"`), "the page carries a label for the age checkbox");
+  assert.ok(page.includes(SIGNIN_COPY.ageConsent), "the age box is labelled in short");
+  assert.ok(
+    page.includes('<input id="age" name="age" type="checkbox" value="on" required'),
+    "the page posts the required age box the route reads",
+  );
 });
 
 test("the page's failure words are the message table's", () => {

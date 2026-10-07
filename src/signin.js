@@ -224,7 +224,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, age?: unknown, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, age?: boolean, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -278,7 +278,7 @@ function isTick(value) {
  * @param {unknown} age
  * @returns {string|null}
  */
-export function refuseSignupWithoutAge(age) {
+function refuseSignupWithoutAge(age) {
   return isTick(age) ? null : SIGNIN_COPY.needAge;
 }
 
@@ -288,7 +288,7 @@ export function refuseSignupWithoutAge(age) {
  * claiming a card from an unauthenticated start is how a stranger locked
  * an address out.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, age?: unknown, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, age?: boolean, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -309,7 +309,7 @@ function readStart(body) {
     step: "start",
     method,
     email,
-    age: body.age,
+    age: isTick(body.age),
     // The device-approval return path (drive#558): the approve page sent the
     // person here with ?next= its own URL. Validated here, at the read, so a
     // hand-edited link is dropped rather than stored — the same drop
