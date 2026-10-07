@@ -718,7 +718,7 @@ test("a hash the feed loaded is refused with the feed untouched", async () => {
 });
 
 /**
- * The database a Worker really has when it is deployed before migration 0039.
+ * The database a Worker really has when it is deployed before migration 0041.
  * There are two shapes D1 can answer a missing table in, and a test that pins
  * only one proves only that shape:
  *
