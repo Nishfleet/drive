@@ -1934,7 +1934,7 @@ details p {
         <a class="hide-m" href="/docs/">Docs</a>
         <a class="hide-m" href="/get-started">Get started</a>
         <a href="/signin">Sign in</a>
-        <a class="btn" href="/signin">Get drive</a>
+        <a class="btn" href="#waitlist" data-waitlist-source="nav">Get drive</a>
       </nav>
     </div>
   </header>
@@ -1952,7 +1952,7 @@ details p {
           <p class="slogan">Terabytes in Finder.<br><span>No plans. Your balance never expires.</span></p>
           <p class="lede">A drive for your video, datasets and archives. It uses almost no disk, and your agents can read and write it. Your first file is there about 1 second after install.</p>
           <div class="cta-row">
-            <a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a>
+            <a class="btn" href="#waitlist" data-waitlist-source="hero">Get drive <span aria-hidden="true">&#8594;</span></a>
             <p class="cta-note">Add $10, store 200&nbsp;GB, and it draws $4 a month.</p>
           </div>
           <p class="open-note">The drive is not open yet. Sign-ups on the pricing page go to a waitlist. <a href="#waitlist" data-waitlist-source="pricing-page">Join the waitlist</a>.</p>
@@ -2042,7 +2042,9 @@ details p {
           <p class="demo-command"><b>$</b> blender --background Drive/models/part.blend --python-expr "bpy.ops.wm.save_mainfile()"</p>
           <p class="demo-figure"><span class="demo-number">0.48 s <small>open</small></span><span class="demo-number">0.51 s <small>save back</small></span></p>
         </div>
-        <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The video was written and read back through the same mount, so its two figures are reads the mount's own cache serves; a cold-read number is an open check. The real iDrive e2 account (issue #173) and the Mac-side halves (a Finder window, Final Cut) are open checks, not numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
+        <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The video was written and read back through the same mount, so its two figures are reads the mount's own cache serves; a cold-read number is an open check. A real iDrive e2 account and the
+        Mac-side halves (a Finder window, Final Cut) are open checks, not
+        numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
       </div>
     </section>
 
@@ -2189,14 +2191,14 @@ details p {
             <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No plans. Your balance never expires.</p></details>
             <details><summary>Can my agents wreck my files?</summary><p>No. Each tool gets its own folder, mounted on its own key. An agent's delete is undoable for 1 day. On Windows the folder is the one you use, because the agent mount is not proven there yet.</p></details>
             <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When the bill would pass it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
-            <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
+            <details><summary>Does it work on Windows?</summary><p>Not yet. Drive runs on macOS and Linux today.</p></details>
           </div>
         </div>
 
         <section class="business" aria-labelledby="business-heading">
           <h2 id="business-heading">Business</h2>
           <div>
-            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support. The teams API is the only way to manage a company drive in version 1, and the company screens come later.</p>
+            <p>The same storage price, plus single sign-on (planned) and priority support (planned). The teams API is the only way to manage a company drive in version 1, and the company screens come later.</p>
             <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
             <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
             <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
@@ -2221,7 +2223,7 @@ details p {
     <div class="wrap">
       <div class="foot-top">
         <p class="foot-big">Terabytes,<br><span>2¢ a GB.</span></p>
-        <a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a>
+        <a class="btn" href="#waitlist" data-waitlist-source="footer">Get drive <span aria-hidden="true">&#8594;</span></a>
       </div>
       <div class="foot-nav">
         <nav aria-label="Footer">
@@ -2237,7 +2239,7 @@ details p {
           <a href="/accessibility">Accessibility</a>
           <a href="/status">Status</a>
         </nav>
-        <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
+        <p>Drive runs on macOS and Linux today. Windows is not ready yet. We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
       </div>
     </div>
   </footer>

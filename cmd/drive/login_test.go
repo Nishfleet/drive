@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
@@ -27,7 +28,7 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	api.approved["dev_secret"] = true
 
 	var out strings.Builder
-	if err := Login(home, server.URL, &out); err != nil {
+	if err := Login(home, server.URL, "", &out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,7 +132,7 @@ func TestLoginNamesMissingStorageInsteadOfLooping(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 
-	err := Login(t.TempDir(), server.URL, io.Discard)
+	err := Login(t.TempDir(), server.URL, "", io.Discard)
 	if err == nil {
 		t.Fatal("expected login to refuse a mint with no storage location")
 	}
@@ -207,7 +208,7 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 	api.approved["dev_secret"] = true
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	first, err := LoadCredentials(home)
@@ -224,7 +225,7 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	if err := SaveCredentials(home, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.queueClears) != 1 || api.queueClears[0] != "Bearer "+oldToken {
@@ -239,5 +240,166 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	}
 	if second.KeyID == "" || second.KeyID == first.KeyID {
 		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
+	}
+}
+
+// TestLoginRefusesADeviceKeyWithAnHourOnIt is drive#544. The api records a
+// provider's own session lifetime on the key's row now, so a deployment whose
+// STS provider mints sessions that die answers a device mint with an hour on
+// it. A device key is the one credential the CLI stores and never renews, so
+// storing one would leave storage settings on disk that stop signing requests
+// an hour later while the person sees a mount that looks healthy. Nothing is
+// written before the refusal: the files on disk stay the ones that worked.
+func TestLoginRefusesADeviceKeyWithAnHourOnIt(t *testing.T) {
+	api := newFakeAPI()
+	// The hour this deployment's provider named. It is held here so the
+	// assertion below can check the message names it, rather than the words
+	// "an hour", which the api no longer promises (drive#544).
+	mintedAt := time.Now().Add(time.Hour).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == keysPath && r.Method == http.MethodPost {
+			at := mintedAt
+			writeTestJSON(w, 201, MintedKey{
+				KeyID: "key_sts", AccessKeyID: "ak", Secret: "sk",
+				Prefix: "u/acct_1/", SessionToken: "tok",
+				Endpoint: "http://127.0.0.1:39181", Bucket: "drive-standin",
+				ExpiresAt: &at,
+			})
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	home := t.TempDir()
+	if err := Login(home, server.URL, "", io.Discard); err == nil {
+		t.Fatal("login must refuse a device credential with an expiry")
+	} else {
+		if !strings.Contains(err.Error(), "minted this device's key") {
+			t.Errorf("got %v, want device-key-expiring", err)
+		}
+		// The message names the expiry it was handed: any session length, not an
+		// hour the api did not promise.
+		if !strings.Contains(err.Error(), expiryLabel(&mintedAt)) {
+			t.Errorf("message %v must name when the key dies", err)
+		}
+		if !strings.Contains(err.Error(), "Next:") {
+			t.Errorf("the failure must say what to do next:\n%v", err)
+		}
+	}
+	// Nothing is written by a login that was refused: the files on disk stay
+	// the ones that worked.
+	if _, err := os.Stat(CredentialsPath(home)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("credentials were written before the refusal: %v", err)
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("rclone.conf was written before the refusal: %v", err)
+	}
+}
+
+// The device-name flag (drive issue #561): `drive login
+// --device studio` names this device at sign-in, both on the
+// approval page (the device-code request) and on the device
+// key, so the account and the drive agree on what the machine
+// is called.
+func TestEnvDeviceNameReadsDriveDevice(t *testing.T) {
+	// DRIVE_DEVICE (the mount's own setting) wins, and sign-in answers
+	// to the same name the mount carries.
+	t.Setenv(deviceEnvName, "studio")
+	if got := envDeviceName(t.TempDir()); got != "studio" {
+		t.Fatalf("envDeviceName(t.TempDir()) = %q, want the DRIVE_DEVICE value", got)
+	}
+	t.Setenv(deviceEnvName, "")
+	if got := envDeviceName(t.TempDir()); strings.TrimSpace(got) == "" {
+		t.Fatal("envDeviceName(t.TempDir()) with DRIVE_DEVICE unset = \"\", want the hostname fallback")
+	}
+}
+
+func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	var out strings.Builder
+	if err := Login(t.TempDir(), server.URL, "studio", &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("the device-code request named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("the device key was minted as %v, want [studio]", api.mintedNames)
+	}
+}
+
+// `drive login --device studio` is remembered in the credentials file, so a
+// later re-sign-in or `drive agents` answers to "studio" and does not
+// register a second device under the hostname.
+func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	t.Setenv(deviceEnvName, "")
+
+	home := t.TempDir()
+	if err := Login(home, server.URL, "studio", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := envDeviceName(home); got != "studio" {
+		t.Fatalf("envDeviceName after login --device studio = %q, want studio", got)
+	}
+	// A later login without the flag keeps the chosen name at sign-in
+	// and on the minted key, not only in the credentials file.
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := envDeviceName(home); got != "studio" {
+		t.Fatalf("envDeviceName after a flagless login = %q, want studio kept", got)
+	}
+	if len(api.deviceNames) != 2 || api.deviceNames[1] != "studio" {
+		t.Fatalf("flagless login named the device %v, want [studio, studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 2 || api.mintedNames[1] != "studio" {
+		t.Fatalf("flagless login minted %v, want [studio, studio]", api.mintedNames)
+	}
+	// DRIVE_DEVICE still wins.
+	t.Setenv(deviceEnvName, "laptop")
+	if got := envDeviceName(home); got != "laptop" {
+		t.Fatalf("envDeviceName with DRIVE_DEVICE = %q, want laptop", got)
+	}
+}
+
+// DRIVE_DEVICE is the same name the mount carries, so a login with no
+// --device still registers that name instead of the hostname.
+func TestLoginHonorsDriveDeviceWithoutFlag(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	t.Setenv(deviceEnvName, "studio")
+
+	if err := Login(t.TempDir(), server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("login with DRIVE_DEVICE named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("login with DRIVE_DEVICE minted %v, want [studio]", api.mintedNames)
 	}
 }

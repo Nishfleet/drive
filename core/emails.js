@@ -321,13 +321,17 @@ export function monthlyReceiptTemplate(data = {}) {
   // anything is rendered, so a receipt with no month in it never renders at
   // all rather than going out with a name missing from its subject.
   const month = monthLabel(data.monthIso);
+  // requireMoney() both checks and types: what it hands back is the number
+  // the sentence templates below print.
+  const metered = requireMoney(meteredUsd, "meteredUsd");
+  const ceiling = requireMoney(ceilingUsd, "ceilingUsd");
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a
   // receipt that guessed the baseline would state the wrong saving.
   const saved = savedLine({
-    meteredUsd: requireMoney(meteredUsd, "meteredUsd"),
+    meteredUsd: metered,
     billUsd: bill,
-    ceilingUsd: requireMoney(ceilingUsd, "ceilingUsd"),
+    ceilingUsd: ceiling,
     capped,
   });
   const subject = `Your Drive receipt: ${month}`;
@@ -339,12 +343,15 @@ export function monthlyReceiptTemplate(data = {}) {
     // the rule once and in the same words.
     "Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
     "",
-    "This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.",
+    // drive#545: "min(metered, ceiling)" is code jargon on a customer mail.
+    // The two numbers already on the receipt say the same fact in the
+    // reader's words.
+    `Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.`,
   ];
   const html_lines = [
     `<p>Your Drive bill for ${month} is ${usd(bill)}.</p>`,
     "<p>Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>",
-    "<p>This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.</p>",
+    `<p>Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.</p>`,
   ];
   if (saved) {
     lines.push("", saved);
@@ -395,7 +402,7 @@ function requireDay(value, name) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function accountClosedTemplate(data = {}) {
+function accountClosedTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
@@ -576,7 +583,7 @@ function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function topUpReceiptTemplate(data = {}) {
+function topUpReceiptTemplate(data = {}) {
   const amount = requireMoney(data.amountUsd, "amountUsd");
   const balance = requireMoney(data.balanceUsd, "balanceUsd");
   if (typeof data.auto !== "boolean") {
@@ -608,7 +615,7 @@ export function topUpReceiptTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function lowBalanceTemplate(data = {}) {
+function lowBalanceTemplate(data = {}) {
   const balance = requireMoney(data.balanceUsd, "balanceUsd");
   const auto =
     data.autoTopUpUsd === null || data.autoTopUpUsd === undefined
@@ -643,7 +650,7 @@ function requireText(value, name) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function deviceApproveNoticeTemplate(data = {}) {
+function deviceApproveNoticeTemplate(data = {}) {
   const deviceName = requireText(data.deviceName, "deviceName");
   const requestedAt = requireText(data.requestedAt, "requestedAt");
   const subject = "A device asked to connect to your drive";
@@ -673,7 +680,7 @@ export function deviceApproveNoticeTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function uploadArrivalsTemplate(data = {}) {
+function uploadArrivalsTemplate(data = {}) {
   const ownerName = requireText(data.ownerName, "ownerName");
   const folder = requireText(data.folder, "folder");
   if (!Array.isArray(data.arrivals) || data.arrivals.length === 0) {
@@ -736,7 +743,7 @@ const SECURITY_LINK = Object.freeze({
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function securityEventTemplate(data = {}) {
+function securityEventTemplate(data = {}) {
   const event = data.event;
   if (typeof event !== "string" || !Object.hasOwn(SECURITY_EVENT_COPY, event)) {
     throw new TypeError(

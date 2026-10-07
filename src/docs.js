@@ -35,7 +35,7 @@ import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
  * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
  * not retyped, so a re-rate moves the docs and the invoice together.
  */
-export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
+const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
 
 /**
  * The metered cost of a month, in dollars, before the maximum: the rate on the
@@ -45,7 +45,7 @@ export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}
  * old fixed divisor over-billed (drive#531).
  * @param {number} gbMinutes
  */
-export function meteredUsdFor(gbMinutes) {
+function meteredUsdFor(gbMinutes) {
   return meteredMonthlyBillUsd(gbMinutes, QUOTE_MONTH_MINUTES);
 }
 
@@ -57,7 +57,7 @@ export function meteredUsdFor(gbMinutes) {
  * maximum from the two functions the usage page reads. A docs row is therefore
  * the same row, worked the same way, that the copy gate holds the live page to.
  */
-export const BILL_EXAMPLES = Object.freeze(
+const BILL_EXAMPLES = Object.freeze(
   [0.2, 0.8, 1.5, 3].map((tb) => {
     const gb = tb * GB_PER_TB;
     const bill = monthlyBillForStoredTb(tb);
@@ -85,7 +85,7 @@ function dollars(amount) {
  * typed in the page so a re-price cannot leave a stale example on a page that
  * still reads as current.
  */
-export const BILL_TABLE = Object.freeze(
+const BILL_TABLE = Object.freeze(
   [
     "| Stored, kept all month | The meter | The maximum | Your bill |",
     "| --- | --- | --- | --- |",
@@ -185,7 +185,7 @@ export const KEY_TABLE = Object.freeze(
  * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
  * test/docs.test.mjs still fails if either number leaves that internal row.
  */
-export const RIVAL_1TB = Object.freeze({
+const RIVAL_1TB = Object.freeze({
   name: "The main competitor",
   monthToMonthUsd: 20,
   yearlyUsd: 15,
@@ -209,8 +209,8 @@ export const FAQ = Object.freeze([
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
-      "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
-      "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
+      "{{VERSION_MINIMUM}} You add money first, and what you store is drawn from your balance as it is metered.",
+      "Downloads are not in the published price, so nothing is charged for them today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}} (planned).",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
   }),

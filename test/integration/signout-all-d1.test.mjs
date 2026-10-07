@@ -27,24 +27,16 @@ import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore } from "../../core/keystore.js";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 
-// The schema this proof needs, over the harness's default list: the device
-// sign-in tables (`device_codes`, `device_tokens`, migrations/drive/
-// 0007_device_codes.sql -- the same issue named them). The default list now
-// also carries the two columns `0010_accounts_devices.sql`'s `devices` table
-// gained with drive#106 (`0012_agent_key_ttl.sql`), so the key rows here --
-// written the way the mint writes them -- land on the real schema without this
-// file listing `0012` a second time (which would fail with `duplicate column
-// name: expires_at`).
-// The meter tables are here because authenticate of an agent key now reads
-// the metered month (drive#171): a fixture without `usage_minutes` is not
-// the schema the live Worker ships, and that path would throw
-// `no such table: usage_minutes` on the other account's still-live agent key.
-const MIGRATIONS = [
-  ...DRIVE_MIGRATIONS,
-  "drive/0007_device_codes.sql",
-  "drive/0005_meter.sql",
-  "drive/0006_usage_stored_bytes.sql",
-];
+// The whole customer schema: `DRIVE_MIGRATIONS` is every file in
+// `migrations/drive/`, in the deploy's order (drive#579), so this proof runs on
+// the device sign-in tables (`device_codes`, `device_tokens` --
+// 0007_device_codes.sql, the same issue named them), on the two columns
+// `0010_accounts_devices.sql`'s `devices` table gained with drive#106
+// (`0012_agent_key_ttl.sql`), and on the meter tables authenticate of an agent
+// key reads when it looks at the metered month (drive#171). It used to hand
+// pick those four files over the harness's shorter default list, and the file
+// it left out was one the live Worker ships.
+const MIGRATIONS = DRIVE_MIGRATIONS;
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
 const NOW = 1_800_000_000_000;

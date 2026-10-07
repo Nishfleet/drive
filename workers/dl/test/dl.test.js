@@ -14,7 +14,7 @@ import { createD1DeviceStore } from "../../../core/devices.js";
 import { parseByteRange } from "../../../core/files.js";
 import { readGrant, signGrant } from "../../../core/grant.js";
 import { createMemoryStore } from "../../../core/keystore.js";
-import { recordUsage } from "../../../core/meter.js";
+import { MINUTE_MS, recordUsage } from "../../../core/meter.js";
 import { makeMeteredDB, midnight } from "../../../test/d1-sqlite.mjs";
 import {
   downloadKey,
@@ -475,7 +475,7 @@ test("the counter adds across an hour and never touches the rollup's column", as
     midnight(),
     42.5,
     1000,
-    midnight() + 60_000,
+    midnight() + MINUTE_MS,
   );
   for (let read = 0; read < 2; read++) {
     const res = await handleDownload(new Request(h.url("/u/acct_alice/a.bin")), h.ctx);

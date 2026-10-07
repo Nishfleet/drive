@@ -112,9 +112,25 @@ func checkImportSource(src string) error {
 	return nil
 }
 
+// windowsImportDest is the import's target on Windows: the volume root of the
+// drive letter the mount uses. It is a variable so a test on Linux, where
+// schtasks is absent and the letter lookup errors out, can still prove the
+// target is the root rather than the bare letter (drive#544).
+var windowsImportDest = func() (string, error) {
+	letter, err := windowsMountLetter()
+	if err != nil {
+		return "", err
+	}
+	return windowsVolumeRoot(letter), nil
+}
+
 func importDest(goos, home string) (string, error) {
 	if goos == "windows" {
-		return windowsMountLetter()
+		// The volume root, never the bare letter (drive#544). `D:` is a
+		// drive-relative path: it resolves against whatever folder was last
+		// used on that drive, so an import landed there instead of at the top.
+		// `D:\` is the root the drive is mounted at.
+		return windowsImportDest()
 	}
 	return DefaultMountDir(home), nil
 }
