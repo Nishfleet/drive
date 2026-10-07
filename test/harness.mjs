@@ -97,6 +97,15 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // Share-link content pin (drive#554): shares.etag is the file's storage
+  // fingerprint at mint. Expand only, default empty so older rows keep
+  // serving by path.
+  "drive/0037_share_etag.sql",
+  // The per-link arrival digest (drive#684): upload_requests.digest_at and
+  // pending_uploads. Expand only; the upload path and the info route read the
+  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
+  // Numbered 0038, the next free prefix after the other open migrations.
+  "drive/0038_request_digest.sql",
   // The second factor's tables (drive#524): better-auth's `twoFactor` rows
   // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
   // plus the `user.twoFactorEnabled` flag. Additive only; the pin in
@@ -313,11 +322,23 @@ export function createTestD1(options = {}) {
         sqlite.exec(sql);
         return { count: 0, duration: 0 };
       },
+      // D1 runs a batch as one transaction: a statement that fails rolls the
+      // whole batch back. test/d1-sqlite.mjs keeps the same guarantee, so code
+      // that leans on it (the arrival digest's clear and stamp, drive#684) is
+      // tested against D1's behaviour, not a run of independent writes.
       /**
        * @param {Array<{sql: string, params?: unknown[]}>} statements
        */
       async batch(statements) {
-        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+        sqlite.exec("BEGIN");
+        try {
+          const results = statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+          sqlite.exec("COMMIT");
+          return results;
+        } catch (error) {
+          sqlite.exec("ROLLBACK");
+          throw error;
+        }
       },
     })
   );

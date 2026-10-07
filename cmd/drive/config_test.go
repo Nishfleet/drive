@@ -717,7 +717,7 @@ func TestReadSecretKeyFromTheEnvironment(t *testing.T) {
 func TestReadSecretKeyFromTheEnvFile(t *testing.T) {
 	home := t.TempDir()
 	cfg := testStorage()
-	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
+	if err := WriteRcloneEnv(home, cfg, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")

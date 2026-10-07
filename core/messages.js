@@ -213,6 +213,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This link has handed out as much of the file as it can.",
     next: "Ask the person who shared it for a new link.",
   }),
+  // A share link whose file was replaced after mint (drive issue #554). The
+  // link stored the file's etag and the live object no longer matches, so
+  // the bytes are refused rather than labelled: serving the new file would
+  // let a swapped-in payload ride the old link's downloads and judgment.
+  "share-changed": Object.freeze({
+    what: "This file has changed since the link was made.",
+    next: "Ask the person who sent it for a new one.",
+  }),
+  // Bytes whose SHA-256 is on the stock known-bad list, refused on share
+  // mint and on an upload-request drop (drive issue #554). Nothing was
+  // stored or linked.
+  "malware-refused": Object.freeze({
+    what: "That file did not pass the safety check.",
+    next: "Try a different file.",
+  }),
   // An upload-request drop named a file longer than the 255-character cap
   // (drive issue #549). Nothing was stored; the next step is a shorter name.
   "upload-name-too-long": Object.freeze({
