@@ -12,9 +12,10 @@ the live site.
 
 - A folder kept offline stays open even after the network has been down for
   hours, not just seconds. Before, the drive's short directory cache turned
-  the pin's promise off after five seconds without a link, and every open in
-  the folder said Input/output error. Listings now stay fresh only while the
-  network answers, so during an outage you work from the copy you have.
+  the kept-folder promise off after five seconds without a link, and every
+  open in the folder said Input/output error. Listings now stay fresh only
+  while the network answers, so during an outage you work from the copy you
+  have.
 
 ## 2026-10-06
 
