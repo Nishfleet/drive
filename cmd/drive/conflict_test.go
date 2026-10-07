@@ -137,6 +137,10 @@ type fakeConflictBackend struct {
 	listErr       error
 	// versions is the size and mtime operations/stat reports per object.
 	versions map[string]objectVersion
+	// down is what reachable() answers with: a non-nil value stands for
+	// the object store not answering, so the pass must leave the
+	// directory cache (24h) alone (issue #541).
+	down error
 }
 
 type objectVersion struct {
@@ -265,6 +269,8 @@ func (f *fakeConflictBackend) refresh(_ context.Context, _ bool) error {
 	return nil
 }
 
+func (f *fakeConflictBackend) reachable(_ context.Context) error { return f.down }
+
 // guardFor builds a guard over a mount dir with real files under it, so
 // the hashing reads the bytes a mount would serve.
 func guardFor(t *testing.T, device string, files map[string]string) (*conflictGuard, string, *fakeConflictBackend) {
@@ -329,6 +335,37 @@ func TestConflictGuardKeepsTheLosersVersion(t *testing.T) {
 	}
 	// The path stays recorded on the result, so a log says what happened.
 	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want || res.Claimed[0].LosingPath != "report.txt" {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardSkipsTheRefreshWhenStorageIsDown proves the #541 rule
+// holds in the second caller too: a claim that landed just before the link
+// dropped must not vfs/refresh against a dead backend, because rclone forces
+// the directory cache (24h here) stale before it re-lists and a kept-offline
+// folder would answer every open with Input/output error. The copy survives;
+// the fill loop refreshes when the link is back.
+func TestConflictGuardSkipsTheRefreshWhenStorageIsDown(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-is-the-other-machines-save\n")
+	f.down = errors.New("connection refused")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the claim with storage down: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]: a dead backend must still get its conflict copy", f.copied, want)
+	}
+	if f.refreshed != 0 {
+		t.Errorf("the pass refreshed the directory cache while storage was down: rclone forces it stale before it re-lists, so every kept-offline open would fail until the cache expired (issue #541)")
+	}
+	if len(res.Claimed) != 1 {
 		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
 	}
 }

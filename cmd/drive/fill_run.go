@@ -202,8 +202,10 @@ func (c *rcClient) refreshDirs(ctx context.Context, dirs []string) error {
 }
 
 // vfsRefreshReplyError reads rclone's vfs/refresh JSON. A listing error is
-// inside result with HTTP 200. skipFailed is for named dirs: a file path is
-// not a directory and must not fail the fill.
+// inside result with HTTP 200. skipFailed is for named dirs: a listed name
+// that is a file, or that does not exist, is not a failure — but any other
+// error string in a named dir is returned, so a real listing problem never
+// hides behind an OK (issue #541).
 func vfsRefreshReplyError(reply map[string]any, skipFailed bool) error {
 	raw, ok := reply["result"]
 	if !ok {
@@ -221,12 +223,20 @@ func vfsRefreshReplyError(reply map[string]any, skipFailed bool) error {
 		if s == "OK" {
 			continue
 		}
-		if skipFailed {
+		if skipFailed && namedDirNotFound(s) {
 			continue
 		}
 		return fmt.Errorf("rclone rc vfs/refresh %s: %s", p, s)
 	}
 	return nil
+}
+
+// namedDirNotFound is rclone's not-found family for a named vfs/refresh dir:
+// the path is a file, or it does not exist, and neither is a listing error
+// the caller must hear about. Anything else is real.
+func namedDirNotFound(s string) bool {
+	l := strings.ToLower(s)
+	return strings.Contains(l, "not found") || strings.Contains(l, "not a directory") || strings.Contains(l, "is a file")
 }
 
 // reachable asks the object store for the remote's root listing, not through

@@ -754,7 +754,13 @@ func TestVfsRefreshReplyError(t *testing.T) {
 		t.Errorf("root listing failure: %v", err)
 	}
 	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "directory not found"}}, true); err != nil {
-		t.Errorf("skipFailed must ignore a named-dir error: %v", err)
+		t.Errorf("skipFailed must ignore a named-dir not-found: %v", err)
+	}
+	// Anything else in a named dir is real: a swallowed listing error would
+	// leave the machine reading a listing older than it thinks (issue #541).
+	err = vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "connection refused"}}, true)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("skipFailed must not swallow a real named-dir failure: %v", err)
 	}
 }
 
