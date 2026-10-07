@@ -169,21 +169,12 @@ export function keyTtlSeconds(kind) {
  * for a fresh credential. The api's enforcement is the bound, so the bound
  * cannot be widened from a config file.
  *
- * A kind with no ceiling of its own takes the provider's answer, because
- * `null` on a device row is the claim the api cannot keep: the STS provider
- * mints sessions that die (s3-keys.js DurationSeconds), so the row would read
- * "never expires" over a credential that stops signing requests. The shorter
- * of the two is recorded, every time (drive#544).
- *
- * A provider that names a lifetime which is not a usable number is refused
- * rather than rounded up to the ceiling. `null` is the one value that means
- * "this provider names no session", and every other wrong answer — zero, a
- * negative, NaN, Infinity — is a claim about a lifetime that cannot be true.
- * Folding it into the ceiling is how a device key's `null` ceiling turns a
- * provider's broken answer into a row that reads "never expires": the exact
- * lie this function exists to keep off the row. The mint fails and nothing is
- * written, which is the only answer that keeps the row's claim one the api
- * can stand behind.
+ * A kind with no ceiling of its own takes the provider's answer: the STS
+ * provider mints sessions that die (s3-keys.js DurationSeconds), and a row
+ * that read "never expires" over a credential that stops signing requests
+ * would be a lie (drive#544). A provider answer that is neither null nor a
+ * positive finite number is refused, not folded into the ceiling: folding
+ * one in is how a broken answer becomes "never expires" on the row.
  * @param {KeyKind} kind
  * @param {number|null|undefined} providerExpiresIn the provider session's own
  *   seconds, when it names one
