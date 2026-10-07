@@ -33,6 +33,7 @@ import { enforceAccountCap } from "../core/cap.js";
 import { reconcileAccount, toMillis } from "../core/meter.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { captureError } from "./monitoring.js";
 
 /** The kinds of message the meter sends, one account each. */
 export const METER_JOB_KINDS = Object.freeze({
@@ -150,6 +151,7 @@ export async function handleMeterJobs(batch, handlers) {
  *   mailFrom?: string,
  *   settle?: import("../core/prepaid.js").SettleDeps,
  *   store?: import("../core/files.js").FileStore,
+ *   reportError?: (error: unknown, where: string) => void | Promise<void>,
  * }} MeterJobDeps
  */
 
@@ -167,10 +169,27 @@ async function runHourlyAccountJob(deps, job) {
       job.accountId,
     );
   }
-  const drawn = await drawAccountPending(deps.meterDb, job.accountId, {
-    through: /** @type {number} */ (job.through),
-    now: job.at,
-  });
+  // drive#642 no-bugs bar 5: a day whose meter rows are missing or do not parse
+  // makes NO draw. The draw is the one step here that turns a meter row into
+  // money, so its failure is reported to the monitoring the repo already uses
+  // (src/monitoring.js) instead of being read as a quiet $0 day - a silent
+  // zero and a guessed charge are both failures. The rethrow keeps the queue's
+  // own retry-and-dead-letter path: the next run reads the same rows and
+  // charges the day, and a job that keeps failing lands in
+  // drive-meter-jobs-dlq for an operator rather than charging a guess.
+  let drawn;
+  try {
+    drawn = await drawAccountPending(deps.meterDb, job.accountId, {
+      through: /** @type {number} */ (job.through),
+      now: job.at,
+    });
+  } catch (error) {
+    // The monitoring seam is injectable like the email and the mail-from, so a
+    // test can stand a recorder in place of the stock Sentry call.
+    const report = deps.reportError ?? captureError;
+    await report(error, `meter hourly draw ${job.accountId}`);
+    throw error;
+  }
   if (drawn.drawn > 0) {
     await settleBalances(deps.meterDb, [job.accountId], { ...deps.settle, now: job.at });
   } else if (deps.settle?.devices) {
