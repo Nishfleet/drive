@@ -2581,7 +2581,7 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
  *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
  *   can read stored bytes, whether the pause at a $0 balance is on
  *   (drive#586), and the account's own state, so a read-only drive refuses a
@@ -2968,7 +2968,7 @@ async function listingEntry(store, path) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -3003,6 +3003,15 @@ async function uploadRequest(request, url, store, account, options = {}) {
     // the upload. Listing, downloads, deletes and restores never come here.
     // 402, so a client can tell "add money" from every other refusal.
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
+  }
+  if (
+    options.size30DayUnpaid &&
+    options.prepaidPause &&
+    incomingLength !== null &&
+    incomingLength > 0 &&
+    (await options.size30DayUnpaid(account.id, incomingLength))
+  ) {
+    return json({ error: failureMessage("size30-unpaid"), top_up: TOP_UP_PAGE }, 402);
   }
   if (options.db) {
     const firstChargedAt = await accountFirstChargedAt(options.db, account.id);

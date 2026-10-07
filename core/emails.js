@@ -598,12 +598,12 @@ function topUpReceiptTemplate(data = {}) {
     "",
     `Your balance is now ${usd(balance)}. It never expires.`,
     "",
-    "Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.",
+    "Storage is drawn from it at 2 cents per GB a month, and never more than $15 per TB.",
   ];
   const html_lines = [
     `<p>${first}</p>`,
     `<p>Your balance is now ${usd(balance)}. It never expires.</p>`,
-    "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.</p>",
+    "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $15 per TB.</p>",
   ];
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
