@@ -1853,7 +1853,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, owner?: unknown, email?: unknown, mailFrom?: string}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, owner?: unknown, email?: unknown, mailFrom?: string, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1954,6 +1954,14 @@ export async function handleRequestUploadRequest(request, files, links, capState
       detail: `An upload through /s/${record.token} was refused for a file on the known-bad list.`,
     });
     return json({ error: failureMessage("malware-refused") }, 403);
+  }
+  if (
+    options.size30DayUnpaid &&
+    options.prepaidPause &&
+    sized.bytes > 0 &&
+    (await options.size30DayUnpaid(record.accountId, sized.bytes))
+  ) {
+    return json({ error: failureMessage("upload-paused-balance") }, 403);
   }
   const contentType = request.headers.get("content-type") || "application/octet-stream";
   // The request row names the owner, so that is the prefix the write lands

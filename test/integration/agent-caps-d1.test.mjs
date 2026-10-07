@@ -127,6 +127,21 @@ function meterAMonthOf(sqlite, accountId, gigabytes) {
     .run(accountId, AT, gigabytes * MINUTES_PER_MONTH, Math.round(gigabytes * BYTES_PER_GB), AT);
 }
 
+/**
+ * Raise or lower size30 for an account the cap already metered. The bill
+ * reads stored_bytes (drive#642), not gb_minutes_live.
+ * @param {import("../d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} accountId
+ * @param {number} gigabytes
+ */
+function setStoredGb(sqlite, accountId, gigabytes) {
+  sqlite
+    .prepare(
+      `UPDATE usage_minutes SET stored_bytes = ?2, gb_minutes_live = ?3 WHERE account_id = ?1`,
+    )
+    .run(accountId, Math.round(gigabytes * BYTES_PER_GB), gigabytes * MINUTES_PER_MONTH);
+}
+
 test("an agent request under the cap writes, and the day it spent is stamped", async () => {
   const { sqlite, db } = makeMeteredDB();
   const clock = fixedClock();
@@ -175,21 +190,21 @@ test("a row stamped by the store is capped at the code default, not the old $12"
   // key the store created was capped at $12.0 while the documented default is
   // $20. Migration 0021 makes the column nullable with no default and the
   // backfill clears the 12.0, so this row carries NULL and the reader's $20
-  // applies. 1.5 TB for a whole month bills a regular account $15: over $12,
-  // under $20, so the write distinguishes the two defaults on the real schema.
+  // applies. 700 GB bills $14: over $12, under $20, so the write distinguishes
+  // the two defaults on the real schema. (1.5 TB now bills $22.50 at $15/TB.)
   const { sqlite, db } = makeMeteredDB();
   const clock = fixedClock();
   const store = storeOver(db, clock);
   const account = { id: "acct_default", name: "Default drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
-  // 1500 GB for a whole month bills $15 at the one rate (`meterAMonthOf`
-  // takes gigabytes), which is over $12 and under $20: a $12 cap refuses this
-  // write and a $20 cap lets it through, so the number itself is the assertion.
-  meterAMonthOf(sqlite, account.id, 1500);
+  // 700 GB bills $14 at the one rate (`meterAMonthOf` takes gigabytes), which
+  // is over $12 and under $20: a $12 cap refuses this write and a $20 cap lets
+  // it through, so the number itself is the assertion.
+  meterAMonthOf(sqlite, account.id, 700);
   assert.equal(
     (await writeAt(store, key, "/u/acct_default/under.md")).status,
     201,
-    "$15 is under the $20 code default: the old $12 default would have refused it",
+    "$14 is under the $20 code default: the old $12 default would have refused it",
   );
   const stamped = rowIn(
     sqlite,
@@ -199,10 +214,8 @@ test("a row stamped by the store is capped at the code default, not the old $12"
   assert.equal(stamped.monthly_cap_usd, null, "the store's row carries no cap of its own");
   assert.equal(stamped.day_requests, 1);
   // Past the $20 default the same key is refused: the default is a real cap,
-  // not an absent one. 3 TB is $30, clear of the $20 ceiling.
-  sqlite
-    .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
-    .run(account.id, 3000 * MINUTES_PER_MONTH);
+  // not an absent one. 3 TB is $45, clear of the $20 ceiling.
+  setStoredGb(sqlite, account.id, 3000);
   assert.equal((await writeAt(store, key, "/u/acct_default/at.md")).status, 403);
 });
 
@@ -358,8 +371,8 @@ test("an agent key counts the account's one bill, at the real schema", async () 
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
   // The one price (drive#607, which folded the founding rate into a single
-  // rate): 500 GB held for a whole month bills $10, under the $20 the code
-  // default now applies (drive#534).
+  // rate): 500 GB as size30 bills $10, under the $20 the code default now
+  // applies (drive#534).
   sqlite
     .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
     .run(account.id, "");
@@ -374,11 +387,9 @@ test("an agent key counts the account's one bill, at the real schema", async () 
     ["list", "read", "write"],
   );
   // Past the $20 the schema default no longer overrides, so the cap bites:
-  // 2.5 TB is $25. (2 TB is exactly $20, and `capStatus` reads
-  // `countedUsd > cap`, so a bill that lands on the cap still writes.)
-  sqlite
-    .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
-    .run(account.id, 2500 * MINUTES_PER_MONTH);
+  // 2.5 TB is $37.50 at $15/TB (drive#642). `capStatus` reads `countedUsd > cap`,
+  // so a bill that lands on the cap still writes.
+  setStoredGb(sqlite, account.id, 2500);
   assert.equal((await writeAt(store, key, "/u/acct_one_price/over.md")).status, 403);
 });
 

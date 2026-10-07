@@ -123,8 +123,9 @@ function liveKeyCountInMap(devices, accountId, atSeconds) {
  * the factory.
  * `writesPaused` is the prepaid pause (drive#586): when set, it answers
  * whether an account's balance is $0 so its keys may not write. It is unset
- * while the pause is switched off.
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
+ * while the pause is switched off. `size30DayUnpaid` is the size30 raise
+ * check (drive#642).
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -780,6 +781,18 @@ export function createMemoryStore(options = {}) {
      */
     async balancePaused(device) {
       return options.writesPaused ? options.writesPaused(device.accountId) : false;
+    },
+
+    /**
+     * Whether a write of `extraBytes` would raise size30 without one day's
+     * balance at the new size (drive#642). Unset when the pause is off.
+     * @param {{accountId: string}} device
+     * @param {number} extraBytes
+     */
+    async size30DayUnpaid(device, extraBytes) {
+      return options.size30DayUnpaid
+        ? options.size30DayUnpaid(device.accountId, extraBytes)
+        : false;
     },
 
     /**
