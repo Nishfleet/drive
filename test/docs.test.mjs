@@ -379,8 +379,8 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
       )
       .join("\n");
   assert.throws(
-    () => faqMarkdown(flip("price at 1 TB", "not yet measured")),
-    /price at 1 TB/,
+    () => faqMarkdown(flip("price at 500 GB", "not yet measured")),
+    /price at 500 GB/,
     "the cost answer must come out when its row is not yet measured",
   );
   assert.throws(

@@ -384,10 +384,23 @@ function checkedBytes(value, name) {
     }
     return value;
   }
+  if (typeof value === "string" && /^[0-9]+$/.test(value)) {
+    return BigInt(value);
+  }
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${name} must be 0 or more whole bytes, got ${String(value)}`);
   }
   return BigInt(value);
+}
+
+/**
+ * JSON-safe exact bytes: a Number inside the safe integer range, otherwise
+ * the decimal string, so a size30 above 2^53 does not round (drive#642 B4).
+ * @param {bigint} value
+ * @returns {number|string}
+ */
+function jsonBytes(value) {
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString();
 }
 
 /**
@@ -893,8 +906,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     config,
   });
   return Object.freeze({
-    // A plain Number, never a throw: a huge size30 only loses digits it could not show anyway.
-    size30Bytes: Number(size30Bytes),
+    size30Bytes: jsonBytes(size30Bytes),
     size30Gb,
     size30ReachedDay,
     size30DropsOutDay,
@@ -917,7 +929,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     }),
     labels: Object.freeze({
       storedNow: formatBytes(storedGb * BYTES_PER_GB),
-      size30: formatBytes(Number(size30Bytes)),
+      size30: formatBytes(size30Bytes),
       size30Reached: size30ReachedDay ?? "",
       size30DropsOut: size30DropsOutDay ?? "",
       todayDraw: formatUsd(todayDrawMillicents / MILLICENTS_PER_CENT / 100),

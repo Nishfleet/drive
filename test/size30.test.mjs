@@ -25,6 +25,7 @@ import {
   size30Window,
   unpackDrawRemainder,
 } from "../core/billing.js";
+import { pendingDrawDays } from "../core/prepaid.js";
 import { PRICE } from "../core/pricing.js";
 
 const GB = 1e9;
@@ -234,4 +235,21 @@ test("property: a draw is never negative and never above monthly/30 plus remaind
     }
     assert.equal(sum, monthly);
   }
+});
+
+test("pendingDrawDays walks every UTC day from the last draw through the newest rolled day", () => {
+  assert.deepEqual(pendingDrawDays([], null, "2026-10-05"), []);
+  assert.deepEqual(pendingDrawDays(["2026-10-01", "2026-10-05"], null, "2026-10-05"), [
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-03",
+    "2026-10-04",
+    "2026-10-05",
+  ]);
+  assert.deepEqual(pendingDrawDays(["2026-10-01", "2026-10-05"], "2026-10-03", "2026-10-05"), [
+    "2026-10-03",
+    "2026-10-04",
+    "2026-10-05",
+  ]);
+  assert.deepEqual(pendingDrawDays(["2026-10-05"], "2026-10-05", "2026-10-05"), ["2026-10-05"]);
 });

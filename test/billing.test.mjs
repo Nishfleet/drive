@@ -34,6 +34,7 @@ import {
   usageSummary,
 } from "../core/billing.js";
 import { PRICE } from "../core/pricing.js";
+import { formatBytes } from "../core/status.js";
 import worker from "../src/index.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -235,7 +236,7 @@ test("the cap counts min(metered, maximum), and bites only past the cap", () => 
   const raised = capStatus(bytes(3000), 50);
   assert.equal(raised.state, "active");
   assert.equal(raised.remainingUsd, 5);
-  for (const bad of [Number.NaN, -1, "600", null, undefined]) {
+  for (const bad of [Number.NaN, -1, "600x", null, undefined]) {
     assert.throws(() => capStatus(bad, 12), TypeError);
     assert.throws(() => monthlyMaximumUsd(bad), TypeError);
   }
@@ -417,7 +418,7 @@ test("every line is integer cents, whatever the meter recorded", () => {
     {
       const bill = monthBillCents({
         size30Bytes,
-        downloadBytes: 987654321,
+        downloadBytes: size30Bytes === 0 ? 0 : 987654321,
       });
       for (const key of /** @type {const} */ ([
         "meteredCents",
@@ -434,12 +435,40 @@ test("every line is integer cents, whatever the meter recorded", () => {
       assert.ok(bill.totalCents >= 0, "the bill is never negative");
     }
   }
-  for (const bad of [Number.NaN, -1, "600", null]) {
+  for (const bad of [Number.NaN, -1, "600x", null]) {
     assert.throws(() => monthBillCents({ size30Bytes: bad }), TypeError);
     assert.throws(() => monthBillCents({ size30Bytes: 0, downloadBytes: bad }), TypeError);
     assert.throws(() => monthBillCents({ size30Bytes: 0, averageStoredGb: bad }), TypeError);
   }
   assert.throws(() => monthBillCents({ size30Bytes: undefined }), TypeError);
+});
+
+test("downloads with an empty size30 throw, and empty size30 with no downloads is $0", () => {
+  assert.throws(() => monthBillCents({ size30Bytes: 0, downloadBytes: 1 }), /size30Bytes above 0/);
+  assert.equal(monthBillCents({ size30Bytes: 0 }).totalCents, 0);
+  assert.equal(monthBillCents({ size30Bytes: 0, downloadBytes: 0 }).totalCents, 0);
+});
+
+test("a size30 above 2^53 bills and formats the exact integer", () => {
+  const huge = 2n ** 53n + 1n;
+  const tbBytes = 1000n * 1_000_000_000n;
+  const expectedMilli = (15n * 100n * 1000n * huge) / tbBytes;
+  const bill = monthBillCents({ size30Bytes: huge });
+  assert.equal(bill.storageMillicents, Number(expectedMilli));
+  const asString = monthBillCents({ size30Bytes: huge.toString() });
+  assert.equal(asString.storageMillicents, Number(expectedMilli));
+  const summary = usageSummary({
+    size30Bytes: huge,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+  });
+  assert.equal(summary.size30Bytes, huge.toString());
+  assert.notEqual(summary.size30Bytes, String(Number(huge)));
+  assert.equal(summary.billCents.storageMillicents, Number(expectedMilli));
+  assert.equal(summary.labels.size30, formatBytes(huge));
+  assert.equal(Number.isFinite(summary.billUsd), true);
 });
 
 test("the retired inputs fail loudly: peak, first month, month number", () => {
