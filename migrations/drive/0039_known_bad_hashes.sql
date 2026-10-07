@@ -16,8 +16,10 @@
 -- stays the first sighting and a row never churns: a hash that cycles out of the
 -- feed stays refused. That is why no pruning by age is right here — a row that
 -- left the feed is still a row that was on a stock public list, and deleting it
--- would reopen the one file that list refuses. Growth is the feed's own rate,
--- about 1,500 rows a day, and that is the accepted cost of the promise.
+-- would reopen the one file that list refuses. Growth is the feed's own rate —
+-- the live run of 2026-10-07 (PR #834) loaded 1,502 hashes from that URL in
+-- one cron trip, which is an estimate about the source rather than a promise
+-- about it — and that cost is accepted rather than paid for with a pruning job.
 --
 -- Expand only (drive issue #170): two new tables, no existing column touched,
 -- so the previous version of the code keeps running against this schema. D1 has

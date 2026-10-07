@@ -633,20 +633,36 @@ test("a hash the feed loaded is refused with the feed untouched", async () => {
 });
 
 /**
- * The database a Worker really has when it is deployed before migration 0039:
- * every statement answers `no such table`, because the table is not there yet.
- * The stand-in only has to throw where D1 would, and core/db.js's own helpers
- * call it synchronously on the way to the row.
+ * The database a Worker really has when it is deployed before migration 0039.
+ * There are two shapes D1 can answer a missing table in, and a test that pins
+ * only one proves only that shape:
+ *
+ * - `prepare` throws synchronously, which is what a stand-in bound in a test
+ *   sees first, because core/db.js's `first()` calls `db.prepare(sql)` on the
+ *   way to `.bind(...).first()`;
+ * - `first()` returns a rejected promise, which is the shape the real D1 client
+ *   has: D1 rejects asynchronously, so nothing is thrown synchronously at all.
+ *
+ * The route has to answer an error either way, never a pass.
  *
  * @param {string} [message] what D1 answered
+ * @param {boolean} [rejects] true for the async shape
  * @returns {import("./harness.mjs").TestD1}
  */
-function unbounddb(message = "Error: no such table: known_bad_hashes") {
-  const standIn = {
-    prepare() {
-      throw new Error(message);
-    },
-  };
+function unbounddb(message = "Error: no such table: known_bad_hashes", rejects = false) {
+  const standIn = rejects
+    ? {
+        prepare: () => ({
+          bind: () => ({
+            first: () => Promise.reject(new Error(message)),
+          }),
+        }),
+      }
+    : {
+        prepare() {
+          throw new Error(message);
+        },
+      };
   return /** @type {import("./harness.mjs").TestD1} */ (/** @type {unknown} */ (standIn));
 }
 
@@ -655,39 +671,53 @@ test("a database that throws is an error, not a pass", async () => {
   // Worker ships before the migration the read answers `no such table` all
   // day. Nothing in isKnownBadHash catches that, and the day is not saved by
   // one: a swallowed error is a mint of a file nobody checked, which is the
-  // thing this check exists to stop. Both public routes get the same answer.
-  const { upload, share, links, request, files } = drive();
-  await upload("/", "notes.txt", "benign bytes");
-  await upload("/", "eicar.txt", EICAR_BODY);
+  // thing this check exists to stop. Both public routes get the same answer,
+  // and both of the shapes D1 can answer in.
+  /**
+   * One mint and one drop against the same unmigrated database.
+   * @param {import("./harness.mjs").TestD1} db
+   */
+  const refuse = async (db) => {
+    const { upload, share, links, request, files } = drive();
+    await upload("/", "notes.txt", "benign bytes");
+    await upload("/", "eicar.txt", EICAR_BODY);
+    await assert.rejects(
+      share("/notes.txt", { db }),
+      /no such table/,
+      "the mint throws rather than minting",
+    );
+    assert.equal(await links.shares.get(TOKEN), null, "no link row is written either");
 
-  const mint = share("/notes.txt", { db: unbounddb() });
-  await assert.rejects(mint, /no such table/, "the mint throws rather than minting");
-  assert.equal(await links.shares.get(TOKEN), null, "no link row is written either");
+    // The same read on the drop half, where the body is already in hand.
+    const made = await request("/", { token: "BBBBBBBBBBBBBBBBBBBBBB" });
+    assert.equal(made.status, 201);
+    await assert.rejects(
+      handleRequestUploadRequest(
+        new Request(
+          `${api(REQUEST_ENDPOINT)}/upload?k=BBBBBBBBBBBBBBBBBBBBBB&name=${encodeURIComponent("notes.txt")}`,
+          { method: "POST", headers: { "content-type": "text/plain" }, body: "benign bytes" },
+        ),
+        files,
+        links,
+        () => "active",
+        withLimits({ db, now }),
+      ),
+      /no such table/,
+      "the drop throws rather than storing",
+    );
+    const record = await links.requests.get("BBBBBBBBBBBBBBBBBBBBBB");
+    assert.ok(record);
+    assert.equal(record.uploadCount, 0, "no upload is counted either");
 
-  // The same read on the drop half, where the body is already in hand.
-  const made = await request("/", { token: "BBBBBBBBBBBBBBBBBBBBBB" });
-  assert.equal(made.status, 201);
-  const dropped = handleRequestUploadRequest(
-    new Request(
-      `${api(REQUEST_ENDPOINT)}/upload?k=BBBBBBBBBBBBBBBBBBBBBB&name=${encodeURIComponent("notes.txt")}`,
-      { method: "POST", headers: { "content-type": "text/plain" }, body: "benign bytes" },
-    ),
-    files,
-    links,
-    () => "active",
-    withLimits({ db: unbounddb(), now }),
-  );
-  await assert.rejects(dropped, /no such table/, "the drop throws rather than storing");
-  const record = await links.requests.get("BBBBBBBBBBBBBBBBBBBBBB");
-  assert.ok(record);
-  assert.equal(record.uploadCount, 0, "no upload is counted either");
-
-  // EICAR still decides with no db bound, so a table that is not there yet
-  // cannot open the in-memory half's door either.
-  const eicar = await share("/eicar.txt", { token: "CCCCCCCCCCCCCCCCCCCCCC", db: undefined });
-  assert.equal(eicar.status, 403);
+    // The in-memory half decides before the row is read, so EICAR is refused
+    // even on the day the table is not there. A mint that cannot check the
+    // feed half still refuses the one body it can check.
+    const eicar = await share("/eicar.txt", { token: "CCCCCCCCCCCCCCCCCCCCCC", db });
+    assert.equal(eicar.status, 403);
+  };
+  await refuse(unbounddb());
+  await refuse(unbounddb("Error: D1_ERROR: no such table: known_bad_hashes", true));
 });
-
 /**
  * A mailer double in the shape core/security-event.js's own caller uses,
  * so a test can prove a notification went out without a vendor on the wire.
@@ -782,7 +812,7 @@ test("a known-bad refusal mails the owner, and a mailer that is down still refus
     files,
     links,
     () => "active",
-    withLimits({ db, owner: async () => owner, email: down, mailFrom: MAIL_FROM }),
+    withLimits({ db, now, owner: async () => owner, email: down, mailFrom: MAIL_FROM }),
   );
   assert.equal(dropped.status, 403, "a mail vendor that is down is not the stranger's problem");
   assert.equal((await dropped.json()).error, failureMessage("malware-refused"));
@@ -792,6 +822,9 @@ test("a known-bad refusal mails the owner, and a mailer that is down still refus
   // stranger is named by what they used, not by who they are.
   assert.match(down.sent[0].text, /\/s\/BBBBBBBBBBBBBBBBBBBBBB/);
   assert.match(down.sent[0].text, /device named the drive CLI/);
+  // The clock the notice carries is the one the request was given, so an owner
+  // reading the mail can line it up against their own access log.
+  assert.match(down.sent[0].text, new RegExp(`It happened at ${new Date(now).toISOString()}`));
   assert.deepEqual(
     (await list()).map((row) => row.name),
     ["flagged.txt"],
