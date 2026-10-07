@@ -34,6 +34,7 @@ import {
   TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
 import { bearerToken, errorResponse } from "../core/http.js";
+import { runKeySweep } from "../core/key-sweep.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
@@ -1630,9 +1631,10 @@ const handler = {
           throw new Error("the account close cron needs the drive database");
         }
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const devices = createD1DeviceStore(env.DRIVE_DB);
         const close = await runAccountCloseCron({
           db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
+          devices,
           store: files,
           email: env.EMAIL,
           mailFrom: secrets.MAIL_FROM ?? "",
@@ -1659,6 +1661,19 @@ const handler = {
             `account close: mailed=${close.mailed} reminded=${close.reminded} purged=${close.purged}`,
           );
         }
+        // The vendor-key sweep (drive issue #552), on the same store: remove
+        // the dead rows' vendor access keys and record how many keys the
+        // vendor holds. A deployment whose provider has no removal (the
+        // S3/STS one, whose sessions expire on their own) is skipped loudly
+        // by the sweep itself. A missing provider with leftover vendor keys
+        // fails this trigger rather than reporting success. The shared iDrive
+        // provider is the one with keys to remove. Awaited like the account
+        // close above: a sweep that failed must be a failed trigger, not a
+        // run that reported success. The provider is read off the same env
+        // the api Worker reads, so the two Workers mint with one credential
+        // and the sweep removes what that credential minted.
+        const provider = keyProviderFor(env);
+        await runKeySweep({ devices, provider, now: event.scheduledTime });
       });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
