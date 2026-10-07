@@ -732,7 +732,8 @@ func TestFillReadFileStopsAtTheDeadline(t *testing.T) {
 // drive#742 at the fill pass itself: a read that hits the deadline reports the
 // context error, and the pass stops instead of reading the rest of the
 // recently-opened set. The stand-in read is the large file: the deadline lands
-// inside it, and the bytes it got through still count toward the cap check.
+// inside it, and the pass aborts on that error, so the bytes the failed read
+// got through are not part of the pass's result.
 func TestFillTargetsReadStopsWhenAReadHitsTheDeadline(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
@@ -747,7 +748,7 @@ func TestFillTargetsReadStopsWhenAReadHitsTheDeadline(t *testing.T) {
 	targets := fillTargets{
 		root:   dir,
 		recent: []string{"a.bin", "b.bin", "c.bin"},
-		readFile: func(ctx context.Context, p string) (int64, error) {
+		readFile: func(_ context.Context, p string) (int64, error) {
 			read = append(read, filepath.Base(p))
 			if len(read) > 1 {
 				return 10, nil
