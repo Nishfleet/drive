@@ -590,52 +590,53 @@ test("approve plan is written once per slice, not rewritten every batch", {
   const counts = { planReads: 0, planPuts: 0, wholePlanPuts: 0 };
   /** @param {string} key */
   const isPlanKey = (key) => key === planPrefix || key.startsWith(`${planPrefix}.`);
-  const kv = /** @type {KVNamespace & {values: Map<string, string>}} */ (
-    /** @type {unknown} */ ({
-      values: inner.values,
-      /** @param {string} key */
-      async get(key) {
-        if (isPlanKey(key)) {
-          counts.planReads += 1;
-        }
-        return inner.get(key);
-      },
-      /**
-       * @param {string} key
-       * @param {string} value
-       */
-      async put(key, value) {
-        if (isPlanKey(key)) {
-          counts.planPuts += 1;
-        }
-        if (key === planPrefix) {
-          counts.wholePlanPuts += 1;
-        }
-        return inner.put(key, value);
-      },
-      /** @param {string} key */
-      async delete(key) {
-        return inner.delete(key);
-      },
-      /** @param {{prefix?: string}} [options] */
-      async list(options = {}) {
-        return inner.list(options);
-      },
-      reset() {
-        counts.planReads = 0;
-        counts.planPuts = 0;
-      },
-      get planReads() {
-        return counts.planReads;
-      },
-      get planPuts() {
-        return counts.planPuts;
-      },
-      get wholePlanPuts() {
-        return counts.wholePlanPuts;
-      },
-    })
-  );
+  const kv =
+    /** @type {KVNamespace & {values: Map<string, string>, reset(): void, planReads: number, planPuts: number, wholePlanPuts: number}} */ (
+      /** @type {unknown} */ ({
+        values: inner.values,
+        /** @param {string} key */
+        async get(key) {
+          if (isPlanKey(key)) {
+            counts.planReads += 1;
+          }
+          return inner.get(key);
+        },
+        /**
+         * @param {string} key
+         * @param {string} value
+         */
+        async put(key, value) {
+          if (isPlanKey(key)) {
+            counts.planPuts += 1;
+          }
+          if (key === planPrefix) {
+            counts.wholePlanPuts += 1;
+          }
+          return inner.put(key, value);
+        },
+        /** @param {string} key */
+        async delete(key) {
+          return inner.delete(key);
+        },
+        /** @param {{prefix?: string}} [options] */
+        async list(options = {}) {
+          return inner.list(options);
+        },
+        reset() {
+          counts.planReads = 0;
+          counts.planPuts = 0;
+        },
+        get planReads() {
+          return counts.planReads;
+        },
+        get planPuts() {
+          return counts.planPuts;
+        },
+        get wholePlanPuts() {
+          return counts.wholePlanPuts;
+        },
+      })
+    );
   const snapshots = createKvSnapshotStore(kv);
   await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   const pending = [];
