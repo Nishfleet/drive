@@ -59,8 +59,8 @@ const SIGNED_EVENT_BODY_BYTES = 256 * 1024;
  *
  * Two shapes carry it: a record with a `bucket` field of its own, and the S3
  * notification's `s3.bucket.name`, the shape core/event-routes.js parses. The
- * record is spread through notificationRecord untouched, so this reader runs
- * on what the provider sent.
+ * caller already flattened a `Records` envelope through `notificationRecords`,
+ * so this reader sees one record, not the envelope.
  * @param {Record<string, unknown>} record
  * @returns {string|null}
  */
@@ -103,7 +103,10 @@ function bindsToAccount(record, accountId) {
   }
   try {
     return bucket === bucketForAccount(accountId);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error;
+    }
     return false;
   }
 }
@@ -126,7 +129,10 @@ function drivePathOf(key, accountId) {
   const trimmed = key.startsWith("/") ? key.slice(1) : key;
   try {
     return drivePathFromKey(trimmed, { id: accountId });
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error;
+    }
     return null;
   }
 }
@@ -206,7 +212,10 @@ export async function handleSignedStorageEventRequest(request, deps) {
   let parsed;
   try {
     parsed = JSON.parse(body);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
     return json({ error: "The request body is not valid JSON." }, 400);
   }
   // The same three shapes the open intake takes - a list, a `Records`

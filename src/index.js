@@ -260,6 +260,8 @@ function dodoEnv(env) {
  * @returns {string|undefined}
  */
 function storageEventsSecret(env) {
+  // Env has no field for an undeclared secret, so the Worker type cannot name
+  // this binding. The unknown cast is that gap, not a missing check.
   return /** @type {{STORAGE_EVENTS_WEBHOOK_SECRET?: string}} */ (/** @type {unknown} */ (env))
     .STORAGE_EVENTS_WEBHOOK_SECRET;
 }

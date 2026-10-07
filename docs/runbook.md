@@ -181,10 +181,14 @@ steps below are the operator's, in this order:
    for `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`. A rule that cannot sign
    (a vendor webhook carrying only a bearer token) stays on
    `/api/storage-events` with `METER_EVENT_TOKEN`.
-3. Confirm it: post one signed event and expect
-   `{"ok":true,"stored":1,"deduped":0,"enqueued":1}`. Repost the same `webhook-id`
-   and expect `stored:0`, `deduped:1`, `enqueued:0`. Then wait for the next
-   nightly run and confirm the row is there.
+3. Confirm it: post one signed event (headers `webhook-id`,
+   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`;
+   body the fixture in `test/storage-events-signed.test.mjs`, a create with
+   `eventName`, `keyName` `u/<account>/notes.md`, and `bucket` that account's
+   own name) and expect `{"ok":true,"stored":1,"deduped":0,"enqueued":1}`.
+   Repost the same `webhook-id` and expect `stored:0`, `deduped:1`,
+   `enqueued:0`. Then wait for the next nightly run and confirm the row is
+   there.
 
 Until step 2 is done for a bucket, a file saved into it through the drive
 folder, the S3 API or an agent tool is metered and indexed at the nightly run
