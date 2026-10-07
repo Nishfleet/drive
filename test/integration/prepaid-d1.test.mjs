@@ -6,7 +6,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dailyDrawMillicents, monthBillCents, size30Window } from "../../core/billing.js";
+import {
+  dailyDrawMillicents,
+  monthBillCents,
+  size30DropsOutDay,
+  size30Window,
+} from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
@@ -79,6 +84,26 @@ async function storeHours(db, sizeGb, count, from = midnight()) {
   for (let h = 0; h < count; h++) {
     const hour = from + h * HOUR_MS;
     await recordUsage(db, ACCOUNT, hour, sizeGb * 60, sizeGb * BYTES_PER_GB, hour + HOUR_MS);
+    hours.push(hour);
+  }
+  return hours;
+}
+
+/**
+ * Stores `sizeGb` for `count` hours from `from` for one account, the rows the
+ * meter rolls. The same walk storeHours does, for the second account of a
+ * same-day test.
+ * @param {import("../d1-sqlite.mjs").MeteredD1} db
+ * @param {string} accountId
+ * @param {number} sizeGb
+ * @param {number} count
+ * @param {number} [from]
+ */
+async function storeHoursFor(db, accountId, sizeGb, count, from = midnight()) {
+  const hours = [];
+  for (let h = 0; h < count; h++) {
+    const hour = from + h * HOUR_MS;
+    await recordUsage(db, accountId, hour, sizeGb * 60, sizeGb * BYTES_PER_GB, hour + HOUR_MS);
     hours.push(hour);
   }
   return hours;
@@ -982,4 +1007,181 @@ test("a payment with no customer id credits and claims the card, and the alarm f
     null,
     "no customer on the event means none is written, and the gap alarm will name it",
   );
+});
+
+
+// drive#642's day-key law, on the real draw path: the key is (account, day),
+// so two accounts drawing on the same day each get their own row and each is
+// charged once, and the day key is never shared between them.
+test("two accounts drawing the same day each get their own draw", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const second = "acc-draw-2";
+  await putAccount(db, ACCOUNT);
+  await putAccount(db, second);
+  const day = Date.parse("2028-02-28T00:00:00Z");
+  await storeHours(db, 1000, 24, day);
+  await storeHoursFor(db, second, 700, 24, day);
+  const through = day + 23 * HOUR_MS;
+  await Promise.all([
+    drawAccountPending(db, ACCOUNT, { through, now: day + 24 * HOUR_MS }),
+    drawAccountPending(db, second, { through, now: day + 24 * HOUR_MS }),
+  ]);
+  // Each account's own row for that day, at its own size: 1 TB bills $15 a
+  // month, 700 GB bills $14 a month, and a day draws its own daily slice.
+  const rows = sqlite
+    .prepare(
+      "SELECT account_id, day, size30_bytes, draw_millicents FROM daily_draws ORDER BY account_id",
+    )
+    .all();
+  assert.deepEqual(
+    rows.map((row) => [row.account_id, row.day]),
+    [
+      [ACCOUNT, "2028-02-28"],
+      [second, "2028-02-28"],
+    ],
+    "the draw key is (account, day), not the day alone",
+  );
+  assert.equal(Number(rows[0].size30_bytes), 1000 * BYTES_PER_GB);
+  assert.equal(Number(rows[1].size30_bytes), 700 * BYTES_PER_GB);
+  // And the ledger: one usage row per account, each keyed by its own day.
+  const keys = usageRows(sqlite).map((row) => row.idempotency_key);
+  assert.deepEqual(keys, [usageDayKey(ACCOUNT, "2028-02-28"), usageDayKey(second, "2028-02-28")]);
+  assert.equal(await balanceCents(db, ACCOUNT), -50, "1 TB draws 50 cents a day");
+  assert.equal(await balanceCents(db, second), -46, "700 GB draws its own, smaller daily slice");
+});
+
+// drive#642's window law on the real draw path: a peak draws until the 30th
+// UTC day after it, at the hour it drops out, whether the span crosses a month
+// end, a leap day (2028-02-29) or UTC midnight. The peak is stored on a month
+// end in a leap year, then the drive is emptied to 700 GB, and the day's draw
+// follows the peak in the window rather than the size stored today.
+test("a peak draws until it drops out of the 30-day window, across a month end and a leap day", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakDay = Date.parse("2028-01-31T00:00:00Z");
+  await storeHours(db, 1000, 24, peakDay);
+  let at = peakDay + 24 * HOUR_MS;
+  // 29 UTC days of a smaller drive, then the 30th: the leap day 2028-02-29 and
+  // a month end sit inside the span.
+  const smaller = [];
+  for (let d = 0; d < 30; d += 1) {
+    await storeHours(db, 700, 24, at);
+    smaller.push(at);
+    at += 24 * HOUR_MS;
+  }
+  const lastSmall = /** @type {number} */ (smaller.at(-1));
+  assert.equal(new Date(lastSmall).toISOString().slice(0, 10), "2028-03-01");
+  const leapDay = smaller[28] ?? 0;
+  assert.equal(new Date(leapDay).toISOString().slice(0, 10), "2028-02-29");
+  await drawAccountPending(db, ACCOUNT, { through: lastSmall + 23 * HOUR_MS, now: at });
+  const drawn = sqlite
+    .prepare("SELECT day, size30_bytes, draw_millicents FROM daily_draws ORDER BY day")
+    .all();
+  // Day 29 of the smaller drive (2028-02-29, the leap day): the 1 TB peak is
+  // still in the window, so the day draws 1 TB's daily slice.
+  const leap = drawn.find((row) => row.day === "2028-02-29");
+  assert.ok(leap, "the leap day is drawn");
+  assert.equal(
+    Number(leap.size30_bytes),
+    1000 * BYTES_PER_GB,
+    "the peak is still the window's size",
+  );
+  assert.equal(
+    new Date(size30Window(leapDay + 23 * HOUR_MS).from).toISOString().slice(0, 10),
+    "2028-01-31",
+    "on the 29th day the window's first day is still the peak's own day",
+  );
+  // The next day (2028-03-01, day 30): the peak has dropped out, so the draw
+  // falls to 700 GB's slice, and never rises when the drive stores less.
+  const after = drawn.find((row) => row.day === "2028-03-01");
+  assert.ok(after, "the day after the leap day is drawn");
+  assert.equal(
+    Number(after.size30_bytes),
+    700 * BYTES_PER_GB,
+    "the peak drops out on the 30th day",
+  );
+  assert.ok(
+    Number(after.draw_millicents) < Number(leap.draw_millicents),
+    "the draw falls with the window's size, never the other way",
+  );
+  // size30DropsOutDay says the same day, so the usage page's own drop-out date
+  // and the draw agree.
+  assert.equal(size30DropsOutDay("2028-01-31"), "2028-03-01");
+});
+
+// drive#642's window law at the three instants the issue names, on the real
+// size read the draw uses: the window is aligned to the UTC day, so a peak
+// reached at 2028-01-31T00:00Z is billed for the last time at 29d23h and is
+// gone by 30d - the boundary is UTC midnight, not a rolling 30*24 hours.
+test("the window edges: billed at 29d23h, gone at 30d and at 30d+1min", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakHour = Date.parse("2028-01-31T00:00:00Z");
+  await storeHours(db, 1000, 1, peakHour);
+  /** The size30 the draw would bill at `through`, read by the draw's own read. */
+  const sizeAt = async (/** @type {number} */ through) => {
+    const window = size30Window(through);
+    const read = await size30Through(db, ACCOUNT, window.from, window.through);
+    return read.size30Bytes;
+  };
+  const day = 24 * HOUR_MS;
+  const oneTb = 1000 * BYTES_PER_GB;
+  // 29d23h: 2028-02-29T23:00Z, the leap day's last hour.
+  assert.equal(
+    new Date(peakHour + 29 * day + 23 * HOUR_MS).toISOString().slice(0, 10),
+    "2028-02-29",
+  );
+  assert.equal(
+    await sizeAt(peakHour + 29 * day + 23 * HOUR_MS),
+    oneTb,
+    "29d23h still bills the peak",
+  );
+  // 30d: 2028-03-01T00:00Z, the drop-out day.
+  assert.equal(await sizeAt(peakHour + 30 * day), 0, "30d is past the window");
+  assert.equal(await sizeAt(peakHour + 30 * day + 60_000), 0, "30d+1min is past the window too");
+  // And the draw itself: the 30 days the peak is in the window are drawn, then
+  // the next day with no rows and no peak is a $0 day, not a charge.
+  const through = peakHour + 30 * 24 * HOUR_MS + 60_000;
+  const first = await drawAccountPending(db, ACCOUNT, {
+    through: peakHour,
+    now: peakHour + HOUR_MS,
+  });
+  assert.equal(first.drawn, 1, "the peak's own day is drawn as soon as it is stored");
+  const drawn = await drawAccountPending(db, ACCOUNT, { through, now: through });
+  assert.equal(drawn.drawn, 29, "the 29 days the peak stays in the window");
+  assert.equal(drawn.cents, 1450);
+  assert.equal(await balanceCents(db, ACCOUNT), -1500, "that is the 1 TB month exactly");
+  const again = await drawAccountPending(db, ACCOUNT, {
+    through: through + 24 * HOUR_MS,
+    now: through + 24 * HOUR_MS,
+  });
+  assert.deepEqual(
+    again.draws ?? again,
+    { drawn: 0, cents: 0 },
+    "the day after the window is a $0 day",
+  );
+});
+
+// drive#642's UTC-midnight law: a peak reached late in its own day is billed
+// for the whole of the 29 days after it, and the boundary is the UTC midnight
+// that starts the 30th day, not a rolling 30*24 hours.
+test("a peak reached at 23:00 stops being billed at UTC midnight", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakHour = Date.parse("2028-01-31T23:00:00Z");
+  await storeHours(db, 1000, 1, peakHour);
+  const sizeAt = async (/** @type {number} */ through) => {
+    const window = size30Window(through);
+    return (await size30Through(db, ACCOUNT, window.from, window.through)).size30Bytes;
+  };
+  const oneTb = 1000 * BYTES_PER_GB;
+  const day = 24 * HOUR_MS;
+  // 29d later is 2028-02-29T23:00Z, the leap day's last hour: still billed.
+  assert.equal(await sizeAt(peakHour + 29 * day), oneTb);
+  // One hour later is 2028-03-01T00:00Z: the UTC midnight the peak drops out at.
+  assert.equal(
+    new Date(peakHour + 29 * day + 1 * HOUR_MS).toISOString(),
+    "2028-03-01T00:00:00.000Z",
+  );
+  assert.equal(await sizeAt(peakHour + 29 * day + 1 * HOUR_MS), 0, "UTC midnight is the boundary");
 });
