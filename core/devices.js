@@ -137,6 +137,55 @@ function changesOf(result) {
 }
 
 /**
+ * A device session re-mint's row write (drive#749): the fresh credential's
+ * access key and secret hash replace the old ones, and `expires_at` is the
+ * new session's end. Unlike `renewKeyRow`'s keep-later window rule, this SET
+ * is the fresh truth: after the swap exactly one credential is live, and the
+ * row must name the session IT carries — the old credential dies at the
+ * vendor when the vendor's session ends, so a row that outlived it would be
+ * the drive#713 lie again. The `revoked_at IS NULL` guard is the same race
+ * guard `renewKeyRow` has: a key revoked between the caller's read and this
+ * write is not revived by it, and the row count is how the caller proves the
+ * write landed.
+ *
+ * @param {D1Database} db
+ * @param {string} keyId
+ * @param {string} accessKeyId
+ * @param {string} secretHash
+ * @param {number|null} ttlSeconds the lifetime the fresh mint gave, or null
+ *   for a session-less provider (never reached on this path today)
+ * @param {number|null} expiresAt the fresh session's end
+ * @param {number} lastSeenAt
+ * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
+ *   caller proves a write landed
+ */
+function renewDeviceCredentialRow(
+  /** @type {D1Database} */ db,
+  /** @type {string} */ keyId,
+  /** @type {string} */ accessKeyId,
+  /** @type {string} */ secretHash,
+  /** @type {number|null} */ ttlSeconds,
+  /** @type {number|null} */ expiresAt,
+  /** @type {number} */ lastSeenAt,
+) {
+  return run(
+    db,
+    `UPDATE devices SET last_seen_at = ?1,
+       b2_key_id = ?2,
+       secret_hash = ?3,
+       ttl_seconds = ?4,
+       expires_at = ?5
+     WHERE id = ?6 AND revoked_at IS NULL`,
+    lastSeenAt,
+    accessKeyId,
+    secretHash,
+    ttlSeconds,
+    expiresAt,
+    keyId,
+  );
+}
+
+/**
  * Move one row's window forward: the later of the expiry this call computed and
  * the expiry the row already holds.
  *
@@ -1246,9 +1295,22 @@ export function createD1DeviceStore(db, options = {}) {
      * An expired key can be renewed: the credential is dead, but the row is
      * not cancelled and the caller is the signed-in device, so this is the
      * one route by which a tool that sat idle for an hour comes back.
+     *
+     * A device key on a provider that names a session (the STS path) renews
+     * differently (drive#749): the vendor ends the credential when its
+     * session ends, whatever the row says, so the renewal is a fresh
+     * credential minted inside the row's own scope under the same row id —
+     * the cap-swap shape (`swapToReadOnly` above) minus the revoke and minus
+     * the capability change. The old session is left alone: whatever called
+     * this is still using it, and the vendor ends it on its own schedule, so
+     * a mint that fails here leaves the key working until its hour runs out
+     * — the same failure a moved window would hide, but named at the caller
+     * instead. The fresh credential rides the answer to the signed-in device
+     * that asked, the same trust the mint answer itself has: the account
+     * gate decided this caller may speak for the account.
      * @param {{id: string}} account
      * @param {string} keyId
-     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}
+     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>}
      */
     async renewKey(account, keyId) {
       const row = await first(
@@ -1265,6 +1327,55 @@ export function createD1DeviceStore(db, options = {}) {
         return { error: "revoked" };
       }
       const at = nowSeconds(now());
+      // The device session re-mint (drive#749): a provider that names a
+      // session bounds the credential at the vendor, so a renewal mints a
+      // fresh one inside the row's own scope and swaps the row onto it.
+      // A provider that names no session (the key-pair path) falls through
+      // to the window move below, which is the whole renewal such a row has
+      // ever needed.
+      if (device.kind === "device" && providerNamesSessions) {
+        // Cap first: a mint then a capped refusal would swap the row onto a
+        // credential nobody holds. Device rows are never capped today, so
+        // this is the same read the window move makes rather than a second
+        // rule, but the order still has to refuse before it writes.
+        const capped = await enforceAgentCaps({ ...device, lastSeenAt: at });
+        if (capped.capped) {
+          return { error: "capped" };
+        }
+        const credential = await mintCredential({
+          prefix: device.prefix,
+          capabilities: /** @type {KeyScope["capabilities"]} */ ([...device.capabilities]),
+          bucket: bucketForKeyPrefix(account.id, device.prefix),
+        });
+        const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
+        const expiresAt = ttl === null ? null : at + ttl;
+        // The row count proves the write landed, so a key revoked between
+        // the read and this write is reported rather than renewed
+        // (`renewDeviceCredentialRow`).
+        const changed = await renewDeviceCredentialRow(
+          db,
+          device.id,
+          credential.accessKeyId,
+          await sha256Hex(credential.secret),
+          ttl,
+          expiresAt,
+          at,
+        );
+        if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
+          return { error: "revoked" };
+        }
+        return {
+          renewed: true,
+          device: publicDevice({ ...device, lastSeenAt: at, expiresAt }),
+          credential: {
+            accessKeyId: credential.accessKeyId,
+            secret: credential.secret,
+            sessionToken: credential.sessionToken,
+            expiresIn: credential.expiresIn,
+            expiresAt,
+          },
+        };
+      }
       const renewed = renewKeyWindow(device, at);
       const before = device.expiresAt ?? null;
       // `revoked_at IS NULL` repeats the read above, and the row count is what

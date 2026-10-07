@@ -1,11 +1,14 @@
 package rc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +46,67 @@ func New(binary, addr, fs string) *Client {
 
 // SetAuth stores the remote-control user and password from rclone.env.
 func (c *Client) SetAuth(user, pass string) { c.user, c.pass = user, pass }
+
+// UpdateRemoteConfig reloads the live rclone remote with a fresh credential
+// (drive#749). The body is a JSON POST to rclone's own rc HTTP API, never
+// argv and never `rclone rc --json`, because rclone v1.75.1 treats `--json @file`
+// as a literal blob (`invalid character '@'`) and `/proc/<pid>/cmdline` is
+// world-readable for the life of a CLI call. The listener is loopback with
+// basic auth from rclone.env (mode 0600). The same secret is already in that
+// file; this call is how a live mount picks up a new session without wiping
+// the VFS cache.
+func (c *Client) UpdateRemoteConfig(cfg login.StorageConfig) error {
+	params := map[string]string{
+		"access_key_id":     cfg.AccessKey,
+		"secret_access_key": cfg.SecretKey,
+	}
+	if cfg.SessionToken != "" {
+		params["session_token"] = cfg.SessionToken
+	}
+	body, err := json.Marshal(map[string]any{
+		"name":       login.RcloneRemoteName,
+		"parameters": params,
+	})
+	if err != nil {
+		return err
+	}
+	base := c.Addr
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/config/update", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.user != "" || c.pass != "" {
+		req.SetBasicAuth(c.user, c.pass)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("rclone rc config/update: %w", err)
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("rclone rc config/update: %w", err)
+	}
+	if len(b) > 0 {
+		var reply map[string]any
+		if err := json.Unmarshal(b, &reply); err != nil {
+			return fmt.Errorf("rclone rc config/update: decode %s: %w", strings.TrimSpace(string(b)), err)
+		}
+		if errText, ok := reply["error"].(string); ok && errText != "" {
+			return fmt.Errorf("rclone rc config/update: %s", errText)
+		}
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("rclone rc config/update: HTTP %s", res.Status)
+	}
+	return nil
+}
 
 // vfsStats is the part of vfs/stats the fill loop reads. Field names are
 // rclone's own: the JSON keys come straight from the vfs/stats output, and
