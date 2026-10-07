@@ -5,7 +5,7 @@ import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import { runPreChargeLimitCron } from "../core/abuse-guards.js";
-import { authFor, SIGNIN_LINK_PATH } from "../core/auth.js";
+import { authFor, SIGNIN_LINK_PATH, twoFactorAuthFor } from "../core/auth.js";
 import {
   BILLING_CONFIG,
   handleQuoteRequest,
@@ -655,11 +655,24 @@ const csrfWhenBrowser = async (c, next) => {
 const AUTH_FAMILY_ALLOWED =
   /^\/api\/auth\/(?:get-session|two-factor\/[a-z-]+|passkey\/[a-z-]+)\/?$/;
 
+// The second-factor half of that family, split out so the route below can pick
+// the instance that carries the factor without testing the whole path twice
+// (drive#848). Everything else on the mount — the session read and the passkey
+// endpoints — is answered by the factorless instance, so a request that is not
+// a second-factor one never loads the factor's code.
+const TWO_FACTOR_PATH = /^\/api\/auth\/two-factor\/[a-z-]+\/?$/;
+
 const authApiHandler = async (/** @type {DriveContext} */ c) => {
   if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
     return c.json({ error: "Not found." }, 404);
   }
-  const auth = authFor(c.env);
+  // A second-factor route needs the plugin that registers those endpoints, and
+  // that plugin is loaded on demand; every other route on this mount reads a
+  // session or a passkey credential and does not. The closed door is checked
+  // inside both, so an unconfigured deployment answers 503 either way.
+  const auth = TWO_FACTOR_PATH.test(c.req.path)
+    ? await twoFactorAuthFor(c.env)
+    : authFor(c.env);
   if (!auth) {
     return c.json(signinClosedBody(), 503);
   }

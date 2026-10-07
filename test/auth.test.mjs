@@ -541,8 +541,31 @@ test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
   const source = readFileSync(new URL("../core/auth.js", import.meta.url), "utf8");
   assert.match(source, /from "better-auth\/minimal"/);
   assert.match(source, /from "better-auth\/plugins\/magic-link"/);
-  assert.match(source, /from "better-auth\/plugins\/two-factor"/);
   assert.match(source, /d1Adapter/);
   assert.doesNotMatch(source, /from "better-auth";/);
   assert.doesNotMatch(source, /from "better-auth\/plugins";/);
+});
+
+// The second factor is the one plugin that left the main entry (drive#848).
+// The pin is on the import, not on the byte count, because the byte count is
+// a build output CI measures in the ratchet and a change there would fail for
+// a reason this file cannot see: a static import of the plugin is what put its
+// code in every request's entry chunk, and the dynamic import below is what
+// keeps it out. If someone re-adds the static import, the factor is back in
+// the entry for every request and this fails on the next run.
+test("the second factor is reached only through the on-demand module", () => {
+  const entry = readFileSync(new URL("../core/auth.js", import.meta.url), "utf8");
+  const onDemand = readFileSync(
+    new URL("../core/auth-two-factor.js", import.meta.url),
+    "utf8",
+  );
+  // The entry imports the factor's module by path, and does so inside the
+  // function that needs it: a top-level import is the thing this change is
+  // about, so the shape of the import is the pin, not just its presence.
+  assert.match(entry, /await import\("\.\/auth-two-factor\.js"\)/);
+  assert.doesNotMatch(entry, /^import .*two-factor/m);
+  // And the plugin itself is imported in exactly one place, the on-demand
+  // module, which nothing but that dynamic import reaches.
+  assert.match(onDemand, /^import \{ twoFactor \} from "better-auth\/plugins\/two-factor";/m);
+  assert.doesNotMatch(onDemand, /^import .*from "\.\/auth\.js"/m);
 });

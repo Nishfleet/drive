@@ -60,7 +60,7 @@ const DEVICE_MIGRATIONS = [
  * the pair the approval route joins.
  */
 function apiMade() {
-  return createTestAuth({ migrations: DEVICE_MIGRATIONS });
+  return createTestAuth({ migrations: DEVICE_MIGRATIONS, twoFactor: true });
 }
 
 /**
@@ -113,7 +113,7 @@ function approveBody(fields) {
 // ---------------------------------------------------------------- enrollment
 
 test("enabling two-factor shows the recovery codes once and stores them encrypted", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const signed = await signIn(made, "armed@example.com");
   // `body: {}` is the library's default method, the reader: the codes come
   // back on the enrollment answer, and the cast is the union's totp branch.
@@ -150,7 +150,7 @@ test("the first correct code arms the account and rotates the session", async ()
 // ---------------------------------------------------------------- passkeys
 
 test("the stock passkey endpoints answer the mounted api", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const env = siteEnv(made);
   const signed = await signIn(made, "pw@example.com");
   const options = await workerFetch(
@@ -365,7 +365,7 @@ test("the correct code approves; a recovery code approves once and reuse is refu
 // ------------------------------------------------------------ site worker
 
 test("the site worker mounts the auth family and keeps cross-site posts out", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const env = siteEnv(made);
   const signed = await signIn(made, "site@example.com");
   // GET returns the session JSON — the mount is live and the account gate
@@ -399,7 +399,7 @@ test("the site worker mounts the auth family and keeps cross-site posts out", as
 // passkey routes. The magic-link send (and verify) stay on /api/signin, which
 // carries the site's own limits, so an anonymous POST here mails nothing.
 test("the public auth mount refuses the magic-link send and verify", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   /** @type {string[]} */
   const sent = [];
   const env = {
@@ -421,7 +421,7 @@ test("the public auth mount refuses the magic-link send and verify", async () =>
 });
 
 test("arming two-factor does not change the email sign-in", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   await armTwoFactor(made, "armed@example.com");
   const second = await signIn(made, "armed@example.com");
   const session = await made.auth.api.getSession({
@@ -438,7 +438,7 @@ test("arming two-factor does not change the email sign-in", async () => {
 // there is a session at all. The anonymous answer is "no session" (a null
 // body), never a 401 from the account gate.
 test("an anonymous caller reaches the mounted auth family", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const response = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/auth/get-session`, {
       // No cookie: a signed-out browser.

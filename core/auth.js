@@ -27,7 +27,6 @@
 import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth/minimal";
 import { magicLink } from "better-auth/plugins/magic-link";
-import { twoFactor } from "better-auth/plugins/two-factor";
 import { d1Adapter } from "./auth-d1-adapter.js";
 import { sha256Hex } from "./db.js";
 import { sendEmail } from "./email-send.js";
@@ -193,7 +192,15 @@ export async function consumeSigninReturn(db, token) {
  * token and builds the link itself, so Better Auth never has to know the
  * drive's page layout.
  *
- * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} options
+ * `twoFactorPlugin` is the second factor's factory, and it is a parameter
+ * rather than an import so this module stays free of it (drive#848): the main
+ * Worker entry reaches `createAuth` on every request, so importing the factor
+ * here would put its code and its recovery-code crypto in the entry chunk.
+ * Omit the parameter and the chain has no factor; pass the factory from
+ * core/auth-two-factor.js and it does. Which one a request gets is the
+ * caller's choice — `authFor` never passes it, `twoFactorAuthFor` always does.
+ *
+ * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>, twoFactorPlugin?: (options: {allowPasswordless: boolean}) => unknown}} options
  */
 export function createAuth(options) {
   return betterAuth({
@@ -318,9 +325,24 @@ export function createAuth(options) {
       // The tables this needs are migration 0034 (migrations/drive/), and the
       // pin in test/auth.test.mjs fails when the shipped files and the
       // library's expected schema drift apart.
-      twoFactor({
-        allowPasswordless: true,
-      }),
+      //
+      // The plugin factory is injected rather than imported here (drive#848):
+      // this module is reachable from the main Worker entry, and a static
+      // import of `better-auth/plugins/two-factor` would put the whole plugin
+      // — and the recovery-code crypto it alone pulls in — in every request's
+      // entry chunk. The base instance built here omits the factor; the
+      // /api/auth/two-factor/* routes get an instance that has it, from
+      // core/auth-two-factor.js, which the bundler loads on demand. An
+      // instance with no factor answers 404 on those paths, which is what the
+      // base instance is for: it serves every request that is not a
+      // second-factor one.
+      ...(options.twoFactorPlugin === undefined
+        ? []
+        : [
+            options.twoFactorPlugin({
+              allowPasswordless: true,
+            }),
+          ]),
       // Passkeys on the same account, over the library's stock WebAuthn
       // plugin: registration and authentication options, the credential rows
       // (table `passkey`, same migration) and the verify endpoints. The
@@ -365,6 +387,17 @@ function signinLink(token, baseURL) {
 const AUTH_CACHE = new WeakMap();
 
 /**
+ * The second cache, keyed the same way, for the instance that carries the
+ * second factor (drive#848). It is a separate box because the factor is a
+ * different plugin chain: building one without the factor and then handing
+ * that instance to a second-factor route would answer those routes from a
+ * chain the plugin never registered, and building one per request would
+ * recompile the chain on every arming.
+ * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>}
+ */
+const TWO_FACTOR_AUTH_CACHE = new WeakMap();
+
+/**
  * The auth instance for this request's environment, or null when the
  * deployment cannot have a session at all: no customer database, no signing
  * secret or no public address. Null is the honest answer and every caller
@@ -378,6 +411,46 @@ const AUTH_CACHE = new WeakMap();
  * @returns {Auth|null}
  */
 export function authFor(env) {
+  return cachedAuth(AUTH_CACHE, env, undefined);
+}
+
+/**
+ * The auth instance that carries the second factor, or null when the
+ * deployment cannot have a session at all — the same closed door `authFor`
+ * documents, checked before anything is imported, so a deployment with no
+ * sign-in configuration never loads the factor's code to learn that.
+ *
+ * This is the instance only the /api/auth/two-factor/* routes may use, and
+ * the api Worker's device approval, which verifies a TOTP or a recovery code
+ * (workers/api/src/device-routes.js). Every other request is answered by
+ * `authFor`, whose instance does not carry the factor and is smaller for it
+ * (drive#848).
+ *
+ * It is a promise because the factor's module is loaded on demand: the main
+ * Worker entry reaches this module on every request, so importing the factor
+ * here at the top would put it back in the entry chunk this exists to keep
+ * it out of. The first second-factor request in an isolate pays the import
+ * and every later one reads the module cache and the instance cache.
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @returns {Promise<Auth|null>}
+ */
+export async function twoFactorAuthFor(env) {
+  const ready = readyForAuth(env);
+  if (ready === null) {
+    return null;
+  }
+  const module = await import("./auth-two-factor.js");
+  return cachedAuth(TWO_FACTOR_AUTH_CACHE, env, module.twoFactorPlugin);
+}
+
+/**
+ * The closed-door check `authFor` and `twoFactorAuthFor` share: the three
+ * settings a session cannot exist without, or null. Split out so the two
+ * entry points cannot drift on what "no sign-in configuration" means.
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string}} env
+ * @returns {{database: object, secret: string, baseURL: string}|null}
+ */
+function readyForAuth(env) {
   const database = env.DRIVE_DB;
   const secret = env.BETTER_AUTH_SECRET;
   const baseURL = env.BETTER_AUTH_URL;
@@ -392,7 +465,29 @@ export function authFor(env) {
   ) {
     return null;
   }
-  const cached = AUTH_CACHE.get(database);
+  return { database, secret, baseURL };
+}
+
+/**
+ * The instance for one cache box, built once per (database, secret, URL).
+ *
+ * `twoFactorPlugin` is what separates the two boxes: `authFor` passes nothing
+ * and gets the chain without the second factor, `twoFactorAuthFor` passes the
+ * plugin factory the on-demand module exported. Same WeakMap discipline, same
+ * env box, one function, so the two instances cannot disagree about the
+ * secret, the address or the mailer.
+ * @param {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>} cache
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @param {((options: {allowPasswordless: boolean}) => unknown)|undefined} twoFactorPlugin
+ * @returns {Auth|null}
+ */
+function cachedAuth(cache, env, twoFactorPlugin) {
+  const ready = readyForAuth(env);
+  if (ready === null) {
+    return null;
+  }
+  const { database, secret, baseURL } = ready;
+  const cached = cache.get(database);
   if (cached !== undefined && cached.secret === secret && cached.baseURL === baseURL) {
     cached.env.env = env;
     return cached.auth;
@@ -403,8 +498,9 @@ export function authFor(env) {
     secret,
     baseURL,
     sendLink: (link) => sendSigninLink(box.env, link),
+    twoFactorPlugin,
   });
-  AUTH_CACHE.set(database, { secret, baseURL, env: box, auth });
+  cache.set(database, { secret, baseURL, env: box, auth });
   return auth;
 }
 

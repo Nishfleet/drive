@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { methodNotAllowed } from "hono/method-not-allowed";
 
-import { authFor } from "../../../core/auth.js";
+import { twoFactorAuthFor } from "../../../core/auth.js";
 import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
 import { createD1DeviceStore } from "../../../core/devices.js";
 import { bearerToken, errorResponse } from "../../../core/http.js";
@@ -535,12 +535,20 @@ export default {
       db: env.DRIVE_DB,
       store,
       // The same sign-in gate the site Worker's account routes resolve
-      // (core/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
+      // (core/auth.js, over the same DRIVE_DB), so one session cookie
       // is one account in both Workers and the approval page needs no second
       // session system of its own. No database, secret or address is the closed
-      // door `authFor` already documents: null, and every account route 401s.
+      // door that resolver documents: null, and every account route 401s.
+      //
+      // This one is the two-factor instance, not the plain one: approving a
+      // device for an account that armed the factor verifies a TOTP or a
+      // recovery code through the library's own endpoints (device-routes.js),
+      // and those endpoints only exist on a chain the plugin registered
+      // (drive#848). It resolves the same way on every request — the factor's
+      // module is a module cache read after the first — so awaiting it here
+      // costs the approval path one microtask and nothing else.
       /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
-      accounts: authFor(env),
+      accounts: await twoFactorAuthFor(env),
       // The queue report's row lives on the same database the key store
       // and the team store live on, so a report written on one instance
       // is the row the next one reads (drive#318). Without a database
