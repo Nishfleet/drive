@@ -17,7 +17,6 @@
 // a distinct string, so the guard never fired. A sign-up whose payment has not
 // landed yet simply holds no fingerprint, and claimCardFingerprint writes it
 // when the webhook arrives.
-
 import { GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { failureMessage } from "./messages.js";
@@ -64,16 +63,16 @@ export function pendingCardAccountId(email) {
   return `${PENDING_CARD_ACCOUNT_PREFIX}${email.trim().toLowerCase()}`;
 }
 
+// The fingerprint the verified webhook records: the provider's own id for the
+// card the payment was made with, namespaced so it can never equal another
+// account's string (drive#503). It is built from the event body, never from a
+// request field, so nothing a browser sends can choose it.
+//
+// Dodo's payment event carries `payment_method_id` on the payment; older
+// events put the same value on `method`. Both are read, and anything else (a
+// missing, empty or non-string value) yields null, which the caller treats
+// as "no card on this event" rather than inventing a value.
 /**
- * The fingerprint the verified webhook records: the provider's own id for the
- * card the payment was made with, namespaced so it can never equal another
- * account's string (drive#503). It is built from the event body, never from a
- * request field, so nothing a browser sends can choose it.
- *
- * Dodo's payment event carries `payment_method_id` on the payment; older
- * events put the same value on `method`. Both are read, and anything else
- * (a missing, empty or non-string value) yields null, which the caller treats
- * as "no card on this event" rather than inventing a value.
  * @param {unknown} paymentMethodId
  * @returns {string|null}
  */
@@ -110,22 +109,21 @@ export async function cardFingerprintTaken(db, fingerprint, exceptAccountId) {
   return row !== null && row !== undefined;
 }
 
+// Make sure the account row exists, with no card on it (drive#503).
+//
+// The row is the billing account's own record (core/devices.js reads the cap,
+// the card and the state off it), and the sign-in is where it first appears.
+// It used to be written as a side effect of claiming the `test:<email>`
+// stand-in fingerprint; with that claim gone the row still has to be written,
+// so it is written here, explicitly, with nothing else set.
+//
+// No fingerprint and no `card_added_at`: an account that has not paid has no
+// card, which is what `cardAdded` and `monthUsage` read (both fail closed), so
+// key minting stays shut until the payment webhook claims the real card. An
+// existing row keeps its card, card_added_at, cap and closed state; only the
+// email mirror is refreshed, which keeps a changed mailbox current for the
+// card-holder notice (core/ledger.js reads it).
 /**
- * Make sure the account row exists, with no card on it.
- *
- * The row is the billing account's own record (core/devices.js reads the cap,
- * the card and the state off it), and the sign-in is where it first appears.
- * This is what used to happen as a side effect of claiming the `test:<email>`
- * stand-in fingerprint (drive#503): with the browser-supplied fingerprint
- * gone, the row still has to be written, so it is written here, explicitly,
- * with nothing else set.
- *
- * No fingerprint and no `card_added_at`: an account that has not paid has no
- * card, which is what `cardAdded` and `monthUsage` read (both fail closed), so
- * key minting stays shut until the payment webhook claims the real card. An
- * existing row keeps its card, card_added_at, cap and closed state; only the
- * email mirror is refreshed from the current session, which keeps a changed
- * mailbox current for the card-holder notice (core/ledger.js reads it).
  * @param {D1Database} db
  * @param {{accountId: string, email: string, now?: number}} options
  * @returns {Promise<void>}
@@ -249,92 +247,6 @@ export async function claimCardFingerprint(db, options) {
     return { error: failureMessage("card-in-use") };
   }
   return { fingerprint };
-}
-
-/**
- * Moves the card-step hold onto the Better Auth user id after the magic-link
- * is followed. The fingerprint and first-charge stamp stay on the same row. A missing hold
- * is a no-op: returning sign-ins never created one.
- * @param {D1Database} db
- * @param {{email: string, accountId: string}} options
- * @returns {Promise<void>}
- */
-export async function attachPendingCardAccount(db, options) {
-  if (typeof options !== "object" || options === null) {
-    throw new TypeError(`attachPendingCardAccount needs options, got ${String(options)}`);
-  }
-  const email = options.email;
-  const accountId = options.accountId;
-  if (typeof email !== "string" || email.trim() === "") {
-    throw new TypeError(`attachPendingCardAccount needs an email, got ${String(email)}`);
-  }
-  if (typeof accountId !== "string" || accountId === "") {
-    throw new TypeError(`attachPendingCardAccount needs an account id, got ${String(accountId)}`);
-  }
-  const hold = await db
-    .prepare(
-      `SELECT id FROM accounts
-        WHERE lower(email) = lower(?1)
-          AND id LIKE ?2
-          AND state != 'closed'`,
-    )
-    .bind(email, `${PENDING_CARD_ACCOUNT_PREFIX}%`)
-    .first();
-  if (hold === null || hold === undefined || typeof hold !== "object") {
-    return;
-  }
-  const holdId = /** @type {{id?: unknown}} */ (hold).id;
-  if (typeof holdId !== "string" || holdId === "") {
-    throw new TypeError(`attachPendingCardAccount read a hold with no id for ${email}`);
-  }
-  if (holdId === accountId) {
-    return;
-  }
-  const holdFields = await db
-    .prepare(
-      `SELECT card_fingerprint, first_charged_at, card_added_at
-         FROM accounts WHERE id = ?1`,
-    )
-    .bind(holdId)
-    .first();
-  if (holdFields === null || holdFields === undefined || typeof holdFields !== "object") {
-    throw new TypeError(`attachPendingCardAccount lost the hold row ${holdId}`);
-  }
-  const holdFp = /** @type {{card_fingerprint?: unknown}} */ (holdFields).card_fingerprint;
-  const existing = await db
-    .prepare("SELECT id, card_fingerprint FROM accounts WHERE id = ?1")
-    .bind(accountId)
-    .first();
-  if (existing !== null && existing !== undefined && typeof existing === "object") {
-    const targetFp = /** @type {{card_fingerprint?: unknown}} */ (existing).card_fingerprint;
-    if (typeof targetFp === "string" && targetFp !== "" && targetFp !== holdFp) {
-      throw new TypeError(
-        `attachPendingCardAccount would replace ${accountId}'s fingerprint with a different card`,
-      );
-    }
-    await db
-      .prepare("UPDATE accounts SET card_fingerprint = NULL WHERE id = ?1")
-      .bind(holdId)
-      .run();
-    await db
-      .prepare(
-        `UPDATE accounts
-            SET card_fingerprint = COALESCE(card_fingerprint, ?1),
-                first_charged_at = COALESCE(first_charged_at, ?2),
-                card_added_at = COALESCE(card_added_at, ?3)
-          WHERE id = ?4`,
-      )
-      .bind(
-        holdFp ?? null,
-        /** @type {{first_charged_at?: unknown}} */ (holdFields).first_charged_at ?? null,
-        /** @type {{card_added_at?: unknown}} */ (holdFields).card_added_at ?? null,
-        accountId,
-      )
-      .run();
-    await db.prepare("DELETE FROM accounts WHERE id = ?1").bind(holdId).run();
-    return;
-  }
-  await db.prepare("UPDATE accounts SET id = ?1 WHERE id = ?2").bind(accountId, holdId).run();
 }
 
 /**

@@ -114,21 +114,19 @@ export function reportBillingGap(gapHours, watermark, lastClosed, sentry = stock
   );
 }
 
+// Reports the accounts that are storing files and hold no billing customer
+// (drive#503). The provider's push skips such an account — there is no
+// customer to bill — and the prepaid draw runs against a balance only a
+// top-up opens, so an account whose first payment never landed (a failed
+// webhook, an account older than the column) uses the drive and is billed by
+// nobody, with nothing naming it. The customer id is written from the verified
+// payment webhook (core/ledger.js), so a gap here means that write has not
+// happened for that account.
+//
+// A count and the oldest metered hour, never an id or an email: this text
+// reaches a Sentry issue. A warning, not an error: the hour's work landed,
+// and the next run asks again.
 /**
- * Reports the accounts that are storing files and hold no billing customer
- * (drive#503). The provider's push skips such an account — there is no
- * customer to bill — and the prepaid draw runs against a balance only a
- * top-up opens, so an account whose first payment never landed (a webhook
- * that failed, an account from before the column existed) uses the drive and
- * is billed by nobody, with nothing naming it. The card fingerprint and the
- * customer id are both written from the verified payment webhook now
- * (core/ledger.js), so a gap here means that write has not happened for that
- * account: a failed webhook, or a payment that predates the fix.
- *
- * A count and the oldest metered hour, never an id or an email: this text
- * reaches a Sentry issue. A warning, not an error: the hour's work landed,
- * and the next run asks again.
- *
  * @param {{accounts: number, since: number|null}} gap
  * @param {Sentry} [sentry] injectable for tests
  */

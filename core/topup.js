@@ -303,7 +303,7 @@ async function creditFromEvent(db, data, now, mail) {
   // cannot choose it: nothing in the request body supplies a card (the sign-in
   // form's posted fingerprint is gone, core/abuse-guards.js). An event with no
   // payment method id records no card at all rather than guessing one from
-  // another field -- an earlier `data.method` fallback could have given every
+  // another field — the earlier `data.method` fallback could have given every
   // account the same id and locked the second one out with nothing to show it.
   // Absent is loud: the "card was not recorded" line below fires once per such
   // payment, so a field-shape change surfaces instead of passing silently.
@@ -455,12 +455,12 @@ async function refundFromEvent(db, data, now) {
  * }} TopUpDeps
  */
 
+// Opens one Dodo checkout for a top-up and answers its URL. The checkout is a
+// Pay What You Want product (DODO_TOPUP_PRODUCT_ID) with the amount set, and
+// the metadata names the account and the purpose, so the signed webhook can
+// credit the right balance. A saved customer id (#503) is passed so Dodo
+// shows the saved card.
 /**
- * Opens one Dodo checkout for a top-up and answers its URL. The checkout is a
- * Pay What You Want product (DODO_TOPUP_PRODUCT_ID) with the amount set, and
- * the metadata names the account and the purpose, so the signed webhook can
- * credit the right balance. A saved customer id (#503) is passed so Dodo
- * shows the saved card.
  * @param {Request} request
  * @param {{id: string, email?: string|null}|null} account
  * @param {TopUpDeps} deps

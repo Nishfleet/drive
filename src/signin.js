@@ -631,10 +631,9 @@ export async function handleSigninLinkVerify(request, env) {
       }
       // The billing row this account needs, written without a card. It used to
       // appear as a side effect of claiming the stand-in fingerprint above, so
-      // it is now its own call: no fingerprint, no card_added_at, and an
-      // existing row left untouched. A failure is logged loudly and the
-      // sign-in still lands, because the cap write and the key mint each make
-      // their own row.
+      // it is now its own call: no fingerprint, no card_added_at, an existing
+      // row left untouched. A failure is logged and the sign-in still lands,
+      // because the cap write and the key mint each make their own row.
       try {
         await ensureBillingAccount(/** @type {D1Database} */ (driveDb), {
           accountId: account.id,

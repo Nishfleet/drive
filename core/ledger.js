@@ -338,25 +338,25 @@ export async function recentLedger(db, accountId, limit = 10) {
   });
 }
 
+// Credits one confirmed top-up. Called only by the verified webhook, never on
+// a checkout redirect.
+//
+// The same payment id twice credits once. The first credit also stamps
+// `accounts.first_charged_at` (the "first charge" that lifts the 1 TB limit,
+// #532/#536) and saves the provider's customer id when the account has none
+// yet (#503), both with COALESCE so a replay changes nothing.
+//
+// The same verified event is also the only writer of the card fingerprint
+// (#503): the browser no longer supplies one, so the provider's payment
+// method id is the whole record of which card an account holds. A second live
+// account already holding that card is refused, which is reported in the
+// result and logged, and never stops the credit: money that moved is credited
+// whatever the guard says.
+//
+// A payment for an account that no longer exists is not credited: money
+// under an id nobody can sign in as is lost to everyone. The caller logs it,
+// and the reconciliation lists it as missing, so a person refunds it.
 /**
- * Credits one confirmed top-up. Called only by the verified webhook, never on
- * a checkout redirect.
- *
- * The same payment id twice credits once. The first credit also stamps
- * `accounts.first_charged_at` (the "first charge" that lifts the 1 TB limit,
- * #532/#536) and saves the provider's customer id when the account has none
- * yet (#503), both with COALESCE so a replay changes nothing.
- *
- * The same verified event is also the only writer of the card fingerprint
- * (#503): the browser no longer supplies one, so the provider's payment
- * method id is the whole record of which card an account holds, and it is
- * claimed here, in the verified path. A second live account already holding
- * that card is refused, which is reported in the result and logged, and never
- * stops the credit: money that moved is credited whatever the guard says.
- *
- * A payment for an account that no longer exists is not credited: money
- * under an id nobody can sign in as is lost to everyone. The caller logs it,
- * and the reconciliation lists it as missing, so a person refunds it.
  * @param {D1Database} db
  * @param {{accountId: string, paymentId: string, amountCents: number, grossCents?: number, customerId?: string|null, paymentMethodId?: string|null, now?: number}} payment
  *   grossCents is what the provider took, tax included (defaults to amountCents)

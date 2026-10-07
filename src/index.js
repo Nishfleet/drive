@@ -1436,21 +1436,8 @@ const handler = {
           now,
           ...(pause ?? {}),
         });
-        // The billing gap that is an account rather than an hour (drive#503):
-        // the accounts storing files whose first payment never landed, so no
-        // customer id was written and nothing bills them. Reported beside the
-        // draw above, and wrapped because a detector that throws must not
-        // fail a trigger whose draws are already written — the next hour asks
-        // again.
         try {
-          const unbillable = await unbillableAccounts(env.METER_DB, { now });
-          if (unbillable.accounts > 0) {
-            console.log(
-              "billing gap: accounts storing files with no customer id",
-              `accounts=${unbillable.accounts}`,
-            );
-          }
-          reportUnbillableAccounts(unbillable);
+          reportUnbillableAccounts(await unbillableAccounts(env.METER_DB, { now }));
         } catch (error) {
           console.error(
             "billing gap: the unbillable-account report failed",

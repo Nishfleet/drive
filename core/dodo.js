@@ -74,6 +74,29 @@ const INGEST_BATCH = 1000;
  */
 export const BILLING_PUSH_GAP_HOURS = 48;
 
+// The closed-hour window both gap detectors read, as [from, lastClosed].
+// Shared so the hour detector and the account detector cannot drift apart on
+// what "the window" means (drive#503).
+/**
+ * @param {D1Database} db
+ * @param {{now?: number|Date|string, hours?: number}} [options]
+ * @returns {Promise<{from: number, lastClosed: number}>}
+ */
+async function gapWindow(db, options = {}) {
+  if (!db) {
+    throw new Error("billing gap: METER_DB binding is not configured");
+  }
+  const now = toMillis(options.now === undefined ? Date.now() : options.now, "now");
+  const hours = options.hours === undefined ? BILLING_PUSH_GAP_HOURS : options.hours;
+  if (!Number.isSafeInteger(hours) || hours <= 0) {
+    throw new TypeError(
+      `the gap window must be a positive whole number of hours, got ${String(hours)}`,
+    );
+  }
+  const lastClosed = hourStart(now) - HOUR_MS;
+  return { from: lastClosed - (hours - 1) * HOUR_MS, lastClosed };
+}
+
 /**
  * The metered hours inside the window that no push reached.
  *
@@ -99,18 +122,7 @@ export const BILLING_PUSH_GAP_HOURS = 48;
  * @returns {Promise<number[]>} the hour starts, oldest first
  */
 export async function unpushedBillingHours(db, options = {}) {
-  if (!db) {
-    throw new Error("billing gap: METER_DB binding is not configured");
-  }
-  const now = toMillis(options.now === undefined ? Date.now() : options.now, "now");
-  const hours = options.hours === undefined ? BILLING_PUSH_GAP_HOURS : options.hours;
-  if (!Number.isSafeInteger(hours) || hours <= 0) {
-    throw new TypeError(
-      `the gap window must be a positive whole number of hours, got ${String(hours)}`,
-    );
-  }
-  const lastClosed = hourStart(now) - HOUR_MS;
-  const from = lastClosed - (hours - 1) * HOUR_MS;
+  const { from, lastClosed } = await gapWindow(db, options);
   const result = await db
     .prepare(
       `SELECT DISTINCT u.hour AS hour
@@ -170,43 +182,28 @@ export async function billingPushGap(db, options = {}) {
   };
 }
 
+// The accounts that are storing files and hold no Dodo customer id
+// (drive#503).
+//
+// The push above skips such an account — there is no customer to bill — and
+// unpushedBillingHours counts only the accounts that do hold one, so an
+// account whose first payment never landed (a failed webhook, a checkout
+// abandoned after the charge, an account older than the column) used the
+// drive and was billed by nobody, with nothing naming it. That is the shape
+// the audit found on main: `dodo_customer_id` read in four places and written
+// in none.
+//
+// One grouped join over the same window, and it names no id, no email and no
+// card: a count and the oldest metered hour are what a person needs, and the
+// report reaches only a log. A `closed` account is left out: it holds files
+// nobody will bill for.
 /**
- * The accounts that are using the drive and hold no Dodo customer id
- * (drive#503).
- *
- * The push above deliberately skips such an account — there is no Dodo
- * customer to bill — and its own gap detector counts only the accounts that
- * do hold one, so the two together made the class invisible: an account whose
- * first payment never landed (a webhook that failed, a checkout abandoned
- * after the charge, an account imported before the column existed) stored
- * usage forever and reached the provider never, with no report naming it.
- * That is the shape the audit found on main: `dodo_customer_id` read in four
- * places and written in none.
- *
- * The read is one grouped join, bounded to the same window the hour detector
- * uses, and it names no email, no card and no id: a count and the oldest
- * metered hour are what a person needs, and the report reaches a log.
- *
- * A `closed` account is left out: it holds files nobody will bill for, and an
- * account that asked to be closed must not keep the alarm raised.
- *
  * @param {D1Database} db
  * @param {{now?: number|Date|string, hours?: number}} [options]
  * @returns {Promise<{accounts: number, since: number|null}>}
  */
 export async function unbillableAccounts(db, options = {}) {
-  if (!db) {
-    throw new Error("billing gap: METER_DB binding is not configured");
-  }
-  const now = toMillis(options.now === undefined ? Date.now() : options.now, "now");
-  const hours = options.hours === undefined ? BILLING_PUSH_GAP_HOURS : options.hours;
-  if (!Number.isSafeInteger(hours) || hours <= 0) {
-    throw new TypeError(
-      `the gap window must be a positive whole number of hours, got ${String(hours)}`,
-    );
-  }
-  const lastClosed = hourStart(now) - HOUR_MS;
-  const from = lastClosed - (hours - 1) * HOUR_MS;
+  const { from, lastClosed } = await gapWindow(db, options);
   const row = /** @type {{accounts?: unknown, since?: unknown}|null} */ (
     await db
       .prepare(
@@ -455,12 +452,12 @@ export async function pushBillingHours(db, hours, options = {}) {
     );
     // Record the batch we just ingested before the next POST, so a later
     // batch's failure cannot leave those events without a local row. The
-    // insert is conflict-safe on the table's own two keys (drive#503): two
-    // overlapping cron runs both POST the same hours — Dodo dedupes them on
-    // event_id, so no double charge — and the second run's plain INSERT threw
-    // on `billing_pushes_dodo_event_id_idx`, which failed the whole run and
-    // with it every later hour in that run's batch. `DO NOTHING` leaves the
-    // row the first run wrote and lets the run continue.
+    // insert is conflict-safe on the table's own event id (drive#503): two
+    // overlapping cron runs both POST the same hours — Dodo dedupes them, so no
+    // double charge — and the second run's plain INSERT threw on
+    // `billing_pushes_dodo_event_id_idx`, which failed the whole run and with it
+    // every later hour in that run's batch. `DO NOTHING` leaves the row the
+    // first run wrote and lets the run continue.
     await db.batch(
       batch.map((item) =>
         db
