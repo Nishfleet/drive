@@ -313,10 +313,6 @@ var messageTable = map[string][2]string{
 		"The list of files kept offline could not be read ({1}).",
 		"Delete {1} by hand, then run `drive offline` again for each file you want to keep.",
 	},
-	"device-key-expiring": {
-		"This drive's api minted this device's key to {1}, and `drive login` does not renew one.",
-		"Ask whoever runs this drive's api to mint device keys with no expiry, then run `drive login` again.",
-	},
 	"agent-key-missing": {
 		"{1}'s agent key is missing the settings its own mount needs.",
 		"Run `drive agents revoke {1}`, then `drive agents connect {1}`, to mint a full agent key.",
