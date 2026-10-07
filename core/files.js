@@ -556,27 +556,30 @@ async function storedBytesUnder(store, path) {
  * @returns {Promise<number>}
  */
 export async function preChargeStoredBytes(db, store, accountId, firstChargedAt) {
-  const stored = await accountStoredBytes(db, accountId);
   if (firstChargedAt !== null) {
-    return stored;
-  }
-  // In-run review (prune review #9): when the live rows alone already fill the
-  // limit, the walk cannot change the answer, so an upload at or past the
-  // limit is refused on one statement with no listing. `stored` is every live
-  // row the reconcile has folded in, so this short-circuit is an
-  // over-approximation: it can only refuse, never allow.
-  if (stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
-    return stored;
+    return accountStoredBytes(db, accountId);
   }
   // The reconciled branch bytes in the row sum, removed before the walk adds
-  // the store's own branch bytes back (see above). Read outside the try: a
-  // corrupt non-finite size here is the same genuine failure
-  // accountStoredBytes already raises, not a branch listing that failed.
+  // the store's own branch bytes back (see above). Read before the full sum,
+  // not after it: a reconcile that inserts branch rows between the two reads
+  // then lands only in `stored`, so the race over-counts (refuses) and never
+  // subtracts rows `stored` did not include. Read outside the try: a corrupt
+  // non-finite size here is the same genuine failure accountStoredBytes
+  // already raises, not a branch listing that failed.
   const branchRowBytes = await accountBranchBytes(
     db,
     accountId,
     `${accountPrefix({ id: accountId })}${BRANCHES_PATH}/`,
   );
+  const stored = await accountStoredBytes(db, accountId);
+  // In-run review (prune review #9): when the live rows alone already fill the
+  // limit, the walk cannot change the answer, so an upload at or past the
+  // limit is refused with no listing. `stored` is every live row the
+  // reconcile has folded in, so this short-circuit is an over-approximation:
+  // it can only refuse, never allow.
+  if (stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
+    return stored;
+  }
   let branchWalkBytes;
   try {
     branchWalkBytes = await storedBytesUnder(store, BRANCHES_PATH);
