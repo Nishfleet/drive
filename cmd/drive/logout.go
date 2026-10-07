@@ -398,12 +398,9 @@ func stopMount(goos, home string) error {
 	if goos == "windows" {
 		return stopWindowsMount(home)
 	}
-	on, err := Mounted(goos, home)
-	if err != nil {
-		return err
-	}
 	mountDir := DefaultMountDir(home)
-	if !on && !mountDirNotConnected(mountDir) {
+	on, err := Mounted(goos, home)
+	if err == nil && !on && !mountDirNotConnected(goos, mountDir) {
 		return nil
 	}
 	// fusermount3 ships with current FUSE; fusermount is the older name. Every

@@ -1144,16 +1144,12 @@ func Unmount(goos, home string) error {
 }
 
 // clearStaleMountDir lazy-unmounts a dead FUSE or NFS entry at mountDir so
-// MkdirAll and rclone can use the folder again. findmnt (and BSD mount) still
-// list that entry after rclone is gone; a leftover ENOTCONN is the other
-// signal. Either one is enough to try the unmount.
+// MkdirAll and rclone can use the folder again. A live answering mount is
+// left alone: `drive mount` over a working drive must not detach rclone's
+// cache. A listing timeout is treated as stale, because a wedged mount can
+// block findmnt the same way it blocks Lstat.
 func clearStaleMountDir(goos, mountDir string) error {
-	on, err := MountedDir(goos, mountDir)
-	stale := mountDirNotConnected(mountDir)
-	if err != nil {
-		stale = true
-	}
-	if !on && !stale {
+	if !mountDirNotConnected(goos, mountDir) {
 		return nil
 	}
 	if uerr := lazyUnmount(goos, mountDir); uerr != nil {
@@ -1173,15 +1169,41 @@ func lazyUnmount(goos, mountDir string) error {
 		return nil
 	}
 	on, merr := MountedDir(goos, mountDir)
-	if merr == nil && !on && !mountDirNotConnected(mountDir) {
+	if merr == nil && !on {
 		return nil
 	}
 	return err
 }
 
-func mountDirNotConnected(dir string) bool {
-	_, err := os.Lstat(dir)
-	return isNotConnected(err)
+// mountDirNotConnected reports a listed mount that does not answer. The mount
+// listing is consulted first: os.Lstat on a hard NFS mount (macOS after
+// rclone dies) can hang forever, so it is never the first probe. A listing
+// timeout is stale without Lstat. A listed mount is probed with a bounded
+// Lstat so ENOTCONN is distinguished from a live answering mount.
+func mountDirNotConnected(goos, dir string) bool {
+	on, err := MountedDir(goos, dir)
+	if err != nil {
+		return true
+	}
+	if !on {
+		return false
+	}
+	return !mountDirAnswers(dir)
+}
+
+func mountDirAnswers(dir string) bool {
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		_, err := os.Lstat(dir)
+		done <- result{err}
+	}()
+	select {
+	case r := <-done:
+		return !isNotConnected(r.err)
+	case <-time.After(2 * time.Second):
+		return false
+	}
 }
 
 func isNotConnected(err error) bool {
