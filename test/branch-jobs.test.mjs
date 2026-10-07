@@ -1184,6 +1184,377 @@ test("approve of a branch still being created answers 409, not 500", async () =>
   assert.equal(row?.state, "creating");
 });
 
+test("a create batch writes only its own delta, so KV reads and writes per batch do not grow with the branch", {
+  timeout: 180_000,
+}, async () => {
+  // The batch must not read and rewrite the whole snapshot (drive#842). At the
+  // 100,000-file cap that is ~1,250 reads and writes of a value up to ~11 MiB.
+  // So this drives one create batch at a time against a KV stand-in that counts
+  // every read and write, and pins the per-batch counts at two branch sizes:
+  // if they were the same the cost is per batch, not per branch.
+
+  /**
+   * A KV namespace that counts the reads and writes, and how many bytes each
+   * put carried, so a whole-snapshot rewrite shows up as bytes that grow with
+   * the branch even when the count does not.
+   * @param {KVNamespace} inner
+   */
+  function countingKv(inner) {
+    /** @type {{reads: number, writes: number, readBytes: number, writeBytes: number}} */
+    const counts = { reads: 0, writes: 0, readBytes: 0, writeBytes: 0 };
+    return {
+      counts,
+      reset() {
+        counts.reads = 0;
+        counts.writes = 0;
+        counts.readBytes = 0;
+        counts.writeBytes = 0;
+      },
+      kv: /** @type {KVNamespace} */ (
+        /** @type {unknown} */ ({
+          ...inner,
+          /** @param {string} key */
+          async get(key) {
+            counts.reads += 1;
+            const value = await inner.get(key);
+            counts.readBytes += typeof value === "string" ? value.length : 0;
+            return value;
+          },
+          /**
+           * @param {string} key
+           * @param {string} value
+           */
+          async put(key, value) {
+            counts.writes += 1;
+            counts.writeBytes += typeof value === "string" ? value.length : 0;
+            return inner.put(key, value);
+          },
+        })
+      ),
+    };
+  }
+
+  /**
+   * What one create of a given size cost, batch by batch (drive#842): the
+   * busiest single batch, the batch that finished the copy, how many batches
+   * ran, and every key the namespace still holds once the branch was open.
+   * @typedef {{batches: number, busiestReads: number, busiestWrites: number, busiestReadBytes: number, busiestWriteBytes: number, finalReads: number, finalWrites: number, keys: string[]}} RunCost
+   */
+
+  /**
+   * Runs one create of `files` files batch by batch, returning the busiest
+   * single batch's KV cost and what the batch that finishes the copy cost.
+   * @param {number} files
+   * @returns {Promise<RunCost>}
+   */
+  async function perBatchCost(files) {
+    const raw = createMemoryStore();
+    const scoped = scopeStore(raw, ACCOUNT);
+    const pending = [];
+    for (let index = 0; index < files; index += 1) {
+      pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+      if (pending.length === 200) {
+        await Promise.all(pending.splice(0, 200));
+      }
+    }
+    await Promise.all(pending);
+    const db = createTestD1();
+    const inner = createTestKv();
+    const counted = countingKv(inner);
+    const snapshots = createKvSnapshotStore(counted.kv);
+    const started = await createBranch(
+      db,
+      snapshots,
+      scoped,
+      ACCOUNT,
+      { folder: "/big", name: "work" },
+      () => Date.now(),
+      fakeQueue(),
+    );
+    assert.equal(started.state, "creating");
+    const row = await getBranch(db, snapshots, ACCOUNT, "work");
+    assert.ok(row);
+    let batches = 0;
+    let busiestReads = 0;
+    let busiestWrites = 0;
+    let busiestReadBytes = 0;
+    let busiestWriteBytes = 0;
+    // The batch that finishes the copy is the one that joins the parts, so its
+    // cost is the branch's own, not the batch's: it reads one key per part and
+    // writes the whole snapshot once. Counting it in the busiest would force a
+    // bound that grows with the branch and hide the per-batch number, so it is
+    // measured apart and asserted apart (drive#842, in-run review).
+    let finalReads = 0;
+    let finalWrites = 0;
+    for (let step = 0; step < 40_000; step += 1) {
+      counted.reset();
+      const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+      if (result.error) {
+        assert.fail(JSON.stringify(result));
+      }
+      finalReads = counted.counts.reads;
+      finalWrites = counted.counts.writes;
+      if (result.done) {
+        break;
+      }
+      batches += 1;
+      busiestReads = Math.max(busiestReads, counted.counts.reads);
+      busiestWrites = Math.max(busiestWrites, counted.counts.writes);
+      busiestReadBytes = Math.max(busiestReadBytes, counted.counts.readBytes);
+      busiestWriteBytes = Math.max(busiestWriteBytes, counted.counts.writeBytes);
+    }
+    const done = await getBranch(db, snapshots, ACCOUNT, "work");
+    assert.equal(done?.state, "open");
+    assert.equal(Object.keys(done?.snapshot ?? {}).length, files, "every file is in the snapshot");
+    assert.equal(done?.jobDone, files);
+    return {
+      batches,
+      busiestReads,
+      busiestWrites,
+      busiestReadBytes,
+      busiestWriteBytes,
+      finalReads,
+      finalWrites,
+      // Every key the namespace still holds once the branch is open. A finished
+      // branch keeps its snapshot and nothing else: the frozen windows, the walk
+      // blob and the create parts are all scratch, and leaving any of them would
+      // hold a second copy of every fingerprint the branch has.
+      keys: [...inner.values.keys()],
+    };
+  }
+
+  const small = await perBatchCost(2_000);
+  const large = await perBatchCost(20_000);
+  assert.ok(
+    small.batches > 2 && large.batches > small.batches,
+    `the copy really did run many batches: ${small.batches} then ${large.batches}`,
+  );
+  // The join happens once, in the batch that finishes the copy, and it reads
+  // each batch twice: the part that batch wrote, and the scratch key that batch
+  // left (its frozen window, cleared now the listing is inside the snapshot).
+  // Everything else the join reads is the fixed handful a branch reads once:
+  // the frozen listing count, the marker, the walk blob, the row's own
+  // snapshot. So the last batch costs two reads per batch plus one constant,
+  // not a read of anything that grows with the branch a second time.
+  const joinOverhead = (/** @type {RunCost} */ run, /** @type {number} */ parts) =>
+    run.finalReads - 2 * parts;
+  assert.ok(
+    joinOverhead(small, small.batches) === joinOverhead(large, large.batches),
+    `the joining batch must read two keys per batch plus a fixed set: ` +
+      `${small.finalReads} reads for ${small.batches} parts at 2,000 files, ` +
+      `${large.finalReads} for ${large.batches} at 20,000`,
+  );
+  assert.ok(
+    joinOverhead(small, small.batches) >= 0 && joinOverhead(small, small.batches) < 20,
+    `the joining batch must not read the whole branch as well as its parts: ` +
+      `${small.finalReads} reads for ${small.batches} parts at 2,000 files`,
+  );
+  // The branch keeps one value: no `.v` part, no window, no walk blob outlives
+  // the copy that wrote them.
+  for (const [label, run] of /** @type {Array<[string, RunCost]>} */ ([
+    ["2,000 files", small],
+    ["20,000 files", large],
+  ])) {
+    const leftovers = run.keys.filter((key) => /(\.v\d+|frozen-window|create-parts)/.test(key));
+    assert.equal(
+      leftovers.length,
+      0,
+      `a finished branch must keep no scratch key: ${leftovers.slice(0, 5).join(", ")} at ${label}`,
+    );
+  }
+
+  assert.equal(
+    large.busiestReads,
+    small.busiestReads,
+    `a batch must read a constant number of keys: ${small.busiestReads} at 2,000 files, ` +
+      `${large.busiestReads} at 20,000`,
+  );
+  assert.equal(
+    large.busiestWrites,
+    small.busiestWrites,
+    `a batch must write a constant number of keys: ${small.busiestWrites} at 2,000 files, ` +
+      `${large.busiestWrites} at 20,000`,
+  );
+  // The bytes move with the branch otherwise: a batch that reads and rewrites
+  // the snapshot pays the whole listing every time, which is the cost this
+  // issue removes, so a per-batch byte count is the half a call count cannot
+  // see (the chunked store writes one key per 20 MiB, so the key count alone
+  // is flat on a 2 MiB and a 12 MiB snapshot alike).
+  //
+  // A batch's own bytes are its 80 files' names and fingerprints, so they are
+  // bounded by the batch rather than equal across branch sizes: a name in the
+  // 20,000-file case carries one more digit than in the 2,000-file one, which is
+  // 80 bytes over 80 names and is still one batch's worth of work. What must not
+  // happen is the per-batch cost growing with the branch, so the bound is a few
+  // multiples of a single batch — and a whole-snapshot read is 10x that at
+  // 20,000 files, which is what this pins down.
+  const batchBytes = Math.max(small.busiestReadBytes, small.busiestWriteBytes);
+  /** @type {Array<[string, number, number]>} */
+  const perBatchBytes = [
+    ["read", small.busiestReadBytes, large.busiestReadBytes],
+    ["write", small.busiestWriteBytes, large.busiestWriteBytes],
+  ];
+  for (const [label, smallBytes, largeBytes] of perBatchBytes) {
+    // The whole point: per-batch cost cannot scale with the branch. At 20,000
+    // files a whole-snapshot rewrite is megabytes, so a bound of two batches'
+    // own bytes is two orders of magnitude away from the behaviour this
+    // removes, and loose enough for the extra digit in each of 80 names.
+    assert.ok(
+      largeBytes <= batchBytes * 2,
+      `a batch must ${label} a bounded number of bytes, not the whole listing: ${smallBytes} ` +
+        `at 2,000 files and ${largeBytes} at 20,000, against one batch's ${batchBytes}`,
+    );
+  }
+});
+
+test("a create join that is missing a part fails the job instead of opening the branch", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < BRANCH_JOB_BATCH_FILES * 3; index += 1) {
+    pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending.splice(0, 200));
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const inner = createTestKv();
+  const snapshots = createKvSnapshotStore(inner);
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/big", name: "work" },
+    () => Date.now(),
+    fakeQueue(),
+  );
+  assert.equal(started.state, "creating");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+
+  // One clear batch and one copy batch: part 0 is written and the row's own
+  // parts leaf counts one.
+  const partsLeaf = `${snapshotKey(ACCOUNT, "work")}/create-parts/${row.id}`;
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let batch = { done: false };
+  for (let step = 0; step < 2 && !inner.values.has(`${partsLeaf}.v0`); step += 1) {
+    batch = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.ok(!("error" in batch), JSON.stringify(batch));
+  }
+  const part = `${partsLeaf}.v0`;
+  assert.ok(inner.values.has(part), "the first copy batch wrote part 0");
+  assert.equal(JSON.parse(inner.values.get(partsLeaf) ?? "{}").parts, 1);
+
+  // The namespace loses part 0 the way real storage can lose a key: a write
+  // that never landed, or a key removed under the build. A join that cannot
+  // read a part is a copy that cannot be honest, because a shorter snapshot is
+  // what a later rewind and approve read as removed files (drive#842,
+  // coordinator review).
+  inner.values.delete(part);
+
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let result = { done: false };
+  for (let step = 0; step < 20 && result.done !== true; step += 1) {
+    result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  }
+  assert.equal(result.done, true, JSON.stringify(result));
+  assert.ok("error" in result, `a failed join must reach the caller: ${JSON.stringify(result)}`);
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.notEqual(done?.state, "open", "a branch whose join failed must not open");
+  assert.equal(done?.state, "discarded");
+  assert.ok(done?.jobError, "the row records what failed");
+  // The parts this row wrote are gone, so a later branch of the same name never
+  // folds a dead build's deltas into its own snapshot.
+  const leftovers = [...inner.values.keys()].filter((key) => key.startsWith(partsLeaf));
+  assert.deepEqual(leftovers, [], `no part of a failed build survives: ${leftovers.join(", ")}`);
+});
+
+test("a create batch whose cursor was cleared takes its part index from the stored count", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < BRANCH_JOB_BATCH_FILES * 5; index += 1) {
+    pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending.splice(0, 200));
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const inner = createTestKv();
+  const snapshots = createKvSnapshotStore(inner);
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/big", name: "work" },
+    () => Date.now(),
+    fakeQueue(),
+  );
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+
+  // One clear batch and one copy batch: part 0 is in the namespace and the
+  // row's cursor names the part the next batch writes.
+  const partsLeaf = `${snapshotKey(ACCOUNT, "work")}/create-parts/${row.id}`;
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let batch = { done: false };
+  for (let step = 0; step < 2 && !inner.values.has(`${partsLeaf}.v0`); step += 1) {
+    batch = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.ok(!("error" in batch), JSON.stringify(batch));
+  }
+  assert.ok(inner.values.has(`${partsLeaf}.v0`), "the first copy batch wrote part 0");
+  const first = inner.values.get(`${partsLeaf}.v0`);
+  assert.ok(first);
+
+  // A give-up clears the cursor while the parts are still in the namespace (the
+  // sweep that goes with it can fail: dropCreateParts answers false and only
+  // logs). A batch that lands afterwards has no part in its cursor (drive#842,
+  // coordinator review).
+  await db.prepare("UPDATE branches SET job_cursor = '' WHERE id = ?1").bind(row.id).run();
+  const cursorNow = async () => {
+    const held = await db
+      .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
+      .bind(row.id)
+      .first("job_cursor");
+    return JSON.parse(typeof held === "string" && held !== "" ? held : "{}");
+  };
+
+  // The row walks back through the clear phase, and the copy batch that lands
+  // with no part in its cursor is the one that names a part once it has
+  // written. It appends: part 0 keeps the value its own walk wrote, and the
+  // row's own leaf counts two parts instead of resetting to one over part 0
+  // and leaving parts 1..N orphaned (drive#842, coordinator review).
+  for (let step = 0; step < 10; step += 1) {
+    batch = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.ok(!("error" in batch), JSON.stringify(batch));
+    if (typeof (await cursorNow()).part === "number") {
+      break;
+    }
+  }
+  assert.equal(inner.values.get(`${partsLeaf}.v0`), first, "part 0 was not overwritten");
+  assert.equal(JSON.parse(inner.values.get(partsLeaf) ?? "{}").parts, 2, "the count went up");
+
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let result = { done: false };
+  for (let step = 0; step < 20 && result.done !== true; step += 1) {
+    result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  }
+  assert.equal(result.done, true, JSON.stringify(result));
+  assert.ok(!("error" in result), JSON.stringify(result));
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "open");
+  // The join folded five parts into the one complete snapshot and swept all
+  // five: a build whose count had reset would have left parts the join never
+  // read standing in the namespace (drive#842).
+  assert.equal(Object.keys(done?.snapshot ?? {}).length, BRANCH_JOB_BATCH_FILES * 5);
+  const leftovers = [...inner.values.keys()].filter((key) => key.startsWith(partsLeaf));
+  assert.deepEqual(leftovers, [], `no part outlives a finished build: ${leftovers.join(", ")}`);
+});
+
 /** A create the route can run: the limiter the route checks before the body. */
 const ALLOWED = { ipLimiter: { limit: () => Promise.resolve({ success: true }) } };
 
