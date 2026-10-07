@@ -32,6 +32,7 @@ import {
   isWriteCapable,
   parseCapUsd,
   READ_ONLY_CAPABILITIES,
+  SPEND_CAP_REASON,
   WRITE_SCOPE_BY_KIND,
 } from "../core/cap.js";
 import { failureMessage as tableMessage } from "../core/messages.js";
@@ -114,14 +115,23 @@ const capped = (key, capabilities) => ({
   cappedFrom: Object.freeze([...capabilities]),
 });
 
-// A provider that records every call, so order and scope are visible.
+// A provider that records every call, so order and scope are visible. The
+// freeze's reason (drive#661) is recorded beside the call that carried it, so
+// the wiring from a capSwapPlan swap to the row the provider writes is visible
+// here and not only in the Worker's store.
+/** @param {{cappedReason?: string|null}} [options] */
+const reasonOf = (options) =>
+  options !== undefined && options.cappedReason !== undefined
+    ? { cappedReason: options.cappedReason }
+    : {};
+
 /**
  * @param {{swapToReadOnly?: boolean}} [options]
  * @returns {{
  *   calls: Array<Record<string, unknown>>,
- *   mint: (scope: Record<string, unknown>) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+ *   mint: (scope: Record<string, unknown>, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
  *   revoke: (keyId: string) => Promise<void>,
- *   swapToReadOnly?: (keyId: string) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+ *   swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
  * }}
  */
 function recordingProvider({ swapToReadOnly = false } = {}) {
@@ -130,15 +140,15 @@ function recordingProvider({ swapToReadOnly = false } = {}) {
   let minted = 0;
   /** @type {{
    *   calls: Array<Record<string, unknown>>,
-   *   mint: (scope: Record<string, unknown>) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+   *   mint: (scope: Record<string, unknown>, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
    *   revoke: (keyId: string) => Promise<void>,
-   *   swapToReadOnly?: (keyId: string) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+   *   swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
    * }} */
   const provider = {
     calls,
-    /** @param {Record<string, unknown>} scope */
-    async mint(scope) {
-      calls.push({ call: "mint", ...scope });
+    /** @param {Record<string, unknown>} scope @param {{cappedReason?: string|null}} [options] */
+    async mint(scope, options) {
+      calls.push({ call: "mint", ...scope, ...reasonOf(options) });
       minted += 1;
       return { keyId: `new-${minted}`, accessKeyId: `id-${minted}`, secret: `s-${minted}` };
     },
@@ -148,9 +158,9 @@ function recordingProvider({ swapToReadOnly = false } = {}) {
     },
   };
   if (swapToReadOnly) {
-    /** @param {string} keyId */
-    provider.swapToReadOnly = async (keyId) => {
-      calls.push({ call: "swapToReadOnly", keyId });
+    /** @param {string} keyId @param {{cappedReason?: string|null}} [options] */
+    provider.swapToReadOnly = async (keyId, options) => {
+      calls.push({ call: "swapToReadOnly", keyId, ...reasonOf(options) });
       minted += 1;
       return { keyId: `new-${minted}`, accessKeyId: `id-${minted}`, secret: `s-${minted}` };
     };
@@ -170,23 +180,32 @@ test("at the cap every write-capable key is replaced by a read-only one on its o
   );
   const byId = Object.fromEntries(plan.swaps.map((swap) => [swap.keyId, swap]));
   assert.equal(byId["k-ro"], undefined, "a key that already cannot write is not churned");
-  // A swap names the key, the scope that replaces it, and the scope it took
-  // away (issue #74: the record is what the cap is allowed to give back later).
-  // A deepEqual on the whole entry is the negative that matters here: no file
-  // id, no path inside the prefix, nothing that a swap could delete is in the
-  // plan.
+  // A swap names the key, the scope that replaces it, the scope it took away
+  // (issue #74: the record is what the cap is allowed to give back later), and
+  // the reason that names the cap that did it (drive#661, the only value this
+  // phase sets). A deepEqual on the whole entry is the negative that matters
+  // here: no file id, no path inside the prefix, nothing that a swap could
+  // delete is in the plan.
   assert.deepEqual(byId["k-device"], {
     keyId: "k-device",
     kind: "device",
     prefix: "u/a1/",
     capabilities: Object.freeze(["list", "read"]),
     cappedFrom: Object.freeze(["list", "read", "write", "delete"]),
+    cappedReason: SPEND_CAP_REASON,
   });
   assert.deepEqual(byId["k-agent"].capabilities, READ_ONLY_CAPABILITIES);
   assert.equal(
     byId["k-branch"].prefix,
     "u/a1/.branches/fix/",
     "a branch key narrows to itself, never to the account",
+  );
+  // Every swap on the freeze names the same word, and only this phase's word:
+  // a give-back pass (drive#656) reads it to tell the cap's own freeze from
+  // another cap's, so it has to be on every entry rather than on the plan.
+  assert.ok(
+    plan.swaps.every((swap) => swap.cappedReason === SPEND_CAP_REASON),
+    "every freeze carries the spending cap's reason",
   );
   // The mount holds the old key until it restarts, so a swap is a restart.
   assert.deepEqual(plan.mount, { restart: true, reason: "cap-reached" });
@@ -251,6 +270,10 @@ test("raising the cap gives back exactly what the cap took, and nothing more", (
   // on the row it just minted: a later cap starts from what the key holds.
   for (const swap of plan.swaps) {
     assert.equal(swap.cappedFrom, null, `${swap.keyId} has nothing left to give back`);
+    // ...and the reason is cleared with it (drive#661). A raised key is not a
+    // key the spending cap froze, so a second freeze has to be free to write
+    // the reason again rather than finding a marker it did not leave.
+    assert.equal(swap.cappedReason, null, `${swap.keyId} has no reason left either`);
   }
   // Once restored, a second pass has nothing to do either: the keys on file
   // are the ones the first pass minted, not the read-only ones it replaced.
@@ -543,9 +566,22 @@ test("the provider call order keeps the write key from outliving the cap", async
 
   assert.deepEqual(provider.calls, [
     { call: "revoke", keyId: "k-device" },
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read"] },
+    // The freeze's reason rides on the mint that leaves the replacement row
+    // live (drive#661), so the store has one value to write and core/cap.js
+    // names the word once.
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read"],
+      cappedReason: SPEND_CAP_REASON,
+    },
     { call: "revoke", keyId: "k-agent" },
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read"] },
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read"],
+      cappedReason: SPEND_CAP_REASON,
+    },
   ]);
   assert.equal(result.state, "read_only");
   assert.equal(result.applied.length, 2);
@@ -565,7 +601,15 @@ test("the provider call order keeps the write key from outliving the cap", async
     raised,
   );
   assert.deepEqual(raised.calls, [
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write"] },
+    // null, not absent: the raise is the one path that has to clear a reason it
+    // once wrote, and it does it by sending null rather than by saying
+    // nothing, so a store that kept the old row's value would overwrite it.
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read", "write"],
+      cappedReason: null,
+    },
     { call: "revoke", keyId: "k-agent" },
   ]);
 });
@@ -575,7 +619,9 @@ test("a provider's own swapToReadOnly is used for the cap swap, never for a rest
   // when a provider has it, enforcement must not re-do revoke-then-mint by hand.
   const provider = recordingProvider({ swapToReadOnly: true });
   await applyCapSwap(capSwapPlan([deviceKey], { state: "read_only" }), provider);
-  assert.deepEqual(provider.calls, [{ call: "swapToReadOnly", keyId: "k-device" }]);
+  assert.deepEqual(provider.calls, [
+    { call: "swapToReadOnly", keyId: "k-device", cappedReason: SPEND_CAP_REASON },
+  ]);
 
   const raised = recordingProvider({ swapToReadOnly: true });
   await applyCapSwap(
@@ -583,7 +629,12 @@ test("a provider's own swapToReadOnly is used for the cap swap, never for a rest
     raised,
   );
   assert.deepEqual(raised.calls, [
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write", "delete"] },
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read", "write", "delete"],
+      cappedReason: null,
+    },
     { call: "revoke", keyId: "k-device" },
   ]);
 });
@@ -668,7 +719,12 @@ test("enforcement reads the month's numbers from core/billing.js capStatus()", a
   assert.equal(capped.applied.length, 1);
   assert.deepEqual(capProvider.calls, [
     { call: "revoke", keyId: "k-device" },
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read"] },
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read"],
+      cappedReason: SPEND_CAP_REASON,
+    },
   ]);
 
   // The same two conclusions the capStatus() tests pin, read through the
@@ -835,6 +891,9 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
       return recordingProvider();
     },
     async setAccountState() {},
+    async accountState() {
+      return /** @type {"active"} */ ("active");
+    },
   };
   const ok = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -901,6 +960,49 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.deepEqual(await unwired.json(), { error: tableMessage("cap-store-missing") });
 });
 
+test("POST /api/cap answers 409 on a closed account and does not write", async () => {
+  /** @type {number[]} */
+  const stored = [];
+  const capStore = {
+    /**
+     * @param {{id: string}} _account
+     * @param {number} cents
+     */
+    async setCapCents(_account, cents) {
+      stored.push(cents);
+    },
+    async listCapKeys() {
+      return [];
+    },
+    keyProviderFor() {
+      return recordingProvider();
+    },
+    async setAccountState() {
+      throw new Error("a closed account must not reach setAccountState");
+    },
+    async accountState() {
+      return /** @type {"closed"} */ ("closed");
+    },
+  };
+  const refused = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-closed", name: "You", email: "you@example.com" },
+    capStore,
+  );
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: tableMessage("cap-account-closed") });
+  assert.notEqual(
+    tableMessage("cap-account-closed"),
+    tableMessage("account-closed"),
+    "the cap refusal is not the key-mint refusal",
+  );
+  assert.deepEqual(stored, [], "the cap row must not move on a closed account");
+});
+
 test("the swap's own credential is in the answer, so the mount can sign with it", async () => {
   // The finish line of drive issue #241 is a real mount going read-only, and
   // nothing can go read-only on a mount that still holds the pre-cap key.
@@ -944,6 +1046,9 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
       };
     },
     async setAccountState() {},
+    async accountState() {
+      return /** @type {"active"} */ ("active");
+    },
   };
   const swapped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {

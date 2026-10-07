@@ -218,7 +218,7 @@ test("the 'you saved' lines: against our maximum and against a usual 1 TB plan",
 
 test("the cap counts min(metered, maximum), and bites only past the cap", () => {
   const cap = BILLING_CONFIG.defaultCapUsd;
-  // Up to 1 TB the counted spend is at most the $10 maximum, under the cap.
+  // Up to 1 TB the counted spend is at most the $15 maximum, under the cap.
   for (const gb of [0, 300, 600, 1000]) {
     assert.equal(capStatus(bytes(gb), cap).state, "active", `${gb} GB`);
   }

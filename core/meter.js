@@ -81,7 +81,8 @@ import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } fr
 //   - The hour's stored bytes land in usage_minutes.stored_bytes
 //     (migrations/drive/0006_usage_stored_bytes.sql): the month's PEAK is the
 //     largest of those marks (drive issue #163), which is what the bill's
-//     ceiling max($12, $8 x peak TB) is worked out from.
+//     ceiling was once worked out from (drive#642 now bills size30, the
+//     biggest size in the last 30 days, at 2 cents per GB, never more than $15 per TB).
 //
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
@@ -449,7 +450,7 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 //
 // The second number one closed hour answers with, and the one the monthly bill
 // cannot do without (drive issue #163): how BIG the account's drive was during
-// the hour. The ceiling is max($12, $8 x peak TB) - a peak, so the meter has
+// the hour. The old ceiling was max($12, $8 x peak TB), now replaced by $15 per TB on size30 (drive#642) - a peak, so the meter has
 // to record the size and not only for how long, which
 // usage_minutes.gb_minutes_live never could.
 //
@@ -889,7 +890,7 @@ export function monthStart(at) {
 /**
  * The month's PEAK, read from the rollup the meter's own trigger wrote: the
  * largest stored_bytes mark in the month (drive issue #163), which is the
- * second half of the ceiling max($12, $8 x peak TB) and the only part of the
+ * the size the drive#642 bill is read from (size30, never more than $15 per TB) and the only part of the
  * month's storage figures this module owns.
  *
  * MAX over the hour rows IS the peak - it is one SQL read, not arithmetic done

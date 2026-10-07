@@ -49,7 +49,7 @@ import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 // The month's average divides by the minutes in that UTC calendar month
 // (drive#531): 40,320 for a 28-day February up to 44,640 for a 31-day month.
 // A fixed 43,800-minute "average month" read 1 TB held all of October as
-// 1.019 TB and billed $10.19, which broke "never more than $10 per TB". So
+// 1.019 TB, which broke "never more than $10 per TB" (the maximum then; it is $15 now). So
 // there is no month constant: every function below takes the month's length
 // as input, and minutesInMonth() is the one place it is worked out.
 const MINUTE_MS = 60_000;
@@ -588,6 +588,14 @@ export function monthBillCents(month) {
   if (!Number.isSafeInteger(downloadBytes)) {
     throw new TypeError(`month.downloadBytes must be 0 or more whole bytes, got ${downloadBytes}`);
   }
+  // An empty or missing size30 has no free-download allowance, so any download
+  // would be billed in full. Refuse it: a bill is never guessed from a window
+  // that read as empty while transfer bytes exist (drive#642).
+  if (downloadBytes > 0 && size30Bytes === 0n) {
+    throw new TypeError(
+      "month.downloadBytes needs month.size30Bytes above 0: a month with downloads cannot have an empty size30 window",
+    );
+  }
   const config = billingConfig(fields.config ?? BILLING_CONFIG);
   const rateMillicentsPerGb =
     BigInt(Math.round(config.rateUsdPerGbMonth * 100)) * BigInt(MILLICENTS_PER_CENT);
@@ -866,7 +874,10 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
           })();
   const todayDrawMillicents =
     fields.todayDrawMillicents === undefined
-      ? dailyDrawMillicents(
+      ? // The monthly figure the draw divides by 30 is the same total main
+        // already draws from (storage on size30 plus download overage, as
+        // monthBillCents works it out), the same number core/prepaid.js uses.
+        dailyDrawMillicents(
           monthBillCents({ size30Bytes, downloadBytes, config }).totalMillicents,
           0,
         ).drawMillicents
@@ -882,7 +893,8 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     config,
   });
   return Object.freeze({
-    size30Bytes: millicentsNumber(size30Bytes, "size30Bytes"),
+    // A plain Number, never a throw: a huge size30 only loses digits it could not show anyway.
+    size30Bytes: Number(size30Bytes),
     size30Gb,
     size30ReachedDay,
     size30DropsOutDay,
@@ -992,7 +1004,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null}|null} account the signed-in account, or null when signed out. `usage` is the
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null, openPublicLinks?: number}|null} account the signed-in account, or null when signed out. `usage` is the
  *   month's own metered numbers, read by the route from the account store's
  *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
@@ -1079,7 +1091,20 @@ export function handleUsageRequest(
   // The month rides on the answer finished: the instant, not a name, because
   // the page writes the month's name in the browser's own words and a date
   // rendered on the server is a UTC date (drive#559).
-  const body = { ...empty, monthIso, capLine: capLine(empty.cap), uploadLine, balanceLine };
+  const openPublicLinks =
+    typeof account.openPublicLinks === "number" &&
+    Number.isFinite(account.openPublicLinks) &&
+    account.openPublicLinks >= 0
+      ? Math.floor(account.openPublicLinks)
+      : 0;
+  const body = {
+    ...empty,
+    monthIso,
+    capLine: capLine(empty.cap),
+    uploadLine,
+    balanceLine,
+    openPublicLinks,
+  };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
 

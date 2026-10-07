@@ -20,19 +20,24 @@
  * own id for the row that now holds its hash. A raw storage provider persists
  * no rows, so it has no id to hand back, which is why this is a type of its
  * own rather than KeyProvider with an optional field (drive#371).
- * @typedef {{mint: (scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
+ * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>, swapPrepaidToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
  *
  * @typedef {object} KeyProvider
- * @property {(scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedCredential>} mint
+ * @property {(scope: KeyScope, options?: {expiresAt?: number|null, cappedReason?: string|null}) => Promise<MintedCredential>} mint
  *   `options.expiresAt` is the epoch second a credential bounded by a clock
- *   stops at, and a provider whose vendor expires keys takes it
+ *   stops at, and a provider whose vendor expires keys takes it.
+ *   `options.cappedReason` is ignored here: a raw storage provider persists
+ *   no rows. AccountKeyProvider writes the marker on the devices row.
  * @property {(keyId: string) => Promise<void>} [revoke] withdraws the
  *   credential at the provider, so a revoked row is also a key that stops
  *   working (drive#371). A provider whose credential is bounded anyway — an STS
  *   session — has no revoke, and its caller checks for one rather than
  *   assuming it.
- * @property {(keyId: string) => Promise<MintedKey>} [swapToReadOnly] Replaces a
+ * @property {(keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>} [swapToReadOnly] Replaces a
  *   write-capable key with a read-only one on the same prefix (cap reached).
+ *   `options.cappedReason` is the one word the freeze records naming which cap
+ *   took the key down (drive#661), carried from the swap plan; a caller that
+ *   passes none records no reason, which reads back as "no reason recorded".
  *   Optional because the api's own store mints the replacement itself and only
  *   needs the provider's mint: the boundary a swap keeps is the bucket, which
  *   the store rebuilds from the account id rather than asking the vendor.
@@ -86,7 +91,7 @@ export const CAPABILITIES_BY_KIND = Object.freeze({
  * key a sandbox holds — lives this long and is renewed only while what holds
  * it is still allowed (drive issue #106).
  *
- * Space hands out a one-hour scoped credential and swaps it as the agent
+ * The competitor hands out a one-hour scoped credential and swaps it as the agent
  * works; ours lived until the person revoked it, so a leaked agent key was a
  * key that worked forever. The api Worker keeps only a hash, so a leaked
  * *secret* is not what this bounds: what it bounds is the credential itself,

@@ -24,6 +24,7 @@ import { billingConfigFor, monthlyBillForStoredTb } from "../core/billing.js";
 import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import { BILLING, SITE, softwareApplicationLd } from "../core/seo.js";
 import { markerValues } from "../src/docs.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const llms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
@@ -251,7 +252,7 @@ test("the strip's 60%-full drive bills what the page prints", () => {
 test("the retired price words are gone from every public surface", () => {
   for (const [file, text] of publicTexts) {
     // The rival is named only by the neutral label (drive#463).
-    assert.doesNotMatch(text, /\bSpace(FS)?\b/, `${file} must not name the rival`);
+    assert.doesNotMatch(text, RIVAL_PRODUCT, `${file} must not name the rival`);
     // "minimum" only in "no minimum".
     for (const match of text.matchAll(/minimum/gi)) {
       const before = text.slice(Math.max(0, match.index - 3), match.index).toLowerCase();

@@ -56,11 +56,6 @@ type MountPlan struct {
 	// reach the same one, so it is on the plan rather than a constant
 	// each of them keeps.
 	RCAddr string
-	// StagingDir is where the conflict guard keeps a save's bytes for
-	// the moments they could still be lost. It is inside this device's
-	// own drive folder, never inside the mount dir, so nothing staged
-	// is ever visible in the drive.
-	StagingDir string
 	// DownloadURL is the dl Worker (drive issue #58, build step 5), empty
 	// when none is configured. It is a mount argument, not a line in the
 	// rclone config the user owns: rclone streams every read through the
@@ -77,6 +72,11 @@ type MountPlan struct {
 	// SecretKey is the storage secret passed at mount time through
 	// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY, never written into rclone.conf.
 	SecretKey string
+	// EnvPath is the 0600 EnvironmentFile the login item reads. Empty means
+	// rclone.env beside ConfigPath, which is the device mount's own. The
+	// agent path writes a file of its own so systemd never loads the device
+	// secret into a process that must hold the agent key (drive#514).
+	EnvPath string
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
@@ -192,7 +192,6 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		VFSArgs:     VFSArgs(cacheMax),
 		Device:      DeviceName(),
 		RCAddr:      RCAddr(),
-		StagingDir:  ConflictStagingDir(home),
 		DownloadURL: c.DownloadURL,
 		// A pause that is in force when the mount is (re)started keeps being in
 		// force (drive issue #100): rclone's bandwidth limit lives in its own
@@ -285,14 +284,6 @@ func DeviceName() string {
 	return DefaultDeviceName()
 }
 
-// ConflictStagingDir is where the conflict guard keeps a save's bytes
-// while it could still be lost. It is inside the device's own config
-// folder, so a staged copy is never visible in the drive and never
-// uploaded by anything but the guard's own conflict copy.
-func ConflictStagingDir(home string) string {
-	return filepath.Join(DefaultConfigDir(home), "conflict-staging")
-}
-
 // rcAddrEnvName is the environment variable that carries the remote
 // control's loopback address. Two mounts of the same drive on one host
 // (the two-machine proof, issue #30) cannot both bind one address, so the
@@ -376,8 +367,16 @@ func (p MountPlan) args(includeRCAuth bool) []string {
 		// status` reports the cache. It is one address for all of them.
 		// --rc-user/--rc-pass are rclone's own auth (drive#498); without
 		// them config/dump returns the storage secret to any local process.
-		"--rc", "--rc-addr", p.RCAddr,
+		//
+		// A plan with no remote-control address is a mount that runs no
+		// background loops: the agent path (agentmount.go, drive#514) has
+		// no fill, no conflict guard and no `drive status` to answer, so it
+		// gets no port at all. Writing an empty --rc-addr would open rclone's
+		// control on every interface.
 	)
+	if p.RCAddr != "" {
+		args = append(args, "--rc", "--rc-addr", p.RCAddr)
+	}
 	if includeRCAuth && p.RCUser != "" {
 		args = append(args, "--rc-user", p.RCUser, "--rc-pass", p.RCPass)
 	}
@@ -418,11 +417,20 @@ func (p MountPlan) CommandLine() string {
 // label and program arguments are exactly the rclone plan, so what launchd runs
 // is what `drive mount` would run in the foreground.
 func LaunchdPlist(p MountPlan) string {
+	return LaunchdPlistFor(p, LaunchdLabel)
+}
+
+// LaunchdPlistFor is LaunchdPlist for a login item whose label is not the
+// device mount's own: one label per agent path, because launchd runs one
+// ProcessArguments list per label and a tool's rclone must be its own
+// (drive#514). The credential fields are written only when the plan carries
+// them, so an agent path with no remote control writes no rc password.
+func LaunchdPlistFor(p MountPlan, label string) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(LaunchdLabel))
+	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(label))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))
@@ -473,7 +481,14 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), systemdCommandLine(p))
+}
+
+func (p MountPlan) envFile() string {
+	if p.EnvPath != "" {
+		return p.EnvPath
+	}
+	return filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads
@@ -825,13 +840,18 @@ func mountForeground(p MountPlan, home string) error {
 	}()
 	// The conflict guard (issue #30) runs in this process for as long as the
 	// mount does, on the same remote control: it watches this device's own
-	// upload queue, stages the bytes that could still be lost, and when another
-	// device's save lands it writes the conflict copy so both versions survive.
+	// upload queue, hashes the bytes that could still be lost straight out of
+	// the VFS cache, and when another device's save lands it writes the
+	// conflict copy so both versions survive. The state path is where the
+	// guard records how far behind it is, for `drive status`.
 	conflictCtx, cancelConflict := context.WithCancel(context.Background())
 	go func() {
 		_, _ = MountedDir(p.GOOS, p.MountDir)
+		// rcClientForMount carries the mount's own rc credentials (drive#498);
+		// the guard's fourth argument is the state file it writes so `drive
+		// status` can report how far behind the guard is (issue #569).
 		c := rcClientForMount(p)
-		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.StagingDir, c) {
+		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.CacheDir, p.Remote, ConflictGuardStatePath(home), c) {
 			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()

@@ -39,6 +39,7 @@ import {
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
+import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
 
@@ -198,14 +199,33 @@ export async function drawAccountPending(db, accountId, options) {
     return { drawn: 0, cents: 0 };
   }
   const pending = await db.prepare(PENDING_DRAW_DAYS_SQL).bind(accountId, after, through).all();
-  let drawn = 0;
-  let cents = 0;
+  /** @type {string[]} */
+  const rowDays = [];
   for (const raw of pending.results ?? []) {
     const day = /** @type {{day: unknown}} */ (raw).day;
     if (typeof day !== "string") {
       throw new TypeError(`prepaid draw: a pending day did not parse, got ${String(day)}`);
     }
-    const amount = await drawForDay(db, accountId, day, now);
+    rowDays.push(day);
+  }
+  const lastDrawn = /** @type {{day?: unknown}|null} */ (
+    await db
+      .prepare("SELECT MAX(day) AS day FROM daily_draws WHERE account_id = ?1")
+      .bind(accountId)
+      .first()
+  );
+  const days = pendingDrawDays(
+    rowDays,
+    typeof lastDrawn?.day === "string" ? lastDrawn.day : null,
+    new Date(through).toISOString().slice(0, 10),
+  );
+  let drawn = 0;
+  let cents = 0;
+  for (const day of days) {
+    // A day with no meter rows still owes its draw while size30 holds a peak
+    // (an emptied drive keeps drawing for up to 30 days, drive#642), so every
+    // UTC day is walked, and a day with no rows and an empty window is skipped.
+    const amount = await drawForDay(db, accountId, day, now, !rowDays.includes(day));
     if (amount > 0) {
       drawn += 1;
       cents += amount;
@@ -260,6 +280,40 @@ function previousMonthStart(at) {
 }
 
 /**
+ * Every UTC day an account may owe, oldest first: from its last stored draw's
+ * day (or its first metered day when it has none) through `throughDay`.
+ * Days between metered days are included, so a missed or unmetered day is
+ * charged once on the next run. Nothing is owed before the first metered day.
+ * @param {readonly string[]} rowDays days with rolled meter rows, sorted
+ * @param {string|null} lastDrawnDay the newest day already in daily_draws
+ * @param {string} throughDay the UTC day of the newest rolled hour
+ * @returns {string[]}
+ */
+export function pendingDrawDays(rowDays, lastDrawnDay, throughDay) {
+  const first = rowDays[0];
+  /** @type {string} */
+  let start;
+  if (lastDrawnDay !== null) {
+    // The last drawn day itself is walked again: its row and ledger key make
+    // it a no-op, and it keeps a failed write on that day from passing silently.
+    start = lastDrawnDay;
+  } else if (first !== undefined) {
+    start = first;
+  } else {
+    return [];
+  }
+  const days = [];
+  for (
+    let at = Date.parse(`${start}T00:00:00.000Z`);
+    at <= Date.parse(`${throughDay}T00:00:00.000Z`);
+    at += 24 * HOUR_MS
+  ) {
+    days.push(new Date(at).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/**
  * One account's draw for one UTC day (drive#642). Answers the cents drawn
  * (0 when the day was already drawn, the millicents did not yet make a cent,
  * or size30 is 0). Missing or unparseable meter rows throw, so the job
@@ -268,21 +322,28 @@ function previousMonthStart(at) {
  * @param {string} accountId
  * @param {string} day YYYY-MM-DD
  * @param {number} now
+ * @param {boolean} [skipEmpty] a day with no meter rows: skipped when size30 is 0
  */
-async function drawForDay(db, accountId, day, now) {
+async function drawForDay(db, accountId, day, now, skipEmpty = false) {
   const through = Date.parse(`${day}T23:59:59.999Z`);
   const window = size30Window(through);
   const size30 = await size30Through(db, accountId, window.from, through);
+  if (skipEmpty && size30.size30Bytes === 0) {
+    return 0;
+  }
   const bill = monthBillCents({
     size30Bytes: size30.size30Bytes,
     downloadBytes: size30.downloadBytes,
   });
   const dayStart = Date.parse(`${day}T00:00:00.000Z`);
-  const previousDay = new Date(dayStart - 24 * HOUR_MS).toISOString().slice(0, 10);
+  // The newest earlier stored draw, not strictly the day before: a day skipped
+  // for an empty window must not reset the carried remainder.
   const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
     await db
-      .prepare("SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2")
-      .bind(accountId, previousDay)
+      .prepare(
+        "SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day < ?2 ORDER BY day DESC LIMIT 1",
+      )
+      .bind(accountId, day)
       .first()
   );
   const remainderPacked = prev === null ? 0 : Number(prev.remainder_millicents);
@@ -409,13 +470,12 @@ export async function checkYesterdayDraws(db, now = Date.now()) {
         size30Bytes: size30.size30Bytes,
         downloadBytes: size30.downloadBytes,
       });
-      const previousDay = new Date(yesterdayStart - 24 * HOUR_MS).toISOString().slice(0, 10);
       const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
         await db
           .prepare(
-            "SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day = ?2",
+            "SELECT remainder_millicents FROM daily_draws WHERE account_id = ?1 AND day < ?2 ORDER BY day DESC LIMIT 1",
           )
-          .bind(accountId, previousDay)
+          .bind(accountId, yesterday)
           .first()
       );
       const remainderPacked = prev === null ? 0 : Number(prev.remainder_millicents);
@@ -458,14 +518,19 @@ export async function checkYesterdayDraws(db, now = Date.now()) {
  *   productId?: string,
  *   fetch?: typeof fetch,
  *   now?: number,
+ *   pauseOn?: boolean,
+ *   devices?: Parameters<typeof pauseAccountKeys>[1]["devices"],
  * }} SettleDeps
  */
 
 /**
- * After a draw: the "$2 left" email once per crossing, and the auto top-up
- * when it is on. Each account is settled on its own, and a failure is logged
- * and does not stop the next account, because the draw that called this has
- * already been written and must not be retried for a mail outage.
+ * After a draw: the "$2 left" email once per crossing, the auto top-up
+ * when it is on, and the prepaid key swap (drive#589) so a $0 balance
+ * takes the mount and device keys read-only. Each account is settled on
+ * its own. A mail failure is logged and does not stop the next account,
+ * because the draw that called this has already been written and must not
+ * be retried for a mail outage. A key-swap failure is raised, so the
+ * hourly run retries the swap; the draw is idempotent.
  * @param {D1Database} db
  * @param {readonly string[]} accountIds
  * @param {SettleDeps} deps
@@ -487,6 +552,23 @@ export async function settleBalances(db, accountIds, deps) {
         `account=${accountId}`,
         error instanceof Error ? error.message : String(error),
       );
+    }
+    if (deps.devices) {
+      // A failed swap is logged and the next account is still settled: the
+      // swap reads live state, so the next hour retries it.
+      try {
+        await pauseAccountKeys(accountId, {
+          db,
+          devices: deps.devices,
+          pauseOn: deps.pauseOn === true,
+        });
+      } catch (error) {
+        console.error(
+          "prepaid: the key swap failed",
+          `account=${accountId}`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
   return { lowBalanceSent, autoTopUpsStarted };

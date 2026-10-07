@@ -19,6 +19,7 @@ import {
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import worker from "../src/index.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
@@ -121,7 +122,7 @@ test("the pricing page has the calculator, the shipped headline, and no rival na
   assert.match(section, /a usual 1 TB plan/);
   assert.match(page, /labels\.maximum/);
   assert.match(page, /labels\.plan/);
-  assert.doesNotMatch(section, /\bSpace(FS)?\b/);
+  assert.doesNotMatch(section, RIVAL_PRODUCT);
   assert.doesNotMatch(section, /Dropbox|Google Drive/i);
 });
 
