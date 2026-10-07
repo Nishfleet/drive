@@ -10,6 +10,13 @@ the live site.
 
 ## 2026-10-06
 
+- A Rewind tab in the web app lists the branches an agent worked in, names the
+  files each one changed, and puts your files back in one tap. The new
+  `drive undo` command does the same thing from the command line: it rewinds
+  the last branch an agent worked in, prints what it removes first, and says
+  when it is done. Both read the same /api/rewind route, so the screen and the
+  command cannot disagree about what a rewind undoes, and a branch stays
+  rewindable for 30 days.
 - A branch copies the files your folder held when you made the branch, not the
   files it holds when the copy runs. A file added in between is not in the
   branch, and the next branch takes it. A file that grew in between is copied in
@@ -28,6 +35,8 @@ the live site.
   refused when you share it and when someone drops it on an upload page.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
+- A test now fails the build if a page names a command or links to a page that
+  does not exist, so a page that promises `drive restore` cannot come back.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".

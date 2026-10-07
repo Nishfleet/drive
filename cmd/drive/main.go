@@ -25,6 +25,7 @@ Usage:
   drive diff <branch> [flags]           files added, changed or removed in a branch
   drive approve <branch> [flags]        copy a branch's changes back into the original
   drive discard <branch> [flags]        throw a branch away; the original is untouched
+  drive undo [branch] [flags]           rewind the last branch an agent worked in
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
@@ -165,6 +166,7 @@ var commands = map[string]func([]string) error{
 	"diff":      runDiff,
 	"approve":   runApprove,
 	"discard":   runDiscard,
+	"undo":      runUndo,
 	"mount":     runMount,
 	"unmount":   runUnmount,
 	"offline":   runOffline,
@@ -389,7 +391,29 @@ func runUnmount(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	return Unmount(CurrentGOOS(), common.home)
+	goos := CurrentGOOS()
+	home := common.home
+	mountDir := DefaultMountDir(home)
+	before, listErr := Mounted(goos, home)
+	if listErr != nil {
+		before = true
+	}
+	if err := Unmount(goos, home); err != nil {
+		return err
+	}
+	after, err := Mounted(goos, home)
+	if err != nil {
+		return err
+	}
+	if after {
+		return failf("unmount-failed", mountDir)
+	}
+	if before {
+		fmt.Printf("drive: unmounted %s\n", mountDir)
+	} else {
+		fmt.Printf("drive: no mount at %s\n", mountDir)
+	}
+	return nil
 }
 
 // countEntries lists a mount dir with a deadline. A FUSE mount whose backing
