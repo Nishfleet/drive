@@ -211,6 +211,12 @@ button:disabled {
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
+        <!-- Required age box. The route refuses a start without it. -->
+        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
+        <label class="hint" for="age">
+          <input id="age" name="age" type="checkbox" value="on" required aria-describedby="age-sentence">
+          I am 18 or older
+        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
@@ -265,6 +271,7 @@ const METHODS = ["email"];
 
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
+const ageInput = document.getElementById("age");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
 
@@ -324,8 +331,9 @@ async function start(method, email) {
           : {
               method,
               email,
-              // undefined drops out of the JSON: a plain sign-in posts
-              // exactly what it posted before drive#558.
+              age: ageInput !== null && ageInput.checked,
+              // next is only set for the device-approve return path.
+              // The age box is always sent.
               next: nextParam === "" ? undefined : nextParam,
             },
       ),
