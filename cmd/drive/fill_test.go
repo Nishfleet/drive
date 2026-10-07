@@ -771,17 +771,51 @@ func TestFillTargetsReadStopsWhenAReadHitsTheDeadline(t *testing.T) {
 	}
 }
 
-// A read with no context has no deadline to stop at, which is the bug drive#742
-// fixes, so the fill read refuses one rather than running unbounded.
-func TestFillReadFileRefusesANilContext(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "x.bin")
-	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+// drive#742: the deadline lands while a large file is being read. The reader
+// stands in for a slow mounted file: it never ends, and the context is
+// cancelled during its third chunk. The read must return the context error
+// within one more chunk, not read on to the end.
+func TestReadCtxChunkedStopsWhenCancelledDuringARead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelAfterReader{cancelOn: 3, cancel: cancel}
+	done := make(chan struct{})
+	var n int64
+	var err error
+	go func() {
+		defer close(done)
+		n, err = readCtxChunked(ctx, r)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read kept going after the context was cancelled")
 	}
-	if _, err := fillReadFile(nil, path); err == nil {
-		t.Error("fillReadFile(nil, path) returned no error, so the read had no deadline to stop at")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("read returned %v after cancel, want %v", err, context.Canceled)
 	}
+	if r.reads > r.cancelOn+1 {
+		t.Errorf("read %d chunks, cancelled during chunk %d: it must stop within one chunk", r.reads, r.cancelOn)
+	}
+	if want := int64(r.reads) * fillReadChunk; n != want {
+		t.Errorf("reported %d bytes, want %d (the chunks it read)", n, want)
+	}
+}
+
+// cancelAfterReader serves full chunks forever and cancels its context during
+// the cancelOn-th Read, as a deadline firing mid-file would.
+type cancelAfterReader struct {
+	cancelOn, reads int
+	cancel          context.CancelFunc
+}
+
+func (r *cancelAfterReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == r.cancelOn {
+		r.cancel()
+	}
+	time.Sleep(time.Millisecond)
+	return len(p), nil
 }
 
 // The fill's read chunk is the mount's shipped first chunk, --vfs-read-ahead
