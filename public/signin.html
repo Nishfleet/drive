@@ -211,13 +211,7 @@ button:disabled {
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
-        <!-- drive#781: the terms say an account holder must be 18 or older
-             (public/terms.html, drive#547). The sentence above the box is
-             SIGNIN_COPY.needAge and the route refuses a start without the
-             box with those same words; the label is the short consent line.
-             The box is required for every start, because looking the address
-             up would tell a stranger whether it already has an account
-             (drive#538). -->
+        <!-- Required age box. The route refuses a start without it. -->
         <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
         <label class="hint" for="age">
           <input id="age" name="age" type="checkbox" value="on" required aria-describedby="age-sentence">
@@ -338,10 +332,8 @@ async function start(method, email) {
               method,
               email,
               age: ageInput !== null && ageInput.checked,
-              // `next` is undefined and drops out of the JSON unless this sign-in
-              // started from the device-approve page (drive#558). The age box
-              // (drive#781) is always sent, so a start that skips it is the
-              // same 400 for every address (drive#538).
+              // next is only set for the device-approve return path.
+              // The age box is always sent.
               next: nextParam === "" ? undefined : nextParam,
             },
       ),

@@ -1944,10 +1944,11 @@ test("the page states the spec's two promises: a card at sign-up, and the member
 });
 
 test("the page states the age rule and labels the age box in short (drive#781)", () => {
-  // The terms carry the rule (public/terms.html, drive#547); this page must
-  // show it once and carry the box that agrees to it. The server refuses a
-  // start without the box with the same sentence, so the page and the route
-  // cannot drift.
+  // The terms carry the rule; this page must show it once and carry the box
+  // that agrees to it. The server refuses a start without the box with the
+  // same sentence, so the page, the terms and the route cannot drift.
+  const terms = readFileSync(new URL("../public/terms.html", import.meta.url), "utf8");
+  assert.ok(terms.includes(SIGNIN_COPY.needAge), "the terms must carry the same age sentence");
   assert.ok(page.includes(SIGNIN_COPY.needAge), "the page must say the age rule");
   assert.equal(
     page.split(SIGNIN_COPY.needAge).length - 1,
@@ -1960,6 +1961,26 @@ test("the page states the age rule and labels the age box in short (drive#781)",
     page.includes('<input id="age" name="age" type="checkbox" value="on" required'),
     "the page posts the required age box the route reads",
   );
+});
+
+test("no other shipped page posts a sign-in start (drive#781)", () => {
+  // The age box lives on the sign-in form. Other pages post sign-out only.
+  const others = [
+    "../get-started.html",
+    "../public/files.html",
+    "../public/usage.html",
+    "../public/devices.html",
+    "../public/index.html",
+    "../public/upload.html",
+  ];
+  for (const rel of others) {
+    const html = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.equal(
+      html.includes('name="step" value="start"'),
+      false,
+      `${rel} must not post a sign-in start`,
+    );
+  }
 });
 
 test("the page's failure words are the message table's", () => {
