@@ -73,6 +73,13 @@ would rather you read it here than find out in week three.
 
 ## Where we are better
 
+- **A save made outside the web page is counted at the nightly run.**
+  Everything you save through the Files page is in your usage, your cap and
+  your search the moment you save it. A file you save through the mounted
+  drive folder, the S3 API or an agent tool is counted at the nightly run
+  instead: search picks it up at 03:00 UTC, the meter at 04:00 UTC. Until
+  storage events are switched on, that is the whole delay (#831), and the
+  nightly run is what makes the number right whichever way you saved the file.
 - **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
   drive goes read-only at it: nothing is deleted, and the bill stops there.
   The default cap is {{DEFAULT_CAP}}.
