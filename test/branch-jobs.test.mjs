@@ -830,9 +830,17 @@ test("a create batch writes only its own delta, so KV reads and writes per batch
   }
 
   /**
+   * What one create of a given size cost, batch by batch (drive#842): the
+   * busiest single batch, the batch that finished the copy, how many batches
+   * ran, and every key the namespace still holds once the branch was open.
+   * @typedef {{batches: number, busiestReads: number, busiestWrites: number, busiestReadBytes: number, busiestWriteBytes: number, finalReads: number, finalWrites: number, keys: string[]}} RunCost
+   */
+
+  /**
    * Runs one create of `files` files batch by batch, returning the busiest
-   * single batch's KV cost.
+   * single batch's KV cost and what the batch that finishes the copy cost.
    * @param {number} files
+   * @returns {Promise<RunCost>}
    */
   async function perBatchCost(files) {
     const raw = createMemoryStore();
@@ -846,7 +854,8 @@ test("a create batch writes only its own delta, so KV reads and writes per batch
     }
     await Promise.all(pending);
     const db = createTestD1();
-    const counted = countingKv(createTestKv());
+    const inner = createTestKv();
+    const counted = countingKv(inner);
     const snapshots = createKvSnapshotStore(counted.kv);
     const started = await createBranch(
       db,
@@ -865,12 +874,21 @@ test("a create batch writes only its own delta, so KV reads and writes per batch
     let busiestWrites = 0;
     let busiestReadBytes = 0;
     let busiestWriteBytes = 0;
+    // The batch that finishes the copy is the one that joins the parts, so its
+    // cost is the branch's own, not the batch's: it reads one key per part and
+    // writes the whole snapshot once. Counting it in the busiest would force a
+    // bound that grows with the branch and hide the per-batch number, so it is
+    // measured apart and asserted apart (drive#842, in-run review).
+    let finalReads = 0;
+    let finalWrites = 0;
     for (let step = 0; step < 40_000; step += 1) {
       counted.reset();
       const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
       if (result.error) {
         assert.fail(JSON.stringify(result));
       }
+      finalReads = counted.counts.reads;
+      finalWrites = counted.counts.writes;
       if (result.done) {
         break;
       }
@@ -884,7 +902,20 @@ test("a create batch writes only its own delta, so KV reads and writes per batch
     assert.equal(done?.state, "open");
     assert.equal(Object.keys(done?.snapshot ?? {}).length, files, "every file is in the snapshot");
     assert.equal(done?.jobDone, files);
-    return { batches, busiestReads, busiestWrites, busiestReadBytes, busiestWriteBytes };
+    return {
+      batches,
+      busiestReads,
+      busiestWrites,
+      busiestReadBytes,
+      busiestWriteBytes,
+      finalReads,
+      finalWrites,
+      // Every key the namespace still holds once the branch is open. A finished
+      // branch keeps its snapshot and nothing else: the frozen windows, the walk
+      // blob and the create parts are all scratch, and leaving any of them would
+      // hold a second copy of every fingerprint the branch has.
+      keys: [...inner.values.keys()],
+    };
   }
 
   const small = await perBatchCost(2_000);
@@ -893,6 +924,40 @@ test("a create batch writes only its own delta, so KV reads and writes per batch
     small.batches > 2 && large.batches > small.batches,
     `the copy really did run many batches: ${small.batches} then ${large.batches}`,
   );
+  // The join happens once, in the batch that finishes the copy, and it reads
+  // each batch twice: the part that batch wrote, and the scratch key that batch
+  // left (its frozen window, cleared now the listing is inside the snapshot).
+  // Everything else the join reads is the fixed handful a branch reads once:
+  // the frozen listing count, the marker, the walk blob, the row's own
+  // snapshot. So the last batch costs two reads per batch plus one constant,
+  // not a read of anything that grows with the branch a second time.
+  const joinOverhead = (/** @type {RunCost} */ run, /** @type {number} */ parts) =>
+    run.finalReads - 2 * parts;
+  assert.ok(
+    joinOverhead(small, small.batches) === joinOverhead(large, large.batches),
+    `the joining batch must read two keys per batch plus a fixed set: ` +
+      `${small.finalReads} reads for ${small.batches} parts at 2,000 files, ` +
+      `${large.finalReads} for ${large.batches} at 20,000`,
+  );
+  assert.ok(
+    joinOverhead(small, small.batches) >= 0 && joinOverhead(small, small.batches) < 20,
+    `the joining batch must not read the whole branch as well as its parts: ` +
+      `${small.finalReads} reads for ${small.batches} parts at 2,000 files`,
+  );
+  // The branch keeps one value: no `.v` part, no window, no walk blob outlives
+  // the copy that wrote them.
+  for (const [label, run] of /** @type {Array<[string, RunCost]>} */ ([
+    ["2,000 files", small],
+    ["20,000 files", large],
+  ])) {
+    const leftovers = run.keys.filter((key) => /(\.v\d+|frozen-window|create-parts)/.test(key));
+    assert.equal(
+      leftovers.length,
+      0,
+      `a finished branch must keep no scratch key: ${leftovers.slice(0, 5).join(", ")} at ${label}`,
+    );
+  }
+
   assert.equal(
     large.busiestReads,
     small.busiestReads,
