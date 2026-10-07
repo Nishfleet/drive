@@ -21,6 +21,22 @@ func TestParseBaseRefusesCredentialsAndCleartext(t *testing.T) {
 	}
 }
 
+func TestNewAndParseBaseRefuseTheSameBrokenURLs(t *testing.T) {
+	broken := []string{
+		"https://drive.example\nGET /elsewhere",
+		"https://drive.example\x00",
+		"https://user:pass@example.com",
+		"http://example.com",
+	}
+	for _, raw := range broken {
+		_, parseErr := ParseBase(raw)
+		_, newErr := New(raw, "")
+		if parseErr == nil || newErr == nil {
+			t.Errorf("%q: ParseBase=%v New=%v, want both refused", raw, parseErr, newErr)
+		}
+	}
+}
+
 func TestFailureKindSplitsRevokedFromRefused(t *testing.T) {
 	if k := FailureKind(&Error{Status: "401 Unauthorized"}); k != "key-revoked" {
 		t.Fatalf("401 kind = %q", k)

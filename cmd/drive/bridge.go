@@ -135,11 +135,11 @@ type Transfer = rc.Transfer
 type Stats = rc.Stats
 
 const (
-	pausedRate         = "1KiB:off"
-	rclonePausedRate   = "1Ki:off"
-	resumeRate         = "off"
-	queueHoldExpiry    = "1000000000"
-	queueReleaseExpiry = "-1000000000"
+	pausedRate         = rc.PausedBWLimit
+	rclonePausedRate   = rc.RclonePausedBWLimit
+	resumeRate         = rc.ResumeBWLimit
+	queueHoldExpiry    = rc.QueueHoldExpiry
+	queueReleaseExpiry = rc.QueueReleaseExpiry
 	rcTimeout          = 30 * time.Second
 )
 

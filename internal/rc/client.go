@@ -162,24 +162,34 @@ func (c *Client) Remote() string { return c.fs }
 // 157,286,400 bytes with transfers=1, so nothing was lost and nothing was
 // sent twice.
 
-// pausedRate is the rclone bandwidth string that pauses uploads and leaves
+// PausedBWLimit is the rclone bandwidth string that pauses uploads and leaves
 // downloads alone. rclone's --bwlimit and rc core/bwlimit both read "UP:DOWN"
 // (rclone.org/rc "core/bwlimit": `rclone rc core/bwlimit rate=1M:100k`), so
 // the upload half is the first one. 1 KiB/s rather than 0, because 0 means
 // "off" to rclone and would start the upload at full speed: measured above,
 // "1KiB:off" flattens the byte counter while "off" resumes it.
-const pausedRate = "1KiB:off"
+const PausedBWLimit = "1KiB:off"
 
-// rclonePausedRate is how rclone reports the paused rate back. It collapses
+// RclonePausedBWLimit is how rclone reports the paused rate back. It collapses
 // "1KiB" to "1Ki" in core/bwlimit's answer. Both spellings mean the same cap.
-const rclonePausedRate = "1Ki:off"
+const RclonePausedBWLimit = "1Ki:off"
 
-// queueHoldExpiry is a far-future vfs/queue-set-expiry (rclone.org/rc). A
+// ResumeBWLimit is rclone's "no cap" rate. A paused mount returns to this.
+const ResumeBWLimit = "off"
+
+// QueueHoldExpiry is a far-future vfs/queue-set-expiry (rclone.org/rc). A
 // large positive number delays the item until resume; a large negative number
 // makes it eligible immediately. An item that has already started uploading
 // is not affected: rclone says so, and core/bwlimit is what slows that one.
-const queueHoldExpiry = "1000000000"
-const queueReleaseExpiry = "-1000000000"
+const QueueHoldExpiry = "1000000000"
+const QueueReleaseExpiry = "-1000000000"
+
+const (
+	pausedRate         = PausedBWLimit
+	rclonePausedRate   = RclonePausedBWLimit
+	queueHoldExpiry    = QueueHoldExpiry
+	queueReleaseExpiry = QueueReleaseExpiry
+)
 
 // PauseStatePath is where the paused state is remembered. rclone's bandwidth
 // limit lives in the running process, so a restart of the mount comes back

@@ -695,26 +695,11 @@ func readCostLine(apiBase, token string) string {
 	return ""
 }
 
-// parseAPIBase checks the api Worker URL and drops its trailing slash, so the
-// endpoint path is appended the same way every time. A URL is operator
-// config, but it is printed and put in an error, so it is held to the same
-// rule as the secret itself (issue #75):
-//
-//   - user:password@ in a URL is a credential on the command line and in every
-//     line that prints the URL, so it is refused rather than carried;
-//   - no error here echoes the value back. Each failure names the fault and
-//     stops, because a URL that parses as scheme "user" and opaque
-//     "password@host" clears every parsed field a check could look at, so
-//     "check first, then print" is not a rule a new branch can rely on;
-//   - a secret goes over TLS, so plain http is only good enough on loopback.
-//
-// The same rejection config.go applies to a rclone config value applies here: a
-// newline would break the line it is printed on, and a NUL byte is never a URL.
+// parseAPIBase is the CLI name for api.ParseBase. Every construction path
+// (NewAPIClient, status, search, share, revoke, doctor) goes through that
+// one parser, so a newline, a credential-in-URL, or plain remote http is
+// refused the same way (issue #75).
 func parseAPIBase(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
-		return "", err
-	}
 	return api.ParseBase(raw)
 }
 

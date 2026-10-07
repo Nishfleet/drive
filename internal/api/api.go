@@ -304,9 +304,9 @@ func (e *Error) Sentence() string {
 func (c *Client) RequestDeviceCode(deviceName string) (DeviceCode, error) {
 	var code DeviceCode
 	if err := c.post(deviceCodePath, map[string]string{"name": deviceName}, &code); err != nil {
-		// A Worker that reaches this route but answers with something unusable
-		// is classified by do() (api-answer/offline/key-revoked); keep those
-		// words, and never let an unclassified error through.
+		// send already classifies the refusal (api-answer/offline/key-revoked)
+		// through wrapFail. Returning that error keeps those words; wrapping
+		// again here would hide the kind send already named.
 		return DeviceCode{}, err
 	}
 	if code.UserCode == "" || code.DeviceCode == "" || code.VerificationURI == "" {
