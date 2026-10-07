@@ -103,7 +103,6 @@ import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
   METER_JOB_KINDS,
-  METER_JOBS_QUEUE,
   meterJobHandlers,
   meterJobsQueue,
   sendMeterJobs,
@@ -1860,7 +1859,7 @@ const handler = {
     // branch jobs without setting `batch.queue`, and the platform names
     // the bound queue on live traffic. A named queue that is neither the
     // reindex nor the meter jobs is a misbind, not a silent fallthrough.
-    if (batch.queue != null && batch.queue !== METER_JOBS_QUEUE) {
+    if (batch.queue != null && batch.queue !== "drive-meter-jobs") {
       throw new Error(`unknown queue ${String(batch.queue)}`);
     }
     const branchMessages = [];

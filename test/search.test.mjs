@@ -18,7 +18,6 @@ import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";
-import { METER_JOBS_QUEUE } from "../src/meter-jobs.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -1244,7 +1243,7 @@ test("a named meter-queue batch is not refused as unknown", async () => {
       message.retried = true;
     },
   };
-  await workerQueue({ queue: METER_JOBS_QUEUE, messages: [message] }, {}, { waitUntil() {} });
+  await workerQueue({ queue: "drive-meter-jobs", messages: [message] }, {}, { waitUntil() {} });
   assert.equal(message.retried, true, "a missing DRIVE_DB still retries on the live queue name");
   assert.equal(message.acked, undefined);
 });
