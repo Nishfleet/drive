@@ -51,8 +51,8 @@ export const DODO_CHECKOUT_PATH = "/checkouts";
 /** The metadata tag that marks a Dodo payment as a drive top-up. */
 export const TOPUP_PURPOSE = "drive-topup";
 
-/** How far a webhook's timestamp may be from now, in seconds. */
-export const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
+// How far a webhook's timestamp may be from now, in seconds.
+const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
 /**
  * A whole number of cents in dollars, as the page prints it: "$12.34",
