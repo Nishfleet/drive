@@ -164,6 +164,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This account is closed, so it cannot make a new key.",
     next: "Cancel the close while the account is still in its 30-day window to use it again.",
   }),
+  // POST /api/cap on an account whose close has landed (drive#537). The
+  // unguarded write used to set state back to active while closed_at stayed
+  // set, so purge never ran and cancelClose threw. The route now 409s before
+  // any write; the one next step is the same cancel as a closed-account mint.
+  "cap-account-closed": Object.freeze({
+    what: "This account is closed, so its spending cap cannot change.",
+    next: "Cancel the close while the account is still in its 30-day window to use it again.",
+  }),
   // A share link or upload page that does not open: unknown, revoked or past
   // its 7-day window (issue #19). One entry for all three on purpose — the
   // public routes must not tell a stranger which of those it was, and the one
@@ -235,6 +243,16 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
+  }),
+  // A devices-page revoke named a key this account does not hold (drive#525).
+  "key-not-found": Object.freeze({
+    what: "That key is not on this account.",
+    next: "Reload the devices page and pick a key that is still listed.",
+  }),
+  // A URL with more segments than /api/devices/<keyId>, or an empty id.
+  "key-path-unknown": Object.freeze({
+    what: "That is not a key path.",
+    next: "Open the key from the list.",
   }),
   // A URL with more segments than /api/branches/<name>/<action>.
   "branch-path-unknown": Object.freeze({
