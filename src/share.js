@@ -1407,10 +1407,19 @@ export async function handleShareRequest(request, files, links, account, options
       // The known-bad refusal also tells the owner (drive issue #826): the
       // file is already on a stock public list, so the account that tried to
       // share it is the one thing a notification can act on.
+      const ownerEmail = typeof account.email === "string" ? account.email : "";
+      if (ownerEmail === "") {
+        // The same loud line the drop half logs (src/share.js's upload
+        // refusal): a mint that cannot notify otherwise notifies nobody,
+        // and a silenced mint is as invisible as a silenced drop.
+        console.error(
+          `drive share: no owner address to notify for a refused mint of ${checked.path}`,
+        );
+      }
       await notifySecurityEvent({
         email: options.email,
         mailFrom: options.mailFrom,
-        to: typeof account.email === "string" ? account.email : "",
+        to: ownerEmail,
         event: "malware-refused",
         deviceName: options.deviceName,
         happenedAt: new Date(now).toISOString(),
