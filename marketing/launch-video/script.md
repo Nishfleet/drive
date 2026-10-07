@@ -10,7 +10,7 @@ Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-
 | 6–17 | hero | THE DRIVE · "Plain files, opened by the apps you already use." | `public/index.html` hero |
 | 17–28 | huge files | HUGE FILES · "A 5 GB video starts without a 5 GB download." | `public/index.html` finder section |
 | 28–40 | agents | EVERY AGENT · "Agent keys can list, read and write. They can never delete." | `public/index.html` agents section |
-| 40–52 | price | ONE PRICE · "2¢ per GB a month. Never more than $10 per TB." | `public/index.html` calculator |
+| 40–52 | price | ONE PRICE · "2¢ per GB a month. Never more than $15 per TB." | `public/index.html` calculator |
 | 52–64 | cap | THE CAP · "At the cap, writes stop. Every file stays." | `public/index.html` cap section |
 | 64–75 | cta | drive · "Get drive." · "The drive is not open yet. Sign-ups go to the waitlist." · "Join the waitlist on the drive site." | — |
 
@@ -22,7 +22,7 @@ Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-
 | "Plain files in object storage, opened by the apps you already use." | `README.md:4` ("Your files live in object storage and open on demand") and `README.md:8` ("Real names, opened by the apps you already use") |
 | "A 5 GB video starts without a 5 GB download." | `public/index.html` finder section ("A 5 GB video starts without a 5 GB download.") — measured on the page |
 | "Agent keys can list, read and write. They can never delete." | `public/index.html` agents section; `README.md` ("an agent key can list, read and write, but it can never delete") |
-| "2¢ per GB a month. Never more than $10 per TB." | `public/index.html` calculator subhead ("2 cents per GB until the bill reaches $10, at 500 GB") and its metered note ("You pay 2 cents per GB a month…"); `README.md` pricing line; the rule is min(2¢ × GB-months, $10 × max(1, TB)) in `src/billing.js` |
+| "2¢ per GB a month. Never more than $15 per TB." | `public/index.html` calculator subhead ("2 cents per GB until the bill reaches $15, at 750 GB") and its metered note; `README.md` pricing line; the rule is min(2¢ × size30 GB, $15 × max(1, size30 TB)) in `core/billing.js` (drive#642) |
 | "At the cap, writes stop. Every file stays." | `public/index.html` cap section ("A cap that stops writes, not files.") |
 | "The drive is not open yet. Sign-ups go to the waitlist." | `public/index.html` waitlist copy |
 | "Join the waitlist on the drive site." | no host is printed, on purpose. `drive-pricing.nishant345.workers.dev` answers `302` to a Cloudflare Access login for anyone logged out, so a printed URL is a dead end. Verified 2026-10-06. |
