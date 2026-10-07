@@ -453,7 +453,11 @@ test("a returning address without the age box is refused the same way (drive#781
   );
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 1, "the refused start mailed nothing more than the earlier sign-in");
+  assert.equal(
+    made.sent.length,
+    1,
+    "the refused start mailed nothing more than the earlier sign-in",
+  );
 });
 
 test("a start with no age field is refused (drive#781)", async () => {
