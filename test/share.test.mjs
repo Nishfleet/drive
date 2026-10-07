@@ -629,6 +629,62 @@ test("a hash the feed loaded is refused with the feed untouched", async () => {
 });
 
 /**
+ * The database a Worker really has when it is deployed before migration 0039:
+ * every statement answers `no such table`, because the table is not there yet.
+ * The stand-in only has to throw where D1 would, and core/db.js's own helpers
+ * call it synchronously on the way to the row.
+ *
+ * @param {string} [message] what D1 answered
+ * @returns {import("./harness.mjs").TestD1}
+ */
+function unbounddb(message = "Error: no such table: known_bad_hashes") {
+  const standIn = {
+    prepare() {
+      throw new Error(message);
+    },
+  };
+  return /** @type {import("./harness.mjs").TestD1} */ (/** @type {unknown} */ (standIn));
+}
+
+test("a database that throws is an error, not a pass", async () => {
+  // The refusal reads a row on every mint and every drop, so the day the
+  // Worker ships before the migration the read answers `no such table` all
+  // day. Nothing in isKnownBadHash catches that, and the day is not saved by
+  // one: a swallowed error is a mint of a file nobody checked, which is the
+  // thing this check exists to stop. Both public routes get the same answer.
+  const { upload, share, links, request, files } = drive();
+  await upload("/", "notes.txt", "benign bytes");
+  await upload("/", "eicar.txt", EICAR_BODY);
+
+  const mint = share("/notes.txt", { db: unbounddb() });
+  await assert.rejects(mint, /no such table/, "the mint throws rather than minting");
+  assert.equal(await links.shares.get(TOKEN), null, "no link row is written either");
+
+  // The same read on the drop half, where the body is already in hand.
+  const made = await request("/", { token: "BBBBBBBBBBBBBBBBBBBBBB" });
+  assert.equal(made.status, 201);
+  const dropped = handleRequestUploadRequest(
+    new Request(
+      `${api(REQUEST_ENDPOINT)}/upload?k=BBBBBBBBBBBBBBBBBBBBBB&name=${encodeURIComponent("notes.txt")}`,
+      { method: "POST", headers: { "content-type": "text/plain" }, body: "benign bytes" },
+    ),
+    files,
+    links,
+    () => "active",
+    withLimits({ db: unbounddb(), now }),
+  );
+  await assert.rejects(dropped, /no such table/, "the drop throws rather than storing");
+  const record = await links.requests.get("BBBBBBBBBBBBBBBBBBBBBB");
+  assert.ok(record);
+  assert.equal(record.uploadCount, 0, "no upload is counted either");
+
+  // EICAR still decides with no db bound, so a table that is not there yet
+  // cannot open the in-memory half's door either.
+  const eicar = await share("/eicar.txt", { token: "CCCCCCCCCCCCCCCCCCCCCC", db: undefined });
+  assert.equal(eicar.status, 403);
+});
+
+/**
  * A mailer double in the shape core/security-event.js's own caller uses,
  * so a test can prove a notification went out without a vendor on the wire.
  * @param {Error|null} [failure] what the vendor answers, which is the case a

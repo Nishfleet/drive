@@ -1939,7 +1939,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
       to: ownerEmail,
       event: "malware-refused",
       deviceName: sessionLabel(request),
-      happenedAt: new Date(options.now ?? Date.now()).toISOString(),
+      happenedAt: new Date(now).toISOString(),
       detail: `An upload through /s/${record.token} was refused for a file on the known-bad list.`,
     });
     return json({ error: failureMessage("malware-refused") }, 403);
