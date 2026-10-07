@@ -43,6 +43,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
+import { rivalHits } from "./rival-terms.mjs";
 
 const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -937,7 +938,7 @@ test("the home page's demo section renders the recorded numbers and the date", (
   );
   // No rival words on the new section: the scan test covers the whole tree,
   // and this one names the failure on the page itself.
-  assert.doesNotMatch(page, /SpaceFS|Space AI/i, "the demos section uses our words");
+  assert.deepEqual(rivalHits(page), [], "the demos section uses our words");
 });
 
 test("the three home-page demos run on a drive folder and record their numbers", async (t) => {
