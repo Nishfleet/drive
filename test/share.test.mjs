@@ -2094,6 +2094,10 @@ test("the shipped upload page carries the module's words and endpoints", () => {
   // No script files and no inline secrets: one inline script, nothing fetched
   // from another origin.
   assert.ok(!/<script src=/.test(page), "the page is one inline script");
+  // drive#546: the file input was 1px and transparent but still in the tab
+  // order and the accessibility tree with no label. `hidden` takes it out of
+  // both, the same way public/files.html does it.
+  assert.match(page, /<input type="file" id="file-input" multiple hidden>/);
 });
 
 // The handlers answer DELETE (revoke), but a route the app does not register is
