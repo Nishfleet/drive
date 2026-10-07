@@ -250,6 +250,10 @@ export function createTestD1(options = {}) {
         sqlite.exec(sql);
         return { count: 0, duration: 0 };
       },
+      // D1 runs a batch as one transaction: a statement that fails rolls the
+      // whole batch back. test/d1-sqlite.mjs keeps the same guarantee, so code
+      // that leans on it (the arrival digest's clear and stamp, drive#684) is
+      // tested against D1's behaviour, not a run of independent writes.
       /**
        * D1 sends a batch as ONE transaction: every statement commits together,
        * and one that fails takes the whole batch with it. Running the

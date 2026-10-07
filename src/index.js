@@ -34,6 +34,7 @@ import {
   TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
 import { bearerToken, errorResponse } from "../core/http.js";
+import { runKeySweep } from "../core/key-sweep.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
@@ -59,6 +60,7 @@ import {
   prepaidPauseOn,
   settleBalances,
 } from "../core/prepaid.js";
+import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { createD1QueueStore } from "../core/queues.js";
 import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
@@ -129,6 +131,7 @@ import {
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
+  sendArrivalDigests,
 } from "./share.js";
 import {
   handleSigninLinkVerify,
@@ -300,6 +303,25 @@ function closeDepsFor(env) {
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
     now: () => Date.now(),
+  };
+}
+
+/**
+ * The prepaid key swap's live deps (drive#589): the same D1 device store the
+ * cap walk uses, so a $0 pause hits the same rows. Missing DRIVE_DB is null,
+ * and the callers skip the swap rather than inventing an in-memory store.
+ * @param {Env} env
+ * @returns {{pauseOn: boolean, devices: ReturnType<typeof createD1DeviceStore>}|null}
+ */
+function prepaidPauseFromEnv(env) {
+  if (!env.DRIVE_DB) {
+    return null;
+  }
+  return {
+    pauseOn: prepaidPauseOn(env),
+    devices: createD1DeviceStore(env.DRIVE_DB, {
+      keyProvider: keyProviderFor(env) ?? undefined,
+    }),
   };
 }
 
@@ -524,6 +546,20 @@ async function liveDevicesFor(env, account) {
  */
 function capStateFor(env) {
   return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
+}
+
+/**
+ * The resolver the public upload page asks for a link owner's display name
+ * (drive issue #684): the Better Auth `user` row for the account that minted
+ * the link, so a stranger opening the link sees whose drive it is. It is the
+ * same per-call device store `capStateFor` uses, and the same resolver feeds
+ * the nightly arrival digest (`sendArrivalDigests`), so the name on the page
+ * and the name in the mail come from one read.
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<{id: string, name: string, email: string}|null>}
+ */
+function ownerFor(env) {
+  return (accountId) => createD1DeviceStore(env.DRIVE_DB).accountById(accountId);
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
@@ -981,10 +1017,24 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store, {
+    const answered = await handleCapRequest(c.req.raw, c.get("account"), store, {
       ...mailFromEnv(c.env),
       deviceName: sessionLabel(c.req.raw),
     });
+    const account = c.get("account");
+    // After a cap raise, restore what the prepaid pause took (drive#589),
+    // because a pause that ran first left no `capped_from` for the raise to
+    // read. The swap is a no-op when the balance is still $0 or the pause
+    // never took a key. Only a cap write that actually ran (2xx) does this:
+    // a 400 must not swap keys.
+    if (answered.ok && store && account && db) {
+      await pauseAccountKeys(account.id, {
+        db,
+        devices: store,
+        pauseOn: prepaidPauseOn(c.env),
+      });
+    }
+    return answered;
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -1092,7 +1142,9 @@ export function createApp() {
     ),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env), {
+      owner: ownerFor(c.env),
+    }),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
     withFileStore(c, (store) =>
@@ -1113,6 +1165,7 @@ export function createApp() {
       secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
       email: c.env.EMAIL,
       mailFrom: dodoEnv(c.env).MAIL_FROM ?? "",
+      ...(prepaidPauseFromEnv(c.env) ?? {}),
     }),
   );
 
@@ -1370,6 +1423,7 @@ const handler = {
         // the draws above are written, and a retry must not wait on a mail
         // outage.
         const dodo = dodoEnv(env);
+        const pause = prepaidPauseFromEnv(env);
         await settleBalances(env.METER_DB, drawn.accounts, {
           email: env.EMAIL,
           mailFrom: dodo.MAIL_FROM ?? "",
@@ -1378,7 +1432,33 @@ const handler = {
           baseUrl: dodo.DODO_BASE_URL,
           fetch: dodo.DODO_FETCH ?? globalThis.fetch,
           now,
+          ...(pause ?? {}),
         });
+        // Accounts the hour did not draw still need the swap: a cap raise
+        // with no usage this hour, or PREPAID_PAUSE flipped on against
+        // accounts already at $0.
+        if (pause) {
+          const drawnSet = new Set(drawn.accounts);
+          for (const accountId of await listMeteredAccounts(env.METER_DB)) {
+            if (!drawnSet.has(accountId)) {
+              try {
+                await pauseAccountKeys(accountId, {
+                  db: env.METER_DB,
+                  devices: pause.devices,
+                  pauseOn: pause.pauseOn,
+                });
+              } catch (error) {
+                // One account's failed swap must not skip the rest or the
+                // over-limit trip below. The next hour retries it.
+                console.error(
+                  "prepaid: the key swap failed",
+                  `account=${accountId}`,
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
+            }
+          }
+        }
         // The pre-charge limit's own trip (drive#536). The web upload path has
         // held 1 TB free since drive#464, but a mount holds a storage key and
         // writes past any page, so the same hourly run reads the over-limit
@@ -1485,6 +1565,36 @@ const handler = {
             `link retention: pruned ${purged.shares} share rows, ` +
               `${purged.requests} upload-request rows`,
           );
+          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+          // The arrival digest (drive issue #684): one mail a day to a link's
+          // owner, listing what arrived through that link since the last one.
+          // It shares the close cron's settings and its fire-and-forget shape:
+          // the reconcile trip should not wait on a mail send, and an idle
+          // deployment with no MAIL_FROM queues nothing rather than failing
+          // every night. The no-sender case is logged once a night, so a
+          // deployment that lost its MAIL_FROM says so here instead of keeping
+          // every arrival queued with nothing in the log.
+          if (secrets.MAIL_FROM) {
+            context.waitUntil(
+              sendArrivalDigests(env.DRIVE_DB, {
+                email: env.EMAIL,
+                mailFrom: secrets.MAIL_FROM,
+                owner: ownerFor(env),
+                now: toMillis(event.scheduledTime, "scheduledTime"),
+              })
+                .then((result) => {
+                  console.log(`upload digests: sent=${result.sent} skipped=${result.skipped}`);
+                })
+                .catch((error) => {
+                  // Log and resolve: a rejected waitUntil is reported by the
+                  // runtime, but the reconcile trip's own work above has already
+                  // finished and must not appear to have failed with it.
+                  console.error(`upload arrival digest failed: ${String(error)}`);
+                }),
+            );
+          } else {
+            console.warn("upload arrival digest skipped: this deployment has no MAIL_FROM");
+          }
           // Sign-in counter retention (drive#725): a row whose day window
           // ended more than a day ago is deleted, so the public sign-in route
           // cannot make this table keep every address anybody typed. It deletes
@@ -1521,9 +1631,10 @@ const handler = {
           throw new Error("the account close cron needs the drive database");
         }
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const devices = createD1DeviceStore(env.DRIVE_DB);
         const close = await runAccountCloseCron({
           db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
+          devices,
           store: files,
           email: env.EMAIL,
           mailFrom: secrets.MAIL_FROM ?? "",
@@ -1550,6 +1661,19 @@ const handler = {
             `account close: mailed=${close.mailed} reminded=${close.reminded} purged=${close.purged}`,
           );
         }
+        // The vendor-key sweep (drive issue #552), on the same store: remove
+        // the dead rows' vendor access keys and record how many keys the
+        // vendor holds. A deployment whose provider has no removal (the
+        // S3/STS one, whose sessions expire on their own) is skipped loudly
+        // by the sweep itself. A missing provider with leftover vendor keys
+        // fails this trigger rather than reporting success. The shared iDrive
+        // provider is the one with keys to remove. Awaited like the account
+        // close above: a sweep that failed must be a failed trigger, not a
+        // run that reported success. The provider is read off the same env
+        // the api Worker reads, so the two Workers mint with one credential
+        // and the sweep removes what that credential minted.
+        const provider = keyProviderFor(env);
+        await runKeySweep({ devices, provider, now: event.scheduledTime });
       });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
@@ -1678,6 +1802,7 @@ const handler = {
           productId: dodo.DODO_TOPUP_PRODUCT_ID,
           baseUrl: dodo.DODO_BASE_URL,
           fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+          ...(prepaidPauseFromEnv(env) ?? {}),
         },
         store,
       }),

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -84,6 +85,16 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		}
 		return func() { stopStandinProcess(cmd, filepath.Join(home, "Drive")) }
 	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, h := range []string{homeA, homeB} {
+			if log, err := os.ReadFile(filepath.Join(h, ".config", "drive", "mount.log")); err == nil {
+				t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
+			}
+		}
+	})
 	stopA := startDevice(homeA, deviceA, rcA)
 	defer stopA()
 	stopB := startDevice(homeB, "linux", rcB)
@@ -103,60 +114,17 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The rule is decided after the uploads have landed: give the mount's
-	// write-back (5s) and the guard its interval. The deadline is generous
-	// on purpose — the proof is what was kept, not how fast.
-	// Whichever save lands last is the plain file; the other is the conflict
-	// copy, named for the device that lost it. Either device can lose: the
-	// write-back timers are independent, so write order is not land order.
-	// The rule is checked by what is kept rather than by who won.
+	// The rule is decided after the uploads have landed. Write-back timers
+	// and rclone's retry delay after a dead stand-in can spread the two
+	// uploads past the guard's 10s win watch (merge-group runs 37505697801,
+	// 37519236130), so the queues are released together first. Storage is
+	// the truth for the bytes: a mount still holding the save that lost
+	// reads as if both files were the winner (merge-group run 37516493629).
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
-	deadline := time.Now().Add(90 * time.Second)
-	var kept string
-	for time.Now().Before(deadline) {
-		for _, n := range candidates {
-			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
-				kept = n
-				break
-			}
-		}
-		if kept != "" {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if kept == "" {
-		t.Fatalf("neither save survived: none of %v appeared on device A", candidates)
-	}
-
-	plain, err := os.ReadFile(filepath.Join(mountB, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	conflict, err := os.ReadFile(filepath.Join(mountA, kept))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{bodyA, bodyB} {
-		if string(plain) != want && string(conflict) != want {
-			t.Errorf("the save %q survived nowhere: plain=%q conflict=%q", want, plain, conflict)
-		}
-	}
-	if string(plain) == string(conflict) {
-		t.Errorf("both saves are the same bytes (%q): the other device's save was overwritten", plain)
-	}
-
-	// Both devices are notified: the device that lost the save and the other
-	// one both see both files through their own mount.
-	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
-		got, err := os.ReadFile(filepath.Join(m.dir, kept))
-		if err != nil {
-			t.Fatalf("device %s cannot read the conflict copy: %v", m.label, err)
-		}
-		if string(got) != string(conflict) {
-			t.Errorf("the conflict copy on device %s is %q, want %q", m.label, got, conflict)
-		}
-	}
+	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
+	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
+	releaseSavesTogether(t, rcAClient, rcBClient, name)
+	kept := proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, name, bodyA, bodyB, candidates)
 
 	// And nothing was deleted: the losing device's file is a copy, not a
 	// rename, so its own listing has both files.
@@ -197,42 +165,21 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 
 	// Whichever save lands last is the plain file; the other is the conflict
 	// copy, named for the device that lost it. Either device can lose, so the
-	// rule is checked by what is kept rather than by who won.
+	// rule is checked by what is kept rather than by who won. The stand-in
+	// coming back can leave rclone's queue on a minutes-long retry delay
+	// (rc.go: rclone retries forever with a 5-minute backoff), which is
+	// longer than this proof's wait — resume's own ReleaseQueuedUploads is
+	// what makes both uploads eligible in one window again.
 	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
-	deadline = time.Now().Add(90 * time.Second)
-	kept = ""
-	for time.Now().Before(deadline) {
-		for _, n := range candidates {
-			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
-				kept = n
-				break
-			}
-		}
-		if kept != "" {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if kept == "" {
-		t.Fatalf("the offline save never uploaded under the conflict rule: neither %v "+
-			"appeared on device A after the storage came back", candidates)
-	}
-	plain, err = os.ReadFile(filepath.Join(mountA, offlineName))
+	releaseSavesTogether(t, rcAClient, rcBClient, offlineName)
+	kept = proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, offlineName, offlineA, offlineB, candidates)
+	plain, err := os.ReadFile(standinObjectPath(root, cfg, offlineName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	conflict, err = os.ReadFile(filepath.Join(mountA, kept))
+	conflict, err := os.ReadFile(standinObjectPath(root, cfg, kept))
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, want := range []string{offlineA, offlineB} {
-		if string(plain) != want && string(conflict) != want {
-			t.Errorf("the offline save %q survived nowhere: plain=%q conflict=%q",
-				want, plain, conflict)
-		}
-	}
-	if string(plain) == string(conflict) {
-		t.Errorf("both saves are the same bytes (%q): the other device's save was overwritten", plain)
 	}
 	t.Logf("after the reconnect: plain=%q, conflict=%q, both saves kept", plain, conflict)
 }
@@ -378,6 +325,185 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	}
 	t.Logf("two saves seconds apart, one sync window: plain=%q, conflict=%q, A's listing=%v",
 		plain, kept, names)
+}
+
+// standinObjectPath is the object on disk inside the loopback S3 stand-in.
+// It is the same join transferEnv.objectPath uses, so a proof that both
+// saves survived reads storage rather than a mount's dirty file.
+func standinObjectPath(root string, cfg StorageConfig, name string) string {
+	return filepath.Join(root, "data", cfg.Bucket, filepath.FromSlash(cfg.Prefix), name)
+}
+
+func queueHasName(q Queue, name string) bool {
+	for _, item := range q.Queue {
+		if item.Name == name || strings.HasSuffix(item.Name, "/"+name) {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseSavesTogether waits until both devices have name in rclone's
+// upload queue, then uses resume's own ReleaseQueuedUploads so the two
+// saves land in one window. Write-back is 5s; after a dead stand-in the
+// queue can sit on a 5-minute retry delay, which is past the conflict
+// guard's 10s win watch.
+func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	seenBoth := false
+	var lastA, lastB error
+	for time.Now().Before(deadline) {
+		qa, errA := a.ReadQueue(context.Background())
+		qb, errB := b.ReadQueue(context.Background())
+		lastA, lastB = errA, errB
+		if errA != nil || errB != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if queueHasName(qa, name) {
+			if err := a.HoldQueuedUploads(ctx); err != nil {
+				cancel()
+				t.Fatalf("device A hold uploads of %s: %v", name, err)
+			}
+		}
+		if queueHasName(qb, name) {
+			if err := b.HoldQueuedUploads(ctx); err != nil {
+				cancel()
+				t.Fatalf("device B hold uploads of %s: %v", name, err)
+			}
+		}
+		cancel()
+		if queueHasName(qa, name) && queueHasName(qb, name) {
+			seenBoth = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !seenBoth {
+		t.Fatalf("both devices did not queue %s within 20s (A queue err=%v, B queue err=%v)", name, lastA, lastB)
+	}
+	// The conflict guard hashes a save while it is still in the queue
+	// (conflict_guard.go sight). Releasing in the same instant the
+	// items appear lets a tiny file leave before the next 500ms pass,
+	// and then nothing writes a conflict copy.
+	time.Sleep(2 * conflictInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.ReleaseQueuedUploads(ctx); err != nil {
+		t.Fatalf("device A release uploads of %s: %v", name, err)
+	}
+	if err := b.ReleaseQueuedUploads(ctx); err != nil {
+		t.Fatalf("device B release uploads of %s: %v", name, err)
+	}
+}
+
+func logStandinListing(t *testing.T, root string, cfg StorageConfig) {
+	t.Helper()
+	dir := filepath.Join(root, "data", cfg.Bucket, filepath.FromSlash(cfg.Prefix))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Logf("stand-in %s: %v", dir, err)
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	t.Logf("stand-in listing %s: %v", dir, names)
+}
+
+// proveBothSavesKept waits until storage holds a conflict copy of name,
+// checks both bodies survived there, then refreshes both mounts so each
+// device can see both files. It reads the stand-in, not the mount: the
+// device that lost still shows its own save at the plain path until the
+// directory cache expires.
+func proveBothSavesKept(t *testing.T, root string, cfg StorageConfig, rcA, rcB *rcClient, mountA, mountB, name, bodyA, bodyB string, candidates []string) string {
+	t.Helper()
+	var kept string
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, n := range candidates {
+			if _, err := os.Stat(standinObjectPath(root, cfg, n)); err == nil {
+				kept = n
+				break
+			}
+		}
+		if kept != "" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if kept == "" {
+		logStandinListing(t, root, cfg)
+		qa, errA := rcA.ReadQueue(context.Background())
+		qb, errB := rcB.ReadQueue(context.Background())
+		t.Logf("device A queue (err=%v): %+v", errA, qa.Queue)
+		t.Logf("device B queue (err=%v): %+v", errB, qb.Queue)
+		t.Fatalf("neither save survived: none of %v appeared in stand-in storage", candidates)
+	}
+
+	plain, err := os.ReadFile(standinObjectPath(root, cfg, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict, err := os.ReadFile(standinObjectPath(root, cfg, kept))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{bodyA, bodyB} {
+		if string(plain) != want && string(conflict) != want {
+			t.Errorf("the save %q survived nowhere: plain=%q conflict=%q", want, plain, conflict)
+		}
+	}
+	if string(plain) == string(conflict) {
+		t.Errorf("both saves are the same bytes (%q): the other device's save was overwritten", plain)
+	}
+
+	for _, m := range []struct {
+		label, dir string
+		rc         *rcClient
+	}{{"A", mountA, rcA}, {"B", mountB, rcB}} {
+		waitMountSees(t, m.rc, m.dir, []string{name, kept})
+		got, err := os.ReadFile(filepath.Join(m.dir, kept))
+		if err != nil {
+			t.Fatalf("device %s cannot read the conflict copy: %v", m.label, err)
+		}
+		if string(got) != string(conflict) {
+			t.Errorf("the conflict copy on device %s is %q, want %q", m.label, got, conflict)
+		}
+	}
+	return kept
+}
+
+func waitMountSees(t *testing.T, c *rcClient, dir string, names []string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := c.refresh(ctx, false)
+		cancel()
+		if err != nil {
+			last = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		missing := false
+		for _, n := range names {
+			if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+				last = err
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("mount %s did not show %v: %v", dir, names, last)
 }
 
 // tailLines is the last n lines of s, so a skip message can carry the mount's
