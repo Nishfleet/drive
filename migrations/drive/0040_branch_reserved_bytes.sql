@@ -1,0 +1,37 @@
+-- The bytes a queued branch create has reserved (drive issue #801).
+--
+-- A create claims its row and hands the copy to a queued job (drive#563), so
+-- between the claim and the first batch the branch's bytes are in neither the
+-- file index (branch copies skip it) nor the store walk the pre-charge guard
+-- reads (`/.branches` is only walked after the copy lands). A create queued
+-- behind another one therefore measured only its own folder, each passed the
+-- guard that should have refused the later ones, and then all the copies went
+-- on to write their bytes. drive#801 proved it on main: at 900 GB held, a
+-- 100 GB create was allowed, and a second 100 GB create behind it was allowed
+-- too - 1.1 TB of planned copies against a 1 TB limit.
+--
+-- Expand only: one nullable column, no DEFAULT, nothing dropped or renamed, so
+-- a revert of the Worker reads and writes the table exactly as before and the
+-- column cannot break the previous version of the code the instant it lands
+-- (the fleet D1 expand/contract rule). D1 has no down-migrations, so this file
+-- is one-way and a rollback is the code going back, never the column going away.
+--
+--   reserved_bytes  the byte total the claim measured for a row still in
+--                   'creating'. NULL on every row written before this file,
+--                   and NULL on a row whose copy already ran.
+--
+-- The state is the whole release: a row that leaves 'creating' has copied bytes
+-- the store walk can see, so no transition has to clear anything and a stale
+-- reservation can never pin an account at the limit. The guard sums this
+-- column over the 'creating' rows only, and COALESCE treats the NULL rows the
+-- older code wrote as zero bytes, which is exactly what they are: nothing this
+-- deployment has measured for them yet.
+--
+-- The NULL rows are not a hole. A row that predates this file and is still
+-- 'creating' was measured by code that did not record the measurement, and its
+-- bytes are unknowable from the row; the copy job re-checks the account before
+-- its first batch (drive#553) and refuses there, which is where such a row is
+-- actually stopped. Backfilling a guess would be worse than NULL: a number
+-- nobody measured, presented as one.
+
+ALTER TABLE branches ADD COLUMN reserved_bytes INTEGER;

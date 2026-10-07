@@ -73,7 +73,7 @@ export { MAX_OPEN_BRANCHES };
  *   snapshot: Record<string, Fingerprint>,
  *   snapshotKey: string, snapshotBytes: number,
  *   jobKind: string, jobDone: number, jobTotal: number, jobError: string,
- *   changed: number, sourceChanged: number}} Branch
+ *   changed: number, sourceChanged: number, reservedBytes: number}} Branch
  */
 
 /** How many files one job batch copies or deletes, so one invocation stays
@@ -815,6 +815,36 @@ async function storedBytesUnder(store, root) {
   return bytesOf((await listFiles(store, root)).values());
 }
 
+/** The bytes every create still queued on this account has reserved: the
+ * `reserved_bytes` its claim measured, summed over the rows that have not
+ * copied yet (drive#801).
+ *
+ * A queued create's bytes are in neither the file index (branch copies skip
+ * it) nor the store walk, because `/.branches` is only walked once the copy
+ * lands. Without this sum ten queued creates of a 100 GB folder each measured
+ * only their own folder, each passed the guard that should have refused the
+ * later ones, and then all ten copies went on to write. `COALESCE` reads a row
+ * written before migration 0040 as zero, which is what it holds: nothing this
+ * deployment measured for it. Such a row is stopped by the copy job's own
+ * re-check before its first batch (drive#553), not by this sum.
+ * @param {D1Database} db @param {string} accountId
+ * @returns {Promise<number>}
+ */
+async function queuedReservedBytes(db, accountId) {
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(SUM(reserved_bytes), 0) AS reserved FROM branches " +
+        "WHERE account_id = ?1 AND state = 'creating'",
+    )
+    .bind(accountId)
+    .first();
+  const reserved = Number(/** @type {{reserved?: unknown} | null | undefined} */ (row)?.reserved ?? 0);
+  if (!Number.isFinite(reserved) || reserved < 0) {
+    throw new TypeError(`branches.reserved_bytes must be 0 or more, got ${reserved}`);
+  }
+  return reserved;
+}
+
 /** @param {D1Database} db @param {FileStore} store @param {{id: string}} account @param {number} incomingBytes */
 async function branchCopyBlocked(db, store, account, incomingBytes) {
   const firstChargedAt = await accountFirstChargedAt(db, account.id);
@@ -822,7 +852,9 @@ async function branchCopyBlocked(db, store, account, incomingBytes) {
   return preChargeUploadBlocked({
     firstChargedAt,
     storedBytes:
-      (await accountStoredBytes(db, account.id)) + (await storedBytesUnder(store, BRANCHES_ROOT)),
+      (await accountStoredBytes(db, account.id)) +
+      (await storedBytesUnder(store, BRANCHES_ROOT)) +
+      (await queuedReservedBytes(db, account.id)),
     incomingBytes,
   });
 }
@@ -1065,6 +1097,14 @@ function toBranch(row, snapshot) {
       typeof row.source_changed_count === "number"
         ? row.source_changed_count
         : Number(row.source_changed_count ?? 0) || 0,
+    // What the claim measured for a row still copying (migration 0040,
+    // drive#801). Null on a row written before the column and on one whose
+    // copy has run, which is the honest answer for both: nobody measured it,
+    // or its bytes are in the store now.
+    reservedBytes:
+      typeof row.reserved_bytes === "number"
+        ? row.reserved_bytes
+        : Number(row.reserved_bytes ?? 0) || 0,
   };
 }
 
@@ -1075,7 +1115,7 @@ function toBranch(row, snapshot) {
 const BRANCH_COLUMNS =
   "id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, " +
   "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, job_error, " +
-  "changed_count, source_changed_count";
+  "changed_count, source_changed_count, reserved_bytes";
 
 /** One of the account's own branches, or null. A name from another account is
  * "no such branch".
@@ -1920,7 +1960,8 @@ export async function createBranch(
   // listing is what counts (drive#553). A charged account is lifted (drive#464).
   // The open-branch cap is the claim INSERT's WHERE, so a race cannot land 11.
   const listed = await listFiles(store, folderPath);
-  const blocked = await branchCopyBlocked(db, store, account, bytesOf(listed.values()));
+  const incomingBytes = bytesOf(listed.values());
+  const blocked = await branchCopyBlocked(db, store, account, incomingBytes);
   if (blocked !== null) {
     return { error: blocked, status: 403 };
   }
@@ -1936,14 +1977,20 @@ export async function createBranch(
   // copy, so a row that is claimed but interrupted is closed by the catch
   // below rather than left open on an empty prefix. The leftover `snapshot`
   // column is omitted (drive#329) and takes its own `DEFAULT '{}'`.
-  // The cap is the same INSERT's WHERE (branches_account_created_idx, migration 0015).
+  // The cap is the same INSERT's WHERE (branches_account_created_idx, migration 0015),
+  // and the claim carries the byte total the guard just measured in
+  // `reserved_bytes` (migration 0040), so a create queued behind this one is
+  // measured against the bytes this one is about to write. The reservation is
+  // released by the state itself: a row that leaves 'creating' has copied bytes
+  // the store walk can see.
   let claimId;
   try {
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
-          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind) " +
-          "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create' " +
+          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind, " +
+          "reserved_bytes) " +
+          "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',?9 " +
           "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
           `(${ACTIVE_STATE_LIST})) < ?8`,
       )
@@ -1956,6 +2003,7 @@ export async function createBranch(
         createdAt,
         changedBy,
         MAX_OPEN_BRANCHES,
+        incomingBytes,
       )
       .run();
     if (!claimed.success || typeof claimed.meta?.changes !== "number") {
