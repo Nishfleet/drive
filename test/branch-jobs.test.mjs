@@ -1352,3 +1352,151 @@ test("a create batch writes only its own delta, so KV reads and writes per batch
     );
   }
 });
+
+test("a create join that is missing a part fails the job instead of opening the branch", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < BRANCH_JOB_BATCH_FILES * 3; index += 1) {
+    pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending.splice(0, 200));
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const inner = createTestKv();
+  const snapshots = createKvSnapshotStore(inner);
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/big", name: "work" },
+    () => Date.now(),
+    fakeQueue(),
+  );
+  assert.equal(started.state, "creating");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+
+  // One clear batch and one copy batch: part 0 is written and the row's own
+  // parts leaf counts one.
+  const partsLeaf = `${snapshotKey(ACCOUNT, "work")}/create-parts/${row.id}`;
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let batch = { done: false };
+  for (let step = 0; step < 2 && !inner.values.has(`${partsLeaf}.v0`); step += 1) {
+    batch = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.ok(!("error" in batch), JSON.stringify(batch));
+  }
+  const part = `${partsLeaf}.v0`;
+  assert.ok(inner.values.has(part), "the first copy batch wrote part 0");
+  assert.equal(JSON.parse(inner.values.get(partsLeaf) ?? "{}").parts, 1);
+
+  // The namespace loses part 0 the way real storage can lose a key: a write
+  // that never landed, or a key removed under the build. A join that cannot
+  // read a part is a copy that cannot be honest, because a shorter snapshot is
+  // what a later rewind and approve read as removed files (drive#842,
+  // coordinator review).
+  inner.values.delete(part);
+
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let result = { done: false };
+  for (let step = 0; step < 20 && result.done !== true; step += 1) {
+    result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  }
+  assert.equal(result.done, true, JSON.stringify(result));
+  assert.ok("error" in result, `a failed join must reach the caller: ${JSON.stringify(result)}`);
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.notEqual(done?.state, "open", "a branch whose join failed must not open");
+  assert.equal(done?.state, "discarded");
+  assert.ok(done?.jobError, "the row records what failed");
+  // The parts this row wrote are gone, so a later branch of the same name never
+  // folds a dead build's deltas into its own snapshot.
+  const leftovers = [...inner.values.keys()].filter((key) => key.startsWith(partsLeaf));
+  assert.deepEqual(leftovers, [], `no part of a failed build survives: ${leftovers.join(", ")}`);
+});
+
+test("a create batch whose cursor was cleared takes its part index from the stored count", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const pending = [];
+  for (let index = 0; index < BRANCH_JOB_BATCH_FILES * 5; index += 1) {
+    pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending.splice(0, 200));
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const inner = createTestKv();
+  const snapshots = createKvSnapshotStore(inner);
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/big", name: "work" },
+    () => Date.now(),
+    fakeQueue(),
+  );
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+
+  // One clear batch and one copy batch: part 0 is in the namespace and the
+  // row's cursor names the part the next batch writes.
+  const partsLeaf = `${snapshotKey(ACCOUNT, "work")}/create-parts/${row.id}`;
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let batch = { done: false };
+  for (let step = 0; step < 2 && !inner.values.has(`${partsLeaf}.v0`); step += 1) {
+    batch = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.ok(!("error" in batch), JSON.stringify(batch));
+  }
+  assert.ok(inner.values.has(`${partsLeaf}.v0`), "the first copy batch wrote part 0");
+  const first = inner.values.get(`${partsLeaf}.v0`);
+  assert.ok(first);
+
+  // A give-up clears the cursor while the parts are still in the namespace (the
+  // sweep that goes with it can fail: dropCreateParts answers false and only
+  // logs). A batch that lands afterwards has no part in its cursor (drive#842,
+  // coordinator review).
+  await db.prepare("UPDATE branches SET job_cursor = '' WHERE id = ?1").bind(row.id).run();
+  const cursorNow = async () => {
+    const held = await db
+      .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
+      .bind(row.id)
+      .first("job_cursor");
+    return JSON.parse(typeof held === "string" && held !== "" ? held : "{}");
+  };
+
+  // The row walks back through the clear phase, and the copy batch that lands
+  // with no part in its cursor is the one that names a part once it has
+  // written. It appends: part 0 keeps the value its own walk wrote, and the
+  // row's own leaf counts two parts instead of resetting to one over part 0
+  // and leaving parts 1..N orphaned (drive#842, coordinator review).
+  for (let step = 0; step < 10; step += 1) {
+    batch = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    assert.ok(!("error" in batch), JSON.stringify(batch));
+    if (typeof (await cursorNow()).part === "number") {
+      break;
+    }
+  }
+  assert.equal(inner.values.get(`${partsLeaf}.v0`), first, "part 0 was not overwritten");
+  assert.equal(JSON.parse(inner.values.get(partsLeaf) ?? "{}").parts, 2, "the count went up");
+
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let result = { done: false };
+  for (let step = 0; step < 20 && result.done !== true; step += 1) {
+    result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+  }
+  assert.equal(result.done, true, JSON.stringify(result));
+  assert.ok(!("error" in result), JSON.stringify(result));
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "open");
+  // The join folded five parts into the one complete snapshot and swept all
+  // five: a build whose count had reset would have left parts the join never
+  // read standing in the namespace (drive#842).
+  assert.equal(Object.keys(done?.snapshot ?? {}).length, BRANCH_JOB_BATCH_FILES * 5);
+  const leftovers = [...inner.values.keys()].filter((key) => key.startsWith(partsLeaf));
+  assert.deepEqual(leftovers, [], `no part outlives a finished build: ${leftovers.join(", ")}`);
+});

@@ -1559,7 +1559,10 @@ async function enqueueJob(queue, job) {
  * row's own `job_cursor` as well as on the build's own leaf in the namespace,
  * because it belongs to the row's progress exactly as the walk cursor does and
  * D1 writes it with the progress it goes with — but a give-up that clears the
- * cursor can still read the count off the leaf (drive#842).
+ * cursor can still read the count off the leaf (drive#842). A zero is the answer
+ * both when the cursor holds no part and when the build has written none, so
+ * `saveCreateBatch` reads the count off the row's own leaf before it trusts a
+ * zero (drive#842, coordinator review).
  * @param {Record<string, unknown>} cursor the row's parsed `job_cursor`
  * @returns {number} the part index this batch writes, zero when none is written
  * yet
@@ -1595,7 +1598,6 @@ function createPartIndex(cursor) {
  */
 async function saveCreateBatch(db, branch, copiedFiles, snapshots, key, cursor) {
   const resolved = resolvedSnapshotKey(branch, key);
-  const index = createPartIndex(cursor);
   /** @type {Record<string, Fingerprint>} */
   const delta = {};
   for (const file of copiedFiles) {
@@ -1610,11 +1612,19 @@ async function saveCreateBatch(db, branch, copiedFiles, snapshots, key, cursor) 
     const saved = await saveSnapshot(db, branch.id, { ...merged, ...delta }, snapshots, key);
     return { success: saved.success, part: 0 };
   }
-  const put = await parts.putPart(
-    createPartsKey(resolved, branch.id),
-    index,
-    JSON.stringify(delta),
-  );
+  const leaf = createPartsKey(resolved, branch.id);
+  // The cursor carries each batch's next part beside its walk position, and a
+  // batch that finished keeps it. But a give-up clears the cursor while its
+  // parts are still in the namespace, which is why the discard path reads the
+  // count off the leaf: a batch that lands with no part in the cursor takes the
+  // next index from the count the build stored on its own leaf, so a redelivery
+  // never overwrites part 0 and resets the count over parts 1..N (drive#842,
+  // coordinator review).
+  let index = createPartIndex(cursor);
+  if (index === 0) {
+    index = (await parts.partCount(leaf)) ?? 0;
+  }
+  const put = await parts.putPart(leaf, index, JSON.stringify(delta));
   if (put === null) {
     const merged = await readSnapshot(snapshots, resolved);
     const saved = await saveSnapshot(db, branch.id, { ...merged, ...delta }, snapshots, key);
@@ -1693,18 +1703,23 @@ function snapshotPartWriter(snapshots) {
  * @param {Record<string, unknown>} cursor the row's parsed `job_cursor`
  * @param {{part: number}} written what this batch's write returned
  * @param {string} key the key the row already holds, for a row with no pointer
+ * @returns {Promise<{success: boolean}>} whether the one complete value was
+ *   written; a false is a job that did not finish and must not open
  */
 async function joinCreateParts(db, branch, snapshots, base, cursor, written, key) {
   const resolved = resolvedSnapshotKey(branch, key);
   const parts = snapshotPartWriter(snapshots);
   if (parts === null || resolved === "" || written.part === 0) {
-    return;
+    return { success: true };
   }
   const leaf = createPartsKey(resolved, branch.id);
   try {
     const reads = snapshotPartReader(snapshots);
     if (reads === null) {
-      return;
+      // Parts were written to a store that cannot read them back, so the one
+      // value a finished branch resolves can never be assembled (drive#842,
+      // coordinator review).
+      return { success: false };
     }
     /** @type {Record<string, Fingerprint>} */
     const snapshot = { ...base };
@@ -1732,18 +1747,25 @@ async function joinCreateParts(db, branch, snapshots, base, cursor, written, key
     }
     const saved = await saveSnapshot(db, branch.id, snapshot, snapshots, resolved);
     if (!saved.success) {
-      return;
+      // The row refused the one complete snapshot, so a branch opened here
+      // would hand later readers a value the join never wrote (drive#842,
+      // coordinator review).
+      return { success: false };
     }
     // The deltas are folded into the one value `saveSnapshot` wrote, so they are
     // swept here. Leaving them would keep every file of the branch in the
     // namespace twice, and the next create of the same key would read them back.
     await dropCreateParts(snapshots, branch, cursor, written.part, key);
   } catch (error) {
-    // A part the namespace does not hold, or a value that does not parse: this
-    // only says what went wrong. The row's job error is what a retry acts on,
-    // and a batch that throws takes that route (drive#563).
+    // A part the namespace does not hold, or a value that does not parse: the
+    // join cannot be honest because returning a shorter snapshot would call
+    // every missing file removed, so the failure reaches the batch and fails
+    // the job (drive#842, coordinator review). The detail is logged; the row's
+    // job error is the one table's words.
     console.error?.(`create parts join failed for ${branch.id}: ${errorText(error)}`);
+    return { success: false };
   }
+  return { success: true };
 }
 
 /**
@@ -2147,14 +2169,6 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   // source as it is, which is what its bytes already on the row must not turn
   // off. Its own snapshot is written a batch at a time, so reading `only` off
   // `snapshot_bytes` would have made batch two copy batch one's files again and
-  // open a branch missing everything after the first 80.
-  // What the claim froze (drive#802): the source listing as of claim time,
-  // stored under the row's own snapshot pointer, and marked by the claim with
-  // its own key. The marker is the test, not the snapshot's byte length: a
-  // create queued before that shipped has no marker and keeps copying the
-  // source as it is, which is what its bytes already on the row must not turn
-  // off. Its own snapshot is written a batch at a time, so reading `only` off
-  // `snapshot_bytes` would have made batch two copy batch one's files again and
   // open a branch missing everything after the first 80. Every frozen key the
   // batch reads resolves `key` the way the parts do, so a row with no pointer
   // of its own looks in one place and not in the empty one (drive#842, in-run
@@ -2244,7 +2258,7 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     // The last batch is the one that reads the whole snapshot back, because it
     // is the one that has to hand a reader a whole snapshot (drive#842). Every
     // earlier batch wrote only its own 80 files and left the value alone.
-    await joinCreateParts(
+    const joined = await joinCreateParts(
       db,
       branch,
       snapshots,
@@ -2253,6 +2267,19 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       written,
       key,
     );
+    if (!joined.success) {
+      // A join that did not fold every part into the one value is a copy that
+      // did not finish: an incomplete snapshot is exactly what a later rewind or
+      // approve reads as removed files, so the job fails instead of opening. The
+      // frozen listing is left standing, because clearing it is what would make
+      // the incomplete branch look finished (drive#842, coordinator review).
+      const error = failureMessage("unexpected");
+      console.error?.(`create parts join failed for ${branch.id}: opening refused`);
+      await removePrefixFiles(store, branch.branchPrefix);
+      await failJob(db, branch.id, "discarded", error);
+      await dropCreateParts(snapshots, branch, stored, written.part, key);
+      return { error, status: 500, done: true };
+    }
     try {
       await clearScratch(snapshots, walkKey);
       // The frozen listing is the branch's snapshot from here on, so the marker
