@@ -806,6 +806,18 @@ async function storedBytesUnder(store, root) {
   return bytesOf((await listFiles(store, root)).values());
 }
 
+/**
+ * How many files this job has copied: the keys under the branch's own prefix,
+ * relative to the branch. A batch limit is about the files on disk, so this is
+ * the count that answers it (drive#844 in-run review).
+ * @param {FileStore} store a scoped store
+ * @param {Branch} branch
+ * @returns {Promise<number>}
+ */
+async function copiedFileCount(store, branch) {
+  return (await listFiles(store, branch.branchPrefix)).size;
+}
+
 /** How many of the account's own branches occupy an in-flight state right now:
  * the count the claim's own WHERE enforces (drive#553). Read back only to tell
  * a cap refusal from a byte-limit refusal, never to decide either (drive#801).
@@ -1394,7 +1406,17 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   // Progress is the files this job has copied, not the size of the snapshot it
   // copies: the snapshot is seeded with the whole frozen listing, so counting
   // its keys would report the branch finished on its first batch.
-  const files = doneSoFar + copied.copied;
+  //
+  // Which of the two real counts applies depends on the walk. While there is
+  // more source to walk it is this job's own count plus what this batch moved.
+  // On the batch that finishes the walk the saved snapshot already holds every
+  // file the branch will ever hold, so its size is the frozen listing and not
+  // the copy's size; the count is the files under the branch prefix instead.
+  // Adding the count to that size was the trap drive#844's review found: a
+  // resumed copy counted its own past batches again on the finishing batch, so
+  // a 1003 file branch passed BRANCH_FILE_LIMIT and the caller got a
+  // `branch-too-large` for a branch that fits.
+  const files = copied.done ? await copiedFileCount(store, branch) : doneSoFar + copied.copied;
   if (files > BRANCH_FILE_LIMIT) {
     await removePrefixFiles(store, branch.branchPrefix);
     const error = failureMessage("branch-too-large");
