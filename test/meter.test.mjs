@@ -18,7 +18,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../core/billing.js";
+import {
+  BYTES_PER_GB as BILLING_BYTES_PER_GB,
+  BILLING_CONFIG,
+  MINUTE_MS as BILLING_MINUTE_MS,
+  meteredMonthlyBillUsd,
+} from "../core/billing.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
@@ -153,6 +158,8 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
   const freeGb = BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth;
   assert.equal(freeGb, 50, "$1 at 2c per GB-month is 50 GB - the spec's 'about 50 GB'");
   assert.equal(BYTES_PER_GB, 1_000_000_000, "decimal GB, the one the spec prices in");
+  assert.equal(BYTES_PER_GB, BILLING_BYTES_PER_GB, "the meter and the invoice share one GB");
+  assert.equal(MINUTE_MS, BILLING_MINUTE_MS, "the meter and the invoice share one minute");
 
   // A month of whole minutes at that size: ONE version of the credit's GB,
   // written at the month's first instant and live to the end of it, so its

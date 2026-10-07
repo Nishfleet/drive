@@ -229,7 +229,7 @@ export function renewTtlSeconds(device, ceiling) {
 /** @typedef {"read_only"|"read_write"} TeamRole */
 
 /** @type {ReadonlyArray<TeamRole>} */
-export const TEAM_ROLES = ["read_only", "read_write"];
+const TEAM_ROLES = ["read_only", "read_write"];
 
 /**
  * The one role to capabilities table for a team member (drive#20). A team key
