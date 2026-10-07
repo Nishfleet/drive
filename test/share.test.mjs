@@ -464,6 +464,10 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
 });
 
 // ------------------------------------------------- the feed half of the list
+//
+// The two tests here that replace `globalThis.fetch` do so inside try/finally and
+// restore it in the finally, so they are safe under `node --test`'s default
+// serial runner: the replace is undone before the next test starts.
 
 /**
  * Three digests the shape of the stock export's own rows carries: a line of 64
