@@ -76,10 +76,12 @@ export default defineWorker({
     // Each binding needs its own namespace: Cloudflare wants a positive
     // integer string unique per account, and a namespace another binding
     // already uses fails the deploy with 10021. The site Worker holds 1001
-    // (waitlist), 1002/1003 (sign-in), 1004/1005 (request-upload) and 1008
-    // (share download), so the api Worker's pair is 1006/1007. Both configs
-    // are one minute, the waitlist's period, so one number describes every
-    // rate limit on this account.
+    // (waitlist), 1002/1003 (sign-in), 1004/1005 (request-upload), 1008
+    // (share download), 1009 (health) and 1010/1011 (share and request mint).
+    // This Worker's device pair is 1006/1007 and the key-mint limiter below
+    // is 1012. Both
+    // configs are one minute, the waitlist's period, so one number describes
+    // every rate limit on this account.
     DEVICE_RATE_LIMITER: bindings.rateLimit({
       namespace: "1006",
       simple: { limit: 60, period: 60 },
@@ -87,6 +89,25 @@ export default defineWorker({
     DEVICE_GLOBAL_RATE_LIMITER: bindings.rateLimit({
       namespace: "1007",
       simple: { limit: 600, period: 60 },
+    }),
+    // drive issue #552: the per-account limit the key mint runs behind, ahead
+    // of the live-key count cap the store enforces. The count caps what an
+    // account may hold (20 live keys, keyprovider.js KEY_COUNT_CAP); this one
+    // caps how fast mints are tried — 10 a minute per account, far above a
+    // person's pace (one key per device or tool, a handful in a sitting) and
+    // far below what a looping script needs to matter before the next
+    // nightly sweep. Keyed on the account id, not the client IP: the caller
+    // is signed in, and one account's loop must not spend another account's
+    // quota. Unlike the device pair it does not fail closed at the route on a
+    // missing binding (the account gate and the count cap bind the route
+    // anyway), but the deploy config gate refuses to ship without it, which
+    // is what makes the name load-bearing.
+    // Namespace 1012: 1001–1005 and 1008–1011 are the site Worker, 1006/1007
+    // are this Worker's device pair. A namespace another binding already uses
+    // fails the deploy with 10021.
+    KEYS_RATE_LIMITER: bindings.rateLimit({
+      namespace: "1012",
+      simple: { limit: 10, period: 60 },
     }),
     // drive#462: the iDrive e2 reseller API token, the credential that mints
     // a key limited to ONE bucket. iDrive e2 cannot scope a key to a folder

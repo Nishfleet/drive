@@ -1,8 +1,8 @@
 // Search: find any file by name in under a second (drive issue #18,
-// build-spec.md "Against Space"). One D1 table (`file_index`, migration
+// build-spec.md "Against the competitor"). One D1 table (`file_index`, migration
 // 0002) holds one row per file the drive knows about, and the search reads
 // only that table and the trigram index beside it (`file_index_fts`,
-// migration 0032) — it never lists the bucket. The two feeds the spec names
+// migration 0039) — it never lists the bucket. The two feeds the spec names
 // are here too:
 //
 //   * the write path — `withIndex(store, db, account)` wraps a FileStore so
@@ -20,7 +20,7 @@
 // and the bar in test/search.test.mjs is measured on a million-file account.
 //
 // Nothing here writes the trigram table. Three triggers on `file_index`
-// (migration 0032) mirror every row change into it inside the statement that
+// (migration 0039) mirror every row change into it inside the statement that
 // made the change, so the index row and its search row are written, deleted or
 // fail together, and every writer of `file_index` — including
 // src/account-close.js's purge — is mirrored without knowing the table exists.
@@ -197,7 +197,7 @@ export function searchSql(words, { accountId, limit }) {
         // The two facts the trigram table does not carry are read back from
         // file_index by its (account_id, path) primary key, and the EXISTS
         // in the WHERE is what keeps the two tables in step from the reader's
-        // side. The triggers that maintain the trigram table (migration 0032)
+        // side. The triggers that maintain the trigram table (migration 0039)
         // write both rows inside one statement, so they cannot drift; the
         // EXISTS is the reader's own assertion of the same invariant, and it
         // costs one seek on the primary key SQLite already uses for the two
@@ -372,7 +372,7 @@ export function upsertStatements(db, rows) {
 
 /** The one prepared statement that drops one row. The trigram table is keyed
  * by file_index's rowid and a trigger on file_index drops that row inside this
- * same DELETE (migration 0032), so the index row and the search row go
+ * same DELETE (migration 0039), so the index row and the search row go
  * together and nothing here has to know the trigram table exists.
  * @param {D1Database} db
  * @param {{id: string}} account
@@ -433,7 +433,7 @@ export async function reconcileIndex(db, store, account, options = {}) {
     }
   }
   // One statement drops every row of the account, and a trigger on file_index
-  // (migration 0032) drops each row's trigram row inside the same DELETE, so a
+  // (migration 0039) drops each row's trigram row inside the same DELETE, so a
   // rebuild can never answer a search from rows the store no longer has.
   await db.batch([db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id)]);
   for (let start = 0; start < rows.length; start += batchSize * ROWS_PER_STATEMENT) {
@@ -596,7 +596,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       const at = now();
       // One batch, one statement pair: the row and its trigram row are written
       // inside the upsert itself by the AFTER INSERT/UPDATE triggers (migration
-      // 0032), so a save cannot land the index row and lose the search row.
+      // 0039), so a save cannot land the index row and lose the search row.
       await db.batch(
         upsertStatements(db, [fileRow(account, path, { size: counted.bytes(), modified: at }, at)]),
       );

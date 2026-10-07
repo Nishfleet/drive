@@ -84,7 +84,7 @@ function makeD1() {
     "waitlist/0001_waitlist.sql",
     "drive/0002_file_index.sql",
     "drive/0010_accounts_devices.sql",
-    "drive/0032_file_index_fts.sql",
+    "drive/0039_file_index_fts.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -338,7 +338,8 @@ test("the trigram search ranks exact, prefix then middle (drive#571)", async () 
     ),
   );
   /** @param {string} q */
-  const rank = async (q) => (await searchDrive(db, ACCOUNT, q)).results?.map((row) => row.name) ?? [];
+  const rank = async (q) =>
+    (await searchDrive(db, ACCOUNT, q)).results?.map((row) => row.name) ?? [];
   // Exact first, then prefix matches in name order, then a match in the middle.
   assert.deepEqual(await rank("report"), [
     "report",
