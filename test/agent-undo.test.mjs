@@ -26,9 +26,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createMemoryStore, createS3Store, scopeStore, storageBucketForKey } from "../core/files.js";
-import { decodeEntities } from "../core/s3-listing.js";
+import {
+  createMemoryStore,
+  createS3Store,
+  scopeStore,
+  storageBucketForKey,
+} from "../core/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { decodeEntities } from "../core/s3-listing.js";
 import {
   createBranch,
   createKvSnapshotStore,
