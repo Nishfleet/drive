@@ -13,8 +13,8 @@ import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../../core/files.js";
 import { failureMessage } from "../../core/messages.js";
 import { createBranch, createKvSnapshotStore, getBranch } from "../../src/branches.js";
-import { createTestKv } from "../harness.mjs";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
+import { createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-reserved", name: "Reserved" };
 const GB = 1e9;
@@ -180,7 +180,11 @@ test("a row written before the column is summed as zero bytes, not as a guess (#
         "WHERE account_id = ?1 AND state = 'creating'",
     )
     .get(ACCOUNT.id);
-  assert.equal(sum.reserved, 0, "a NULL is read as zero bytes, the honest value for an unmeasured row");
+  assert.equal(
+    sum.reserved,
+    0,
+    "a NULL is read as zero bytes, the honest value for an unmeasured row",
+  );
   assert.equal((await getBranch(db, snapshots, ACCOUNT, "legacy"))?.reservedBytes, 0);
   // The sum does not fail on it, and the create behind it is still judged on
   // what the database can measure.
@@ -193,5 +197,9 @@ test("a row written before the column is summed as zero bytes, not as a guess (#
     () => Date.now(),
     queue,
   );
-  assert.equal(second.state, "creating", "the account is at exactly the limit with this row uncounted");
+  assert.equal(
+    second.state,
+    "creating",
+    "the account is at exactly the limit with this row uncounted",
+  );
 });
