@@ -778,3 +778,161 @@ test("approve of a branch still being created answers 409, not 500", async () =>
   const row = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(row?.state, "creating");
 });
+
+test("a create batch writes only its own delta, so KV reads and writes per batch do not grow with the branch", {
+  timeout: 180_000,
+}, async () => {
+  // The batch must not read and rewrite the whole snapshot (drive#842). At the
+  // 100,000-file cap that is ~1,250 reads and writes of a value up to ~11 MiB.
+  // So this drives one create batch at a time against a KV stand-in that counts
+  // every read and write, and pins the per-batch counts at two branch sizes:
+  // if they were the same the cost is per batch, not per branch.
+
+  /**
+   * A KV namespace that counts the reads and writes, and how many bytes each
+   * put carried, so a whole-snapshot rewrite shows up as bytes that grow with
+   * the branch even when the count does not.
+   * @param {KVNamespace} inner
+   */
+  function countingKv(inner) {
+    /** @type {{reads: number, writes: number, readBytes: number, writeBytes: number}} */
+    const counts = { reads: 0, writes: 0, readBytes: 0, writeBytes: 0 };
+    return {
+      counts,
+      reset() {
+        counts.reads = 0;
+        counts.writes = 0;
+        counts.readBytes = 0;
+        counts.writeBytes = 0;
+      },
+      kv: /** @type {KVNamespace} */ (
+        /** @type {unknown} */ ({
+          ...inner,
+          /** @param {string} key */
+          async get(key) {
+            counts.reads += 1;
+            const value = await inner.get(key);
+            counts.readBytes += typeof value === "string" ? value.length : 0;
+            return value;
+          },
+          /**
+           * @param {string} key
+           * @param {string} value
+           */
+          async put(key, value) {
+            counts.writes += 1;
+            counts.writeBytes += typeof value === "string" ? value.length : 0;
+            return inner.put(key, value);
+          },
+        })
+      ),
+    };
+  }
+
+  /**
+   * Runs one create of `files` files batch by batch, returning the busiest
+   * single batch's KV cost.
+   * @param {number} files
+   */
+  async function perBatchCost(files) {
+    const raw = createMemoryStore();
+    const scoped = scopeStore(raw, ACCOUNT);
+    const pending = [];
+    for (let index = 0; index < files; index += 1) {
+      pending.push(scoped.write(`/big/${index}.txt`, new Blob(["x"]).stream(), "text/plain"));
+      if (pending.length === 200) {
+        await Promise.all(pending.splice(0, 200));
+      }
+    }
+    await Promise.all(pending);
+    const db = createTestD1();
+    const counted = countingKv(createTestKv());
+    const snapshots = createKvSnapshotStore(counted.kv);
+    const started = await createBranch(
+      db,
+      snapshots,
+      scoped,
+      ACCOUNT,
+      { folder: "/big", name: "work" },
+      () => Date.now(),
+      fakeQueue(),
+    );
+    assert.equal(started.state, "creating");
+    const row = await getBranch(db, snapshots, ACCOUNT, "work");
+    assert.ok(row);
+    let batches = 0;
+    let busiestReads = 0;
+    let busiestWrites = 0;
+    let busiestReadBytes = 0;
+    let busiestWriteBytes = 0;
+    for (let step = 0; step < 40_000; step += 1) {
+      counted.reset();
+      const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+      if (result.error) {
+        assert.fail(JSON.stringify(result));
+      }
+      if (result.done) {
+        break;
+      }
+      batches += 1;
+      busiestReads = Math.max(busiestReads, counted.counts.reads);
+      busiestWrites = Math.max(busiestWrites, counted.counts.writes);
+      busiestReadBytes = Math.max(busiestReadBytes, counted.counts.readBytes);
+      busiestWriteBytes = Math.max(busiestWriteBytes, counted.counts.writeBytes);
+    }
+    const done = await getBranch(db, snapshots, ACCOUNT, "work");
+    assert.equal(done?.state, "open");
+    assert.equal(Object.keys(done?.snapshot ?? {}).length, files, "every file is in the snapshot");
+    assert.equal(done?.jobDone, files);
+    return { batches, busiestReads, busiestWrites, busiestReadBytes, busiestWriteBytes };
+  }
+
+  const small = await perBatchCost(2_000);
+  const large = await perBatchCost(20_000);
+  assert.ok(
+    small.batches > 2 && large.batches > small.batches,
+    `the copy really did run many batches: ${small.batches} then ${large.batches}`,
+  );
+  assert.equal(
+    large.busiestReads,
+    small.busiestReads,
+    `a batch must read a constant number of keys: ${small.busiestReads} at 2,000 files, ` +
+      `${large.busiestReads} at 20,000`,
+  );
+  assert.equal(
+    large.busiestWrites,
+    small.busiestWrites,
+    `a batch must write a constant number of keys: ${small.busiestWrites} at 2,000 files, ` +
+      `${large.busiestWrites} at 20,000`,
+  );
+  // The bytes move with the branch otherwise: a batch that reads and rewrites
+  // the snapshot pays the whole listing every time, which is the cost this
+  // issue removes, so a per-batch byte count is the half a call count cannot
+  // see (the chunked store writes one key per 20 MiB, so the key count alone
+  // is flat on a 2 MiB and a 12 MiB snapshot alike).
+  //
+  // A batch's own bytes are its 80 files' names and fingerprints, so they are
+  // bounded by the batch rather than equal across branch sizes: a name in the
+  // 20,000-file case carries one more digit than in the 2,000-file one, which is
+  // 80 bytes over 80 names and is still one batch's worth of work. What must not
+  // happen is the per-batch cost growing with the branch, so the bound is a few
+  // multiples of a single batch — and a whole-snapshot read is 10x that at
+  // 20,000 files, which is what this pins down.
+  const batchBytes = Math.max(small.busiestReadBytes, small.busiestWriteBytes);
+  /** @type {Array<[string, number, number]>} */
+  const perBatchBytes = [
+    ["read", small.busiestReadBytes, large.busiestReadBytes],
+    ["write", small.busiestWriteBytes, large.busiestWriteBytes],
+  ];
+  for (const [label, smallBytes, largeBytes] of perBatchBytes) {
+    // The whole point: per-batch cost cannot scale with the branch. At 20,000
+    // files a whole-snapshot rewrite is megabytes, so a bound of two batches'
+    // own bytes is two orders of magnitude away from the behaviour this
+    // removes, and loose enough for the extra digit in each of 80 names.
+    assert.ok(
+      largeBytes <= batchBytes * 2,
+      `a batch must ${label} a bounded number of bytes, not the whole listing: ${smallBytes} ` +
+        `at 2,000 files and ${largeBytes} at 20,000, against one batch's ${batchBytes}`,
+    );
+  }
+});
