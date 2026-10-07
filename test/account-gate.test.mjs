@@ -23,6 +23,7 @@ import { test } from "node:test";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../core/billing.js";
 import { CAP_ENDPOINT } from "../core/cap.js";
 import { isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT } from "../core/export.js";
 import {
   createMemoryStore,
   FILES_ENDPOINT,
@@ -35,6 +36,7 @@ import { STATUS_ENDPOINT } from "../core/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
+import { DEVICES_ENDPOINT } from "../src/devices-page.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
@@ -115,6 +117,11 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/restore`,
   `${USAGE_ENDPOINT}`,
   `${USAGE_ENDPOINT}/`,
+  // drive#547: own-data export, served on the site Worker so a signed-in
+  // browser can download it before the api Worker is bound. Same gate as
+  // the usage read: the document is this account's records.
+  `${EXPORT_ENDPOINT}`,
+  `${EXPORT_ENDPOINT}/`,
   // drive issue #64: the spending cap write. Same gate as the usage read.
   `${CAP_ENDPOINT}`,
   `${CAP_ENDPOINT}/`,
@@ -164,6 +171,9 @@ const ACCOUNT_ROUTES = [
   // requires the same 401 for a stranger.
   `${PORTAL_ENDPOINT}`,
   `${PORTAL_ENDPOINT}/`,
+  // drive#525: the devices page lists keys and revokes one at the provider.
+  `${DEVICES_ENDPOINT}`,
+  `${DEVICES_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -237,10 +247,12 @@ test("every route src/index.js registers is either public or behind the gate", a
         ACCOUNT_ROUTES.includes(path) ||
         path.startsWith(FILES_ENDPOINT) ||
         path.startsWith(USAGE_ENDPOINT) ||
+        path.startsWith(EXPORT_ENDPOINT) ||
         path.startsWith(STATUS_ENDPOINT) ||
         path.startsWith(SEARCH_ENDPOINT) ||
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
+        path.startsWith(DEVICES_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
         path.startsWith(STARTER_ENDPOINT) ||
@@ -274,6 +286,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         registered.some((path) => path.endsWith("/*") && route.startsWith(path.slice(0, -1))) ||
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
+        route.startsWith(EXPORT_ENDPOINT) ||
         route.startsWith(CAP_ENDPOINT) ||
         route.startsWith(BALANCE_ENDPOINT) ||
         route.startsWith(TOPUP_ENDPOINT) ||
@@ -282,6 +295,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(DEVICES_ENDPOINT) ||
         route.startsWith(STARTER_ENDPOINT) ||
         route.startsWith(CLOSE_ENDPOINT) ||
         route.startsWith(CLOSE_CANCEL_ENDPOINT) ||

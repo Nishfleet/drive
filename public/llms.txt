@@ -8,8 +8,9 @@
 Drive is a mounted folder (macOS and Linux) where your files live in object
 storage; what is on your disk is the parts you have opened, held in a cache
 capped at 20G with 1G of your disk always kept free. Libraries bigger than the
-laptop open on demand. Agents read and write the same files through the folder, the
-MCP filesystem server, or the S3 API, each with its own scoped key.
+laptop open on demand. Agents read and write the same files through the folder
+and the stock MCP filesystem server; `drive init` connects each tool it finds
+and gives that tool its own key.
 
 ## Pricing
 
@@ -48,20 +49,23 @@ Worked examples, each kept all month, with a usual 1 TB plan beside it:
 - A spending cap you set; at the cap the drive goes read-only and nothing is
   deleted.
 - Agents read and write freely but cannot permanently delete; a person can undo
-  an agent's delete. Branches copy a folder for an agent to work in, then you
-  approve or discard the copy.
+  an agent's delete. `drive init` gives each tool its own mount at ~/Drive-agents/<tool> on
+  its own key, and the MCP server and the tool's allowed folders use that path.
+  Branches copy a folder for an agent to work in, then you approve or discard the
+  copy.
 
 ## Docs
 
 Every page below is one plain-words page about the drive, also served as
 Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
-holds all nine in one file.
+holds all ten in one file.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the maximum and four worked sizes.
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
+- [When something goes wrong](https://drive-pricing.nishant345.workers.dev/docs/troubleshooting.md): what to run first, the log on each system, a lost laptop, your files out.
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits.md): what version 1 does not do, in plain words.
 - [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md): measured speed, including where we lose.
 - [Security](https://drive-pricing.nishant345.workers.dev/docs/security.md): who can see your files, and what we cannot claim.

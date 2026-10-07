@@ -160,6 +160,32 @@ test("every indexable page names its own canonical URL", () => {
   }
 });
 
+test("every shipped page links the served favicon", () => {
+  // drive#546: no page linked an icon, so every tab fetched /favicon.ico and
+  // hit the 404 page. The file ships and every page points at it.
+  assert.ok(
+    existsSync(new URL(SITE.faviconPath.replace(/^\//, ""), publicDir)),
+    `public${SITE.faviconPath} must exist`,
+  );
+  for (const page of PAGES) {
+    const name = fileFor(page);
+    const html = readPage(name);
+    // Exactly one icon link. `link()` reads the first match, so a page that
+    // kept the old inline data: URI favicon beside the new one would pass the
+    // equality below while the browser still prefers the stale icon.
+    assert.equal(
+      html.match(/<link\s+rel="icon"/gi)?.length ?? 0,
+      1,
+      `${name} must carry exactly one <link rel="icon">`,
+    );
+    assert.equal(
+      link(html, "icon"),
+      SITE.faviconPath,
+      `${name} must carry <link rel="icon" href="${SITE.faviconPath}">`,
+    );
+  }
+});
+
 test("every indexable page carries a complete Open Graph card that resolves", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
@@ -306,6 +332,7 @@ test("every file the metadata points at is one this site actually ships", () => 
   for (const path of [
     SITE.homePath,
     SITE.ogImagePath,
+    SITE.faviconPath,
     SITE.robotsPath,
     SITE.sitemapPath,
     SITE.llmsPath,

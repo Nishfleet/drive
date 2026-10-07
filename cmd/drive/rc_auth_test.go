@@ -9,6 +9,7 @@ import (
 )
 
 func TestPrepareMountAuthWritesEnvAt0600AndOmitsTheSecretFromConf(t *testing.T) {
+	t.Setenv("DRIVE_RC_ADDR", "")
 	home := t.TempDir()
 	cfg := testStorage()
 	p := BuildMountPlan("linux", home, "rclone", cfg)
@@ -46,6 +47,41 @@ func TestPrepareMountAuthWritesEnvAt0600AndOmitsTheSecretFromConf(t *testing.T) 
 	}
 	if auth.User != p.RCUser || auth.Pass != p.RCPass {
 		t.Errorf("ReadRCAuth = %+v, want the generated pair", auth)
+	}
+	if p.RCAddr == "" || p.RCAddr == loopbackRCAddr {
+		t.Errorf("prepareMountAuth RCAddr = %q, want a free loopback port, not the shipped 5572", p.RCAddr)
+	}
+	if !IsLoopbackAddr(p.RCAddr) {
+		t.Errorf("prepareMountAuth RCAddr = %q, want loopback", p.RCAddr)
+	}
+	if auth.Addr != p.RCAddr {
+		t.Errorf("ReadRCAuth.Addr = %q, want the bound address %q", auth.Addr, p.RCAddr)
+	}
+	if !strings.Contains(body, rcAddrEnvName+"="+p.RCAddr) {
+		t.Errorf("rclone.env missing the rc address %s:\n%s", p.RCAddr, body)
+	}
+	if !hasArgPair(p.Args(), "--rc-addr", p.RCAddr) {
+		t.Errorf("Args() missing --rc-addr %s: %v", p.RCAddr, p.Args())
+	}
+}
+
+func TestTwoPreparedMountsDoNotShareAnRCAddr(t *testing.T) {
+	t.Setenv("DRIVE_RC_ADDR", "")
+	cfg := testStorage()
+	seen := map[string]string{}
+	for i := 0; i < 2; i++ {
+		home := t.TempDir()
+		p := BuildMountPlan("linux", home, "rclone", cfg)
+		if err := prepareMountAuth(home, &p, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if p.RCAddr == "" || p.RCAddr == loopbackRCAddr {
+			t.Fatalf("mount %d bound %q, want a free port", i, p.RCAddr)
+		}
+		if other, ok := seen[p.RCAddr]; ok {
+			t.Fatalf("homes %s and %s both bound %s", other, home, p.RCAddr)
+		}
+		seen[p.RCAddr] = home
 	}
 }
 
@@ -136,4 +172,40 @@ func TestUnauthenticatedConfigDumpIsRejectedOnALiveMount(t *testing.T) {
 		t.Fatalf("unauthenticated config/dump status %d, want 401 or 403", resp.StatusCode)
 	}
 	t.Logf("unauthenticated config/dump on live mount at %s: HTTP %d", addr, resp.StatusCode)
+}
+
+// TestTwoStandinMountsDoNotCollideOnRC is drive#807 finish line 3: two
+// product mounts on one machine each bind their own stored loopback port,
+// and each client's core/version reaches that mount, not the other.
+func TestTwoStandinMountsDoNotCollideOnRC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stand-in proof skipped in -short mode")
+	}
+	t.Setenv("DRIVE_RC_ADDR", "")
+	root := t.TempDir()
+	cfg, _ := standinOn(t, root, "u/rccollide")
+	var addrs [2]string
+	for i, name := range []string{"home-a", "home-b"} {
+		home := filepath.Join(root, name)
+		mountDir := filepath.Join(home, "Drive")
+		if err := os.MkdirAll(mountDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_ = standinEnv(t, home, cfg)
+		_, stop := startStandinMount(t, home, mountDir, cfg)
+		t.Cleanup(stop)
+		addr := storedRCAddr(t, home)
+		addrs[i] = addr
+		c := rcClientForTestHome(t, home, addr, "")
+		ctx, cancel := rcCtx()
+		if err := c.requireVersion(ctx); err != nil {
+			cancel()
+			t.Fatalf("mount %s at %s core/version: %v", name, addr, err)
+		}
+		cancel()
+	}
+	if addrs[0] == addrs[1] {
+		t.Fatalf("both mounts bound %s", addrs[0])
+	}
+	t.Logf("two mounts bound %s and %s", addrs[0], addrs[1])
 }

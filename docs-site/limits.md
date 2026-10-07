@@ -28,7 +28,14 @@ would rather you read it here than find out in week three.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
-- **Windows installs with an MSI, not a command.** Windows gets the
+- **Twenty live keys per account.** An account holds at most 20 live keys at
+  once — its device, agent, s3 and branch keys all counted together. A mint
+  past the cap is refused until you revoke a key you no longer use or let an
+  hourly key expire. The storage vendor sets no per-account limit of its
+  own, so this cap is ours (and the nightly sweep removes the vendor keys of
+  expired or revoked entries, so dead rows do not hold slots).
+- **Windows is not in version 1, and its installer is an unsigned MSI, not a
+  command.** Windows gets the
   same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,

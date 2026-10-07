@@ -141,7 +141,7 @@ test("an account id and branch name from the real id format are accepted", () =>
 
 // ---- the one-hour credential (drive issue #106) ----
 //
-// Space swaps a key for a one-hour scoped credential, so a leaked agent key
+// The competitor swaps a key for a one-hour scoped credential, so a leaked agent key
 // stops working on its own. The lifetime is a per-kind table for the same
 // reason the capabilities are: one place a kind's rules live, so a kind cannot
 // be given an hour in one file and forever in another.
