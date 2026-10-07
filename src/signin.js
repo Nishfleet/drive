@@ -641,9 +641,7 @@ export async function handleSigninLinkVerify(request, env) {
           email: account.email,
         });
       } catch (cause) {
-        console.error(
-          `billing row for account ${account.id} did not write: ${String(cause)}`,
-        );
+        console.error(`billing row for account ${account.id} did not write: ${String(cause)}`);
       }
       // The account's own bucket exists from the first sign-in (drive#540):
       // the verify step provisions `drv-<id>` through the one provisionBucket

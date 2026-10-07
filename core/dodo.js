@@ -222,11 +222,15 @@ export async function unbillableAccounts(db, options = {}) {
   );
   const accounts = Number(row?.accounts ?? 0);
   if (!Number.isSafeInteger(accounts) || accounts < 0) {
-    throw new TypeError(`the unbillable account count is not a whole number, got ${String(row?.accounts)}`);
+    throw new TypeError(
+      `the unbillable account count is not a whole number, got ${String(row?.accounts)}`,
+    );
   }
   const since = row?.since === null || row?.since === undefined ? null : Number(row.since);
   if (since !== null && !Number.isSafeInteger(since)) {
-    throw new TypeError(`usage_minutes has a row whose hour is not a number: ${String(row?.since)}`);
+    throw new TypeError(
+      `usage_minutes has a row whose hour is not a number: ${String(row?.since)}`,
+    );
   }
   return { accounts, since };
 }
