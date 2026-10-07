@@ -73,9 +73,7 @@ import { unauthorizedResponse } from "../core/status.js";
  * plus a listing or two and a progress write is under 100 subrequests. */
 export const BRANCH_JOB_BATCH_FILES = 80;
 
-/** The remaining branch size cap once jobs run in batches (drive#563). The
- * snapshot for 100,000 files is ~11 MiB of JSON in memory, and the documented
- * plan in cloudflare.config.ts is this number. A larger folder is refused. */
+// Remaining branch size cap once jobs run in batches (drive#563).
 const BRANCH_FILE_LIMIT = 100_000;
 
 /** Keys per DeleteObjects call, the provider's own ceiling (core/files.js
@@ -193,15 +191,7 @@ function frozenSnapshotKey(key) {
   return `${key}/frozen`;
 }
 
-/**
- * The size cap one Workers KV namespace puts on one value: 25 MiB. One
- * snapshot entry measured ~117 bytes (test/branches-snapshot.test.mjs), so
- * the cap is a file count - about 215,000 entries in one string - and a
- * branch past it was refused by the namespace with nothing in this design to
- * catch it (drive issue #564). The chunker splits at an order of magnitude
- * under the cap, so a write that grows between measuring and landing still
- * fits, and a snapshot grows into more chunks instead of into a refusal.
- */
+// KV value cap is 25 MiB; split a snapshot an order of magnitude under it (drive#564).
 const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
 
 /**

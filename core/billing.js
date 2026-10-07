@@ -64,8 +64,6 @@ export const QUOTE_MONTH_MINUTES = 31 * 1440;
 // Exported for the same reason: the docs page's worked table divides by it too,
 // so a docs example and an invoice example cannot disagree about what a TB is.
 export const GB_PER_TB = 1000;
-// The decimal GB is core/units.js's. Re-exported so callers that already
-// import this module keep one name for the invoice GB (issue #583).
 
 /**
  * The billing config for a price: the price's own numbers plus the

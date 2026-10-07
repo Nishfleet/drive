@@ -129,9 +129,6 @@ export function toMillis(value, field) {
 // stopped (drive issue #104).
 export const MINIMUM_MINUTES_PER_VERSION = 60;
 
-// The decimal GB and the minute are core/units.js's. Re-exported so the
-// meter SQL and the invoice keep one name each without this module importing
-// billing.js (that import would cycle: meter → files → abuse-guards → billing).
 export { BYTES_PER_GB, MINUTE_MS };
 
 export const HOUR_MS = 60 * MINUTE_MS;

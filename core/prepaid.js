@@ -34,7 +34,7 @@ import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
 
-/** The env value that turns the pause on. Anything else leaves it off. */
+// The env value that turns the pause on. Anything else leaves it off.
 const PREPAID_PAUSE_ON = "on";
 
 /** A started auto top-up is not started again for this long. */

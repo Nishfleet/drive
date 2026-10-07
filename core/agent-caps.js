@@ -37,11 +37,7 @@ import { monthUsageThrough } from "./meter.js";
 // somebody's own uploads, which is the failure these caps must not have.
 const AGENT_KEY_KIND = "agent";
 
-/**
- * Whether this key is one the caps cover.
- * @param {{kind?: string}|null|undefined} device
- * @returns {boolean}
- */
+/** @param {{kind?: string}|null|undefined} device */
 function isAgentKey(device) {
   return device?.kind === AGENT_KEY_KIND;
 }

@@ -22,8 +22,6 @@ export const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 
 export const CLOSE_GRACE_DAYS = 30;
 export const CLOSE_REMINDER_DAYS = 25;
-// One day in seconds, from core/units.js's day, so the grace window and every
-// other expiry in the repo cannot disagree about what a day is (issue #583).
 const DAY_SECONDS = DAY_MS / 1000;
 
 // The account close cron runs on its own schedule, not inside the meter's

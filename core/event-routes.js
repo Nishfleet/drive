@@ -140,8 +140,7 @@ export async function storageEventsRoute(request, ctx) {
     return errorResponse(400, parsed.error);
   }
   for (const event of parsed.events) {
-    // Log the event name, version and time only. The object key is the
-    // customer's file path, so it stays out of Worker logs (issue #583).
+    // Event name, version and time only. The object key is a customer path.
     console.log(
       `[api] storage event ${event.eventName} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
     );

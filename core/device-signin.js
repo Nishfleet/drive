@@ -109,9 +109,8 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // days is the session TTL core/auth.js already chose, and for the same reason
 // ("the drive is reached on every visit, so signing in every week would be a
 // support ticket, not a security win"): a month bounds what a leak is worth
-// without asking a person to approve a code every few days. The month is three
-// tens of core/units.js's day, and keystore.test.js pins the two to each
-// other, so they cannot drift into two different months.
+// without asking a person to approve a code every few days. keystore.test.js
+// pins this to the session TTL, so they cannot drift into two different months.
 export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
 /**

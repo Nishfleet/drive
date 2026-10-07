@@ -1,8 +1,5 @@
-// Shared time and size units. This file imports nothing, so a module that
-// needs a day, a minute or a GB can take it without pulling Better Auth or
-// closing a billing/meter cycle. Putting DAY_MS on core/auth.js (issue #583's
-// first pass) made core/files.js import Better Auth and grew the site Worker
-// past the 3,520,000-byte budget.
+// Shared time and size units. This file imports nothing, so a day, a minute
+// or a GB can be taken without pulling Better Auth or billing.
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const MINUTE_MS = 60_000;

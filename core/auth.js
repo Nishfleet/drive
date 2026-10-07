@@ -63,8 +63,7 @@ export const SIGNIN_LINK_TTL_SECONDS = 600;
  * How long a session lives, and how often it is refreshed. Thirty days is the
  * browser-session length a person expects from a web app, refreshed when it is
  * used, so signing in every week would be a support ticket rather than a
- * security win. The day is core/units.js's, so this module does not export a
- * second copy.
+ * security win.
  */
 export const SESSION_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
@@ -441,11 +440,7 @@ async function sendSigninLink(env, link) {
  */
 export const IGNORING_SENTENCE = "If you did not ask for this, ignore it.";
 
-/** The device line's unknown half: the words a request without a readable
- * user-agent gets, so the sentence still names a device. One string, so
- * every mail this code sends carries the same words in the same place.
- * @type {string}
- */
+// Words a request without a readable user-agent gets, so the mail still names a device.
 const UNKNOWN_DEVICE_NAME = "an unknown device";
 
 /**

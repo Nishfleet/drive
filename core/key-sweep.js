@@ -30,14 +30,7 @@
 import { nowSeconds } from "./db.js";
 import { IdriveKeyError } from "./idrive-keys.js";
 
-/**
- * The most rows one sweep takes. The nightly cron is the only caller, so a
- * limit is how a backlog (a sweep skipped while a deployment was down) drains
- * a hundred keys a night instead of one unbounded vendor walk. Mirrors the
- * account-close batch (src/account-close.js): a per-row vendor failure does
- * not stop the rows behind it in the same 100, and a row that fails stays in
- * the next night's batch the way a failed close purge does.
- */
+// Most rows one nightly sweep takes, so a backlog drains 100 keys a night.
 const KEY_SWEEP_LIMIT = 100;
 
 /** The vendor's own words for "there is no such key". Their error body's
