@@ -19,7 +19,7 @@
 //     ceiling is asked with the account cap's own function (`capStatus` in
 //     core/billing.js), so the number that decides "this is over" is the number
 //     the usage page shows. No second money rule and no second ledger: the read
-//     is `monthUsageThrough` (core/meter.js), the same metered month the account
+//     is `size30Through` (core/meter.js), the same peak the account
 //     cap and the usage page read, and `agent_caps.month_spend_cents` is left
 //     unread so there is nowhere else for a spend total to live.
 //   - The daily half is the key's own requests to the drive's API, counted on
@@ -35,7 +35,7 @@
 // Worker. The caller (core/agent-caps.js) reads the row, counts the
 // request and hands the numbers here. That split is what lets the decision be
 // tested as plain data while the reading is tested against the real schema.
-import { BILLING_CONFIG, capStatus, minutesInMonth } from "./billing.js";
+import { BILLING_CONFIG, capStatus } from "./billing.js";
 import { capSwapPlan } from "./cap.js";
 
 // The ceilings an agent key gets when its row says nothing about its own.
@@ -151,7 +151,7 @@ function checkedUsd(value, name) {
  * call usageSummary() makes.
  *
  * @param {{
- *   usage: {gbMinutes: number, downloadBytes?: number, averageStoredGb?: number},
+ *   usage: {size30Bytes: number, downloadBytes?: number},
  *   caps?: {monthly_cap_usd?: unknown, daily_requests?: unknown},
  *   requestsToday?: number,
  *   day?: string,
@@ -169,22 +169,15 @@ export function agentCapStatus(agent) {
   }
   const usage = agent.usage;
   if (typeof usage !== "object" || usage === null) {
-    throw new TypeError(`agentCapStatus needs usage {gbMinutes}, got ${String(usage)}`);
+    throw new TypeError(`agentCapStatus needs usage {size30Bytes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
   // The month the cap counts is the calendar month `at` falls in (drive#531).
   // The whole bill, downloads included, the same way the account's own cap
   // counts it (drive#496).
-  const counted = capStatus(
-    usage.gbMinutes,
-    minutesInMonth(agent.at),
-    caps.monthlyCapUsd,
-    BILLING_CONFIG,
-    {
-      downloadBytes: usage.downloadBytes,
-      averageStoredGb: usage.averageStoredGb,
-    },
-  );
+  const counted = capStatus(usage.size30Bytes, caps.monthlyCapUsd, BILLING_CONFIG, {
+    downloadBytes: usage.downloadBytes,
+  });
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({
