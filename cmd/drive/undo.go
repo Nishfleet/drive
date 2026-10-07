@@ -203,7 +203,7 @@ func undoNow(client *APIClient, name string) error {
 		}
 	}
 	if answer.State != "discarded" {
-		return fail("unexpected")
+		return fail("unexpected rewind state " + answer.State)
 	}
 	who := strings.TrimSpace(answer.ChangedBy)
 	if who == "" {
