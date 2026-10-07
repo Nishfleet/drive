@@ -108,11 +108,22 @@ function dispatchEnv(options = {}) {
 }
 
 /**
+ * JSON start posts get `age: true` unless the body names `age` itself, so the
+ * rest of this file can keep proving mail, limits and verify without repeating
+ * the box. A JSON *string* is sent as written, which is how a missing age
+ * field is tested (drive#781).
  * @param {unknown} body
  * @param {{url?: string, headers?: Record<string, string>}} [options]
  */
 const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) => {
-  const payload = typeof body === "string" ? body : JSON.stringify(body);
+  const payload =
+    typeof body === "string"
+      ? body
+      : JSON.stringify(
+          typeof body === "object" && body !== null && !Array.isArray(body)
+            ? { age: true, ...body }
+            : body,
+        );
   return new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
@@ -239,6 +250,7 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
         method: "email",
         email: "you@example.com",
         card: "on",
+        age: "on",
       }),
     }),
     made.env,
@@ -269,7 +281,14 @@ test("a returning address signs in with no card field (drive#538)", async () => 
   const made = dispatchEnv();
   await signIn(made, "back@example.com");
   const response = await workerFetch(
-    post(JSON.stringify({ step: "start", method: "email", email: "back@example.com" })),
+    post(
+      JSON.stringify({
+        step: "start",
+        method: "email",
+        email: "back@example.com",
+        age: true,
+      }),
+    ),
     made.env,
   );
   assert.equal(response.status, 202);
@@ -400,13 +419,100 @@ test("every new-account path still cannot open an account through OAuth (drive#4
         "content-type": "application/x-www-form-urlencoded",
         origin: TEST_BASE_URL,
       },
-      body: new URLSearchParams({ step: "start", method: "email", email: "form@example.com" }),
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "form@example.com",
+        age: "on",
+      }),
     }),
     made.env,
   );
   assert.equal(form.status, 202, "the form path mails a link with no card field");
   assert.equal((await form.json()).ok, true);
   assert.equal(made.sent.length, 2);
+});
+
+test("a start without the age box is refused and mails nothing (drive#781)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "young@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "a refused start mails nothing");
+});
+
+test("a returning address without the age box is refused the same way (drive#781)", async () => {
+  const made = dispatchEnv();
+  await signIn(made, "known@example.com");
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "known@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(
+    made.sent.length,
+    1,
+    "the refused start mailed nothing more than the earlier sign-in",
+  );
+});
+
+test("a start with no age field is refused (drive#781)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+    made.env,
+  );
+  assert.equal(response.status, 400, "a start with no age field is refused");
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "a refused start mails nothing");
+  const row = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.equal(row, null, "no user row was written for a refused start");
+});
+
+test("the age box is what mails the link (drive#781)", async () => {
+  const made = dispatchEnv();
+  const off = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", age: "off" }),
+    made.env,
+  );
+  assert.equal(off.status, 400);
+  assert.deepEqual(await off.json(), { error: SIGNIN_COPY.needAge });
+  const withAge = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", age: true }),
+    made.env,
+  );
+  assert.equal(withAge.status, 202, "the age box is what mails the link");
+  assert.equal((await withAge.json()).ok, true);
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+});
+
+test("the form path is refused with no age box (drive#781)", async () => {
+  const made = dispatchEnv();
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "form@example.com",
+      }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 400, "the form path is refused with no age box");
+  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "the refused form post mailed nothing");
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -800,10 +906,10 @@ test("the twenty-first sign-in link in a day is answered like a sent link, and n
 });
 
 test("one address's ceiling is shared by every spelling of it", async () => {
-  // The address is the account key, and the account row is looked up by the
-  // lower(email) query (emailHasUser), so the counter is keyed the same way:
-  // Alice@, alice@ and ALICE@ share one ceiling. Without the lowercase key a
-  // script would mint five more links per spelling of the same inbox.
+  // The address is the account key, and the user row is looked up by
+  // lower(email), so the counter is keyed the same way: Alice@, alice@ and
+  // ALICE@ share one ceiling. Without the lowercase key a script would mint
+  // five more links per spelling of the same inbox.
   const made = dispatchEnv();
   for (let ask = 0; ask < 5; ask += 1) {
     const answer = await askForLink(made, "Same@b.co");
@@ -1825,7 +1931,6 @@ test("the page states the spec's two promises: a card at sign-up, and the member
   // stand-in; a real card waits on the Dodo key. A box here made every
   // returning customer tick "I understand a card is required".
   assert.doesNotMatch(page, /id="card"/);
-  assert.doesNotMatch(page, /type="checkbox"/);
   assert.doesNotMatch(page, /I understand a card is required/);
   assert.ok(page.includes(SIGNIN_COPY.noPlansLine), "the page must quote the no-minimum line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
@@ -1836,6 +1941,46 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     assert.equal(words.includes(banned), false, `the sign-in page must not say "${banned}"`);
   }
   assert.equal(/\d+\s*¢\s*per minute/.test(page), false, "no per-minute price on the sign-in page");
+});
+
+test("the page states the age rule and labels the age box in short (drive#781)", () => {
+  // The terms carry the rule; this page must show it once and carry the box
+  // that agrees to it. The server refuses a start without the box with the
+  // same sentence, so the page, the terms and the route cannot drift.
+  const terms = readFileSync(new URL("../public/terms.html", import.meta.url), "utf8");
+  assert.ok(terms.includes(SIGNIN_COPY.needAge), "the terms must carry the same age sentence");
+  assert.ok(page.includes(SIGNIN_COPY.needAge), "the page must say the age rule");
+  assert.equal(
+    page.split(SIGNIN_COPY.needAge).length - 1,
+    1,
+    "the age sentence appears exactly once on the page",
+  );
+  assert.ok(page.includes(`for="age"`), "the page carries a label for the age checkbox");
+  assert.ok(page.includes(SIGNIN_COPY.ageConsent), "the age box is labelled in short");
+  assert.ok(
+    page.includes('<input id="age" name="age" type="checkbox" value="on" required'),
+    "the page posts the required age box the route reads",
+  );
+});
+
+test("no other shipped page posts a sign-in start (drive#781)", () => {
+  // The age box lives on the sign-in form. Other pages post sign-out only.
+  const others = [
+    "../get-started.html",
+    "../public/files.html",
+    "../public/usage.html",
+    "../public/devices.html",
+    "../public/index.html",
+    "../public/upload.html",
+  ];
+  for (const rel of others) {
+    const html = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.equal(
+      html.includes('name="step" value="start"'),
+      false,
+      `${rel} must not post a sign-in start`,
+    );
+  }
 });
 
 test("the page's failure words are the message table's", () => {

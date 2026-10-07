@@ -852,8 +852,6 @@ test("the rewind route resumes a rewind the queue's retries left running (drive#
   // Nothing ran after the message was lost, so the branch's copies are still
   // there and the name is still claimed.
   assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
-  // The one message the setup sent is the message the retries used up. The
-  // resume sends no second one: it finishes the removal that message started.
   const messagesBefore = queue.sent.length;
 
   const resumed = await handleRewindRequest(
@@ -931,7 +929,7 @@ test("the create route resumes a copy the queue's retries left running (drive#84
   assert.equal(started.state, "creating");
   await exhaustRetries(queue.sent[0].body);
   const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
-  assert.equal(stuck?.state, "creating");
+  assert.equal(stuck?.state, "creating", "the row keeps its claim and its job");
   assert.equal(stuck?.jobKind, "create");
 
   // A different folder under the held name is still refused: resuming the row
@@ -1067,7 +1065,8 @@ test("the discard route cancels a copy the queue's retries left running (drive#8
   );
   await exhaustRetries(queue.sent[0].body);
   const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
-  assert.equal(stuck?.state, "creating");
+  assert.ok(stuck, "the row is still there with its claim");
+  assert.equal(stuck.state, "creating");
   assert.equal(await readText(scoped, "/.branches/work/a.txt"), null, "the copy never ran");
 
   const cancelled = await handleBranchesRequest(
@@ -1086,7 +1085,7 @@ test("the discard route cancels a copy the queue's retries left running (drive#8
   const row = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(row?.state, "discarded");
   assert.equal(row?.jobKind, "");
-  assert.equal(row?.reservedBytes, stuck?.reservedBytes, "the claim it reserved stays the record");
+  assert.equal(row?.reservedBytes, stuck.reservedBytes, "the claim it reserved stays the record");
   // The clean state: the original is untouched and the name is free.
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
   const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
