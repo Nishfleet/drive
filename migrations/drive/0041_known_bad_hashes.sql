@@ -1,4 +1,8 @@
 -- The known-bad hash list, loaded from a stock public feed (drive issue #826).
+-- Numbered 0041 because 0039 belongs to drive#802's file_index_fts and 0040 to
+-- the branch reserved-bytes column: drive#619's gate refuses a new file that
+-- shares a prefix, and a shared prefix leaves the apply order to the
+-- filesystem.
 -- The feed half of src/malware.js's list: abuse.ch MalwareBazaar's SHA-256
 -- export, downloaded daily by the KNOWN_BAD_FEED_SCHEDULE cron and stored here,
 -- so the share-mint and upload-request-drop checks read one indexed row instead
@@ -16,10 +20,12 @@
 -- stays the first sighting and a row never churns: a hash that cycles out of the
 -- feed stays refused. That is why no pruning by age is right here — a row that
 -- left the feed is still a row that was on a stock public list, and deleting it
--- would reopen the one file that list refuses. Growth is the feed's own rate —
--- the live run of 2026-10-07 (PR #834) loaded 1,502 hashes from that URL in
--- one cron trip, which is an estimate about the source rather than a promise
--- about it — and that cost is accepted rather than paid for with a pruning job.
+-- would reopen the one file that list refuses. Growth is the feed's own rate:
+-- the run of 2026-10-07T19:32:07Z on PR #834, with this file applied and
+-- src/malware.js's loader run against that URL, wrote 1,351 rows and stamped
+-- loaded_at 1791401527. That number moves with the source — the export is the
+-- recent window, so it is an estimate about abuse.ch rather than a promise
+-- about it — and the cost is accepted rather than paid for with a pruning job.
 --
 -- Expand only (drive issue #170): two new tables, no existing column touched,
 -- so the previous version of the code keeps running against this schema. D1 has
