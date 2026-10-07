@@ -1,6 +1,6 @@
 # Agent notes for drive
 
-A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.
+A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month for the biggest size in the last 30 days.
 
 - The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). These two repo files are the source. The vault copy under `02 Projects/competitor-clone/spec/` is a stale snapshot and is not kept in step: the vault is a private repo no worker can push to, and its copy of this spec is untracked (drive#89).
 - Every build step's finish line is proven on real files and real accounts, cited by path, id or timestamp. A green test alone is not done.

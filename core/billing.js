@@ -2,30 +2,30 @@
 // step 6).
 //
 // Plain data and pure functions: no Worker, no D1, no clock. The api Worker
-// reads `usage_minutes` and calls these; the usage page and `drive usage` /
-// `drive cap` read the same numbers, so the invoice, the page and the CLI
-// cannot disagree. The one fetch handler at the bottom serves GET /api/usage
-// with the standard Response, which node --test provides.
+// reads size30 and calls these; the usage page and `drive usage` / `drive cap`
+// read the same numbers, so the invoice, the page and the CLI cannot disagree.
+// The one fetch handler at the bottom serves GET /api/usage with the standard
+// Response, which node --test provides.
 //
-// The rule (drive#463, Nish 2026-10-04: pay only for what you store):
+// The rule (drive#642, Nish 2026-10-05: pay for the biggest size in 30 days):
 //
-//     avg_GB       = the month's GB-minutes / the minutes in that UTC calendar
-//                    month (time-weighted average, drive#531)
-//     storage      = min(rate x avg_GB, maxPerTb x max(1, avg_GB / 1000))
-//                    rate 2¢/GB-month, maxPerTb $10, the same for everyone
-//     downloads    = 1¢/GB above 3x the month's average stored size
+//     size30_GB    = the largest stored size in the trailing 30 days
+//     storage      = min(rate x size30_GB, maxPerTb x max(1, size30_GB / 1000))
+//                    rate 2¢/GB-month, maxPerTb $15, the same for everyone
+//     downloads    = 1¢/GB above 3x size30
 //     monthly_bill = storage + downloads
+//     daily_draw   = monthly_bill / 30, remainder carried in millicents
 //
-// So you pay 2¢ per GB until the bill reaches $10 (at 500 GB), a flat $10 from
-// there to 1 TB, and above 1 TB never more than $10 for each TB, prorated to
-// the GB (1.5 TB is $15, 4 TB is $40). There is no minimum, no membership, no
-// first-month discount and no free tier. The maximum follows the month's
-// average, the same number the meter charges, so a file held for 3 days
-// counts for 3 days in both halves of the min().
+// So you pay 2¢ per GB until the bill reaches $15 (at 750 GB), a flat $15 from
+// there to 1 TB, and above 1 TB never more than $15 for each TB, prorated to
+// the GB (1.5 TB is $22.50, 4 TB is $60). A file uploaded and deleted the next
+// day still sets size30 for 30 days. An empty drive that was empty for 30 days
+// pays nothing.
 //
 // monthBillCents() is the one function that returns this bill, in integer
-// cents, so the invoice, the usage page and the cap all read the same number.
-// The numbers come from core/pricing.js (PRICE), the one price source.
+// millicents (and whole cents for the cent fields), so the invoice, the usage
+// page and the cap all read the same number. The numbers come from
+// core/pricing.js (PRICE), the one price source.
 //
 // The cap line (`drive status`'s cap, and the usage response's `capLine`) is
 // in this file too, because it is the money's words: it reads the same
@@ -52,18 +52,20 @@ export { BYTES_PER_GB, MINUTE_MS };
 // The month's average divides by the minutes in that UTC calendar month
 // (drive#531): 40,320 for a 28-day February up to 44,640 for a 31-day month.
 // A fixed 43,800-minute "average month" read 1 TB held all of October as
-// 1.019 TB and billed $10.19, which broke "never more than $10 per TB". So
+// 1.019 TB, which broke "never more than $10 per TB" (the maximum then; it is $15 now). So
 // there is no month constant: every function below takes the month's length
 // as input, and minutesInMonth() is the one place it is worked out.
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
-// The month a "kept all month" quote is worked over when the caller names
-// none. A size held all month bills the same in every month length, so the
-// choice changes no figure. It is the longest month, the one the old divisor
-// over-billed, so the worked examples are the ones the issue checked.
-export const QUOTE_MONTH_MINUTES = 31 * 1440;
-// Exported for the same reason: the docs page's worked table divides by it too,
-// so a docs example and an invoice example cannot disagree about what a TB is.
+// Exported so a docs example and an invoice example cannot disagree about
+// what a TB is.
 export const GB_PER_TB = 1000;
+
+/** 1/1000 of a cent: 10 MB a month is 20 millicents ($0.0002). */
+export const MILLICENTS_PER_CENT = 1000;
+/** Trailing window and the daily divisor: monthly millicents / 30. */
+export const DRAW_DAYS = 30;
+/** Trailing 30 days in milliseconds, the size30 window. */
+export const SIZE30_MS = DRAW_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * The billing config for a price: the price's own numbers plus the
@@ -74,10 +76,10 @@ export const GB_PER_TB = 1000;
 export function billingConfigFor(price) {
   return Object.freeze({
     // From the one price source: the metered rate, in dollars per GB-month,
-    // billed by the minute.
+    // billed on the biggest size in the last 30 days.
     rateUsdPerGbMonth: price.rateUsdPerGbMonth,
-    // The maximum: maxUsdPerTb for each TB stored, never less than one TB's
-    // worth. One config value (drive#463).
+    // The maximum: maxUsdPerTb for each TB of size30, never less than one TB's
+    // worth. One config value (drive#642).
     maxUsdPerTb: price.maxUsdPerTb,
     // Kept for the card-less write cap until every account has a card (#387).
     freeMonthlyUsd: price.freeMonthlyUsd,
@@ -225,64 +227,70 @@ export function gbMonths(gbMinutes, monthMinutes) {
 }
 
 /**
- * The metered cost of a month, in dollars, before the maximum: the rate on the
- * month's GB-months, so the meter, the page and the CLI divide the same way.
- * @param {number} gbMinutes the `usage_minutes` rollup for the month
- * @param {number} monthMinutes minutesInMonth() of the month being billed
+ * The metered cost of a month, in dollars, before the maximum: the rate on
+ * size30, so the meter, the page and the CLI multiply the same way.
+ * @param {number|bigint} size30Bytes
  * @param {BillingConfig} [config]
  */
-export function meteredMonthlyBillUsd(gbMinutes, monthMinutes, config = BILLING_CONFIG) {
-  return gbMonths(gbMinutes, monthMinutes) * billingConfig(config).rateUsdPerGbMonth;
+export function meteredMonthlyBillUsd(size30Bytes, config = BILLING_CONFIG) {
+  return monthBillCents({ size30Bytes, config: billingConfig(config) }).meteredCents / 100;
 }
 
 /**
- * The month's maximum, in dollars: maxUsdPerTb for each TB of the month's
- * average stored size, never less than one TB's worth. $10 up to 1 TB, then
- * $10 a TB prorated to the GB (1.5 TB is $15).
- * @param {unknown} averageGb the month's time-weighted average stored size, in GB
+ * The month's maximum, in dollars: maxUsdPerTb for each TB of size30, never
+ * less than one TB's worth. $15 up to 1 TB, then $15 a TB prorated to the GB
+ * (1.5 TB is $22.50).
+ * @param {unknown} size30Gb size30 in GB
  * @param {BillingConfig} [config]
  */
-export function monthlyMaximumUsd(averageGb, config = BILLING_CONFIG) {
-  const size = checked(averageGb, "averageGb");
-  return billingConfig(config).maxUsdPerTb * Math.max(1, size / GB_PER_TB);
-}
-
-/**
- * The month's storage bill, in dollars: the storage line of monthBillCents(),
- * before downloads. It is not the amount Dodo is pushed: that is
- * monthBillCents().totalCents, and the name says storage so a caller cannot
- * mistake it for the whole bill.
- * @param {number} gbMinutes the month's metered GB-minutes
- * @param {number} monthMinutes minutesInMonth() of the month being billed
- * @param {BillingConfig} [config=BILLING_CONFIG]
- */
-export function monthlyStorageBillUsd(gbMinutes, monthMinutes, config = BILLING_CONFIG) {
+export function monthlyMaximumUsd(size30Gb, config = BILLING_CONFIG) {
+  const size = checked(size30Gb, "size30Gb");
   return (
-    monthBillCents({ gbMinutes, monthMinutes, config: billingConfig(config) }).storageCents / 100
+    monthBillCents({
+      size30Bytes: Math.round(size * BYTES_PER_GB),
+      config: billingConfig(config),
+    }).maximumCents / 100
   );
 }
 
 /**
- * The month's bill in dollars for a size held all month, from monthBillCents()
- * — the one function that turns the config into money — with no downloads.
- * The pricing page's worked examples are all "kept all month" figures, so this
- * is the one call the copy gate and anything else quoting a size share.
- * @param {unknown} tb the stored size in TB, held the whole month
+ * The month's storage bill, in dollars: the storage line of monthBillCents(),
+ * before downloads.
+ * @param {number|bigint} size30Bytes
  * @param {BillingConfig} [config=BILLING_CONFIG]
- * @param {number} [monthMinutes=QUOTE_MONTH_MINUTES] the month it is held for;
- *   a size held all month bills the same in every month length
+ */
+export function monthlyStorageBillUsd(size30Bytes, config = BILLING_CONFIG) {
+  return monthBillCents({ size30Bytes, config: billingConfig(config) }).storageCents / 100;
+}
+
+/**
+ * Whole bytes for a size in TB, counted to the thousandth of a GB so 1.5 TB
+ * and 200 GB are exact integers. Quote sizes stay inside Number.MAX_SAFE_INTEGER
+ * as a GB count; the byte count itself may be a BigInt.
+ * @param {number} tb
+ * @returns {bigint}
+ */
+function size30BytesFromTb(tb) {
+  const milliGb = Math.round(tb * GB_PER_TB * 1000);
+  if (!Number.isSafeInteger(milliGb) || milliGb < 0) {
+    throw new TypeError(`tb must convert to a whole thousandth of a GB, got ${tb}`);
+  }
+  return (BigInt(milliGb) * BigInt(BYTES_PER_GB)) / 1000n;
+}
+
+/**
+ * The month's bill in dollars for a size held as size30, from monthBillCents()
+ * — the one function that turns the config into money — with no downloads.
+ * The pricing page's worked examples are size30 figures, so this is the one
+ * call the copy gate and anything else quoting a size share.
+ * @param {unknown} tb the stored size in TB (size30)
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  * @returns {{storageUsd: number, maximumUsd: number, billUsd: number}}
  */
-export function monthlyBillForStoredTb(
-  tb,
-  config = BILLING_CONFIG,
-  monthMinutes = QUOTE_MONTH_MINUTES,
-) {
+export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
   const size = checked(tb, "tb");
-  const minutes = checkedMonthMinutes(monthMinutes);
   const bill = monthBillCents({
-    gbMinutes: size * GB_PER_TB * minutes,
-    monthMinutes: minutes,
+    size30Bytes: size30BytesFromTb(size),
     config: billingConfig(config),
   });
   return Object.freeze({
@@ -306,12 +314,14 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   }
   const bill = monthlyBillForStoredTb(size, config);
   const planUsd = usualPlanMonthlyUsd(size);
+  const savedUsd = Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100);
   return Object.freeze({
     tb: size,
     storageUsd: bill.storageUsd,
     billUsd: bill.billUsd,
     maximumUsd: bill.maximumUsd,
     planUsd,
+    savedUsd,
     labels: Object.freeze({
       bill: formatUsd(bill.billUsd),
       maximum: formatUsd(bill.maximumUsd),
@@ -320,11 +330,19 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   });
 }
 
-// Fields the bill no longer reads (drive#463). A caller still passing one is
-// on the old rule, so it is refused rather than silently ignored: the peak no
-// longer sets the maximum (the average does), and the membership's first-month
-// discount is gone.
-const RETIRED_MONTH_FIELDS = Object.freeze(["peakGb", "peakBytes", "firstMonth", "monthNumber"]);
+// Fields the bill no longer reads (drive#642). A caller still passing one is
+// on the old per-minute average rule, so it is refused rather than silently
+// ignored. gbMinutes/monthMinutes were the average; peakGb/peakBytes were
+// already retired by #463; the membership's first-month discount is gone.
+const RETIRED_MONTH_FIELDS = Object.freeze([
+  "gbMinutes",
+  "monthMinutes",
+  "peakGb",
+  "peakBytes",
+  "firstMonth",
+  "monthNumber",
+  "averageStoredGb",
+]);
 // Founding pricing is gone (drive#586, Nish 2026-10-05): everyone pays the one
 // rate. A caller still passing a founding field is refused, never ignored, so
 // nothing can believe it is halving a bill that is no longer halved.
@@ -349,20 +367,205 @@ function refuseFoundingFields(input, name) {
 }
 
 /**
- * The month's bill, in integer cents (drive#463): the one function the
- * invoice, the usage page and the cap all read.
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {bigint}
+ */
+function checkedBytes(value, name) {
+  if (typeof value === "bigint") {
+    if (value < 0n) {
+      throw new TypeError(`${name} must be 0 or more whole bytes, got ${value}`);
+    }
+    return value;
+  }
+  if (typeof value === "string" && /^[0-9]+$/.test(value)) {
+    return BigInt(value);
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be 0 or more whole bytes, got ${String(value)}`);
+  }
+  return BigInt(value);
+}
+
+/**
+ * JSON-safe exact bytes: a Number inside the safe integer range, otherwise
+ * the decimal string, so a size30 above 2^53 does not round (drive#642 B4).
+ * @param {bigint} value
+ * @returns {number|string}
+ */
+function jsonBytes(value) {
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString();
+}
+
+/**
+ * @param {bigint} value
+ * @param {string} name
+ * @returns {number}
+ */
+function millicentsNumber(value, name) {
+  if (value < 0n) {
+    throw new TypeError(`${name} is negative: ${value}`);
+  }
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError(`${name} exceeds a safe millicent count: ${value}`);
+  }
+  return Number(value);
+}
+
+/**
+ * One day's draw from a monthly millicent bill, with the remainder carried
+ * so thirty draws at a constant size sum to the month exactly.
+ * @param {unknown} monthlyMillicents
+ * @param {unknown} [remainderMillicents]
+ */
+export function dailyDrawMillicents(monthlyMillicents, remainderMillicents = 0) {
+  if (!Number.isSafeInteger(monthlyMillicents) || /** @type {number} */ (monthlyMillicents) < 0) {
+    throw new TypeError(
+      `monthlyMillicents must be 0 or more whole millicents, got ${String(monthlyMillicents)}`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(remainderMillicents) ||
+    /** @type {number} */ (remainderMillicents) < 0 ||
+    /** @type {number} */ (remainderMillicents) >= DRAW_DAYS
+  ) {
+    throw new TypeError(
+      `remainderMillicents must be a carried remainder in 0..${DRAW_DAYS - 1}, got ${String(remainderMillicents)}`,
+    );
+  }
+  const monthly = /** @type {number} */ (monthlyMillicents);
+  const remainder = /** @type {number} */ (remainderMillicents);
+  const total = monthly + remainder;
+  return Object.freeze({
+    drawMillicents: Math.floor(total / DRAW_DAYS),
+    remainderMillicents: total % DRAW_DAYS,
+  });
+}
+
+/**
+ * Whole cents posted from one day's millicent draw. Leftover millicents
+ * (0..999) are carried so thirty days of cents sum to the month's cents.
+ * @param {unknown} drawMillicents
+ * @param {unknown} [unpostedMillicents]
+ */
+export function centsFromDrawnMillicents(drawMillicents, unpostedMillicents = 0) {
+  if (!Number.isSafeInteger(drawMillicents) || /** @type {number} */ (drawMillicents) < 0) {
+    throw new TypeError(
+      `drawMillicents must be 0 or more whole millicents, got ${String(drawMillicents)}`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(unpostedMillicents) ||
+    /** @type {number} */ (unpostedMillicents) < 0 ||
+    /** @type {number} */ (unpostedMillicents) >= MILLICENTS_PER_CENT
+  ) {
+    throw new TypeError(
+      `unpostedMillicents must be 0..${MILLICENTS_PER_CENT - 1}, got ${String(unpostedMillicents)}`,
+    );
+  }
+  const pool = /** @type {number} */ (drawMillicents) + /** @type {number} */ (unpostedMillicents);
+  return Object.freeze({
+    drawCents: Math.floor(pool / MILLICENTS_PER_CENT),
+    unpostedMillicents: pool % MILLICENTS_PER_CENT,
+  });
+}
+
+/**
+ * Pack the /30 millicent remainder (0..29) with millicents not yet posted as
+ * cents (0..999). An old daily_draws row that stored only 0..29 unpacks as
+ * unposted 0, so a leftover hourly-era remainder is still a /30 remainder.
+ * @param {unknown} thirtyRemainder
+ * @param {unknown} unpostedMillicents
+ */
+export function packDrawRemainder(thirtyRemainder, unpostedMillicents) {
+  if (
+    !Number.isSafeInteger(thirtyRemainder) ||
+    /** @type {number} */ (thirtyRemainder) < 0 ||
+    /** @type {number} */ (thirtyRemainder) >= DRAW_DAYS
+  ) {
+    throw new TypeError(
+      `thirtyRemainder must be 0..${DRAW_DAYS - 1}, got ${String(thirtyRemainder)}`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(unpostedMillicents) ||
+    /** @type {number} */ (unpostedMillicents) < 0 ||
+    /** @type {number} */ (unpostedMillicents) >= MILLICENTS_PER_CENT
+  ) {
+    throw new TypeError(
+      `unpostedMillicents must be 0..${MILLICENTS_PER_CENT - 1}, got ${String(unpostedMillicents)}`,
+    );
+  }
+  return (
+    /** @type {number} */ (unpostedMillicents) * DRAW_DAYS + /** @type {number} */ (thirtyRemainder)
+  );
+}
+
+/**
+ * @param {unknown} packed
+ * @returns {{thirtyRemainder: number, unpostedMillicents: number}}
+ */
+export function unpackDrawRemainder(packed) {
+  if (!Number.isSafeInteger(packed) || /** @type {number} */ (packed) < 0) {
+    throw new TypeError(`packed draw remainder must be 0 or more, got ${String(packed)}`);
+  }
+  const value = /** @type {number} */ (packed);
+  return Object.freeze({
+    thirtyRemainder: value % DRAW_DAYS,
+    unpostedMillicents: Math.trunc(value / DRAW_DAYS),
+  });
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The trailing 30 UTC-day window size30 is read from. Inclusive: today and
+ * the 29 UTC days before it. A peak on the first day of the window drops out
+ * the next UTC day after the 30th day.
+ * @param {unknown} throughMs
+ * @returns {{from: number, through: number, today: string}}
+ */
+export function size30Window(throughMs) {
+  const through = checked(throughMs, "throughMs");
+  if (!Number.isFinite(through)) {
+    throw new TypeError(`size30Window needs an instant, got ${String(throughMs)}`);
+  }
+  const instant = new Date(through);
+  const dayStart = Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), instant.getUTCDate());
+  const from = dayStart - (DRAW_DAYS - 1) * DAY_MS;
+  const today = new Date(dayStart).toISOString().slice(0, 10);
+  return Object.freeze({ from, through, today });
+}
+
+/**
+ * The UTC day a peak drops out of size30: 30 days after the day it was
+ * reached.
+ * @param {string} reachedDay YYYY-MM-DD
+ */
+export function size30DropsOutDay(reachedDay) {
+  if (typeof reachedDay !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(reachedDay)) {
+    throw new TypeError(`size30DropsOutDay needs a YYYY-MM-DD day, got ${String(reachedDay)}`);
+  }
+  const start = Date.parse(`${reachedDay}T00:00:00.000Z`);
+  if (!Number.isFinite(start)) {
+    throw new TypeError(`size30DropsOutDay needs a real day, got ${reachedDay}`);
+  }
+  return new Date(start + DRAW_DAYS * DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * The month's bill, in integer millicents and cents (drive#642): the one
+ * function the invoice, the usage page and the cap all read.
  *
- *   meteredCents  = rate x avg GB, avg = month.gbMinutes / month.monthMinutes
- *                   (the minutes in that UTC calendar month, drive#531)
- *   maximumCents  = maxPerTb x max(1, avg TB)
- *   storageCents  = min(metered, maximum)
- *   downloadCents = 1¢/GB for the bytes over 3x the month's average stored
- *                   size (build-spec.md "How the money is worked out")
- *   totalCents    = storage + downloads
+ *   metered     = rate x size30 GB, in millicents
+ *   maximum     = maxPerTb x max(1, size30 TB), in millicents
+ *   storage     = min(metered, maximum)
+ *   downloads   = 1¢/GB for the bytes over 3x size30
+ *   total       = storage + downloads
  *
- * Every field is a whole number of cents, so a caller cannot hand Dodo a
- * fractional cent (billing_pushes.amount_units). `lines` is the invoice:
- * storage and downloads.
+ * Millicents are the money unit (10 MB a month is 20 millicents). The cent
+ * fields are millicents / 1000, truncated, so a caller cannot hand Dodo a
+ * fractional cent. `lines` is the invoice: storage and downloads.
  * @param {unknown} month
  */
 export function monthBillCents(month) {
@@ -370,42 +573,57 @@ export function monthBillCents(month) {
     throw new TypeError(`monthBillCents needs a month object, got ${String(month)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, monthMinutes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
+    /** @type {{size30Bytes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
       month
     );
+  refuseFoundingFields(month, "month");
+  if (fields.size30Bytes === undefined) {
+    throw new TypeError(
+      "month.size30Bytes is the bill (drive#642): the charge follows the biggest size in the last 30 days",
+    );
+  }
   for (const retired of RETIRED_MONTH_FIELDS) {
     if (/** @type {Record<string, unknown>} */ (month)[retired] !== undefined) {
       throw new TypeError(
-        `month.${retired} is no longer part of the bill (drive#463): the maximum follows the month's average, read from month.gbMinutes`,
+        `month.${retired} is no longer part of the bill (drive#642): the charge follows month.size30Bytes`,
       );
     }
   }
-  refuseFoundingFields(month, "month");
-  const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
-  const monthMinutes = checkedMonthMinutes(fields.monthMinutes);
+  const size30Bytes = checkedBytes(fields.size30Bytes, "month.size30Bytes");
   const downloadBytes =
     fields.downloadBytes === undefined ? 0 : checked(fields.downloadBytes, "month.downloadBytes");
-  const averageStoredGb =
-    fields.averageStoredGb === undefined
-      ? 0
-      : checked(fields.averageStoredGb, "month.averageStoredGb");
-  const config = billingConfig(fields.config ?? BILLING_CONFIG);
-  // The free 3x allowance is the average stored size, so a rollup with
-  // download bytes but no stored average is a broken month: defaulting the
-  // average to 0 would silently charge every downloaded byte. Both omitted is
-  // a storage-only call (the cap's own use), which is fine.
-  if (downloadBytes > 0 && averageStoredGb === 0) {
+  if (!Number.isSafeInteger(downloadBytes)) {
+    throw new TypeError(`month.downloadBytes must be 0 or more whole bytes, got ${downloadBytes}`);
+  }
+  // An empty or missing size30 has no free-download allowance, so any download
+  // would be billed in full. Refuse it: a bill is never guessed from a window
+  // that read as empty while transfer bytes exist (drive#642).
+  if (downloadBytes > 0 && size30Bytes === 0n) {
     throw new TypeError(
-      "month.downloadBytes needs month.averageStoredGb: a month with downloads cannot have no stored average",
+      "month.downloadBytes needs month.size30Bytes above 0: a month with downloads cannot have an empty size30 window",
     );
   }
-  const averageGb = gbMonths(gbMinutes, monthMinutes);
-  const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, monthMinutes, config) * 100);
-  const maximumCents = Math.round(monthlyMaximumUsd(averageGb, config) * 100);
-  const storageCents = Math.min(meteredCents, maximumCents);
-  const downloadCents = Math.round(
-    downloadCostUsd(downloadBytes, averageStoredGb, config).usd * 100,
-  );
+  const config = billingConfig(fields.config ?? BILLING_CONFIG);
+  const rateMillicentsPerGb =
+    BigInt(Math.round(config.rateUsdPerGbMonth * 100)) * BigInt(MILLICENTS_PER_CENT);
+  const meteredMillicentsBig = (size30Bytes * rateMillicentsPerGb) / BigInt(BYTES_PER_GB);
+  const tbBytes = BigInt(GB_PER_TB) * BigInt(BYTES_PER_GB);
+  const maxMillicentsPerTb = BigInt(config.maxUsdPerTb) * 100n * BigInt(MILLICENTS_PER_CENT);
+  const sizeForMax = size30Bytes > tbBytes ? size30Bytes : tbBytes;
+  const maximumMillicentsBig = (maxMillicentsPerTb * sizeForMax) / tbBytes;
+  const storageMillicentsBig =
+    meteredMillicentsBig < maximumMillicentsBig ? meteredMillicentsBig : maximumMillicentsBig;
+  const meteredMillicents = millicentsNumber(meteredMillicentsBig, "meteredMillicents");
+  const maximumMillicents = millicentsNumber(maximumMillicentsBig, "maximumMillicents");
+  const storageMillicents = millicentsNumber(storageMillicentsBig, "storageMillicents");
+  const size30Gb = Number(size30Bytes) / BYTES_PER_GB;
+  const downloadCents = Math.round(downloadCostUsd(downloadBytes, size30Gb, config).usd * 100);
+  const downloadMillicents = downloadCents * MILLICENTS_PER_CENT;
+  const meteredCents = Math.trunc(meteredMillicents / MILLICENTS_PER_CENT);
+  const maximumCents = Math.trunc(maximumMillicents / MILLICENTS_PER_CENT);
+  const storageCents = Math.trunc(storageMillicents / MILLICENTS_PER_CENT);
+  const totalMillicents = storageMillicents + downloadMillicents;
+  const totalCents = storageCents + downloadCents;
   const lines = Object.freeze([
     Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
     Object.freeze({
@@ -415,11 +633,16 @@ export function monthBillCents(month) {
     }),
   ]);
   return Object.freeze({
+    meteredMillicents,
+    maximumMillicents,
+    storageMillicents,
+    downloadMillicents,
+    totalMillicents,
     meteredCents,
     maximumCents,
     storageCents,
     downloadCents,
-    totalCents: storageCents + downloadCents,
+    totalCents,
     lines,
   });
 }
@@ -436,11 +659,10 @@ export function monthBillCents(month) {
  * show": an empty month (a $0 bill is not a saving against anything) or no
  * saving at all.
  * @param {unknown} bill a monthBillCents() result
- * @param {number} gbMinutes the same month's GB-minutes, for the plan's size
- * @param {number} monthMinutes minutesInMonth() of the same month
+ * @param {number|bigint} size30Bytes the same size30 the bill was worked from
  * @returns {{usd: number, planUsd: number, copy: string}|null}
  */
-export function savedLine(bill, gbMinutes, monthMinutes) {
+export function savedLine(bill, size30Bytes) {
   if (typeof bill !== "object" || bill === null) {
     throw new TypeError(`savedLine needs a monthBillCents result, got ${String(bill)}`);
   }
@@ -449,13 +671,14 @@ export function savedLine(bill, gbMinutes, monthMinutes) {
   const metered = checked(fields.meteredCents, "bill.meteredCents");
   const maximum = checked(fields.maximumCents, "bill.maximumCents");
   const storage = checked(fields.storageCents, "bill.storageCents");
-  const averageTb = gbMonths(gbMinutes, monthMinutes) / GB_PER_TB;
+  const bytes = checkedBytes(size30Bytes, "size30Bytes");
+  const size30Tb = Number(bytes) / (GB_PER_TB * BYTES_PER_GB);
   if (storage === 0) {
     return null;
   }
   const capped = metered > maximum;
   const savedCents = Math.max(0, (capped ? metered : maximum) - storage);
-  const planCents = Math.max(0, Math.round(usualPlanMonthlyUsd(averageTb) * 100) - storage);
+  const planCents = Math.max(0, Math.round(usualPlanMonthlyUsd(size30Tb) * 100) - storage);
   if (savedCents === 0 && planCents === 0) {
     return null;
   }
@@ -486,31 +709,20 @@ export function savedLine(bill, gbMinutes, monthMinutes) {
  * the cap the way a month of storage does (drive#496). At the cap the api
  * Worker deletes each write-capable key and mints read-only ones; the CLI
  * restarts the mount. Nothing is deleted.
- * @param {unknown} gbMinutes metered so far this month
- * @param {unknown} monthMinutes minutesInMonth() of this month
+ * @param {unknown} size30Bytes size30 in bytes
  * @param {unknown} capUsd the account's cap in dollars
  * @param {BillingConfig} [config=BILLING_CONFIG]
- * @param {{downloadBytes?: number, averageStoredGb?: number}} [downloads] the
- *   month's download bytes and average stored size; omitted is a storage-only
- *   month
+ * @param {{downloadBytes?: number}} [downloads] the month's download bytes;
+ *   omitted is a storage-only month
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
-export function capStatus(
-  gbMinutes,
-  monthMinutes,
-  capUsd,
-  config = BILLING_CONFIG,
-  downloads = {},
-) {
-  const minutes = checked(gbMinutes, "gbMinutes");
-  const length = checkedMonthMinutes(monthMinutes);
+export function capStatus(size30Bytes, capUsd, config = BILLING_CONFIG, downloads = {}) {
+  const bytes = checkedBytes(size30Bytes, "size30Bytes");
   const cap = checked(capUsd, "capUsd");
   const counted =
     monthBillCents({
-      gbMinutes: minutes,
-      monthMinutes: length,
+      size30Bytes: bytes,
       downloadBytes: downloads.downloadBytes ?? 0,
-      averageStoredGb: downloads.averageStoredGb ?? 0,
       config: billingConfig(config),
     }).totalCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it: a bill
@@ -625,90 +837,101 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, monthMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown}} */ (
+    /** @type {{size30Bytes?: unknown, size30ReachedDay?: unknown, size30DropsOutDay?: unknown, todayDrawMillicents?: unknown, gbMinutes?: unknown, monthMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown}} */ (
       usage
     );
-  // The peak no longer sets any number on the bill (drive#463: the maximum
-  // follows the month's average), so a caller still passing it is refused.
   if (fields.peakGb !== undefined) {
     throw new TypeError(
-      "usage.peakGb is no longer part of the bill (drive#463): the maximum follows the month's average",
+      "usage.peakGb is no longer part of the bill (drive#642): the charge follows size30",
+    );
+  }
+  if (fields.gbMinutes !== undefined) {
+    throw new TypeError(
+      "usage.gbMinutes is no longer part of the bill (drive#642): the charge follows usage.size30Bytes",
     );
   }
   refuseFoundingFields(usage, "usage");
-  const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
-  const monthMinutes = checkedMonthMinutes(fields.monthMinutes);
+  if (fields.size30Bytes === undefined) {
+    throw new TypeError("usage.size30Bytes is the bill (drive#642)");
+  }
+  const size30Bytes = checkedBytes(fields.size30Bytes, "usage.size30Bytes");
   const storedGb = checked(fields.storedGb, "usage.storedGb");
   const downloadBytes = checked(fields.downloadBytes, "usage.downloadBytes");
-  const averageStoredGb = checked(fields.averageStoredGb, "usage.averageStoredGb");
   const capUsd = checked(fields.capUsd, "usage.capUsd");
   const series = storedSeries(fields.storedDaily);
-  // The cap writes stop at is the account's own cap for a provisioned account
-  // and the free $1 for a signed-out default (unchanged, `cardAdded`): the
-  // usage endpoint passes true here as it always has, so the cap line a
-  // card-less account is shown still matches the cap enforceCap() stops writes
-  // at (src/index.js capStateFor).
+  const size30ReachedDay =
+    fields.size30ReachedDay === undefined || fields.size30ReachedDay === null
+      ? null
+      : isDay(fields.size30ReachedDay)
+        ? fields.size30ReachedDay
+        : (() => {
+            throw new TypeError(
+              `usage.size30ReachedDay must be a real YYYY-MM-DD date, got ${String(fields.size30ReachedDay)}`,
+            );
+          })();
+  const size30DropsOutDay =
+    fields.size30DropsOutDay === undefined || fields.size30DropsOutDay === null
+      ? null
+      : isDay(fields.size30DropsOutDay)
+        ? fields.size30DropsOutDay
+        : (() => {
+            throw new TypeError(
+              `usage.size30DropsOutDay must be a real YYYY-MM-DD date, got ${String(fields.size30DropsOutDay)}`,
+            );
+          })();
+  const todayDrawMillicents =
+    fields.todayDrawMillicents === undefined
+      ? // The monthly figure the draw divides by 30 is the same total main
+        // already draws from (storage on size30 plus download overage, as
+        // monthBillCents works it out), the same number core/prepaid.js uses.
+        dailyDrawMillicents(
+          monthBillCents({ size30Bytes, downloadBytes, config }).totalMillicents,
+          0,
+        ).drawMillicents
+      : checked(fields.todayDrawMillicents, "usage.todayDrawMillicents");
   const effectiveCap = fields.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
-  // drive#417: whether a real card is on file, the usage surfaces' own flag,
-  // separate from the write-cap basis above. It defaults to the write-cap flag
-  // so every caller that predates the accounts stamp keeps showing the bill it
-  // always did; the endpoint passes the accounts row's own state, fail-closed,
-  // so a card-less month says no charge has been made and shows no bill.
   const cardOnFile =
     fields.cardOnFile === undefined ? fields.cardAdded === true : fields.cardOnFile === true;
-  const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
-  const months = gbMonths(gbMinutes, monthMinutes);
-  // The one bill function (drive#463): storage up to the maximum, plus the
-  // download line. The page's cost and the cap both read it, so neither can
-  // work out a different number.
+  const size30Gb = Number(size30Bytes) / BYTES_PER_GB;
+  const downloads = downloadCostUsd(downloadBytes, size30Gb, config);
   const bill = monthBillCents({
-    gbMinutes,
-    monthMinutes,
+    size30Bytes,
     downloadBytes,
-    averageStoredGb,
     config,
   });
   return Object.freeze({
-    gbMonths: months,
+    size30Bytes: jsonBytes(size30Bytes),
+    size30Gb,
+    size30ReachedDay,
+    size30DropsOutDay,
+    todayDrawMillicents,
     storedGb,
     storedDaily: series,
     meteredUsd: bill.meteredCents / 100,
     maximumUsd: bill.maximumCents / 100,
     billUsd: bill.totalCents / 100,
-    // The one function's whole result, cents and invoice lines, so the page,
-    // the CLI and the Dodo push read the same bytes.
     billCents: bill,
-    saved: savedLine(bill, gbMinutes, monthMinutes),
+    saved: savedLine(bill, size30Bytes),
     downloads: Object.freeze({
       freeBytes: downloads.freeBytes,
       usedBytes: downloadBytes,
       billableBytes: downloads.billableBytes,
       usd: downloads.usd,
     }),
-    cap: capStatus(gbMinutes, monthMinutes, effectiveCap, config, {
+    cap: capStatus(size30Bytes, effectiveCap, config, {
       downloadBytes,
-      averageStoredGb,
     }),
-    // The finished strings the page sets and `drive usage` prints. One place
-    // formats each number, so a change here moves both surfaces together.
     labels: Object.freeze({
       storedNow: formatBytes(storedGb * BYTES_PER_GB),
-      gbMonths: months.toFixed(2),
+      size30: formatBytes(size30Bytes),
+      size30Reached: size30ReachedDay ?? "",
+      size30DropsOut: size30DropsOutDay ?? "",
+      todayDraw: formatUsd(todayDrawMillicents / MILLICENTS_PER_CENT / 100),
       downloads: `${formatBytes(downloadBytes)} of ${formatBytes(downloads.freeBytes)} free`,
-      // The bill number is unchanged (monthBillCents() still owns it); only the
-      // word shown for a card-less month is the honest one (drive#417). The
-      // page hides the bill lines on the same flag, so a card-less month shows
-      // neither a $10 line nor a bill as if charged.
       cost: cardOnFile ? formatUsd(bill.totalCents / 100) : PRICE.noChargeYet,
-      // Two caps, because they are two things: `cap` is the cap writes stop
-      // at (a card-less account's is the free $1, not the account's own) and
-      // `accountCap` is the account's own setting, which is what the page's
-      // cap slider shows.
       cap: formatUsd(effectiveCap),
       accountCap: formatUsd(capUsd),
     }),
-    // The page reads this to hide the bill lines for a card-less month, so the
-    // two surfaces cannot show a charge one and not the other (drive#417).
     cardOnFile,
   });
 }
@@ -844,13 +1067,10 @@ export function handleUsageRequest(
           ),
         )
       : usageSummary({
-          gbMinutes: 0,
-          // The month this read falls in sets the divisor (drive#531).
-          monthMinutes: minutesInMonth(Date.now()),
+          size30Bytes: 0,
           storedGb: 0,
           storedDaily: [],
           downloadBytes: 0,
-          averageStoredGb: 0,
           capUsd,
           // The write-cap basis is a provisioned account's own (unchanged): the cap
           // line this endpoint reports still matches the cap enforceCap() stops

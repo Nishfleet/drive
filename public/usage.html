@@ -619,8 +619,20 @@ h2 {
             <dd id="stored-now"></dd>
           </div>
           <div class="pair">
-            <dt>GB-months so far</dt>
-            <dd id="gb-months"></dd>
+            <dt>Biggest size in the last 30 days</dt>
+            <dd id="size30"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size was reached</dt>
+            <dd id="size30-reached"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size drops out</dt>
+            <dd id="size30-drops-out"></dd>
+          </div>
+          <div class="pair">
+            <dt>Today's draw</dt>
+            <dd id="today-draw"></dd>
           </div>
           <div class="pair">
             <dt>Cost so far</dt>
@@ -638,7 +650,7 @@ h2 {
             <dd id="downloads-line"></dd>
           </div>
         </dl>
-        <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
+        <p class="hint" id="downloads-hint">Free up to 3× the biggest size in the last 30 days</p>
       </section>
 
       <section aria-labelledby="links-heading">
@@ -720,7 +732,7 @@ h2 {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
-    <p>Pay from your balance, metered by the minute. <a href="/">See the price</a>.</p>
+    <p>Pay from your balance for the biggest size your drive reached in the last 30 days. <a href="/">See the price</a>.</p>
   </footer>
 
   <script>
@@ -798,7 +810,10 @@ const chartLine = document.getElementById("chart-line");
 const chartFigureEl = document.getElementById("chart-figure");
 const storageEmptyEl = document.getElementById("storage-empty");
 const storedNowEl = document.getElementById("stored-now");
-const gbMonthsEl = document.getElementById("gb-months");
+const size30El = document.getElementById("size30");
+const size30ReachedEl = document.getElementById("size30-reached");
+const size30DropsOutEl = document.getElementById("size30-drops-out");
+const todayDrawEl = document.getElementById("today-draw");
 const costEl = document.getElementById("cost");
 const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
@@ -1008,7 +1023,7 @@ function drawChart(series) {
 // line prints), and every one is required: a payload missing any label is as
 // unusable as no answer, and setting it would put "undefined" on the page,
 // which is the failure this check exists for.
-const LABEL_KEYS = ["storedNow", "gbMonths", "downloads", "cost", "cap", "accountCap"];
+const LABEL_KEYS = ["storedNow", "size30", "size30Reached", "size30DropsOut", "todayDraw", "downloads", "cost", "cap", "accountCap"];
 
 // A payload that is not the summary shape is as unusable as no answer, so it
 // leaves the numbers on the page alone and says the service was unreachable.
@@ -1082,7 +1097,10 @@ function render(summary) {
 
   drawChart(summary.storedDaily);
   storedNowEl.textContent = labels.storedNow;
-  gbMonthsEl.textContent = labels.gbMonths;
+  size30El.textContent = labels.size30;
+  size30ReachedEl.textContent = labels.size30Reached;
+  size30DropsOutEl.textContent = labels.size30DropsOut;
+  todayDrawEl.textContent = labels.todayDraw;
   costEl.textContent = labels.cost;
   billLinesEl.replaceChildren();
   for (const line of summary.billCents.lines) {
