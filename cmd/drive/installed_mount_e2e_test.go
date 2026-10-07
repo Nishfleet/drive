@@ -27,10 +27,10 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	t.Cleanup(func() { lookupDriveBin = origLookup })
 
 	var mounts []*exec.Cmd
-	origStart := startInstalledMount
-	startInstalledMount = func(goos string, p MountPlan) error {
+	origStart := startLoginItem
+	startLoginItem = func(goos string, p MountPlan, itemPath string) error {
 		cmd := exec.Command(p.DriveBin, p.productArgs()...)
-		cmd.Env = append(os.Environ(), "DRIVE_PREFETCH=0")
+		cmd.Env = append(envWithoutDriveS3(os.Environ()), "DRIVE_PREFETCH=0")
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
 			return err
@@ -38,7 +38,7 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 		mounts = append(mounts, cmd)
 		return nil
 	}
-	t.Cleanup(func() { startInstalledMount = origStart })
+	t.Cleanup(func() { startLoginItem = origStart })
 
 	root := t.TempDir()
 	cfg, standin := standinOn(t, root, "u/installed")
@@ -126,7 +126,9 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	deadline := time.Now().Add(90 * time.Second)
 	conflict := ConflictName(name, "mac")
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(mountA, conflict)); err == nil {
+		_, errA := os.Stat(filepath.Join(mountA, conflict))
+		_, errB := os.Stat(filepath.Join(mountB, conflict))
+		if errA == nil && errB == nil {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -159,7 +161,7 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := runDriveHome(t, rcA, "offline", "--home", homeA, "pinned.txt")
-	if !strings.Contains(out, "kept offline") && !strings.Contains(out, "pinned.txt") {
+	if !strings.Contains(out, "kept offline:") || !strings.Contains(out, "pinned.txt") {
 		t.Fatalf("drive offline said %q", out)
 	}
 	if err := restart.stop(); err != nil {
@@ -173,4 +175,18 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 		t.Errorf("pinned file = %q", got)
 	}
 	t.Logf("installed unit: conflict=%s, pinned file stayed cached after storage stopped", conflict)
+}
+
+// envWithoutDriveS3 drops the storage keys a real login item does not
+// inherit: systemd and launchd start the product with rclone.env, not
+// DRIVE_S3_* from the parent shell (drive#515).
+func envWithoutDriveS3(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "DRIVE_S3_") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

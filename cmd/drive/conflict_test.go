@@ -137,6 +137,15 @@ type fakeConflictBackend struct {
 	listErr       error
 	// versions is the size and mtime operations/stat reports per object.
 	versions map[string]objectVersion
+	// down is what reachable() answers with: a non-nil value stands for
+	// the object store not answering, so the pass must leave the
+	// directory cache (24h) alone (issue #541).
+	down error
+	// refreshErr is only the vfs/refresh error, which is the probe's
+	// blind window: the store answered reachable and the refresh then
+	// failed, so the pass must name that failure instead of leaving the
+	// copy in a listing nobody can see (issue #541).
+	refreshErr error
 }
 
 type objectVersion struct {
@@ -258,12 +267,14 @@ func hashFile(p string) (string, error) {
 }
 
 func (f *fakeConflictBackend) refresh(_ context.Context, _ bool) error {
-	if f.failWith != nil {
-		return f.failWith
+	if f.refreshErr != nil {
+		return f.refreshErr
 	}
 	f.refreshed++
 	return nil
 }
+
+func (f *fakeConflictBackend) reachable(_ context.Context) error { return f.down }
 
 // guardFor builds a guard over a mount dir with real files under it, so
 // the hashing reads the bytes a mount would serve.
@@ -330,6 +341,69 @@ func TestConflictGuardKeepsTheLosersVersion(t *testing.T) {
 	// The path stays recorded on the result, so a log says what happened.
 	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want || res.Claimed[0].LosingPath != "report.txt" {
 		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardSkipsTheRefreshWhenStorageIsDown proves the #541 rule
+// holds in the second caller too: a claim that landed just before the link
+// dropped must not vfs/refresh against a dead backend, because rclone forces
+// the directory cache (24h here) stale before it re-lists and a kept-offline
+// folder would answer every open with Input/output error. The copy survives;
+// the fill loop refreshes when the link is back.
+func TestConflictGuardSkipsTheRefreshWhenStorageIsDown(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-is-the-other-machines-save\n")
+	f.down = errors.New("connection refused")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the claim with storage down: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]: a dead backend must still get its conflict copy", f.copied, want)
+	}
+	if f.refreshed != 0 {
+		t.Errorf("the pass refreshed the directory cache while storage was down: rclone forces it stale before it re-lists, so every kept-offline open would fail until the cache expired (issue #541)")
+	}
+	if len(res.Claimed) != 1 {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardNamesTheRefreshFailureAfterAClaim is the guard's
+// other half of the #541 rule, the one the probe cannot close: the store
+// answers reachable and the refresh then fails, so the pass must name the
+// failure rather than leave the listing stale behind a copy nobody can see.
+// rclone has no stale-on-error (rclone#1963), so the next pass's probe and
+// refresh is the recovery path, which TestConflictGuardSkipsTheRefreshWhen
+// StorageIsDown above and the fill's own mirror prove.
+func TestConflictGuardNamesTheRefreshFailureAfterAClaim(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-is-the-other-machines-save\n")
+	f.refreshErr = errors.New("connection reset by peer")
+	res, err := g.pass(context.Background(), f)
+	if err == nil || !strings.Contains(err.Error(), "refresh after claiming") {
+		t.Fatalf("pass with a failing refresh: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Errorf("the error does not carry the backend's own message: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Errorf("copied %v, want [%s]: the copy still lands, only the refresh failed", f.copied, want)
+	}
+	if len(res.Claimed) != 1 {
+		t.Errorf("Claimed = %+v, want the one conflict copy that must be retried on the next pass", res.Claimed)
 	}
 }
 
@@ -1777,4 +1851,110 @@ func TestRunConflictLoopWritesTheBacklogStateFile(t *testing.T) {
 func md5Hex(s string) string {
 	f := md5.Sum([]byte(s))
 	return hex.EncodeToString(f[:])
+}
+
+// The stock-hostname fix (drive issue #561): macOS names a new
+// Mac after its model, so two Macs of one model answer to the
+// same "MacBook-Air" and are one device in the account, on the
+// approval page and in conflict copies. A stock name gets a
+// short machine suffix; a name a person chose is left alone.
+func TestStockHostnameGetsASuffix(t *testing.T) {
+	got := stockedHostname("MacBook-Air")
+	if !strings.HasPrefix(got, "MacBook-Air-") || len(got) != len("MacBook-Air-")+4 {
+		t.Fatalf("stocked hostname = %q, want MacBook-Air-<4 characters>", got)
+	}
+	// The suffix is stable for this machine, or it would
+	// rename the device on every run.
+	if again := stockedHostname("MacBook-Air"); again != got {
+		t.Fatalf("the suffix moved between two runs: %q then %q", got, again)
+	}
+}
+
+func TestStockHostnameWithLocalSuffixGetsASuffix(t *testing.T) {
+	// macOS can answer os.Hostname() with the mDNS name
+	// ("MacBook-Air.local"), which must trigger the same suffix as the
+	// bare model name or two such Macs share one device name again.
+	if !isStockHostname("MacBook-Air.local") {
+		t.Fatal("isStockHostname(\"MacBook-Air.local\") = false, want true")
+	}
+	got := stockedHostname("MacBook-Air.local")
+	if !strings.HasPrefix(got, "MacBook-Air-") || strings.Contains(got, ".local") {
+		t.Fatalf("stockedHostname(\"MacBook-Air.local\") = %q, want MacBook-Air-<4 characters>", got)
+	}
+}
+
+// macOS hostnames are case-insensitive and mDNS can answer in any case, so
+// "macbook-air" and "MacBook-Air.LOCAL" are the stock name too.
+func TestStockHostnameMatchIgnoresCase(t *testing.T) {
+	for _, host := range []string{"macbook-air", "MACBOOK-PRO-2", "MacBook-Air.LOCAL", "imac.Local"} {
+		if !isStockHostname(host) {
+			t.Errorf("isStockHostname(%q) = false, want true", host)
+		}
+		got := stockedHostname(host)
+		if got == host || strings.Contains(strings.ToLower(got), ".local") {
+			t.Errorf("stockedHostname(%q) = %q, want the name without .local plus a suffix", host, got)
+		}
+	}
+}
+
+func TestChosenHostnameIsLeftAlone(t *testing.T) {
+	for _, host := range []string{
+		"Nish's MacBook",
+		"studio",
+		"MacBook-Air-2x", // not the number macOS adds: a name a person chose
+		"MacBook-Air-",
+		"MacBookAir",
+	} {
+		if got := stockedHostname(host); got != host {
+			t.Errorf("stockedHostname(%q) = %q, want it untouched", host, got)
+		}
+	}
+}
+
+func TestIsStockHostname(t *testing.T) {
+	stock := []string{
+		"MacBook", "MacBook-Air", "MacBook-Pro", "iMac", "Mac-mini",
+		"Mac-Studio", "Mac-Pro",
+		"MacBook-Air-2", "iMac-7", "Mac-mini-10", // macOS's own numbering
+	}
+	for _, host := range stock {
+		if !isStockHostname(host) {
+			t.Errorf("isStockHostname(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{"Nish's MacBook", "studio", "MacBook-Air-2x", "MacBook-Air-", "MacBookAir"} {
+		if isStockHostname(host) {
+			t.Errorf("isStockHostname(%q) = true, want false", host)
+		}
+	}
+}
+
+func TestDeviceNameFlagWinsOverTheHostname(t *testing.T) {
+	if got := deviceName("studio", "MacBook-Air"); got != "studio" {
+		t.Errorf("deviceName with a flag = %q, want the flag's name", got)
+	}
+	if got := deviceName("  ", "MacBook-Air"); !strings.HasPrefix(got, "MacBook-Air-") {
+		t.Errorf("deviceName with a blank flag = %q, want the stock hostname suffixed", got)
+	}
+	if got := deviceName("", "Nish's MacBook"); got != "Nish-s-MacBook" {
+		t.Errorf("deviceName with a chosen hostname = %q, want the sanitized \"Nish-s-MacBook\"", got)
+	}
+	// The sign-in name and the mount's conflict name are one name: the
+	// mount sanitizes through DefaultDeviceName -> SanitizeDevice.
+	if got, want := deviceName("", "Nish's MacBook"), SanitizeDevice(stockedHostname("Nish's MacBook")); got != want {
+		t.Errorf("deviceName = %q, mount conflict name = %q, want one name", got, want)
+	}
+	if got := deviceName("", ""); got != "this device" {
+		t.Errorf("deviceName with no hostname = %q, want \"this device\"", got)
+	}
+}
+
+func TestMachineIDIsPresent(t *testing.T) {
+	// Whatever the OS gave this machine (a platform UUID, a
+	// machine id, a hostname), it must answer with something:
+	// an empty id would make every stock-named Mac share one
+	// suffix, which is the bug the suffix exists to fix.
+	if id := machineID(); strings.TrimSpace(id) == "" {
+		t.Fatal("machineID() = \"\", want this machine's identifier")
+	}
 }

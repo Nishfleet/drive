@@ -35,7 +35,7 @@ Markdown (add `.md` to the address), and the whole set is in one file for
 agents.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
-  five steps to a mounted drive
+  six steps to a mounted drive
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
   plain files, the cache, restore, the bill
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -113,11 +114,14 @@ func VFSArgs(cacheMax string) []string {
 		// much free space, whatever the max-size above would allow. That is
 		// what makes a cap a cap rather than a promise.
 		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
-		// S3 sends no change notifications, so without a short directory cache
-		// a save made on the other machine waits out rclone's 5-minute default
-		// before it is visible here. The step-3 two-machine proof measured it
-		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
-		// flag, still absent after 60 s without.
+		// S3 sends no change notifications. A short directory cache (5s) made
+		// the other machine see a save quickly, but rclone re-lists when the
+		// cache is older than this and returns the error on failure (no
+		// stale-on-error, rclone#1963), so a kept-offline folder became
+		// "Input/output error" five seconds after the network dropped
+		// (issue #541). Freshness is vfs/refresh from the fill loop while
+		// storage answers. 24h is "five minutes or more" so a listing
+		// survives a dropped link for a day's travel, not five seconds.
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
 		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),
@@ -210,25 +214,44 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	}
 }
 
-// prepareMountAuth generates the remote-control user and password, picks a
-// free loopback port for this mount (drive#807), stores them with the storage
-// secret in rclone.env (mode 0600), and puts them on the plan so Args() and
-// the login item can pass --rc-user/--rc-pass/--rc-addr (or, for systemd,
-// EnvironmentFile= for the secrets).
+// prepareMountAuth puts the remote-control user, password and loopback
+// address on the plan, stores them with the storage secret in rclone.env
+// (mode 0600), and returns. Args() and the login item pass --rc-user/
+// --rc-pass/--rc-addr (or, for systemd, read them from EnvironmentFile=).
+// The pair and address already on disk are reused, so a re-run of the
+// same plan writes the same bytes (issue #561): the running rclone keeps
+// answering the CLI's own rc calls with the credentials in that file, and
+// a plain re-run can then skip the restart. Only a first mount, or one
+// after a login that cleared them, mints a new pair and picks a free
+// loopback port (drive#807); a rotated storage secret arrives through
+// the config and makes the bytes differ, which the caller counts as a
+// changed plan.
 func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
-	user, pass, err := generateRCAuth()
+	// A rclone.env that cannot be read (a stray line, a loose mode) is
+	// treated as absent: the write below replaces it with a fresh pair.
+	auth, err := ReadRCAuth(home)
 	if err != nil {
-		return err
+		auth = RCAuth{}
 	}
-	addr, err := pickRCAddr()
-	if err != nil {
-		return err
+	if auth.User == "" || auth.Pass == "" {
+		user, pass, err := generateRCAuth()
+		if err != nil {
+			return err
+		}
+		auth.User, auth.Pass = user, pass
 	}
-	p.RCUser = user
-	p.RCPass = pass
-	p.RCAddr = addr
+	if auth.Addr == "" {
+		addr, err := pickRCAddr()
+		if err != nil {
+			return err
+		}
+		auth.Addr = addr
+	}
+	p.RCUser = auth.User
+	p.RCPass = auth.Pass
+	p.RCAddr = auth.Addr
 	p.SecretKey = c.SecretKey
-	return WriteRcloneEnv(home, c, user, pass, addr)
+	return WriteRcloneEnv(home, c, auth.User, auth.Pass, auth.Addr)
 }
 
 func generateRCAuth() (user, pass string, err error) {
@@ -400,9 +423,14 @@ func (p MountPlan) loginItemArgs() []string {
 // keeps the chosen letter on the vector so status can still read it off
 // the task command line. Secrets stay in rclone.env; the product reads
 // them through storageFromDisk and ReadSecretKey, the same path `drive
-// mount --home` uses after login.
+// mount --home` uses after login. --rclone carries the path this run
+// already resolved, because a login item has no shell PATH and
+// LookPath would miss Homebrew's rclone (drive#515).
 func (p MountPlan) productArgs() []string {
 	args := []string{"mount", "--foreground", "--home", p.Home}
+	if p.RcloneBin != "" {
+		args = append(args, "--rclone", p.RcloneBin)
+	}
 	if p.Device != "" {
 		args = append(args, "--device", p.Device)
 	}
@@ -530,6 +558,15 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
 	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(label))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
+	// launchd has no ExecStartPre. A KeepAlive restart runs this argv
+	// directly, so the first step has to clear a dead NFS entry before the
+	// product tries to mount again. $1 is the mount dir; shift leaves the
+	// product's own argv for exec, so paths with spaces stay one argument.
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("/bin/sh"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("-c"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/mount -t nfs | grep -F " on $1 (" >/dev/null 2>&1 && /sbin/umount -f "$1"; shift; exec "$@"`))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("drive-mount"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(p.MountDir))
 	for _, a := range p.productArgv() {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))
 	}
@@ -570,13 +607,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+ExecStartPre=%s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, systemdCommandLine(p))
+`, systemdClearStalePre(p.MountDir), systemdCommandLine(p))
 }
 
 // agentSystemdUnit is the agent tool's login item: stock rclone, with its
@@ -590,13 +628,44 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%s
+ExecStartPre=%s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(p.EnvPath), systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), systemdClearStalePre(p.MountDir), systemdCommandLine(p))
+}
+
+// systemdClearStalePre lazy-unmounts only a FUSE entry at mountDir. A login
+// item has no shell PATH, so the binaries are resolved here the same way
+// ResolveRclone writes rclone into ExecStart. findmnt -t keeps an unrelated
+// filesystem at that folder (a bind mount, a disk) attached.
+func systemdClearStalePre(mountDir string) string {
+	script := `$2 -n -M "$1" -t fuse.rclone,fuse >/dev/null 2>&1 && { $3 -uz "$1" || $4 -uz "$1"; }`
+	return "-/bin/sh -c " + strings.Join([]string{
+		systemdEscapeArg(script),
+		systemdEscapeArg("drive-pre"),
+		systemdEscapeArg(mountDir),
+		systemdEscapeArg(lookBin("findmnt", "/usr/bin/findmnt")),
+		systemdEscapeArg(lookBin("fusermount3", "/usr/bin/fusermount3")),
+		systemdEscapeArg(lookBin("fusermount", "/usr/bin/fusermount")),
+	}, " ")
+}
+
+func lookBin(name, fallback string) string {
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	return fallback
+}
+
+func (p MountPlan) envFile() string {
+	if p.EnvPath != "" {
+		return p.EnvPath
+	}
+	return filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")
 }
 
 // systemdCommandLine renders the product argument vector the way systemd reads
@@ -730,12 +799,32 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return fmt.Errorf("device name is empty: set --device or DRIVE_DEVICE to a name " +
 			"this mount can carry in a conflict filename")
 	}
+	// The rclone env carries the remote-control credentials and the storage
+	// secret. prepareMountAuth reuses the credentials already on disk, so a
+	// plain re-run writes the same bytes and a rotated secret writes new
+	// ones; comparing before and after is how a changed secret counts as a
+	// changed plan (issue #561) while an unchanged re-run does not.
+	envBefore, envBeforeErr := os.ReadFile(RcloneEnvPath(home))
 	if err := prepareMountAuth(home, &p, c); err != nil {
 		return err
 	}
+	envAfter, envAfterErr := os.ReadFile(RcloneEnvPath(home))
+	envChanged := envBeforeErr != nil || envAfterErr != nil || !bytes.Equal(envBefore, envAfter)
 	item := []byte(LoginItem(goos, p))
+	writes := []mountWrite{
+		{p.ConfigPath, []byte(RcloneConfig(c)), 0o600},
+		{itemPath, item, itemMode},
+		{prefetchPath, prefetchItem, 0o644},
+	}
+	// A dead FUSE or NFS entry is cleared first so a re-run whose files
+	// did not change still recovers after rclone dies (drive#805). A live
+	// answering mount is left alone, and the skip below can then keep it
+	// running under open files (issue #561).
+	if err := clearStaleMountDir(goos, p.MountDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
-		return failDetail("drive-folder", err, p.MountDir)
+		return driveFolderCreateError(err, p.MountDir)
 	}
 	// A folder that is already a mount holds the drive itself, not stray
 	// local files, so nothing is moved out of it.
@@ -761,15 +850,51 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			_ = restoreStrayMountFiles(holding, p.MountDir)
 		}
 	}()
-	config := []byte(RcloneConfig(c))
-	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
+	// The cache holds transient bytes by design: chunks up to the cache
+	// cap, gone on the next sweep. Mark it from the first mount on so a
+	// backup tool that walks the home folder (Time Machine, a Linux home
+	// backup) skips it instead of burning the backup's quota on them
+	// (issue #561). The tag is the standard one, so the tools that read
+	// it recognize it, and it is rewritten identically on every mount.
+	if err := writeCacheTag(p.CacheDir); err != nil {
 		return err
 	}
-	if err := WriteFileAtomic(itemPath, item, itemMode); err != nil {
-		return err
+	// A re-run that would write exactly what is already on disk must not
+	// restart the login item: a restart stops the running rclone, so it
+	// unmounts a live drive under open files (issue #561). When nothing
+	// changed and the drive is up, the run says so and leaves the mount
+	// alone. A stopped drive still starts: an unchanged plan is not a
+	// reason to leave a mount down.
+	if !envChanged && mountWritesUnchanged(goos, writes) {
+		up, probeErr := mountState(goos, home)
+		if probeErr != nil {
+			// A probe that cannot answer is not an answer, and the drive
+			// is only called up once the kernel says so. A wedged FUSE
+			// mount is what makes the probe fail, and a restart would
+			// unmount a live mount under open files, so the run neither
+			// restarts nor reports success: it fails and names the cause.
+			return failDetail("mount-probe", probeErr, p.MountDir, probeErr.Error())
+		}
+		skipRestart := false
+		if up {
+			fmt.Printf("Mount already running at %s\n", p.MountDir)
+			skipRestart = true
+		}
+		if skipRestart {
+			// The mount is up (or the probe could not say), but the prefetch
+			// sidecar can still be down after a partial boot. Starting it is
+			// idempotent and does not touch the mount.
+			if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
+				fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
+			}
+			excludeTransientFromBackup(goos, p)
+			return nil
+		}
 	}
-	if err := WriteFileAtomic(prefetchPath, prefetchItem, 0o644); err != nil {
-		return err
+	for _, w := range writes {
+		if err := WriteFileAtomic(w.path, w.data, w.mode); err != nil {
+			return err
+		}
 	}
 	if foreground {
 		// The files go into the drive once it is up. If it never comes up,
@@ -795,8 +920,8 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		restore()
 		return err
 	}
-	if err := startInstalledMount(goos, p); err != nil {
-		return failDetail("login-item", err)
+	if err := startLoginItem(goos, p, itemPath); err != nil {
+		return err
 	}
 	// Starting the login item is a request, not a promise: say the mount is up
 	// only once the kernel says so, so a first run that silently failed is not
@@ -811,19 +936,80 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
+	// The cache holds the mount's transient bytes (issue #561); keep macOS's
+	// own backup tool off it. Everywhere else the CACHEDIR.TAG marker is the
+	// signal a backup tool reads, so there is nothing to call here.
+	excludeTransientFromBackup(goos, p)
 	printMountedLine(p.MountDir)
 	return nil
 }
 
-// startInstalledMount starts the login item that was just written. Tests
-// replace it so a proof can start the unit's own command without touching
-// the host's user session (drive#515).
-var startInstalledMount = startInstalledMountDefault
+// mountWrite is one file a mount writes: where, what and with which
+// mode. The same list decides whether a re-run changed anything and
+// does the writing, so the two can never disagree about what a mount
+// owns on disk.
+type mountWrite struct {
+	path string
+	data []byte
+	mode os.FileMode
+}
 
-func startInstalledMountDefault(goos string, p MountPlan) error {
+// mountWritesUnchanged reports whether every file in writes is already
+// on disk with exactly the bytes this run would write and the mode it
+// would set. A re-run of `drive init` or `drive mount` with the same
+// plan is the common case, and it is the case where restarting the
+// login item would break open files (issue #561). A mode that drifted
+// (the config and the login item carry the storage secret, so both are
+// 0600) is a change too: the run repairs it.
+//
+// The mode is compared on every platform but Windows (drive#817): a
+// Windows file's permission bits are not the Unix ones, because the
+// file system stores only a read-only attribute and the OS answers a
+// stat with the whole mode every Unix write would use, so the 0600
+// this code asks for never matches what comes back and an unchanged
+// Windows mount would count as changed on every run. On Windows the
+// 0600 that does protect the file is asked for at the write, and the
+// bytes are what decide whether a re-run changed anything.
+func mountWritesUnchanged(goos string, writes []mountWrite) bool {
+	for _, w := range writes {
+		info, err := os.Stat(w.path)
+		if err != nil {
+			return false
+		}
+		if goos != "windows" && info.Mode().Perm() != w.mode.Perm() {
+			return false
+		}
+		onDisk, err := os.ReadFile(w.path)
+		if err != nil || !bytes.Equal(onDisk, w.data) {
+			return false
+		}
+	}
+	return true
+}
+
+// mountState reports whether the drive is mounted at the mount dir
+// home holds. A var (the production value is Mounted) so a test can
+// answer without a kernel mount: it is the check a re-run makes
+// before it decides whether a restart is needed.
+var mountState = Mounted
+
+// waitProbe is the probe the wait for a just-started mount polls.
+// The production value is Mounted; a var so a test can answer
+// "up" without a kernel mount.
+var waitProbe = Mounted
+
+// startLoginItem starts the login item a mount just wrote: launchd
+// bootstraps the plist into the session, and systemd daemon-reloads,
+// enables and restarts the unit, falling back to a detached product
+// process when there is no user session to talk to. A var so a test
+// can record the actions a mount takes, or start the unit's own
+// command without touching the machine's user manager (drive#515).
+var startLoginItem = startPlatformLoginItem
+
+func startPlatformLoginItem(goos string, p MountPlan, itemPath string) error {
 	if goos == "darwin" {
-		if err := bootstrapLaunchd(LoginItemPath(goos, p.Home)); err != nil {
-			return err
+		if err := bootstrapLaunchd(itemPath); err != nil {
+			return failDetail("login-item", err)
 		}
 		return nil
 	}
@@ -836,14 +1022,59 @@ func startInstalledMountDefault(goos string, p MountPlan) error {
 		// fallback: a detached mount there plus the unit still enabled would
 		// start a second mount at the next login.
 		if !systemdUserSessionAbsent(err) {
-			return err
+			return failDetail("login-item", err)
 		}
-		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, LoginItemPath(goos, p.Home))
+		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, itemPath)
 		if err := startLinuxMountDetached(p); err != nil {
-			return err
+			return failDetail("mount-failed", err)
 		}
 	}
 	return nil
+}
+
+// cacheDirTag is the standard cache-directory marker (the cache-dir
+// convention backup and index tools read): a fixed signature line,
+// then a comment naming what the directory is. The signature is the
+// spec's own constant, so a tool that looks for CACHEDIR.TAG files
+// finds this one.
+const cacheDirTag = "Signature: 8a477f597d28d172769f0698c07c4e93\n" +
+	"* This file is a cache directory tag. See https://bford.info/cachedir/ for information about cache directory systems that use it.\n"
+
+// writeCacheTag marks the mount's cache dir as a cache (issue #561),
+// on every platform, from the first mount on. It is idempotent: every
+// mount writes the same bytes, and a backup tool that already read the
+// tag reads the same answer again.
+func writeCacheTag(cacheDir string) error {
+	if cacheDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return failDetail("cache-tag", err, cacheDir)
+	}
+	if err := WriteFileAtomic(filepath.Join(cacheDir, "CACHEDIR.TAG"), []byte(cacheDirTag), 0o644); err != nil {
+		return failDetail("cache-tag", err, cacheDir)
+	}
+	return nil
+}
+
+// excludeTransientFromBackup keeps macOS's own backup tool (Time
+// Machine, which walks the home folder by default) off the mount's
+// transient bytes (issue #561): the cache dir, whose chunks can fill
+// the backup's quota. It is regenerable, so excluding it loses
+// nothing. A refusal is a note, not a mount failure: the drive works
+// without the exclusion, and the CACHEDIR.TAG marker still tells a
+// tool that reads it. Everywhere but macOS there is no command to
+// call, so the marker is the whole of it.
+func excludeTransientFromBackup(goos string, p MountPlan) {
+	if goos != "darwin" {
+		return
+	}
+	if p.CacheDir == "" {
+		return
+	}
+	if out, err := exec.Command("tmutil", "addexclusion", p.CacheDir).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not exclude %s from Time Machine backups (%v): %s\n", p.CacheDir, err, out)
+	}
 }
 
 // startLinuxLoginItem enables and restarts the systemd user unit this command
@@ -1046,7 +1277,7 @@ func waitMountedFor(goos, home string, wait, tick time.Duration, out io.Writer) 
 	deadline := time.Now().Add(wait)
 	shown := 0
 	for time.Now().Before(deadline) {
-		on, err := Mounted(goos, home)
+		on, err := waitProbe(goos, home)
 		if err != nil {
 			return err
 		}
@@ -1169,26 +1400,102 @@ func Unmount(goos, home string) error {
 		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
+	var disableErr error
 	if _, err := os.Stat(itemPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+		if !errors.Is(err, fs.ErrNotExist) {
+			return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
 		}
-		return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
+	} else if goos == "darwin" {
+		disableErr = bootoutLaunchd(itemPath)
+	} else if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
+		disableErr = fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
 	}
-	if goos == "darwin" {
-		return bootoutLaunchd(itemPath)
-	}
-	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
-		if stopErr := stopMount(goos, home); stopErr != nil {
-			return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr))
+	if stopErr := stopMount(goos, home); stopErr != nil {
+		if disableErr != nil {
+			return failDetail("unexpected", fmt.Errorf("%v; unmount: %w", disableErr, stopErr))
 		}
-		// The mount is down but the login item could not be disabled, and only
-		// uninstall and logout delete its file afterwards: a bare `drive
-		// unmount` would otherwise report success while the unit starts again
-		// at the next login. The error names the disable that failed.
-		return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err))
+		return failDetail("unmount-failed", stopErr, DefaultMountDir(home))
+	}
+	if disableErr != nil {
+		return failDetail("unexpected", disableErr)
 	}
 	return nil
+}
+
+// clearStaleMountDir lazy-unmounts a dead FUSE or NFS entry at mountDir so
+// MkdirAll and rclone can use the folder again. A live answering mount is
+// left alone: `drive mount` over a working drive must not detach rclone's
+// cache. A listing timeout is treated as stale, because a wedged mount can
+// block findmnt the same way it blocks Lstat.
+func clearStaleMountDir(goos, mountDir string) error {
+	if !mountDirNotConnected(goos, mountDir) {
+		return nil
+	}
+	if uerr := lazyUnmount(goos, mountDir); uerr != nil {
+		return failDetail("stale-mount", uerr, mountDir)
+	}
+	return nil
+}
+
+func lazyUnmount(goos, mountDir string) error {
+	var err error
+	if goos == "darwin" {
+		// A hard NFS mount whose nfsd is gone hangs a plain umount, so the
+		// stale path uses -f and never tries the blocking form first.
+		err = runUmountFlag(mountDir, "-f")
+	} else {
+		err = runFusermountFlag(mountDir, "-uz")
+	}
+	if err == nil {
+		return nil
+	}
+	on, merr := MountedDir(goos, mountDir)
+	if merr == nil && !on {
+		return nil
+	}
+	return err
+}
+
+// mountDirNotConnected reports a listed mount that does not answer. The mount
+// listing is consulted first: os.Lstat on a hard NFS mount (macOS after
+// rclone dies) can hang forever, so it is never the first probe. A listing
+// timeout is stale without Lstat. A listed mount is probed with a bounded
+// Lstat so ENOTCONN is distinguished from a live answering mount.
+func mountDirNotConnected(goos, dir string) bool {
+	on, err := MountedDir(goos, dir)
+	if err != nil {
+		return true
+	}
+	if !on {
+		return false
+	}
+	return !mountDirAnswers(dir)
+}
+
+func mountDirAnswers(dir string) bool {
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		_, err := os.Lstat(dir)
+		done <- result{err}
+	}()
+	select {
+	case r := <-done:
+		return !isNotConnected(r.err)
+	case <-time.After(2 * time.Second):
+		return false
+	}
+}
+
+func isNotConnected(err error) bool {
+	return err != nil && (errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.ENXIO))
+}
+
+func driveFolderCreateError(err error, mountDir string) error {
+	if isNotConnected(err) {
+		return failDetail("stale-mount", err, mountDir)
+	}
+	return failDetail("drive-folder", err, mountDir)
 }
 
 // Mounted reports whether MountDir has a live mount. Linux asks the kernel

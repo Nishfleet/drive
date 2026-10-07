@@ -22,10 +22,12 @@ import {
   getBranch,
   handleBranchesRequest,
   listBranches,
+  MAX_OPEN_BRANCHES,
   readSnapshot,
   readSnapshotObject,
   relativePath,
   removePrefixFiles,
+  runBranchJobToEnd,
   sameFile,
   snapshotKey,
 } from "../src/branches.js";
@@ -52,8 +54,16 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0005_meter.sql",
+    "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
+    // for the job columns and in-flight unique index it inserts through
+    // (drive#563). Not the whole folder: 0017_drop_branches_snapshot.sql
+    // removes the leftover column some proofs below still select.
+    "drive/0016_founding.sql",
+    "drive/0019_abuse_guards.sql",
     "drive/0030_branch_jobs.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
@@ -257,6 +267,11 @@ function request(method, path, body) {
   }
   return new Request(`https://drive.test${path}`, init);
 }
+
+// The branch-create limiter, allowed: the route enforces it before the body is
+// read, and these tests are about what happens after it lets the call through.
+// The limiter's own refusals are asserted on their own below.
+const ALLOWED = { ipLimiter: { limit: () => Promise.resolve({ success: true }) } };
 
 // `approveBranch` and `discardBranch` each answer a union: the worked object or
 // a failure carrying a status. Every status assertion below is about the
@@ -657,6 +672,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     snapshots,
     raw,
     account,
+    ALLOWED,
   );
   assert.equal(created.status, 202);
   const createdBody = await created.json();
@@ -704,6 +720,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
     snapshots,
     raw,
     account,
+    ALLOWED,
   );
   assert.equal(second.status, 202);
   const discarded = await handleBranchesRequest(
@@ -758,6 +775,7 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
     snapshots,
     raw,
     ACCOUNT,
+    ALLOWED,
   );
   assert.equal(notJson.status, 400);
 
@@ -851,6 +869,7 @@ test("the route answers a closed branch with an empty diff and its state", async
     snapshots,
     raw,
     ACCOUNT,
+    ALLOWED,
   );
   const approved = await handleBranchesRequest(
     request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
@@ -866,6 +885,7 @@ test("the route answers a closed branch with an empty diff and its state", async
     snapshots,
     raw,
     ACCOUNT,
+    ALLOWED,
   );
 
   const answer = await handleBranchesRequest(
@@ -910,6 +930,7 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
     snapshots,
     raw,
     account,
+    ALLOWED,
   );
 
   const extra = await handleBranchesRequest(
@@ -1113,4 +1134,418 @@ test("a create whose prefix clear fails closes its own claim row", async () => {
     name: "work",
   });
   assert.equal(again.state, "open");
+});
+
+// ------------------------------------------------- the open-branch cap (#553)
+
+test("the account's open branches stop at the cap, and the next one is refused", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // The cap is a whole number of open branches. Create exactly that many, each
+  // a real copy through the same path the route uses, so the count the cap
+  // reads is the count the drive holds.
+  for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
+    const made = await createBranch(db, snapshots, scoped, ACCOUNT, {
+      folder: "/Photos",
+      name: `work-${i}`,
+    });
+    assert.equal(made.state, "open", `branch ${i} should be open`);
+  }
+  // The next create is refused on the cap, not on the name, and writes nothing
+  // (no row, no copy): a refused branch must not count against the cap either.
+  const over = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work-over",
+  });
+  assert.equal(over.error, failureMessage("branch-limit"));
+  assert.equal(over.status, 409);
+  // The sentence names the same cap the code enforces, so a changed constant
+  // cannot leave the message quoting a stale number.
+  assert.ok(failureMessage("branch-limit").includes(String(MAX_OPEN_BRANCHES)));
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work-over"), null);
+  const listed = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.equal(listed.length, MAX_OPEN_BRANCHES);
+  // Closing one frees a slot: a discarded branch no longer counts.
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "work-1");
+  const after = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work-over",
+  });
+  assert.equal(after.state, "open");
+  // Approving frees a slot the same way: the refusal sentence tells the
+  // person to approve or discard, so both must be able to unblock the next
+  // create. The original is untouched since these branches were made, so the
+  // approve is the clean copy-back arm.
+  await approveBranch(db, snapshots, scoped, ACCOUNT, "work-2");
+  const afterApprove = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work-after-approve",
+  });
+  assert.equal(afterApprove.state, "open");
+});
+test("a queued create counts against the cap before its copy has run", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // Production creates copy in batches on a queue (drive#563), so a branch's
+  // row sits in 'creating' with its bytes still to be written. Ten of those
+  // are ten copies this account is about to hold, so the cap has to count
+  // them: counting only 'open' would let ten queued creates each pass and then
+  // each finish open, which is the whole bound the cap exists for. The queue
+  // here never runs the copies, so every row stays 'creating' for the test.
+  /** @type {Array<unknown>} */
+  const sent = [];
+  const queue = {
+    /** @param {unknown} body */
+    async send(body) {
+      sent.push(body);
+    },
+  };
+  for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
+    const made = await createBranch(
+      db,
+      snapshots,
+      scoped,
+      ACCOUNT,
+      { folder: "/Photos", name: `queued-${i}` },
+      () => Date.now(),
+      queue,
+    );
+    assert.equal(made.state, "creating", `branch ${i} should be queued, not open`);
+  }
+  assert.equal(sent.length, MAX_OPEN_BRANCHES, "every queued create asked the queue once");
+  // None of them is open yet, and the eleventh is still refused.
+  const open = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.deepEqual(
+    open.map((branch) => branch.state),
+    Array.from({ length: MAX_OPEN_BRANCHES }, () => "creating"),
+  );
+  const over = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "queued-over" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(over.error, failureMessage("branch-limit"));
+  assert.equal(over.status, 409);
+  // Nothing was written and no job was asked for: a refused create costs the
+  // queue nothing either.
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "queued-over"), null);
+  assert.equal(sent.length, MAX_OPEN_BRANCHES);
+});
+test("a concurrent create that loses the atomic claim copies nothing", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // Two creates start together below the cap: "held" is already open, and the
+  // loser wants a different name, so nothing about the name refuses it. The
+  // only thing that separates the winner from the loser is the claim INSERT's
+  // WHERE clause: the loser inserts no row, and must hear the cap answer here
+  // rather than copy into a prefix another create is walking. This test
+  // answers the claim insert with no changed row, exactly what D1 reports.
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "held" });
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  // Only the claim insert is stubbed: the guard's own reads still run, and the
+  // refusal lands after the copy was not asked for. Every other statement and
+  // every other method goes through the real adapter, which is why this is a
+  // proxy over it (the same shape as the failing devices store in
+  // test/signin.test.mjs) rather than a bare object that would have to restate
+  // D1's interface; the loser's store is never asked to walk the folder or
+  // copy a file. The stub matches the claim statement by its role — the one
+  // INSERT into the branches table — not by an incidental sub-select's
+  // spelling, so an edit to the claim's WHERE clause cannot silently unstub
+  // it: a dark stub answers the loser with a real insert and fails the test.
+  const losingDb = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          const statement = target.prepare(sql);
+          if (!sql.startsWith("INSERT INTO branches")) {
+            return statement;
+          }
+          return {
+            sql,
+            /** @param {...unknown} values */
+            bind(...values) {
+              return {
+                ...statement.bind(...values),
+                async run() {
+                  return { results: [], success: true, meta: { changes: 0, last_row_id: 0 } };
+                },
+              };
+            },
+          };
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const loser = await createBranch(losingDb, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(loser.error, failureMessage("branch-limit"));
+  assert.equal(loser.status, 409);
+  assert.deepEqual(copies, []);
+  // The refused name is not a branch: no row claimed, and the prefix holds no
+  // files a later diff or a list would report.
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
+  const names = (await listBranches(db, snapshots, store, ACCOUNT)).map((branch) => branch.name);
+  assert.deepEqual(names, ["held"]);
+});
+test("the cap's claim is what refuses the eleventh create, not the earlier count", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // Ten 'open' rows already on disk, planted without createBranch, so the
+  // claim INSERT's WHERE is the only thing that can refuse the eleventh.
+  // Delete that WHERE and this test fails: the eleventh row lands and copies.
+  for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
+    db.sqlite
+      .prepare(
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, state) " +
+          "VALUES (?1,?2,?3,?4,'open')",
+      )
+      .run(ACCOUNT.id, `taken-${i}`, "/Photos", `/.branches/taken-${i}`);
+  }
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  const loser = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "eleventh",
+  });
+  assert.equal(loser.error, failureMessage("branch-limit"));
+  assert.equal(loser.status, 409);
+  assert.deepEqual(copies, [], "the loser never asked for a copy");
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "eleventh"), null);
+  const held = await listBranches(db, snapshots, store, ACCOUNT);
+  assert.equal(
+    held.length,
+    MAX_OPEN_BRANCHES,
+    "the claim inserted nothing, so the cap is not one row over",
+  );
+});
+
+// ------------------------------------------- the pre-charge guard (#553, #536)
+
+test("a pre-charge account at 900 GB cannot branch a 200 GB folder", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // The account is unpaid (first_charged_at is null), so the 1 TB pre-charge
+  // limit applies. The live file_versions rows already hold 900 GB for it, and
+  // the folder about to be branched reports 200 GB from its listing, so the
+  // copy would take the account past the limit. The branch bytes live outside
+  // the index, so the guard reads them from the store too; there are none yet.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 900 * GB, 1);
+  const folderBytes = 200 * GB;
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      // The folder's listing reports one 200 GB file; no such bytes exist here.
+      return entries.map((entry) =>
+        entry.name === "a.txt" && path === "/Photos" ? { ...entry, size: folderBytes } : entry,
+      );
+    },
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return scoped.copy(from, to, size);
+    },
+  };
+  const blocked = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(blocked.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(blocked.status, 403);
+  // Nothing was copied and no row was claimed: the guard runs before the name
+  // is claimed, so a refused branch leaves no trace.
+  assert.deepEqual(copies, []);
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
+  // The same folder is allowed once a first charge lifts the limit.
+  db.sqlite.prepare("UPDATE accounts SET first_charged_at = ? WHERE id = ?").run(1, ACCOUNT.id);
+  const allowed = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(allowed.state, "open");
+});
+
+// --------------------------------------------------- the create limiter (#553)
+
+test("branch bytes already held count toward the pre-charge limit", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // An unpaid account 900 GB into the 1 TB pre-charge limit makes one small
+  // branch, then that branch's own listing reports 200 GB. A 1 GB create sits
+  // at 901 GB on its own and would pass; with the branch's 200 GB counted it is
+  // over. Branch copies are written without withIndex, so the guard's index
+  // read cannot see them: this is the store sum that catches them, and the
+  // discard control below shows the same create passes once they are gone.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 900 * GB, 1);
+  const held = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "held",
+  });
+  assert.equal(held.state, "open");
+  const branchBytes = 200 * GB;
+  const folderBytes = 1 * GB;
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      // One file under the branch reports 200 GB, and the folder about to be
+      // branched reports 1 GB; no such bytes exist here.
+      return entries.map((entry) => {
+        if (entry.name !== "a.txt") {
+          return entry;
+        }
+        if (path.startsWith(`${BRANCHES_ROOT}/`)) {
+          return { ...entry, size: branchBytes };
+        }
+        if (path === "/Photos") {
+          return { ...entry, size: folderBytes };
+        }
+        return entry;
+      });
+    },
+  };
+  const blocked = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(blocked.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(blocked.status, 403);
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
+  // The branch's bytes were the whole difference: discard it and the same
+  // create is 901 GB, under the limit, and lands.
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "held");
+  const allowed = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(allowed.state, "open");
+});
+
+test("a queued create is refused before it copies if the account passed the limit while it waited", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  /** @type {Array<unknown>} */
+  const sent = [];
+  const queue = {
+    /** @param {unknown} body */
+    async send(body) {
+      sent.push(body);
+    },
+  };
+  const made = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(made.state, "creating");
+  assert.deepEqual(copies, []);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 1000 * GB, 1);
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+  const ran = await runBranchJobToEnd(db, snapshots, store, ACCOUNT, row.id);
+  assert.equal(ran.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(ran.status, 403);
+  assert.deepEqual(copies, [], "the job refused before it asked for a copy");
+  assert.equal((await getBranch(db, snapshots, ACCOUNT, "work"))?.state, "discarded");
+});
+
+// ---------------------------------------- the guards on a create (#553)
+
+test("the branch route limits a create and fails closed without a limiter", async () => {
+  const { raw, db, snapshots } = await driven();
+  const create = () =>
+    handleBranchesRequest(
+      request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+      db,
+      snapshots,
+      raw,
+      ACCOUNT,
+      { ipLimiter: { limit: () => Promise.resolve({ success: false }) } },
+    );
+  const denied = await create();
+  assert.equal(denied.status, 429);
+  assert.equal((await denied.json()).error, failureMessage("rate-limited"));
+  assert.equal(denied.headers.get("retry-after"), "60");
+  // A create whose limiter binding is missing is refused before any work: the
+  // fail-closed rule every limited route follows.
+  const unbound = await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    {},
+  );
+  assert.equal(unbound.status, 503);
+  assert.equal((await unbound.json()).error, failureMessage("unexpected"));
+  // A GET is never limited: listing branches is a read, and only the create
+  // copy costs the operator work.
+  const listed = await handleBranchesRequest(
+    new Request(`https://drive.test${BRANCHES_ENDPOINT}`, { method: "GET" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(listed.status, 200);
 });

@@ -82,8 +82,15 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0005_meter.sql",
+    "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
     "drive/0015_branch_row_id.sql",
+    // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
+    // for the job columns and in-flight unique index it inserts through
+    // (drive#563).
+    "drive/0016_founding.sql",
+    "drive/0019_abuse_guards.sql",
     "drive/0030_branch_jobs.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
@@ -303,7 +310,7 @@ test("the rewind screen lists what the agent changed before anything is touched"
     snapshots,
     raw,
     ACCOUNT,
-    () => AT,
+    { now: () => AT },
   );
   const [row] = (await branches.json()).branches;
   const preview = await rewindPreview(scopeStore(raw, ACCOUNT), row, AT, snapshots);
@@ -536,7 +543,7 @@ async function rewindBranchRowFor(db, snapshots, raw, name) {
     snapshots,
     raw,
     ACCOUNT,
-    () => AT,
+    { now: () => AT },
   );
   // `Response.json()` is typed as `Promise<any>` by the DOM lib, so the row is
   // read through one bound local carrying the list's own shape.

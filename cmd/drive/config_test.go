@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testStorage() StorageConfig {
@@ -19,6 +20,16 @@ func testStorage() StorageConfig {
 		Bucket:    "drive-standin",
 		Prefix:    "u/1234",
 		Region:    "us-east-1",
+	}
+}
+
+func TestVFSDirCacheTimeIsAtLeastFiveMinutes(t *testing.T) {
+	d, err := time.ParseDuration(vfsDirCacheTimeValue)
+	if err != nil {
+		t.Fatalf("vfsDirCacheTimeValue %q: %v", vfsDirCacheTimeValue, err)
+	}
+	if d < 5*time.Minute {
+		t.Errorf("vfsDirCacheTimeValue = %s (%v), want at least 5m (issue #541)", vfsDirCacheTimeValue, d)
 	}
 }
 
@@ -165,9 +176,9 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 
 // The mount must carry every VFS flag the product mounts with, on both
 // platforms, and use the platform's own rclone subcommand. --dir-cache-time is
-// the fourth: S3 sends no change notifications, so without it a save from the
-// other machine waits out rclone's 5-minute default (issue #62; the step-3
-// proof in PR #61 carries the same flag into docs/build-spec.md).
+// the fourth: S3 sends no change notifications, so listings stay fresh via
+// vfs/refresh from the fill loop (issue #541) rather than a 5s expiry that
+// broke kept-offline folders.
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
@@ -179,7 +190,7 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-cache-mode full",
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
-			"--dir-cache-time 5s",
+			"--dir-cache-time " + vfsDirCacheTimeValue,
 			"--vfs-read-chunk-size " + vfsReadChunkSizeValue,
 			"--vfs-read-chunk-streams 2",
 			"--buffer-size 32M",
@@ -193,8 +204,8 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 		// The flag and its value are one pair: a plan that emitted
 		// --dir-cache-time with no value would still match the substring
 		// above, and rclone would take the next argument as the duration.
-		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", "5s") {
-			t.Errorf("%s: --dir-cache-time and 5s are not adjacent args:\n%v", tc.goos, args)
+		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
+			t.Errorf("%s: --dir-cache-time and %s are not adjacent args:\n%v", tc.goos, vfsDirCacheTimeValue, args)
 		}
 		if args := p.Args(); !hasArgPair(args, "--vfs-read-ahead", "128k") {
 			t.Errorf("%s: --vfs-read-ahead and 128k are not adjacent args:\n%v", tc.goos, args)
@@ -226,6 +237,9 @@ func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
 		}
 		if args[0] != "mount" {
 			t.Errorf("%s: productArgs[0] = %q, want mount", goos, args[0])
+		}
+		if !hasArgPair(args, "--rclone", p.RcloneBin) {
+			t.Errorf("%s: productArgs missing --rclone %s: %v", goos, p.RcloneBin, args)
 		}
 	}
 }
@@ -260,10 +274,16 @@ func TestLaunchdPlistRunsTheProduct(t *testing.T) {
 			t.Errorf("launchd plist missing %q:\n%s", want, plist)
 		}
 	}
-	if strings.Contains(plist, "/opt/homebrew/bin/rclone") || strings.Contains(plist, "nfsmount") {
-		t.Errorf("launchd plist still execs rclone:\n%s", plist)
-	}
 	args := plistProgramArguments(t, plist)
+	if len(args) < 6 || args[5] != "/opt/homebrew/bin/drive" {
+		t.Errorf("launchd exec target = %v, want this CLI after the umount wrapper", args)
+	}
+	if hasArg(args, "nfsmount") {
+		t.Errorf("launchd plist still execs nfsmount:\n%s", plist)
+	}
+	if !hasArgPair(args, "--rclone", "/opt/homebrew/bin/rclone") {
+		t.Errorf("launchd ProgramArguments missing --rclone of the resolved binary:\n%v", args)
+	}
 	if !hasArgPair(args, "--home", "/Users/test") || !hasArg(args, "--foreground") {
 		t.Errorf("launchd ProgramArguments missing the product command:\n%v", args)
 	}
@@ -297,14 +317,14 @@ func TestSystemdUnitRunsTheProduct(t *testing.T) {
 	p := withProductBin(BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage()))
 	unit := SystemdUnit(p)
 	for _, want := range []string{
-		"ExecStart=/usr/local/bin/drive mount --foreground --home /home/test",
+		"ExecStart=/usr/local/bin/drive mount --foreground --home /home/test --rclone /usr/bin/rclone",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
 		}
 	}
-	if strings.Contains(unit, "/usr/bin/rclone") {
+	if strings.HasPrefix(strings.TrimPrefix(extractExecStart(unit), "ExecStart="), "/usr/bin/rclone") {
 		t.Errorf("systemd unit still execs rclone:\n%s", unit)
 	}
 	if strings.Contains(unit, "Environment=") || strings.Contains(unit, "EnvironmentFile=") {
@@ -314,11 +334,61 @@ func TestSystemdUnitRunsTheProduct(t *testing.T) {
 		t.Errorf("systemd unit has an ExecStop line:\n%s", unit)
 	}
 	execStart := extractExecStart(unit)
-	if !hasArgPair(strings.Fields(strings.TrimPrefix(execStart, "ExecStart=")), "--home", "/home/test") {
+	startArgs := strings.Fields(strings.TrimPrefix(execStart, "ExecStart="))
+	if !hasArgPair(startArgs, "--home", "/home/test") {
 		t.Errorf("ExecStart line missing adjacent --home /home/test:\n%s", execStart)
+	}
+	if !hasArgPair(startArgs, "--rclone", "/usr/bin/rclone") {
+		t.Errorf("ExecStart line missing adjacent --rclone of the resolved binary:\n%s", execStart)
 	}
 	if p := SystemdUnitPath("/home/test"); p != "/home/test/.config/systemd/user/drive-mount.service" {
 		t.Errorf("SystemdUnitPath = %q", p)
+	}
+}
+
+func TestSystemdUnitClearsADeadFuseEntryBeforeStart(t *testing.T) {
+	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+	unit := SystemdUnit(p)
+	pre := extractExecStartPre(unit)
+	if pre == "" {
+		t.Fatalf("systemd unit missing ExecStartPre:\n%s", unit)
+	}
+	for _, want := range []string{"findmnt", "fuse.rclone", "-uz", "/home/test/Drive", "fusermount3", "fusermount"} {
+		if !strings.Contains(pre, want) {
+			t.Errorf("ExecStartPre missing %q:\n%s", want, pre)
+		}
+	}
+	if !strings.Contains(pre, "-t fuse.rclone,fuse") {
+		t.Errorf("ExecStartPre unmounts without a FUSE type check:\n%s", pre)
+	}
+}
+
+func extractExecStartPre(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStartPre=") {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestLaunchdPlistClearsADeadMountBeforeStart(t *testing.T) {
+	p := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage())
+	args := plistProgramArguments(t, LaunchdPlist(p))
+	if len(args) < 4 || args[0] != "/bin/sh" || args[1] != "-c" {
+		t.Fatalf("launchd ProgramArguments = %v, want /bin/sh -c <umount> … rclone", args)
+	}
+	if !strings.Contains(args[2], "umount") || !strings.Contains(args[2], "-f") {
+		t.Errorf("launchd pre-start script = %q, want a forced umount of a dead NFS entry", args[2])
+	}
+	if strings.Contains(args[2], `umount "$1"`) {
+		t.Errorf("launchd pre-start script = %q, want umount -f only: a plain umount hangs on a hard NFS mount", args[2])
+	}
+	if !strings.Contains(args[2], "mount -t nfs") {
+		t.Errorf("launchd pre-start script = %q, want an NFS mount-table check before umount", args[2])
+	}
+	if args[4] != "/Users/test/Drive" {
+		t.Errorf("launchd umount target = %q, want the mount dir", args[4])
 	}
 }
 

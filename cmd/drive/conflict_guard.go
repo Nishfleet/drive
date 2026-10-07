@@ -232,6 +232,12 @@ type conflictBackend interface {
 	// is never true here: a conflict copy is always in the folder
 	// whose save was lost, so only that folder's listing changed.
 	refresh(ctx context.Context, recursive bool) error
+	// reachable reports whether the object store answers. The post-claim
+	// refresh must never run against a dead backend: rclone forces the
+	// directory cache stale before it re-lists, so a failed refresh would
+	// make every kept-offline open fail until the cache expired
+	// (issue #541, rclone#1963).
+	reachable(ctx context.Context) error
 }
 
 // ConflictResult is what one guard pass did, so a proof and a log
@@ -458,9 +464,17 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		// directory cache is what a listing of the mount reads, so
 		// both devices need it refreshed to see them; this one does
 		// it for its own listing. The other device sees the copy on
-		// its next listing, which is the same 5s --dir-cache-time
-		// step 3 measures for any save: no save is pushed to the
-		// other machine, and this is no different.
+		// the fill loop's next vfs/refresh while storage answers
+		// (issue #541): no save is pushed to the other machine, and
+		// this is no different.
+		// A back-end that has gone down between the claim and this call is
+		// left alone: vfs/refresh forces the directory cache stale before it
+		// re-lists, so the refresh would poison the 24h cache and turn a
+		// kept-offline folder into Input/output errors (issue #541). The fill
+		// loop refreshes when the link comes back.
+		if err := b.reachable(ctx); err != nil {
+			return res, nil
+		}
 		if err := b.refresh(ctx, false); err != nil {
 			return res, fmt.Errorf("conflict: refresh after claiming: %w", err)
 		}
