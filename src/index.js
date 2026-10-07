@@ -21,6 +21,7 @@ import {
 } from "../core/cap.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
+import { unbillableAccounts } from "../core/dodo.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
@@ -108,6 +109,7 @@ import {
   captureError,
   reportBillingGap,
   reportPurgeFailures,
+  reportUnbillableAccounts,
   withCronCheckIn,
 } from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
@@ -841,8 +843,11 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
-      () => Date.now(),
-      branchJobsQueue(c.env),
+      {
+        now: () => Date.now(),
+        queue: branchJobsQueue(c.env),
+        ipLimiter: c.env.BRANCH_RATE_LIMITER,
+      },
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -1434,6 +1439,27 @@ const handler = {
           now,
           ...(pause ?? {}),
         });
+        // The billing gap that is an account rather than an hour (drive#503):
+        // the accounts storing files whose first payment never landed, so no
+        // customer id was written and nothing bills them. Reported beside the
+        // draw above, and wrapped because a detector that throws must not
+        // fail a trigger whose draws are already written — the next hour asks
+        // again.
+        try {
+          const unbillable = await unbillableAccounts(env.METER_DB, { now });
+          if (unbillable.accounts > 0) {
+            console.log(
+              "billing gap: accounts storing files with no customer id",
+              `accounts=${unbillable.accounts}`,
+            );
+          }
+          reportUnbillableAccounts(unbillable);
+        } catch (error) {
+          console.error(
+            "billing gap: the unbillable-account report failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
         // Accounts the hour did not draw still need the swap: a cap raise
         // with no usage this hour, or PREPAID_PAUSE flipped on against
         // accounts already at $0.

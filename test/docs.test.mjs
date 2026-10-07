@@ -261,6 +261,28 @@ test("the security page answers whether writing resumes once the cap is raised",
   );
 });
 
+test("the limits page states the account size search stays under a second at (drive#571)", () => {
+  const page = shipped("limits.md");
+  // The issue asks for the size, so the number is pinned here: a search under
+  // one second is claimed for an account of a million files, and the number
+  // must not drift off the figure test/search.test.mjs measures.
+  assert.match(
+    page,
+    /Search on an account of a million files/i,
+    "the limits page must name the account size search stays under a second at",
+  );
+  assert.match(
+    page,
+    /1,000,000\s*\n?\s*file/,
+    "the limits page must state the figure as one million files",
+  );
+  assert.match(
+    page,
+    /milliseconds/,
+    "the limits page must give the measured time, not only the size",
+  );
+});
+
 test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
   const page = shipped("limits.md");
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
@@ -534,6 +556,135 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   }
 });
 
+// The docs count public/llms.txt states (drive#814). The links above are gated
+// but the sentence that tells an answer engine how many pages there are is
+// prose, so drive#562 could add a page, add its link, and leave the sentence
+// counting the old nine with nothing failing. The count is read out of the file
+// and compared with DOC_PAGES, the list core/seo.js holds and the link gate
+// walks, so the sentence and the page list cannot disagree.
+//
+// It is stated once: the sentence is found by shape and never by a typed figure,
+// and the two other files that advertise the docs list state no count, so a
+// reword that drops the count or a second figure written elsewhere both fail
+// here rather than shipping a number nobody checked.
+const COUNT_SENTENCE = /holds all ([\w-]+) in one file/gi;
+
+// The counts the sentence may spell, so "nine" is read as nine rather than as a
+// word the gate cannot compare. A page list past twenty is a rewrite of this
+// table, which is a louder change than editing a sentence.
+/** @type {Readonly<Record<string, number>>} */
+const COUNT_WORDS = Object.freeze({
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+});
+
+/**
+ * @param {string} text
+ * @returns {string} the text with a hard wrap folded away, a blank line kept
+ */
+const foldSentence = (text) => text.replace(/(?<!\n)\n(?!\n)/g, " ");
+
+// The count written in other words, so a second figure is caught rather than
+// read past: "nine pages", "9 docs pages", "the docs have 12 pages". The number
+// words are the keys of the table above, so there is one list of them, and every
+// space here is a space and not a line break, so a claim cannot be assembled out
+// of two paragraphs. The number sits against "pages", so prose like "one of the
+// pages" is not read as a count of them.
+const NUMBER = `(?:\\d{1,3}|${Object.keys(COUNT_WORDS).join("|")})`;
+const PAGE_COUNT_CLAIM = new RegExp(
+  [
+    `\\b${NUMBER}\\b[^\\S\\n]+(?:docs?[^\\S\\n]+)?pages?\\b`,
+    `\\bdocs?\\b[^\\S\\n]+(?:has|have|holds?)[^\\S\\n]+${NUMBER}\\b[^\\S\\n]+pages?\\b`,
+  ].join("|"),
+  "gi",
+);
+
+/**
+ * The docs count a file states, in the one sentence that states it. A
+ * hard-wrapped sentence is folded to the one sentence a reader sees, but a blank
+ * line is a paragraph break and is kept, so "holds all nine" and "in one file"
+ * either side of one are not read as a claim the file makes.
+ * @param {string} text
+ * @returns {Array<{sentence: string, said: string, count: number | undefined}>}
+ */
+function statedCounts(text) {
+  return [...foldSentence(text).matchAll(COUNT_SENTENCE)].map((match) => {
+    const said = match[1].toLowerCase();
+    const digits = Number(said);
+    return {
+      sentence: match[0],
+      said,
+      count: said === String(digits) ? digits : COUNT_WORDS[said],
+    };
+  });
+}
+
+/**
+ * @param {string} text
+ * @returns {string[]} the page-count phrases the text states
+ */
+function pageCountClaims(text) {
+  return [...text.matchAll(PAGE_COUNT_CLAIM)].map((match) => match[0]);
+}
+
+/** @param {string} name */
+const readRepoText = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+
+test("public/llms.txt states the docs page count DOC_PAGES has, and states it once", () => {
+  const llms = readRepoText("../public/llms.txt");
+  const stated = statedCounts(llms);
+  assert.equal(
+    stated.length,
+    1,
+    `public/llms.txt must state the docs page count in exactly one sentence of the shape "holds all <count> in one file", and it states it in ${stated.length}`,
+  );
+  const { said, count, sentence } = stated[0];
+  assert.ok(
+    count !== undefined,
+    `public/llms.txt states "${sentence}", and this gate cannot read "${said}" as a count`,
+  );
+  assert.equal(
+    count,
+    DOC_PAGES.length,
+    `public/llms.txt says there are ${said} docs pages, and DOC_PAGES (core/seo.js) has ${DOC_PAGES.length}`,
+  );
+  // The count is stated once across the three files that advertise the docs
+  // list, and in public/llms.txt only in the sentence above: a second figure in
+  // this file, or a count added to the README or the docs home, is a number kept
+  // in step by hand, which is the gap this gate closes.
+  assert.deepEqual(
+    pageCountClaims(llms),
+    [],
+    "public/llms.txt states the count in the one sentence above, not a second time",
+  );
+  for (const name of ["../README.md", "../docs-site/index.md"]) {
+    const other = readRepoText(name);
+    assert.deepEqual(
+      [...statedCounts(other), ...pageCountClaims(other)],
+      [],
+      `${name} must not state a docs page count: the count is stated once, in public/llms.txt`,
+    );
+  }
+});
+
 test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
@@ -693,6 +844,52 @@ test("the shipped docs do not preload Inter", () => {
   // here rather than shipping a 0.015 layout shift.
   const html = shipped("index.html");
   assert.doesNotMatch(html, /inter-/i, "the docs HTML must not preload or link Inter");
+});
+
+test("every docs page links the served favicon", () => {
+  // drive#546: without a rel="icon" link every tab fetched /favicon.ico and
+  // hit the 404 page. The home page and every docs page point at the one
+  // served SVG.
+  assert.ok(
+    existsSync(new URL("../public/favicon.svg", import.meta.url)),
+    "public/favicon.svg must ship",
+  );
+  const docsHtml = readdirSync(siteDir).filter(
+    (name) => name.endsWith(".html") && name !== "404.html",
+  );
+  assert.ok(docsHtml.length >= 10, "the docs home and every page must have built");
+  for (const name of docsHtml) {
+    assert.match(
+      shipped(name),
+      /<link\s+rel="icon"\s+href="\/favicon\.svg"/,
+      `${name} must carry <link rel="icon" href="/favicon.svg">`,
+    );
+  }
+});
+
+test("every docs table is wrapped in a scroll container and stays a table", () => {
+  // drive#546: Chrome ignores overflow on a table box, so a wide table cannot
+  // scroll on its own. The markdown renderer wraps each table in
+  // .table-wrap (overflow-x: auto); the theme keeps display: table so the
+  // cells stay aligned.
+  const theme = readFileSync(
+    new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(theme, /\.VPDoc \.table-wrap\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(theme, /\.VPDoc table\s*\{[^}]*display:\s*table/);
+  const docsHtml = readdirSync(siteDir).filter(
+    (name) => name.endsWith(".html") && name !== "404.html",
+  );
+  let tables = 0;
+  for (const name of docsHtml) {
+    const html = shipped(name);
+    const all = (html.match(/<table\b/g) ?? []).length;
+    const wrapped = (html.match(/<div class="table-wrap"><table\b/g) ?? []).length;
+    tables += all;
+    assert.equal(wrapped, all, `${name}: every <table> must sit inside .table-wrap`);
+  }
+  assert.ok(tables > 0, "the benchmark and security pages ship tables");
 });
 
 test("the docs carry the home page's design tokens, not a different palette", () => {

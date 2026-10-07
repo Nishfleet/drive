@@ -230,6 +230,9 @@ test("the branch route refuses a body that is not a JSON object in the table's w
       createMemorySnapshotStore(),
       createMemoryStore(),
       account,
+      // The create limiter runs before the body is read, so it has to allow
+      // this call for the body refusal below to be the answer under test.
+      { ipLimiter: { limit: () => Promise.resolve({ success: true }) } },
     );
   for (const body of ["[]", "null", "a form", "="]) {
     const refused = await call(body);

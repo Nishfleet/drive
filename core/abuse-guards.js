@@ -9,12 +9,14 @@
 //
 // The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
 //
-// The real card capture still waits on the Dodo key (#417). The fingerprint
-// here is the test double: a posted `cardFingerprint` (kept as
-// `posted:<value>`), or `test:<email>` when the existing card checkbox is the
-// only proof, the same shape PR 445 used for the card step itself. No Dodo
-// call, and no secret. The two prefixes keep a posted string from ever
-// equalling another person's stand-in, so nobody can lock an address out.
+// The fingerprint is the provider's own id for the card a payment was made
+// with, and only the verified webhook may write it (drive#503). The browser
+// never supplies one: signupCardFingerprint is gone, and with it the
+// `test:<email>` stand-in a start request or a ticked checkbox produced. That
+// stand-in made one-account-per-card unprovable, because every new address got
+// a distinct string, so the guard never fired. A sign-up whose payment has not
+// landed yet simply holds no fingerprint, and claimCardFingerprint writes it
+// when the webhook arrives.
 
 import { GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
@@ -63,34 +65,23 @@ export function pendingCardAccountId(email) {
 }
 
 /**
- * The fingerprint the card step records. A posted provider fingerprint wins;
- * otherwise the checkbox stand-in is `test:<email>`, lowercased, so two
- * sign-ups with only the box ticked still have distinct cards unless a test
- * posts the same fingerprint on purpose.
- * @param {{card?: unknown, cardFingerprint?: unknown, email?: unknown}} fields
+ * The fingerprint the verified webhook records: the provider's own id for the
+ * card the payment was made with, namespaced so it can never equal another
+ * account's string (drive#503). It is built from the event body, never from a
+ * request field, so nothing a browser sends can choose it.
+ *
+ * Dodo's payment event carries `payment_method_id` on the payment; older
+ * events put the same value on `method`. Both are read, and anything else
+ * (a missing, empty or non-string value) yields null, which the caller treats
+ * as "no card on this event" rather than inventing a value.
+ * @param {unknown} paymentMethodId
  * @returns {string|null}
  */
-export function signupCardFingerprint(fields) {
-  if (typeof fields !== "object" || fields === null) {
-    throw new TypeError(`signupCardFingerprint needs a fields object, got ${String(fields)}`);
-  }
-  const posted = fields.cardFingerprint;
-  if (typeof posted === "string" && posted.trim() !== "") {
-    return `posted:${posted.trim()}`;
-  }
-  // Same four yes-values hasSignupCard reads (src/signin.js). Copied here so
-  // this module does not import the route, which imports this file.
-  const card = fields.card;
-  if (card !== true && card !== "true" && card !== "on" && card !== "1") {
+export function paymentCardFingerprint(paymentMethodId) {
+  if (typeof paymentMethodId !== "string" || paymentMethodId.trim() === "") {
     return null;
   }
-  const email = fields.email;
-  if (typeof email !== "string" || email.trim() === "") {
-    throw new TypeError(
-      `signupCardFingerprint needs an email when the card step has no fingerprint, got ${String(email)}`,
-    );
-  }
-  return `test:${email.trim().toLowerCase()}`;
+  return `dodo:${paymentMethodId.trim()}`;
 }
 
 /**
@@ -120,8 +111,61 @@ export async function cardFingerprintTaken(db, fingerprint, exceptAccountId) {
 }
 
 /**
+ * Make sure the account row exists, with no card on it.
+ *
+ * The row is the billing account's own record (core/devices.js reads the cap,
+ * the card and the state off it), and the sign-in is where it first appears.
+ * This is what used to happen as a side effect of claiming the `test:<email>`
+ * stand-in fingerprint (drive#503): with the browser-supplied fingerprint
+ * gone, the row still has to be written, so it is written here, explicitly,
+ * with nothing else set.
+ *
+ * No fingerprint and no `card_added_at`: an account that has not paid has no
+ * card, which is what `cardAdded` and `monthUsage` read (both fail closed), so
+ * key minting stays shut until the payment webhook claims the real card. An
+ * existing row keeps its card, card_added_at, cap and closed state; only the
+ * email mirror is refreshed from the current session, which keeps a changed
+ * mailbox current for the card-holder notice (core/ledger.js reads it).
+ * @param {D1Database} db
+ * @param {{accountId: string, email: string, now?: number}} options
+ * @returns {Promise<void>}
+ */
+export async function ensureBillingAccount(db, options) {
+  if (typeof options !== "object" || options === null) {
+    throw new TypeError(`ensureBillingAccount needs options, got ${String(options)}`);
+  }
+  const { accountId, email } = options;
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`ensureBillingAccount needs an account id, got ${String(accountId)}`);
+  }
+  if (typeof email !== "string" || email.trim() === "") {
+    throw new TypeError(`ensureBillingAccount needs an email, got ${String(email)}`);
+  }
+  const nowMs = options.now === undefined ? Date.now() : options.now;
+  if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
+    throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
+  }
+  await db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, state)
+       VALUES (?1, ?2, ?3, 'active')
+       ON CONFLICT(id) DO UPDATE SET
+         email = excluded.email`,
+    )
+    .bind(accountId, email, Math.floor(nowMs / 1000))
+    .run();
+}
+
+/**
  * Record the card fingerprint on this account and stamp card_added_at. A
- * second live account with the same fingerprint is refused with the message table's words and writes nothing.
+ * second live account with the same fingerprint is refused with the message
+ * table's words and writes nothing.
+ *
+ * The fingerprint comes from the provider, through the verified webhook
+ * (paymentCardFingerprint), so this is the only path that writes one for a
+ * real card. A refusal here is not a dropped payment: the caller credits the
+ * money either way and reports why the account was not stamped, because a
+ * top-up is never held hostage by the one-account-per-card rule.
  * @param {D1Database} db
  * @param {{accountId: string, email: string, fingerprint: string, now?: number}} options
  * @returns {Promise<{error: string}|{fingerprint: string}>}
@@ -362,67 +406,43 @@ export async function accountStoredBytes(db, accountId) {
 }
 
 /**
- * The live `file_versions` bytes stored under one account's `.branches`
- * folder - the reconciled half of drive#800. A branch copy lands in
- * `file_versions` only after the nightly reconcile walks it (core/meter.js
- * `reconcileAccount` lists the whole account, system folders included), so
- * between the copy and that walk the SAME branch bytes are in the store but
- * not here. The upload guard (core/files.js `preChargeStoredBytes`) subtracts
- * this number from the row sum it already holds and adds the store's own
- * current branch bytes back, so one copy is counted once whether the nightly
- * walk has run yet or not.
- *
- * The branch key prefix is built and passed by the caller, which already owns
- * drive paths (core/files.js accountPrefix + BRANCHES_PATH): this share of
- * the guard stays plain SQL over file_versions and knows nothing about paths,
- * and importing files.js back would close an import cycle (files.js already
- * imports this module for accountStoredBytes).
+ * Live `file_versions` bytes, and the reconciled `.branches` slice, in one
+ * statement (drive#800). The prefix is escaped so `%`/`_`/`\` cannot widen it,
+ * and the only wildcard is the trailing `%`, so a person's `x.branches` is
+ * not a branch. One read cannot race a reconcile between two sums.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {string} branchKeyPrefix the account's `.branches` storage key prefix
- * @returns {Promise<number>}
+ * @returns {Promise<{stored: number, branch: number}>}
  */
-export async function accountBranchBytes(db, accountId, branchKeyPrefix) {
+export async function accountStoredAndBranchBytes(db, accountId, branchKeyPrefix) {
   if (typeof accountId !== "string" || accountId === "") {
-    throw new TypeError(`accountBranchBytes needs an account id, got ${String(accountId)}`);
+    throw new TypeError(`accountStoredBytes needs an account id, got ${String(accountId)}`);
   }
   if (typeof branchKeyPrefix !== "string" || branchKeyPrefix === "") {
     throw new TypeError(
-      `accountBranchBytes needs a branch key prefix, got ${String(branchKeyPrefix)}`,
+      `accountStoredAndBranchBytes needs a branch key prefix, got ${String(branchKeyPrefix)}`,
     );
   }
-  // The match is anchored to the branch folder and nothing else: the prefix is
-  // escaped so a `%`, `_` or backslash in an account id cannot widen it, and
-  // the single trailing `%` is the only wildcard, so a person's `x.branches`
-  // folder (or a `.branches-sub` one) is never counted as a branch. ESCAPE
-  // keeps the backslash one character rather than the start of a SQL escape.
   const row = await db
     .prepare(
-      `SELECT ${LIVE_STORED_BYTES} AS stored
+      `SELECT ${LIVE_STORED_BYTES} AS stored,
+              COALESCE(SUM(CASE WHEN v.path LIKE ?2 ESCAPE '\\' THEN v.size_bytes ELSE 0 END), 0) AS branch
          FROM ${LIVE_VERSIONS}
         WHERE ${LIVE_VERSION_ROWS}
-          AND v.account_id = ?1
-          AND v.path LIKE ?2 ESCAPE '\\'`,
+          AND v.account_id = ?1`,
     )
-    .bind(accountId, `${escapeLike(branchKeyPrefix)}%`)
+    .bind(accountId, `${branchKeyPrefix.replace(/[\\%_]/g, "\\$&")}%`)
     .first();
   const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
+  const branch = Number(/** @type {{branch?: unknown} | null | undefined} */ (row)?.branch ?? 0);
   if (!Number.isFinite(stored) || stored < 0) {
     throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${stored}`);
   }
-  return stored;
-}
-
-/**
- * Escape a literal for a SQL LIKE pattern whose ESCAPE is a backslash, so a
- * `%`, `_` or backslash in the value matches itself instead of standing for a
- * character class. The wildcard the caller appends is added after this and so
- * stays a wildcard.
- * @param {string} value
- * @returns {string}
- */
-function escapeLike(value) {
-  return value.replace(/[\\%_]/g, "\\$&");
+  if (!Number.isFinite(branch) || branch < 0) {
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${branch}`);
+  }
+  return { stored, branch };
 }
 
 /**

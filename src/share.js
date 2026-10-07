@@ -1875,11 +1875,8 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // reads the same store, so this is built before it.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
   if (options.db) {
-    // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
-    // not on the length header a stranger's client sent. An empty body counts
-    // as 1 byte once the drive is at 1 TB, the same edge core/files.js holds.
-    // The branch copies count too (drive#800), through the same shared read
-    // the owner's own upload route uses: the sum is one number, not two.
+    // The owner's 1 TB pre-charge limit, judged on bytes actually read, and
+    // branch copies count too (drive#800) through the same shared read.
     const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
     const stored = await preChargeStoredBytes(options.db, scoped, record.accountId, firstChargedAt);
     const blocked = preChargeUploadBlocked({
