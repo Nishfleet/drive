@@ -407,6 +407,47 @@ export async function accountStoredBytes(db, accountId) {
 }
 
 /**
+ * Live `file_versions` bytes, and the reconciled `.branches` slice, in one
+ * statement (drive#800). The prefix is escaped so `%`/`_`/`\` cannot widen it,
+ * and the only wildcard is the trailing `%`, so a person's `x.branches` is
+ * not a branch. One read cannot race a reconcile between two sums.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {string} branchKeyPrefix the account's `.branches` storage key prefix
+ * @returns {Promise<{stored: number, branch: number}>}
+ */
+export async function accountStoredAndBranchBytes(db, accountId, branchKeyPrefix) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`accountStoredBytes needs an account id, got ${String(accountId)}`);
+  }
+  if (typeof branchKeyPrefix !== "string" || branchKeyPrefix === "") {
+    throw new TypeError(
+      `accountStoredAndBranchBytes needs a branch key prefix, got ${String(branchKeyPrefix)}`,
+    );
+  }
+  const row = await db
+    .prepare(
+      `SELECT ${LIVE_STORED_BYTES} AS stored,
+              COALESCE(SUM(CASE WHEN v.path LIKE ?2 ESCAPE '\\' THEN v.size_bytes ELSE 0 END), 0) AS branch
+         FROM ${LIVE_VERSIONS}
+        WHERE ${LIVE_VERSION_ROWS}
+          AND v.account_id = ?1`,
+    )
+    // LIKE ESCAPE is `\`, so JS sends `\%` / `\_` / `\\` as one escaped char.
+    .bind(accountId, `${branchKeyPrefix.replace(/[\\%_]/g, "\\$&")}%`)
+    .first();
+  const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
+  const branch = Number(/** @type {{branch?: unknown} | null | undefined} */ (row)?.branch ?? 0);
+  if (!Number.isFinite(stored) || stored < 0) {
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${stored}`);
+  }
+  if (!Number.isFinite(branch) || branch < 0) {
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${branch}`);
+  }
+  return { stored, branch };
+}
+
+/**
  * The unpaid accounts whose live stored bytes pass the 1 TB pre-charge limit
  * (drive#536): one grouped read over `file_versions` joined to the `accounts`
  * rows, so however many accounts hold bytes this costs one statement and

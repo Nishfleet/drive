@@ -33,6 +33,7 @@ export { nextContinuationToken, parseListVersions } from "./s3-listing.js";
 
 import {
   accountFirstChargedAt,
+  accountStoredAndBranchBytes,
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   PreChargeLimitError,
@@ -475,6 +476,46 @@ export function withoutTrash(entries, path) {
   return entries.filter(
     (entry) => !(entry.kind === "folder" && SYSTEM_FOLDERS.includes(entry.name)),
   );
+}
+
+/**
+ * Bytes the 1 TB pre-charge limit counts at an upload door (drive#800): live
+ * `file_versions` plus `.branches` copies the store holds (written without
+ * `withIndex`). A charged account skips the walk. Unpaid: subtract the
+ * reconciled branch slice and add the store walk, so one copy counts once.
+ * A failed listing refuses toward the limit, never as zero.
+ * @param {D1Database} db
+ * @param {FileStore} store a store already scoped to one account
+ * @param {string} accountId
+ * @param {number|null} firstChargedAt epoch milliseconds, or null unpaid
+ * @returns {Promise<number>}
+ */
+export async function preChargeStoredBytes(db, store, accountId, firstChargedAt) {
+  if (firstChargedAt !== null) {
+    return accountStoredBytes(db, accountId);
+  }
+  const { stored, branch } = await accountStoredAndBranchBytes(
+    db,
+    accountId,
+    `${accountPrefix({ id: accountId })}${BRANCHES_PATH}/`,
+  );
+  if (stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
+    return stored;
+  }
+  try {
+    let walk = 0;
+    for (const entry of await store.listAll(BRANCHES_PATH)) {
+      if (entry.kind !== "folder") walk += entry.size || 0;
+    }
+    return stored - branch + walk;
+  } catch (error) {
+    console.error(
+      "preChargeStoredBytes: branch listing failed, refusing toward the limit:",
+      accountId,
+      error instanceof Error ? error.message : String(error),
+    );
+    return PRE_CHARGE_STORAGE_LIMIT_BYTES;
+  }
 }
 
 /**
@@ -2964,7 +3005,8 @@ async function uploadRequest(request, url, store, account, options = {}) {
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
   }
   if (options.db) {
-    const stored = await accountStoredBytes(options.db, account.id);
+    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
+    const stored = await preChargeStoredBytes(options.db, store, account.id, firstChargedAt);
     // A missing length is 0 while under the limit. At or past 1 TB it is 1
     // byte so an upload with no length cannot sneak past the exact-limit
     // edge (stored + 0 is not greater than the limit).
@@ -2974,7 +3016,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
         : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
           ? 1
           : 0;
-    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
     const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
     if (blocked !== null) {
       return json({ error: blocked }, 403);
