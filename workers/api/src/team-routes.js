@@ -13,6 +13,7 @@
 // read-only one. Nothing here keeps a second copy of the capability rule.
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { checkedTeamRole, teamScopeFor } from "../../../core/keyprovider.js";
+import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
 
 /**
  * POST /v1/teams — create a team owned by the signed-in account.
@@ -209,7 +210,7 @@ export function publicMember(member, options = {}) {
  * the key's capabilities are the one table's and the storage write route
  * refuses a read-only one.
  * @param {Request} request
- * @param {{store: any, account: {id: string}, params: Record<string, string>}} ctx
+ * @param {{store: any, account: {id: string, name?: string, email?: string|null}, params: Record<string, string>, env?: unknown}} ctx
  */
 export async function mintTeamKeyRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -241,5 +242,19 @@ export async function mintTeamKeyRoute(request, ctx) {
   const name =
     typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : role;
   const minted = await ctx.store.mintTeamKey(ctx.account, team.id, role, { name });
+  const mail = mailFromEnv(ctx.env);
+  await notifySecurityEvent({
+    email: mail.email,
+    mailFrom: mail.mailFrom,
+    to:
+      typeof ctx.account === "object" &&
+      ctx.account !== null &&
+      typeof ctx.account.email === "string"
+        ? ctx.account.email
+        : "",
+    event: "team-key-minted",
+    deviceName: name,
+    happenedAt: new Date().toISOString(),
+  });
   return json(minted, 201);
 }

@@ -81,10 +81,20 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 			if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 				t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 			}
-			t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+			skipNoMount(t, "this host will not bring up the %s mount (%s)", device, mountSkipReason())
 		}
 		return func() { stopStandinProcess(cmd, filepath.Join(home, "Drive")) }
 	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, h := range []string{homeA, homeB} {
+			if log, err := os.ReadFile(filepath.Join(h, ".config", "drive", "mount.log")); err == nil {
+				t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
+			}
+		}
+	})
 	stopA := startDevice(homeA, deviceA, rcA)
 	defer stopA()
 	stopB := startDevice(homeB, "linux", rcB)
@@ -204,7 +214,7 @@ func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr s
 		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 			t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 		}
-		t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+		skipNoMount(t, "this host will not bring up the %s mount (%s)", device, mountSkipReason())
 	}
 	return func() { stopStandinProcess(cmd, mountDir) }
 }
@@ -321,7 +331,7 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 // It is the same join transferEnv.objectPath uses, so a proof that both
 // saves survived reads storage rather than a mount's dirty file.
 func standinObjectPath(root string, cfg StorageConfig, name string) string {
-	return filepath.Join(root, "data", cfg.Bucket, cfg.Prefix, name)
+	return filepath.Join(root, "data", cfg.Bucket, filepath.FromSlash(cfg.Prefix), name)
 }
 
 func queueHasName(q Queue, name string) bool {
@@ -391,7 +401,7 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 
 func logStandinListing(t *testing.T, root string, cfg StorageConfig) {
 	t.Helper()
-	dir := filepath.Join(root, "data", cfg.Bucket, cfg.Prefix)
+	dir := filepath.Join(root, "data", cfg.Bucket, filepath.FromSlash(cfg.Prefix))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Logf("stand-in %s: %v", dir, err)
