@@ -720,6 +720,10 @@ export const SECURITY_EVENT_COPY = Object.freeze({
   "signed-out-everywhere": "Every device was signed out",
   "device-logged-out": "A device was signed out",
   "cap-changed": "The spending cap was changed",
+  // A refusal, not a change: the mint or drop of a file whose SHA-256 is on
+  // the stock known-bad list (drive issue #826). The mail says what happened
+  // and where, which is all the recipient needs to decide to look at it.
+  "malware-refused": "A known-bad file was refused",
 });
 
 // USAGE_URL is the same absolute /usage.html the close-lane templates pass

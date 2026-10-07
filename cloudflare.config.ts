@@ -1,7 +1,7 @@
 import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
-// The three cron trips this Worker runs, spelled out below in `triggers` and
+// The cron trips this Worker runs, spelled out below in `triggers` and
 // read from core/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
 // src/search.js (REINDEX_SCHEDULE) by the `scheduled` handler in src/index.js.
 //
@@ -97,6 +97,12 @@ export default defineConfig({
       // trash purge (drive#521) took 05:00 in the same window, so the close
       // cron runs after it, at 06:00 UTC.
       triggers.scheduled({ schedule: "0 6 * * *" }),
+      // The known-bad feed load (drive#826, KNOWN_BAD_FEED_SCHEDULE in
+      // src/malware.js): the Cron Trigger that reads the stock public
+      // MalwareBazaar SHA-256 list into D1. It runs last of the nightly trips,
+      // after the close cron, and it is the only trip that talks to an outside
+      // host — the request path reads the table it fills.
+      triggers.scheduled({ schedule: "0 7 * * *" }),
       // One message per account from the meter crons (drive#519). Both
       // queues were created on the account on 2026-10-06; see the note at
       // the top of src/meter-jobs.js. Remove this and METER_JOBS to go back

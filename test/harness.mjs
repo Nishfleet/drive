@@ -106,6 +106,12 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
   // Numbered 0038, the next free prefix after the other open migrations.
   "drive/0038_request_digest.sql",
+  // The feed half of the known-bad list (drive#826): `known_bad_hashes` and
+  // `known_bad_feed_state`. The share-mint and upload-request-drop checks read
+  // `known_bad_hashes` on every one of those requests, so a schema without it
+  // throws where the previous version of the code answered. Numbered 0039, the
+  // next free prefix after the other open migrations.
+  "drive/0039_known_bad_hashes.sql",
   // The second factor's tables (drive#524): better-auth's `twoFactor` rows
   // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
   // plus the `user.twoFactorEnabled` flag. Additive only; the pin in

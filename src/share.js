@@ -70,7 +70,7 @@ import { json, readJsonObject } from "../core/http.js";
 import { balanceCents } from "../core/ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
-import { notifySecurityEvent } from "../core/security-event.js";
+import { notifySecurityEvent, sessionLabel } from "../core/security-event.js";
 import { formatBytes, unauthorizedResponse } from "../core/status.js";
 import { isMalwareBody } from "./malware.js";
 
@@ -1190,9 +1190,35 @@ async function capStateFor(resolver, accountId) {
 }
 
 /**
+ * The account row that minted a link, read through the deployment's own account
+ * resolver (the Better Auth `user` row). The resolver is read in one place so
+ * the two reads a route needs — the display name a stranger sees, and the
+ * address the notification goes to — cannot drift apart on what a missing,
+ * non-function or throwing resolver means: both get null.
+ * @param {unknown} resolver
+ * @param {string} accountId
+ * @returns {Promise<{name?: unknown, email?: unknown}|null>}
+ */
+async function ownerRowFor(resolver, accountId) {
+  if (typeof resolver !== "function") {
+    return null;
+  }
+  let owner;
+  try {
+    owner = await resolver(accountId);
+  } catch (cause) {
+    console.error(`drive share: reading a link owner failed: ${String(cause)}`);
+    return null;
+  }
+  if (owner === null || owner === undefined) {
+    return null;
+  }
+  return /** @type {{name?: unknown, email?: unknown}} */ (owner);
+}
+
+/**
  * The display name of the account that minted a link, for the page a stranger
- * opens (drive issue #684). The resolver is the deployment's own account read
- * (the Better Auth `user` row). Only the row's own `name` is used: the address
+ * opens (drive issue #684). Only the row's own `name` is used: the address
  * is never shown to a stranger holding a link, so an account with no display
  * name leaves the page's owner line hidden. A missing or non-function resolver
  * and a resolver that throws both degrade to the empty string rather than
@@ -1202,24 +1228,14 @@ async function capStateFor(resolver, accountId) {
  * @returns {Promise<string>}
  */
 async function ownerNameFor(resolver, accountId) {
-  if (typeof resolver !== "function") {
+  const owner = await ownerRowFor(resolver, accountId);
+  if (owner === null) {
     return "";
   }
-  let owner;
-  try {
-    owner = await resolver(accountId);
-  } catch (cause) {
-    console.error(`drive share: reading a link owner's name failed: ${String(cause)}`);
+  if (typeof owner.name !== "string") {
     return "";
   }
-  if (owner === null || owner === undefined) {
-    return "";
-  }
-  const o = /** @type {{name?: unknown}} */ (owner);
-  if (typeof o.name !== "string") {
-    return "";
-  }
-  const name = o.name.trim();
+  const name = owner.name.trim();
   // A name is a display name, not a fallback address: a signup flow that
   // seeded `name` from the email would otherwise publish the address to a
   // stranger holding the link (drive issue #684). Anything that looks like an
@@ -1228,6 +1244,24 @@ async function ownerNameFor(resolver, accountId) {
     return "";
   }
   return name;
+}
+
+/**
+ * The address of the account that owns a link, for the security notification a
+ * refused drop has to send (drive issue #826). Never rendered: it goes to the
+ * mailer's `to` only, which is why the display-name rules above do not apply
+ * here. An account row with no usable address resolves to the empty string,
+ * the same "nobody to tell" core/security-event.js skips over.
+ * @param {unknown} resolver
+ * @param {string} accountId
+ * @returns {Promise<string>}
+ */
+async function ownerEmailFor(resolver, accountId) {
+  const owner = await ownerRowFor(resolver, accountId);
+  if (owner === null || typeof owner.email !== "string") {
+    return "";
+  }
+  return owner.email.trim();
 }
 
 /** The request's own origin: the links are absolute so they can be copied.
@@ -1288,7 +1322,7 @@ export function folderDisplayName(folder) {
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string, email?: string|null}|null} account the signed-in account, or null when signed out
- * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, email?: unknown, mailFrom?: string, deviceName?: string}} [options]
+ * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database|null, email?: unknown, mailFrom?: string, deviceName?: string}} [options]
  */
 export async function handleShareRequest(request, files, links, account, options = {}) {
   if (!account) {
@@ -1358,10 +1392,28 @@ export async function handleShareRequest(request, files, links, account, options
     // object is not pulled in to be hashed.
     const tooLarge = Number.isFinite(object.size) && object.size > REQUEST_FILE_MAX_BYTES;
     if (tooLarge) {
+      // The bytes are never read, so there is no hash to check and no
+      // signature to run the body through. The etag is what pins the version
+      // the link serves, so a file this large stays pinned exactly as before;
+      // the known-bad check covers the bodies a mint does read. See the pin
+      // in test/share.test.mjs, which proves all three: the body cancelled,
+      // the hash skipped, the etag stored.
       if (object.body) {
         await object.body.cancel();
       }
-    } else if (object.body && (await isMalwareBody(object.body))) {
+    } else if (object.body && (await isMalwareBody(options.db, object.body))) {
+      // The known-bad refusal also tells the owner (drive issue #826): the
+      // file is already on a stock public list, so the account that tried to
+      // share it is the one thing a notification can act on.
+      await notifySecurityEvent({
+        email: options.email,
+        mailFrom: options.mailFrom,
+        to: typeof account.email === "string" ? account.email : "",
+        event: "malware-refused",
+        deviceName: options.deviceName,
+        happenedAt: new Date(now).toISOString(),
+        detail: "A share link mint was refused for a file on the known-bad list.",
+      });
       return json({ error: failureMessage("malware-refused") }, 403);
     }
     const record = newShareRecord({
@@ -1790,7 +1842,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, owner?: unknown, email?: unknown, mailFrom?: string}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1866,7 +1918,30 @@ export async function handleRequestUploadRequest(request, files, links, capState
   }
   // sized.body is the Uint8Array takeUploadBody already copied from the
   // request, so hashing it does not consume the bytes writeIfAbsent stores.
-  if (await isMalwareBody(sized.body)) {
+  if (await isMalwareBody(options.db, sized.body)) {
+    // A known-bad body dropped through a public upload link tells the link's
+    // owner, not the stranger (drive issue #826): the resolver read happens
+    // here, on the refusal, so the owner's address only reaches the mailer.
+    const ownerEmail = await ownerEmailFor(options.owner, record.accountId);
+    if (ownerEmail === "") {
+      // Loud, and named: without this line a misbound resolver or an account row
+      // with no address turns off the notification half of this refusal with
+      // nothing an operator can read. core/security-event.js logs that it
+      // skipped too, but that line names no link, and a notice nobody can act
+      // on is the failure worth seeing.
+      console.error(
+        `drive share: no owner address to notify for a refused upload through /s/${record.token}`,
+      );
+    }
+    await notifySecurityEvent({
+      email: options.email,
+      mailFrom: options.mailFrom,
+      to: ownerEmail,
+      event: "malware-refused",
+      deviceName: sessionLabel(request),
+      happenedAt: new Date(options.now ?? Date.now()).toISOString(),
+      detail: `An upload through /s/${record.token} was refused for a file on the known-bad list.`,
+    });
     return json({ error: failureMessage("malware-refused") }, 403);
   }
   if (options.db) {

@@ -134,6 +134,7 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
   const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   const branches = [
     ["METER_CRON", "meter-hourly-rollup"],
+    ["KNOWN_BAD_FEED_SCHEDULE", "known-bad-feed"],
     ["METER_RECONCILE_SCHEDULE", "meter-nightly-reconcile"],
     ["TRASH_PURGE_SCHEDULE", "nightly-trash-purge"],
     ["CLOSE_SCHEDULE", "nightly-account-close"],
@@ -156,14 +157,17 @@ test("every scheduled branch runs in its own check-in with a unique slug", () =>
     slugs.push(slug);
   }
   // The reindex's check-in is the fallthrough: its `context.waitUntil` runs
-  // only when no earlier branch matched, so exactly the four guards above
-  // may read `event.cron` and the last waitUntil must carry the monitor.
+  // only when no earlier branch matched, so exactly the five guards above
+  // may read `event.cron` and the last waitUntil must carry the monitor. The
+  // feed load's branch sits above them (it needs no store, so it runs before
+  // `storeFor` throws for a deployment with no storage), and it stays a
+  // guard: an unknown cron string still reaches the throw below.
   assert.equal(
     [...src.matchAll(/if \(event\.cron === ([A-Z_]+)\)/g)]
       .map((m) => m[1])
       .sort()
       .join(","),
-    "CLOSE_SCHEDULE,METER_CRON,METER_RECONCILE_SCHEDULE,TRASH_PURGE_SCHEDULE",
+    "CLOSE_SCHEDULE,KNOWN_BAD_FEED_SCHEDULE,METER_CRON,METER_RECONCILE_SCHEDULE,TRASH_PURGE_SCHEDULE",
   );
   const waitUntil = src.lastIndexOf("context.waitUntil(");
   assert.ok(waitUntil !== -1, "the reindex runs in the fallthrough waitUntil");
