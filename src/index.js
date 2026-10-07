@@ -56,10 +56,12 @@ import {
 } from "../core/meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
+  checkYesterdayDraws,
   drawPendingHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalances,
+  size30DayUnpaid,
 } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { createD1QueueStore } from "../core/queues.js";
@@ -707,6 +709,8 @@ const filesHandler = async (c) => {
       ? {
           db: c.env.DRIVE_DB,
           prepaidPause: prepaidPauseOn(c.env),
+          size30DayUnpaid: (accountId, extraBytes) =>
+            size30DayUnpaid(c.env.DRIVE_DB, accountId, extraBytes),
           accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
           recordDownload: downloadRecorder(c.env.DRIVE_DB),
         }
@@ -1196,6 +1200,9 @@ export function createApp() {
         linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
         db: c.env.DRIVE_DB,
         prepaidPause: prepaidPauseOn(c.env),
+        size30DayUnpaid: c.env.DRIVE_DB
+          ? (accountId, extraBytes) => size30DayUnpaid(c.env.DRIVE_DB, accountId, extraBytes)
+          : undefined,
       }),
     ),
   );
@@ -1681,6 +1688,27 @@ const handler = {
             `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
             `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
         );
+        // Daily draw check (drive#642): recompute yesterday's draw from the
+        // meter rows and page monitoring on any difference.
+        const drawCheck = await checkYesterdayDraws(
+          env.METER_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
+        if (drawCheck.mismatches.length > 0) {
+          for (const mismatch of drawCheck.mismatches) {
+            captureError(
+              new Error(
+                `draw check ${drawCheck.yesterday} ${mismatch.accountId}: ${mismatch.reason}`,
+              ),
+              "meter-daily-draw-check",
+            );
+          }
+          console.error(
+            `draw check: ${drawCheck.mismatches.length} mismatch(es) for ${drawCheck.yesterday}`,
+          );
+        } else {
+          console.log(`draw check: ${drawCheck.yesterday} matched`);
+        }
       });
     }
     // The account close cron, on its own trip and its own Sentry Crons

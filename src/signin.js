@@ -141,6 +141,13 @@ export const SIGNIN_COPY = Object.freeze({
   // customer consent again (drive#538). Verify claims a test stand-in;
   // a real card waits on the Dodo key (drive#417, drive#325).
   needCard: PRICE.needCard,
+  // drive#781: the terms say an account holder must be 18 or older
+  // (public/terms.html, drive#547), and this page is where the person agrees.
+  // The label is short; needAge is the sentence the page shows above the box,
+  // and it is also the route's own refusal, so a start with no age box gets
+  // the words the page already showed.
+  needAge: "You must be 18 or older to open an account.",
+  ageConsent: "I am 18 or older",
   noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
@@ -217,7 +224,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, age?: boolean, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -252,12 +259,36 @@ export function readSigninRequest(body) {
 }
 
 /**
+ * Whether a posted field is a tick. The page's checkbox posts "on"; JSON posts
+ * true. A missing, false, or unknown value is not a tick, so the age box
+ * (drive#781) fails closed.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isTick(value) {
+  return value === true || value === "true" || value === "on" || value === "1";
+}
+
+/**
+ * A start without the age box is refused (drive#781). Returning the need-age
+ * sentence, or null when the box is ticked. The terms carry the rule
+ * (public/terms.html, drive#547); this is the route's refusal. The check does
+ * not look the address up, so a missing tick is the same 400 for every
+ * address (drive#538).
+ * @param {unknown} age
+ * @returns {string|null}
+ */
+function refuseSignupWithoutAge(age) {
+  return isTick(age) ? null : SIGNIN_COPY.needAge;
+}
+
+/**
  * The start step: the method and, for the email method, the address.
  * A fingerprint or card field posted on the body is ignored (drive#538):
  * claiming a card from an unauthenticated start is how a stranger locked
  * an address out.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, age?: boolean, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -278,6 +309,7 @@ function readStart(body) {
     step: "start",
     method,
     email,
+    age: isTick(body.age),
     // The device-approval return path (drive#558): the approve page sent the
     // person here with ?next= its own URL. Validated here, at the read, so a
     // hand-edited link is dropped rather than stored — the same drop
@@ -461,6 +493,13 @@ export async function handleSigninRequest(request, env) {
   const email = read.email;
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
+  }
+  // drive#781: every start needs the age box. The check does not look the
+  // address up (drive#538): a missing tick is the same 400 for a new
+  // address and a returning one, so a stranger cannot tell which this is.
+  const ageRefused = refuseSignupWithoutAge(read.age);
+  if (ageRefused !== null) {
+    return json({ error: ageRefused }, 400);
   }
   // drive#538: the start step does not look the address up, does not refuse
   // a missing card, and does not write a hold. Those three were how a

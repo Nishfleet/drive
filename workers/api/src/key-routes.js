@@ -427,6 +427,9 @@ export async function storageWriteRoute(request, ctx) {
     return errorResponse(402, failureMessage("balance-empty"));
   }
   const body = new Uint8Array(await request.arrayBuffer());
+  if (await ctx.store.size30DayUnpaid(device, body.byteLength)) {
+    return errorResponse(402, failureMessage("size30-unpaid"));
+  }
   ctx.store.putObject(authorized.path, body);
   return json(
     { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },

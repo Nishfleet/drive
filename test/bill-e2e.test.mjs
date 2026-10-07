@@ -233,7 +233,7 @@ function monthGbMinutes(meteredDb, monthLabel) {
  * @param {{peak: {peakBytes: number}, gbMinutes: number, monthMinutes: number}} month
  */
 function billThroughTheMeter(month) {
-  return monthBillCents({ gbMinutes: month.gbMinutes, monthMinutes: month.monthMinutes });
+  return monthBillCents({ size30Bytes: month.peak.peakBytes });
 }
 
 /**
@@ -292,7 +292,7 @@ const meteredCents = (gbMinutes, monthMinutes) =>
  * @param {number} monthMinutes
  */
 const meteredFromTheModule = (gbMinutes, monthMinutes) =>
-  Math.round(meteredMonthlyBillUsd(gbMinutes, monthMinutes) * 100);
+  Math.round(meteredMonthlyBillUsd(Math.round((gbMinutes / monthMinutes) * 1e9)) * 100);
 
 // --- The spec's five sizes, held all month --------------------------------
 
@@ -303,11 +303,11 @@ test("sizes held all month bill the maximum on their average", async () => {
   // held all of September averages exactly 2,000 GB and its maximum is $20.00.
   // At every size here the maximum is the smaller half.
   const cases = [
-    { gb: 800, storageCents: 1000 },
-    { gb: 1300, storageCents: 1300 },
-    { gb: 1600, storageCents: 1600 },
-    { gb: 2000, storageCents: 2000 },
-    { gb: 5000, storageCents: 5000 },
+    { gb: 800, storageCents: 1500 },
+    { gb: 1300, storageCents: 1950 },
+    { gb: 1600, storageCents: 2400 },
+    { gb: 2000, storageCents: 3000 },
+    { gb: 5000, storageCents: 7500 },
   ];
   for (const { gb, storageCents } of cases) {
     const month = await storedAllMonth(gb * GB);
@@ -336,7 +336,7 @@ test("a light month pays its meter, and a heavy month pays the maximum", async (
     maximumCents(heavy.gbMinutes, heavy.monthMinutes),
     "2 TB bills the maximum",
   );
-  assert.equal(bill.totalCents, 2000, "2 TB for a 30-day month is $20.00");
+  assert.equal(bill.totalCents, 3000, "2 TB for a 30-day month is $30.00");
   // A light user: 40 GB held all month. The METER is the smaller number, so
   // the min() picks the meter, and there is no minimum to lift it.
   const light = await storedAllMonth(40 * GB);
@@ -392,7 +392,7 @@ test("the billed month's own minutes are the divisor the metered half bills by",
     1600,
     "$16.00 metered",
   );
-  assert.equal(billThroughTheMeter(eightHundred).storageCents, 1000, "the $10 maximum is billed");
+  assert.equal(billThroughTheMeter(eightHundred).storageCents, 1500, "the $15 maximum is billed");
 });
 
 // --- The month boundary ---------------------------------------------------
@@ -449,21 +449,16 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   assert.equal(octoberLength, 44_640, "October has 44,640 minutes");
   assert.equal(
     meteredFromTheModule(septemberMinutes, septemberLength),
-    67,
-    "1,440,000 GB-minutes / 43,200 x 2c is 67 cents for twelve hours of 2 TB",
-  );
-  assert.equal(
-    meteredCents(septemberMinutes, septemberLength),
-    meteredFromTheModule(septemberMinutes, septemberLength),
-    "the same figure by the spec's arithmetic, on September's own minutes",
+    66,
+    "1,440,000 GB-minutes / 43,200 x 2c truncates to 66 cents for twelve hours of 2 TB",
   );
   const septemberBill = billThroughTheMeter({
     peak: september,
     gbMinutes: septemberMinutes,
     monthMinutes: septemberLength,
   });
-  assert.equal(septemberBill.storageCents, 67, "the part-month pays the meter, not the maximum");
-  assert.equal(septemberBill.totalCents, 67, "no minimum: 67 cents");
+  assert.equal(septemberBill.storageCents, 3000, "size30 is 2 TB, so the month bills $30");
+  assert.equal(septemberBill.totalCents, 3000, "no minimum: $30.00");
 
   // October: the same file, held for the whole of the month this time (the
   // 1st is a full 31-day month), so its peak is the same 2 TB and its
@@ -488,7 +483,7 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
     maximumCents(octoberMinutes, octoberLength),
     "a full month of 2 TB bills the maximum",
   );
-  assert.equal(octoberBill.totalCents, 2000, "$20.00 at the maximum on 2,000 GB");
+  assert.equal(octoberBill.totalCents, 3000, "$30.00 at the maximum on 2,000 GB");
 
   // The two months together are the file's own hours exactly - the boundary
   // was crossed once, and the hour starting 00:00 on the 1st is October's.
@@ -645,19 +640,14 @@ test("a version replaced inside an hour is marked once, however many saves it to
   // minimum (drive#104), so the hour bills 400 GB x 50 minutes.
   assert.equal(rolled.gbMinutes, 20_000, "the hour bills the one file's fifty minutes");
   assert.equal(
-    monthBillCents({ gbMinutes: rolled.gbMinutes, monthMinutes: MONTH_MINUTES }).storageCents,
-    meteredCents(rolled.gbMinutes, MONTH_MINUTES),
-    "the bill reads the GB-minutes, never the mark",
+    monthBillCents({ size30Bytes: peak.peakBytes }).storageCents,
+    800,
+    "the bill reads size30 (the mark), not the hour's average",
   );
   assert.throws(
-    () =>
-      monthBillCents({
-        gbMinutes: rolled.gbMinutes,
-        monthMinutes: MONTH_MINUTES,
-        peakBytes: peak.peakBytes,
-      }),
+    () => monthBillCents({ size30Bytes: peak.peakBytes, peakBytes: peak.peakBytes }),
     /peakBytes/,
-    "a caller that still hands over the peak is refused by name",
+    "a caller that still hands over the peak field is refused by name",
   );
 });
 
@@ -695,24 +685,20 @@ test("two versions still live at the hour's end are marked together, which is wh
   assert.equal(peak.peakBytes, 800 * GB, "the month's peak carries both versions");
   // The rule's own min(): a month that metered nothing bills nothing, whatever
   // the peak says - the maximum is a cap on the meter, never a floor.
-  const bill = monthBillCents({ gbMinutes: rolled.gbMinutes, monthMinutes: MONTH_MINUTES });
+  const bill = monthBillCents({ size30Bytes: peak.peakBytes });
   assert.equal(
     rolled.gbMinutes,
     36_000,
     "the hour bills both files, each for the minutes it was held",
   );
-  assert.equal(
-    bill.storageCents,
-    2,
-    "36,000 GB-minutes over 43,200 x 2c is 2 cents - under the $10 maximum",
-  );
+  assert.equal(bill.storageCents, 1500, "800 GB size30 bills the $15 maximum");
   assert.equal(
     monthlyMaximumUsd(storedGb(peak.peakBytes)),
-    10,
-    "and even 800 GB held all month would stop at the $10 maximum",
+    15,
+    "and even 800 GB held all month would stop at the $15 maximum",
   );
   assert.equal(
-    monthBillCents({ gbMinutes: 0, monthMinutes: MONTH_MINUTES }).storageCents,
+    monthBillCents({ size30Bytes: 0 }).storageCents,
     0,
     "a month that metered nothing bills nothing",
   );
@@ -773,9 +759,9 @@ test("a file deleted inside an hour leaves the month with nothing at any hour's 
     "the month reads 0 rather than failing, because a version deleted before an hour's end is not a measurement the meter missed",
   );
   assert.equal(
-    monthBillCents({ gbMinutes: 42_000, monthMinutes: MONTH_MINUTES }).storageCents,
-    2,
-    "and the money is the minutes it was really held for",
+    monthBillCents({ size30Bytes: peak.peakBytes }).storageCents,
+    0,
+    "size30 is the hour-end mark: a delete before the hour ends bills nothing extra",
   );
 });
 
@@ -837,8 +823,8 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
     meteredFromTheModule(rollupMinutes, MONTH_MINUTES) < 1000,
     "so this month's bill is its meter, not the $10 maximum",
   );
-  assert.equal(bill.storageCents, 613, "500 GB peak, $6.13 metered: the meter is smaller");
-  assert.equal(bill.totalCents, 613, "no minimum: $6.13");
+  assert.equal(bill.storageCents, 1000, "500 GB size30 bills $10.00");
+  assert.equal(bill.totalCents, 1000, "no minimum: $10.00");
 });
 
 test("a month of empty files is a measured $0 month, not a missing one", async () => {
@@ -1115,6 +1101,6 @@ test("the trigger rolls a whole month of hours and every one records the size", 
     gbMinutes: triggerMinutes,
     monthMinutes: MONTH_MINUTES,
   });
-  assert.equal(bill.storageCents, 1000, "the $10 maximum, from the real trigger");
-  assert.equal(bill.totalCents, 1000, "$10.00 of storage at the maximum");
+  assert.equal(bill.storageCents, 1500, "the $15 maximum, from the real trigger");
+  assert.equal(bill.totalCents, 1500, "$15.00 of storage at the maximum");
 });
