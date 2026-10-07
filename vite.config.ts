@@ -174,123 +174,142 @@ function deadAuthCryptoShim(): Plugin {
   // The NUL prefix marks a virtual module: rolldown never looks for it on
   // disk, and the built chunks carry it as a region marker, not a path.
   const shimId = (name: string) => `\0drive-auth-shim/${name}`;
-  // "If this error fired, do this": every stub shares the escape hatch, so a
-  // message that points back at this file is the whole fix path.
-  const escapeHatch =
-    "If this error fired, core/auth.js now enables a flow that needs it: " +
-    "remove the matching stub in vite.config.ts (the deadAuthCryptoShim " +
-    "plugin), rebuild, and re-measure with test/bundle-auth-crypto.test.mjs.";
-  /** @param {string} what @returns {string} */
-  const dead = (what: string) =>
-    `throw new Error(${JSON.stringify(
-      `drive (${what}): this code was removed from the Worker bundle by ` +
-        "the deadAuthCryptoShim plugin (drive issue #851), because no flow " +
-        `this deployment configures calls it. ${escapeHatch}`,
-    )});`;
 
-  // The names every kept better-auth module imports from "jose" (the union
-  // across its dist files). Functions and classes throw on use; `errors` is
-  // read for its members' `code` at module level, so it is a real object of
-  // stub classes; `base64url` is an object in jose itself, so it stays one.
-  const joseFunctions = [
-    "EncryptJWT",
-    "SignJWT",
-    "UnsecuredJWT",
-    "calculateJwkThumbprint",
-    "createLocalJWKSet",
-    "createRemoteJWKSet",
-    "customFetch",
-    "decodeJwt",
-    "decodeProtectedHeader",
-    "exportJWK",
-    "generateKeyPair",
-    "importJWK",
-    "importPKCS8",
-    "jwtDecrypt",
-    "jwtVerify",
-  ];
-  const joseErrors = {
-    JOSEError: "ERR_JOSE_GENERIC",
-    JWKSTimeout: "ERR_JWKS_TIMEOUT",
-    JWKSInvalid: "ERR_JWKS_INVALID",
-    JWKSMultipleMatchingKeys: "ERR_JWKS_MULTIPLE_MATCHING_KEYS",
-    JWKSNoMatchingKey: "ERR_JWKS_NO_MATCHING_KEY",
-    JWSSignatureVerificationFailed: "ERR_JWS_SIGNATURE_VERIFICATION_FAILED",
-    JWTExpired: "ERR_JWT_EXPIRED",
-    JWTClaimValidationFailed: "ERR_JWT_CLAIM_VALIDATION_FAILED",
+  // Every shim's source below is one static string: no value from this file is
+  // ever interpolated into generated code. CodeQL reads a value interpolated
+  // into a code string as construction from an unsanitised input
+  // (js/improper-code-sanitization), and the only way to keep that line quiet
+  // is to keep a shim's text literal — so each stub writes its own failure
+  // text out, and the repeats (the hatch sentence, the stub-class helper) are
+  // the price. Do not "tidy" these back into a mapped builder: that is the
+  // finding, not a style fix. The detector is
+  // test/bundle-auth-crypto.test.mjs, and it checks the built bundle, not this
+  // text — so a hand-edited stub still runs.
+  //
+  // `errors` keeps real classes because better-auth reads a member's `code` at
+  // module level, and `base64url` keeps its object shape because jose exports
+  // it as one.
+
+  // jose/errors (a subpath import): the classes the stubs stand in for.
+  const joseErrorShim = `
+const stubError = (name, code) =>
+  class extends Error {
+    static code = code;
+    constructor(message) { super(message); this.name = name; }
   };
-  // jose/errors (a subpath import): the error classes the stubs stand in for.
-  const joseErrorShim = [
-    `const stubError = (name, code) => class extends Error { static code = code; constructor(message) { super(message); this.name = name; } };`,
-    ...Object.entries(joseErrors).map(
-      ([name, code]) =>
-        `export const ${name} = stubError(${JSON.stringify(name)}, ${JSON.stringify(code)});`,
-    ),
-  ].join("\n");
+export const JOSEError = stubError("JOSEError", "ERR_JOSE_GENERIC");
+export const JWKSTimeout = stubError("JWKSTimeout", "ERR_JWKS_TIMEOUT");
+export const JWKSInvalid = stubError("JWKSInvalid", "ERR_JWKS_INVALID");
+export const JWKSMultipleMatchingKeys = stubError("JWKSMultipleMatchingKeys", "ERR_JWKS_MULTIPLE_MATCHING_KEYS");
+export const JWKSNoMatchingKey = stubError("JWKSNoMatchingKey", "ERR_JWKS_NO_MATCHING_KEY");
+export const JWSSignatureVerificationFailed = stubError("JWSSignatureVerificationFailed", "ERR_JWS_SIGNATURE_VERIFICATION_FAILED");
+export const JWTExpired = stubError("JWTExpired", "ERR_JWT_EXPIRED");
+export const JWTClaimValidationFailed = stubError("JWTClaimValidationFailed", "ERR_JWT_CLAIM_VALIDATION_FAILED");
+`;
 
-  const joseShim = [
-    `const stubError = (name, code) => class extends Error { static code = code; constructor(message) { super(message); this.name = name; } };`,
-    `const fail = () => { ${dead("jose")} };`,
-    ...joseFunctions.map((name) => `export function ${name}() { fail(); }`),
-    `export const base64url = { encode: () => fail(), decode: () => fail() };`,
-    `export const errors = {`,
-    ...Object.entries(joseErrors).map(
-      ([name, code]) => `  ${name}: stubError(${JSON.stringify(name)}, ${JSON.stringify(code)}),`,
-    ),
-    `};`,
-  ].join("\n");
+  // jose, the package: the surface the kept better-auth modules import, as the
+  // union across its dist files. Functions throw on use, and `errors` carries
+  // the classes above for the importers that read them as members.
+  const joseShim = `
+const stubError = (name, code) =>
+  class extends Error {
+    static code = code;
+    constructor(message) { super(message); this.name = name; }
+  };
+const driveShimWhy = "the package only reached the Worker entry through the better-auth flows this deployment disables";
+const driveShimHatch = "If this error fired, core/auth.js now enables a flow that needs it: remove the matching stub in vite.config.ts (the deadAuthCryptoShim plugin), rebuild, and re-measure the bundle with test/bundle-auth-crypto.test.mjs.";
+const driveShimFail = (what) => {
+  throw new Error(
+    "drive issue #851: " + what + " is dead code that the deadAuthCryptoShim plugin in vite.config.ts removed from the Worker bundle, because " +
+      driveShimWhy + ". " + driveShimHatch
+  );
+};
+export function EncryptJWT() { driveShimFail("jose EncryptJWT"); }
+export function SignJWT() { driveShimFail("jose SignJWT"); }
+export function UnsecuredJWT() { driveShimFail("jose UnsecuredJWT"); }
+export function calculateJwkThumbprint() { driveShimFail("jose calculateJwkThumbprint"); }
+export function createLocalJWKSet() { driveShimFail("jose createLocalJWKSet"); }
+export function createRemoteJWKSet() { driveShimFail("jose createRemoteJWKSet"); }
+export function customFetch() { driveShimFail("jose customFetch"); }
+export function decodeJwt() { driveShimFail("jose decodeJwt"); }
+export function decodeProtectedHeader() { driveShimFail("jose decodeProtectedHeader"); }
+export function exportJWK() { driveShimFail("jose exportJWK"); }
+export function generateKeyPair() { driveShimFail("jose generateKeyPair"); }
+export function importJWK() { driveShimFail("jose importJWK"); }
+export function importPKCS8() { driveShimFail("jose importPKCS8"); }
+export function jwtDecrypt() { driveShimFail("jose jwtDecrypt"); }
+export function jwtVerify() { driveShimFail("jose jwtVerify"); }
+export const base64url = { encode: () => driveShimFail("jose base64url.encode"), decode: () => driveShimFail("jose base64url.decode") };
+export const errors = {
+  JOSEError: stubError("JOSEError", "ERR_JOSE_GENERIC"),
+  JWKSTimeout: stubError("JWKSTimeout", "ERR_JWKS_TIMEOUT"),
+  JWKSInvalid: stubError("JWKSInvalid", "ERR_JWKS_INVALID"),
+  JWKSMultipleMatchingKeys: stubError("JWKSMultipleMatchingKeys", "ERR_JWKS_MULTIPLE_MATCHING_KEYS"),
+  JWKSNoMatchingKey: stubError("JWKSNoMatchingKey", "ERR_JWKS_NO_MATCHING_KEY"),
+  JWSSignatureVerificationFailed: stubError("JWSSignatureVerificationFailed", "ERR_JWS_SIGNATURE_VERIFICATION_FAILED"),
+  JWTExpired: stubError("JWTExpired", "ERR_JWT_EXPIRED"),
+  JWTClaimValidationFailed: stubError("JWTClaimValidationFailed", "ERR_JWT_CLAIM_VALIDATION_FAILED"),
+};
+`;
 
   // better-auth/dist/crypto/jwt.mjs's own export surface.
-  const authJwtShim = ["signJWT", "symmetricEncodeJWT", "symmetricDecodeJWT", "verifyJWT"]
-    .map(
-      (name) =>
-        `export function ${name}() { throw new Error(${JSON.stringify(
-          `drive (better-auth crypto/jwt ${name}): JWT and JWE cookie crypto runs ` +
-            "only for JWT/JWE session storage (session.store.sessionStrategy), the " +
-            "session cookie cache (session.cookieCache) and email verification " +
-            `tokens, none of which this deployment enables. ${escapeHatch}`,
-        )}); }`,
-    )
-    .join("\n");
+  const authJwtShim = `
+const driveShimWhy = "JWT and JWE cookie crypto runs only for JWT/JWE session storage (session.store.sessionStrategy), the session cookie cache (session.cookieCache) and email verification tokens, none of which this deployment enables";
+const driveShimHatch = "If this error fired, core/auth.js now enables a flow that needs it: remove the matching stub in vite.config.ts (the deadAuthCryptoShim plugin), rebuild, and re-measure the bundle with test/bundle-auth-crypto.test.mjs.";
+const driveShimFail = (what) => {
+  throw new Error(
+    "drive issue #851: " + what + " is dead code that the deadAuthCryptoShim plugin in vite.config.ts removed from the Worker bundle, because " +
+      driveShimWhy + ". " + driveShimHatch
+  );
+};
+export function signJWT() { driveShimFail("better-auth crypto/jwt.mjs signJWT"); }
+export function symmetricEncodeJWT() { driveShimFail("better-auth crypto/jwt.mjs symmetricEncodeJWT"); }
+export function symmetricDecodeJWT() { driveShimFail("better-auth crypto/jwt.mjs symmetricDecodeJWT"); }
+export function verifyJWT() { driveShimFail("better-auth crypto/jwt.mjs verifyJWT"); }
+`;
 
   // better-auth/dist/cookies/jwt.mjs: constants keep their real values.
-  const cookiesJwtShim = [
-    `export const SESSION_COOKIE_JWT_TYPE = "better-auth.session-cache+jwt";`,
-    `export const SESSION_COOKIE_JWT_AUDIENCE = "better-auth:session-cache";`,
-    `export const SESSION_COOKIE_JWT_ISSUER = "better-auth:session-cache";`,
-    [
-      "getSessionCookieJwtVerifyOptions",
-      "parseSessionCookieJwtPayload",
-      "verifySessionCookieJwtWithJwks",
-    ]
-      .map(
-        (name) =>
-          `export function ${name}() { throw new Error(${JSON.stringify(
-            `drive (better-auth cookies/jwt ${name}): a JWKS-verified session cookie ` +
-              "only runs with the session cookie cache (session.cookieCache), which " +
-              `this deployment does not enable. ${escapeHatch}`,
-          )}); }`,
-      )
-      .join("\n"),
-  ].join("\n");
+  const cookiesJwtShim = `
+export const SESSION_COOKIE_JWT_TYPE = "better-auth.session-cache+jwt";
+export const SESSION_COOKIE_JWT_AUDIENCE = "better-auth:session-cache";
+export const SESSION_COOKIE_JWT_ISSUER = "better-auth:session-cache";
+const driveShimWhy = "a JWKS-verified session cookie cache cookie only runs with session.cookieCache, which this deployment does not enable";
+const driveShimHatch = "If this error fired, core/auth.js now enables a flow that needs it: remove the matching stub in vite.config.ts (the deadAuthCryptoShim plugin), rebuild, and re-measure the bundle with test/bundle-auth-crypto.test.mjs.";
+const driveShimFail = (what) => {
+  throw new Error(
+    "drive issue #851: " + what + " is dead code that the deadAuthCryptoShim plugin in vite.config.ts removed from the Worker bundle, because " +
+      driveShimWhy + ". " + driveShimHatch
+  );
+};
+export function getSessionCookieJwtVerifyOptions() { driveShimFail("better-auth cookies/jwt.mjs getSessionCookieJwtVerifyOptions"); }
+export function parseSessionCookieJwtPayload() { driveShimFail("better-auth cookies/jwt.mjs parseSessionCookieJwtPayload"); }
+export function verifySessionCookieJwtWithJwks() { driveShimFail("better-auth cookies/jwt.mjs verifySessionCookieJwtWithJwks"); }
+`;
 
-  const purposeShim = `export function derivePurposeKey() { throw new Error(${JSON.stringify(
-    "drive (better-auth crypto/purpose derivePurposeKey): this derives the key " +
-      "for the social sign-in state cookie, and socialProviders is empty in " +
-      `core/auth.js. ${escapeHatch}`,
-  )}); }`;
+  const purposeShim = `
+const driveShimWhy = "it derives the key for the social sign-in state cookie, and socialProviders is empty in core/auth.js";
+const driveShimHatch = "If this error fired, core/auth.js now enables a flow that needs it: remove the matching stub in vite.config.ts (the deadAuthCryptoShim plugin), rebuild, and re-measure the bundle with test/bundle-auth-crypto.test.mjs.";
+const driveShimFail = (what) => {
+  throw new Error(
+    "drive issue #851: " + what + " is dead code that the deadAuthCryptoShim plugin in vite.config.ts removed from the Worker bundle, because " +
+      driveShimWhy + ". " + driveShimHatch
+  );
+};
+export function derivePurposeKey() { driveShimFail("better-auth crypto/purpose.mjs derivePurposeKey"); }
+`;
 
-  const passwordShim = ["hashPassword", "verifyPassword"]
-    .map(
-      (name) =>
-        `export function ${name}() { throw new Error(${JSON.stringify(
-          "drive (better-auth crypto/password " +
-            `${name}): password hashing runs only for email and password sign-in, ` +
-            "and emailAndPassword.enabled is false in core/auth.js. " +
-            `${escapeHatch}`,
-        )}); }`,
-    )
-    .join("\n");
+  const passwordShim = `
+const driveShimWhy = "password hashing runs only for email and password sign-in, and emailAndPassword.enabled is false in core/auth.js";
+const driveShimHatch = "If this error fired, core/auth.js now enables a flow that needs it: remove the matching stub in vite.config.ts (the deadAuthCryptoShim plugin), rebuild, and re-measure the bundle with test/bundle-auth-crypto.test.mjs.";
+const driveShimFail = (what) => {
+  throw new Error(
+    "drive issue #851: " + what + " is dead code that the deadAuthCryptoShim plugin in vite.config.ts removed from the Worker bundle, because " +
+      driveShimWhy + ". " + driveShimHatch
+  );
+};
+export function hashPassword() { driveShimFail("better-auth crypto/password.mjs hashPassword"); }
+export function verifyPassword() { driveShimFail("better-auth crypto/password.mjs verifyPassword"); }
+`;
 
   /** The shim each virtual id carries. */
   const shims = {

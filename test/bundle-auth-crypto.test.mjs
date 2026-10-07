@@ -168,9 +168,8 @@ test("the deadAuthCryptoShim plugin still lists every module it replaces", () =>
     '"crypto/purpose.mjs"',
     '"crypto/password.mjs"',
   ]) {
-    assert.match(
-      config,
-      new RegExp(replaced.replace(/\./g, "\\.")),
+    assert.ok(
+      config.includes(replaced),
       `the shim list no longer names ${replaced}: either the module was removed ` +
         "on purpose (re-measure the bundle, then drop this probe) or the list " +
         "drifted from better-auth's dist layout and the code is back in the " +
