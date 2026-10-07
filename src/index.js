@@ -843,8 +843,11 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
-      () => Date.now(),
-      branchJobsQueue(c.env),
+      {
+        now: () => Date.now(),
+        queue: branchJobsQueue(c.env),
+        ipLimiter: c.env.BRANCH_RATE_LIMITER,
+      },
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
