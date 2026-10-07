@@ -36,6 +36,7 @@ import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
+  KEY_COUNT_CAP,
   KEY_KINDS,
   keyTtlSeconds,
   mintTtlSeconds,
@@ -61,6 +62,48 @@ export {
 };
 
 /**
+ * The refusal to mint because the account already holds the most live keys it
+ * may hold (drive issue #552, `KEY_COUNT_CAP` in keyprovider.js). The mint
+ * path throws it before the vendor call, so a capped account makes no vendor
+ * request at all; the key route maps it to the message table's
+ * "key-count-cap" answer. `live` is the count the check measured, for the
+ * log — the customer's message is the table's, not this one.
+ */
+export class KeyCountCapError extends Error {
+  /** @param {string} accountId @param {number} live */
+  constructor(accountId, live) {
+    super(`Account ${accountId} holds ${live} live keys, which is the cap of ${KEY_COUNT_CAP}.`);
+    this.name = "KeyCountCapError";
+    this.accountId = accountId;
+    this.live = live;
+  }
+}
+
+/**
+ * How many of the account's keys this isolate's map holds live: not revoked
+ * and not past their hour — the same two predicates the D1 store's
+ * `countLiveKeys` applies (devices.js), so the count is the same whichever
+ * backend the factory was built with. Only used when no device store is
+ * bound: the tests and a database-less deployment. The live Worker counts in
+ * D1, where keys minted by other isolates are visible.
+ * @param {Map<string, Device>} devices
+ * @param {string} accountId
+ * @param {number} atSeconds
+ * @returns {number}
+ */
+function liveKeyCountInMap(devices, accountId, atSeconds) {
+  let live = 0;
+  for (const device of devices.values()) {
+    if (device.accountId !== accountId || device.revokedAt !== null) continue;
+    // A null expiry never dies (a device key), so it counts as live: only a
+    // real expiry at or before `at` makes the row dead here.
+    if ((device.expiresAt ?? Number.POSITIVE_INFINITY) <= atSeconds) continue;
+    live += 1;
+  }
+  return live;
+}
+
+/**
  * The stand-in key and object store. One instance per Worker isolate
  * (src/index.js), the same choice the Web Files page made for its bytes
  * (core/files.js) until the real store lands.
@@ -81,7 +124,7 @@ export {
  * `writesPaused` is the prepaid pause (drive#586): when set, it answers
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off.
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -116,6 +159,18 @@ export function createMemoryStore(options = {}) {
    * @param {string} name
    */
   async function mintScopedKey(account, scope, kind, name) {
+    // The per-account live-key cap (drive issue #552), before the vendor
+    // call: mintKey and mintTeamKey both come through here, so a team mint
+    // cannot walk around the bound. The count is a read then a mint, not a
+    // single D1 transaction across isolates, so two concurrent mints can both
+    // see 19 and both pass; the per-account KEYS_RATE_LIMITER (10 a minute)
+    // is the bound on how wide that window can get.
+    const live = deviceStore?.countLiveKeys
+      ? await deviceStore.countLiveKeys(account.id, nowSeconds(now()))
+      : liveKeyCountInMap(devices, account.id, nowSeconds(now()));
+    if (live >= KEY_COUNT_CAP) {
+      throw new KeyCountCapError(account.id, live);
+    }
     const keyId = newId("key");
     /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
     let credential;
@@ -353,6 +408,8 @@ export function createMemoryStore(options = {}) {
       if (!KEY_KINDS.includes(/** @type {any} */ (kind))) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
       }
+      // The live-key cap runs inside mintScopedKey, before the vendor call,
+      // so mintKey and mintTeamKey share one bound.
       const scope =
         request.scope ??
         (kind === "branch"
@@ -766,6 +823,10 @@ export function createMemoryStore(options = {}) {
  *   own hour is then the ceiling. A renewal is measured from here, so a
  *   provider's shorter session is never renewed past its own end.
  * @property {string[]|null} [cappedFrom] the capabilities the cap took, when it did
+ * @property {string[]|null} [prepaidPausedFrom] the capabilities the prepaid
+ *   pause took (drive#589), when it did. Separate from `cappedFrom` so a
+ *   top-up restores what the pause took and a cap raise restores what the
+ *   cap took.
  * @property {string|null} [cappedReason] the one word naming which cap took the
  *   key down (drive#661): the spending cap's own freeze is `spend-cap`. Absent
  *   and null are the same claim -- no reason recorded -- and a give-back pass
