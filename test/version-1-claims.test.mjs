@@ -19,6 +19,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { BILLING_CONFIG } from "../core/billing.js";
 import { monthlyReceiptTemplate } from "../core/emails.js";
 import {
   NOT_OPEN,
@@ -324,6 +325,53 @@ test("the step count the surfaces quote is the quickstart's own", () => {
       `${surface} must say the quickstart is ${word} steps`,
     );
   }
+});
+
+test("the download charge is marked planned, not sold as live", () => {
+  // drive#545 (the #517 extension): the pricing page, the FAQ and llms.txt
+  // advertised a 1¢ per GB download charge. core/pricing.js, the published
+  // price, has no download rate, so the charge is stated as the plan, marked
+  // planned, on every surface that names it.
+  const rate = `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`;
+  const multiple = `${BILLING_CONFIG.freeDownloadMultiplier}×`;
+  const surfaces = /** @type {const} */ ([
+    ["docs-site/pricing.md", /not in the published price[\s\S]*?planned/],
+    ["public/llms.txt", /not in the published price, so they are free today/],
+    [
+      "src/docs.js",
+      /Downloads are not in the published price, so nothing is charged for them today/,
+    ],
+  ]);
+  for (const [surface, pattern] of surfaces) {
+    assert.match(read(surface), pattern, `${surface} must mark the download charge planned`);
+    // A period right after the rate, with no "(planned)", is the live sell.
+    assert.doesNotMatch(
+      read(surface),
+      /then \d+¢ per GB\./,
+      `${surface} sells the download charge as live`,
+    );
+  }
+  assert.ok(
+    read("public/llms.txt").includes(`${multiple} your stored size free, then ${rate} (planned)`),
+    "llms.txt must print the download plan from the billing config",
+  );
+  const builtPricing = shipped("pricing");
+  assert.doesNotMatch(
+    builtPricing,
+    /then \d+¢ per GB\./,
+    "the built pricing page sells the download charge as live",
+  );
+  assert.match(
+    builtPricing,
+    /not in the published price[\s\S]{0,200}\(planned\)/,
+    "the built pricing page must keep the planned marker next to the download price",
+  );
+  const builtFaq = shipped("faq");
+  assert.match(
+    builtFaq,
+    /not in the published price[\s\S]{0,220}\(planned\)/,
+    "the built FAQ must keep the planned marker next to the download price",
+  );
 });
 
 test("the monthly receipt states its facts in the customer's words", () => {

@@ -55,8 +55,8 @@ the live site.
   email, and taking your files out. Linked from the 404 page and from
   `drive status`.
 - Customer pages now say only what version 1 does: no $5 roll-over, no live
-  team bill, Get drive opens the waitlist while sign-up is invite-only, and
-  get-started names Mac and Linux.
+  team bill, Get drive opens the waitlist while sign-up is invite-only,
+  get-started names Mac and Linux, and a download charge is marked planned.
 
 ## 2026-10-05
 
