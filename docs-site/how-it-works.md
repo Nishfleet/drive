@@ -12,7 +12,7 @@ open in the apps you already use. Nothing is packed into a database or a
 proprietary container, so if you ever leave, your files come with you in the
 shape you put them in.
 
-Under the folder, the bytes live in an object store we run. You never see that
+Under the folder, the bytes live in object storage. You never see that
 layer; you see files.
 
 ## Files on demand
@@ -46,7 +46,11 @@ drive online <path>       # stop keeping it here; with no path, all of it
 ```
 
 `drive status` says what is kept offline. What is kept here is a copy on this
-machine's disk, so it is the one thing that a wiped laptop can lose.
+machine's disk, so it is the one thing that a wiped laptop can lose. A kept
+folder still opens, lists and accepts a new file after the network has been
+down for more than five minutes. While the network is down the listing is
+the one last fetched: saves that landed elsewhere in the meantime are not in
+it until the network is back.
 
 ## Stopping the uploads for a while
 
@@ -89,5 +93,5 @@ counted separately. The numbers worked out for four sizes are on
 
 ## Next
 
-- [Quickstart](/quickstart) — five steps to a mounted drive.
+- [Quickstart](/quickstart) — six steps to a mounted drive.
 - [Pricing and your bill](/pricing) — the rate and the maximum.

@@ -350,7 +350,7 @@ func doctorAPIReason(apiBase, token string) string {
 	if token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: doctorTimeout}
+	client := newHTTPClient(doctorTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return firstLine(fail("offline").Error())

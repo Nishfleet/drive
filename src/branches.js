@@ -46,11 +46,19 @@
 // Worker's key scoping (core/keyprovider.js), so a branch name and
 // a branch key prefix can never accept a different shape of name.
 
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  preChargeUploadBlocked,
+} from "../core/abuse-guards.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
-import { failureMessage } from "../core/messages.js";
+import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { unauthorizedResponse } from "../core/status.js";
+
+export { MAX_OPEN_BRANCHES };
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
@@ -90,6 +98,7 @@ export const BRANCH_ACTIVE_STATES = Object.freeze([
   "discarding",
   "rewinding",
 ]);
+const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
 
 /** @typedef {{kind: string, done: number, total: number}} BranchProgress */
 /** @typedef {{send?: Function, sendBatch?: Function}|null} BranchQueue */
@@ -793,6 +802,31 @@ function fingerprintMapFromObject(raw) {
   return files;
 }
 
+/** @param {Iterable<Fingerprint>} files */
+function bytesOf(files) {
+  let n = 0;
+  for (const file of files) n += file.size;
+  return n;
+}
+
+// Bytes under `root` from the store listing. Branch copies skip the file index (drive#553).
+/** @param {FileStore} store @param {string} root */
+async function storedBytesUnder(store, root) {
+  return bytesOf((await listFiles(store, root)).values());
+}
+
+/** @param {D1Database} db @param {FileStore} store @param {{id: string}} account @param {number} incomingBytes */
+async function branchCopyBlocked(db, store, account, incomingBytes) {
+  const firstChargedAt = await accountFirstChargedAt(db, account.id);
+  if (firstChargedAt !== null) return null;
+  return preChargeUploadBlocked({
+    firstChargedAt,
+    storedBytes:
+      (await accountStoredBytes(db, account.id)) + (await storedBytesUnder(store, BRANCHES_ROOT)),
+    incomingBytes,
+  });
+}
+
 /** The fingerprint of one file, or null when it is not there. One listing of
  * its parent, so reading a fingerprint never downloads the bytes. When
  * `listings` is handed in, each parent is listed once and later lookups read
@@ -1043,8 +1077,6 @@ const BRANCH_COLUMNS =
   "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, job_error, " +
   "changed_count, source_changed_count";
 
-const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
-
 /** One of the account's own branches, or null. A name from another account is
  * "no such branch".
  * @param {D1Database} db
@@ -1273,6 +1305,17 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   // open a branch missing everything after the first 80.
   const frozenMarker = await snapshots.get(frozenSnapshotKey(branch.snapshotKey));
   const only = frozenMarker !== null && frozenMarker !== undefined ? branch.snapshot : undefined;
+  if (doneSoFar === 0) {
+    const incomingBytes =
+      only !== undefined
+        ? bytesOf(Object.values(only))
+        : await storedBytesUnder(store, branch.sourcePrefix);
+    const blocked = await branchCopyBlocked(db, store, account, incomingBytes);
+    if (blocked !== null) {
+      await failJob(db, branch.id, "discarded", blocked);
+      return { error: blocked, status: 403, done: true };
+    }
+  }
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
@@ -1873,30 +1916,53 @@ export async function createBranch(
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
     return { error: failureMessage("branch-exists"), status: 409 };
   }
+  // The 1 TB pre-charge check: branch copies skip the file index, so the store
+  // listing is what counts (drive#553). A charged account is lifted (drive#464).
+  // The open-branch cap is the claim INSERT's WHERE, so a race cannot land 11.
+  const listed = await listFiles(store, folderPath);
+  const blocked = await branchCopyBlocked(db, store, account, bytesOf(listed.values()));
+  if (blocked !== null) {
+    return { error: blocked, status: 403 };
+  }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
   const snapKey = snapshotKey(account, name);
   // Claim the name before touching the store. The partial unique index on
-  // (account_id, name) where state = 'open' then makes this the one create
-  // that may copy into the prefix: two creates of a name in the same moment
-  // can no longer both walk and clear /.branches/<name>/ and overwrite each
-  // other's copies, because the loser fails this INSERT before it copies
-  // anything. The snapshot lands after the copy, so a row that is claimed but
-  // interrupted is closed by the catch below rather than left open on an
-  // empty prefix. The leftover `snapshot` column is omitted (drive#329) and
-  // takes its own `DEFAULT '{}'`.
+  // (account_id, name) over the in-flight states (migrations/drive/0030) then
+  // makes this the one create that may copy into the prefix: two creates of a
+  // name in the same moment can no longer both walk and clear
+  // /.branches/<name>/ and overwrite each other's copies, because the loser
+  // fails this INSERT before it copies anything. The snapshot lands after the
+  // copy, so a row that is claimed but interrupted is closed by the catch
+  // below rather than left open on an empty prefix. The leftover `snapshot`
+  // column is omitted (drive#329) and takes its own `DEFAULT '{}'`.
+  // The cap is the same INSERT's WHERE (branches_account_created_idx, migration 0015).
   let claimId;
   try {
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
           "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind) " +
-          "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,?7,'create')",
+          "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create' " +
+          "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
+          `(${ACTIVE_STATE_LIST})) < ?8`,
       )
-      .bind(account.id, name, folderPath, branchPrefix, snapKey, createdAt, changedBy)
+      .bind(
+        account.id,
+        name,
+        folderPath,
+        branchPrefix,
+        snapKey,
+        createdAt,
+        changedBy,
+        MAX_OPEN_BRANCHES,
+      )
       .run();
-    if (!claimed.success) {
+    if (!claimed.success || typeof claimed.meta?.changes !== "number") {
       return { error: failureMessage("unexpected"), status: 500 };
+    }
+    if (claimed.meta.changes === 0) {
+      return { error: failureMessage("branch-limit"), status: 409 };
     }
     claimId = Number(claimed.meta.last_row_id);
     if (!Number.isInteger(claimId) || claimId < 1) {
@@ -1972,7 +2038,7 @@ export async function createBranch(
     const saved = await saveSnapshot(
       db,
       claimId,
-      fingerprintMapToObject(await listFiles(store, folderPath)),
+      fingerprintMapToObject(listed),
       snapshots,
       snapKey,
     );
@@ -2369,37 +2435,25 @@ function sourceMoved(named, total) {
 
 // ---------------------------------------------------------------- the route
 
+// The /api/branches* handlers. The account gate is in front of it
+// (src/index.js): no account is a 401 with no data, before the store or the
+// database is touched. The routes are:
+//   GET    /api/branches              list this account's branches
+//   POST   /api/branches              {folder, name} — make a branch
+//   GET    /api/branches/<name>       the branch's diff
+//   POST   /api/branches/<name>/approve   copy it back
+//   POST   /api/branches/<name>/discard   throw it away
 /**
- * The /api/branches* handlers. The account gate is in front of it
- * (src/index.js): no account is a 401 with no data, before the store or the
- * database is touched. The routes are:
- *
- *   GET    /api/branches              list this account's branches
- *   POST   /api/branches              {folder, name} — make a branch
- *   GET    /api/branches/<name>       the branch's diff
- *   POST   /api/branches/<name>/approve   copy it back
- *   POST   /api/branches/<name>/discard   throw it away
- *
  * @param {Request} request
- * @param {unknown} db the branches table
- * @param {SnapshotStore|null} snapshots the KV snapshot store; a request with
- *   no namespace is a 503, because the legacy column a branch could fall back
- *   to is gone (drive#329) and the health check already reports the missing
- *   binding by name
- * @param {import("../core/files.js").FileStore|null} store the shared, unscoped store
- * @param {{id: string, name: string}|null} account the signed-in account
- * @param {() => number} now
- * @param {{send?: Function, sendBatch?: Function}|null} [queue]
+ * @param {unknown} db
+ * @param {SnapshotStore|null} snapshots
+ * @param {import("../core/files.js").FileStore|null} store
+ * @param {{id: string, name: string}|null} account
+ * @param {{now?: () => number, queue?: {send?: Function, sendBatch?: Function}|null, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
-export async function handleBranchesRequest(
-  request,
-  db,
-  snapshots,
-  store,
-  account,
-  now = () => Date.now(),
-  queue = null,
-) {
+export async function handleBranchesRequest(request, db, snapshots, store, account, options = {}) {
+  const now = options.now ?? (() => Date.now());
+  const queue = options.queue ?? null;
   if (!account) {
     return unauthorizedResponse();
   }
@@ -2429,6 +2483,19 @@ export async function handleBranchesRequest(
       return json({ branches });
     }
     if (request.method === "POST") {
+      const limited = await enforceEdgeLimits(
+        [
+          {
+            binding: options.ipLimiter,
+            key: clientIpKey(request, "branch-create"),
+            name: "BRANCH_RATE_LIMITER",
+          },
+        ],
+        "branch-create",
+      );
+      if (limited) {
+        return limited;
+      }
       const read = await readJsonBody(request);
       if (read.error) {
         return json({ error: read.error }, 400);

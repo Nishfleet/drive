@@ -19,9 +19,11 @@ would rather you read it here than find out in week three.
   `goreleaser release --snapshot --clean` and install the file under `dist/`.
   The [Quickstart](/quickstart) leads with the released commands and
   keeps the details in its Other ways section.
-- **macOS is read-only for us.** We can prove the drive on a Mac only on a
-  GitHub macOS runner or by hand, so what we have measured end to end is
-  Linux.
+- **We cannot yet prove the drive end to end on a Mac.** We can test a Mac
+  only on a GitHub macOS runner or by hand, so what we have measured end to
+  end is Linux. The Mac mount is in the CLI and is built for macOS, but we
+  have not run the measured suite on a Mac, so treat read-write on a Mac as
+  untested.
 - **No `restore` command yet.** A delete from the Files page is restorable for
   30 days in Recently deleted; a delete made any other way is recoverable for
   one day by asking us. `drive restore` is not in the CLI.
@@ -40,7 +42,7 @@ would rather you read it here than find out in week three.
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,
   never a vendored copy. Builds are unsigned until a signing certificate is
-  bought, so no published release exists yet (#154).
+  bought, so no published release exists yet.
 - **No second person on the account.** There is one account, your devices and
   your agents, so sharing a folder with a colleague is not a version 1 thing.
   When someone leaves there is no access of theirs to take away: revoke that
@@ -68,6 +70,20 @@ would rather you read it here than find out in week three.
   your search at the nightly run instead: search at 03:00 UTC, the meter at
   04:00 UTC. Whichever way you saved the file, the nightly run is what makes
   the number right.
+- **Search on an account of a million files.** Search reads a trigram index
+  over your file names, so it does not scan the whole drive: at a **1,000,000
+  file** account, a search for the name of one file answers in about **5
+  milliseconds** on the SQLite engine the repository tests run (the same
+  engine D1 uses; a live query also pays the network round-trip). The test
+  that proves it is in the repository. The one slower case is a search word
+  that every one of a million names contains — "invoice" on a drive of a
+  million invoices — where the index has to rank a million matching names and
+  the search takes on the order of a second. A search of one or two
+  characters (a single letter, say) does not use the trigram index at all,
+  because a three-letter window is the shortest one it can hold, and scans
+  the account's index rows to answer. Saving a file writes the name into the
+  trigram table as well as the index (one seek per file, not a scan), so a
+  search is current without waiting for the nightly rebuild.
 - **Your disk holds a cache, and it is capped.** What is on disk is the parts
   of your files you have already opened. It grows to at most {{CACHE_LIMIT}},
   and the drive always keeps at least {{CACHE_FLOOR}} of your disk free. The
