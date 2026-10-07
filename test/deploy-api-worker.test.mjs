@@ -29,17 +29,18 @@ import { failureMessage } from "../core/messages.js";
 import apiConfig from "../workers/api/cloudflare.config.ts";
 import { DEVICE_GLOBAL_LIMIT, DEVICE_IP_LIMIT } from "../workers/api/src/device-routes.js";
 import { dispatch } from "../workers/api/src/index.js";
+import { KEYS_LIMIT } from "../workers/api/src/key-routes.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-// The two limiter names device-routes.js reads off env, imported from that
-// module rather than copied here or read back out of its text: a rename there
+// The limiter names the api routes read off env, imported from those modules
+// rather than copied here or read back out of their text: a rename there
 // changes this gate with it, so the config cannot declare a name the routes no
 // longer read and the routes cannot read a name the config does not declare.
 // Nothing here spells the names, because a second spelling is the drift this
 // import exists to prevent.
-const limiterNames = [DEVICE_IP_LIMIT, DEVICE_GLOBAL_LIMIT];
+const limiterNames = [DEVICE_IP_LIMIT, DEVICE_GLOBAL_LIMIT, KEYS_LIMIT];
 
 // The site Worker's rate-limit bindings, as its config spells them. The root
 // config cannot be imported (see the header), so the namespaces and numbers
@@ -60,12 +61,16 @@ function siteLimiters() {
   }));
 }
 
-test("the api Worker's config declares the two device limiters the routes read", () => {
+test("the api Worker's config declares the rate limiters the routes read", () => {
   // Both directions, so the gate cannot pass with a name on only one side: the
-  // config's rate-limit bindings are exactly the names device-routes.js reads
-  // off env, no more and no fewer. A third limit added there, or one renamed on
-  // either side, fails here and says which side drifted.
-  assert.equal(new Set(limiterNames).size, 2, "the device flow runs behind two limits");
+  // config's rate-limit bindings are exactly the names the device and key
+  // routes read off env, no more and no fewer. A third limit added there, or
+  // one renamed on either side, fails here and says which side drifted.
+  assert.equal(
+    new Set(limiterNames).size,
+    3,
+    "the device flow runs behind two limits and the key mint behind one",
+  );
   const bindings = Object.entries(apiConfig.env);
   const declaredLimiters = bindings
     .filter(([, binding]) => binding.type === "rate-limit")
@@ -97,6 +102,7 @@ test("the config binds the api Worker to the drive database, the device limits, 
     "DRIVE_DB",
     "DEVICE_RATE_LIMITER",
     "DEVICE_GLOBAL_RATE_LIMITER",
+    "KEYS_RATE_LIMITER",
     "IDRIVE_E2_API_TOKEN",
     "EMAIL",
   ]);
@@ -161,8 +167,8 @@ test("the per-IP ceiling sits above the CLI's own poll rate and the sign-in limi
 test("every rate-limit namespace on the account is distinct", () => {
   // Cloudflare wants a positive integer string unique per account, and a
   // namespace another binding already uses fails the deploy with 10021. The
-  // site Worker holds the first five; the api Worker's pair has to start after
-  // them rather than reuse one.
+  // site Worker holds the first five; the api Worker's three have to start
+  // after them rather than reuse one.
   const api = Object.values(apiConfig.env)
     .filter((binding) => binding.type === "rate-limit")
     .map((binding) => ({ binding: "api", namespace: binding.namespace }));
