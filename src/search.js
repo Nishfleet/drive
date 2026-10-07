@@ -370,7 +370,7 @@ function stagingStatements(db, generation, rows) {
  * @param {string} accountId
  * @param {number} generation
  * @returns {D1PreparedStatement[]} */
-export function swapStatements(db, accountId, generation) {
+function swapStatements(db, accountId, generation) {
   return [
     db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(accountId),
     db

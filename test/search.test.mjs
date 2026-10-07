@@ -631,11 +631,10 @@ test("1,000,000 files: a search returns in under one second and reads only its m
 
   // The plan must be the trigram index, and file_index may only be reached by
   // a primary-key seek (for the rows that survive the LIMIT), never scanned.
+  const planned = searchSql(["invoice"], { accountId: ACCOUNT.id, limit: DEFAULT_LIMIT });
   const plan = db.sqlite
-    .prepare(
-      `EXPLAIN QUERY PLAN ${searchSql(["invoice"], { accountId: ACCOUNT.id, limit: DEFAULT_LIMIT }).sql}`,
-    )
-    .all()
+    .prepare(`EXPLAIN QUERY PLAN ${planned.sql}`)
+    .all(...planned.params)
     .map((row) => row.detail)
     .join(" | ");
   assert.match(
