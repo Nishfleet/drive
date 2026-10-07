@@ -224,7 +224,14 @@
 }
 
 /* The tables on the Pricing and Security pages are data, so the numbers align
-   and a long cell does not wrap mid-figure. */
+   and a long cell does not wrap mid-figure. The table keeps display: table;
+   drive#546: Chrome ignores overflow on a table box, so the .table-wrap div
+   the markdown renderer emits is the scroll container. A wide table scrolls
+   sideways inside its wrapper and the page stays 375px wide. */
+.VPDoc .table-wrap {
+  overflow-x: auto;
+}
+
 .VPDoc table {
   display: table;
   width: 100%;

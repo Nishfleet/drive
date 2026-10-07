@@ -65,8 +65,8 @@ type rcClient struct {
 }
 
 // newRCClient builds the client for the mount's remote control. The address
-// is the one MountPlan puts on the command line, so there is one address in
-// the product, not one in the CLI and another in the fill loop.
+// is the one this mount stored in rclone.env and put on the command line, so
+// the fill loop and the CLI reach the same listener (drive#807).
 func newRCClient(binary, addr, fs string) *rcClient {
 	return &rcClient{binary: binary, addr: addr, fs: fs}
 }
@@ -253,11 +253,11 @@ func (c *rcClient) reachable(ctx context.Context) error {
 	return c.call(probeCtx, "operations/list", map[string]string{"fs": c.fs, "remote": ""}, &reply)
 }
 
-// loopbackRCAddr is the address the mount's remote control binds. rclone's
-// default is localhost:5572; the plan sets it explicitly so the fill loop and
-// the operator reach the same one even on a host with another rclone running.
-// localhost only: the remote control is password-protected (drive#498) and
-// it must not be reachable off the machine.
+// loopbackRCAddr is rclone's own default remote-control address. A prepared
+// mount does not bind it: prepareMountAuth picks a free loopback port and
+// stores it in rclone.env so two mounts on one machine do not collide
+// (drive#807). The constant remains the unprepared fallback (dry-run, a
+// DRIVE_RC_ADDR that is not loopback) and the address tests refuse to reuse.
 const loopbackRCAddr = "127.0.0.1:5572"
 
 // FillResult is what one fill pass did, so `drive status` and the test can

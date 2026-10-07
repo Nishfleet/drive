@@ -58,13 +58,14 @@ Worked examples, each kept all month, with a usual 1 TB plan beside it:
 
 Every page below is one plain-words page about the drive, also served as
 Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
-holds all nine in one file.
+holds all ten in one file.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the maximum and four worked sizes.
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
+- [When something goes wrong](https://drive-pricing.nishant345.workers.dev/docs/troubleshooting.md): what to run first, the log on each system, a lost laptop, your files out.
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits.md): what version 1 does not do, in plain words.
 - [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md): measured speed, including where we lose.
 - [Security](https://drive-pricing.nishant345.workers.dev/docs/security.md): who can see your files, and what we cannot claim.

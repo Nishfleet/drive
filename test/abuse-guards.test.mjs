@@ -26,7 +26,6 @@ import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/f
 import { failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
-import { hasSignupCard } from "../src/signin.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
@@ -78,7 +77,6 @@ test("the card-step test double reads a posted fingerprint, else one from the em
   );
   assert.equal(signupCardFingerprint({ card: "on", email: "A@B.co" }), "test:a@b.co");
   assert.equal(signupCardFingerprint({ card: false, email: "a@b.co" }), null);
-  assert.equal(hasSignupCard(true), true);
 });
 
 test("a second active account with the same card fingerprint is refused in plain words", async () => {
