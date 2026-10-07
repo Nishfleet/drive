@@ -138,22 +138,21 @@ func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
 // `drive init` signed in to. That base fronts both /api/branches* and
 // /v1/keys (drive#156); there is no second keysBase. The token is this
 // device's, so a branch is made, keyed and approved as the signed-in account.
+// branchClient is the api client for a branch command. It keeps the branch
+// rules this file owns -- no signed-in device, no api base, and the empty token
+// is named here as `not-signed-in` rather than as a 401 the person cannot act
+// on -- and adds the one re-sign-in every account route gets, so a branch on a
+// device whose sign-in slipped past its window comes back on its own
+// (drive#557).
 func branchClient(home, api string) (*APIClient, error) {
-	creds, err := LoadCredentials(home)
+	client, err := signedInClient(home, api, os.Stdout)
 	if err != nil {
 		return nil, err
 	}
-	base, err := resolveAPIBase(home, api)
-	if err != nil {
-		return nil, err
-	}
-	if base == "" {
-		return nil, fail("no-api")
-	}
-	if strings.TrimSpace(creds.DeviceToken) == "" {
+	if strings.TrimSpace(client.Token) == "" {
 		return nil, fail("not-signed-in")
 	}
-	return NewAPIClient(base, creds.DeviceToken)
+	return client, nil
 }
 
 // branchPathFor names one branch's endpoint. The name is escaped, so a name

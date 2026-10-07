@@ -81,6 +81,12 @@ const (
 	RCUserEnv = "RCLONE_RC_USER"
 	RCPassEnv = "RCLONE_RC_PASS"
 	SecretEnv = "RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY"
+	// RCAddrEnv is the environment variable that carries the remote control's
+	// loopback address. Two mounts on one host cannot both bind one address
+	// (drive#807), so a person's mount picks a free loopback port and stores it
+	// in rclone.env under this name. DRIVE_RC_ADDR and --rc-addr still override,
+	// which is how the two-machine proof (issue #30) and the tests pin a port.
+	RCAddrEnv = "DRIVE_RC_ADDR"
 	// DownloadURLEnv is the S3 backend's download_url (the dl Worker).
 	// The URL carries the key's download grant (drive#517), so it rides with
 	// the secret in the 0600 environment and never on rclone's command line,
@@ -347,22 +353,28 @@ func EnvPathBeside(configPath string) string {
 }
 
 // RCAuth is the random user and password the mount generates for rclone's
-// remote control. They live in rclone.env (mode 0600) and are what --rc-user /
-// --rc-pass and the one rc client send (drive#498).
+// remote control, and the loopback address that mount bound. They live in
+// rclone.env (mode 0600) and are what --rc-user / --rc-pass, --rc-addr and
+// the one rc client send (drive#498, drive#807).
 type RCAuth struct {
 	User string
 	Pass string
+	Addr string
 }
 
 // WriteRcloneEnv writes the 0600 EnvironmentFile rclone and systemd read: the
-// remote-control user/password (hex, so they need no quoting) and the storage
-// secret as rclone's own RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY. An empty rc
-// user (login, before the first mount) writes only the secret.
-func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
+// remote-control user/password (hex, so they need no quoting), the loopback
+// address that mount bound (drive#807), and the storage secret as rclone's
+// own RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY. An empty rc user (login, before
+// the first mount) writes only the secret.
+func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass, rcAddr string) error {
 	var b strings.Builder
 	if rcUser != "" {
 		fmt.Fprintf(&b, "%s=%s\n", RCUserEnv, rcUser)
 		fmt.Fprintf(&b, "%s=%s\n", RCPassEnv, rcPass)
+	}
+	if rcAddr != "" {
+		fmt.Fprintf(&b, "%s=%s\n", RCAddrEnv, rcAddr)
 	}
 	if c.SecretKey != "" {
 		fmt.Fprintf(&b, "%s=%s\n", SecretEnv, systemdEnvQuote(c.SecretKey))
@@ -376,7 +388,8 @@ func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
 	return atomicwrite.Write(RcloneEnvPath(home), []byte(b.String()), 0o600)
 }
 
-// ReadRCAuth reads the remote-control user and password from rclone.env.
+// ReadRCAuth reads the remote-control user, password and bound address from
+// rclone.env.
 func ReadRCAuth(home string) (RCAuth, error) {
 	vals, err := parseRcloneEnvFile(RcloneEnvPath(home))
 	if err != nil {
@@ -385,7 +398,7 @@ func ReadRCAuth(home string) (RCAuth, error) {
 		}
 		return RCAuth{}, err
 	}
-	return RCAuth{User: vals[RCUserEnv], Pass: vals[RCPassEnv]}, nil
+	return RCAuth{User: vals[RCUserEnv], Pass: vals[RCPassEnv], Addr: vals[RCAddrEnv]}, nil
 }
 
 func SecretFromEnvFile(path string) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Nishfleet/drive/internal/api"
@@ -57,6 +58,7 @@ type MintedKey = api.MintedKey
 type Account = api.Account
 type Credentials = api.Credentials
 type RenewedKey = api.RenewedKey
+type SignedIn = api.SignedIn
 
 const (
 	deviceCodePath  = api.DeviceCodePath
@@ -69,7 +71,7 @@ func NewAPIClient(apiBase, token string) (*APIClient, error) {
 	return api.New(apiBase, token)
 }
 
-func SignIn(client *APIClient, deviceName string, out io.Writer) (string, Account, error) {
+func SignIn(client *APIClient, deviceName string, out io.Writer) (SignedIn, error) {
 	return api.SignIn(client, deviceName, out)
 }
 
@@ -105,8 +107,8 @@ func RcloneConfig(c StorageConfig) string { return login.RcloneConfig(c) }
 func RcloneConfigRedacted(c StorageConfig) string {
 	return login.RcloneConfigRedacted(c)
 }
-func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
-	return login.WriteRcloneEnv(home, c, rcUser, rcPass)
+func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass, rcAddr string) error {
+	return login.WriteRcloneEnv(home, c, rcUser, rcPass, rcAddr)
 }
 func ReadRCAuth(home string) (RCAuth, error) { return login.ReadRCAuth(home) }
 func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, error) {
@@ -139,6 +141,11 @@ const (
 	queueReleaseExpiry = "-1000000000"
 	rcTimeout          = 30 * time.Second
 )
+
+// rcAddrEnvName is the environment variable that carries the remote control's
+// loopback address. It is login.RCAddrEnv, aliased here so the CLI and the
+// login package write and read one name.
+const rcAddrEnvName = login.RCAddrEnv
 
 func rcCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), rcTimeout)
@@ -200,11 +207,65 @@ func mountRCClient(home string) (*rcClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rclone: %w", err)
 	}
-	c := newRCClient(binary, RCAddr(), "")
+	addr, err := resolveMountRCAddr(home)
+	if err != nil {
+		return nil, err
+	}
+	c := newRCClient(binary, addr, "")
 	auth, err := ReadRCAuth(home)
 	if err != nil {
 		return nil, fmt.Errorf("rclone rc auth: %w", err)
 	}
 	c.SetAuth(auth.User, auth.Pass)
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.requireVersion(ctx); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// resolveMountRCAddr is the address the CLI uses to reach this home's mount.
+// DRIVE_RC_ADDR wins (tests and --rc-addr), then the address prepareMountAuth
+// stored in rclone.env. The shipped 5572 is never a silent fallback: that is
+// how pause/status used to talk to whichever rclone owned the port (drive#807).
+func resolveMountRCAddr(home string) (string, error) {
+	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
+		if !IsLoopbackAddr(set) {
+			return "", fmt.Errorf("%s %s is not a loopback address: the mount's remote control binds loopback only", rcAddrEnvName, set)
+		}
+		return set, nil
+	}
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		return "", fmt.Errorf("rclone rc address: %w", err)
+	}
+	if auth.Addr == "" {
+		return "", fmt.Errorf("rclone rc address is missing from %s; run drive mount", RcloneEnvPath(home))
+	}
+	if !IsLoopbackAddr(auth.Addr) {
+		return "", fmt.Errorf("stored rc address %s is not a loopback address", auth.Addr)
+	}
+	return auth.Addr, nil
+}
+
+// rcVersion is the part of rclone rc core/version this client needs: a
+// non-empty version string means the listener is rclone, not some other
+// HTTP service on the stored port.
+type rcVersion struct {
+	Version string `json:"version"`
+}
+
+// requireVersion asks rclone who it is before the client acts. An empty
+// version or a failed call is a named error, so pause/status never mutate
+// a stranger on the port (drive#807).
+func (c *rcClient) requireVersion(ctx context.Context) error {
+	var v rcVersion
+	if err := c.call(ctx, "core/version", nil, &v); err != nil {
+		return fmt.Errorf("rclone rc core/version: %w", err)
+	}
+	if strings.TrimSpace(v.Version) == "" {
+		return fmt.Errorf("rclone rc core/version: empty version")
+	}
+	return nil
 }

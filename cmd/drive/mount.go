@@ -72,6 +72,11 @@ type MountPlan struct {
 	// SecretKey is the storage secret passed at mount time through
 	// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY, never written into rclone.conf.
 	SecretKey string
+	// EnvPath is the 0600 EnvironmentFile the login item reads. Empty means
+	// rclone.env beside ConfigPath, which is the device mount's own. The
+	// agent path writes a file of its own so systemd never loads the device
+	// secret into a process that must hold the agent key (drive#514).
+	EnvPath string
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
@@ -197,19 +202,25 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	}
 }
 
-// prepareMountAuth generates the remote-control user and password, stores
-// them with the storage secret in rclone.env (mode 0600), and puts them on
-// the plan so Args() and the login item can pass --rc-user/--rc-pass (or,
-// for systemd, EnvironmentFile=).
+// prepareMountAuth generates the remote-control user and password, picks a
+// free loopback port for this mount (drive#807), stores them with the storage
+// secret in rclone.env (mode 0600), and puts them on the plan so Args() and
+// the login item can pass --rc-user/--rc-pass/--rc-addr (or, for systemd,
+// EnvironmentFile= for the secrets).
 func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
 	user, pass, err := generateRCAuth()
 	if err != nil {
 		return err
 	}
+	addr, err := pickRCAddr()
+	if err != nil {
+		return err
+	}
 	p.RCUser = user
 	p.RCPass = pass
+	p.RCAddr = addr
 	p.SecretKey = c.SecretKey
-	return WriteRcloneEnv(home, c, user, pass)
+	return WriteRcloneEnv(home, c, user, pass, addr)
 }
 
 func generateRCAuth() (user, pass string, err error) {
@@ -279,20 +290,11 @@ func DeviceName() string {
 	return DefaultDeviceName()
 }
 
-// rcAddrEnvName is the environment variable that carries the remote
-// control's loopback address. Two mounts of the same drive on one host
-// (the two-machine proof, issue #30) cannot both bind one address, so the
-// address is overridable; the constant below is the shipped value and a
-// person's mount never sets either.
-const rcAddrEnvName = "DRIVE_RC_ADDR"
-
-// RCAddr is the loopback address the mount's remote control binds.
-// rclone's remote control is authenticated (drive#498), and it still binds
-// to loopback only and never to a wildcard: the background fill, the
-// conflict guard and `drive status` all reach this one address. A
-// DRIVE_RC_ADDR that is not a loopback address is refused and the shipped
-// address is used, because a wildcard bind would put a control port on the
-// network.
+// RCAddr is the loopback address a command that has not yet prepared a mount
+// would bind. A real `drive mount` overwrites it in prepareMountAuth with a
+// free port stored in rclone.env. DRIVE_RC_ADDR still wins when it is a
+// loopback address; a non-loopback value is refused and the rclone default
+// is used, because a wildcard bind would put a control port on the network.
 func RCAddr() string {
 	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
 		if IsLoopbackAddr(set) {
@@ -301,6 +303,35 @@ func RCAddr() string {
 		return loopbackRCAddr
 	}
 	return loopbackRCAddr
+}
+
+// pickRCAddr is the address this mount will bind. DRIVE_RC_ADDR wins when it
+// is loopback, so a test or --rc-addr can pin the port; otherwise a free
+// 127.0.0.1 port is chosen so a second mount on this machine does not die
+// with "address already in use" (drive#807).
+func pickRCAddr() (string, error) {
+	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" && IsLoopbackAddr(set) {
+		return set, nil
+	}
+	return listenLoopbackRCAddr()
+}
+
+// listenLoopbackRCAddr binds 127.0.0.1:0, reads the kernel-chosen port, and
+// closes the probe socket so rclone can bind the same address. The window
+// after close is the same one the tests' freePort already uses.
+func listenLoopbackRCAddr() (string, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("bind a free loopback port for rclone rc: %w", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		return "", fmt.Errorf("release the rc probe port: %w", err)
+	}
+	if !IsLoopbackAddr(addr) {
+		return "", fmt.Errorf("probe port %s is not loopback", addr)
+	}
+	return addr, nil
 }
 
 // IsLoopbackAddr reports whether addr is a loopback host:port. The remote
@@ -362,8 +393,16 @@ func (p MountPlan) args(includeRCAuth bool) []string {
 		// status` reports the cache. It is one address for all of them.
 		// --rc-user/--rc-pass are rclone's own auth (drive#498); without
 		// them config/dump returns the storage secret to any local process.
-		"--rc", "--rc-addr", p.RCAddr,
+		//
+		// A plan with no remote-control address is a mount that runs no
+		// background loops: the agent path (agentmount.go, drive#514) has
+		// no fill, no conflict guard and no `drive status` to answer, so it
+		// gets no port at all. Writing an empty --rc-addr would open rclone's
+		// control on every interface.
 	)
+	if p.RCAddr != "" {
+		args = append(args, "--rc", "--rc-addr", p.RCAddr)
+	}
 	if includeRCAuth && p.RCUser != "" {
 		args = append(args, "--rc-user", p.RCUser, "--rc-pass", p.RCPass)
 	}
@@ -404,11 +443,20 @@ func (p MountPlan) CommandLine() string {
 // label and program arguments are exactly the rclone plan, so what launchd runs
 // is what `drive mount` would run in the foreground.
 func LaunchdPlist(p MountPlan) string {
+	return LaunchdPlistFor(p, LaunchdLabel)
+}
+
+// LaunchdPlistFor is LaunchdPlist for a login item whose label is not the
+// device mount's own: one label per agent path, because launchd runs one
+// ProcessArguments list per label and a tool's rclone must be its own
+// (drive#514). The credential fields are written only when the plan carries
+// them, so an agent path with no remote control writes no rc password.
+func LaunchdPlistFor(p MountPlan, label string) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(LaunchdLabel))
+	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(label))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))
@@ -459,7 +507,14 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), systemdCommandLine(p))
+}
+
+func (p MountPlan) envFile() string {
+	if p.EnvPath != "" {
+		return p.EnvPath
+	}
+	return filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads

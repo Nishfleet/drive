@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — usage</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
@@ -492,7 +493,8 @@ h2 {
     <a href="/">Pricing</a>
     <a href="/get-started">Get started</a>
     <a href="/usage" aria-current="page">Usage</a>
-      <a href="/signin" id="nav-signin">Sign in</a>
+    <a href="/devices">Devices</a>
+    <a href="/signin" id="nav-signin">Sign in</a>
       <noscript>
         <!-- Not Django: POST /api/signin refuses a cross-site post
              (isSameOriginRequest). A token in the markup would protect nothing. -->
@@ -518,10 +520,10 @@ h2 {
        link goes to the page where the close and the cancel both live. The
        styles are the shared stylesheet's, so the four pages that carry this
        aside are one banner. -->
-  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
-  </aside>
+  </div>
   <main>
     <section aria-labelledby="usage-heading">
       <h1 id="usage-heading">Usage</h1>
@@ -637,6 +639,16 @@ h2 {
           </div>
         </dl>
         <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
+      </section>
+
+      <section aria-labelledby="links-heading">
+        <h2 id="links-heading">Public links</h2>
+        <dl class="readout">
+          <div class="pair">
+            <dt>Open public links</dt>
+            <dd id="open-public-links"></dd>
+          </div>
+        </dl>
       </section>
 
       <!-- The upload-progress line (drive issue #308): the same live words
@@ -790,6 +802,7 @@ const gbMonthsEl = document.getElementById("gb-months");
 const costEl = document.getElementById("cost");
 const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
+const openPublicLinksEl = document.getElementById("open-public-links");
 const uploadLineEl = document.getElementById("upload-line");
 const capAmount = document.getElementById("cap-amount");
 const capSlider = document.getElementById("cap-slider");
@@ -1092,6 +1105,9 @@ function render(summary) {
   // looking like a bill that was taken.
   billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
+  openPublicLinksEl.textContent = Number.isFinite(summary.openPublicLinks)
+    ? String(summary.openPublicLinks)
+    : "0";
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.
   uploadLineEl.textContent = summary.uploadLine === null ? "" : summary.uploadLine;

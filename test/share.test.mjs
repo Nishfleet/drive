@@ -28,6 +28,7 @@ import {
 import { bucketForAccount } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
 import { createApp } from "../src/index.js";
+import { EICAR_BODY, EICAR_SHA256, isKnownMalwareHash, malwareHashOf } from "../src/malware.js";
 import {
   base64url,
   createD1LinkStore,
@@ -370,6 +371,121 @@ test("POST /api/share mints a link for a file that is there, and 404s one that i
   );
 });
 
+test("replacing a file after mint refuses the share link", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "notes.txt", "benign");
+  const made = await share("/notes.txt", { token: TOKEN });
+  assert.equal(made.status, 201);
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.ok(record.etag && record.etag.length > 0, "mint stores the file's etag");
+
+  const before = await handleShareFileRequest(
+    new Request((await made.json()).share.url),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(before.status, 200);
+  assert.equal(await before.text(), "benign");
+
+  await upload("/", "notes.txt", "replaced bytes");
+  const after = await handleShareFileRequest(
+    new Request(`https://drive.test${SHARE_LINK_PREFIX}/${TOKEN}`),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(after.status, 409);
+  assert.equal(await after.text(), failureMessage("share-changed"));
+  const head = await handleShareFileRequest(
+    new Request(`https://drive.test${SHARE_LINK_PREFIX}/${TOKEN}`, { method: "HEAD" }),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(head.status, 409);
+  assert.equal(await head.text(), failureMessage("share-changed"));
+});
+
+test("a known-bad hash is refused on share mint and on an upload-request drop", async () => {
+  assert.equal(await malwareHashOf(EICAR_BODY), EICAR_SHA256);
+  assert.equal(isKnownMalwareHash(EICAR_SHA256), true);
+  assert.equal(isKnownMalwareHash(EICAR_SHA256.toUpperCase()), true);
+  assert.equal(isKnownMalwareHash("0".repeat(64)), false);
+
+  const { upload, share, files, links, list, request } = drive();
+  await upload("/", "eicar.txt", EICAR_BODY);
+  const minted = await share("/eicar.txt", { token: TOKEN });
+  assert.equal(minted.status, 403);
+  assert.equal((await minted.json()).error, failureMessage("malware-refused"));
+  assert.equal(await links.shares.get(TOKEN), null);
+
+  const made = await request("/", { token: TOKEN });
+  assert.equal(made.status, 201);
+  const dropped = await handleRequestUploadRequest(
+    new Request(`${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=eicar.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: EICAR_BODY,
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(dropped.status, 403);
+  assert.equal((await dropped.json()).error, failureMessage("malware-refused"));
+  assert.deepEqual(
+    (await list()).map((row) => row.name),
+    ["eicar.txt"],
+  );
+  const record = await links.requests.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.uploadCount, 0);
+});
+
+test("a share minted before etag pinning still serves after a replace", async () => {
+  const { upload, files, links } = drive();
+  await upload("/", "notes.txt", "benign");
+  await links.shares.create(
+    newShareRecord({ accountId: account.id, path: "/notes.txt", now, token: TOKEN }),
+  );
+  await upload("/", "notes.txt", "replaced");
+  const opened = await handleShareFileRequest(
+    new Request(`https://drive.test${SHARE_LINK_PREFIX}/${TOKEN}`),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), "replaced");
+});
+
+test("a quoted stored etag still matches the live object", async () => {
+  const { upload, files, links } = drive();
+  await upload("/", "notes.txt", "benign");
+  const live = await scopeStore(files, account).read("/notes.txt");
+  assert.ok(live?.etag);
+  await links.shares.create(
+    newShareRecord({
+      accountId: account.id,
+      path: "/notes.txt",
+      now,
+      token: TOKEN,
+      etag: `"${live.etag}"`,
+    }),
+  );
+  const opened = await handleShareFileRequest(
+    new Request(`https://drive.test${SHARE_LINK_PREFIX}/${TOKEN}`),
+    files,
+    links,
+    shareOpts(),
+  );
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), "benign");
+});
+
 test("GET /api/share lists the account's links, newest first", async () => {
   const { upload, share, shareList } = drive();
   await upload("/", "a.txt", "a");
@@ -527,6 +643,156 @@ test("the cap is resolved from the account that minted the token", async () => {
     withLimits(),
   );
   assert.equal(capped.status, 403);
+});
+
+test("the info response names the link's owner, so a stranger knows whose drive it is", async () => {
+  // drive#684: the upload page shows the owner's display name. The route
+  // resolves it from the link's own account through the same owner store the
+  // rest of the site reads, and puts it on both the open and the closed
+  // response — a closed page still says who the link belonged to.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  /** @type {string[]} */
+  const asked = [];
+  /** @param {string} accountId */
+  const owner = async (accountId) => {
+    asked.push(accountId);
+    return { id: accountId, name: "Nish Patel", email: "nish@example.com" };
+  };
+  const open = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(open.status, 200);
+  const openBody = await open.json();
+  assert.equal(openBody.open, true);
+  assert.equal(openBody.owner, "Nish Patel");
+  assert.deepEqual(asked, [account.id], "the owner is read from the token's own account");
+
+  const closed = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "read_only",
+    { now, owner },
+  );
+  const closedBody = await closed.json();
+  assert.equal(closedBody.open, false);
+  assert.equal(closedBody.owner, "Nish Patel");
+});
+
+test("an account with no display name is left unseen, never its address", async () => {
+  // drive#684: only the row's own name reaches a stranger. An account that has
+  // no name must not have its email published to anyone holding the link.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  /** @param {string} accountId */
+  const owner = async (accountId) => ({ id: accountId, name: "", email: "name@example.com" });
+  const response = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.open, true);
+  assert.equal(body.owner, "", "a blank name hides the line rather than showing the address");
+});
+
+test("a display name that looks like an address is kept off the page", async () => {
+  // drive#684 (in-run review): a signup flow that seeded `name` from the
+  // email leaves an address in the name column. It is not a display name, so
+  // the info route hides it rather than publishing it to a stranger.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  /** @param {string} accountId */
+  const owner = async (accountId) => ({
+    id: accountId,
+    name: "nish@example.com",
+    email: "nish@example.com",
+  });
+  const response = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.open, true);
+  assert.equal(body.owner, "", "an address in the name column is not shown as a name");
+});
+
+test("a failing owner read does not close the public upload page", async () => {
+  // drive#684: the name is a label. A read that throws degrades to no name and
+  // the stranger can still upload; it must not turn the info route into a 500.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  const owner = async () => {
+    throw new Error("the owner store is down");
+  };
+  const response = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.open, true);
+  assert.equal(body.owner, "");
+});
+
+test("an upload through a link queues an arrival for the nightly digest", async () => {
+  // drive#684: after the write wins, the route records the arrival so the
+  // digest can list it. The row keeps the file's name and size and no send
+  // stamp, and the store is the real D1 store so the queue is the column the
+  // digest reads.
+  const { files, links, request } = drive();
+  await request("/", { token: TOKEN });
+  const dropped = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=contract.pdf`, {
+      method: "POST",
+      body: "pdf",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(dropped.status, 201);
+  const row = await links.requests.get(TOKEN);
+  assert.ok(row);
+  assert.equal(row.digestAt, null, "no digest has gone out");
+  const arrivals = JSON.parse(row.pendingUploads);
+  assert.deepEqual(arrivals, [{ bytes: 3, name: "contract.pdf" }]);
+  const pending = await links.requests.listPendingDigests();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].token, TOKEN);
+  // A store that cannot record arrivals must not fail the stranger's upload:
+  // the file is stored, so the 201 stands.
+  const noQueue = {
+    ...links,
+    requests: {
+      ...links.requests,
+      recordArrival: async () => {
+        throw new Error("this store has no arrival queue");
+      },
+    },
+  };
+  const stored = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=second.pdf`, {
+      method: "POST",
+      body: "pdf",
+    }),
+    files,
+    noQueue,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(stored.status, 201, "a queue failure never fails the upload");
 });
 
 test("a link with no usable expiry is expired, not a permanent link", async () => {
@@ -1828,6 +2094,10 @@ test("the shipped upload page carries the module's words and endpoints", () => {
   // No script files and no inline secrets: one inline script, nothing fetched
   // from another origin.
   assert.ok(!/<script src=/.test(page), "the page is one inline script");
+  // drive#546: the file input was 1px and transparent but still in the tab
+  // order and the accessibility tree with no label. `hidden` takes it out of
+  // both, the same way public/files.html does it.
+  assert.match(page, /<input type="file" id="file-input" multiple hidden>/);
 });
 
 // The handlers answer DELETE (revoke), but a route the app does not register is

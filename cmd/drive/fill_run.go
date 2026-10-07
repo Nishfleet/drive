@@ -45,11 +45,11 @@ import (
 // a drive larger than the cache no longer downloads continuously while the
 // machine sits idle.
 
-// loopbackRCAddr is the address the mount's remote control binds. rclone's
-// default is localhost:5572; the plan sets it explicitly so the fill loop and
-// the operator reach the same one even on a host with another rclone running.
-// localhost only: the remote control is password-protected (drive#498) and
-// it must not be reachable off the machine.
+// loopbackRCAddr is rclone's own default remote-control address. A prepared
+// mount does not bind it: prepareMountAuth picks a free loopback port and
+// stores it in rclone.env so two mounts on one machine do not collide
+// (drive#807). The constant remains the unprepared fallback (dry-run, a
+// DRIVE_RC_ADDR that is not loopback) and the address tests refuse to reuse.
 const loopbackRCAddr = "127.0.0.1:5572"
 
 // FillResult is what one fill pass did, so `drive status` and the test can

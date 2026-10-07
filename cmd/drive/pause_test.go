@@ -134,6 +134,22 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 	return newRCClient(shim, addr, "")
 }
 
+const rcloneVersionJSON = `{"version":"v1.75.1"}`
+
+// withRCVersion answers core/version the way rclone does, then hands every
+// other call to inner. mountRCClient checks core/version before it acts
+// (drive#807), so a stand-in that only implements bwlimit/vfs/stats would
+// fail the identity check.
+func withRCVersion(inner http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "core/version") {
+			_, _ = w.Write([]byte(rcloneVersionJSON))
+			return
+		}
+		inner(w, r)
+	}
+}
+
 func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	// mu guards the stand-in's state: it is written on the server's goroutine
 	// and read here once each call returns.
@@ -549,9 +565,9 @@ func TestTransfersLineTrustsTheLiveRateWhenMounted(t *testing.T) {
 	if err := SetPaused(home); err != nil {
 		t.Fatal(err)
 	}
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"rate":"off","bytesPerSecond":-1,"bytesPerSecondTx":-1,"bytesPerSecondRx":-1}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.Binary)
 	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if got := transfersLine(home, true); got != transfersRunning {
@@ -561,9 +577,9 @@ func TestTransfersLineTrustsTheLiveRateWhenMounted(t *testing.T) {
 
 func TestTransfersLineReadsPausedFromTheLiveRate(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"rate":"1Ki:off","bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.Binary)
 	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {

@@ -187,7 +187,13 @@ test("the docs build is not a second hand-kept copy of the page list", () => {
 test("the site's own asset files ship, and the API is left to the Worker", () => {
   // SITE names the site-level paths; each one has to be a file, or a discovery
   // file points at nothing.
-  for (const path of [SITE.homePath, SITE.robotsPath, SITE.sitemapPath, SITE.llmsPath]) {
+  for (const path of [
+    SITE.homePath,
+    SITE.faviconPath,
+    SITE.robotsPath,
+    SITE.sitemapPath,
+    SITE.llmsPath,
+  ]) {
     assert.ok(
       shipsAsset(path),
       `${absoluteUrl(path)} is a path core/seo.js declares and public/ does not carry (${assetFileFor(path)})`,
@@ -238,7 +244,12 @@ test("the built assets carry CSP, frame-ancestors, nosniff, Referrer-Policy and 
  * The MIME types the served checks look for; anything else is bytes.
  * @type {Record<string, string>}
  */
-const MIME_BY_EXT = { ".html": "text/html", ".txt": "text/plain", ".xml": "application/xml" };
+const MIME_BY_EXT = {
+  ".html": "text/html",
+  ".txt": "text/plain",
+  ".xml": "application/xml",
+  ".svg": "image/svg+xml",
+};
 
 /**
  * public/ over real HTTP. The Worker serves everything outside /api/* and
@@ -294,6 +305,7 @@ test("the pages the issue names are served from the shipped directory", async ()
       ["/", "text/html"],
       [SITE.llmsPath, "text/plain"],
       [SITE.sitemapPath, "application/xml"],
+      [SITE.faviconPath, "image/svg+xml"],
       [SEO_DOC_PAGES[0].path, "text/html"],
       // drive#584: the trust pages the launch checklist names, and the site's
       // own 5xx page. Each is a public/ asset the deploy copies verbatim.
