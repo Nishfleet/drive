@@ -12,7 +12,12 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../../core/files.js";
 import { failureMessage } from "../../core/messages.js";
-import { createBranch, createKvSnapshotStore, getBranch } from "../../src/branches.js";
+import {
+  createBranch,
+  createKvSnapshotStore,
+  getBranch,
+  runBranchJobToEnd,
+} from "../../src/branches.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 import { createTestKv } from "../harness.mjs";
 
@@ -95,7 +100,7 @@ test("the real claim stores the reservation and the real guard sums it (#801)", 
   const sum = sqlite
     .prepare(
       "SELECT COALESCE(SUM(reserved_bytes), 0) AS reserved FROM branches " +
-        "WHERE account_id = ?1 AND state = 'creating'",
+        "WHERE account_id = ?1 AND state = 'creating' AND id != 0",
     )
     .get(ACCOUNT.id);
   assert.equal(sum.reserved, 100 * GB, "the guard's sum sees the queued create's bytes");
@@ -132,20 +137,29 @@ test("the reservation stops counting the moment the row leaves 'creating' (#801)
     () => Date.now(),
     queue,
   );
-  // The copy ran: its bytes are in the store now, so the walk sees them and no
-  // transition has to clear a reservation.
-  sqlite
-    .prepare("UPDATE branches SET state = 'open' WHERE account_id = ?1 AND name = 'queued'")
-    .run(ACCOUNT.id);
+  // The copy really runs, so the bytes are in the store and the row is open
+  // because the job finished it, not because a column was flipped.
+  const row = await getBranch(db, snapshots, ACCOUNT, "queued");
+  assert.ok(row);
+  const ran = await runBranchJobToEnd(db, snapshots, store, ACCOUNT, row.id);
+  assert.equal(ran.error, undefined);
+  assert.equal((await getBranch(db, snapshots, ACCOUNT, "queued"))?.state, "open");
   const sum = sqlite
     .prepare(
       "SELECT COALESCE(SUM(reserved_bytes), 0) AS reserved FROM branches " +
-        "WHERE account_id = ?1 AND state = 'creating'",
+        "WHERE account_id = ?1 AND state = 'creating' AND id != 0",
     )
     .get(ACCOUNT.id);
   assert.equal(sum.reserved, 0, "an open row holds copied bytes, not a reservation");
-  // The same create that was refused above now passes, because the store walk
-  // sees the copy instead of the reservation.
+  assert.equal(
+    sqlite
+      .prepare("SELECT reserved_bytes FROM branches WHERE account_id = ?1 AND name = 'queued'")
+      .get(ACCOUNT.id).reserved_bytes,
+    100 * GB,
+    "the row keeps what it measured, as history; the state is what releases it",
+  );
+  // The create behind it is still refused, now by the store walk that can see
+  // the copy. Releasing the reservation does not release the bytes.
   const after = await createBranch(
     db,
     snapshots,
@@ -155,7 +169,8 @@ test("the reservation stops counting the moment the row leaves 'creating' (#801)
     () => Date.now(),
     queue,
   );
-  assert.equal(after.state, "creating");
+  assert.equal(after.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(after.status, 403);
 });
 
 test("a row written before the column is summed as zero bytes, not as a guess (#801)", async () => {

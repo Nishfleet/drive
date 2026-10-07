@@ -49,6 +49,7 @@
 import {
   accountFirstChargedAt,
   accountStoredBytes,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
@@ -815,6 +816,27 @@ async function storedBytesUnder(store, root) {
   return bytesOf((await listFiles(store, root)).values());
 }
 
+/** How many of the account's own branches occupy an in-flight state right now:
+ * the count the claim's own WHERE enforces (drive#553). Read back only to tell
+ * a cap refusal from a byte-limit refusal, never to decide either (drive#801).
+ * @param {D1Database} db @param {string} accountId @returns {Promise<number>}
+ */
+async function accountActiveBranchCount(db, accountId) {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS active FROM branches WHERE account_id = ?1 AND state IN " +
+        `(${ACTIVE_STATE_LIST})`,
+    )
+    .bind(accountId)
+    .first();
+  return Number(/** @type {{active?: unknown} | null | undefined} */ (row)?.active ?? 0);
+}
+
+/** The sentinel a check passes when it has no branch row of its own to leave
+ * out of the reservation sum (drive#801). Branch ids start at 1 (migration
+ * 0015), so `id != 0` excludes nothing and skips no real row. */
+const NO_RESERVATION_YET = 0;
+
 /** The bytes every create still queued on this account has reserved: the
  * `reserved_bytes` its claim measured, summed over the rows that have not
  * copied yet (drive#801).
@@ -827,26 +849,35 @@ async function storedBytesUnder(store, root) {
  * written before migration 0040 as zero, which is what it holds: nothing this
  * deployment measured for it. Such a row is stopped by the copy job's own
  * re-check before its first batch (drive#553), not by this sum.
- * @param {D1Database} db @param {string} accountId
+ *
+ * `excludeId` drops one row from the sum, and no call site leaves it unset: the
+ * copy job's own re-check passes the branch it is copying. That row's bytes are
+ * already the `incomingBytes` of the same check, so leaving its reservation in
+ * `storedBytes` counts them twice and discards a branch that was legal when it
+ * was claimed (drive#801 in-run review). D1's `!=` never yields NULL here,
+ * because `id` is the row's primary key and is never NULL.
+ * @param {D1Database} db @param {string} accountId @param {number} excludeId
  * @returns {Promise<number>}
  */
-async function queuedReservedBytes(db, accountId) {
+async function queuedReservedBytes(db, accountId, excludeId) {
   const row = await db
     .prepare(
       "SELECT COALESCE(SUM(reserved_bytes), 0) AS reserved FROM branches " +
-        "WHERE account_id = ?1 AND state = 'creating'",
+        "WHERE account_id = ?1 AND state = 'creating' AND id != ?2",
     )
-    .bind(accountId)
+    .bind(accountId, excludeId)
     .first();
-  const reserved = Number(/** @type {{reserved?: unknown} | null | undefined} */ (row)?.reserved ?? 0);
+  const reserved = Number(
+    /** @type {{reserved?: unknown} | null | undefined} */ (row)?.reserved ?? 0,
+  );
   if (!Number.isFinite(reserved) || reserved < 0) {
     throw new TypeError(`branches.reserved_bytes must be 0 or more, got ${reserved}`);
   }
   return reserved;
 }
 
-/** @param {D1Database} db @param {FileStore} store @param {{id: string}} account @param {number} incomingBytes */
-async function branchCopyBlocked(db, store, account, incomingBytes) {
+/** @param {D1Database} db @param {FileStore} store @param {{id: string}} account @param {number} incomingBytes @param {number} excludeReservedId */
+async function branchCopyBlocked(db, store, account, incomingBytes, excludeReservedId) {
   const firstChargedAt = await accountFirstChargedAt(db, account.id);
   if (firstChargedAt !== null) return null;
   return preChargeUploadBlocked({
@@ -854,7 +885,7 @@ async function branchCopyBlocked(db, store, account, incomingBytes) {
     storedBytes:
       (await accountStoredBytes(db, account.id)) +
       (await storedBytesUnder(store, BRANCHES_ROOT)) +
-      (await queuedReservedBytes(db, account.id)),
+      (await queuedReservedBytes(db, account.id, excludeReservedId)),
     incomingBytes,
   });
 }
@@ -1097,10 +1128,10 @@ function toBranch(row, snapshot) {
       typeof row.source_changed_count === "number"
         ? row.source_changed_count
         : Number(row.source_changed_count ?? 0) || 0,
-    // What the claim measured for a row still copying (migration 0040,
-    // drive#801). Null on a row written before the column and on one whose
-    // copy has run, which is the honest answer for both: nobody measured it,
-    // or its bytes are in the store now.
+    // What the claim measured for this row (migration 0040, drive#801). Kept
+    // after the copy runs, as the record of what the claim reserved; it is
+    // never cleared. Absent on a row written before the column, which reads as
+    // zero: nobody measured it, or its bytes are in the store now.
     reservedBytes:
       typeof row.reserved_bytes === "number"
         ? row.reserved_bytes
@@ -1350,7 +1381,11 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       only !== undefined
         ? bytesOf(Object.values(only))
         : await storedBytesUnder(store, branch.sourcePrefix);
-    const blocked = await branchCopyBlocked(db, store, account, incomingBytes);
+    // This check asks one question: has the account gone over the limit while
+    // this branch waited? Its own reservation is left out of the sum because
+    // its own bytes are the `incomingBytes` just measured, and the other queued
+    // rows are in it, because theirs are not (drive#801 in-run review).
+    const blocked = await branchCopyBlocked(db, store, account, incomingBytes, branch.id);
     if (blocked !== null) {
       await failJob(db, branch.id, "discarded", blocked);
       return { error: blocked, status: 403, done: true };
@@ -1961,7 +1996,10 @@ export async function createBranch(
   // The open-branch cap is the claim INSERT's WHERE, so a race cannot land 11.
   const listed = await listFiles(store, folderPath);
   const incomingBytes = bytesOf(listed.values());
-  const blocked = await branchCopyBlocked(db, store, account, incomingBytes);
+  // No row to exclude: this create has no claim yet, so every other queued
+  // row's reservation belongs in the sum, and this folder's own bytes are the
+  // `incomingBytes` being measured here for the first time (drive#801).
+  const blocked = await branchCopyBlocked(db, store, account, incomingBytes, NO_RESERVATION_YET);
   if (blocked !== null) {
     return { error: blocked, status: 403 };
   }
@@ -1992,7 +2030,23 @@ export async function createBranch(
           "reserved_bytes) " +
           "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',?9 " +
           "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
-          `(${ACTIVE_STATE_LIST})) < ?8`,
+          `(${ACTIVE_STATE_LIST})) < ?8` +
+          // The reservation sum rides this same statement, the way the cap's
+          // count already does, so D1 serializes the two: two creates that both
+          // read a stale sum cannot both land a reservation the third create
+          // would then measure against (drive#801 in-run review). The sum is
+          // what the database can measure - the file index and the store walk
+          // are both outside this statement, and the copy job re-checks those
+          // before its first batch.
+          // A first charge lifts the limit (drive#464), inside the statement as
+          // well as outside it, or a charged account's claim would still be
+          // refused by a rule it has paid to be free of.
+          " AND ((SELECT first_charged_at FROM accounts WHERE id = ?1) IS NOT NULL" +
+          " OR (SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches " +
+          "WHERE account_id = ?1 AND state = 'creating') + " +
+          "(SELECT COALESCE(SUM(v.size_bytes), 0) FROM file_versions v " +
+          "WHERE v.account_id = ?1 AND v.hidden_at IS NULL) + ?9 <= " +
+          `${PRE_CHARGE_STORAGE_LIMIT_BYTES})`,
       )
       .bind(
         account.id,
@@ -2010,6 +2064,22 @@ export async function createBranch(
       return { error: failureMessage("unexpected"), status: 500 };
     }
     if (claimed.meta.changes === 0) {
+      // The statement's WHERE now refuses on the cap OR on the byte limit, so
+      // zero changed rows does not say which. The refusal is read back from the
+      // same live state rather than guessed, because the two answer different
+      // sentences: the cap is a 409 about branches, the limit a 403 about
+      // storage (drive#801 in-run review).
+      const atCap = (await accountActiveBranchCount(db, account.id)) >= MAX_OPEN_BRANCHES;
+      if (!atCap) {
+        const reraced = await branchCopyBlocked(
+          db,
+          store,
+          account,
+          incomingBytes,
+          NO_RESERVATION_YET,
+        );
+        return { error: reraced ?? failureMessage("pre-charge-storage-limit"), status: 403 };
+      }
       return { error: failureMessage("branch-limit"), status: 409 };
     }
     claimId = Number(claimed.meta.last_row_id);

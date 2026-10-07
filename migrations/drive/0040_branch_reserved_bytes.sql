@@ -16,16 +16,15 @@
 -- (the fleet D1 expand/contract rule). D1 has no down-migrations, so this file
 -- is one-way and a rollback is the code going back, never the column going away.
 --
---   reserved_bytes  the byte total the claim measured for a row still in
---                   'creating'. NULL on every row written before this file,
---                   and NULL on a row whose copy already ran.
+--   reserved_bytes  the byte total the claim measured for the folder it is
+--                   about to copy. Kept on the row after the copy runs, as the
+--                   record of what that claim reserved; it is never cleared.
 --
 -- The state is the whole release: a row that leaves 'creating' has copied bytes
--- the store walk can see, so no transition has to clear anything and a stale
--- reservation can never pin an account at the limit. The guard sums this
--- column over the 'creating' rows only, and COALESCE treats the NULL rows the
--- older code wrote as zero bytes, which is exactly what they are: nothing this
--- deployment has measured for them yet.
+-- the store walk can see, so the guard stops counting this column the moment the
+-- state is no longer 'creating', with no transition to write and no stale
+-- reservation able to pin an account at the limit. Retaining the number on an
+-- open row is the audit trail, not a live claim - the sum never reads it.
 --
 -- The NULL rows are not a hole. A row that predates this file and is still
 -- 'creating' was measured by code that did not record the measurement, and its
