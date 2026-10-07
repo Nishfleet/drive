@@ -801,7 +801,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 				fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 			}
-			if err := startDeviceRenewLoginItem(goos, home, renewPath); err != nil {
+			if err := startDeviceRenewSidecar(goos, home, renewPath, foreground); err != nil {
 				fmt.Fprintf(os.Stderr, "note: device-key renew login item not started (%v); it is written at %s\n", err, renewPath)
 			}
 			excludeTransientFromBackup(goos, p)
@@ -814,6 +814,11 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		}
 	}
 	if foreground {
+		// A leftover sidecar from a previous login-item mount would remint
+		// beside the in-process loop. Stop it before that loop starts.
+		if err := stopDeviceRenewLoginItem(goos, home); err != nil {
+			fmt.Fprintf(os.Stderr, "note: device-key renew login item not stopped (%v)\n", err)
+		}
 		// The files go into the drive once it is up. If it never comes up,
 		// they go back into the plain folder once rclone has exited, so a
 		// failed mount does not leave them in the hidden holding folder.
@@ -853,7 +858,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
-	if err := startDeviceRenewLoginItem(goos, home, renewPath); err != nil {
+	if err := startDeviceRenewSidecar(goos, home, renewPath, foreground); err != nil {
 		fmt.Fprintf(os.Stderr, "note: device-key renew login item not started (%v); it is written at %s\n", err, renewPath)
 	}
 	// The cache holds the mount's transient bytes (issue #561); keep macOS's

@@ -25,8 +25,9 @@ import (
 //
 // The loop runs two ways, matching prefetch: inside `drive mount --foreground`
 // as a goroutine, and as a sidecar login item for the systemd/launchd mount
-// that runs rclone itself. The sidecar is not PartOf the mount unit, so it can
-// restart rclone without being stopped with it.
+// that runs rclone itself. Foreground stops the sidecar first so both cannot
+// remint at once. The sidecar is not PartOf the mount unit, so it can restart
+// rclone without being stopped with it.
 
 const (
 	// deviceKeyRenewFraction is how far through a session the CLI asks for a
@@ -120,6 +121,17 @@ func deviceRenewLaunchdPlist(driveBin, home string) string {
 	return b.String()
 }
 
+// startDeviceRenewSidecar starts the login-item loop for a background mount.
+// A foreground mount runs the loop in-process and must not start this too,
+// or two writers can swap rclone.conf onto a credential the api already
+// replaced.
+func startDeviceRenewSidecar(goos, home, itemPath string, foreground bool) error {
+	if foreground {
+		return nil
+	}
+	return startDeviceRenewLoginItem(goos, home, itemPath)
+}
+
 func startDeviceRenewLoginItem(goos, home, itemPath string) error {
 	if !deviceRenewEnabled() || goos == "windows" || itemPath == "" {
 		return nil
@@ -205,9 +217,9 @@ type deviceRenewFailure struct {
 }
 
 func recordDeviceRenewFailure(home string, err error) error {
-	what := err.Error()
+	what := fail("device-key-renew-failed").What
 	var f *failure
-	if errors.As(err, &f) {
+	if errors.As(err, &f) && strings.TrimSpace(f.What) != "" {
 		what = f.What
 	}
 	body, encErr := json.Marshal(deviceRenewFailure{FailedAt: time.Now().UTC(), What: what})
@@ -331,7 +343,13 @@ func runDeviceRenewLoop(ctx context.Context, home, api string) error {
 		}
 		creds, err := LoadCredentials(home)
 		if err != nil {
-			return err
+			_ = recordDeviceRenewFailure(home, err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(deviceKeyRenewTick):
+			}
+			continue
 		}
 		if creds.KeyID == "" || creds.KeyExpiresAt == 0 {
 			select {

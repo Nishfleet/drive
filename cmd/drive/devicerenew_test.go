@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -245,6 +246,50 @@ func TestDeviceRenewSidecarIsNotPartOfTheMount(t *testing.T) {
 	}
 	if !strings.Contains(unit, "drive renew --home /home/test") {
 		t.Fatalf("ExecStart missing drive renew:\n%s", unit)
+	}
+}
+
+func TestForegroundMountDoesNotStartTheRenewSidecar(t *testing.T) {
+	if err := startDeviceRenewSidecar("linux", t.TempDir(), "/no/such/unit", true); err != nil {
+		t.Fatalf("foreground must skip the sidecar, got %v", err)
+	}
+}
+
+func TestRecordDeviceRenewFailureDoesNotPersistRawErrorText(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := errors.New("Get https://s3.example/bucket: secret=sk-live leaked")
+	if err := recordDeviceRenewFailure(home, raw); err != nil {
+		t.Fatal(err)
+	}
+	line := deviceRenewStatusLine(home)
+	if strings.Contains(line, "sk-live") || strings.Contains(line, "s3.example") {
+		t.Fatalf("raw error reached drive status:\n%s", line)
+	}
+	if !strings.Contains(line, "could not be renewed") {
+		t.Fatalf("status line missing the named failure:\n%s", line)
+	}
+}
+
+func TestRunDeviceRenewLoopTicksOnUnreadableCredentials(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := CredentialsPath(home)
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	err := runDeviceRenewLoop(ctx, home, "")
+	if err == nil {
+		t.Fatal("the loop must stop when the context ends")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v, want a wait until cancel, not an immediate credentials error", err)
 	}
 }
 
