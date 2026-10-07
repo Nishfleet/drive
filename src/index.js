@@ -5,7 +5,7 @@ import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import { runPreChargeLimitCron } from "../core/abuse-guards.js";
-import { authFor, SIGNIN_LINK_PATH } from "../core/auth.js";
+import { authFor, authForPasskey, SIGNIN_LINK_PATH } from "../core/auth.js";
 import {
   BILLING_CONFIG,
   handleQuoteRequest,
@@ -659,7 +659,7 @@ const authApiHandler = async (/** @type {DriveContext} */ c) => {
   if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
     return c.json({ error: "Not found." }, 404);
   }
-  const auth = authFor(c.env);
+  const auth = /\/passkey\//.test(c.req.path) ? await authForPasskey(c.env) : authFor(c.env);
   if (!auth) {
     return c.json(signinClosedBody(), 503);
   }

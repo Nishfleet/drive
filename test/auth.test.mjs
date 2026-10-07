@@ -14,8 +14,9 @@
 //      deployment with no auth at all all read as signed out.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
 import { getAuthTables } from "better-auth/db";
@@ -81,9 +82,10 @@ function schemaPinInstance() {
     // Mirrors the option in core/auth.js: the rate-limit counters are stored
     // in D1, so the planner expects the rateLimit table too.
     rateLimit: { storage: "database" },
-    // The whole plugin set core/auth.js mounts, in the same order: a drift in
-    // this list makes the planner expect a schema the migration files do not
-    // carry, which is exactly what these tests exist to catch.
+    // The whole plugin set the Worker mounts, in the same order: magic-link
+    // and two-factor from core/auth.js, passkey from core/auth-passkey.js. A
+    // drift in this list makes the planner expect a schema the migration
+    // files do not carry, which is exactly what these tests exist to catch.
     plugins: [
       magicLink({ sendMagicLink: async () => {} }),
       twoFactor({ allowPasswordless: true }),
@@ -545,4 +547,34 @@ test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
   assert.match(source, /d1Adapter/);
   assert.doesNotMatch(source, /from "better-auth";/);
   assert.doesNotMatch(source, /from "better-auth\/plugins";/);
+  assert.doesNotMatch(
+    source,
+    /from "@better-auth\/passkey"/,
+    "the passkey plugin must load on demand from core/auth-passkey.js, not the Worker entry",
+  );
+  assert.match(
+    source,
+    /await import\("\.\/auth-passkey\.js"\)/,
+    "passkey auth must load through a dynamic import so the bundler can split it",
+  );
+});
+
+test("the built Worker entry no longer contains the passkey stack", (t) => {
+  // drive#846: @simplewebauthn/server (and the asn1/x509 stack it pulls) must
+  // sit in a chunk loaded only for /api/auth/passkey/*, not in the isolate
+  // script every request parses. CI runs `npm run build` before `npm test`;
+  // a local run without a build has nothing to pin.
+  const entry = fileURLToPath(
+    new URL("../.cloudflare/output/v0/workers/default/bundle/index.js", import.meta.url),
+  );
+  if (!existsSync(entry)) {
+    t.skip("no Worker build output; CI runs npm run build before npm test");
+    return;
+  }
+  const source = readFileSync(entry, "utf8");
+  assert.equal(
+    source.includes("//#region node_modules/@simplewebauthn/server"),
+    false,
+    "the passkey stack must not sit in the Worker entry chunk",
+  );
 });
