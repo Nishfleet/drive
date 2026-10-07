@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Drive — your files</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
@@ -540,10 +541,10 @@ dialog.viewer::backdrop {
        link goes to the page where the close and the cancel both live. The
        styles are the shared stylesheet's, so the four pages that carry this
        aside are one banner. -->
-  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
-  </aside>
+  </div>
   <nav class="tabs" aria-label="Views">
     <button type="button" id="tab-files" aria-pressed="true">Files</button>
     <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>

@@ -298,8 +298,16 @@ test("the banner's markup is the same one on every signed-in page", () => {
   let first = [];
   for (const { name, url } of SIGNED_IN_PAGES) {
     const html = readFileSync(url, "utf8");
-    const banner = html.slice(html.indexOf('id="close-banner"'));
-    const ids = [...banner.slice(0, banner.indexOf("</aside>")).matchAll(/id="([\w-]+)"/g)].map(
+    // The banner is a <div role="status">, not an <aside>: role="status" is
+    // not allowed on aside, which axe reports as aria-allowed-role (drive#546).
+    const start = html.indexOf('<div class="close-banner"');
+    assert.notEqual(
+      start,
+      -1,
+      `${name}'s close banner must be a <div>, not an <aside> (drive#546)`,
+    );
+    const banner = html.slice(start);
+    const ids = [...banner.slice(0, banner.indexOf("</div>")).matchAll(/id="([\w-]+)"/g)].map(
       (match) => match[1],
     );
     if (first.length === 0) {
