@@ -97,6 +97,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // Share-link content pin (drive#554): shares.etag is the file's storage
+  // fingerprint at mint. Expand only, default empty so older rows keep
+  // serving by path.
+  "drive/0037_share_etag.sql",
   // The per-link arrival digest (drive#684): upload_requests.digest_at and
   // pending_uploads. Expand only; the upload path and the info route read the
   // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
