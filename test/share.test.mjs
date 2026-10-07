@@ -221,7 +221,7 @@ function denyLimiter() {
  * Options the public upload route needs in tests: the two edge limiters
  * production binds, plus the clock. A call that omits them is the fail-closed
  * 503, which is not what the size/cap tests are asking.
- * @param {{now?: number, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} [options]
  */
 function withLimits(options = {}) {
   return {
