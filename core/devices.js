@@ -63,6 +63,22 @@ function parseCappedFrom(raw) {
 }
 
 /**
+ * The one word a freeze wrote naming which cap took the key down (drive#661), or
+ * null when no reason is recorded. Null and blank mean the same thing: a row
+ * written before `capped_reason` existed, and a key nothing capped by reason,
+ * both read "no reason recorded" -- which is the answer a give-back pass must
+ * not mistake for the spending cap's own freeze.
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+function parseCappedReason(raw) {
+  if (raw === null || raw === undefined || raw === "") {
+    return null;
+  }
+  return String(raw);
+}
+
+/**
  * @param {unknown} row
  * @returns {Device|null}
  */
@@ -98,6 +114,16 @@ function deviceFromRow(row) {
     ...(parseCappedFrom(r.capped_from) === null
       ? {}
       : { cappedFrom: parseCappedFrom(r.capped_from) }),
+    ...(parseCappedFrom(r.prepaid_paused_from) === null
+      ? {}
+      : { prepaidPausedFrom: parseCappedFrom(r.prepaid_paused_from) }),
+    // The reason this key went read-only, when a freeze wrote one: the
+    // spending cap's own freeze is 'spend-cap', and the sweep's
+    // 'pre-charge-limit' is drive#655's to set. A row with no reason leaves
+    // the field out, so a caller tests one shape rather than an empty string.
+    ...(parseCappedReason(r.capped_reason) === null
+      ? {}
+      : { cappedReason: parseCappedReason(r.capped_reason) }),
   };
 }
 
@@ -179,12 +205,26 @@ export function createD1DeviceStore(db, options = {}) {
       device.cappedFrom === undefined || device.cappedFrom === null
         ? null
         : JSON.stringify(device.cappedFrom);
+    const prepaidPausedFrom =
+      device.prepaidPausedFrom === undefined || device.prepaidPausedFrom === null
+        ? null
+        : JSON.stringify(device.prepaidPausedFrom);
+    // The reason a freeze wrote, or null. Null is written as null and never as
+    // a blank, because the read below hands an absent reason back as absent and
+    // a blank is not the same claim to make twice.
+    const cappedReason =
+      device.cappedReason === undefined ||
+      device.cappedReason === null ||
+      device.cappedReason === ""
+        ? null
+        : String(device.cappedReason);
     await run(
       db,
       `INSERT INTO devices (
          id, account_id, name, kind, b2_key_id, secret_hash, capabilities,
-         prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         prefix, capped_from, capped_reason, prepaid_paused_from, created_at, last_seen_at,
+         revoked_at, expires_at, ttl_seconds
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
        ON CONFLICT(id) DO UPDATE SET
          account_id = excluded.account_id,
          name = excluded.name,
@@ -194,6 +234,8 @@ export function createD1DeviceStore(db, options = {}) {
          capabilities = excluded.capabilities,
          prefix = excluded.prefix,
          capped_from = excluded.capped_from,
+         capped_reason = excluded.capped_reason,
+         prepaid_paused_from = excluded.prepaid_paused_from,
          last_seen_at = excluded.last_seen_at,
          revoked_at = excluded.revoked_at,
          expires_at = excluded.expires_at,
@@ -207,6 +249,8 @@ export function createD1DeviceStore(db, options = {}) {
       JSON.stringify(device.capabilities),
       device.prefix,
       cappedFrom,
+      cappedReason,
+      prepaidPausedFrom,
       device.createdAt,
       device.lastSeenAt,
       device.revokedAt,
@@ -834,6 +878,42 @@ export function createD1DeviceStore(db, options = {}) {
           bucket: bucketForKeyPrefix(accountId, device.prefix),
           capabilities: Object.freeze([...device.capabilities]),
           ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
+          // Which cap took the key down, beside the powers it took, so a caller
+          // planning a swap -- or a give-back pass (drive#656) -- can tell the
+          // spending cap's freeze from something else's. A row with no reason
+          // leaves the field out rather than answering with an empty string.
+          ...(device.cappedReason ? { cappedReason: device.cappedReason } : {}),
+        }),
+      );
+    },
+
+    /**
+     * The account's live keys in the shape core/cap.js `capSwapPlan` reads,
+     * with the prepaid pause's record presented as the plan's own record
+     * (`cappedFrom`). This is `listCapKeys` with one difference, and the
+     * difference is the whole point of drive#589: the record a restore may
+     * read is `prepaid_paused_from`, not `capped_from`, so a top-up gives
+     * back exactly what the pause took while the cap's own record stays
+     * the cap's to read.
+     *
+     * The kinds are not narrowed here. `listCapKeys` does not narrow them
+     * either: the Mac mount, an agent key and a branch key all write at
+     * the storage provider directly, and a $0 pause that left any of them
+     * writable would not pause the account.
+     * @param {string} accountId
+     */
+    async listPrepaidKeys(accountId) {
+      const devices = await liveDevices(accountId);
+      return devices.map((device) =>
+        Object.freeze({
+          keyId: device.id,
+          kind: device.kind,
+          prefix: device.prefix,
+          bucket: bucketForKeyPrefix(accountId, device.prefix),
+          capabilities: Object.freeze([...device.capabilities]),
+          ...(device.prepaidPausedFrom
+            ? { cappedFrom: Object.freeze([...device.prepaidPausedFrom]) }
+            : {}),
         }),
       );
     },
@@ -877,6 +957,84 @@ export function createD1DeviceStore(db, options = {}) {
           kind: device.kind,
           lastSeenAt: device.lastSeenAt === null ? null : device.lastSeenAt * 1000,
         }));
+    },
+
+    /**
+     * How many of the account's keys are live: not revoked, and not past
+     * their own hour. This is the count the mint cap (drive#552) is measured
+     * on — an hourly key that expired can no longer authenticate, and the
+     * nightly sweep removes its vendor key, so it is no longer one of the
+     * credentials the account holds.
+     * @param {string} accountId
+     * @param {number} atSeconds the read's now, in epoch seconds
+     * @returns {Promise<number>}
+     */
+    async countLiveKeys(accountId, atSeconds) {
+      const row = /** @type {{n?: number}|null|undefined} */ (
+        await first(
+          db,
+          `SELECT COUNT(*) AS n FROM devices
+            WHERE account_id = ?1
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?2)`,
+          accountId,
+          atSeconds,
+        )
+      );
+      return typeof row?.n === "number" ? row.n : 0;
+    },
+
+    /**
+     * The rows whose vendor key may still exist while the row itself is
+     * dead: revoked rows, and rows whose hour has passed (the vendor's key
+     * has no hour of its own — 0012 put the hour on our row only). Live is
+     * `expires_at > at` (countLiveKeys); sweepable is `expires_at <= at`, so
+     * the exact expiry second frees the cap slot and is swept the same night.
+     * A row the sweep has already stamped (0033 `vendor_key_removed_at`) is
+     * left out, so one vendor key is removed at most once and the sweep's
+     * work cannot grow with every key the account ever held. Rows with no
+     * vendor key id (the stand-in credential, which never reached the vendor)
+     * are left out too: there is nothing there to remove.
+     * @param {number} atSeconds the sweep's now, in epoch seconds
+     * @param {number} limit the most rows one sweep takes
+     * @returns {Promise<Array<{keyId: string, vendorKeyId: string, name: string, kind: string}>>}
+     */
+    async listSweepableKeys(atSeconds, limit) {
+      const result = await db
+        .prepare(
+          `SELECT id, b2_key_id, name, kind FROM devices
+           WHERE vendor_key_removed_at IS NULL
+             AND b2_key_id IS NOT NULL AND b2_key_id != ''
+             AND (revoked_at IS NOT NULL
+                  OR (expires_at IS NOT NULL AND expires_at <= ?1))
+           ORDER BY created_at
+           LIMIT ?2`,
+        )
+        .bind(atSeconds, limit)
+        .all();
+      return (result.results ?? [])
+        .filter((row) => typeof row?.id === "string" && typeof row?.b2_key_id === "string")
+        .map((row) => ({
+          keyId: /** @type {string} */ (row.id),
+          vendorKeyId: /** @type {string} */ (row.b2_key_id),
+          name: typeof row.name === "string" ? row.name : "",
+          kind: typeof row.kind === "string" ? row.kind : "",
+        }));
+    },
+
+    /**
+     * Stamp one row's vendor key as accounted for. Written once by the sweep
+     * after the vendor stopped holding the key; read by nothing else.
+     * @param {string} keyId
+     * @param {number} atSeconds
+     */
+    async markVendorKeyRemoved(keyId, atSeconds) {
+      await run(
+        db,
+        "UPDATE devices SET vendor_key_removed_at = ?1 WHERE id = ?2",
+        atSeconds,
+        keyId,
+      );
     },
 
     /**
@@ -1387,11 +1545,79 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {import("./keyprovider.js").AccountKeyProvider}
      */
     keyProviderFor(accountId) {
+      /**
+       * @param {string} keyId
+       * @param {"cappedFrom"|"prepaidPausedFrom"} record
+       * @param {{cappedReason?: string|null}} [options] the cap freeze's reason
+       *   (drive#661); the prepaid pause names none.
+       */
+      async function swapRowToReadOnly(keyId, record, options = {}) {
+        const row = await first(
+          db,
+          "SELECT * FROM devices WHERE id = ?1 AND account_id = ?2 AND revoked_at IS NULL",
+          keyId,
+          accountId,
+        );
+        const device = deviceFromRow(row);
+        if (device === null) {
+          throw new Error(`No key ${keyId} on this account to swap.`);
+        }
+        // The old credential is withdrawn at the vendor before the
+        // replacement is minted: a cap swap that left the old key live at
+        // the storage server would not cap anything (drive#371).
+        await revokeCredentialAtProvider(device.accessKeyId);
+        const credential = await mintCredential({
+          prefix: device.prefix,
+          capabilities: READ_ONLY_CAPABILITIES,
+          // The cap swap keeps the key inside the bucket the old key was
+          // scoped to, so the replacement credential is limited to the same
+          // boundary: an account's own bucket for an account key, and the
+          // team's for a key on a team prefix (drive#371, drive#462).
+          bucket: bucketForKeyPrefix(accountId, device.prefix),
+        });
+        // The swap keeps the row's own lifetime and its own id: the hour
+        // restarts on the new credential, and the key a person sees listed
+        // is the one that was there before. Nothing about the swap widens
+        // the window — the named record holds the powers it took, and the
+        // capabilities become READ_ONLY_CAPABILITIES, never more. The other
+        // record is left on the row (`...device`): the cap and the pause
+        // must not wipe each other's restore.
+        const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
+        const updated = {
+          ...device,
+          accessKeyId: credential.accessKeyId,
+          secretHash: await sha256Hex(credential.secret),
+          [record]: [...device.capabilities],
+          capabilities: [...READ_ONLY_CAPABILITIES],
+          // The freeze's own reason, on the row it froze. A caller that names
+          // nothing leaves the row's reason as it was.
+          ...(options.cappedReason === undefined || options.cappedReason === null
+            ? {}
+            : { cappedReason: String(options.cappedReason) }),
+          expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
+        };
+        await put(updated);
+        return {
+          keyId: updated.id,
+          accessKeyId: credential.accessKeyId,
+          secret: credential.secret,
+          sessionToken: credential.sessionToken,
+          expiresIn: credential.expiresIn,
+          expiresAt: updated.expiresAt,
+        };
+      }
+
       return {
         /**
          * @param {KeyScope} scope
+         * @param {{cappedReason?: string|null}} [options] the reason the freeze
+         *   that asked for this row recorded, on the one path that has one:
+         *   a cap swap that mints the replacement itself revokes the write
+         *   key and mints the read-only one here (drive#661). A mint with no
+         *   option is a person's own key, which carries no reason and writes
+         *   null.
          */
-        async mint(scope) {
+        async mint(scope, options = {}) {
           const sibling = deviceFromRow(
             await first(
               db,
@@ -1422,6 +1648,13 @@ export function createD1DeviceStore(db, options = {}) {
             expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
             lastSeenAt: null,
             revokedAt: null,
+            // The freeze's reason, or null. This row is the one the swap that
+            // mints its own replacement leaves live, so it is the one that
+            // carries the marker; a person's own key and the raise's
+            // replacement both leave it null, which is "no reason recorded".
+            ...(options.cappedReason === undefined || options.cappedReason === null
+              ? {}
+              : { cappedReason: String(options.cappedReason) }),
           };
           await put(device);
           return {
@@ -1465,55 +1698,28 @@ export function createD1DeviceStore(db, options = {}) {
         },
 
         /**
+         * The cap's own freeze of one key (drive#661): it narrows the row and
+         * records the reason that named the cap, so a give-back pass (drive#656)
+         * can tell this freeze from one another cap made.
+         * @param {string} keyId
+         * @param {{cappedReason?: string|null}} [options] the freeze's reason,
+         *   carried from the swap plan so the word is decided once in
+         *   core/cap.js. A swap that names none records no reason, which reads
+         *   "no reason recorded" -- the safe answer, because a give-back pass
+         *   then leaves the key as it is rather than widening it.
+         */
+        async swapToReadOnly(keyId, options = {}) {
+          return swapRowToReadOnly(keyId, "cappedFrom", options);
+        },
+
+        /**
+         * The prepaid pause's own swap (drive#589): same replacement as the
+         * cap, recorded on `prepaid_paused_from` so a top-up restores what
+         * the pause took and a later cap raise still reads `capped_from`.
          * @param {string} keyId
          */
-        async swapToReadOnly(keyId) {
-          const row = await first(
-            db,
-            "SELECT * FROM devices WHERE id = ?1 AND account_id = ?2 AND revoked_at IS NULL",
-            keyId,
-            accountId,
-          );
-          const device = deviceFromRow(row);
-          if (device === null) {
-            throw new Error(`No key ${keyId} on this account to swap.`);
-          }
-          // The old credential is withdrawn at the vendor before the
-          // replacement is minted: a cap swap that left the old key live at
-          // the storage server would not cap anything (drive#371).
-          await revokeCredentialAtProvider(device.accessKeyId);
-          const credential = await mintCredential({
-            prefix: device.prefix,
-            capabilities: READ_ONLY_CAPABILITIES,
-            // The cap swap keeps the key inside the bucket the old key was
-            // scoped to, so the replacement credential is limited to the same
-            // boundary: an account's own bucket for an account key, and the
-            // team's for a key on a team prefix (drive#371, drive#462).
-            bucket: bucketForKeyPrefix(accountId, device.prefix),
-          });
-          // The swap keeps the row's own lifetime and its own id: the hour
-          // restarts on the new credential, and the key a person sees listed
-          // is the one that was there before. Nothing about the swap widens
-          // the window — `cappedFrom` records the powers it took, and the
-          // capabilities become READ_ONLY_CAPABILITIES, never more.
-          const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
-          const updated = {
-            ...device,
-            accessKeyId: credential.accessKeyId,
-            secretHash: await sha256Hex(credential.secret),
-            cappedFrom: [...device.capabilities],
-            capabilities: [...READ_ONLY_CAPABILITIES],
-            expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
-          };
-          await put(updated);
-          return {
-            keyId: updated.id,
-            accessKeyId: credential.accessKeyId,
-            secret: credential.secret,
-            sessionToken: credential.sessionToken,
-            expiresIn: credential.expiresIn,
-            expiresAt: updated.expiresAt,
-          };
+        async swapPrepaidToReadOnly(keyId) {
+          return swapRowToReadOnly(keyId, "prepaidPausedFrom");
         },
       };
     },

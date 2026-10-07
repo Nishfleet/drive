@@ -72,6 +72,11 @@ type MountPlan struct {
 	// SecretKey is the storage secret passed at mount time through
 	// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY, never written into rclone.conf.
 	SecretKey string
+	// EnvPath is the 0600 EnvironmentFile the login item reads. Empty means
+	// rclone.env beside ConfigPath, which is the device mount's own. The
+	// agent path writes a file of its own so systemd never loads the device
+	// secret into a process that must hold the agent key (drive#514).
+	EnvPath string
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
@@ -362,8 +367,16 @@ func (p MountPlan) args(includeRCAuth bool) []string {
 		// status` reports the cache. It is one address for all of them.
 		// --rc-user/--rc-pass are rclone's own auth (drive#498); without
 		// them config/dump returns the storage secret to any local process.
-		"--rc", "--rc-addr", p.RCAddr,
+		//
+		// A plan with no remote-control address is a mount that runs no
+		// background loops: the agent path (agentmount.go, drive#514) has
+		// no fill, no conflict guard and no `drive status` to answer, so it
+		// gets no port at all. Writing an empty --rc-addr would open rclone's
+		// control on every interface.
 	)
+	if p.RCAddr != "" {
+		args = append(args, "--rc", "--rc-addr", p.RCAddr)
+	}
 	if includeRCAuth && p.RCUser != "" {
 		args = append(args, "--rc-user", p.RCUser, "--rc-pass", p.RCPass)
 	}
@@ -404,11 +417,20 @@ func (p MountPlan) CommandLine() string {
 // label and program arguments are exactly the rclone plan, so what launchd runs
 // is what `drive mount` would run in the foreground.
 func LaunchdPlist(p MountPlan) string {
+	return LaunchdPlistFor(p, LaunchdLabel)
+}
+
+// LaunchdPlistFor is LaunchdPlist for a login item whose label is not the
+// device mount's own: one label per agent path, because launchd runs one
+// ProcessArguments list per label and a tool's rclone must be its own
+// (drive#514). The credential fields are written only when the plan carries
+// them, so an agent path with no remote control writes no rc password.
+func LaunchdPlistFor(p MountPlan, label string) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(LaunchdLabel))
+	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(label))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	// launchd has no ExecStartPre. A KeepAlive restart runs this argv
 	// directly, so the first step has to clear a dead NFS entry before rclone
@@ -471,7 +493,14 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), mountDir, mountDir, systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), mountDir, mountDir, systemdCommandLine(p))
+}
+
+func (p MountPlan) envFile() string {
+	if p.EnvPath != "" {
+		return p.EnvPath
+	}
+	return filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads

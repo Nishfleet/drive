@@ -10,6 +10,12 @@ the live site.
 
 ## 2026-10-06
 
+- An account holds at most 20 live keys, and a mint past that is refused with
+  the words to fix it. The storage vendor sets no limit of its own, and a
+  nightly sweep removes the vendor keys of expired or revoked entries and
+  records how many keys the vendor holds.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".
@@ -20,6 +26,11 @@ the live site.
 
 ## 2026-10-05
 
+- Your account can carry a second factor: a rotating six-digit code from an
+  authentication app. Approving a new device asks for that code after the code
+  from the terminal, and ten one-time recovery codes are shown once when you
+  turn it on. You can also add a passkey, which is a way to sign in and is not
+  asked for when you approve a device. The security page has the recovery rule.
 - Your drive never works on an old copy: the app says which build it is when
   it talks to the server, and the server tells an old build to run
   `drive update` instead of failing in some other way.

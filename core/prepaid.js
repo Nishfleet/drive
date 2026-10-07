@@ -30,6 +30,7 @@ import {
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
 
@@ -285,14 +286,19 @@ async function drawFor(db, accountId, hour, now) {
  *   productId?: string,
  *   fetch?: typeof fetch,
  *   now?: number,
+ *   pauseOn?: boolean,
+ *   devices?: Parameters<typeof pauseAccountKeys>[1]["devices"],
  * }} SettleDeps
  */
 
 /**
- * After a draw: the "$2 left" email once per crossing, and the auto top-up
- * when it is on. Each account is settled on its own, and a failure is logged
- * and does not stop the next account, because the draw that called this has
- * already been written and must not be retried for a mail outage.
+ * After a draw: the "$2 left" email once per crossing, the auto top-up
+ * when it is on, and the prepaid key swap (drive#589) so a $0 balance
+ * takes the mount and device keys read-only. Each account is settled on
+ * its own. A mail failure is logged and does not stop the next account,
+ * because the draw that called this has already been written and must not
+ * be retried for a mail outage. A key-swap failure is raised, so the
+ * hourly run retries the swap; the draw is idempotent.
  * @param {D1Database} db
  * @param {readonly string[]} accountIds
  * @param {SettleDeps} deps
@@ -314,6 +320,23 @@ export async function settleBalances(db, accountIds, deps) {
         `account=${accountId}`,
         error instanceof Error ? error.message : String(error),
       );
+    }
+    if (deps.devices) {
+      // A failed swap is logged and the next account is still settled: the
+      // swap reads live state, so the next hour retries it.
+      try {
+        await pauseAccountKeys(accountId, {
+          db,
+          devices: deps.devices,
+          pauseOn: deps.pauseOn === true,
+        });
+      } catch (error) {
+        console.error(
+          "prepaid: the key swap failed",
+          `account=${accountId}`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
   return { lowBalanceSent, autoTopUpsStarted };

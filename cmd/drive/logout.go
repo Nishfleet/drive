@@ -538,6 +538,17 @@ func runLogout(args []string) error {
 		revoker = client
 		account = client
 	}
+	// The storage-key revoker is built from the RESOLVED base, not from the
+	// raw --api flag. `drive login` writes the api address into the credentials
+	// file, so a person who signed in once has no DRIVE_API_URL in their
+	// environment and passes no --api; handing that empty string to the revoker
+	// answered every revoke with "set --api or DRIVE_API_URL" (noAPIKeyStore),
+	// which is how a device whose sign-in had already lapsed signed out with
+	// its key still live on the server (drive#557). The key revoke is
+	// authenticated with the key pair itself and never with the device token,
+	// so it works for an expired token; it only ever needed the address, and
+	// the address the person signed in to is the one above.
+	keyRevoker := resolveKeyRevoker(base)
 	if *all {
 		// The confirm step, and it is a step: `--all` says what it would do
 		// and stops, so an account-wide revoke can never be one keystroke away
@@ -550,10 +561,10 @@ func runLogout(args []string) error {
 			fmt.Println(signOutEverywhereWarning)
 			return fail("signout-everywhere-unconfirmed")
 		}
-		return LogoutEveryDevice(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api), account)
+		return LogoutEveryDevice(CurrentGOOS(), common.home, *force, revoker, keyRevoker, account)
 	}
 	if *yes {
 		return fail("confirm-without-all")
 	}
-	return Logout(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api))
+	return Logout(CurrentGOOS(), common.home, *force, revoker, keyRevoker)
 }
