@@ -24,6 +24,7 @@ import { billingConfigFor, monthlyBillForStoredTb } from "../core/billing.js";
 import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import { BILLING, SITE, softwareApplicationLd } from "../core/seo.js";
 import { markerValues } from "../src/docs.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const llms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
@@ -249,7 +250,7 @@ test("the strip's 60%-full drive bills what the page prints", () => {
 test("the retired price words are gone from every public surface", () => {
   for (const [file, text] of publicTexts) {
     // The rival is named only by the neutral label (drive#463).
-    assert.doesNotMatch(text, /\bSpace(FS)?\b/, `${file} must not name the rival`);
+    assert.doesNotMatch(text, RIVAL_PRODUCT, `${file} must not name the rival`);
     // "minimum" only in "no minimum".
     for (const match of text.matchAll(/minimum/gi)) {
       const before = text.slice(Math.max(0, match.index - 3), match.index).toLowerCase();
@@ -398,10 +399,12 @@ test("the first viewport says who it is for and what it does", () => {
 
 test("no unsourced claims appear anywhere on the page", () => {
   // The owner's review of PR #17: "We have no SOC 2, and unsourced claims
-  // are a hold." Single sign-on is marked planned where the Business box
-  // names it, since the Business tier is built after v1.
+  // are a hold." The Business box names what is not built and marks it
+  // planned in the same breath (drive#545: the team bill and priority
+  // support were sold as today's features).
   assert.equal(words.includes("SOC 2"), false, "the page must not claim a SOC 2 report");
-  assert.match(words, /single sign-on \(planned\)/);
+  assert.match(words, /single sign-on \(planned\) and priority support \(planned\)\./);
+  assert.doesNotMatch(words, /one company bill split by team/);
 });
 
 // The text of one <dd>, for the worked-example rows, as a reader sees it. The

@@ -33,6 +33,8 @@ import {
   savedLine,
   welcomeTemplate,
 } from "../core/emails.js";
+import { SIGN_IN_COMMAND } from "../core/messages.js";
+import { INSTALL_COMMAND } from "../core/status.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
 // a deployment decision, not a code one).
@@ -115,6 +117,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "top-up-receipt",
     "low-balance",
     "device-approve-notice",
+    "upload-arrivals",
+    "security-event",
   ]);
 });
 
@@ -198,13 +202,23 @@ test("the close lane links to the usage page, and the deletion notice cannot be 
 // 1) welcome
 // ---------------------------------------------------------------------------
 
-test("welcome names the one install command and what it does", () => {
-  const { subject, text } = welcomeTemplate({ replyTo: REPLY_TO });
+// Two commands, in this order, and each named once: `drive login` signs the
+// machine in and writes the storage settings, and `drive init` then mounts and
+// connects the agent tools (drive#557). The old copy had a single `drive init`
+// doing both jobs, which sent people to a command that cannot sign them in.
+test("welcome names the sign-in and the setup, once each, in that order", () => {
+  const { subject, text, html } = welcomeTemplate({ replyTo: REPLY_TO });
   assert.equal(subject, "Your drive is ready");
-  assert.match(text, /drive init/);
-  // The one command, not a second install path: the CLI ships with build
-  // step 2 (drive#3) and there is no app to download.
-  assert.equal(text.split("drive init").length - 1, 1);
+  assert.equal(text.split(SIGN_IN_COMMAND).length - 1, 1, "the sign-in is named once");
+  assert.equal(text.split(INSTALL_COMMAND).length - 1, 1, "the setup is named once");
+  assert.ok(
+    text.indexOf(SIGN_IN_COMMAND) < text.indexOf(INSTALL_COMMAND),
+    "the sign-in comes first: init needs the settings login writes",
+  );
+  // One install path, not two: the CLI ships with build step 2 (drive#3) and
+  // there is no app to download.
+  assert.equal(html.split(INSTALL_COMMAND).length - 1, 1, "the html names the setup once");
+  assert.equal(html.split(SIGN_IN_COMMAND).length - 1, 1, "the html names the sign-in once");
   assert.match(text, /read-only/);
   // The cap is the one thing a new person is told they control.
   assert.match(text, /spending cap/i);
@@ -366,6 +380,20 @@ function dataFor(kind) {
         deviceName: "office laptop",
         requestedAt: "2026-10-05T12:00:00.000Z",
       };
+    case "upload-arrivals":
+      return {
+        ...base,
+        ownerName: "Nish",
+        folder: "Your drive",
+        arrivals: [{ name: "contract.pdf", sizeLabel: "1.2 MB" }],
+      };
+    case "security-event":
+      return {
+        ...base,
+        event: "agent-key-minted",
+        deviceName: "office laptop",
+        happenedAt: "2026-10-06T09:00:00.000Z",
+      };
     default:
       throw new Error(`no test data for ${kind}`);
   }
@@ -485,12 +513,38 @@ test("the receipt refuses a month that is not a month's first instant", () => {
   }
 });
 
-test("the receipt explains the bill is the capped meter", () => {
-  // The one line that stops "why is my bill less than my usage" tickets:
-  // the bill is min(metered, ceiling), and the ceiling is never charged.
-  const { text } = monthlyReceiptTemplate(receiptData());
-  assert.match(text, /min\(metered, ceiling\)/);
-  assert.match(text, /never charged/);
+test("the receipt explains the bill in the customer's words", () => {
+  // drive#545: "min(metered, ceiling)" is code jargon on a customer mail.
+  // The receipt says the same fact in the reader's words, with the two
+  // numbers it already has.
+  const { text, html } = monthlyReceiptTemplate(receiptData());
+  assert.doesNotMatch(text, /min\(|ceiling\)|metered, ceiling/);
+  assert.doesNotMatch(html, /min\(|ceiling\)|metered, ceiling/);
+  assert.match(
+    text,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  assert.match(
+    html,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  const { saved } = monthlyReceiptTemplate(receiptData());
+  assert.equal(saved, "Our price cap saved you $4.00");
+  assert.doesNotMatch(saved, /min\(|metered, ceiling|\bceiling\b/);
+});
+
+test("the receipt refuses a meter or ceiling that is not money", () => {
+  // The two numbers now print on the mail. A missing or negative one is a
+  // caller bug, not a $0 that hides it (requireMoney in core/emails.js).
+  for (const bad of [
+    { meteredUsd: undefined, ceilingUsd: 12 },
+    { meteredUsd: -1, ceilingUsd: 12 },
+    { meteredUsd: 16, ceilingUsd: "12" },
+    { meteredUsd: Number.NaN, ceilingUsd: 12 },
+    { meteredUsd: 16, ceilingUsd: Number.POSITIVE_INFINITY },
+  ]) {
+    assert.throws(() => monthlyReceiptTemplate(receiptData(bad)), TypeError);
+  }
 });
 
 test("the receipt never shows a per-minute price", () => {
@@ -773,6 +827,8 @@ test("the route sends an authorised request", async () => {
   assert.equal(body.to, "person@example.com");
   assert.equal(typeof body.messageId, "string");
   assert.equal(env.EMAIL.sent.length, 1);
+  const sent = /** @type {{subject: string}} */ (env.EMAIL.sent[0]);
+  assert.equal(sent.subject, monthlyReceiptTemplate(receiptData()).subject);
 });
 
 test("the route refuses a request with no token", async () => {

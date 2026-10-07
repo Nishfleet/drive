@@ -398,25 +398,32 @@ func stopMount(goos, home string) error {
 	if goos == "windows" {
 		return stopWindowsMount(home)
 	}
+	mountDir := DefaultMountDir(home)
 	on, err := Mounted(goos, home)
-	if err != nil {
-		return err
-	}
-	if !on {
+	if err == nil && !on && !mountDirNotConnected(goos, mountDir) {
 		return nil
 	}
-	mountDir := DefaultMountDir(home)
+	stale := err != nil || mountDirNotConnected(goos, mountDir)
 	// fusermount3 ships with current FUSE; fusermount is the older name. Every
 	// call site runs a literal binary name, never a variable, and the only
 	// argument is the mount dir (the caller's --home); exec.Command takes an
-	// argument vector and no shell.
+	// argument vector and no shell. A stale entry uses the lazy/force flag
+	// only: a plain -u / umount can hang on ENOTCONN or a hard NFS mount.
 	if goos == "darwin" {
-		if err := runUmount(mountDir); err != nil {
+		if stale {
+			if err := runUmountFlag(mountDir, "-f"); err != nil {
+				return fmt.Errorf("unmount %s: %w", mountDir, err)
+			}
+		} else if err := runUmount(mountDir); err != nil {
 			return fmt.Errorf("unmount %s: %w", mountDir, err)
 		}
 		return expectUnmounted(goos, home)
 	}
-	if err := runFusermount(mountDir); err != nil {
+	if stale {
+		if err := runFusermountFlag(mountDir, "-uz"); err != nil {
+			return fmt.Errorf("unmount %s: %w", mountDir, err)
+		}
+	} else if err := runFusermount(mountDir); err != nil {
 		return fmt.Errorf("unmount %s: %w", mountDir, err)
 	}
 	return expectUnmounted(goos, home)
@@ -424,21 +431,37 @@ func stopMount(goos, home string) error {
 
 // runUmount unmounts with the stock macOS umount.
 func runUmount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("umount", mountDir).CombinedOutput()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("umount", mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
+	return runUmountFlag(mountDir, "-f")
+}
+
+func runUmountFlag(mountDir, umountFlag string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount" and literal flag -f; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("umount", umountFlag, mountDir).CombinedOutput()
 	return unmountError("umount", err, out)
 }
 
 // runFusermount unmounts with the stock Linux FUSE tool: fusermount3 where it
-// exists, fusermount otherwise. Each is a literal binary and the only argument
-// is the mount dir.
+// exists, fusermount otherwise. -uz is lazy so a dead FUSE entry (ENOTCONN)
+// comes down even when a plain -u would block. Each call is a literal binary
+// name and a literal flag; the only path argument is the mount dir.
 func runFusermount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	if _, err := exec.Command("fusermount3", "-u", mountDir).CombinedOutput(); err == nil {
+	if err := runFusermountFlag(mountDir, "-u"); err == nil {
 		return nil
 	}
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("fusermount", "-u", mountDir).CombinedOutput()
+	return runFusermountFlag(mountDir, "-uz")
+}
+
+func runFusermountFlag(mountDir, fuseFlag string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3" and literal flag -u or -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", fuseFlag, mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount" and literal flag -u or -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("fusermount", fuseFlag, mountDir).CombinedOutput()
 	return unmountError("fusermount", err, out)
 }
 
@@ -537,6 +560,17 @@ func runLogout(args []string) error {
 		revoker = client
 		account = client
 	}
+	// The storage-key revoker is built from the RESOLVED base, not from the
+	// raw --api flag. `drive login` writes the api address into the credentials
+	// file, so a person who signed in once has no DRIVE_API_URL in their
+	// environment and passes no --api; handing that empty string to the revoker
+	// answered every revoke with "set --api or DRIVE_API_URL" (noAPIKeyStore),
+	// which is how a device whose sign-in had already lapsed signed out with
+	// its key still live on the server (drive#557). The key revoke is
+	// authenticated with the key pair itself and never with the device token,
+	// so it works for an expired token; it only ever needed the address, and
+	// the address the person signed in to is the one above.
+	keyRevoker := resolveKeyRevoker(base)
 	if *all {
 		// The confirm step, and it is a step: `--all` says what it would do
 		// and stops, so an account-wide revoke can never be one keystroke away
@@ -549,10 +583,10 @@ func runLogout(args []string) error {
 			fmt.Println(signOutEverywhereWarning)
 			return fail("signout-everywhere-unconfirmed")
 		}
-		return LogoutEveryDevice(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api), account)
+		return LogoutEveryDevice(CurrentGOOS(), common.home, *force, revoker, keyRevoker, account)
 	}
 	if *yes {
 		return fail("confirm-without-all")
 	}
-	return Logout(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api))
+	return Logout(CurrentGOOS(), common.home, *force, revoker, keyRevoker)
 }

@@ -180,13 +180,13 @@ export const KEY_TABLE = Object.freeze(
 // docs build instead of shipping an unmeasured claim.
 
 /**
- * Space's 1 TB price, as the scoreboard's "price at 1 TB" row records it
+ * The competitor's 1 TB price, as the scoreboard's "price at 1 TB" row records it
  * (docs/scoreboard.md, checked 2026-09-30): about $20 month to
  * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
  * test/docs.test.mjs still fails if either number leaves that internal row.
  */
 export const RIVAL_1TB = Object.freeze({
-  name: "Space",
+  name: "The main competitor",
   monthToMonthUsd: 20,
   yearlyUsd: 15,
 });
@@ -209,8 +209,8 @@ export const FAQ = Object.freeze([
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
-      "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
-      "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
+      "{{VERSION_MINIMUM}} You add money first, and what you store is drawn from your balance as it is metered.",
+      "Downloads are not in the published price, so nothing is charged for them today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}} (planned).",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
   }),
@@ -222,7 +222,7 @@ export const FAQ = Object.freeze([
       "agent features: spending cap",
     ],
     answer: [
-      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
+      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own folder at `~/Drive-agents/<tool>` on its own key.",
       "{{AGENT_DELETE}}",
       "The drive also carries a spending cap: the default is {{DEFAULT_CAP}} a month, you can change it on the usage page, and at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),
@@ -242,7 +242,7 @@ export const FAQ = Object.freeze([
 
 /**
  * One row's verdict out of docs/scoreboard.md's table, by its metric name.
- * The table's columns are | Metric | Space | Us | Verdict | Issue |, so the
+ * The table's columns are | Metric | Competitor | Us | Verdict | Issue |, so the
  * verdict is the fourth cell. A metric that is not in the table is an error,
  * not a null: a renamed row would otherwise read as "no verdict" and fail
  * later, with the metric name lost.

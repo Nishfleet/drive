@@ -1,4 +1,4 @@
-# SpaceFS clone: build spec
+# Competing drive: build spec
 
 > **Status note (2026-10-02):** this is the historical build plan. The code and the open issues are the source of truth, and where they differ the code wins. Shipped work is listed in `docs-site/changelog.md`.
 
@@ -11,16 +11,16 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Decision | Value | State |
 |---|---|---|
 | Primary storage | **iDrive e2** at $5/TB-month (reseller plan), one bucket per customer, each key limited to that one bucket (drive#371). Backblaze B2 is the standby if iDrive's reseller API stops answering. The spec says B2 further down; those lines are updated with this row | Nish, 2026-09-29; iDrive stays primary 2026-10-04 (drive#371) |
-| Price | 2¢ per GB-month, billed by the minute; the monthly bill never passes max($12, $8 × peak TB), TB measured to the GB. B2 fallback: $10/TB | Nish, 2026-09-30 |
+| Price | 2¢ per GB, billed by the minute. Never more than $10 per TB. The numbers live in `core/pricing.js` (PRICE) | Nish, 2026-10-04 (drive#463); was max($12, $8 × peak TB) until the $10 ceiling shipped |
 | Billing unit | **Per minute** (not per second). The headline stays "2¢ per GB a month, billed by the minute". Never advertise a per-minute price. | Nish leaning, 2026-09-29; coordinator and I agree |
 | Minimum per file | 1 hour | Asked 2026-09-29; default **yes** until Nish answers |
-| Membership | $10 a month, and storage use counts toward it. Go past $10 and you pay by the minute for the rest. A card is needed at sign-up because there is no free tier. | Nish, 2026-10-03 (Drop free); copy drive#387 |
+| Prepaid | Add $10 or more. No plans. Your balance never expires. A card is needed at sign-up because there is no free tier. | drive#586; retired the $10 membership |
 | Old versions | **Free to the user.** Kept 1 day in B2, then 30 days on the Hetzner Storage Box (about $2.3/TB against B2's $6.95) | Nish, 2026-09-29 ("move it to hetzner for 30 days"). Catch: if a file is saved several times in one day, only that day's last version reaches Hetzner |
 | Downloads | Free up to 3x average stored data each month, then 1¢/GB | spec.md |
 | Spending cap | Required at sign-up (default $20, user-adjustable; Nish via #464, decided 2026-10-04). Email at 80%. At the cap the drive goes read-only for uploads; downloads keep working; nothing is deleted. The cap counts min(metered so far, ceiling), not the raw meter | #464 decision 2026-10-04, changelog 2026-10-05 |
 | Platforms | macOS and Linux. No Windows in v1 | spec.md |
-| Headline price | "2¢ per GB, billed by the minute" with the ceiling "never more than $12 a TB, then $8" under it (the $8 is iDrive; see Bill ceiling for the B2 fallback) | Nish, 2026-09-30 |
-| Bill ceiling ("never pay more than the plan") | Billed by the minute, but the monthly bill never passes the peak ceiling: **min(metered, max($12, $8 × peak TB))**, TB measured to the GB (Nish, 2026-09-30, issue #29). $8 a TB holds only on iDrive at about $5/TB; if iDrive fails step 1 and we use B2 ($6.95/TB), the ceiling rate goes to $10/TB and the cap is `max($12, $10 × peak TB)` — so the "$8" in the headline is an iDrive figure and must change with the primary. Inside the ceiling you pay 2¢/GB. Examples: 800 GB = $12; 1.3 TB = $12; 1.6 TB = $12.80; 2 TB = $16, against Space $27; 5 TB = $40, against Space $63. Automatic, no plan switch. Cost is about $5/TB on iDrive, so margin is about 37% at the $8 a TB ceiling before payment fees and the free old-version copies (about $2.3/TB on Hetzner), which take that to about 9% and can break even for heavy editors; margin under the $12 plateau is better. The ceiling also prices below the 1.5¢ hard floor: $12 for 1 TB is 1.2¢/GB and $8 a TB above 1.5 TB is 0.8¢/GB. Nish set both; the floor applies to the metered rate, not the cap. Headline: "2¢ per GB, billed by the minute. Never more than $12 a TB, then $8." | Nish, 2026-09-30 (bill = min(metered, max($12, $8 × peak TB)); B2 fallback $10/TB); issue #29 |
+| Headline price | "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB." from `core/pricing.js` (PRICE.headline) | drive#463, drive#586 |
+| Bill ceiling | Never more than $10 per TB, counted to the GB (`PRICE.maxUsdPerTb`, `monthBillCents` in `core/billing.js`). The older max($12, $8 × peak TB) row is retired. | Nish, 2026-10-04 (drive#463) |
 | Company tier | "Business": same storage price, plus single sign-on, SOC 2 report, one company bill split by team, and priority support. On the pricing page from day one as "Talk to us"; built after v1. The company UI is later, so the teams API is the only v1 path to a company drive: `docs/api.md` documents `POST /v1/teams`, the invite that names an email and a role (`read_only` / `read_write`), and the removal that revokes the member's key (drive#20, drive#518) | Nish, 2026-09-29 |
 | Never do | Confusing credit units, balances that expire, "unlimited" plans | Nish, 2026-09-29 (Higgsfield research). Any prepaid top-up never expires |
 | Encryption | B2 server-side encryption (SSE-B2) on. Not end-to-end in v1 | My default |
@@ -41,7 +41,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 ```
 
 1. **drive CLI** (on the user's machine). One binary. Signs in, writes the rclone config, starts the mount as a login item, registers agent tools, runs branch commands. Language: Go, because rclone is Go and the CLI ships as one file; it calls the installed `rclone` binary rather than embedding it.
-2. **The mount.** Stock rclone. Mac: `rclone nfsmount` (uses macOS's built-in NFS, so no macFUSE). Linux: `rclone mount`. Both with `--vfs-cache-mode full --vfs-write-back 5s --vfs-cache-max-size 20G --vfs-read-ahead 128k --b2-download-url https://dl.<domain>`, and both with `--dir-cache-time 5s`: S3 sends no change notifications, so without it the other machine waits out rclone's 5-minute directory cache before it sees a save (measured 2026-09-30 against a local S3 stand-in with two mounts: 5.0 s with the flag, still absent after 60 s without it, so the counterfactual is measured, not assumed). `--vfs-read-ahead 128k` is the stock extra disk read-ahead with cache-mode full (issue #227). `--vfs-refresh` is not passed: rclone would walk the whole tree at mount start, which is the wrong trigger for "prefetch the next folder" and delays mount-ready. Child listings after a folder is listed have no rclone flag, so `drive prefetch` (a second login item, Nice 19) does only that leftover work. Kept running by launchd (Mac) or a systemd user unit (Linux), both written by the CLI.
+2. **The mount.** Stock rclone. Mac: `rclone nfsmount` (uses macOS's built-in NFS, so no macFUSE). Linux: `rclone mount`. Both with `--vfs-cache-mode full --vfs-write-back 5s --vfs-cache-max-size 20G --vfs-read-ahead 128k --b2-download-url https://dl.<domain>`, and both with `--dir-cache-time 24h`: S3 sends no change notifications, so listings stay fresh through `vfs/refresh` from the fill loop while storage answers (issue #541). A 5s directory cache made the other machine see a save in about 5 s (measured 2026-09-30 against a local S3 stand-in with two mounts) but turned a kept-offline folder into "Input/output error" five seconds after the network dropped, because rclone re-lists when the cache is older than this and has no stale-on-error (rclone#1963). `--vfs-read-ahead 128k` is the stock extra disk read-ahead with cache-mode full (issue #227). `--vfs-refresh` is not passed at mount start: rclone would walk the whole tree then, which is the wrong trigger for "prefetch the next folder" and delays mount-ready. Child listings after a folder is listed have no rclone flag, so `drive prefetch` (a second login item, Nice 19) does only that leftover work. Kept running by launchd (Mac) or a systemd user unit (Linux), both written by the CLI.
 3. **api Worker** (Cloudflare Workers + D1). Accounts, device sign-in, key minting, spending cap, branch bookkeeping, the web pages. Holds the B2 master key as a Worker secret; nothing else does.
 4. **dl Worker** (Cloudflare Workers). Sits on the download hostname. Streams B2 reads through Cloudflare (B2 to Cloudflare egress is free) and adds the bytes to the user's download counter, found from the `/u/<id>/` path.
 5. **Meter** (Worker Cron Trigger, hourly). Turns file events into GB-minutes per user, pushes usage to Dodo, and flips accounts to read-only at their cap. The schedule's reason: Dodo needs periodic usage reports.
@@ -79,14 +79,14 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 
 | Screen | What's on it |
 |---|---|
-| Sign in | Email one-time link, or Google or GitHub. A card is needed at sign-up |
-| Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
+| Sign in | Email one-time link only. The page hides the Google and GitHub offers on purpose (issue #180): they are a closed door, not a 202 for a redirect to nowhere. A card is needed at sign-up |
+| Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal, and for an account with a second factor turned on (drive#524), that factor as well: the rotating code or a recovery code |
 | Usage | One "you saved" line, whose copy varies by month type (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
-| Devices and agents | Every key: device or agent tool, last used, revoke button |
-| Billing | Dodo's hosted portal: card, invoices, the membership line |
-| Branches | Each branch: agent, files changed, approve or discard |
+| Devices and agents | Every key: device or agent tool, last used, revoke button (`/devices`, drive#525) |
+| Billing | Dodo's hosted portal: card, invoices, the prepaid balance |
+| Branches | CLI only in v1 (`drive branch`, `drive branches`, `drive approve`, `drive discard`). No web branch or rewind screen. |
 
-Pricing page: the headline is the rate, "2¢ per GB, billed by the minute", with the ceiling under it — issue #23's finish line renders it "Never more than $12 a TB, and $8 a TB once you pass 1.5 TB" — then "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest"; a public savings calculator (issue #14) that takes a size and shows this month's bill (`monthBillCents`) beside our own flat-plan ceiling, with no rival names or rival prices; worked examples from the same function; a Business column with "Talk to us". We need a card at sign-up because there is no free tier. No per-minute price, no credit units, no "unlimited". The page no longer carries the "about $20 per TB a month" headline, which was Space's price in our voice (issue #23's rework). The ceiling numbers and the canonical ceiling sentences live in `src/pricing.js` (PRICE), the single price module `src/seo.js` reads (issue #23 folded the metadata's copy into it): the page copy, the meta tags and llms.txt are all gated against that config, `src/billing.js`'s `monthBillCents()` is the one function that turns those numbers into dollars, and `test/pricing-copy.test.mjs` builds its expectations from that config and that function, so copy that drifts from the numbers fails CI.
+Pricing page: the headline is PRICE.headline from `core/pricing.js` — "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB." — then PRICE.noPlansLine; a public savings calculator (issue #14) that takes a size and shows this month's bill (`monthBillCents`) beside our own flat-plan ceiling, with no rival names or rival prices; worked examples from the same function; a Business column with "Talk to us". We need a card at sign-up because there is no free tier. No per-minute price, no credit units, no "unlimited". The ceiling numbers and the canonical ceiling sentences live in `core/pricing.js` (PRICE), the single price module `core/seo.js` reads: the page copy, the meta tags and llms.txt are all gated against that config, `core/billing.js`'s `monthBillCents()` is the one function that turns those numbers into dollars, and `test/pricing-copy.test.mjs` builds its expectations from that config and that function, so copy that drifts from the numbers fails CI.
 
 ## Agent tools
 
@@ -164,11 +164,11 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
-## Against Space, feature by feature (bar: match or beat)
+## Against the competitor, feature by feature (bar: match or beat)
 
-Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". Space's claims from https://spacefs.com, read 2026-09-29.
+Nish, 2026-09-29: "gotta build it better than the main competitor tho, at least match it". The competitor's claims from the competitor's site, read 2026-09-29.
 
-| Space offers | Us | Verdict | Where |
+| Competitor offers | Us | Verdict | Where |
 |---|---|---|---|
 | Mac and Linux; Windows "coming soon" | Mac and Linux; Windows later | Match | Steps 2, 3 |
 | "Files open instantly", streamed, "zero bytes on disk" | rclone VFS streaming with a local cache | Match, to prove with the speed test below | Step 2 |
@@ -176,14 +176,14 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | Works with any app, no plugins | Plain mounted folder | Match | Steps 2, 3 |
 | "Search 10x faster than Spotlight" | Nothing yet | **Gap** | Issue 18 |
 | Public file links and upload requests | Nothing yet | **Gap** | Issue 19 |
-| Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
+| Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (the competitor keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
 | Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead. Measured 2026-10-02 (issue 157): a 6 GB file is one multipart copy (5 GiB is CopyObject's single-copy ceiling, so bigger files are `CreateMultipartUpload` + `UploadPartCopy` + `CompleteMultipartUpload`), 384 parts of 16 MiB, 81 s against a local MinIO and the same whole-object checksum at the branch path. The remaining limit is the per-file snapshot: 8,800 files fit one D1 row, 10,000 do not (issue 252 moves it out of the row) |
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
 | Teams: pooled storage, whole-drive sharing, member access | One team drive shared by several accounts, a role per member, removal that kills the key | Match | Issue 20: `t/<teamId>/` keys, `TEAM_ROLE_CAPABILITIES` (`workers/api/src/keyprovider.js`), `workers/api/src/teams.js` |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
-| $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute; the monthly bill never passes max($12, $8 × peak TB) — $16 at 2 TB, $40 at 5 TB (Space charges $15 + $12 flat per extra TB, even when part-full) | **Beat** | Step 6 |
+| $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute; the monthly bill never passes max($12, $8 × peak TB) — $16 at 2 TB, $40 at 5 TB (the competitor charges $15 + $12 flat per extra TB, even when part-full) | **Beat** | Step 6 |
 
-**Speed test (in step 2's "done when"):** from a Mac over home broadband, open a 5 GB video and a 2 GB Blender file straight off the drive. The first frame or viewport must show within 3 s, scrubbing must not stall, and a 1 GB save must reach storage within 10 s. Run the same files on a Space trial side by side if a free trial exists (no card). Otherwise compare against Space's own words, "open instantly" and "in seconds". Record the times in the issue.
+**Speed test (in step 2's "done when"):** from a Mac over home broadband, open a 5 GB video and a 2 GB Blender file straight off the drive. The first frame or viewport must show within 3 s, scrubbing must not stall, and a 1 GB save must reach storage within 10 s. Run the same files on a the competitor trial side by side if a free trial exists (no card). Otherwise compare against the competitor's own words, "open instantly" and "in seconds". Record the times in the issue.
 
 ## Build steps
 

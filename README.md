@@ -15,7 +15,10 @@ write the same folder.
 - **An agent's delete is undoable for 1 day.** An agent gets its own key. The
   storage takes that key's delete but keeps the deleted copy for 1 day, and we
   can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
-  storage limits a key to the whole Drive.
+  storage limits a key to the whole Drive. `drive init` mounts `~/Drive-agents/<tool>`
+  for each tool on its own key, and the MCP server and the tool's allowed folders
+  point there, not at your Drive. Windows is not in version 1, and the tool there
+  still works inside your own Drive, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
@@ -32,7 +35,7 @@ Markdown (add `.md` to the address), and the whole set is in one file for
 agents.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
-  five steps to a mounted drive
+  six steps to a mounted drive
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
   plain files, the cache, restore, the bill
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
@@ -41,6 +44,8 @@ agents.
   the rate, the maximum and four worked sizes
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq) — the questions
   we can answer with a measured number
+- [When something goes wrong](https://drive-pricing.nishant345.workers.dev/docs/troubleshooting) —
+  the three commands, the log on each system, a lost laptop, your files out
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
   version 1 does not do
 - [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks) —

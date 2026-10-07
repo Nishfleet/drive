@@ -39,6 +39,7 @@ import {
   TOP_UP_PAGE,
 } from "./ledger.js";
 import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
+import { pauseAccountKeys } from "./prepaid-pause.js";
 import { PREPAID } from "./pricing.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -201,7 +202,7 @@ function objectOrNull(value) {
  * stops retrying them. Answers 409 only for a refund whose payment has not
  * been credited yet, so Dodo retries it after the payment lands.
  * @param {Request} request
- * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string}} deps
+ * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} deps
  * @returns {Promise<Response>}
  */
 export async function handleBillingWebhook(request, deps) {
@@ -256,7 +257,7 @@ export async function handleBillingWebhook(request, deps) {
  * @param {D1Database} db
  * @param {Record<string, unknown>} data
  * @param {number} now
- * @param {{email?: unknown, mailFrom?: string}} mail
+ * @param {{email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} mail
  */
 async function creditFromEvent(db, data, now, mail) {
   const metadata = objectOrNull(data.metadata);
@@ -296,12 +297,25 @@ async function creditFromEvent(db, data, now, mail) {
     return json({ ok: false, ignored: "amount or currency not creditable" });
   }
   const customer = objectOrNull(data.customer);
+  // The card the payment was made with (drive#503). Dodo keys a card on
+  // `payment_method_id`, the one field core/prepaid.js also reads off the live
+  // /payment-methods call, and it is behind the signature check so a browser
+  // cannot choose it: nothing in the request body supplies a card (the sign-in
+  // form's posted fingerprint is gone, core/abuse-guards.js). An event with no
+  // payment method id records no card at all rather than guessing one from
+  // another field -- an earlier `data.method` fallback could have given every
+  // account the same id and locked the second one out with nothing to show it.
+  // Absent is loud: the "card was not recorded" line below fires once per such
+  // payment, so a field-shape change surfaces instead of passing silently.
+  const paymentMethodId =
+    typeof data.payment_method_id === "string" ? data.payment_method_id : null;
   const credited = await creditTopUp(db, {
     accountId,
     paymentId,
     amountCents,
     grossCents: total,
     customerId: typeof customer?.customer_id === "string" ? customer.customer_id : null,
+    paymentMethodId,
     now,
   });
   if (!credited.accountFound) {
@@ -315,6 +329,18 @@ async function creditFromEvent(db, data, now, mail) {
     );
     return json({ ok: false, ignored: "no such account" });
   }
+  // The card is claimed server-side from the event (drive#503), and a card
+  // another live account already holds is refused. The money is credited
+  // either way: the one-account-per-card rule never holds a payment, and the
+  // line below is what says so to a person.
+  if (credited.card !== undefined && !credited.card.claimed) {
+    console.error(
+      "billing webhook: a top-up was credited but its card was not recorded",
+      `account=${accountId}`,
+      `payment=${paymentId}`,
+      credited.card.error,
+    );
+  }
   if (credited.credited) {
     // A receipt only when money moved, and only once: a replayed event
     // credits nothing and so mails nothing (drive#586, supersedes #572).
@@ -324,6 +350,17 @@ async function creditFromEvent(db, data, now, mail) {
       balanceCents: credited.balanceCents,
       auto: metadata.source === "auto",
       mail,
+    });
+  }
+  // The prepaid pause restore (drive#589): a credit that brings the
+  // balance above $0 swaps the mount and device keys back to writes.
+  // A replay whose credit was already written still runs it, so a swap
+  // that failed on the first delivery is retried without double-crediting.
+  if (credited.accountFound && mail.devices) {
+    await pauseAccountKeys(/** @type {string} */ (accountId), {
+      db,
+      devices: mail.devices,
+      pauseOn: mail.pauseOn === true,
     });
   }
   return json({ ok: true, credited: credited.credited });

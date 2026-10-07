@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -64,8 +65,8 @@ type rcClient struct {
 }
 
 // newRCClient builds the client for the mount's remote control. The address
-// is the one MountPlan puts on the command line, so there is one address in
-// the product, not one in the CLI and another in the fill loop.
+// is the one this mount stored in rclone.env and put on the command line, so
+// the fill loop and the CLI reach the same listener (drive#807).
 func newRCClient(binary, addr, fs string) *rcClient {
 	return &rcClient{binary: binary, addr: addr, fs: fs}
 }
@@ -160,32 +161,116 @@ func (c *rcClient) stats(ctx context.Context) (vfsStats, error) {
 }
 
 // refresh asks rclone to refresh the mount's directory cache, so a file just
-// written to the object store (or a folder just kept offline) is visible to
-// the read the fill does next. rclone's vfs/refresh is the stock call for
-// this; the loop does not list the object store a second way. The fill always
-// passes recursive=false: a whole-tree refresh on a timer is the bug in
-// drive#568, and a non-recursive root refresh is enough for the reads this
-// pass makes. The conflict guard (#30) shares this call with recursive=false.
+// written to the object store is visible to the other machine and to the
+// read the fill does next. rclone's vfs/refresh is the stock call for this.
+// The fill always passes recursive=false: a whole-tree refresh on a timer is
+// the bug in drive#568. The conflict guard (#30) shares this call with
+// recursive=false. Callers must not invoke this while storage is down:
+// rclone forces the cache stale before it re-lists (issue #541).
 func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 	params := map[string]string{"fs": c.fs}
 	if recursive {
 		params["recursive"] = "true"
 	}
 	var reply map[string]any
-	return c.call(ctx, "vfs/refresh", params, &reply)
+	if err := c.call(ctx, "vfs/refresh", params, &reply); err != nil {
+		return err
+	}
+	return vfsRefreshReplyError(reply, false)
 }
 
-// loopbackRCAddr is the address the mount's remote control binds. rclone's
-// default is localhost:5572; the plan sets it explicitly so the fill loop and
-// the operator reach the same one even on a host with another rclone running.
-// localhost only: the remote control is password-protected (drive#498) and
-// it must not be reachable off the machine.
+// refreshDirs refreshes named directories (rclone rc vfs/refresh dir=...).
+// A path that is a file or is missing is skipped: the caller may pass a
+// kept-offline file's parent and a folder in the same list.
+func (c *rcClient) refreshDirs(ctx context.Context, dirs []string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	params := map[string]string{"fs": c.fs}
+	for i, d := range dirs {
+		key := "dir"
+		if i > 0 {
+			key = "dir" + strconv.Itoa(i+1)
+		}
+		params[key] = d
+	}
+	var reply map[string]any
+	if err := c.call(ctx, "vfs/refresh", params, &reply); err != nil {
+		return err
+	}
+	return vfsRefreshReplyError(reply, true)
+}
+
+// vfsRefreshReplyError reads rclone's vfs/refresh JSON. A listing error is
+// inside result with HTTP 200. skipFailed is for named dirs: a listed name
+// that is a file, or that does not exist, is not a failure — but any other
+// error string in a named dir is returned, so a real listing problem never
+// hides behind an OK (issue #541).
+func vfsRefreshReplyError(reply map[string]any, skipFailed bool) error {
+	raw, ok := reply["result"]
+	if !ok {
+		// A reply with no result is not success: rclone's vfs/refresh
+		// always answers with one, so a caller that reads its absence as an
+		// OK would hide a changed remote-control shape behind a stale
+		// listing for --dir-cache-time (24h) (issue #541).
+		return fmt.Errorf("rclone rc vfs/refresh: reply carries no result object")
+	}
+	result, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("rclone rc vfs/refresh: result is %T, want an object", raw)
+	}
+	for p, v := range result {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("rclone rc vfs/refresh: result[%q] is %T, want a string", p, v)
+		}
+		if s == "OK" {
+			continue
+		}
+		if skipFailed && namedDirNotFound(s) {
+			continue
+		}
+		return fmt.Errorf("rclone rc vfs/refresh %s: %s", p, s)
+	}
+	return nil
+}
+
+// namedDirNotFound is rclone's not-found family for a named vfs/refresh dir:
+// the path is a file, or it does not exist, and neither is a listing error
+// the caller must hear about. Anything else is real.
+func namedDirNotFound(s string) bool {
+	l := strings.ToLower(s)
+	return strings.Contains(l, "not found") || strings.Contains(l, "not a directory") || strings.Contains(l, "is a file")
+}
+
+// reachable asks the object store for the remote's root listing, not through
+// the VFS, so a dead backend is a named error and the directory cache is
+// left alone. operations/list with no recurse is one directory, the same
+// shape vfs/refresh uses when it is safe to call.
+func (c *rcClient) reachable(ctx context.Context) error {
+	// A dead S3 endpoint can hang operations/list until the fill's 30s
+	// pass budget; three seconds is enough to see a live stand-in and
+	// short enough that a dropped link does not stall keep-warm.
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var reply map[string]any
+	return c.call(probeCtx, "operations/list", map[string]string{"fs": c.fs, "remote": ""}, &reply)
+}
+
+// loopbackRCAddr is rclone's own default remote-control address. A prepared
+// mount does not bind it: prepareMountAuth picks a free loopback port and
+// stores it in rclone.env so two mounts on one machine do not collide
+// (drive#807). The constant remains the unprepared fallback (dry-run, a
+// DRIVE_RC_ADDR that is not loopback) and the address tests refuse to reuse.
 const loopbackRCAddr = "127.0.0.1:5572"
 
 // FillResult is what one fill pass did, so `drive status` and the test can
 // read what happened without re-running it. It reports the cache's own
 // numbers (before and after) rather than a guess: bytesUsed is vfs/stats.
 type FillResult struct {
+	// Refreshed reports that the pass ran, which is not the same as saying
+	// listings are fresh: a pass with storage down runs, refreshes nothing and
+	// only keeps the kept-offline set warm (issue #541).
 	Refreshed   bool
 	Idle        bool
 	BytesBefore int64
@@ -204,6 +289,12 @@ func (r FillResult) Ran() bool { return r.Refreshed }
 type fillBackend interface {
 	stats(ctx context.Context) (vfsStats, error)
 	refresh(ctx context.Context, recursive bool) error
+	refreshDirs(ctx context.Context, dirs []string) error
+	// reachable reports whether the object store answers. vfs/refresh
+	// forces the directory cache stale before it re-lists (rclone
+	// vfs/dir.go readDir), so a refresh while storage is down makes
+	// every later open fail (issue #541, rclone#1963).
+	reachable(ctx context.Context) error
 	// fs is the mounted remote, the value a stats call is addressed to.
 	remote() string
 }
@@ -239,19 +330,34 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	// under the cap, so a fill never competes with a foreground open and never
 	// loops the drive once the cache is full (drive#568).
 	offline := len(targets.offline) > 0
-	fillRecent := idle && !atCap && len(targets.recent) > 0
-	if !offline && !fillRecent {
-		res.Idle = ShouldFill(offline, load1, load5)
-		return res, nil
-	}
 	res.Idle = ShouldFill(offline, load1, load5)
+	storageUp := c.reachable(ctx) == nil
+	// A recently-opened file is filled only while storage answers. The probe
+	// is a list on the mount's own remote, so it is the same question the read
+	// asks: with the link down the file is either already in the cache or
+	// cannot be fetched at all, and trying anyway turns one dropped link into
+	// one I/O error per recently-opened file on every pass. A kept-offline set
+	// is different and still warms (#115): those files are the promise, and a
+	// read rclone already has is not a round trip.
+	fillRecent := storageUp && idle && !atCap && len(targets.recent) > 0
 	// A non-recursive root refresh, and never a recursive one: a whole-tree
 	// refresh every minute is what listed the drive and re-read it forever
-	// (drive#568). A file newly kept inside an existing subdirectory needs no
-	// recursive refresh: the mount's own --dir-cache-time (5s) expires that
-	// subdirectory's listing long before the next 10s offline pass.
-	if err := c.refresh(ctx, false); err != nil {
-		return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+	// (drive#568). Freshness for the other machine is this call, while
+	// storage answers (issue #541). A dead backend must not be refreshed:
+	// rclone forces the directory cache stale before it re-lists, so a
+	// failed refresh would turn a kept-offline folder into I/O errors.
+	if storageUp {
+		if err := c.refresh(ctx, false); err != nil {
+			return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+		}
+		if dirs := listingDirs(targets); len(dirs) > 0 {
+			if err := c.refreshDirs(ctx, dirs); err != nil {
+				return res, fmt.Errorf("fill: refresh the folders: %w", err)
+			}
+		}
+	}
+	if !offline && !fillRecent {
+		return res, nil
 	}
 	res.Refreshed = true
 
@@ -279,8 +385,7 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	if budget < 0 {
 		budget = 0
 	}
-	targets.ctx = ctx
-	recentBytes, err := targets.read(fillRecent, budget)
+	recentBytes, err := targets.read(ctx, fillRecent, budget)
 	if err != nil {
 		return res, fmt.Errorf("fill: read into cache: %w", err)
 	}
@@ -305,6 +410,47 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 			FormatBytes(res.BytesBefore+recentBytes), FormatBytes(res.CapBytes))
 	}
 	return res, nil
+}
+
+// listingDirs is the folders vfs/refresh should freshen besides the root:
+// a kept-offline folder itself, and the parent of a kept or recently-opened
+// file. The root is refreshed separately. Nested saves in those folders
+// would otherwise stay invisible until --dir-cache-time (24h) expired
+// (issue #541).
+func listingDirs(targets fillTargets) []string {
+	seen := map[string]struct{}{}
+	var dirs []string
+	add := func(rel string) {
+		rel = strings.Trim(rel, "/")
+		if rel == "" || rel == "." {
+			return
+		}
+		if _, ok := seen[rel]; ok {
+			return
+		}
+		seen[rel] = struct{}{}
+		dirs = append(dirs, rel)
+	}
+	consider := func(rel string) {
+		full := filepath.Join(targets.root, filepath.FromSlash(rel))
+		info, err := os.Stat(full)
+		if err == nil && info.IsDir() {
+			add(rel)
+			return
+		}
+		parent := path.Dir(strings.Trim(rel, "/"))
+		if parent != "." && parent != "/" {
+			add(parent)
+		}
+	}
+	for _, rel := range targets.offline {
+		consider(rel)
+	}
+	for _, rel := range targets.recent {
+		consider(rel)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // liveCacheBytes is the current size of rclone's own VFS cache directory, the
@@ -553,15 +699,12 @@ type fillTargets struct {
 	root    string
 	offline []string
 	recent  []string
-	// ctx is the pass deadline. A cancelled or timed-out pass stops between
-	// files rather than walking the rest of the set (drive#516).
-	ctx context.Context
 	// opens records a recently-opened file as filled; nil is a test that does
 	// not exercise the open registry.
 	opens *recentOpens
 	// readFile reads one file into the cache. It is a field so a test can
 	// count bytes without a mount; nil means fillReadFile.
-	readFile func(string) (int64, error)
+	readFile func(context.Context, string) (int64, error)
 }
 
 // read fills the kept-offline set on every pass and the recently-opened files
@@ -570,7 +713,11 @@ type fillTargets struct {
 // is what pushed the cache over the cap. A path that has been deleted from the
 // drive reads as nothing rather than failing the pass: the next pass sees the
 // new tree.
-func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
+//
+// ctx bounds the whole read, not just the gaps between files (drive#742): the
+// pass context carries the fill timeout, and a read that ignores it would let
+// one large file read on long after the pass deadline and hold the loop hostage.
+func (t fillTargets) read(ctx context.Context, includeRecent bool, budget int64) (int64, error) {
 	var spent int64
 	if includeRecent && budget > 0 {
 		read := t.readFile
@@ -578,14 +725,17 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 			read = fillReadFile
 		}
 		for _, rel := range t.recent {
-			if err := t.ctxErr(); err != nil {
+			// The deadline is checked before the budget so a pass that is
+			// already cancelled reports the cancellation even when the budget
+			// ran out on the previous file.
+			if err := ctx.Err(); err != nil {
 				return spent, err
 			}
 			if spent >= budget {
 				break
 			}
 			abs := filepath.Join(t.root, filepath.FromSlash(rel))
-			n, err := read(abs)
+			n, err := read(ctx, abs)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					if t.opens != nil {
@@ -593,6 +743,9 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 					}
 					continue
 				}
+				// The pass aborts on a read error, so the bytes the failed read
+				// got through are not part of this pass's result: the caller
+				// abandons the pass and the next pass measures the cache again.
 				return spent, err
 			}
 			spent += n
@@ -602,10 +755,10 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 		}
 	}
 	for _, rel := range t.offline {
-		if err := t.ctxErr(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return spent, err
 		}
-		if _, err := KeepOffline(t.root, rel); err != nil {
+		if _, err := KeepOffline(ctx, t.root, rel); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
@@ -615,18 +768,23 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 	return spent, nil
 }
 
-func (t fillTargets) ctxErr() error {
-	if t.ctx == nil {
-		return nil
-	}
-	return t.ctx.Err()
-}
+// fillReadChunk is the size of one read chunk the fill reads a mounted file
+// in, and therefore the most a read may overshoot its deadline: the fill
+// checks the deadline between two chunks, so a cancelled read stops at the
+// chunk it has already started rather than at the end of the file (drive#742).
+// It is the mount's own first chunk, --vfs-read-ahead (vfsReadAheadValue), so
+// the boundaries the fill stops on are the requests rclone already serves.
+// TestFillReadChunkMatchesTheMountReadAhead pins the two together, so tuning
+// the mount's read-ahead cannot silently widen the fill's deadline overshoot.
+const fillReadChunk = 128 << 10
 
 // fillReadFile reads one mounted file into io.Discard, which fills rclone's
 // cache for it, and reports how many bytes it read so `drive offline` (#115)
-// can say what it kept. The read is chunked, so a 10 GB file is a sequence of
-// reads rather than one allocation.
-func fillReadFile(path string) (int64, error) {
+// can say what it kept. The read is chunked under ctx, so a 10 GB file is a
+// sequence of reads rather than one allocation, and a cancelled or timed-out
+// read stops at the next chunk boundary after the deadline instead of reading
+// to the end of the file (drive#742).
+func fillReadFile(ctx context.Context, path string) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -635,11 +793,40 @@ func fillReadFile(path string) (int64, error) {
 		return 0, fmt.Errorf("open %s to fill: %w", path, err)
 	}
 	defer f.Close()
-	n, err := io.Copy(io.Discard, f)
+	n, err := readCtxChunked(ctx, f)
 	if err != nil {
 		return n, fmt.Errorf("read %s to fill: %w", path, err)
 	}
 	return n, nil
+}
+
+// readCtxChunked copies f to io.Discard chunk by chunk, checking ctx before
+// each chunk. A cancelled or timed-out read returns at the first chunk
+// boundary at or after the deadline: it stops within one chunk once the
+// in-flight Read returns. An os.File.Read that never returns cannot be
+// interrupted without closing the file, so the bound is on the bytes the fill
+// reads, not on a wedged read. The read stays on the main path: a chunk read at
+// the deadline is not dropped, because dropping bytes the disk already read
+// would under-report the cache the fill just filled.
+func readCtxChunked(ctx context.Context, f io.Reader) (int64, error) {
+	buf := make([]byte, fillReadChunk)
+	var n int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
+		got, err := f.Read(buf)
+		n += int64(got)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return n, nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return n, ctxErr
+			}
+			return n, err
+		}
+	}
 }
 
 // fillInterval is the loop's period. It is not a cache setting: rclone decides
