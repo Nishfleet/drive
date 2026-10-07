@@ -549,6 +549,10 @@ type Credentials struct {
 	DownloadURL    string `json:"downloadUrl,omitempty"`
 	AccessKeyID    string `json:"accessKeyId,omitempty"`
 	KeyID          string `json:"keyId,omitempty"`
+	// Device is the name `drive login --device` gave this machine, kept so a
+	// later re-sign-in or `drive agents` answers to it and does not register
+	// a second device under the hostname (drive#561).
+	Device string `json:"device,omitempty"`
 }
 
 // CredentialsPath is the signed-in device's own file. It is next to the rclone

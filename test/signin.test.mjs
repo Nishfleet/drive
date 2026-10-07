@@ -316,8 +316,8 @@ test("an attacker start cannot lock the owner out (drive#538)", async () => {
   assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
   assert.equal(
     /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
-    "test:owner@example.com",
-    "the proven address owns the stand-in, not the attacker's posted fingerprint",
+    null,
+    "the sign-in writes no card: the attacker's posted fingerprint is not read (drive#503)",
   );
 });
 
@@ -355,8 +355,8 @@ test("a leftover hold is dropped at verify and does not keep the attacker's card
   assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
   assert.equal(
     /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
-    "test:owner@example.com",
-    "the proven address owns the stand-in, not the leftover posted fingerprint",
+    null,
+    "the leftover hold's fingerprint is not carried onto the new account (drive#503)",
   );
 });
 
@@ -390,7 +390,8 @@ test("every new-account path still cannot open an account through OAuth (drive#4
   assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
   assert.equal(
     /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
-    "test:new@example.com",
+    null,
+    "no card is written at sign-up: only the payment webhook writes one (drive#503)",
   );
   const form = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/signin`, {
