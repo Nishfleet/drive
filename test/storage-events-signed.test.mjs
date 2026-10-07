@@ -29,6 +29,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { bucketForAccount } from "../core/keyprovider.js";
 import { notificationRecord } from "../core/meter.js";
 import { signWebhook } from "../core/topup.js";
 import { METER_JOB_KINDS } from "../src/meter-jobs.js";
@@ -46,13 +47,17 @@ const CLOSED = { error: "The signed event intake is not configured on this deplo
 
 /**
  * One fixture delivery: a record with the field names a provider's webhook
- * posts, over the account's own prefix, sized and timestamped as a create is.
+ * posts, over the account's own prefix, from the account's own bucket, sized
+ * and timestamped as a create is. The bucket is what proves who sent it:
+ * without it, an event naming any account is an event whose account the
+ * event itself named (core/meter.js validateEvent).
  * @param {Record<string, unknown>} [overrides]
  */
 const fixture = (overrides = {}) => ({
   eventName: "s3:ObjectCreated:Put",
   eventTime: new Date(Date.parse("2026-10-07T04:10:00.000Z")).toISOString(),
   keyName: `u/${ACCOUNT_ID}/notes.md`,
+  bucket: bucketForAccount(ACCOUNT_ID),
   versionId: `version-${randomBytes(4).toString("hex")}`,
   size: 4096,
   ...overrides,
@@ -195,8 +200,51 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
     assert.equal(deleted.status, 200);
     assert.equal((await readJson(deleted)).stored, 1);
     const rows = await versionRows();
-    assert.equal(rows.at(-1)?.hidden_at === null, false, "the delete hides the row it names");
-    assert.equal(rows.at(-1)?.size_bytes, 0, "and carries no size of its own");
+    const hidden = /** @type {Record<string, any>} */ (rows.at(-1));
+    assert.ok(hidden, "the delete is stored as a version row");
+    assert.equal(typeof hidden.hidden_at, "number", "the delete hides the row it names");
+    assert.ok(hidden.hidden_at > 0, "with the instant it was hidden at");
+    assert.equal(hidden.size_bytes, 0, "and carries no size of its own");
+  });
+
+  await t.test("an event from another account's bucket is refused", async () => {
+    // The attack this closes: core/meter.js reads the account out of
+    // the key's folder, so an event over u/<someone-else>/... names
+    // that someone else and every key-side check passes. The bucket
+    // is the one field the attacker's store cannot fake - the rule
+    // that signs it runs on the account's own bucket (core/keyprovider.js
+    // bucketForAccount).
+    const before = await versionRows();
+    const sentBefore = sent.length;
+    const stranger = fixture({ keyName: "u/someone-else/notes.md" });
+    const response = await handleSignedStorageEventRequest(
+      await signedPost({
+        body: JSON.stringify(stranger),
+        id: `stranger-${randomBytes(4).toString("hex")}`,
+      }),
+      deps,
+    );
+    assert.equal(response.status, 400);
+    const body = /** @type {{rejected?: Array<{error?: string}>}} */ (await readJson(response));
+    assert.match(body.rejected?.[0]?.error ?? "", /bucket/);
+    assert.equal(await versionRows().then((r) => r.length), before.length, "nothing is stored");
+    assert.equal(sent.length, sentBefore, "no queue job is enqueued");
+  });
+
+  await t.test("an event that names no bucket is refused", async () => {
+    // Fails closed: a record with no bucket has not proven where it
+    // came from, and this door is the only index writer.
+    const before = await versionRows();
+    const bare = fixture({ bucket: undefined });
+    const response = await handleSignedStorageEventRequest(
+      await signedPost({
+        body: JSON.stringify(bare),
+        id: `no-bucket-${randomBytes(4).toString("hex")}`,
+      }),
+      deps,
+    );
+    assert.equal(response.status, 400);
+    assert.equal(await versionRows().then((r) => r.length), before.length, "nothing is stored");
   });
 
   await t.test("an unsigned, badly signed or stale delivery stores nothing", async () => {
@@ -387,6 +435,11 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
       eventName: "s3:ObjectCreated:Put",
       eventTime: "2026-10-07T04:20:00.000Z",
       key: `u%2F${ACCOUNT_ID}%2Freport.txt`,
+      // The bucket travels with the key in a real S3 notification
+      // (s3.bucket.name), and this route refuses a record that
+      // names no bucket: without one the event's account is a field
+      // the event itself wrote.
+      s3: { bucket: { name: bucketForAccount(ACCOUNT_ID) } },
       versionId: "version-encoded",
       size: 99,
     });

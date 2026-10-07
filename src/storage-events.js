@@ -21,12 +21,12 @@
 // It is off until its secret is set, and it fails closed: no
 // STORAGE_EVENTS_WEBHOOK_SECRET is a 503 with no body read and no event
 // accepted, the same answer `handleBillingWebhook` gives with DODO_WEBHOOK_
-// SECRET unset. The name is deliberately NOT a declared
-// `bindings.secret()` in cloudflare.config.ts (unlike DODO_WEBHOOK_SECRET it
-// is also absent from that file): declaring it would fail every deploy until
-// Nish sets it on the account, and the live bucket notifications are the
-// orchestrator's step, not a deploy-blocking one. The route stays closed on
-// the deployment until then, which is what the issue asked for.
+// SECRET unset. That name is also undeclared - absent from cloudflare.config.ts
+// - and this one is absent in the same way and for the same reason: a declared
+// `bindings.secret()` no value backs fails every deploy, and the live bucket
+// notifications are the orchestrator's step, not a deploy-blocking one. The
+// route stays closed on the deployment until then, which is what the issue
+// asked for.
 //
 // Where this lives: the site Worker, not the api one. Only the site Worker
 // holds the METER_JOBS queue binding the single-object job is sent on, and the
@@ -34,6 +34,7 @@
 
 import { drivePathFromKey } from "../core/files.js";
 import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
+import { bucketForAccount } from "../core/keyprovider.js";
 import {
   looksLikeNotificationRecord,
   notificationRecord,
@@ -52,6 +53,60 @@ export const SIGNED_STORAGE_EVENTS_PATH = "/api/storage-events/signed";
 /** The same bound the open intake reads a body with, so a caller cannot use
  * the signed door to post a body the token door would refuse. */
 const SIGNED_EVENT_BODY_BYTES = 256 * 1024;
+
+/**
+ * The bucket a notification record names, or null when it names none.
+ *
+ * Two shapes carry it: a record with a `bucket` field of its own, and the S3
+ * notification's `s3.bucket.name`, the shape core/event-routes.js parses. The
+ * record is spread through notificationRecord untouched, so this reader runs
+ * on what the provider sent.
+ * @param {Record<string, unknown>} record
+ * @returns {string|null}
+ */
+function bucketOfRecord(record) {
+  if (typeof record.bucket === "string" && record.bucket !== "") {
+    return record.bucket;
+  }
+  const s3 = record.s3;
+  if (typeof s3 === "object" && s3 !== null) {
+    const nested = /** @type {{bucket?: {name?: unknown}}} */ (s3).bucket;
+    if (typeof nested === "object" && nested !== null && typeof nested.name === "string") {
+      return nested.name === "" ? null : nested.name;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a record's own bucket is the bucket the key's account lives in.
+ *
+ * `validateEvent` reads the account out of the key's folder, so on its own the
+ * account and the key always agree - that check is circular and lets a key
+ * naming someone else's account through. The bucket is the one field the
+ * account's own store cannot fake: the rule that sent the notification is on
+ * the account's own bucket, and every other account's bucket is a name no
+ * rewritten key produces (core/keyprovider.js `bucketForAccount`).
+ *
+ * Fails closed both ways: a record that names no bucket has not proven where
+ * it came from, and a bucket that is not the account's own is refused. The
+ * signed door is the only index writer, so it holds this proof; the meter's
+ * token door and its rows are unchanged.
+ * @param {Record<string, unknown>} record
+ * @param {string} accountId
+ * @returns {boolean}
+ */
+function bindsToAccount(record, accountId) {
+  const bucket = bucketOfRecord(record);
+  if (bucket === null) {
+    return false;
+  }
+  try {
+    return bucket === bucketForAccount(accountId);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The drive path a stored event names, or null when it names none.
@@ -81,11 +136,13 @@ function drivePathOf(key, accountId) {
 /**
  * POST /api/storage-events/signed: a signed bucket event, metered and indexed.
  *
- * Answers 2xx for every event it has finished with, including repeats, so the
- * bucket stops retrying them; the redelivery a 5xx would cause is idempotent
- * either way, but a caller that keeps retrying a door that already worked is
- * noise. Answers 400 for a body that is not an event, 401 for a signature that
- * does not match, and 503 for every configuration that makes accepting one
+ * Answers 200 for a batch it finished with whole, including one made only of
+ * repeats, so the bucket stops retrying those. A batch holding an event it
+ * refuses answers 400, the same split core/meter.js's token door answers: the
+ * accepted events stay stored, the retry that follows is deduped against
+ * them, and the refusal is reported per event with its index in the batch.
+ * Answers 401 for a signature that does not match, 413 for a body past the
+ * bound, and 503 for every configuration that makes accepting one
  * impossible.
  * @param {Request} request
  * @param {SignedEventDeps} deps
@@ -193,12 +250,23 @@ export async function handleSignedStorageEventRequest(request, deps) {
     // The path the index job is sent: the same name the account's store takes.
     // A key the account's prefix does not cover is a wiring bug in whatever
     // built the event, so it is refused by name rather than reaching a job
-    // that could only fail and be retried forever.
-    //
+    // that could only fail and be retried forever. The path's check is how the
+    // key turns into the index row's name; what it proves is done already by
+    // the bucket above.
     // The two fields are read plainly rather than off the narrowed event: the
     // job body's own shape is checked again by the validator its consumer
     // uses, so a `path` that is not a string never reaches a message.
     const accountId = typeof event.accountId === "string" ? event.accountId : "";
+    // The account comes out of the key, so the key cannot prove the account;
+    // the sending bucket can. This door is the only index writer, so it is the
+    // only place that proof is worth holding.
+    if (!bindsToAccount(/** @type {Record<string, unknown>} */ (raw), accountId)) {
+      rejected.push({
+        index,
+        error: "The event's bucket is not the account's own bucket.",
+      });
+      continue;
+    }
     const indexed = drivePathOf(typeof event.path === "string" ? event.path : "", accountId);
     if (indexed === null) {
       rejected.push({

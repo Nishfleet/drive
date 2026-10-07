@@ -61,6 +61,13 @@ would rather you read it here than find out in week three.
   adds a byte to your bill.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
+- **A save made outside the web page is counted at the nightly run.**
+  Everything you save through the Files page is in your usage, your cap and
+  your search the moment you save it. A file you save through the mounted
+  drive folder, the S3 API or an agent tool reaches your usage, your cap and
+  your search at the nightly run instead: search at 03:00 UTC, the meter at
+  04:00 UTC. Whichever way you saved the file, the nightly run is what makes
+  the number right.
 - **Your disk holds a cache, and it is capped.** What is on disk is the parts
   of your files you have already opened. It grows to at most {{CACHE_LIMIT}},
   and the drive always keeps at least {{CACHE_FLOOR}} of your disk free. The
@@ -73,13 +80,6 @@ would rather you read it here than find out in week three.
 
 ## Where we are better
 
-- **A save made outside the web page is counted at the nightly run.**
-  Everything you save through the Files page is in your usage, your cap and
-  your search the moment you save it. A file you save through the mounted
-  drive folder, the S3 API or an agent tool is counted at the nightly run
-  instead: search picks it up at 03:00 UTC, the meter at 04:00 UTC. Until
-  storage events are switched on, that is the whole delay (#831), and the
-  nightly run is what makes the number right whichever way you saved the file.
 - **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
   drive goes read-only at it: nothing is deleted, and the bill stops there.
   The default cap is {{DEFAULT_CAP}}.

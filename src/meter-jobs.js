@@ -251,9 +251,12 @@ export function meterJobHandlers(deps) {
       }
       const path = /** @type {string} */ (job.path);
       const account = { id: job.accountId };
-      return reindexObject(deps.searchDb, scopeStore(deps.store, account), account, path, {
-        now: () => job.at,
-      });
+      // The row is stamped as of the instant this handler runs, the
+      // way `withIndex` and the nightly walk stamp theirs: passing the
+      // message's own `at` would let a retried message move the
+      // row's `modified_at` backwards past the save that overwrote
+      // it. `job.at` stays the message's provenance, not its stamp.
+      return reindexObject(deps.searchDb, scopeStore(deps.store, account), account, path);
     },
   };
 }

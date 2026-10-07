@@ -171,7 +171,7 @@ Price sources (checked 2026-09-29): https://www.backblaze.com/cloud-storage/pric
 - Opening a file streams it; only what you open uses disk space.
 - A file uploads a few seconds after it is closed (decision 2026-09-28). No 60-second whole-drive snapshots.
 - Agents use the same files through the drive folder, an MCP server or the S3 API, each with its own scoped key.
-- Everything you save through the web page counts in your bill and appears in search at once. A save made any other way - the drive folder, the S3 API, an agent tool - is counted at the nightly run instead: the index at 03:00 UTC and the meter at 04:00 UTC (#831). That is the whole delay until the bucket's own storage events are switched on, and it is why the nightly jobs exist at all.
+- Everything you save through the web page counts in your bill and appears in search at once. A save made any other way - the drive folder, the S3 API, an agent tool - is counted at the nightly run instead: the index at 03:00 UTC and the meter at 04:00 UTC. That is the whole delay until the bucket's own storage events are switched on, and it is why the nightly jobs exist at all.
 
 ### Version 1 features
 
