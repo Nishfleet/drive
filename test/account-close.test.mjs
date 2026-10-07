@@ -31,7 +31,7 @@ import {
 } from "../src/account-close.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { createTestAuth, DRIVE_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 const MAIL_FROM = "notifications@drive.example";
 
@@ -575,13 +575,12 @@ test("GET /api/account/close is account-gated, and a signed-in close writes the 
   );
   assert.equal(anonymous.status, 401);
 
-  const made = createTestAuth({
-    // Close now revokes the account's device tokens in the same store call
-    // (drive#497), so the real schema this route runs against carries the
-    // device-token table too; the default harness subset stops at the cap and
-    // account tables and would fail `no such table: device_tokens`.
-    migrations: [...DRIVE_MIGRATIONS, "drive/0007_device_codes.sql"],
-  });
+  // Close revokes the account's device tokens in the same store call
+  // (drive#497), so the real schema this route runs against carries the
+  // device-token table too. The default harness schema is every migration in
+  // `migrations/drive/` (drive#579), so `device_tokens` is in it and this is
+  // just the default.
+  const made = createTestAuth();
   const { cookie, account } = await signIn(made, "close@example.com");
   const email = makeFakeEmail();
   const env = {
