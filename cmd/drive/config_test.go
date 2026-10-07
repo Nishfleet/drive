@@ -225,6 +225,40 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	}
 }
 
+func TestEnvWithoutDriveS3DropsStorageKeys(t *testing.T) {
+	got := envWithoutDriveS3([]string{
+		"PATH=/usr/bin",
+		"DRIVE_S3_SECRET_ACCESS_KEY=secret",
+		"DRIVE_S3_ACCESS_KEY_ID=ak",
+		"HOME=/home/test",
+	})
+	joined := strings.Join(got, ",")
+	if strings.Contains(joined, "DRIVE_S3_") {
+		t.Errorf("env still carries storage keys: %v", got)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") || !strings.Contains(joined, "HOME=/home/test") {
+		t.Errorf("env dropped unrelated keys: %v", got)
+	}
+}
+
+func TestDevicePlanIsNotAnAgent(t *testing.T) {
+	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+	if p.isAgent() || p.EnvPath != "" {
+		t.Fatalf("device plan isAgent=%v EnvPath=%q, want a product login item", p.isAgent(), p.EnvPath)
+	}
+	agent := BuildAgentMountPlan("linux", "/home/test", "/usr/bin/rclone", "claude", testStorage())
+	if !agent.isAgent() || agent.EnvPath == "" {
+		t.Fatalf("agent plan isAgent=%v EnvPath=%q, want stock rclone", agent.isAgent(), agent.EnvPath)
+	}
+	if agent.RCAddr != "" || agent.RCUser != "" || agent.RCPass != "" {
+		t.Fatalf("agent plan has remote control %q / %q, want none", agent.RCAddr, agent.RCUser)
+	}
+	argv := agent.productArgv()
+	if len(argv) == 0 || argv[0] != "/usr/bin/rclone" {
+		t.Fatalf("agent productArgv = %v, want stock rclone first", argv)
+	}
+}
+
 func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin", "windows"} {
 		p := withProductBin(BuildMountPlan(goos, "/home/test", "rclone", testStorage()))

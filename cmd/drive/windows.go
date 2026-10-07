@@ -306,15 +306,19 @@ func windowsTaskXMLPath(p MountPlan) string {
 }
 
 // windowsTaskXML is the login task as Task Scheduler XML. The Exec action
-// carries the plan split the way Task Scheduler stores it: Command is this
-// CLI, Arguments is `mount --foreground --home ...` (drive#515), so
-// `schtasks /Query`'s "Task To Run" still reads as one command line and every
-// reader of it (the drive letter, the stop path) is unchanged. userName is
-// the login user the trigger fires for, in the DOMAIN\user form Task
-// Scheduler requires.
+// carries the plan split the way Task Scheduler stores it: Command is the
+// first element of productArgv (this CLI for the device mount, rclone for
+// an agent path), Arguments is the rest, so `schtasks /Query`'s "Task To
+// Run" still reads as one command line and every reader of it (the drive
+// letter, the stop path) is unchanged. userName is the login user the
+// trigger fires for, in the DOMAIN\user form Task Scheduler requires.
 func windowsTaskXML(p MountPlan, userName string) (string, error) {
-	quoted := make([]string, 0, len(p.productArgs())+2)
-	for _, a := range p.productArgs() {
+	argv := p.productArgv()
+	if len(argv) == 0 {
+		return "", fmt.Errorf("login task has no command")
+	}
+	quoted := make([]string, 0, len(argv)-1)
+	for _, a := range argv[1:] {
 		quoted = append(quoted, windowsQuoteArg(a))
 	}
 	doc := taskXML{
@@ -362,7 +366,7 @@ func windowsTaskXML(p MountPlan, userName string) (string, error) {
 		Actions: taskActionsXML{
 			Context: "Author",
 			Exec: taskExecXML{
-				Command:   p.DriveBin,
+				Command:   argv[0],
 				Arguments: strings.Join(quoted, " "),
 			},
 		},

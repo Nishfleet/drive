@@ -230,8 +230,8 @@ func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
 	if doc.Version != "1.2" {
 		t.Errorf("task XML version = %q, want 1.2", doc.Version)
 	}
-	if doc.Actions.Exec.Command != `C:\Program Files\Drive\drive.exe` {
-		t.Errorf("Exec Command = %q, want the drive CLI", doc.Actions.Exec.Command)
+	if doc.Actions.Exec.Command != p.productArgv()[0] {
+		t.Errorf("Exec Command = %q, want productArgv[0] %q", doc.Actions.Exec.Command, p.productArgv()[0])
 	}
 	for _, want := range []string{"mount", "--foreground", "--home", `C:\Users\test`, "--drive-letter", "Z:", "--rclone", `C:\rclone\rclone.exe`} {
 		if !strings.Contains(doc.Actions.Exec.Arguments, want) {
@@ -358,7 +358,7 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	if _, err := exec.LookPath("schtasks"); err != nil {
 		t.Fatalf("schtasks is not on PATH, so the windows-latest job cannot register the task: %v", err)
 	}
-	home := t.TempDir()
+	home := `C:\Users\` + strings.Repeat("very-long-profile-name-", 12) + `\drive-home`
 	c := testStorage()
 	c.Bucket = "bucket"
 	c.Prefix = "u/" + strings.Repeat("deep-folder-name/", 12) + "1234"
@@ -378,6 +378,9 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	commandLine := WindowsTaskCommandLine(p)
 	if !strings.Contains(commandLine, p.DriveBin) {
 		t.Fatalf("the command line does not run the product: %s", commandLine)
+	}
+	if len(commandLine) <= 261 {
+		t.Fatalf("command line is %d characters, want over the 261 /TR limit so the XML path stays the only way to register it", len(commandLine))
 	}
 	xmlPath := windowsTaskXMLPath(p)
 	if err := WriteFileAtomic(xmlPath, []byte(body), 0o600); err != nil {

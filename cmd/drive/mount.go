@@ -897,6 +897,8 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		}
 	}
 	if foreground {
+		// Return here, before startLoginItem, so `drive mount --foreground`
+		// cannot register the login item again (drive#515).
 		// The files go into the drive once it is up. If it never comes up,
 		// they go back into the plain folder once rclone has exited, so a
 		// failed mount does not leave them in the hidden holding folder.
@@ -1135,11 +1137,26 @@ func startLinuxMountDetached(p MountPlan) error {
 	cmd := exec.Command(p.DriveBin, p.productArgs()...)
 	cmd.Stdout = log
 	cmd.Stderr = log
+	cmd.Env = envWithoutDriveS3(os.Environ())
 	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("drive mount: %w", err)
 	}
 	return nil
+}
+
+// envWithoutDriveS3 drops the storage keys a real login item does not
+// inherit: systemd and launchd start the product with rclone.env, not
+// DRIVE_S3_* from the parent shell (drive#515).
+func envWithoutDriveS3(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "DRIVE_S3_") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // mountForeground runs rclone in this process until it exits. rclonePath is

@@ -176,17 +176,3 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	}
 	t.Logf("installed unit: conflict=%s, pinned file stayed cached after storage stopped", conflict)
 }
-
-// envWithoutDriveS3 drops the storage keys a real login item does not
-// inherit: systemd and launchd start the product with rclone.env, not
-// DRIVE_S3_* from the parent shell (drive#515).
-func envWithoutDriveS3(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, e := range env {
-		if strings.HasPrefix(e, "DRIVE_S3_") {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}

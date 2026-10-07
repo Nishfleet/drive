@@ -35,7 +35,7 @@ func TestMountPassesTheDownloadURLThroughTheEnvironmentOnly(t *testing.T) {
 	if !found {
 		t.Errorf("the foreground mount's environment has no %s", rcloneDownloadURLEnv)
 	}
-	for _, args := range [][]string{p.Args(), p.loginItemArgs()} {
+	for _, args := range [][]string{p.Args(), p.loginItemArgs(), p.productArgs()} {
 		for _, a := range args {
 			if strings.Contains(a, "grantpayload") || a == "--s3-download-url" {
 				t.Fatalf("the download grant is on rclone's command line: %v", args)
