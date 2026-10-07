@@ -1979,6 +1979,44 @@ export async function createBranch(
   }
   const existing = await getBranch(db, snapshots, account, name);
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
+    // A copy the queue's retries used up (drive#844). The row is claimed in
+    // `creating`, its message was dead-lettered, and nothing else moves it:
+    // this 409 held the name for good, a caller had no way to say what to do
+    // when its own copy was half done, and the only way out was dropping the
+    // row. Finishing it is the same create the row already carries, started
+    // from the cursor the last batch stopped at, so the files that are left
+    // are copied and nothing is written twice. A different folder stays the
+    // 409 below, because resuming would copy the row's own source rather than
+    // the folder this create asked for.
+    if (
+      existing.state === "creating" &&
+      existing.jobKind === "create" &&
+      existing.sourcePrefix === folderPath
+    ) {
+      if (
+        await enqueueJob(queue, {
+          kind: "branch.create",
+          accountId: account.id,
+          branchId: existing.id,
+          name,
+        })
+      ) {
+        return {
+          name,
+          sourcePrefix: existing.sourcePrefix,
+          branchPrefix: existing.branchPrefix,
+          state: "creating",
+          createdAt: existing.createdAt,
+          changedBy: existing.changedBy,
+          files: existing.jobDone,
+          progress: { kind: "create", done: existing.jobDone, total: existing.jobTotal },
+        };
+      }
+      // No queue bound, or the send failed: the batches that are left run
+      // here, which is what this route has always answered with for a job it
+      // cannot hand out.
+      return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, existing.id));
+    }
     return { error: failureMessage("branch-exists"), status: 409 };
   }
   // The 1 TB pre-charge check: branch copies skip the file index, so the store
@@ -2384,7 +2422,20 @@ export async function discardBranch(db, snapshots, store, account, name, options
   if (branch.state === "approving") {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
-  if (branch.state === jobState && branch.jobKind === jobKind) {
+  // A row the queue's retries left claimed by a removal, finished by this
+  // call rather than refused (drive#844). It is the row's own job, picked up
+  // from the cursor the lost batch stopped at, so a second call continues the
+  // removal instead of listing the prefix again from the top. A cancel of a
+  // stuck rewind is the same door: what a discard does and what the stuck
+  // rewind started are one removal on one prefix - this branch's own copies -
+  // and both kinds close the row `discarded`, so the name comes back either
+  // way. A rewind does not take another job's row through this door: a rewind that
+  // is already running is finished before this point, and the rewind route's
+  // own state check refuses every other state (drive#844).
+  const finishesClaimedRemoval =
+    (branch.state === jobState && branch.jobKind === jobKind) ||
+    (jobKind === "discard" && branch.state === "rewinding" && branch.jobKind === "rewind");
+  if (finishesClaimedRemoval) {
     return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
   }
   const fromState = jobKind === "discard" && branch.state === "creating" ? "creating" : "open";

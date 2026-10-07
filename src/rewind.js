@@ -221,6 +221,32 @@ export async function rewindBranch(db, snapshots, store, account, name, now, que
     console.error?.(`rewind refused unavailable snapshot for row ${branch.id}`);
     return { error: failureMessage("unexpected"), status: 500 };
   }
+  // A rewind the queue's retries used up (drive#844). The row is claimed in
+  // `rewinding`, its message was dead-lettered, and `rewindPreview` below
+  // refuses it, because a branch whose row already says `rewinding` does not
+  // read as an open branch — so nothing moves the row and the name stays held
+  // by the one-active-name index for good. Finishing a rewind is not starting
+  // one: it removes this branch's own copies and never names the original, so
+  // neither the open state nor the 30-day window decides it, and the batches
+  // run from the cursor the row carries, the way the queue would have
+  // continued them. Cancelling it instead is the discard door, which has taken
+  // a `rewinding` row since this change.
+  if (branch.state === "rewinding" && branch.jobKind === "rewind") {
+    const resumed = await discardBranch(db, snapshots, store, account, name, {
+      kind: "rewind",
+      queue,
+    });
+    if ("error" in resumed) {
+      return resumed;
+    }
+    return {
+      name: resumed.name,
+      state: resumed.state,
+      rewound: resumed.removed ?? 0,
+      changedBy: branch.changedBy,
+      progress: resumed.progress,
+    };
+  }
   const preview = await rewindPreview(store, branch, now, snapshots);
   if (!preview.canRewind) {
     const key =

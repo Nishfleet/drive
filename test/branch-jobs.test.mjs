@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
   BRANCH_JOBS_DEAD_LETTER_QUEUE,
   BRANCH_JOBS_MAX_RETRIES,
@@ -777,4 +778,320 @@ test("approve of a branch still being created answers 409, not 500", async () =>
   assert.equal(/** @type {{status?: number}} */ (approved).status, 409);
   const row = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(row?.state, "creating");
+});
+
+/** A create the route can run: the limiter the route checks before the body. */
+const ALLOWED = { ipLimiter: { limit: () => Promise.resolve({ success: true }) } };
+
+/**
+ * The queue's retries, used up. The last delivery throws and the cleanup that
+ * would have closed the row fails with it, so the message is sent back for the
+ * dead-letter queue and the row keeps its claim: that is the stuck state this
+ * issue is about, because src/index.js logs "branch job exhausted cleanup
+ * failed" and leaves the row exactly where the batch died.
+ * @param {unknown} body the message the route enqueued for the row
+ */
+async function exhaustRetries(body) {
+  /** @type {{body: unknown, ack: () => void, retry: () => void, attempts: number, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body,
+    attempts: BRANCH_JOBS_MAX_RETRIES,
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  const stats = await handleBranchJobs(
+    { messages: [message] },
+    async () => {
+      throw new Error("the batch threw for the last time");
+    },
+    null,
+    async () => {
+      throw new Error("the cleanup could not close the row either");
+    },
+  );
+  assert.equal(stats.retried, 1);
+  assert.equal(message.acked, undefined, "nothing acked it, so the row keeps its job");
+}
+
+/**
+ * A row the queue left `rewinding`, with the removal it had started still half
+ * done. The branch is a copy of the driven folder, so its prefix holds two
+ * files.
+ * @returns {Promise<{raw: import("../src/branches.js").FileStore, scoped: import("../src/branches.js").FileStore, db: D1Database, snapshots: import("../src/branches.js").SnapshotStore, queue: ReturnType<typeof fakeQueue>}>}
+ */
+async function stuckRewinding() {
+  const setup = await driven();
+  const queue = fakeQueue();
+  await createBranch(
+    setup.db,
+    setup.snapshots,
+    setup.scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+  );
+  const started = await discardBranch(setup.db, setup.snapshots, setup.scoped, ACCOUNT, "work", {
+    kind: "rewind",
+    queue,
+  });
+  assert.equal(started.state, "rewinding");
+  assert.equal(queue.sent.length, 1);
+  await exhaustRetries(queue.sent[0].body);
+  const row = await getBranch(setup.db, setup.snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "rewinding");
+  assert.equal(row?.jobKind, "rewind");
+  return { ...setup, queue };
+}
+
+test("the rewind route resumes a rewind the queue's retries left running (drive#844)", async () => {
+  const { scoped, db, snapshots, queue } = await stuckRewinding();
+  // Nothing ran after the message was lost, so the branch's copies are still
+  // there and the name is still claimed.
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
+  // The one message the setup sent is the message the retries used up. The
+  // resume sends no second one: it finishes the removal that message started.
+  const messagesBefore = queue.sent.length;
+
+  const resumed = await handleRewindRequest(
+    new Request("https://drive.test/api/rewind/work", { method: "POST" }),
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(resumed.status, 202, "the resume answers like any other rewind");
+  const body = await resumed.json();
+  assert.equal(body.state, "discarded");
+  assert.equal(body.rewound, 2);
+  // The resume finishes the row's own removal inside the request and sends no
+  // second message: the message for this row is the one that was dead-lettered.
+  assert.equal(queue.sent.length, messagesBefore);
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+  assert.equal(row?.jobKind, "");
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), null);
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), null);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  // The one-active-name index released the name, so a new branch of it works.
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.ok(!("error" in again));
+});
+
+test("the discard route cancels a rewind the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await stuckRewinding();
+  const cancelled = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches/work/discard", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).state, "discarded");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+  assert.equal(row?.jobKind, "");
+  // Whatever the failed message had already removed stayed removed, and the
+  // rest of the copy goes with it.
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), null);
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), null);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.ok(!("error" in again));
+});
+
+test("the create route resumes a copy the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  await exhaustRetries(queue.sent[0].body);
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stuck?.state, "creating");
+  assert.equal(stuck?.jobKind, "create");
+
+  // A different folder under the held name is still refused: resuming the row
+  // would copy the row's own source, not the one this create asked for.
+  const elsewhere = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Photos/sub", name: "work" }),
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    ALLOWED,
+  );
+  assert.equal(elsewhere.status, 409);
+  assert.equal((await elsewhere.json()).error, failureMessage("branch-exists"));
+  const stillStuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stillStuck?.state, "creating");
+
+  // The same create again, with no queue bound to the call, resumes the row and
+  // runs the batches that are left here — the in-process stand-in this route
+  // has always answered with.
+  const resumed = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Photos", name: "work" }),
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    ALLOWED,
+  );
+  assert.equal(resumed.status, 202);
+  const body = await resumed.json();
+  assert.equal(body.branch.state, "open");
+  assert.equal(body.branch.files, 2);
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "open");
+  assert.equal(row?.jobKind, "");
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), "a");
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
+});
+
+test("a resumed copy with the queue bound takes its message back (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  await exhaustRetries(queue.sent[0].body);
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stuck?.state, "creating");
+  // The message above is the one the retries used up, so the resume's own is
+  // the next one in.
+  const messagesBefore = queue.sent.length;
+
+  const resumed = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Photos", name: "work" }),
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    { ...ALLOWED, queue },
+  );
+  assert.equal(resumed.status, 202);
+  const body = await resumed.json();
+  assert.equal(body.branch.state, "creating");
+  // One message for the row that had none, so the batches that are left run one
+  // at a time the way the queue runs them, not all inside the request.
+  assert.equal(queue.sent.length, messagesBefore + 1, "the resume put the row back");
+  assert.equal(
+    /** @type {{branchId?: number}} */ (queue.sent[messagesBefore].body).branchId,
+    stuck?.id,
+  );
+
+  const env = {
+    DRIVE_DB: db,
+    BRANCH_SNAPSHOTS: snapshots,
+    BRANCH_JOBS: queue,
+    [TEST_FILES_STORE]: raw,
+  };
+  const context = { waitUntil() {} };
+  // The exhausted message dies with the row's retries; only the resume's own
+  // messages run, the way the queue redelivers them one at a time.
+  queue.sent.splice(0, messagesBefore);
+  let steps = 0;
+  while (queue.sent.length > 0 && steps < 8) {
+    const next = queue.sent.shift();
+    assert.ok(next, `batch ${steps} must have a queued message`);
+    /** @type {{body: unknown, ack: () => void, retry: () => void, acked?: boolean}} */
+    const message = {
+      body: next.body,
+      ack() {
+        message.acked = true;
+      },
+      retry() {},
+    };
+    await workerQueue({ messages: [message] }, env, context);
+    assert.equal(message.acked, true, `batch ${steps} must ack`);
+    steps += 1;
+  }
+  assert.ok(steps >= 2, "clear then copy are separate batches");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "open");
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
+});
+
+test("the discard route cancels a copy the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  await exhaustRetries(queue.sent[0].body);
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stuck?.state, "creating");
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), null, "the copy never ran");
+
+  const cancelled = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches/work/discard", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).state, "discarded");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+  assert.equal(row?.jobKind, "");
+  assert.equal(row?.reservedBytes, stuck?.reservedBytes, "the claim it reserved stays the record");
+  // The clean state: the original is untouched and the name is free.
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.ok(!("error" in again));
 });
