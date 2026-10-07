@@ -279,7 +279,7 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	if budget < 0 {
 		budget = 0
 	}
-recentBytes, err := targets.read(ctx, fillRecent, budget)
+	recentBytes, err := targets.read(ctx, fillRecent, budget)
 	if err != nil {
 		return res, fmt.Errorf("fill: read into cache: %w", err)
 	}
@@ -606,7 +606,7 @@ func (t fillTargets) read(ctx context.Context, includeRecent bool, budget int64)
 		}
 	}
 	for _, rel := range t.offline {
-if err := ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return spent, err
 		}
 		if _, err := KeepOffline(ctx, t.root, rel); err != nil {
