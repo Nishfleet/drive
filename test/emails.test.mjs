@@ -533,6 +533,20 @@ test("the receipt explains the bill in the customer's words", () => {
   assert.doesNotMatch(saved, /min\(|metered, ceiling|\bceiling\b/);
 });
 
+test("the receipt refuses a meter or ceiling that is not money", () => {
+  // The two numbers now print on the mail. A missing or negative one is a
+  // caller bug, not a $0 that hides it (requireMoney in core/emails.js).
+  for (const bad of [
+    { meteredUsd: undefined, ceilingUsd: 12 },
+    { meteredUsd: -1, ceilingUsd: 12 },
+    { meteredUsd: 16, ceilingUsd: "12" },
+    { meteredUsd: Number.NaN, ceilingUsd: 12 },
+    { meteredUsd: 16, ceilingUsd: Number.POSITIVE_INFINITY },
+  ]) {
+    assert.throws(() => monthlyReceiptTemplate(receiptData(bad)), TypeError);
+  }
+});
+
 test("the receipt never shows a per-minute price", () => {
   // build-spec.md: "Never advertise a per-minute price". The receipt is the
   // one mail a customer keeps and forwards to their accountant.
