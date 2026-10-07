@@ -1303,17 +1303,9 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
 });
 test("the cap's claim is what refuses the eleventh create, not the earlier count", async () => {
   const { scoped, db, snapshots } = await driven();
-  // The race the claim's WHERE clause exists for: the pre-check counts the
-  // account's branches, and between that count and the claim a tenth create
-  // lands. Only then does the count and the claim disagree, and only the
-  // claim's own predicate can catch it. This test builds exactly that state
-  // with real rows in the real database — ten 'open' rows already on disk —
-  // and makes the pre-check report the stale number it read before they
-  // landed. Everything else is the real adapter and the real schema, so the
-  // claim INSERT runs as it ships.
-  //
-  // Delete the `WHERE (SELECT COUNT(*) ...)` from the claim and this test
-  // fails, because the eleventh row lands, `changes` is 1, and the copy runs.
+  // Ten 'open' rows already on disk, planted without createBranch, so the
+  // claim INSERT's WHERE is the only thing that can refuse the eleventh.
+  // Delete that WHERE and this test fails: the eleventh row lands and copies.
   for (let i = 1; i <= MAX_OPEN_BRANCHES; i += 1) {
     db.sqlite
       .prepare(
@@ -1333,37 +1325,7 @@ test("the cap's claim is what refuses the eleventh create, not the earlier count
       return copying(from, to, size);
     },
   };
-  // Only the earlier count is faked, and only down to the number it would have
-  // read one statement earlier. The claim is untouched.
-  const staleCountDb = new Proxy(db, {
-    get(target, prop, receiver) {
-      if (prop === "prepare") {
-        return (/** @type {string} */ sql) => {
-          if (!/SELECT COUNT\(\*\) AS open/.test(sql)) {
-            return target.prepare(sql);
-          }
-          const statement = target.prepare(sql);
-          return {
-            sql,
-            /** @param {...unknown} values */
-            bind(...values) {
-              return {
-                sql,
-                async first() {
-                  // Run the real query too, so a renamed column or a changed
-                  // state list makes this fail rather than pass dark.
-                  await statement.bind(...values).first();
-                  return { open: MAX_OPEN_BRANCHES - 1 };
-                },
-              };
-            },
-          };
-        };
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  });
-  const loser = await createBranch(staleCountDb, snapshots, store, ACCOUNT, {
+  const loser = await createBranch(db, snapshots, store, ACCOUNT, {
     folder: "/Photos",
     name: "eleventh",
   });
@@ -1371,8 +1333,6 @@ test("the cap's claim is what refuses the eleventh create, not the earlier count
   assert.equal(loser.status, 409);
   assert.deepEqual(copies, [], "the loser never asked for a copy");
   assert.equal(await getBranch(db, snapshots, ACCOUNT, "eleventh"), null);
-  // The claim really was refused by the predicate: the ten rows are still the
-  // only rows this account has.
   const held = await listBranches(db, snapshots, store, ACCOUNT);
   assert.equal(
     held.length,

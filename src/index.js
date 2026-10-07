@@ -841,9 +841,6 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
-      // The create limiter is the route's own binding (drive#553); the queue
-      // is the branch-job queue (drive#563). Both travel in the options bag,
-      // which is how src/branches.js reads them.
       {
         now: () => Date.now(),
         queue: branchJobsQueue(c.env),

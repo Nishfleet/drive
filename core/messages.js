@@ -248,16 +248,11 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
   }),
-  // The account already holds as many branches as this drive keeps at once
-  // (drive#553, MAX_OPEN_BRANCHES in src/branches.js). A branch is a full
-  // copy, so the cap bounds the bytes one account can hold. It says "branches"
-  // and not "open branches" because the cap counts a branch until its bytes
-  // are gone: one whose copy job has not run yet, and one being approved,
-  // discarded or rewound, still holds a copy until that job finishes. The next
-  // step is the same either way: finish closing one, then make a new one.
+  // Cap on branches one account may hold at once (drive#553). It says
+  // "branches", not "open branches", because a copy still held counts.
   "branch-limit": Object.freeze({
-    what: "You have 10 branches, which is the most this drive keeps at once.",
-    next: "Approve or discard a branch, then make a new one.",
+    what: "You have 10 branches.",
+    next: "Approve or discard one first.",
   }),
   // An upload-request drop named a file the owner already has. Overwriting
   // that file from a public link is the bug drive#518 closes.
