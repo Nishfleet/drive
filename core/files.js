@@ -2615,7 +2615,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   return plain("Not found.", 404);
 }
 
-// Reads add served bytes to the account's download total (drive#517).
+/** @param {FileStore} store @param {string} accountId @param {((accountId: string, bytes: number) => Promise<void>)|undefined} recordDownload @returns {FileStore} */
 function meterReads(store, accountId, recordDownload) {
   if (!recordDownload) {
     return store;

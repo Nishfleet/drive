@@ -6,6 +6,7 @@
     "workers/dl/src/index.js",
     "test/*.test.mjs",
     "test/integration/*.test.mjs",
+    "test/walks/*.test.mjs",
     "workers/*/test/*.test.js"
   ],
   "project": ["core/**/*.js", "src/**/*.js", "workers/**/*.js"],
