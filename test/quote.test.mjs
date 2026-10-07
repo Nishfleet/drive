@@ -15,10 +15,11 @@ import {
   monthlyMaximumUsd,
   QUOTE_ENDPOINT,
   quoteForStoredTb,
-} from "../src/billing.js";
+} from "../core/billing.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { usualPlanMonthlyUsd } from "../src/pricing.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
@@ -111,7 +112,7 @@ test("the Worker serves GET /api/quote with no account", async () => {
 test("the pricing page has the calculator, the shipped headline, and no rival names in it", () => {
   assert.match(page, /id="calculator"/);
   assert.match(page, new RegExp(`action="${QUOTE_ENDPOINT}"`));
-  assert.match(page, /2 cents per GB\./);
+  assert.ok(page.includes(PRICE.headline), "the page must carry the shipped headline");
   // The new default spending cap is $20 (#464), so the ban narrows to the
   // dropped per-TB headline.
   assert.doesNotMatch(page, /\$20 (per|a) TB/, "the dropped $20 per TB headline must stay gone");
@@ -121,7 +122,7 @@ test("the pricing page has the calculator, the shipped headline, and no rival na
   assert.match(section, /a usual 1 TB plan/);
   assert.match(page, /labels\.maximum/);
   assert.match(page, /labels\.plan/);
-  assert.doesNotMatch(section, /\bSpace(FS)?\b/);
+  assert.doesNotMatch(section, RIVAL_PRODUCT);
   assert.doesNotMatch(section, /Dropbox|Google Drive/i);
 });
 

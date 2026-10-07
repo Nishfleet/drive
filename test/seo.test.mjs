@@ -1,20 +1,20 @@
 // The public-page discovery metadata (drive issue #37) is a decision, not a
 // suggestion, so it is pinned here: the canonical origin, the Open Graph and
 // Twitter tags, the JSON-LD, sitemap.xml, robots.txt and llms.txt are all
-// built from src/seo.js and compared against the files that actually ship. A
+// built from core/seo.js and compared against the files that actually ship. A
 // later run cannot quietly drop the canonical URL, point the share card at a
 // 404, or let the structured data disagree with the config, because this fails.
 //
 // The price copy gate is test/pricing-copy.test.mjs. The bill numbers this
-// file also states are read from src/pricing.js (PRICE), the one price source
-// src/seo.js builds BILLING from (issue #23), so a re-priced product moves the
+// file also states are read from core/pricing.js (PRICE), the one price source
+// core/seo.js builds BILLING from (issue #23), so a re-priced product moves the
 // tags, the JSON-LD and llms.txt together with the visible copy.
 
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthlyBillForStoredTb } from "../src/billing.js";
-import { PRICE } from "../src/pricing.js";
+import { monthlyBillForStoredTb } from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
 import {
   absoluteUrl,
   BILLING,
@@ -24,7 +24,7 @@ import {
   ROOT_PAGES,
   SITE,
   softwareApplicationLd,
-} from "../src/seo.js";
+} from "../core/seo.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 /** @param {string} name */
@@ -38,7 +38,7 @@ const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
 
 // A page ships from one of two places (issue #70): the verbatim assets in
 // public/, and the built Vite entries at the repo root. Which one is the
-// question src/seo.js's PAGES answers per page, so ROOT_PAGES is read from
+// question core/seo.js's PAGES answers per page, so ROOT_PAGES is read from
 // there instead of this file keeping a second list of its own. A flag that
 // calls a page a "public/ asset" while the build compiles it from the root is
 // exactly the drift this file exists to catch, and a test-local copy of that
@@ -51,10 +51,10 @@ const fileUrl = (name) =>
 const readPage = (name) => readFileSync(fileUrl(name), "utf8");
 
 // Every shipped HTML page, from the config, not from the directory, so a page
-// that ships without being added to src/seo.js fails the first test below.
+// that ships without being added to core/seo.js fails the first test below.
 const indexablePages = PAGES.filter((page) => page.indexable);
-/** @param {{path: string}} page */
-const fileFor = (page) => page.path.replace(/^\//, "") || "index.html";
+/** @param {{path: string, file?: string}} page */
+const fileFor = (page) => page.file ?? (page.path.replace(/^\//, "") || "index.html");
 
 // These read hand-maintained HTML, so they assume double-quoted attributes in
 // a fixed order. That is a real (small) coupling to the file's formatting, not
@@ -79,10 +79,10 @@ function link(page, rel) {
   return match ? match[1] : null;
 }
 
-test("every shipped HTML page is registered in PAGES (src/seo.js)", () => {
+test("every shipped HTML page is registered in PAGES (core/seo.js)", () => {
   // The site ships pages from two places (issue #70): the verbatim assets in
   // public/ and the built Vite entries at the repo root, so both are walked.
-  // ROOT_PAGES is src/seo.js's, so the walk and the list cannot disagree.
+  // ROOT_PAGES is core/seo.js's, so the walk and the list cannot disagree.
   const shipped = [
     ...readdirSync(publicDir).filter((name) => name.endsWith(".html")),
     ...ROOT_PAGES,
@@ -156,6 +156,32 @@ test("every indexable page names its own canonical URL", () => {
       canonical,
       pageUrl(page),
       `${name} must have <link rel="canonical"> for its own URL`,
+    );
+  }
+});
+
+test("every shipped page links the served favicon", () => {
+  // drive#546: no page linked an icon, so every tab fetched /favicon.ico and
+  // hit the 404 page. The file ships and every page points at it.
+  assert.ok(
+    existsSync(new URL(SITE.faviconPath.replace(/^\//, ""), publicDir)),
+    `public${SITE.faviconPath} must exist`,
+  );
+  for (const page of PAGES) {
+    const name = fileFor(page);
+    const html = readPage(name);
+    // Exactly one icon link. `link()` reads the first match, so a page that
+    // kept the old inline data: URI favicon beside the new one would pass the
+    // equality below while the browser still prefers the stale icon.
+    assert.equal(
+      html.match(/<link\s+rel="icon"/gi)?.length ?? 0,
+      1,
+      `${name} must carry exactly one <link rel="icon">`,
+    );
+    assert.equal(
+      link(html, "icon"),
+      SITE.faviconPath,
+      `${name} must carry <link rel="icon" href="${SITE.faviconPath}">`,
     );
   }
 });
@@ -281,12 +307,8 @@ test("llms.txt describes the drive and the current price rule", () => {
   assert.ok(llms.includes(BILLING.headline), "llms.txt must state the headline from config");
   assert.ok(llms.includes(BILLING.rule), "llms.txt must state the rule from config");
   assert.ok(
-    llms.includes(BILLING.noMinimumLine),
+    llms.includes(BILLING.noPlansLine),
     "llms.txt must state the no-minimum line from config",
-  );
-  assert.ok(
-    llms.includes(BILLING.foundingLine),
-    "llms.txt must state the founding line from config",
   );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The issue's worked figures, so an answer engine cannot quote a number the
@@ -310,6 +332,7 @@ test("every file the metadata points at is one this site actually ships", () => 
   for (const path of [
     SITE.homePath,
     SITE.ogImagePath,
+    SITE.faviconPath,
     SITE.robotsPath,
     SITE.sitemapPath,
     SITE.llmsPath,
@@ -324,7 +347,7 @@ test("every file the metadata points at is one this site actually ships", () => 
 
 test("the maximum in the metadata is the issue's rule, from the one price source", () => {
   // drive#463 (Nish 2026-10-04): min(2¢ x avg GB, $10 x max(1, avg TB)). The
-  // numbers and the sentences come from src/pricing.js, so a price change is
+  // numbers and the sentences come from core/pricing.js, so a price change is
   // one edit there and it moves the tags, the JSON-LD, llms.txt and the
   // visible copy together (issue #23).
   assert.equal(PRICE.rateUsdPerGbMonth, 0.02);
@@ -332,12 +355,11 @@ test("the maximum in the metadata is the issue's rule, from the one price source
   // BILLING is built from PRICE, not declared beside it.
   assert.equal(BILLING.maxUsdPerTb, PRICE.maxUsdPerTb);
   assert.equal(BILLING.headline, PRICE.headline);
-  assert.equal(BILLING.noMinimumLine, PRICE.noMinimumLine);
-  assert.equal(BILLING.foundingLine, PRICE.foundingLine);
+  assert.equal(BILLING.noPlansLine, PRICE.noPlansLine);
   assert.equal(BILLING.rule, PRICE.rule);
   assert.equal(
     BILLING.headline,
-    "Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
+    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
   );
   // The superseded rules may not come back through the tags: the $12 floor,
   // the $8 slope, the 1.5 TB plateau and the membership.

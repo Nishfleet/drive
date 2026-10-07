@@ -24,12 +24,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, handleFilesRequest, scopeStore } from "../../src/files.js";
-import { failureMessage } from "../../src/messages.js";
+import { createMemoryStore, handleFilesRequest, scopeStore } from "../../core/files.js";
+import { failureMessage } from "../../core/messages.js";
 import {
   createD1LinkStore,
   DAY_MS,
-  expiresLabel,
+  expiresAtIso,
   handleRequestInfoRequest,
   handleRequestRequest,
   handleRequestUploadRequest,
@@ -58,6 +58,7 @@ const api = (path) => `https://drive.test${path}`;
 function allowLimits(nowValue) {
   return {
     now: nowValue,
+    limiter: allowMint(),
     ipLimiter: {
       async limit() {
         return { success: true };
@@ -67,6 +68,15 @@ function allowLimits(nowValue) {
       async limit() {
         return { success: true };
       },
+    },
+  };
+}
+
+/** A mint-route rate-limit binding that always lets the caller through. */
+function allowMint() {
+  return {
+    async limit() {
+      return { success: true };
     },
   };
 }
@@ -134,7 +144,7 @@ function drive() {
         files,
         links,
         account,
-        { now, token: TOKEN },
+        { now, limiter: allowMint(), token: TOKEN },
       ),
     /**
      * Revoke a share through the real owner route, as the given account.
@@ -163,6 +173,11 @@ function drive() {
     open: (links, at) =>
       handleShareFileRequest(new Request(api(`${SHARE_LINK_PREFIX}/${TOKEN}`)), files, links, {
         now: at,
+        ipLimiter: {
+          async limit() {
+            return { success: true };
+          },
+        },
       }),
   };
 }
@@ -293,7 +308,7 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
     d.files,
     d.fresh(),
     account,
-    { now, token: REQUEST_TOKEN },
+    { now, limiter: allowMint(), token: REQUEST_TOKEN },
   );
   assert.equal(minted.status, 201);
   const stored = rowIn(d.db.sqlite, "upload_requests", REQUEST_TOKEN);
@@ -312,7 +327,10 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
   assert.deepEqual(await info.json(), {
     open: true,
     folder: "inbox",
-    expiresLabel: expiresLabel(now + 7 * DAY_MS),
+    // No owner resolver on this call: the name is the empty string, and the
+    // page hides its "Shared by" line rather than showing a blank (drive#684).
+    owner: "",
+    expiresAtIso: expiresAtIso(now + 7 * DAY_MS),
   });
 
   // The upload itself, through a fresh store, lands in the owner's folder.
@@ -357,7 +375,7 @@ test("a revoked upload request is refused by a fresh store", async () => {
     d.files,
     d.fresh(),
     account,
-    { now, token: REQUEST_TOKEN },
+    { now, limiter: allowMint(), token: REQUEST_TOKEN },
   );
   const revoked = await handleRequestRequest(
     new Request(api(REQUEST_ENDPOINT), {
@@ -414,7 +432,7 @@ test("a size-capped upload is refused by a fresh store and writes no row bytes",
     d.files,
     d.fresh(),
     account,
-    { now, token: REQUEST_TOKEN },
+    { now, limiter: allowMint(), token: REQUEST_TOKEN },
   );
   const uploaded = await handleRequestUploadRequest(
     new Request(api(`${REQUEST_ENDPOINT}/upload?k=${REQUEST_TOKEN}&name=huge.bin`), {
@@ -436,4 +454,33 @@ test("a size-capped upload is refused by a fresh store and writes no row bytes",
   assert.equal(stored.upload_count, 0);
   assert.equal(stored.upload_bytes, 0);
   assert.equal(await scopeStore(d.files, account).read("/huge.bin"), null);
+});
+
+test("a minted share stores etag, and a replaced file is refused on a fresh store", async () => {
+  const d = drive();
+  assert.equal((await d.upload()).status, 201);
+  const minted = await d.share(d.fresh());
+  assert.equal(minted.status, 201);
+  const stored = rowIn(d.db.sqlite, "shares", TOKEN);
+  assert.equal(typeof stored.etag, "string");
+  assert.ok(String(stored.etag).length > 0, "the mint wrote the file's etag");
+
+  const opened = await d.open(d.fresh(), now);
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), d.text);
+
+  const replaced = await handleFilesRequest(
+    new Request(`${api(FILES_ENDPOINT)}/upload?path=%2F&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "other bytes",
+    }),
+    d.files,
+    account,
+    now,
+  );
+  assert.equal(replaced.status, 201);
+  const refused = await d.open(d.fresh(), now);
+  assert.equal(refused.status, 409);
+  assert.equal(await refused.text(), failureMessage("share-changed"));
 });

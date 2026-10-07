@@ -3,14 +3,14 @@
 // served from public/usage.html, so it cannot import this module;
 // test/usage.test.mjs reads the shipped page and fails CI when its copy, its
 // endpoint or its poll interval drift from here — the same gate
-// test/status.test.mjs runs for src/status.js and test/pricing-copy.test.mjs
+// test/status.test.mjs runs for core/status.js and test/pricing-copy.test.mjs
 // for the price.
 //
 // No money is worked out here, and no number is formatted here: every value
 // the page sets and the CLI prints arrives finished in the summary's `labels`
-// (src/billing.js). This module holds only the words, so a dollar can never be
+// (core/billing.js). This module holds only the words, so a dollar can never be
 // written down twice.
-import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "./billing.js";
+import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
 /**
  * The usage page itself, served from public/usage.html by the asset layer.
@@ -35,6 +35,7 @@ export const USAGE_LABELS = Object.freeze({
   gbMonths: "GB-months so far",
   downloads: "Downloads",
   downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
+  openPublicLinks: "Open public links",
   cost: "Cost so far",
   cap: "Your cap",
   // The cap's own sentence. The accounts store is live (drive issue #2), so
@@ -51,6 +52,17 @@ export const USAGE_LABELS = Object.freeze({
     what: "No storage history yet.",
     next: "It fills in from the drive's first day on the meter.",
   }),
+  // The month every figure in the "This month" section belongs to (drive#559).
+  // The rollups are whole UTC months — `monthStart` (src/meter.js) is the month
+  // the cap, the invoice and the cap walk all read — and until the page names
+  // one it says "this month", which is a month no page names and a customer
+  // cannot check against their own statement. The Worker sends the month's
+  // first instant and the page writes the name from it, in the browser's own
+  // words; what this table owns is the zone it is measured in, spelled out,
+  // and the one sentence that says how that zone works.
+  monthZone: "UTC",
+  monthNote:
+    "Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
   // A drive that has stored nothing this month, said in the "This month" area
   // (drive issue #427). The status slot there is reserved from the first paint
   // (drive#225), so a new account's first look at the page was a blank box over
@@ -63,7 +75,7 @@ export const USAGE_LABELS = Object.freeze({
   }),
   // The upload-progress line's section (drive issue #308). The line itself is
   // not a word here: /api/usage carries it finished, assembled by
-  // uploadProgress() from UPLOAD_LABEL in src/status.js — the one table
+  // uploadProgress() from UPLOAD_LABEL in core/status.js — the one table
   // `drive status` and the first-run page also read — so the page renders
   // another module's sentence and holds no second copy of it. What this page
   // owns is the heading above the line and the reason the line moves at all.
@@ -75,6 +87,20 @@ export const USAGE_LABELS = Object.freeze({
     what: "Could not reach the usage service just now.",
     next: "Leave this page open. It checks again in a minute.",
   }),
+  // The card-update link (drive#575): an anchor in the page body under the
+  // cap, pointed at the billing-portal route. It is a link, not a control the
+  // page fetches: the browser follows it and the Worker 302s to the
+  // provider's customer portal. The header stays at its five links; this one
+  // is page copy, so it is labelled here like the rest of the page's words.
+  cardPortal: "Update your card in the billing portal",
+  // Own-data export (drive#547): a link in the page body, pointed at the
+  // site Worker's export route, so a signed-in person can download the JSON
+  // before the api Worker is bound. The files themselves stay in the drive
+  // folder; this document is the account records.
+  exportHeading: "Your data",
+  exportWhat:
+    "Download a JSON file of this account's records: the account, keys, file names and version history. Your files stay in the drive folder.",
+  exportAction: "Download your data as JSON",
 });
 
 // The summary labels the four `drive usage` lines print, in print order. They
@@ -82,7 +108,7 @@ export const USAGE_LABELS = Object.freeze({
 // field named rather than rendered as "undefined". The keys are the summary's
 // own label names, so the check below indexes the labels with a key they
 // actually hold rather than with an arbitrary string.
-/** @type {ReadonlyArray<keyof ReturnType<typeof import("./billing.js").usageSummary>["labels"]>} */
+/** @type {ReadonlyArray<keyof ReturnType<typeof import("../core/billing.js").usageSummary>["labels"]>} */
 const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
 
 /**

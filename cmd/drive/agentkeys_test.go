@@ -8,11 +8,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,12 +22,16 @@ import (
 // fakeAPI is a stand-in api Worker: it answers the device flow and the key
 // routes, and records what the CLI sent so a test can assert the wire shape.
 type fakeAPI struct {
+	// mu guards every field: the server answers on its own goroutine while a
+	// test, standing in for the browser, approves a code on another.
+	mu           sync.Mutex
 	codes        map[string]DeviceCode // user code -> code, as the Worker holds it
 	approved     map[string]bool
 	keys         map[string]MintedKey // key id -> key
 	mintedKinds  []string
 	mintedNames  []string
 	revokedIDs   []string
+	queueClears  []string // the authorization header of each DELETE /v1/queue
 	renewedIDs   []string
 	lastAuthHdr  string
 	lastPath     string
@@ -45,6 +51,8 @@ func newFakeAPI() *fakeAPI {
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastAuthHdr = r.Header.Get("authorization")
 	f.lastPath = r.URL.Path
 	switch {
@@ -75,6 +83,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, 200, map[string]any{
 			"status":      "approved",
 			"deviceToken": testDeviceToken,
+			"expiresAt":   testDeviceTokenExpiry,
 			"account":     map[string]string{"id": "acct_1", "name": "Nish's MacBook", "email": "nish@example.com"},
 		})
 	case r.URL.Path == keysPath && r.Method == http.MethodPost:
@@ -97,8 +106,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			at := time.Now().Add(agentKeyTTL).Unix()
 			expiresAt = &at
 		}
+		keyID := "key_" + body.Name
+		if _, exists := f.keys[keyID]; exists {
+			keyID = fmt.Sprintf("key_%s_%d", body.Name, len(f.keys)+1)
+		}
 		key := MintedKey{
-			KeyID:        "key_" + body.Name,
+			KeyID:        keyID,
 			AccessKeyID:  "ak_" + body.Name,
 			Secret:       "sk_" + body.Name,
 			Prefix:       "u/acct_1/",
@@ -107,6 +120,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Endpoint:     "http://127.0.0.1:39181",
 			Bucket:       "drive-standin",
 			Region:       "us-east-1",
+			DownloadURL:  "https://dl.example.test/k/grant_" + body.Name + "/",
 		}
 		f.keys[key.KeyID] = key
 		writeTestJSON(w, 201, key)
@@ -145,6 +159,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && r.Method == http.MethodDelete:
 		f.revokedIDs = append(f.revokedIDs, strings.TrimPrefix(r.URL.Path, keysPath+"/"))
 		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == queueReportPath && r.Method == http.MethodDelete:
+		f.queueClears = append(f.queueClears, r.Header.Get("authorization"))
+		writeTestJSON(w, 200, map[string]any{"cleared": true})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -155,6 +172,11 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // `Bearer <token>` literal, the shape the repo's own secret scan refuses to
 // carry in any tracked file (test/pr-gate.test.mjs, gate 4).
 const testDeviceToken = "dtok_for_this_device"
+
+// testDeviceTokenExpiry is the epoch second the stand-in poll answers as the
+// token's window end (drive#557). A real Worker computes now + 30 days; the
+// tests pin the number so Login writing it down is a comparison, not a clock.
+const testDeviceTokenExpiry = int64(1_800_000_000)
 
 func writeTestJSON(w http.ResponseWriter, status int, body any) {
 	data, err := json.Marshal(body)
@@ -179,18 +201,23 @@ func TestSignInShowsTheCodeThenPollsUntilApproved(t *testing.T) {
 	// Approve from "the browser" while the terminal is polling: the first poll
 	// answers pending, the second is approved.
 	go func() {
+		api.mu.Lock()
+		defer api.mu.Unlock()
 		api.approved["dev_secret"] = true
 	}()
 	var out strings.Builder
-	token, account, err := SignIn(client, "Nish's MacBook", &out)
+	signed, err := SignIn(client, "Nish's MacBook", &out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token != "dtok_for_this_device" {
-		t.Fatalf("got token %q, want the one the Worker minted", token)
+	if signed.Token != "dtok_for_this_device" {
+		t.Fatalf("got token %q, want the one the Worker minted", signed.Token)
 	}
-	if account.ID != "acct_1" || account.Name != "Nish's MacBook" {
-		t.Fatalf("got account %+v, want the one the Worker sent", account)
+	if signed.Account.ID != "acct_1" || signed.Account.Name != "Nish's MacBook" {
+		t.Fatalf("got account %+v, want the one the Worker sent", signed.Account)
+	}
+	if signed.ExpiresAt != testDeviceTokenExpiry {
+		t.Fatalf("got expiry %d, want the poll's expiresAt", signed.ExpiresAt)
 	}
 	printed := out.String()
 	if !strings.Contains(printed, "BCDF-GHJK") {
@@ -219,10 +246,159 @@ func TestSignInFailsWithTheWorkersSentenceWhenACodeExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	if _, _, err := SignIn(client, "laptop", &out); err == nil {
+	if _, err := SignIn(client, "laptop", &out); err == nil {
 		t.Fatal("expected the expired code to fail")
 	} else if !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("the Worker's own sentence was lost: %v", err)
+	}
+}
+
+func TestA401TriggersOneReSignInAndTheCallThenSucceeds(t *testing.T) {
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	const dead = "dtok_expired"
+	const fresh = "dtok_fresh"
+	var mintCalls, codeCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == deviceCodePath && r.Method == http.MethodPost:
+			codeCalls++
+			writeTestJSON(w, 200, DeviceCode{
+				DeviceCode: "dev_secret", UserCode: "BCDF-GHJK",
+				VerificationURI: "https://api.test/v1/device/approve",
+				ExpiresIn:       600, Interval: 1,
+			})
+		case r.URL.Path == deviceTokenPath && r.Method == http.MethodPost:
+			writeTestJSON(w, 200, map[string]any{
+				"status":      "approved",
+				"deviceToken": fresh,
+				"expiresAt":   testDeviceTokenExpiry,
+				"account":     map[string]string{"id": "acct_1", "name": "Nish", "email": "nish@example.com"},
+			})
+		case r.URL.Path == keysPath && r.Method == http.MethodPost:
+			mintCalls++
+			auth := r.Header.Get("authorization")
+			if auth == "Bearer "+dead {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if auth != "Bearer "+fresh {
+				http.Error(w, "bad token "+auth, http.StatusBadRequest)
+				return
+			}
+			writeTestJSON(w, 200, MintedKey{
+				KeyID: "key_device", AccessKeyID: "ak", Secret: "sk",
+				Prefix: "u/acct_1/", Capabilities: []string{"list", "read", "write"},
+				Endpoint: "http://127.0.0.1:9", Bucket: "drive-standin", Region: "us-east-1",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: dead}); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	client, err := signedInClient(home, "", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := client.MintKey("device", "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.KeyID != "key_device" {
+		t.Fatalf("got %+v after the re-sign-in", key)
+	}
+	if mintCalls != 2 {
+		t.Fatalf("mint ran %d times, want 2 (one 401, then the retry)", mintCalls)
+	}
+	if codeCalls != 1 {
+		t.Fatalf("device flow ran %d times, want 1", codeCalls)
+	}
+	if !strings.Contains(out.String(), reSignInLine) {
+		t.Errorf("did not print the one re-sign-in line:\n%s", out.String())
+	}
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.DeviceToken != fresh {
+		t.Fatalf("stored token %q, want the one the re-sign-in wrote", creds.DeviceToken)
+	}
+}
+
+// The share and request commands send their own requests, so they reach the
+// re-sign-in through withFreshDeviceToken rather than APIClient.do. Same rule:
+// a 401 runs the device flow once and the call is retried once with the new
+// token; any other failure is returned untouched (drive#557).
+func TestShareLinksReSignInOnceOnA401(t *testing.T) {
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	const dead = "dtok_expired"
+	const fresh = "dtok_fresh"
+	var codeCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == deviceCodePath && r.Method == http.MethodPost:
+			codeCalls++
+			writeTestJSON(w, 200, DeviceCode{
+				DeviceCode: "dev_secret", UserCode: "BCDF-GHJK",
+				VerificationURI: "https://api.test/v1/device/approve",
+				ExpiresIn:       600, Interval: 1,
+			})
+		case r.URL.Path == deviceTokenPath && r.Method == http.MethodPost:
+			writeTestJSON(w, 200, map[string]any{
+				"status":      "approved",
+				"deviceToken": fresh,
+				"expiresAt":   testDeviceTokenExpiry,
+				"account":     map[string]string{"id": "acct_1", "name": "Nish", "email": "nish@example.com"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: dead}); err != nil {
+		t.Fatal(err)
+	}
+
+	var tokens []string
+	var out strings.Builder
+	err := withFreshDeviceToken(home, "", &out, func(token string) error {
+		tokens = append(tokens, token)
+		if token == dead {
+			return &APIError{Method: http.MethodPost, Path: "/api/links", Status: "401 Unauthorized"}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 2 || tokens[0] != dead || tokens[1] != fresh {
+		t.Fatalf("calls ran with %v, want the dead token then the fresh one", tokens)
+	}
+	if codeCalls != 1 {
+		t.Fatalf("device flow ran %d times, want 1", codeCalls)
+	}
+
+	// A refusal that is not a 401 is the Worker's answer, not a dead sign-in:
+	// no device flow, no retry.
+	tokens = nil
+	err = withFreshDeviceToken(home, "", &out, func(token string) error {
+		tokens = append(tokens, token)
+		return &APIError{Method: http.MethodPost, Path: "/api/links", Status: "403 Forbidden"}
+	})
+	if err == nil || len(tokens) != 1 || codeCalls != 1 {
+		t.Fatalf("a 403 retried or re-signed in: err=%v calls=%v deviceFlows=%d", err, tokens, codeCalls)
 	}
 }
 
@@ -541,6 +717,7 @@ func TestExpiryLabelNamesTheInstantOrTheAbsenceOfOne(t *testing.T) {
 // person runs `drive init` and the line they read is the one the api Worker
 // answers with, never the mint's value the CLI already had.
 func TestInitShowsTheExpiryTheToolHolds(t *testing.T) {
+	stubAgentPath(t)
 	home := t.TempDir()
 	api := newFakeAPI()
 	server := httptest.NewServer(api)

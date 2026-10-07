@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -9,9 +10,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -35,9 +38,10 @@ import (
 // It needs a mount. Where the host does not give one the test skips with a
 // message naming this host's own constraint: an unprivileged FUSE mount on
 // Linux (run it inside `unshare -Urm`) or passwordless sudo for the NFS mount
-// on macOS. An rclone that exits before the mount appears is still a real
-// failure. Set DRIVE_STANDIN_SIZE_MB to change the big file's size (default
-// 64).
+// on macOS. Under CI=true that skip is a failure: the runner is built to
+// mount (drive#501). An rclone that exits before the mount appears is still a
+// real failure. Set DRIVE_STANDIN_SIZE_MB to change the big file's size
+// (default 64).
 func TestStandinMountProof(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -72,20 +76,14 @@ func TestStandinMountProof(t *testing.T) {
 
 	port := freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port,
 		"--log-level", "INFO")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
 
 	// Seed the device's own prefix the way the api Worker will (step 1).
 	seedEnv := append(os.Environ(),
 		"RCLONE_CONFIG="+filepath.Join(home, ".config", "drive", "rclone.conf"),
+		rcloneSecretEnv+"="+secretKey,
 	)
 	// Let Mount write the config first so the seed uses the same file.
 	cfg := testStorage()
@@ -189,6 +187,184 @@ func TestStandinMountProof(t *testing.T) {
 	}
 }
 
+// TestStandinMountProofStrayFile is drive#744: `drive mount` (the Mount
+// function) parks a local file already in the drive folder, prints the note,
+// copies the file into the mounted drive, and the bytes land in storage.
+// The stand-in mount-proof CI job runs -run TestStandinMountProof, which
+// matches this name, so the real FUSE path is the same job as the original
+// proof (drive#501).
+func TestStandinMountProofStrayFile(t *testing.T) {
+	if CurrentGOOS() == "windows" {
+		t.Skip("stray-file park is the unix mount-folder path")
+	}
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone is not installed")
+	}
+	if testing.Short() {
+		t.Skip("stand-in proof skipped in -short mode")
+	}
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	mountDir := filepath.Join(home, "Drive")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const strayBody = "keep me"
+	if err := os.WriteFile(filepath.Join(mountDir, "notes.txt"), []byte(strayBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _ := standinOn(t, root, "u/stray")
+	rcAddr := "127.0.0.1:" + freePort(t)
+	var note lockedBuffer
+	cmd := exec.Command(driveBin(t), "mount",
+		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
+		"--prefix", cfg.Prefix, "--foreground")
+	cmd.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
+		"DRIVE_DEVICE=stray-proof",
+		"DRIVE_RC_ADDR="+rcAddr,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = io.MultiWriter(os.Stderr, &note)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { stopStandinProcess(cmd, mountDir) }) }
+	t.Cleanup(stop)
+	if !waitForMount(t, cmd, mountDir) {
+		log, _ := os.ReadFile(filepath.Join(DefaultConfigDir(home), "mount.log"))
+		t.Logf("stderr:\n%s\nmount.log:\n%s", note.Bytes(), log)
+		stop()
+		if bytes.Contains(log, []byte("CRITICAL")) || bytes.Contains(log, []byte("Failed to start")) {
+			t.Fatalf("rclone failed to start the mount, not a FUSE skip")
+		}
+		skipNoMount(t, "this host will not bring up the mount on %s (%s): the stray-file proof needs "+
+			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
+			"NFS mount", mountDir, mountSkipReason())
+	}
+
+	copiedDeadline := testUntil(t, 15*time.Second)
+	var got []byte
+	var err error
+	for time.Now().Before(copiedDeadline) {
+		got, err = os.ReadFile(filepath.Join(mountDir, "notes.txt"))
+		if err == nil && string(got) == strayBody {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if string(got) != strayBody {
+		log, _ := os.ReadFile(filepath.Join(DefaultConfigDir(home), "mount.log"))
+		t.Fatalf("drive notes.txt = %q, %v, want the parked bytes copied into the mount\nstderr:\n%s\nmount.log:\n%s",
+			got, err, note.Bytes(), log)
+	}
+
+	logged := note.String()
+	if !strings.Contains(logged, "already had local files") {
+		t.Errorf("stderr is missing the stray-file note:\n%s", logged)
+	}
+	if !strings.Contains(logged, "moved to") || !strings.Contains(logged, strayHoldingDir(mountDir)) {
+		t.Errorf("stderr does not name the holding folder the files were parked in:\n%s", logged)
+	}
+
+	holdingDeadline := testUntil(t, 5*time.Second)
+	var leftover []string
+	for time.Now().Before(holdingDeadline) {
+		leftover = nil
+		matches, globErr := filepath.Glob(strayHoldingDir(mountDir) + "*")
+		if globErr != nil {
+			t.Fatal(globErr)
+		}
+		for _, holding := range matches {
+			entries, readErr := os.ReadDir(holding)
+			if readErr == nil && len(entries) > 0 {
+				leftover = append(leftover, holding+":"+strings.Join(namesOf(entries), ","))
+			}
+		}
+		if leftover == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if leftover != nil {
+		t.Errorf("holding folders still have files after the copy into the drive: %v", leftover)
+	}
+
+	seedEnv := append(os.Environ(),
+		"RCLONE_CONFIG="+RcloneConfigPath(home),
+		rcloneSecretEnv+"="+cfg.SecretKey,
+	)
+	storageDeadline := testUntil(t, 20*time.Second)
+	var stored []byte
+	var storeErr error
+	for time.Now().Before(storageDeadline) {
+		cat := exec.Command("rclone", "cat", RemoteFor(cfg)+"/notes.txt")
+		cat.Env = seedEnv
+		stored, storeErr = cat.Output()
+		if storeErr == nil && string(stored) == strayBody {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if string(stored) != strayBody {
+		t.Fatalf("storage notes.txt = %q, %v, want the stray file to have uploaded", stored, storeErr)
+	}
+}
+
+func namesOf(entries []os.DirEntry) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	return names
+}
+
+// lockedBuffer is a bytes.Buffer that a test can read while rclone is still
+// writing the child's stderr into it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func (l *lockedBuffer) Bytes() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]byte, l.b.Len())
+	copy(out, l.b.Bytes())
+	return out
+}
+
+// testUntil is now+d, or the test deadline minus a couple of seconds so a
+// poll cannot run past the runner's own timeout.
+func testUntil(t *testing.T, d time.Duration) time.Time {
+	t.Helper()
+	at := time.Now().Add(d)
+	if dl, ok := t.Deadline(); ok {
+		leave := dl.Add(-2 * time.Second)
+		if leave.Before(at) {
+			return leave
+		}
+	}
+	return at
+}
+
 // TestStandinPauseProof is the drive issue #100 done-when proof, run against a
 // local S3 stand-in (`rclone serve s3`, stock), exactly as TestStandinMountProof
 // is. It asserts the issue's own bullets:
@@ -238,14 +414,8 @@ func TestStandinPauseProof(t *testing.T) {
 	// and pause/resume/status have to reach THIS mount.
 	rcAddr := "127.0.0.1:" + freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
-		"--auth-key", accessKey+","+secretKey, "--addr", "127.0.0.1:"+port)
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
+		"--auth-key", accessKey+","+secretKey)
 
 	cfg := testStorage()
 	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
@@ -272,7 +442,7 @@ func TestStandinPauseProof(t *testing.T) {
 		if !waitForMount(t, cmd, mountDir) {
 			_ = cmd.Process.Signal(os.Interrupt)
 			_ = cmd.Wait()
-			t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+			skipNoMount(t, "this host does not permit an unprivileged FUSE mount on %s; "+
 				"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run StandinPause", mountDir)
 		}
 		return cmd
@@ -293,7 +463,7 @@ func TestStandinPauseProof(t *testing.T) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}
 
-	rc := func() *rcClient { return newRCClient("rclone", rcAddr, "") }
+	rc := func() *rcClient { return rcClientForTestHome(t, home, rcAddr, "") }
 	readBytes := func(t *testing.T) int64 {
 		t.Helper()
 		stats, err := rc().ReadStats(context.Background())
@@ -412,7 +582,7 @@ func TestStandinPauseProof(t *testing.T) {
 		t.Errorf("queue = %+v, want empty once the upload finished", queue.Queue)
 	}
 	listing := exec.Command("rclone", "lsl", "drive:"+cfg.Bucket+"/"+cfg.Prefix+"/pause-proof.bin")
-	listing.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home))
+	listing.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home), rcloneSecretEnv+"="+cfg.SecretKey)
 	out, err := listing.Output()
 	if err != nil {
 		t.Fatalf("independent rclone lsl: %v", err)
@@ -510,6 +680,78 @@ func waitForPort(t testing.TB, port string) {
 	t.Fatalf("stand-in never listened on %s", port)
 }
 
+// testProcesses is every stand-in server a test started in its own process
+// group, keyed by that group's leader. TestMain's signal handler kills them
+// all, because defers and t.Cleanup do not run when the test binary is sent
+// SIGTERM by a stopping runner (drive#659).
+var testProcesses sync.Map
+
+// processStops makes stopping a stand-in exactly once. Two callers can reach
+// the same *exec.Cmd — its t.Cleanup and TestMain's signal handler — and more
+// than one caller of os.Process.Wait on one process corrupts the wait.
+var processStops sync.Map // *exec.Cmd -> *processStop
+
+type processStop struct {
+	once sync.Once
+	err  error
+}
+
+// stopProcess stops one tracked stand-in once, and never signals a process it
+// has already reaped. The entry stays in processStops for the whole run, so a
+// later sweep on the same *exec.Cmd is a no-op even after the OS has recycled
+// the pid (a stale kill would hit an unrelated process group).
+func stopProcess(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	testProcesses.Delete(cmd.Process.Pid)
+	value, _ := processStops.LoadOrStore(cmd, &processStop{})
+	stop := value.(*processStop)
+	stop.once.Do(func() {
+		stop.err = signalProcessGroup(cmd, 5*time.Second)
+	})
+	return stop.err
+}
+
+// trackTestProcess registers a started stand-in so both t.Cleanup and the
+// shutdown handler stop it. The group kill is what reaches the server and
+// anything it started.
+func trackTestProcess(tb testing.TB, cmd *exec.Cmd) {
+	tb.Helper()
+	testProcesses.Store(cmd.Process.Pid, cmd)
+	tb.Cleanup(func() { stopProcess(cmd) })
+}
+
+// stopTestProcesses stops every stand-in a test is still running.
+func stopTestProcesses() {
+	testProcesses.Range(func(_, value any) bool {
+		stopProcess(value.(*exec.Cmd))
+		return true
+	})
+}
+
+// startRcloneServe starts the stock loopback `rclone serve s3` stand-in for dir
+// on port, in its own process group, and waits until it listens. Every test and
+// benchmark starts the stand-in here, so no call site can forget the cleanup
+// and a signalled run kills the whole group (drive#659).
+func startRcloneServe(tb testing.TB, dir, port string, args ...string) *exec.Cmd {
+	tb.Helper()
+	if _, err := exec.LookPath("rclone"); err != nil {
+		tb.Skip("rclone is not installed")
+	}
+	full := append([]string{"serve", "s3", dir}, args...)
+	full = append(full, "--addr", "127.0.0.1:"+port)
+	serve := exec.Command("rclone", full...)
+	serve.SysProcAttr = ownProcessGroup()
+	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
+	if err := serve.Start(); err != nil {
+		tb.Fatal(err)
+	}
+	trackTestProcess(tb, serve)
+	waitForPort(tb, port)
+	return serve
+}
+
 // waitForMount waits for the mount to appear, on whichever platform the test
 // is running. A plain directory that never becomes a mount point while rclone
 // is still running means the host refuses the mount: FUSE without /dev/fuse on
@@ -544,6 +786,35 @@ func mountIsLive(dir string) bool {
 	return on
 }
 
+func rcClientForTestHome(t *testing.T, home, addr, fs string) *rcClient {
+	t.Helper()
+	c := newRCClient("rclone", addr, fs)
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.User == "" || auth.Pass == "" {
+		t.Fatal("rclone.env has no rc user/pass after mount")
+	}
+	c.user, c.pass = auth.User, auth.Pass
+	return c
+}
+
+func storedRCAddr(t *testing.T, home string) string {
+	t.Helper()
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Addr == "" {
+		t.Fatal("rclone.env has no rc address after mount")
+	}
+	if auth.Addr == loopbackRCAddr {
+		t.Fatalf("stored rc address is the shipped %s; two mounts would collide", loopbackRCAddr)
+	}
+	return auth.Addr
+}
+
 // startStandinMount starts `drive mount --foreground` for home against cfg and
 // waits until the kernel reports the mount, so a test reads through a real
 // mount rather than a directory that never became one. The keys reach the child
@@ -573,7 +844,7 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 	stop := func() { stopStandinProcess(cmd, mountDir) }
 	if !waitForMount(t, cmd, mountDir) {
 		stop()
-		t.Skipf("this host will not bring up the mount on %s (%s): the proof needs "+
+		skipNoMount(t, "this host will not bring up the mount on %s (%s): the proof needs "+
 			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
 			"NFS mount", mountDir, mountSkipReason())
 	}
@@ -590,6 +861,22 @@ func mountSkipReason() string {
 	}
 	return "the host does not permit an unprivileged FUSE mount (run it inside a " +
 		"user namespace: unshare -Urm go test ./cmd/drive -run Standin)"
+}
+
+// skipNoMount skips the calling test when this host will not bring up a mount.
+// Under CI=true it fails instead: GitHub's ubuntu runners can mount, so a skip
+// there means the runner is broken, not that the proof is optional (drive#501).
+// The comparison is exact, because shells export CI=false to switch CI off and
+// that host is still an ordinary skip. waitForMount already Fatals when rclone
+// exits before the mount appears, so this helper only sees a live rclone and a
+// directory that never became a mount — the host refused FUSE (or macOS NFS).
+func skipNoMount(t testing.TB, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("CI") == "true" {
+		t.Fatalf("%s: a FUSE skip is a failure under CI=true (drive#501)", msg)
+	}
+	t.Skip(msg)
 }
 
 // stopStandinProcess stops a foreground mount the way the test namespace allows:
@@ -654,24 +941,11 @@ func unmountForCleanup(mountDir string) error {
 // serving on this host.
 func standinOn(t *testing.T, root, prefix string) (StorageConfig, *exec.Cmd) {
 	t.Helper()
-	if _, err := exec.LookPath("rclone"); err != nil {
-		t.Skip("rclone is not installed")
-	}
 	cfg := testStorage()
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
 	port := freePort(t)
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
-		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = serve.Process.Kill()
-		_, _ = serve.Process.Wait()
-	})
-	waitForPort(t, port)
+	serve := startRcloneServe(t, filepath.Join(root, "data"), port,
+		"--auth-key", accessKey+","+secretKey, "--log-level", "ERROR")
 	cfg.Endpoint = "http://127.0.0.1:" + port
 	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
 	cfg.Bucket = "bucket"
@@ -708,7 +982,10 @@ func standinEnv(t *testing.T, home string, cfg StorageConfig) []string {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home))
+	return append(os.Environ(),
+		"RCLONE_CONFIG="+RcloneConfigPath(home),
+		rcloneSecretEnv+"="+cfg.SecretKey,
+	)
 }
 
 // openSizes are the three files issue #194 names, and the bytes that count as
@@ -864,7 +1141,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
 	before, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)
@@ -890,7 +1167,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Errorf("the mount's chunk-size limit is %d bytes, want the fill's %d", before.Opt.ChunkSizeLimit, wantLimit)
 	}
 
-	res, err := fillPass(ctx, c, false, 0, 0, fillReader(mountDir))
+	res, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{name}}, 0, 0)
 	if err != nil {
 		t.Fatalf("fill pass through the mount: %v", err)
 	}
@@ -952,13 +1229,10 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
-		_, err := fillPass(ctx, c, false, 0, 0, func(string, bool) error {
-			_, err := fillReadFile(filepath.Join(mountDir, fillName))
-			return err
-		})
+		_, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{fillName}}, 0, 0)
 		filled <- err
 	}()
 	var withFill []time.Duration
@@ -1016,7 +1290,27 @@ func driveBin(t testing.TB) string {
 // TestMain removes the built binary's directory after the run, since no single
 // test owns it (any test may have been the one to build it).
 func TestMain(m *testing.M) {
+	// A run stopped by a signal (systemd or the CI runner stopping `go test`)
+	// must take its stand-ins with it: defers and t.Cleanup do not run when the
+	// binary is signalled, so this handler stops every tracked server before
+	// the process leaves (drive#659).
+	stopping := make(chan os.Signal, 1)
+	notifyShutdown(stopping)
+	go func() {
+		<-stopping
+		// A second SIGTERM must be able to end the process at once: give up
+		// the notify channel so the default handler takes over, then run the
+		// bounded cleanup below.
+		signal.Stop(stopping)
+		stopTestProcesses()
+		benchTeardown()
+		if builtBinDir != "" {
+			_ = os.RemoveAll(builtBinDir)
+		}
+		os.Exit(1)
+	}()
 	code := m.Run()
+	stopTestProcesses()
 	// The benchmark harness (bench_test.go) is started once for a -bench run
 	// and owns two child processes, so it stops them here rather than leaving
 	// orphans behind on the host.
@@ -1074,7 +1368,7 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", RCAddr(), RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, RCAddr(), RemoteFor(cfg))
 	stats, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)

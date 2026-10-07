@@ -52,22 +52,21 @@ import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-
-import { dispatch } from "../workers/api/src/index.js";
 import {
   bucketForAccount,
   CAPABILITIES_BY_KIND,
   KEY_KINDS,
   scopeFor,
-} from "../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
+} from "../core/keyprovider.js";
+import { createMemoryStore } from "../core/keystore.js";
 import {
   createS3Client,
   parseListVersions,
   provisionBucket,
   readBucketConfig,
-} from "../workers/api/src/s3.js";
-import { createS3KeyProvider, policyForScope } from "../workers/api/src/s3-keys.js";
+} from "../core/s3.js";
+import { createS3KeyProvider, policyForScope } from "../core/s3-keys.js";
+import { dispatch } from "../workers/api/src/index.js";
 import { startMinioStandin } from "./minio-standin.mjs";
 
 // The last MinIO release, pinned by tag. MinIO's own downloads and Docker Hub
@@ -226,7 +225,7 @@ test("S3 signing is aws4fetch, not a hand-written SigV4 module", () => {
     false,
     "workers/api/src/sigv4.js was replaced by aws4fetch",
   );
-  const s3 = readFileSync(new URL("../workers/api/src/s3.js", import.meta.url), "utf8");
+  const s3 = readFileSync(new URL("../core/s3.js", import.meta.url), "utf8");
   assert.match(s3, /from "aws4fetch"/);
 });
 

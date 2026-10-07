@@ -12,11 +12,11 @@
 // email path's own (drive#387): an address with no account yet must tick the
 // card box, and the refusal is the same sentence (src/signin.js).
 
+import { AFTER_SIGNIN_PATH, authFor } from "../core/auth.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import { failureMessage } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { accessConfig, accessIdentity } from "./access.js";
-import { AFTER_SIGNIN_PATH, authFor } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
-import { failureMessage } from "./messages.js";
-import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { emailHasUser, refuseSignupWithoutCard, signinClosedBody } from "./signin.js";
 
 /** @typedef {import("./signin.js").SigninEnv & {ACCESS_AUD?: string, ACCESS_TEAM_DOMAIN?: string}} AccessSigninEnv */

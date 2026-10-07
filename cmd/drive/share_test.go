@@ -96,7 +96,7 @@ func testLinkServer() *linkServer {
 			Name:         "cat.jpg",
 			URL:          "https://drive.test/s/" + shareToken,
 			StateLabel:   "Open",
-			ExpiresLabel: "Until 7 Oct",
+			ExpiresAtIso: "2026-10-08T09:00:00.000Z",
 		}},
 		requests: []RequestLink{{
 			Token:        "BBBBBBBBBBBBBBBBBBBBBB",
@@ -104,7 +104,7 @@ func testLinkServer() *linkServer {
 			Name:         "Dropbox",
 			URL:          "https://drive.test/upload.html?k=BBBBBBBBBBBBBBBBBBBBBB",
 			StateLabel:   "Open",
-			ExpiresLabel: "Until 7 Oct",
+			ExpiresAtIso: "2026-10-08T09:00:00.000Z",
 		}},
 	}
 }

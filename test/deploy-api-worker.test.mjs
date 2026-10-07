@@ -23,23 +23,24 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { failureMessage } from "../src/messages.js";
+import { DEVICE_CODE_INTERVAL_SECONDS } from "../core/device-signin.js";
+import { createMemoryStore } from "../core/keystore.js";
+import { failureMessage } from "../core/messages.js";
 import apiConfig from "../workers/api/cloudflare.config.ts";
 import { DEVICE_GLOBAL_LIMIT, DEVICE_IP_LIMIT } from "../workers/api/src/device-routes.js";
-import { DEVICE_CODE_INTERVAL_SECONDS } from "../workers/api/src/device-signin.js";
 import { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
+import { KEYS_LIMIT } from "../workers/api/src/key-routes.js";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-// The two limiter names device-routes.js reads off env, imported from that
-// module rather than copied here or read back out of its text: a rename there
+// The limiter names the api routes read off env, imported from those modules
+// rather than copied here or read back out of their text: a rename there
 // changes this gate with it, so the config cannot declare a name the routes no
 // longer read and the routes cannot read a name the config does not declare.
 // Nothing here spells the names, because a second spelling is the drift this
 // import exists to prevent.
-const limiterNames = [DEVICE_IP_LIMIT, DEVICE_GLOBAL_LIMIT];
+const limiterNames = [DEVICE_IP_LIMIT, DEVICE_GLOBAL_LIMIT, KEYS_LIMIT];
 
 // The site Worker's rate-limit bindings, as its config spells them. The root
 // config cannot be imported (see the header), so the namespaces and numbers
@@ -60,12 +61,16 @@ function siteLimiters() {
   }));
 }
 
-test("the api Worker's config declares the two device limiters the routes read", () => {
+test("the api Worker's config declares the rate limiters the routes read", () => {
   // Both directions, so the gate cannot pass with a name on only one side: the
-  // config's rate-limit bindings are exactly the names device-routes.js reads
-  // off env, no more and no fewer. A third limit added there, or one renamed on
-  // either side, fails here and says which side drifted.
-  assert.equal(new Set(limiterNames).size, 2, "the device flow runs behind two limits");
+  // config's rate-limit bindings are exactly the names the device and key
+  // routes read off env, no more and no fewer. A third limit added there, or
+  // one renamed on either side, fails here and says which side drifted.
+  assert.equal(
+    new Set(limiterNames).size,
+    3,
+    "the device flow runs behind two limits and the key mint behind one",
+  );
   const bindings = Object.entries(apiConfig.env);
   const declaredLimiters = bindings
     .filter(([, binding]) => binding.type === "rate-limit")
@@ -85,33 +90,31 @@ test("the api Worker's config declares the two device limiters the routes read",
   }
 });
 
-test("the config binds the api Worker to the drive database, the device limits, and the founding offer switch", () => {
+test("the config binds the api Worker to the drive database, the device limits, and the reseller token", () => {
   // The declarations are the env this Worker has: the one database its stores
   // and Better Auth's user and session tables live on, the two limiters above,
-  // the founding-member offer switch (drive#386) the accounts store reads
-  // when a row becomes paying, and the iDrive e2 reseller token (drive#462)
-  // the per-bucket key provider mints with. The accounts store the device
+  // and the iDrive e2 reseller token (drive#462) the per-bucket key provider
+  // mints with, plus the send_email binding device approval uses to mail the
+  // owner (drive#518). The accounts store the device
   // approval reads is the user table already on this database (#181), not a
-  // second one, and no mailer is declared because no route this Worker mounts
-  // sends mail (the site Worker's /api/signin owns the sign-in link).
+  // second one.
   assert.deepEqual(Object.keys(apiConfig.env), [
     "DRIVE_DB",
     "DEVICE_RATE_LIMITER",
     "DEVICE_GLOBAL_RATE_LIMITER",
-    "FOUNDING_OFFER_OPEN",
+    "KEYS_RATE_LIMITER",
     "IDRIVE_E2_API_TOKEN",
+    "EMAIL",
   ]);
   // The iDrive token is a secret binding, so its value is never in the config
   // and `wrangler types` reads it off the deployed Worker (drive#462).
   assert.equal(apiConfig.env.IDRIVE_E2_API_TOKEN.type, "secret");
-  assert.equal(apiConfig.env.FOUNDING_OFFER_OPEN.type, "text");
-  assert.equal(apiConfig.env.FOUNDING_OFFER_OPEN.value, "1");
+  assert.equal(apiConfig.env.EMAIL.type, "send-email");
   assert.equal(
     apiConfig.env.DRIVE_DB.name,
     "drive-data",
     "customer data lives in the drive database",
   );
-  assert.ok(!("EMAIL" in apiConfig.env), "no api route mails, so no mailer is declared");
   assert.ok(
     !("ACCOUNTS_STORE" in apiConfig.env),
     "the account store is Better Auth's user table on DRIVE_DB (#181)",
@@ -164,8 +167,8 @@ test("the per-IP ceiling sits above the CLI's own poll rate and the sign-in limi
 test("every rate-limit namespace on the account is distinct", () => {
   // Cloudflare wants a positive integer string unique per account, and a
   // namespace another binding already uses fails the deploy with 10021. The
-  // site Worker holds the first five; the api Worker's pair has to start after
-  // them rather than reuse one.
+  // site Worker holds the first five; the api Worker's three have to start
+  // after them rather than reuse one.
   const api = Object.values(apiConfig.env)
     .filter((binding) => binding.type === "rate-limit")
     .map((binding) => ({ binding: "api", namespace: binding.namespace }));

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -64,6 +65,10 @@ type MintedKey struct {
 	Endpoint     string   `json:"endpoint,omitempty"`
 	Bucket       string   `json:"bucket,omitempty"`
 	Region       string   `json:"region,omitempty"`
+	// DownloadURL is the dl Worker base URL with this key's download grant
+	// (drive#517), or empty when the deployment has no dl host. The mount
+	// reads through it so reads are checked and counted.
+	DownloadURL string `json:"downloadUrl,omitempty"`
 }
 
 // Account is the account a device token belongs to.
@@ -78,6 +83,99 @@ type APIClient struct {
 	Base  string // the api Worker base URL, without a trailing slash
 	Token string // the device token from sign-in; empty before it
 	HTTP  *http.Client
+	// Re is the one way back from a dead device token, and it is nil when this
+	// client has no business signing anyone in: the device flow itself, and
+	// every call that already holds another credential. See ReSigner.
+	Re ReSigner
+}
+
+// ReSigner gets a new device token for this machine, having run the device
+// flow again, and has already written it over the dead one. It is an interface
+// for two reasons, both load-bearing: the retry in do() is provable against a
+// stub that hands back a token without a browser, and a client that is holding
+// no token to begin with simply leaves it nil and can never sign anyone in by
+// accident.
+//
+// One call, at most, per client: the device flow itself has to reach the api
+// Worker with no token, and a second sign-in after a fresh one was refused
+// would be a loop with a browser at the end of it.
+type ReSigner interface {
+	ReSignIn() (token string, expiresAt int64, err error)
+}
+
+// reSignInLine is what the CLI prints before it opens a browser, once, when an
+// account route refuses a token and the CLI signs this machine back in
+// (drive#557). It is a line, not a paragraph: the person is looking at a
+// command that stopped working, and the one thing they need to know is that
+// this is normal and the browser is about to open.
+const reSignInLine = "This device's sign-in had expired; signing in again."
+
+// signedInClient builds the client every account route uses: this device's
+// token from the credentials file, plus the way back when that token is dead.
+// It is the one place those two are wired together, so no command can end up
+// with a client that can never re-sign in and another that re-signs in without
+// being asked (drive#557).
+func signedInClient(home, api string, out io.Writer) (*APIClient, error) {
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		return nil, err
+	}
+	base, err := resolveAPIBase(home, api)
+	if err != nil {
+		return nil, err
+	}
+	client, err := NewAPIClient(base, creds.DeviceToken)
+	if err != nil {
+		return nil, err
+	}
+	client.Re = deviceReSigner{home: home, base: base, out: out}
+	return client, nil
+}
+
+// deviceReSigner is the real ReSigner: it runs the device flow again for this
+// machine and writes the new token over the dead one, so the very next
+// account call in the same command is already signed in again. It reads the
+// base and the account it is signing in to from the credentials file, which is
+// the same file the dead token came from, so a re-sign-in lands on the account
+// the person was already using rather than whichever one answers first.
+type deviceReSigner struct {
+	home string
+	base string
+	out  io.Writer
+}
+
+// ReSignIn opens the browser once, waits for the approval, and replaces the
+// stored device token. The stored APIBase is rewritten with the same value it
+// already had only so a credentials file written by a run that predates it
+// still ends up complete.
+func (r deviceReSigner) ReSignIn() (string, int64, error) {
+	creds, err := LoadCredentials(r.home)
+	if err != nil {
+		return "", 0, err
+	}
+	client, err := NewAPIClient(r.base, "")
+	if err != nil {
+		return "", 0, err
+	}
+	out := r.out
+	if out == nil {
+		out = io.Discard
+	}
+	fmt.Fprintln(out, reSignInLine)
+	signed, err := SignIn(client, deviceName(), out)
+	if err != nil {
+		return "", 0, err
+	}
+	creds.APIBase = r.base
+	creds.DeviceToken = signed.Token
+	creds.TokenExpiresAt = signed.ExpiresAt
+	creds.AccountID = signed.Account.ID
+	creds.AccountName = signed.Account.Name
+	creds.AccountEmail = signed.Account.Email
+	if err := SaveCredentials(r.home, creds); err != nil {
+		return "", 0, err
+	}
+	return signed.Token, signed.ExpiresAt, nil
 }
 
 // NewAPIClient builds a client for a base URL, reusing parseAPIBase's checks
@@ -93,28 +191,87 @@ func NewAPIClient(apiBase, token string) (*APIClient, error) {
 	return &APIClient{Base: base, Token: token, HTTP: &http.Client{Timeout: apiTimeout}}, nil
 }
 
-// post sends a JSON body and decodes a JSON answer. An api Worker error is
-// {error: <sentence>} (docs/api.md), so that sentence is kept in the detail
-// (DRIVE_DEBUG); the person sees the message table's words for the failure
-// class instead of raw text from the service (drive#117).
+// userAgent is what every drive request to the api names itself with:
+// drive/<version> (<os>/<arch>). The api Worker reads the version out
+// of it and answers 426 with the update sentence when the version is
+// below the deployment's configured minimum (drive#560), so an api
+// shape change under an old CLI names the fix instead of surfacing as
+// an unreadable answer. Go's own default ("Go-http-client/1.1")
+// carries no version, which is why the header is set by hand on every
+// request this client sends.
+func userAgent() string {
+	return fmt.Sprintf("drive/%s (%s/%s)", versionText(), runtime.GOOS, runtime.GOARCH)
+}
+
+// post sends a JSON body and decodes a JSON answer. An api Worker error
+// is {error: <sentence>} (docs/api.md), so that sentence is kept in the
+// detail (DRIVE_DEBUG); the person sees the message table's words for
+// the failure class instead of raw text from the service (drive#117).
 func (c *APIClient) post(path string, body, out any) error {
 	return c.do(http.MethodPost, path, body, out)
 }
 
 // do is post and delete in one place, so the token, the timeout and the error
 // shape are the same whichever verb a route uses.
+//
+// do makes exactly one attempt at the call itself. The single retry below is
+// the whole of the recovery story for an expired sign-in (drive#557): a 401 on
+// an account route means this device's token is past its window, so the client
+// signs the machine back in once and sends the very same call again on the new
+// token. One retry, never a loop — the second answer is the answer, whether it
+// is a success or a refusal, and a client with no ReSigner (the device flow
+// itself, anything already holding a key) reports the 401 as it always did.
 func (c *APIClient) do(method, path string, body, out any) error {
+	retry, err := c.send(method, path, body, out)
+	if err == nil || !retry || c.Re == nil {
+		return err
+	}
+	token, _, signInErr := c.Re.ReSignIn()
+	if signInErr != nil {
+		// The re-sign-in's own failure is the more useful one to show: why the
+		// browser did not open, or why the code expired, rather than the 401
+		// that led here. The 401 is still in the chain for DRIVE_DEBUG.
+		return fmt.Errorf("%w (the token was also refused with %s)", signInErr, apiRefusedStatus(err))
+	}
+	c.Token = token
+	_, err = c.send(method, path, body, out)
+	return err
+}
+
+// retryable401 says whether this failure is the account gate refusing a token
+// and whether a second attempt on a fresh one could answer differently. It is
+// the one predicate, so "which failures re-sign in" is written once.
+//
+// A 401 is the only such status: it is the api Worker's account gate and
+// nothing else, and a device token is the only credential here that can go
+// stale while the person keeps using the machine.
+func retryable401(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && strings.Contains(apiErr.Status, "401")
+}
+
+// apiRefusedStatus is the status line inside a refusal, for the message that
+// explains why a re-sign-in did not rescue a 401.
+func apiRefusedStatus(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status
+	}
+	return "no status"
+}
+
+func (c *APIClient) send(method, path string, body, out any) (bool, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return failDetail("unexpected", err)
+			return false, failDetail("unexpected", err)
 		}
 		reader = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequest(method, c.Base+path, reader)
 	if err != nil {
-		return failDetail("unexpected", err)
+		return false, failDetail("unexpected", err)
 	}
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
@@ -122,6 +279,7 @@ func (c *APIClient) do(method, path string, body, out any) error {
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: apiTimeout}
@@ -132,14 +290,14 @@ func (c *APIClient) do(method, path string, body, out any) error {
 		// words, such as the cloudflared install step; keep them.
 		var f *failure
 		if errors.As(err, &f) {
-			return f
+			return false, f
 		}
-		return failDetail("offline", err)
+		return false, failDetail("offline", err)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return failDetail("unexpected", err)
+		return false, failDetail("unexpected", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		err := &APIError{Method: method, Path: path, Status: response.Status, Body: string(raw)}
@@ -147,15 +305,15 @@ func (c *APIClient) do(method, path string, body, out any) error {
 		if s := err.Sentence(); s != "" {
 			f = f.withService(s)
 		}
-		return f
+		return retryable401(err), f
 	}
 	if out == nil {
-		return nil
+		return false, nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return failDetail("api-answer", err)
+		return false, failDetail("api-answer", err)
 	}
-	return nil
+	return false, nil
 }
 
 // APIError is a call the api Worker refused. Status is the status line and
@@ -214,10 +372,14 @@ func (c *APIClient) RequestDeviceCode(deviceName string) (DeviceCode, error) {
 
 // pollToken asks whether the person has approved the code yet. `pending` is
 // the answer that is not yet an answer, so it is a value here and not an
-// error.
+// error. ExpiresAt is the epoch second the approved device token's window ends
+// at (drive#557): the Worker states it once, here, and every renewal after that
+// is the store's own business, so this poll is the only place the CLI can learn
+// how long the token it is about to keep will last.
 type pollResult struct {
 	Status      string   `json:"status"`
 	DeviceToken string   `json:"deviceToken"`
+	ExpiresAt   int64    `json:"expiresAt"`
 	Account     *Account `json:"account"`
 }
 
@@ -237,14 +399,25 @@ func (c *APIClient) pollToken(deviceCode string) (pollResult, error) {
 	return result, failDetail(apiFailureKind(err), err)
 }
 
+// SignedIn is what one device flow ends with: the token, the epoch second its
+// window ends at, and the account it names. The expiry is carried out of the
+// flow rather than looked up later because the api Worker states it exactly
+// once, at the poll that approves the code (drive#557), and the CLI writes it
+// down so it knows its own shelf life instead of finding out from a 401.
+type SignedIn struct {
+	Token     string
+	ExpiresAt int64
+	Account   Account
+}
+
 // SignIn runs the device flow on the terminal: ask for a code, print it and
 // the page to approve it on, then poll until the person approves or the code
-// expires. It returns the device token and the account it belongs to; the
-// caller keeps both.
-func SignIn(client *APIClient, deviceName string, out io.Writer) (string, Account, error) {
+// expires. It returns the device token, when that token's window ends, and the
+// account it belongs to; the caller keeps all three.
+func SignIn(client *APIClient, deviceName string, out io.Writer) (SignedIn, error) {
 	code, err := client.RequestDeviceCode(deviceName)
 	if err != nil {
-		return "", Account{}, err
+		return SignedIn{}, err
 	}
 	page := code.VerificationURIComplete
 	if page == "" {
@@ -271,24 +444,24 @@ func SignIn(client *APIClient, deviceName string, out io.Writer) (string, Accoun
 	for {
 		select {
 		case <-timeout:
-			return "", Account{}, fail("sign-in-expired")
+			return SignedIn{}, fail("sign-in-expired")
 		case <-wait.C:
 		}
 		result, err := client.pollToken(code.DeviceCode)
 		if err != nil {
-			return "", Account{}, err
+			return SignedIn{}, err
 		}
 		switch result.Status {
 		case "approved":
 			if result.DeviceToken == "" || result.Account == nil {
-				return "", Account{}, fail("api-answer")
+				return SignedIn{}, fail("api-answer")
 			}
-			return result.DeviceToken, *result.Account, nil
+			return SignedIn{Token: result.DeviceToken, ExpiresAt: result.ExpiresAt, Account: *result.Account}, nil
 		case "pending":
 			fmt.Fprint(out, ".")
 			continue
 		default:
-			return "", Account{}, failDetail("api-answer", fmt.Errorf("the api Worker answered %q to the device poll", result.Status))
+			return SignedIn{}, failDetail("api-answer", fmt.Errorf("the api Worker answered %q to the device poll", result.Status))
 		}
 	}
 }
@@ -366,6 +539,12 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive init` again in a moment")
 	}
 	return renewed, nil
+}
+
+// ClearQueueReport drops this device's live upload-queue row so a 15-minute
+// freshness window cannot show a ghost queue after logout.
+func (c *APIClient) ClearQueueReport() error {
+	return c.do(http.MethodDelete, queueReportPath, nil, nil)
 }
 
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE
@@ -448,6 +627,7 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 	if c.Token != "" {
 		request.Header.Set("authorization", "Bearer "+c.Token)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: apiTimeout}
@@ -470,18 +650,25 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 // Workers still fronts them on this one base, the same contract `drive
 // agents` already uses for POST /v1/keys.
 type Credentials struct {
-	APIBase      string `json:"apiBase"`
-	DeviceToken  string `json:"deviceToken"`
-	AccountID    string `json:"accountId"`
-	AccountName  string `json:"accountName"`
-	AccountEmail string `json:"accountEmail,omitempty"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	Bucket       string `json:"bucket,omitempty"`
-	Prefix       string `json:"prefix,omitempty"`
-	Region       string `json:"region,omitempty"`
-	DownloadURL  string `json:"downloadUrl,omitempty"`
-	AccessKeyID  string `json:"accessKeyId,omitempty"`
-	KeyID        string `json:"keyId,omitempty"`
+	APIBase     string `json:"apiBase"`
+	DeviceToken string `json:"deviceToken"`
+	// TokenExpiresAt is the epoch second the DeviceToken's window ends at, as
+	// the sign-in answered it. It is 0 on a credentials file written before the
+	// answer carried one, and that is not an error: the token is there and still
+	// works, and the sliding window the api Worker now applies pushes the date
+	// it holds further out on its own (drive#557). It is kept so the CLI can say
+	// when a sign-in ends instead of only reporting that it did.
+	TokenExpiresAt int64  `json:"tokenExpiresAt,omitempty"`
+	AccountID      string `json:"accountId"`
+	AccountName    string `json:"accountName"`
+	AccountEmail   string `json:"accountEmail,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	Bucket         string `json:"bucket,omitempty"`
+	Prefix         string `json:"prefix,omitempty"`
+	Region         string `json:"region,omitempty"`
+	DownloadURL    string `json:"downloadUrl,omitempty"`
+	AccessKeyID    string `json:"accessKeyId,omitempty"`
+	KeyID          string `json:"keyId,omitempty"`
 }
 
 // CredentialsPath is the signed-in device's own file. It is next to the rclone

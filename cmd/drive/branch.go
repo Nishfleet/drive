@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 )
 
 // BranchSummary is one branch as /api/branches lists it (src/branches.js). A
@@ -39,6 +40,15 @@ type BranchSummary struct {
 	Files         int
 	Changed       int
 	SourceChanged int
+	Progress      *BranchProgress
+	Error         string
+}
+
+// BranchProgress is the job row the UI and CLI poll (drive#563).
+type BranchProgress struct {
+	Kind  string
+	Done  int
+	Total int
 }
 
 // BranchDiff is the file lists /api/branches/<name> answers with.
@@ -78,27 +88,71 @@ type branchDiscardAnswer struct {
 // BRANCHES_ENDPOINT), so the commands and the server cannot drift.
 const BRANCHES_PATH = "/api/branches"
 
+// branchJobPollInterval is how long the CLI waits between GETs of an in-flight
+// create/approve/discard/rewind (drive#563). The HTTP route answers 202 as soon
+// as the job is claimed; this loop is what waits for the last batch.
+const branchJobPollInterval = 500 * time.Millisecond
+
+// branchJobPollLimit caps the wait: 100,000 files at 80 a batch is 1,250
+// batches. A queue batch pays delivery plus processing, so 500ms ticks for
+// two hours stay above that even when each batch takes a couple of seconds.
+const branchJobPollLimit = 14400
+
+// sleepBranchJob is time.Sleep except in tests that replace it so a poll
+// finishes without waiting on the clock.
+var sleepBranchJob = time.Sleep
+
+func isBranchJobState(state string) bool {
+	switch state {
+	case "creating", "approving", "discarding", "rewinding":
+		return true
+	default:
+		return false
+	}
+}
+
+// waitForBranch polls GET /api/branches/<name> until the job is no longer
+// in flight. A 202 create/approve/discard returns before the last batch, so
+// the command that started the job has to wait here.
+func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
+	var last BranchSummary
+	for attempt := 0; attempt < branchJobPollLimit; attempt++ {
+		var answer branchDiffAnswer
+		if err := client.do("GET", branchPathFor(name), nil, &answer); err != nil {
+			return BranchSummary{}, err
+		}
+		last = answer.Branch
+		if last.Error != "" {
+			return last, errors.New(last.Error)
+		}
+		if !isBranchJobState(last.State) {
+			return last, nil
+		}
+		sleepBranchJob(branchJobPollInterval)
+	}
+	return last, fail("unexpected")
+}
+
 // branchClient builds the client every branch command uses. The api base is
 // the deployment's own (--api / DRIVE_API_URL), falling back to the one base
 // `drive init` signed in to. That base fronts both /api/branches* and
 // /v1/keys (drive#156); there is no second keysBase. The token is this
 // device's, so a branch is made, keyed and approved as the signed-in account.
+// branchClient is the api client for a branch command. It keeps the branch
+// rules this file owns -- no signed-in device, no api base, and the empty token
+// is named here as `not-signed-in` rather than as a 401 the person cannot act
+// on -- and adds the one re-sign-in every account route gets, so a branch on a
+// device whose sign-in slipped past its window comes back on its own
+// (drive#557).
 func branchClient(home, api string) (*APIClient, error) {
-	creds, err := LoadCredentials(home)
+	client, err := signedInClient(home, api, os.Stdout)
 	if err != nil {
 		return nil, err
 	}
-	base, err := resolveAPIBase(home, api)
-	if err != nil {
-		return nil, err
-	}
-	if base == "" {
-		return nil, fail("no-api")
-	}
-	if strings.TrimSpace(creds.DeviceToken) == "" {
+	if strings.TrimSpace(client.Token) == "" {
 		return nil, fail("not-signed-in")
 	}
-	return NewAPIClient(base, creds.DeviceToken)
+	return client, nil
 }
 
 // branchPathFor names one branch's endpoint. The name is escaped, so a name
@@ -174,6 +228,16 @@ func runBranch(args []string) error {
 			return getErr
 		}
 		answer.Branch = existing.Branch
+	}
+	if isBranchJobState(answer.Branch.State) {
+		waited, waitErr := waitForBranch(client, branchName)
+		if waitErr != nil {
+			return waitErr
+		}
+		answer.Branch = waited
+	}
+	if answer.Branch.State != "open" {
+		return fail("unexpected")
 	}
 	createdName := answer.Branch.Name
 	if strings.TrimSpace(createdName) == "" {
@@ -320,6 +384,9 @@ func runBranches(args []string) error {
 			line += fmt.Sprintf("\t(the original changed: %d %s)",
 				branch.SourceChanged, pluralFiles(branch.SourceChanged))
 		}
+		if isBranchJobState(branch.State) && branch.Progress != nil && branch.Progress.Total > 0 {
+			line += fmt.Sprintf("\t(%d/%d)", branch.Progress.Done, branch.Progress.Total)
+		}
 		fmt.Println(line)
 	}
 	return nil
@@ -388,6 +455,16 @@ func runApprove(args []string) error {
 	if err := client.post(branchPathFor(fs.Arg(0))+"/approve", map[string]string{}, &answer); err != nil {
 		return err
 	}
+	if isBranchJobState(answer.State) {
+		waited, waitErr := waitForBranch(client, fs.Arg(0))
+		if waitErr != nil {
+			return waitErr
+		}
+		answer.State = waited.State
+	}
+	if answer.State != "approved" {
+		return fail("unexpected")
+	}
 	applied := len(answer.Applied.Added) + len(answer.Applied.Changed) + len(answer.Applied.Removed)
 	fmt.Printf("approved branch %q: %d %s copied back\n", answer.Name, applied, pluralFiles(applied))
 	return dropBranchKey(*home, fs.Arg(0), client)
@@ -410,6 +487,19 @@ func runDiscard(args []string) error {
 	var answer branchDiscardAnswer
 	if err := client.post(branchPathFor(fs.Arg(0))+"/discard", map[string]string{}, &answer); err != nil {
 		return err
+	}
+	if isBranchJobState(answer.State) {
+		waited, waitErr := waitForBranch(client, fs.Arg(0))
+		if waitErr != nil {
+			return waitErr
+		}
+		answer.State = waited.State
+		if waited.Progress != nil {
+			answer.Removed = waited.Progress.Done
+		}
+	}
+	if answer.State != "discarded" {
+		return fail("unexpected")
 	}
 	fmt.Printf("discarded branch %q (%d %s removed; the original is untouched)\n",
 		answer.Name, answer.Removed, pluralFiles(answer.Removed))

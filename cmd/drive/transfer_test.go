@@ -43,7 +43,7 @@ func TestStandinInterruptUpload(t *testing.T) {
 	name := "interrupt.bin"
 
 	env.startMount()
-	rc := newRCClient("rclone", env.rcAddr, "")
+	rc := rcClientForTestHome(t, env.home, env.rcAddr, "")
 	var limitErr error
 	for i := 0; i < 20; i++ {
 		limitErr = rc.SetBwLimit(context.Background(), "10M:off")
@@ -247,7 +247,7 @@ func (e *transferEnv) startMount() {
 	if !waitForMount(e.t, cmd, e.mountDir) {
 		stopStandinProcess(cmd, e.mountDir)
 		e.mount = nil
-		e.t.Skipf("this host will not bring up the mount on %s (%s): the proof needs "+
+		skipNoMount(e.t, "this host will not bring up the mount on %s (%s): the proof needs "+
 			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
 			"NFS mount", e.mountDir, mountSkipReason())
 	}
@@ -281,7 +281,7 @@ func (e *transferEnv) status() string {
 }
 
 func (e *transferEnv) objectPath(name string) string {
-	return filepath.Join(e.root, "data", e.cfg.Bucket, e.cfg.Prefix, name)
+	return standinObjectPath(e.root, e.cfg, name)
 }
 
 func waitForFile(t *testing.T, path string, size int64, d time.Duration) error {

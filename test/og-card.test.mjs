@@ -1,6 +1,6 @@
 // The share card (drive issue #123). public/og.png is a raster, so no test can
 // read its price; the card's source, public/og-card.html, is text, and this
-// gate reads the strings out of that source against src/pricing.js (PRICE),
+// gate reads the strings out of that source against core/pricing.js (PRICE),
 // the one price source. A repriced product, or the superseded "$20 per TB"
 // figure re-hardcoded into the card, fails here, the way
 // test/pricing-copy.test.mjs gates the page's copy. The card's palette and its
@@ -18,7 +18,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { PRICE } from "../src/pricing.js";
+import { PRICE } from "../core/pricing.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const card = readFileSync(new URL("../public/og-card.html", import.meta.url), "utf8");
 const png = readFileSync(new URL("../public/og.png", import.meta.url));
@@ -48,8 +49,7 @@ test("the card's body is exactly the current price, from the one price source", 
     PRICE.headlineAmount,
     PRICE.rateUnit,
     PRICE.maxLine,
-    PRICE.noMinimumLine,
-    PRICE.foundingLine,
+    PRICE.noPlansLine,
   ]);
 });
 
@@ -60,7 +60,8 @@ test("the card carries no superseded figure", () => {
   // comment either.
   assert.doesNotMatch(card, /about \$20/i);
   assert.doesNotMatch(card, /\$20 (per|a) TB/i);
-  assert.doesNotMatch(card, /membership|ceiling|\bSpace(FS)?\b/i);
+  assert.doesNotMatch(card, /membership|ceiling/i);
+  assert.doesNotMatch(card, RIVAL_PRODUCT);
   assert.doesNotMatch(card, /\bunlimited\b/i);
 });
 

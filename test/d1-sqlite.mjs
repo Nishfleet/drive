@@ -13,18 +13,39 @@
 // checked against the whole schema the drive database will actually have.
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { BYTES_PER_GB } from "../src/meter.js";
+import { BYTES_PER_GB } from "../core/meter.js";
 
-// The drive database's migration files, in the numeric order the deploy
-// applies them in.
 const migrationsDir = new URL("../migrations/drive/", import.meta.url);
-const migrationFiles = readdirSync(migrationsDir)
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+// The drive database's migration files in the order `wrangler d1 migrations
+// apply` uses — a full filename sort. A numeric-prefix sort (Number.parseInt)
+// is not portable here: several prefixes are shared by more than one file
+// (0005, 0006, 0012, 0017, 0020 and 0021 on main), both members of a pair
+// parse to the same number, so the comparison returns 0 and a stable sort keeps
+// them in
+// the readdirSync order — stable on one machine, not the same across machines.
+// The full sort is the deploy's own, so the test schema is built in the same
+// order production is. Exported once so every reader of migrations/drive/ reads it
+// the same way, instead of each test re-sorting and diverging (drive issue
+// #619).
+/**
+ * Order migration filenames the way `wrangler d1 migrations apply` does: a
+ * plain full-filename string sort. Exported as a named function so the test can
+ * drive it with a deliberately unordered list and prove the rule itself, not
+ * just that the produced list happens to look sorted — a numeric-prefix sort
+ * also produces a list that reads as sorted, and that is the regression.
+ *
+ * @param {string[]} names
+ * @returns {string[]}
+ */
+export const orderMigrationFiles = (names) => [...names].sort();
+
+export const MIGRATION_FILES = Object.freeze(
+  orderMigrationFiles(readdirSync(migrationsDir).filter((name) => name.endsWith(".sql"))),
+);
 
 /** @param {DatabaseSync} sqlite */
 export function applyMigrations(sqlite) {
-  for (const name of migrationFiles) {
+  for (const name of MIGRATION_FILES) {
     sqlite.exec(readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"));
   }
 }
@@ -121,7 +142,7 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  * A D1Database stand-in over a real SQLite database.
  *
  * It runs the meter's real SQL against the real migrations, so the statements
- * src/meter.js sends are exercised here exactly as D1 would run them: the
+ * core/meter.js sends are exercised here exactly as D1 would run them: the
  * ON CONFLICT upserts, the MIN() watermark, the hour predicate and the
  * NOT IN subquery are SQLite's, not a second implementation of them in JS.
  * Only the two shapes D1 adds on top of a statement are adapted: reads come

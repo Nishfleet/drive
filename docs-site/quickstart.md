@@ -11,7 +11,9 @@ same files.
 
 ## Before you start
 
-You need an invite and a machine running macOS, Linux or Windows.
+You need an invite and a machine running macOS or Linux. Windows is not in
+version 1: it installs with an unsigned MSI, not a command, and no signed
+release exists yet.
 {{NOT_OPEN}} Ask on the pricing page.
 
 Nothing else. One line below installs the command and everything it needs with
@@ -24,19 +26,21 @@ advance.
 macOS, with Homebrew:
 
 ```sh
-brew install drive
+{{INSTALL_MACOS}}
 ```
 
-Linux, Debian or Ubuntu:
+Linux, Debian or Ubuntu — download the `.deb` for your CPU from the GitHub
+release, then:
 
 ```sh
-sudo apt install drive
+{{INSTALL_DEBIAN}}
 ```
 
-Linux, Fedora or RHEL:
+Linux, Fedora or RHEL — download the `.rpm` for your CPU from the GitHub
+release, then:
 
 ```sh
-sudo dnf install drive
+{{INSTALL_FEDORA}}
 ```
 
 One line per system, and nothing else to do by hand: the command and the parts
@@ -46,12 +50,8 @@ package declares the parts it needs and the package manager resolves them.
 prints the fix, so the version talk lives in [Other ways](#other-ways-to-install)
 and not in your way.
 
-These packages are not published yet — they land with the first release, and the
-line above is the one to paste once your package manager can resolve them.
-Until then use one of the [other ways](#other-ways-to-install).
-
-Windows installs with an installer that puts the command on your PATH and
-registers the logon task; it comes with the first published release.
+These packages publish on a `v*` tag. Linux still needs the file from that
+release sitting in the folder you run the line from.
 
 When a new version ships, one command moves you to it:
 
@@ -82,10 +82,9 @@ drive init
 `drive init` is the rest of the first run: it checks the installed parts are
 present and new enough, sets the drive to start on its own at every login,
 starts it now, and then looks for Claude, Codex, Gemini, Cursor and Kiro and
-connects each one it finds. A folder called **Drive** appears in your
-home directory on macOS and Linux, and a drive letter on Windows, and every app
-on the machine can open it. [Agents](/agents) has the details, including what
-an agent key cannot do.
+connects each one it finds. A folder called **Drive** appears in your home
+directory, and every app on the machine can open it. [Agents](/agents) has the
+details, including what an agent key cannot do.
 
 `drive uninstall` is the other half of the login item: it stops the mount and
 removes the item, so the drive does not start at the next login.
@@ -96,7 +95,7 @@ removes the item, so the drive does not start at the next login.
 drive status
 ```
 
-Storage is metered from the moment the mount starts. {{NO_MINIMUM}}
+Storage is metered from the moment the mount starts. {{NO_PLANS}}
 [Pricing and your bill](/pricing) has the maximum and four
 worked sizes.
 
@@ -106,9 +105,13 @@ worked sizes.
 drive update
 ```
 
-`drive update` installs the newest released version and prints the version the
-installed binary now reports. `drive update --check` says whether a newer
-version exists and changes nothing.
+`drive update` asks the package manager that installed this binary (Homebrew,
+apt, dnf or winget) whether a newer package exists. If one does, it hands the
+upgrade to that manager and prints the version the installed binary now
+reports. `drive update --check` says whether a newer package exists and
+changes nothing. A Linux install from a downloaded `.deb` or `.rpm` has no
+package repo, so when apt or dnf has nothing newer the command prints the
+same install line step 1 used.
 
 ## 6. Bring files in
 
@@ -134,15 +137,15 @@ The one-line install above asks your package manager for the released package.
 The packages come from the same tagged release, so these are the ways when
 that release has not run yet, or you would rather build the command yourself:
 
-- Build the command from the source with the Go toolchain. `drive --help` prints
-  the exact route, and `drive update` runs the same build when a new version
-  ships, so it leaves the old binary in place until the new one is built.
 - Build the Linux and macOS packages on your machine with
   `goreleaser release --snapshot --clean`, then install the file the build
   writes under `dist/`.
-- Windows installs with an MSI built with the stock WiX toolchain: it puts the
-  command and rclone on your PATH, brings WinFsp in through WinFsp's own
-  package dependency, and registers the logon task.
+- Build the command from this repository's source with the Go toolchain
+  (`drive --help` prints the module path). That route needs a public module.
+- Windows is not in version 1: it installs with an unsigned MSI built with the
+  stock WiX toolchain, which puts the command and rclone on your PATH, brings
+  WinFsp in through WinFsp's own package dependency, and registers the logon
+  task.
 
 The mount needs rclone 1.68.0 or newer. `drive init` refuses an older one and
 prints the fix, which is to install rclone from

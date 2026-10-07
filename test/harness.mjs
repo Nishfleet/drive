@@ -14,16 +14,34 @@
 // takes neither. Turning them into the integers SQLite stores is what makes the
 // two the same engine rather than two similar ones.
 
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { AUTH_COOKIE_PREFIX, createAuth } from "../core/auth.js";
+import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
-/** Every migration that applies to the customer database, in order. */
+/**
+ * Every migration the short default list applies to the customer database, in
+ * the order `wrangler d1 migrations apply` applies them.
+ *
+ * Short, but never shorter than the schema a real request touches. A list that
+ * skips a table production has is how the pre-charge limit's read passed
+ * against a fixture and failed against a customer: `file_versions` (0005) was
+ * missing here, so `src/files.js uploadRequest` -> `accountStoredBytes`
+ * answered 500 on every upload a test drove (drive#536). When product code
+ * starts reading a table, the table lands in this list.
+ */
 export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0002_file_index.sql",
   "drive/0003_branches.sql",
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
+  // The meter's own tables: `file_versions`, `usage_minutes`, `events_seen` and
+  // `meter_rollup_state`. `file_versions` is the 1 TB pre-charge limit's source
+  // of truth now (drive#536) - the live rows the storage event intake writes as
+  // people save - so the web upload path reads it on every save and a schema
+  // without it refuses every upload. Additive only, as its own header says.
+  "drive/0005_meter.sql",
   "drive/0006_share_links.sql",
   "drive/0008_teams.sql",
   "drive/0009_upload_request_caps.sql",
@@ -43,6 +61,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
   // state) primary key, and after 0012's snapshot pointer columns.
   "drive/0015_branch_row_id.sql",
+  // Branch jobs (drive#563): progress and stored counts, plus the unique
+  // index that covers in-flight approve/create states.
+  "drive/0030_branch_jobs.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.
@@ -51,17 +72,75 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Abuse guards (drive#464): card fingerprint, founding reservation, first
   // charge stamp. Expand only, three nullable columns.
   "drive/0019_abuse_guards.sql",
+  // The purge's resume cursor (drive#565): the drive path the nightly batch
+  // delete stopped after. Nullable expand; getCloseState and listDuePurge
+  // read it, so any test that opens a close state needs the column.
+  "drive/0020_account_purge_cursor.sql",
+  // The prepaid balance (drive#586): the ledger the usage read sums for its
+  // balance line, and the low-balance and auto top-up columns.
+  "drive/0020_balance_ledger.sql",
+  // The per-agent monthly cap's schema default, cleared (drive#534). Rebuilds
+  // `agent_caps` so `monthly_cap_usd` is nullable with no default, then clears
+  // the 0004 default (12.0) off the rows that never chose a cap.
+  "drive/0021_agent_caps_nullable_cap.sql",
+  // The prepaid draws (drive#586): low-balance and auto top-up columns.
+  "drive/0021_prepaid_draws.sql",
+  // The cap notices the hourly walk sends (drive#496): cap_warned_at and
+  // read_only_sent_at. Expand only, two nullable columns.
+  "drive/0024_cap_notices.sql",
+  // The per-link caps and retention (drive#549): upload_requests.max_files
+  // and shares.max_download_bytes. Expand only.
+  "drive/0025_link_caps.sql",
+  // Per-address send counters (drive#550): 5 links an hour, 20 a day
+  // per inbox; the guard spends a slot only when both windows have room.
+  "drive/0026_signin_address_sends.sql",
+  // Per-device upload-queue reports (drive#516). Additive table keyed by
+  // account and device. Numbered 0027 because 0022–0026 are already taken.
+  "drive/0027_device_queue_reports.sql",
+  // Share-link content pin (drive#554): shares.etag is the file's storage
+  // fingerprint at mint. Expand only, default empty so older rows keep
+  // serving by path.
+  "drive/0037_share_etag.sql",
+  // The per-link arrival digest (drive#684): upload_requests.digest_at and
+  // pending_uploads. Expand only; the upload path and the info route read the
+  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
+  // Numbered 0038, the next free prefix after the other open migrations.
+  "drive/0038_request_digest.sql",
+  // The second factor's tables (drive#524): better-auth's `twoFactor` rows
+  // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
+  // plus the `user.twoFactorEnabled` flag. Additive only; the pin in
+  // test/auth.test.mjs holds this file against the library's own planner.
+  // Numbered 0034 because 0032 and 0033 belong to other open PRs and 0031 is on main.
+  "drive/0034_two_factor_passkey.sql",
+  // The device-approval return path (drive#558): one row per sign-in link
+  // token, written at the start step and consumed at the verify step, so a
+  // link opened on a second device still lands on the approve page.
+  "drive/0031_signin_return.sql",
+  // The prepaid-pause marker on devices (drive#789): the device store writes it.
+  "drive/0036_prepaid_paused_from.sql",
+  // The reason marker on the devices row (drive#661): the one word naming
+  // which cap took a key down, so a give-back pass (drive#656) can prove it.
+  // Expand only, one nullable column on `devices`. `put()` writes the column
+  // on every row, so any test that writes a device row needs the migration
+  // applied -- the harness runs the real migrations, so this is the whole fix.
+  // Numbered 0032, not the 0022 the issue proposed: 0026_signin_address_sends
+  // owns 0026, 0027_device_queue_reports owns 0027, and 0029_welcome_sent_at,
+  // 0030_branch_jobs and 0031_signin_return are on disk. 0028 is a gap. A new 0028 would sort
+  // before already-applied 0029/0030 and refuse the deploy. 0029 is not in this short list because put() and the cap path do
+  // not write welcome_sent_at. drive#619's gate fails a new shared prefix.
+  "drive/0032_capped_reason.sql",
 ]);
 
 /**
  * Every `drive/` migration, in the order the production Worker applies them.
  *
- * `DRIVE_MIGRATIONS` above is the subset the cap-mount tests need, and it is
- * deliberately short. A request that reads the month's usage — which the cap
- * write does, because the answer carries `capLine` — needs `0005_meter` and
- * `0006_usage_stored_bytes` as well, and a test that only reads a row could
- * not see that. This list is the whole schema, so a test built on it cannot
- * discover a table that production has is missing here.
+ * `DRIVE_MIGRATIONS` above is the subset the sign-in and cap-mount tests need,
+ * and it is deliberately short — but it carries `0005_meter`, because a
+ * request that saves a file reads `file_versions`. A request that reads the
+ * month's usage — which the cap write does, because the answer carries
+ * `capLine` — needs `0006_usage_stored_bytes` as well, and a test that only
+ * reads a row could not see that. This list is the whole schema, so a test
+ * built on it cannot discover a table that production has is missing here.
  *
  * A test that asserts a cap really is stored reads the row back through this
  * list rather than through the harness's default one (drive issue #421).
@@ -71,30 +150,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
  * another order: `0012_agent_key_ttl.sql` lands before
  * `0012_branch_snapshot_kv.sql` here exactly as the filenames sort.
  */
-export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
-  "drive/0002_file_index.sql",
-  "drive/0003_branches.sql",
-  "drive/0004_agent_undo.sql",
-  "drive/0005_better_auth.sql",
-  "drive/0005_meter.sql",
-  "drive/0006_share_links.sql",
-  "drive/0006_usage_stored_bytes.sql",
-  "drive/0007_device_codes.sql",
-  "drive/0008_teams.sql",
-  "drive/0009_upload_request_caps.sql",
-  "drive/0010_accounts_devices.sql",
-  "drive/0011_rate_limit.sql",
-  "drive/0012_agent_key_ttl.sql",
-  "drive/0012_branch_snapshot_kv.sql",
-  "drive/0013_billing_pushes.sql",
-  "drive/0014_device_queues.sql",
-  "drive/0015_branch_row_id.sql",
-  "drive/0016_founding.sql",
-  "drive/0017_account_close.sql",
-  "drive/0017_agent_caps_drop_month_key.sql",
-  "drive/0017_drop_branches_snapshot.sql",
-  "drive/0018_agent_caps_drop_month_spend.sql",
-]);
+export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze(
+  MIGRATION_FILES.map((name) => `drive/${name}`),
+);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
@@ -264,11 +322,23 @@ export function createTestD1(options = {}) {
         sqlite.exec(sql);
         return { count: 0, duration: 0 };
       },
+      // D1 runs a batch as one transaction: a statement that fails rolls the
+      // whole batch back. test/d1-sqlite.mjs keeps the same guarantee, so code
+      // that leans on it (the arrival digest's clear and stamp, drive#684) is
+      // tested against D1's behaviour, not a run of independent writes.
       /**
        * @param {Array<{sql: string, params?: unknown[]}>} statements
        */
       async batch(statements) {
-        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+        sqlite.exec("BEGIN");
+        try {
+          const results = statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+          sqlite.exec("COMMIT");
+          return results;
+        } catch (error) {
+          sqlite.exec("ROLLBACK");
+          throw error;
+        }
       },
     })
   );
@@ -283,9 +353,12 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
+ * (drive#550): `userAgent` is the requesting request's own header, null when
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);
@@ -339,6 +412,93 @@ export async function signIn(made, email) {
   return {
     cookie,
     account: { id: found.user.id, name: found.user.name, email: found.user.email },
+  };
+}
+
+/** Headers that carry a signed-in session, so a call can read the cookie. */
+/** @param {string} cookie */
+export const sessionHeaders = (cookie) => new Headers({ cookie, origin: TEST_BASE_URL });
+
+/**
+ * The TOTP code a real authentication app would show for `secret` — the same
+ * HMAC-SHA1, 6 digits, 30-second step the library verifies (RFC 6238). A test
+ * that needs a fresh code when one was already used asks for `1` (the next
+ * step), because a code is only valid inside its step.
+ * @param {string} secret the base32 secret from the enrollment TOTP URI
+ * @param {number} [step] the 30-second step offset, 0 being now
+ * @returns {string}
+ */
+export function totpCode(secret, step = 0) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  /** @type {number[]} */
+  const bytes = [];
+  let bits = 0;
+  let value = 0;
+  for (const character of secret.replace(/=+$/, "").toUpperCase()) {
+    const index = alphabet.indexOf(character);
+    if (index === -1) continue;
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  const counter = Math.floor(Date.now() / 30000) + step;
+  const buffer = Buffer.alloc(8);
+  buffer.writeUInt32BE(Math.floor(counter / 2 ** 32), 0);
+  buffer.writeUInt32BE(counter % 2 ** 32, 4);
+  const digest = createHmac("sha1", Buffer.from(bytes)).update(buffer).digest();
+  const offset = digest[digest.length - 1] & 0xf;
+  const code =
+    (((digest[offset] & 0x7f) << 24) |
+      (digest[offset + 1] << 16) |
+      (digest[offset + 2] << 8) |
+      digest[offset + 3]) %
+    10 ** 6;
+  return String(code).padStart(6, "0");
+}
+
+/**
+ * Arms the second factor on a fresh sign-in: enables two-factor
+ * authentication, then confirms it with one correct code — the step that sets
+ * the account's `twoFactorEnabled` and rotates the session. Answers the new
+ * session cookie (the one the browser carries afterwards), the TOTP secret,
+ * and the one-time recovery codes.
+ * @param {ReturnType<typeof createTestAuth>} made
+ * @param {string} email
+ * @returns {Promise<{cookie: string, secret: string, backupCodes: string[], account: {id: string, name: string, email: string}}>}
+ */
+export async function armTwoFactor(made, email) {
+  const signed = await signIn(made, email);
+  // `body: {}` is the library's default method, the reader: the enrollment URI
+  // and the ten one-time codes, which the caller must show once.
+  const enabled = /** @type {{totpURI: string, backupCodes: string[]}} */ (
+    await made.auth.api.enableTwoFactor({
+      body: {},
+      headers: sessionHeaders(signed.cookie),
+    })
+  );
+  const secret = new URL(enabled.totpURI).searchParams.get("secret");
+  if (secret === null) {
+    throw new Error("the enrollment TOTP URI carried no secret");
+  }
+  const confirm = await made.auth.api.verifyTOTP({
+    body: { code: totpCode(secret) },
+    headers: sessionHeaders(signed.cookie),
+    returnHeaders: true,
+  });
+  const rotated = confirm.headers
+    .getSetCookie()
+    .find((cookie) => cookie.startsWith(`__Secure-${AUTH_COOKIE_PREFIX}.session_token=`));
+  if (rotated === undefined) {
+    throw new Error("confirming the factor set no session cookie");
+  }
+  return {
+    cookie: rotated.split(";")[0],
+    secret,
+    backupCodes: enabled.backupCodes,
+    account: signed.account,
   };
 }
 

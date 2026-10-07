@@ -7,15 +7,21 @@ write the same folder.
 
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
-- **Version history is not in version 1.** Saving a file again replaces it, and
-  a delete can be undone from the storage provider's own versions. The full list
-  of what version 1 does not do is on the
+- **Version history is not in version 1.** Saving a file again replaces it. A
+  delete from the Files page is restorable for 30 days in Recently deleted, and
+  a delete made any other way is recoverable for one day, by asking us. The
+  full list of what version 1 does not do is on the
   [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
-- **Agents cannot delete.** An agent gets its own key, and that key cannot
-  remove a file. Only you can.
-- **One price.** Pay only for what you store. 2 cents per GB. Never more than $10 per TB.
-  No minimum. No plans.
-- **A card at sign-up.** We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.
+- **An agent's delete is undoable for 1 day.** An agent gets its own key. The
+  storage takes that key's delete but keeps the deleted copy for 1 day, and we
+  can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
+  storage limits a key to the whole Drive. `drive init` mounts `~/Drive-agents/<tool>`
+  for each tool on its own key, and the MCP server and the tool's allowed folders
+  point there, not at your Drive. Windows is not in version 1, and the tool there
+  still works inside your own Drive, because the agent mount is not proven there.
+- **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
+  No plans. Your balance never expires.
+- **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 
@@ -38,6 +44,8 @@ agents.
   the rate, the maximum and four worked sizes
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq) — the questions
   we can answer with a measured number
+- [When something goes wrong](https://drive-pricing.nishant345.workers.dev/docs/troubleshooting) —
+  the three commands, the log on each system, a lost laptop, your files out
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
   version 1 does not do
 - [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks) —
@@ -46,13 +54,13 @@ agents.
   can see your files
 - [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —
   one line per shipped thing
-- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/llms.txt) and
-  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/llms-full.txt)
+- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms.txt) and
+  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
   — the same words, for an agent
 
 The docs pages are authored in [`docs-site/`](docs-site/) and built by VitePress
 into the site's static assets: `npm run docs:build`. Every number on a page
-comes from `src/billing.js` at build time, so a test fails the build if a page
+comes from `core/billing.js` at build time, so a test fails the build if a page
 and the invoice disagree.
 
 ## The repository
@@ -78,7 +86,8 @@ with the version it found and the version the repo needs, because the test
 adapter uses `node:sqlite`, which is experimental before Node 24.
 To run one test file, build the docs once (`npm run docs:build`), then `node --test test/x.test.mjs`.
 `go test ./...` runs the CLI's tests.
-To install the CLI from source: `go install github.com/Nishfleet/drive/cmd/drive@latest`.
+To install the CLI from a tagged release, use the package-manager line
+`drive --help` prints. To build from this checkout: `go build -o drive ./cmd/drive`.
 
 The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
 step) and [`docs/spec.md`](docs/spec.md) (why: prices, rivals).

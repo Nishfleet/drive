@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -105,6 +106,7 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 		"  case \"$1\" in\n" +
 		"    rc) shift ;;\n" +
 		"    --rc-addr) addr=\"$2\"; shift 2 ;;\n" +
+		"    --user|--pass|--rc-user|--rc-pass) shift 2 ;;\n" +
 		"    *) break ;;\n" +
 		"  esac\n" +
 		"done\n" +
@@ -132,8 +134,32 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 	return newRCClient(shim, addr, "")
 }
 
+const rcloneVersionJSON = `{"version":"v1.75.1"}`
+
+// withRCVersion answers core/version the way rclone does, then hands every
+// other call to inner. mountRCClient checks core/version before it acts
+// (drive#807), so a stand-in that only implements bwlimit/vfs/stats would
+// fail the identity check.
+func withRCVersion(inner http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "core/version") {
+			_, _ = w.Write([]byte(rcloneVersionJSON))
+			return
+		}
+		inner(w, r)
+	}
+}
+
 func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
+	// mu guards the stand-in's state: it is written on the server's goroutine
+	// and read here once each call returns.
+	var mu sync.Mutex
 	var gotPath, gotBody string
+	seen := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotPath, gotBody
+	}
 	// rclone is stateful: setting a rate, then asking with no argument, answers
 	// the rate now in force. The stand-in keeps the same state, so the test
 	// walks the same path the CLI does.
@@ -141,6 +167,8 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	const rate1Ki = `{"bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1,"rate":"1Ki:off"}`
 	inForce := rateOff
 	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		gotPath = r.URL.Path
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("the client did not form-encode the rate: %v", err)
@@ -170,11 +198,8 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	if err := c.SetBwLimit(ctx, pausedRate); err != nil {
 		t.Fatalf("SetBwLimit: %v", err)
 	}
-	if gotPath != "/core/bwlimit" {
-		t.Errorf("posted to %s, want /core/bwlimit", gotPath)
-	}
-	if !strings.Contains(gotBody, "rate=") {
-		t.Errorf("body = %q, want the form-encoded rate rclone reads", gotBody)
+	if path, body := seen(); path != "/core/bwlimit" || !strings.Contains(body, "rate=") {
+		t.Errorf("posted %q to %s, want the form-encoded rate rclone reads at /core/bwlimit", body, path)
 	}
 	limit, err := c.BwLimit(ctx)
 	if err != nil {
@@ -399,10 +424,13 @@ func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	home := filepath.Join("home", "me")
 	plan := BuildMountPlan("linux", home, "rclone", StorageConfig{Endpoint: "http://127.0.0.1:1", Bucket: "b", Prefix: "u/me"})
 	joined := strings.Join(plan.Args(), " ")
-	for _, want := range []string{"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth"} {
+	for _, want := range []string{"--rc", "--rc-addr", loopbackRCAddr} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("mount args %q do not carry %q", joined, want)
 		}
+	}
+	if strings.Contains(joined, "--rc-no-auth") {
+		t.Errorf("mount args %q still disable remote-control auth", joined)
 	}
 	// A drive that was never paused mounts at full speed: the plan must not
 	// carry a limit that was never asked for.
@@ -450,19 +478,19 @@ func TestMountPlanCarriesThePausedRate(t *testing.T) {
 }
 
 // TestStatusWordsMatchThePageWords pins the CLI's transfer words to the ones
-// the first-run page and the usage page use (src/status.js UPLOAD_LABEL). The
+// the first-run page and the usage page use (core/status.js UPLOAD_LABEL). The
 // page is JavaScript and cannot import the Go, and the Go cannot import the
 // page, so this test is the join between the two copies, the same join
 // TestUploadLabelMatchesThePageWords runs for the queue words.
 func TestStatusWordsMatchThePageWords(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{pausedLabel, resumedLabel, `"Paused"`, `"Resumed"`} {
 		if !strings.Contains(html, want) {
-			t.Errorf("src/status.js no longer carries %q; the pages and the CLI must show the same word for the same state", want)
+			t.Errorf("core/status.js no longer carries %q; the pages and the CLI must show the same word for the same state", want)
 		}
 	}
 }
@@ -474,8 +502,13 @@ func TestStatusWordsMatchThePageWords(t *testing.T) {
 // still written.
 func TestRunPauseAndResumeWriteTheMarker(t *testing.T) {
 	home := t.TempDir()
-	if err := runPause([]string{"--home", home}); err != nil {
-		t.Fatalf("runPause: %v", err)
+	out := captureStdout(t, func() {
+		if err := runPause([]string{"--home", home}); err != nil {
+			t.Fatalf("runPause: %v", err)
+		}
+	})
+	if !strings.Contains(out, "slowed") {
+		t.Errorf("pause note = %q, want the words to say slowed", out)
 	}
 	if !Paused(home) {
 		t.Error("runPause did not leave the paused marker")
@@ -532,9 +565,9 @@ func TestTransfersLineTrustsTheLiveRateWhenMounted(t *testing.T) {
 	if err := SetPaused(home); err != nil {
 		t.Fatal(err)
 	}
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"rate":"off","bytesPerSecond":-1,"bytesPerSecondTx":-1,"bytesPerSecondRx":-1}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.binary)
 	t.Setenv("DRIVE_RC_ADDR", c.addr)
 	if got := transfersLine(home, true); got != transfersRunning {
@@ -544,9 +577,9 @@ func TestTransfersLineTrustsTheLiveRateWhenMounted(t *testing.T) {
 
 func TestTransfersLineReadsPausedFromTheLiveRate(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"rate":"1Ki:off","bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.binary)
 	t.Setenv("DRIVE_RC_ADDR", c.addr)
 	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {

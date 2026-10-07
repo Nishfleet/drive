@@ -32,6 +32,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../../core/files.js";
 import {
   approveBranch,
   createBranch,
@@ -41,7 +42,6 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../../src/branches.js";
-import { createMemoryStore, scopeStore } from "../../src/files.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };
@@ -58,7 +58,7 @@ const FILES = 100000;
  * the snapshot it builds is the one a 100,000-file folder produces. The bytes
  * are the in-memory store's (this is not a claim about copying 100,000 files'
  * worth of data — drive#157 measured the copy side against a real MinIO).
- * @returns {Promise<{scoped: import("../../src/files.js").FileStore, files: number}>}
+ * @returns {Promise<{scoped: import("../../core/files.js").FileStore, files: number}>}
  */
 async function driveWithManyFiles() {
   const store = scopeStore(createMemoryStore(), ACCOUNT);
@@ -101,7 +101,7 @@ async function driveWithManyFiles() {
       ...entry,
       path: `${base}/${entry.path.slice("/Photos/".length)}`,
     }));
-  /** @type {import("../../src/files.js").FileStore} */
+  /** @type {import("../../core/files.js").FileStore} */
   const store2 = {
     ...real,
     async list(path) {
@@ -204,20 +204,25 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
 
   // The value, read off the namespace itself: 100,000 entries, and over the
   // row limit D1 would have refused. This is the "this lands" measurement, and
-  // the number to cite is the same ~11 MiB phase 1 refused.
-  const stored = kv.values.get(row.snapshot_key);
-  assert.ok(typeof stored === "string", "the value is in the namespace, not the row");
+  // the number to cite is the same ~11 MiB phase 1 refused. Since drive #564
+  // the namespace holds a small manifest naming generation-scoped parts, so
+  // the value is reassembled through the store's own get over this map - the
+  // manifest pins the value's byte length, and the parts are what carry it.
+  const stored = /** @type {string} */ (await createKvSnapshotStore(kv).get(row.snapshot_key));
   const snapshot = JSON.parse(stored);
   assert.equal(Object.keys(snapshot).length, FILES, "all 100,000 entries are in the namespace");
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(row.snapshot_key)));
+  assert.equal(manifest.fmt, "drive-branch-snapshot-chunked-1", "the key holds a chunked manifest");
+  assert.equal(manifest.bytes, Buffer.byteLength(stored), "the manifest pins the value's length");
   assert.ok(
-    Buffer.byteLength(stored) > D1_ROW_LIMIT,
-    `the value is over the row limit (${Buffer.byteLength(stored)} bytes), which is why it moved`,
+    kv.values.size <= manifest.parts + 2,
+    `the namespace holds one manifest and ${manifest.parts} parts, not ${FILES} entries`,
   );
-  assert.equal(
-    row.snapshot_bytes,
-    Buffer.byteLength(stored),
-    "the row records that value's length",
+  assert.ok(
+    manifest.bytes > D1_ROW_LIMIT,
+    `the value is over the row limit (${manifest.bytes} bytes), which is why it moved`,
   );
+  assert.equal(row.snapshot_bytes, manifest.bytes, "the row records that value's length");
 
   // ------------------------------------------------------------------ list
   const listed = await listBranches(db, snapshots, scoped, ACCOUNT);
@@ -342,7 +347,7 @@ test("the pointer path survives the snapshot column being dropped", async () => 
       modified: AFTER_AT,
     };
   };
-  const scoped = /** @type {import("../../src/files.js").FileStore} */ ({
+  const scoped = /** @type {import("../../core/files.js").FileStore} */ ({
     ...scope,
     async list(path) {
       if (path === "/") {

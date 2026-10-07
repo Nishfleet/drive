@@ -14,18 +14,26 @@
 // Every assertion about storage reads the row back with plain node:sqlite
 // statements, off the same engine, so a store that answered from a Map would
 // leave these tables empty and fail here.
+//
+// drive#661 adds the reason marker, and this file is where its two claims are
+// proven on the real migrations: the round-trip of `capped_reason` through
+// put()/deviceFromRow() with a null surviving as null (so a give-back pass
+// reads drive#656's decision, not a memory of it), and the freeze writing the
+// word while the raise clears it, on the rows `enforceCap` actually leaves.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MINUTES_PER_MONTH } from "../../src/billing.js";
+import { minutesInMonth } from "../../core/billing.js";
 import {
   dollarsToCapCents,
   enforceCap,
   handleCapRequest,
   READ_ONLY_CAPABILITIES,
-} from "../../src/cap.js";
-import { monthStart } from "../../src/meter.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+  SPEND_CAP_REASON,
+} from "../../core/cap.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { failureMessage } from "../../core/messages.js";
+import { MINUTE_MS, monthStart } from "../../core/meter.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**
@@ -38,6 +46,66 @@ function rowIn(sqlite, sql, ...params) {
   assert.notEqual(row, undefined, "the store answered from memory: the row is not in D1");
   return /** @type {Record<string, unknown>} */ (row);
 }
+
+test("an account of empty files gets a real answer from POST /api/cap", async () => {
+  // drive#535, finish line 3 and the crash it names. An account whose only file
+  // is a 0-byte README.txt held all September: every hour of the month is
+  // metered and every mark is 0, so monthUsage used to refuse the month as
+  // unmeasured, monthUsage threw inside handleCapRequest with no catch, and
+  // `drive cap` and POST /api/cap answered 500 for a healthy account.
+  //
+  // The month is measured - $0.00, with nothing to cap - and the route says so.
+  const at = Date.parse("2026-09-30T12:00:00.000Z");
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => at });
+  const account = { id: "acct-empty", email: "empty@example.com" };
+  sqlite
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .run(account.id, account.email);
+  db.insertVersion({
+    accountId: account.id,
+    fileId: "file-empty",
+    path: `/${account.id}/README.txt`,
+    sizeBytes: 0,
+    createdAt: monthStart(at),
+    hiddenAt: null,
+  });
+  for (let hour = 0; hour < 24; hour += 1) {
+    sqlite
+      .prepare(
+        `INSERT INTO usage_minutes
+           (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
+         VALUES (?, ?, 0, 0, 0, ?)`,
+      )
+      .run(account.id, monthStart(at) + hour * 60 * MINUTE_MS, at);
+  }
+
+  const month = await store.monthUsage(account.id, { capUsd: 8 });
+  assert.equal(month.gbMinutes, 0, "a 0-byte file holds zero GB-minutes");
+  assert.equal(month.storedGb, 0, "a 0-byte file holds no peak");
+  assert.equal(
+    month.averageStoredGb,
+    0,
+    "and its month average is 0 - the 3x free download allowance follows it",
+  );
+
+  const answered = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "8" }),
+    }),
+    account,
+    store,
+  );
+  assert.equal(answered.status, 200);
+  const body = await answered.json();
+  assert.equal(body.cap.state, "active", "a $0 month is nowhere near the cap");
+  assert.equal(
+    rowIn(sqlite, "SELECT cap_cents FROM accounts WHERE id = ?", account.id).cap_cents,
+    dollarsToCapCents(8),
+  );
+});
 
 test("the key store writes cap_cents and device rows the real schema holds", async () => {
   const { sqlite, db } = makeMeteredDB();
@@ -82,8 +150,10 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   });
   const minted = { keyId: "key_device" };
 
+  // 2 TB held all of a 30-day month (drive#531: the month's own minutes).
   const month = {
-    gbMinutes: 2000 * 43800,
+    gbMinutes: 2000 * 30 * 1440,
+    monthMinutes: 30 * 1440,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,
@@ -104,6 +174,10 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   const cappedRow = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
   assert.deepEqual(JSON.parse(String(cappedRow.capabilities)), [...READ_ONLY_CAPABILITIES]);
   assert.deepEqual(JSON.parse(String(cappedRow.capped_from)), ["list", "read", "write", "delete"]);
+  // The reason beside the powers, in its own column (drive#661): the marker a
+  // give-back pass (drive#656) reads to prove the spending cap took this key
+  // down, rather than finding it read-only and widening it.
+  assert.equal(cappedRow.capped_reason, SPEND_CAP_REASON);
   assert.equal(
     rowIn(sqlite, "SELECT state FROM accounts WHERE id = ?", account.id).state,
     "read_only",
@@ -124,9 +198,150 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   );
   assert.equal(live.length, 1, "one write-capable key after the cap is raised");
   assert.deepEqual([...live[0].capabilities], ["list", "read", "write", "delete"]);
+  // The raise gives the marker back too: the row it minted carries no reason,
+  // in SQL as well as in the answer above, so a second freeze is free to write
+  // the word again rather than finding one it did not leave (drive#661).
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", live[0].keyId).capped_reason,
+    null,
+  );
   assert.equal(
     rowIn(sqlite, "SELECT state FROM accounts WHERE id = ?", account.id).state,
     "active",
+  );
+});
+
+test("the reason marker round-trips through put() and deviceFromRow(), and null survives as null", async () => {
+  // drive#661 phase 1: the column is nullable and D1 has no down-migrations, so
+  // the claim that matters is that a row written with no reason reads back with
+  // no reason, and a row with one keeps the word. Both directions go through
+  // the real migrations.
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => 0 });
+  const account = { id: "acct-reason", email: "reason@example.com" };
+
+  /**
+   * @param {string} id @param {string|null} cappedReason
+   * Production shape (capSwapPlan): freeze narrows capabilities
+   * to read-only and records the old capabilities in cappedFrom;
+   * raise restores full capabilities and clears cappedFrom.
+   */
+  const writeRow = async (id, cappedReason) => {
+    await store.put({
+      id,
+      accountId: account.id,
+      name: "laptop",
+      kind: "device",
+      accessKeyId: `ak_${id}`,
+      secretHash: "00",
+      prefix: `u/${account.id}/`,
+      // Freeze: read-only scope; raise: full scope.
+      capabilities: cappedReason === null ? ["list", "read", "write", "delete"] : ["list", "read"],
+      createdAt: 1,
+      lastSeenAt: null,
+      revokedAt: null,
+      // Freeze: the old capabilities the cap took; raise: nothing taken.
+      cappedFrom: cappedReason === null ? null : ["list", "read", "write", "delete"],
+      cappedReason,
+    });
+  };
+
+  await writeRow("key_frozen", SPEND_CAP_REASON);
+  const frozen = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_frozen");
+  assert.equal(frozen.capped_reason, SPEND_CAP_REASON);
+  assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read"]);
+
+  const [capKey] = await store.listCapKeys(account.id);
+  assert.equal(capKey.cappedReason, SPEND_CAP_REASON);
+
+  // The same row raised: the marker is cleared, and the answer says the field
+  // is gone rather than carrying an empty string.
+  await writeRow("key_frozen", null);
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_frozen").capped_reason,
+    null,
+  );
+  const [raised] = await store.listCapKeys(account.id);
+  assert.equal(raised.cappedReason, undefined, "a raise leaves no reason, and no empty string");
+  assert.equal(Object.hasOwn(raised, "cappedReason"), false);
+
+  // A person's own key: `mint(scope)` is called with one argument in
+  // production, so the row it writes names no `cappedReason` field at all —
+  // which is a different code path from the null above, and it has to land on
+  // the same NULL column rather than on a blank a caller must test for twice.
+  const own = await store.keyProviderFor(account.id).mint({
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+  });
+  const ownRow = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", own.keyId);
+  assert.equal(ownRow.capped_reason, null, "a person's own key records no reason");
+  const [ownKey] = (await store.listCapKeys(account.id)).filter((key) => key.keyId === own.keyId);
+  assert.equal(Object.hasOwn(ownKey, "cappedReason"), false, "and no empty string either");
+
+  // The same for a freeze that names no reason: `swapToReadOnly(keyId)` with
+  // one argument is a legal call, and it must not put a blank in the column
+  // where a give-back pass (drive#656) would later read "no reason recorded"
+  // as an empty word. The method is optional on the type because a raw storage
+  // provider has none, so it is narrowed the way core/cap.js narrows it.
+  const provider = store.keyProviderFor(account.id);
+  if (typeof provider.swapToReadOnly !== "function") {
+    throw new Error("unreachable: the api's own store always has swapToReadOnly");
+  }
+  const silent = await provider.swapToReadOnly(own.keyId);
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", silent.keyId).capped_reason,
+    null,
+    "a freeze that names no reason records none, not a blank",
+  );
+});
+
+test("a device row written before the column existed still reads with no reason", async () => {
+  // The fleet's auto-revert: if drive#661 is rolled back, the Worker that comes
+  // with it is rolled back too, and it reads rows this migration wrote. It
+  // still has to see them as valid keys. So the reverse direction is proven
+  // here as well: a row inserted by the OLD insert statement, which never named
+  // `capped_reason` at all, reads back as a live key with no reason recorded
+  // (drive#661 -- the column is nullable with no DEFAULT, so this is what a
+  // pre-existing row reads as today).
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => 0 });
+  const account = { id: "acct-old", email: "old@example.com" };
+  sqlite
+    .prepare(
+      `INSERT INTO devices
+         (id, account_id, name, kind, b2_key_id, secret_hash, capabilities,
+          prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
+    )
+    .run(
+      "key_old",
+      account.id,
+      "laptop",
+      "device",
+      "ak_old",
+      "00",
+      JSON.stringify(["list", "read", "write", "delete"]),
+      `u/${account.id}/`,
+      JSON.stringify(["list", "read", "write", "delete"]),
+      1,
+      null,
+      null,
+      null,
+      null,
+    );
+
+  const [key] = await store.listCapKeys(account.id);
+  assert.equal(key.keyId, "key_old");
+  assert.deepEqual([...key.capabilities], ["list", "read", "write", "delete"]);
+  // Compared without a spread because `cappedFrom` and `cappedReason` are both
+  // optional on a row the cap reads: the old insert left cappedFrom set and
+  // named no cappedReason, and if the schema read stopped carrying either the
+  // assert fails on `undefined`.
+  assert.deepEqual(key.cappedFrom, ["list", "read", "write", "delete"]);
+  assert.equal(Object.hasOwn(key, "cappedReason"), false, "no reason, not an empty string");
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", "key_old").capped_reason,
+    null,
   );
 });
 
@@ -181,7 +396,7 @@ test("drive cap below the month already counted swaps on the real rows", async (
          (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
        VALUES (?, ?, ?, ?, 0, ?)`,
     )
-    .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+    .run(account.id, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
 
   const swapped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -208,23 +423,18 @@ test("drive cap below the month already counted swaps on the real rows", async (
   );
 });
 
-test("a founding account's cap counts the half, on the real schema", async () => {
-  // The cap read must carry the account's founding flag (drive#488): a
-  // founding account at 2 TB bills $10, under a $15 cap, while the same 2 TB
-  // at full price bills $20, past it. Without the flag both would be one
-  // number, and the founding account would be stopped at twice its spend.
+test("the cap read counts the one bill for every account, on the real schema", async () => {
+  // Two accounts with the same 2 TB for the same month read the same number:
+  // $20 at the one rate, past a $15 cap, so both are stopped.
   const at = Date.parse("2026-09-30T12:00:00.000Z");
   const { sqlite, db } = makeMeteredDB();
   const store = createD1DeviceStore(db, { now: () => at });
-  const founder = { id: "acct-founder", email: "founder@example.com" };
-  const full = { id: "acct-full", email: "full@example.com" };
-  sqlite
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
-    .run(founder.id, founder.email);
-  sqlite
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 0)")
-    .run(full.id, full.email);
-  for (const account of [founder, full]) {
+  const first = { id: "acct-first", email: "first@example.com" };
+  const second = { id: "acct-second", email: "second@example.com" };
+  for (const account of [first, second]) {
+    sqlite
+      .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+      .run(account.id, account.email);
     await store.setCapCents(account, dollarsToCapCents(15));
     await store.put({
       id: `key_${account.id}`,
@@ -245,24 +455,59 @@ test("a founding account's cap counts the half, on the real schema", async () =>
            (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
          VALUES (?, ?, ?, ?, 0, ?)`,
       )
-      .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+      .run(account.id, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
   }
 
-  const founderMonth = await store.monthUsage(founder.id, { capUsd: 15 });
-  const fullMonth = await store.monthUsage(full.id, { capUsd: 15 });
-  assert.equal(founderMonth.foundingMember, true, "the cap read carries the flag");
-  assert.equal(fullMonth.foundingMember, false);
+  for (const account of [first, second]) {
+    const month = await store.monthUsage(account.id, { capUsd: 15 });
+    assert.equal("foundingMember" in month, false, "the cap read carries no founding flag");
+    const report = await enforceCap(
+      { usage: month, keys: await store.listCapKeys(account.id) },
+      store.keyProviderFor(account.id),
+    );
+    assert.equal(report.state, "read_only", "2 TB is $20, past the $15 cap");
+  }
+});
 
-  const founderReport = await enforceCap(
-    { usage: founderMonth, keys: await store.listCapKeys(founder.id) },
-    store.keyProviderFor(founder.id),
-  );
-  assert.equal(founderReport.state, "active", "2 TB founding is $10, under the $15 cap");
-  assert.equal(founderReport.applied.length, 0);
+test("POST /api/cap on a closed account leaves it closed, and cancelClose still works", async () => {
+  // drive#537: an unguarded cap write set state back to active while closed_at
+  // stayed set, so the purge walk skipped the row and cancelClose threw
+  // close-not-closed. The route must 409 before any write, the row stays
+  // closed, and cancel still reopens it.
+  const at = Date.parse("2026-09-30T12:00:00.000Z");
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => at });
+  const account = { id: "acct-closed-cap", email: "closed-cap@example.com" };
+  await store.setCapCents(account, dollarsToCapCents(20));
+  await store.closeAccount(account, at / 1000);
+  assert.equal(await store.accountState(account.id), "closed");
 
-  const fullReport = await enforceCap(
-    { usage: fullMonth, keys: await store.listCapKeys(full.id) },
-    store.keyProviderFor(full.id),
+  const refused = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "8" }),
+    }),
+    account,
+    store,
   );
-  assert.equal(fullReport.state, "read_only", "2 TB at full price is $20, past the $15 cap");
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: failureMessage("cap-account-closed") });
+  const row = rowIn(
+    sqlite,
+    "SELECT state, closed_at, cap_cents FROM accounts WHERE id = ?",
+    account.id,
+  );
+  assert.equal(row.state, "closed");
+  assert.equal(row.closed_at, at / 1000);
+  assert.equal(row.cap_cents, dollarsToCapCents(20), "the cap must not move on a closed account");
+  // The store's own write is guarded the same way (core/devices.js): a direct
+  // setAccountState cannot un-close the row the route just refused.
+  await store.setAccountState(account.id, "active");
+  assert.equal(await store.accountState(account.id), "closed");
+
+  await store.cancelClose(account.id);
+  const reopened = rowIn(sqlite, "SELECT state, closed_at FROM accounts WHERE id = ?", account.id);
+  assert.equal(reopened.state, "active");
+  assert.equal(reopened.closed_at, null);
 });

@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -56,7 +57,7 @@ type hillClimbFlag struct {
 func tunableFlags() []hillClimbFlag {
 	return []hillClimbFlag{
 		{name: "vfs-read-ahead", flag: "--vfs-read-ahead", env: "VFS_READ_AHEAD", baseline: vfsReadAheadValue, candidate: "0", target: "open-time"},
-		{name: "vfs-read-chunk-size", flag: "--vfs-read-chunk-size", env: "VFS_READ_CHUNK_SIZE", baseline: vfsReadChunkSizeValue, candidate: "32M", target: "video-start"},
+		{name: "vfs-read-chunk-size", flag: "--vfs-read-chunk-size", env: "VFS_READ_CHUNK_SIZE", baseline: vfsReadChunkSizeValue, candidate: "16M", target: "video-start"},
 		{name: "vfs-read-chunk-streams", flag: "--vfs-read-chunk-streams", env: "VFS_READ_CHUNK_STREAMS", baseline: vfsReadChunkStreamsValue, candidate: "4", target: "video-start"},
 		{name: "buffer-size", flag: "--buffer-size", env: "BUFFER_SIZE", baseline: vfsChunkStreamSize, candidate: "16M", target: "small-file-get-1mib"},
 		{name: "transfers", flag: "--transfers", env: "TRANSFERS", baseline: vfsTransfersValue, candidate: "8", target: "small-file-put-4kib"},
@@ -294,7 +295,7 @@ func (h *hillStandin) seedFolderCopies(t *testing.T, name string, nfiles, copies
 func (h *hillStandin) rclone(t *testing.T, args ...string) {
 	t.Helper()
 	cmd := exec.Command("rclone", args...)
-	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rclone %s: %v\n%s", strings.Join(args, " "), err, b)
 	}
@@ -391,6 +392,50 @@ func TestVFSArgsPinsTheSafetyFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestVFSReadChunkingBoundsPerFileMemory is the memory half of the mount's
+// safety flags (issue #543): rclone's parallel reader allocates one read-chunk
+// buffer per stream, so chunk size x streams is the memory one open file can
+// take. The shipped pair is 2-4 streams of 16-32 MiB and the product stays at
+// or under 128 MiB per file. The last two checks prove the bound bites: the old
+// 128M x 2 pair (the bug this fixes) trips it.
+func TestVFSReadChunkingBoundsPerFileMemory(t *testing.T) {
+	const (
+		minChunk   = 16 << 20
+		maxChunk   = 32 << 20
+		minStreams = 2
+		maxStreams = 4
+		maxPerFile = 128 << 20
+	)
+	args := VFSArgs(vfsCacheMaxValue)
+	chunk, err := parseSizeSuffix(argValue(args, "--vfs-read-chunk-size"))
+	if err != nil {
+		t.Fatalf("--vfs-read-chunk-size: %v", err)
+	}
+	streams, err := strconv.Atoi(argValue(args, "--vfs-read-chunk-streams"))
+	if err != nil {
+		t.Fatalf("--vfs-read-chunk-streams: %v", err)
+	}
+	if chunk < minChunk || chunk > maxChunk {
+		t.Errorf("--vfs-read-chunk-size is %d bytes, want %d..%d (issue #543)", chunk, minChunk, maxChunk)
+	}
+	if streams < minStreams || streams > maxStreams {
+		t.Errorf("--vfs-read-chunk-streams is %d, want %d..%d (issue #543)", streams, minStreams, maxStreams)
+	}
+	if got := perFileReadMemory(chunk, streams); got > maxPerFile {
+		t.Errorf("one open file can take %d bytes of read buffers (chunk x streams), want at most %d", got, maxPerFile)
+	}
+	if got := perFileReadMemory(maxChunk, maxStreams); got > maxPerFile {
+		t.Errorf("the largest pair the bound allows (%d x %d) is %d, over the %d ceiling; the bound is wrong", maxChunk, maxStreams, got, maxPerFile)
+	}
+	if perFileReadMemory(128<<20, 2) <= maxPerFile {
+		t.Error("the old 128M x 2 pair must exceed the 128 MiB ceiling, or this test cannot catch the bug it guards")
+	}
+}
+
+// perFileReadMemory is the read-buffer memory one open file can take: rclone
+// allocates one read-chunk buffer per stream.
+func perFileReadMemory(chunk int64, streams int) int64 { return chunk * int64(streams) }
 
 func TestTunedVFSValueOverride(t *testing.T) {
 	t.Setenv("DRIVE_BENCH_VFS_READ_AHEAD", "1M")
@@ -676,19 +721,10 @@ func startStandin(t *testing.T, rows []hillClimbRow, set string) *hillStandin {
 	}
 	port := freePort(t)
 	h.cfg.Endpoint = "http://127.0.0.1:" + port
-	h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	h.serve = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
-		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	serveLog, err := os.Create(filepath.Join(root, "serve.out"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.serve.Stdout, h.serve.Stderr = serveLog, serveLog
-	if err := h.serve.Start(); err != nil {
-		t.Fatal(err)
-	}
+		"--log-level", "ERROR")
 	t.Cleanup(h.close)
-	waitForPort(t, port)
 	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
 		h.close()
 		t.Fatal(err)
@@ -895,5 +931,175 @@ func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
 		if systemdUserSessionAbsent(errors.New(msg)) {
 			t.Errorf("systemdUserSessionAbsent(%q) = true, want false: this systemd host works, so a failed action is an error, not a fallback", msg)
 		}
+	}
+}
+
+func TestParkStrayMountFilesMovesLocalFiles(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(mount, "notes.txt")
+	if err := os.WriteFile(local, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	holding, names, err := parkStrayMountFiles(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.txt" {
+		t.Fatalf("names = %v, want notes.txt", names)
+	}
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Fatal("the stray file is still in the mount folder")
+	}
+	if err := restoreStrayMountFiles(holding, mount); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored %q, want the original bytes", got)
+	}
+}
+
+func TestParkStrayMountFilesRestoresOnPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	orig := renameFile
+	renameFile = func(from, to string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected rename failure")
+		}
+		return orig(from, to)
+	}
+	t.Cleanup(func() { renameFile = orig })
+	_, _, err := parkStrayMountFiles(mount)
+	if err == nil {
+		t.Fatal("a mid-park failure returned no error")
+	}
+	if _, err := os.Stat(filepath.Join(mount, "a.txt")); err != nil {
+		t.Errorf("a.txt was not restored after a partial park: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "b.txt")); err != nil {
+		t.Errorf("b.txt was not left in the mount folder: %v", err)
+	}
+}
+
+func TestParkStrayMountFilesReclaimsALeftoverHolding(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holding := strayHoldingDir(mount) + "-old"
+	if err := os.MkdirAll(holding, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gotHolding, names, err := parkStrayMountFiles(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.txt" {
+		t.Fatalf("names = %v, want notes.txt reclaimed then parked", names)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "notes.txt")); !os.IsNotExist(err) {
+		t.Fatal("the reclaimed file is still in the mount folder")
+	}
+	if err := restoreStrayMountFiles(gotHolding, mount); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(mount, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored %q, want the leftover bytes", got)
+	}
+}
+
+// TestRestoreStrayMountFilesCopiesAcrossFilesystems proves the parked files
+// reach a mounted drive: the holding folder is on the local disk and the
+// mount is another filesystem, where a rename fails with EXDEV, so each entry
+// is copied (folders too) and then removed from the holding folder.
+func TestRestoreStrayMountFilesCopiesAcrossFilesystems(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	holding := filepath.Join(dir, "Drive.drive-local-1")
+	if err := os.MkdirAll(filepath.Join(holding, "photos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "photos", "a.jpg"), []byte("jpg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	renameFile = func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	}
+	t.Cleanup(func() { renameFile = orig })
+	if err := restoreStrayMountFiles(holding, mount); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"notes.txt": "keep me", "photos/a.jpg": "jpg"} {
+		got, err := os.ReadFile(filepath.Join(mount, filepath.FromSlash(name)))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v, want %q", name, got, err, want)
+		}
+	}
+	if _, err := os.Stat(holding); !os.IsNotExist(err) {
+		t.Errorf("the holding folder is still there: %v", err)
+	}
+}
+
+// TestRestoreStrayMountFilesKeepsTheDrivesVersion proves a parked file never
+// overwrites a file of the same name already in the drive.
+func TestRestoreStrayMountFilesKeepsTheDrivesVersion(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	holding := filepath.Join(dir, "Drive.drive-local-1")
+	for _, d := range []string{mount, holding} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mount, "notes.txt"), []byte("the drive's"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreStrayMountFiles(holding, mount); err == nil {
+		t.Fatal("a name clash returned no error, so nobody is told the local copy stayed")
+	}
+	got, _ := os.ReadFile(filepath.Join(mount, "notes.txt"))
+	if string(got) != "the drive's" {
+		t.Errorf("drive copy = %q, want it untouched", got)
+	}
+	got, _ = os.ReadFile(filepath.Join(holding, "notes.txt"))
+	if string(got) != "local" {
+		t.Errorf("local copy = %q, want it kept in the holding folder", got)
 	}
 }

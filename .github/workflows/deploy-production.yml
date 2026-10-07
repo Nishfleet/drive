@@ -1,6 +1,11 @@
-# Push to main deploys the drive-pricing Worker. Merging to main already
-# requires the `verify` and `go` checks (the main ruleset), so this job does
-# not re-run them: it builds, ships, and smokes the live health endpoint.
+# Deploy the drive-pricing Worker only after CI passed on that main commit.
+#
+# drive#499: a push to main used to deploy even when the same commit's CI was
+# red (CI run 37254363049 failed, deploy 37254362979 on 2f62b7a succeeded).
+# GitHub's `workflow_run` on CI's conclusion is the stock gate: the job runs
+# only when CI on a main push succeeded, and it checks out the commit CI
+# tested. It does not re-run CI. It builds, ships, checks the live Worker
+# version and health, and rolls the Worker version back when that check fails.
 #
 # drive#132: the old caller pointed at nish3451/shared-workflows (archived).
 # That reusable workflow had no deploy target for drive and waited on every
@@ -9,8 +14,13 @@
 # already runs, adapted to drive's `cf` CLI (`cloudflare.config.ts`).
 name: Deploy production
 
-on:
-  push:
+# zizmor's dangerous-triggers flags workflow_run because a fork's PR run can
+# reach secrets through it. This one is limited to CI on a main push (the job
+# `if` below), and it checks out the commit CI tested, never PR code.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch: {}  # manual redeploy of main head
 
@@ -20,11 +30,19 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read # the main-head step below reads CI's runs
 
 jobs:
   deploy:
     name: deploy
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    # A red, cancelled or skipped CI run never matches. `event == 'push'` keeps
+    # a merge-queue or pull-request CI run from deploying. A hand start deploys
+    # main only, so a branch that never passed CI cannot reach production.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
     # A job with an environment gets a GitHub Deployment and deployment_status
     # events for free. No `url` while the site has no public address.
     environment:
@@ -33,13 +51,130 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # workflow_run's GITHUB_SHA is the main tip when the event fired, not
+          # the commit CI tested. Ship the tested commit.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
+      - name: Ship only a CI-green main head
+        # A rerun of an old CI run, or a hand start on a red main, must not
+        # ship. The commit must still be main's head, and CI must have passed
+        # on it. A stale commit stops here, because the newer commit's own CI
+        # run deploys that one.
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          test "$SHA" = "$head" || { echo "::error::$SHA is no longer main's head ($head)"; exit 1; }
+          green=$(gh run list -R "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$SHA" --status success --json databaseId --jq length)
+          test "$green" -gt 0 || { echo "::error::CI has not passed on $SHA"; exit 1; }
+          echo "shipping $SHA: main head, CI passed"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Ship only an agent score above the pass bar
+        # drive#526: agent-eval.yml records the held-out score on a schedule.
+        # A release ships only while the newest completed eval run on main is
+        # green; a red score stops the deploy here. The gate arms itself with
+        # the first completed run: until then it warns instead of failing, so
+        # merging the gate itself never wedges deploys. A run in progress is
+        # also a pass here — the next deploy after it completes reads its
+        # score. A run by hand (workflow_dispatch) records a fresh score for
+        # a release that cannot wait for Monday.
+        run: |
+          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion,createdAt --jq '.[0] // empty | "\(.status) \(.createdAt) \(.conclusion // "none")"')
+          if [ -z "$latest" ]; then
+            echo "::warning::no agent eval run has completed yet; the score gate is not armed"
+          else
+            read -r status created conclusion <<<"$latest"
+            if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
+              echo "::error::the newest agent eval run on main concluded $conclusion (a score under the pass bar, or a run that could not score); its run summary says which, and the release stops here (drive#526)"
+              exit 1
+            fi
+            # A green score goes stale when the weekly clock stops (a runner
+            # offline, the schedule disabled): fail loud after two missed
+            # Mondays instead of shipping on an old score.
+            age_days=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
+            if [ "$age_days" -gt 14 ]; then
+              echo "::error::the newest agent eval run on main is $age_days days old; run agent-eval.yml by hand (workflow_dispatch) for a fresh score (drive#526)"
+              exit 1
+            fi
+            echo "agent eval gate: newest run on main is $status/$conclusion"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Warn when there is no sender (drive#522)
+        # Every customer email goes through MAIL_FROM (src/email-send.js). With
+        # it unset, close receipts, reminders and the welcome failed at the
+        # customer's click while every deploy stayed green (drive#522). This
+        # step makes that loud on every run, before any migration or ship. It
+        # reads the secret NAMES the Worker has, never a value.
+        # Until launch a missing sender is a ::warning:: and the deploy goes
+        # on, because drive is pre-launch and a block would stop every deploy
+        # until drive#667 sets MAIL_FROM. drive#752 turns it back into a block
+        # before the first paying customer. /api/health reports the same gap
+        # as "email":"not-ready", and the close and sign-in routes still
+        # report the missing sender by name rather than fail silently.
+        # A CLI or parse failure is still an error, reported as itself, never
+        # as a missing sender: the name check exits 3 only when the list read
+        # fine.
+        run: |
+          names=$(npx cf workers secrets list --worker drive-pricing --quiet) ||
+            { echo "::error::could not list the secret names on drive-pricing; the cf error is above"; exit 1; }
+          rc=0
+          printf '%s' "$names" |
+            node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.exit(s.some((x)=>x.name==="MAIL_FROM")?0:3)' || rc=$?
+          case $rc in
+            0) echo "MAIL_FROM is set on drive-pricing" ;;
+            3) echo "::warning title=No sender address::MAIL_FROM is not set on drive-pricing, so every customer email fails (close receipts, reminders, the welcome, sign-in links). Set it per drive#667. This deploy goes on only because drive is pre-launch; drive#752 makes this a block before the first paying customer." ;;
+            *) echo "::error::the secret list from drive-pricing was not the JSON array this check reads"; exit 1 ;;
+          esac
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Remember the live Worker version
+        # The rollback target. The first deployment in the list is the one
+        # serving traffic. D1 sits outside the Worker version, so a rollback
+        # restores code only.
+        id: live
+        run: |
+          vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet |
+            node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")).deployments[0];process.stdout.write(d.versions.find((v)=>v.percentage===100)?.version_id??"")')
+          test -n "$vid" || { echo "::error::no live Worker version at 100%"; exit 1; }
+          echo "live Worker version: $vid"
+          echo "version_id=$vid" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Record the D1 restore point
+        # A migration is one-way: D1 has no down-migrations, and the databases
+        # sit outside the Worker version a rollback restores (drive#520). So
+        # before the first `cf d1 migrations apply` this captures each
+        # database's Time Travel bookmark and prints it on the run and the
+        # step summary — the point a `cf d1 time-travel restore --bookmark`
+        # returns to (docs/runbook.md has the steps; running one is Nish's).
+        # A failed capture fails the deploy here, before any migration ran:
+        # no restore point, no migration.
+        id: bookmark
+        run: |
+          headers="$RUNNER_TEMP/d1-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e"; do
+            read -r name db <<<"$pair"
+            json=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/time_travel/bookmark") \
+              || { echo "::error::no restore point for $name: the bookmark request failed"; exit 1; }
+            bm=$(printf '%s' "$json" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));if(r.success!==true||typeof r.result?.bookmark!=="string"||!r.result.bookmark)process.exit(1);process.stdout.write(r.result.bookmark)') \
+              || { echo "::error::no restore point for $name: the bookmark is missing in the API answer"; exit 1; }
+            echo "restore point for $name (bookmark): $bm" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Apply D1 migrations
         # The databases live outside the Worker version, so their migrations
         # apply before the code that reads the new tables ships (drive #170,
@@ -73,9 +208,9 @@ jobs:
       - name: Check the site stayed private
         # The workers.dev address sits behind Cloudflare Access until drive
         # has a domain (cloudflare.config.ts). A stranger must get a redirect
-        # to the Access sign-in, never the site. The live health smoke
-        # returns with the domain. The redirect must go to our own Access team
-        # host exactly, so a lookalike URL cannot pass (drive #159).
+        # to the Access sign-in, never the site. The redirect must go to our
+        # own Access team host exactly, so a lookalike URL cannot pass
+        # (drive #159).
         run: |
           out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
           echo "workers.dev answered: ${out%%\?*}"
@@ -96,3 +231,54 @@ jobs:
           if [ "$api" = "200" ]; then
             echo "::error::drive-api has a public workers.dev address"; exit 1
           fi
+      - name: Check the live Worker version and health
+        # The new version must be the one serving, and /api/health must answer
+        # {"ok":true}. Access answers a runner with a 302, so the health call
+        # needs an Access service token (drive#520). Until that token is on
+        # the production environment the health call is skipped with a
+        # warning on the run, and the version check still gates.
+        id: smoke
+        run: |
+          vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet |
+            node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")).deployments[0];process.stdout.write(d.versions.find((v)=>v.percentage===100)?.version_id??"")')
+          echo "live Worker version: $vid (before deploy: $PREVIOUS_VERSION)"
+          test -n "$vid" && test "$vid" != "$PREVIOUS_VERSION" || { echo "::error::the new Worker version is not live"; exit 1; }
+          if [ -z "$CF_ACCESS_CLIENT_ID" ]; then
+            echo "::warning::health not checked: no Access service token on the production environment (drive#520)"
+            exit 0
+          fi
+          # The token goes to curl in a private file, never in its arguments.
+          headers="$RUNNER_TEMP/access-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
+            "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$headers")
+          body=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
+            https://drive-pricing.nishant345.workers.dev/api/health) || { echo "::error::/api/health did not answer 200"; exit 1; }
+          printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
+            { echo "::error::/api/health is not ok: $body"; exit 1; }
+          echo "health ok"
+          # The email part is reported beside ok, never as it (drive#522), so
+          # a live drive that cannot send mail is a warning here, not a rollback.
+          if printf '%s' "$body" | node -e 'process.exit(JSON.parse(require("fs").readFileSync(0,"utf8")).email==="not-ready"?0:1)'; then
+            echo "::warning title=Email not ready::/api/health reports email not-ready: customer email fails until MAIL_FROM is set (drive#667, drive#752)"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          PREVIOUS_VERSION: ${{ steps.live.outputs.version_id }}
+      - name: Roll back the Worker version
+        # Stock Workers rollback: a new deployment of the previous version at
+        # 100%. Runs when any step after the live version was read failed,
+        # including a deploy that timed out after Cloudflare took the upload.
+        # When the old version is still live this changes nothing.
+        if: failure() && steps.live.outcome == 'success'
+        run: |
+          npx cf workers deployments create --worker drive-pricing --strategy percentage \
+            --versions "[{\"version_id\":\"$PREVIOUS_VERSION\",\"percentage\":100}]"
+          echo "::error::rolled drive-pricing back to $PREVIOUS_VERSION"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.live.outputs.version_id }}

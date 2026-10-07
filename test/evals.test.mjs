@@ -14,6 +14,13 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { monthlyBillForStoredTb } from "../core/billing.js";
+// The figures the money graders must follow (drive#526): the cap default,
+// the per-TB ceiling sentence, and the one bill function the worked table
+// is built from. The pages are rendered from these, so the gates below pin
+// grader -> page -> module instead of typing the figures a third time.
+import { DEFAULT_CAP_USD } from "../core/cap-default.js";
+import { PRICE } from "../core/pricing.js";
 // The eval's CLI help text is cmd/drive/main.go's `usage` const, so the gate
 // asks the same function `npm run eval:sync-help` writes the committed snapshot
 // with. The snapshot stays committed and the docs build never writes it:
@@ -613,4 +620,231 @@ test("one unanswerable task: the docs cannot answer, grader expects honesty", ()
     Boolean(echoed) && positiveJs.every((a) => !passed(gradeJavascript(a, echoed, context))),
     `echoing the task's own why_hard must fail every positive grader: ${echoed?.slice(0, 60)}`,
   );
+});
+
+// --- drive#526: the money graders read the price module, through the page ---
+
+test("the money graders' pages carry the price module's figures (drive#526)", () => {
+  const context = gradingContext();
+  const security = context.vars.docs_security ?? "";
+  const pricing = context.vars.docs_pricing ?? "";
+  // The cap the security page names is the cap module's figure, not a typed
+  // one: a re-price of src/cap-default.js fails here before any grader can
+  // drift from it.
+  assert.match(
+    security,
+    new RegExp(`The default cap is \\$${DEFAULT_CAP_USD}\\.`),
+    `security.md names the cap module's $${DEFAULT_CAP_USD}`,
+  );
+  // The ceiling sentence is the price module's own line, verbatim.
+  assert.ok(
+    pricing.includes(PRICE.maxLine),
+    `pricing.md carries the price module's ceiling line verbatim: ${PRICE.maxLine}`,
+  );
+  // The 0.8 TB row's bill is the one bill function's, not a typed figure.
+  const rowLine = pricing.split("\n").find((line) => /^\| 0\.8 TB \|/.test(line));
+  assert.ok(rowLine, "pricing.md carries the 0.8 TB row");
+  const stated = rowLine
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean)[3];
+  assert.ok(stated, "the 0.8 TB row states a bill");
+  assert.equal(
+    parseFloat(stated.replace(/[$,]/g, "")),
+    monthlyBillForStoredTb(0.8).billUsd,
+    `the 0.8 TB row's bill is monthlyBillForStoredTb(0.8).billUsd, not typed: ${stated}`,
+  );
+});
+
+test("the money graders follow the page they are handed, so the retired figures fail (drive#526)", () => {
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  const capTask = tasks.find((t) => t.description === "the default spending cap");
+  const billTask = tasks.find(
+    (t) => t.description === "the price worked out for 800 GB held all month",
+  );
+  const ceilingTask = tasks.find(
+    (t) => t.description === "is there a free tier, and what sign-up needs from me",
+  );
+  assert.ok(capTask && billTask && ceilingTask, "the three money tasks are in the train split");
+  const capGrader = capTask.assert[0]; // reads the security page's cap
+  const billGrader = billTask.assert[0]; // reads the pricing page's 0.8 TB row
+  const ceilingGrader = ceilingTask.assert[1]; // reads the pricing page's ceiling
+
+  // A re-priced page no grader has seen: cap $25, the 800 GB row billing
+  // $12.50, the ceiling $15. A grader that still names any typed figure —
+  // today's or the retired one — cannot pass this page.
+  const reprice = {
+    vars: {
+      docs_security: "The default cap is $25.",
+      docs_pricing: "Never more than $15 per TB.\n| 0.8 TB | $20 | $12.50 | $12.50 |\n",
+    },
+  };
+  const real = gradingContext();
+
+  // On the re-priced page, only the page's own figures pass.
+  assert.ok(passed(gradeJavascript(capGrader, "The default cap is $25.", reprice)));
+  assert.ok(
+    !passed(gradeJavascript(capGrader, "The default cap is $20.", reprice)),
+    "today's figure must fail a re-priced page",
+  );
+  assert.ok(
+    !passed(gradeJavascript(capGrader, "The default cap is $12.", reprice)),
+    "the retired figure must fail a re-priced page",
+  );
+  assert.ok(passed(gradeJavascript(billGrader, "My bill is $12.50.", reprice)));
+  assert.ok(
+    !passed(gradeJavascript(billGrader, "My bill is $10.", reprice)),
+    "today's bill must fail a re-priced page",
+  );
+  assert.ok(passed(gradeJavascript(ceilingGrader, "Never more than $15 per TB.", reprice)));
+  assert.ok(
+    !passed(gradeJavascript(ceilingGrader, "Never more than $10 per TB.", reprice)),
+    "today's ceiling must fail a re-priced page",
+  );
+
+  // On the real pages, the retired $12 — the literal the graders used to
+  // carry — fails every money grader, and each page's own figure passes.
+  assert.ok(passed(gradeJavascript(capGrader, "The default cap is $20.", real)));
+  assert.ok(
+    !passed(gradeJavascript(capGrader, "The default cap is $12.", real)),
+    "the retired cap must fail the real page",
+  );
+  assert.ok(passed(gradeJavascript(billGrader, "My bill is $10.", real)));
+  assert.ok(
+    !passed(gradeJavascript(billGrader, "My bill is $12.", real)),
+    "the retired 800 GB bill must fail the real page",
+  );
+  assert.ok(passed(gradeJavascript(ceilingGrader, "Never more than $10 per TB.", real)));
+  assert.ok(
+    !passed(gradeJavascript(ceilingGrader, "Never more than $12 per TB.", real)),
+    "the retired ceiling must fail the real page",
+  );
+});
+
+test("the docs' held-out command is the env-var form npm actually honours (drive#526)", () => {
+  const pkg = JSON.parse(read("package.json"));
+  // npm appends `--` args to the LAST command of a chained script, so a
+  // split passed as `npm run eval:agents -- --tests <file>` would reach the
+  // endstate step, not promptfoo. The script selects the split by env var.
+  assert.match(
+    pkg.scripts["eval:agents"],
+    /\$\{DRIVE_EVAL_SPLIT:\+--tests \$DRIVE_EVAL_SPLIT\}/,
+    "the one command wires DRIVE_EVAL_SPLIT to promptfoo's --tests flag",
+  );
+  const sb = read("docs/scoreboard.md");
+  const row = sb
+    .split("\n")
+    .find((line) => line.includes("agents finish real tasks from the docs"));
+  assert.ok(row, "scoreboard has the agents row");
+  assert.match(
+    row,
+    /`DRIVE_EVAL_SPLIT=[^`]+ npm run eval:agents`/,
+    "the agents row's test command sets DRIVE_EVAL_SPLIT",
+  );
+  assert.ok(
+    !row.includes("npm run eval:agents --"),
+    "the agents row never suggests the -- form npm swallows",
+  );
+  const readme = read("evals/agents/README.md");
+  assert.match(
+    readme,
+    /DRIVE_EVAL_SPLIT=\S+ \\\n\s+npm run eval:agents/,
+    "README's example sets the split as an env var",
+  );
+  // The held-out example block itself sets the env var; the -- form is
+  // named exactly once, in the warning prose — never as a way to run it.
+  const fenceStart = readme.indexOf("```sh", readme.indexOf("A held-out run"));
+  const example = readme.slice(fenceStart + 6, readme.indexOf("```", fenceStart + 5));
+  assert.match(
+    example,
+    /^DRIVE_EVAL_SPLIT=\S+ \\\n\s+npm run eval:agents\n$/,
+    "the held-out example sets the split as an env var",
+  );
+  assert.ok(!example.includes("--"), "the held-out example never passes the split with --");
+  assert.equal(
+    readme.split("npm run eval:agents --").length - 1,
+    1,
+    "README names the -- form only as the warned-against example",
+  );
+  assert.match(readme, /npm appends/, "README explains why the -- form is wrong");
+});
+
+test("the end-state suite runs in the stock container sandbox and survives a reading split (drive#526)", () => {
+  const py = read("evals/agents/endstate.py");
+  assert.match(
+    py,
+    /sandbox=\("docker", "compose\.yaml"\)/,
+    "the agent's shell runs in Inspect's Docker sandbox",
+  );
+  assert.ok(
+    !py.includes("DRIVE_EVAL_SANDBOX"),
+    "no sandbox override: a broken Docker fails the run instead of falling back",
+  );
+  assert.match(
+    py,
+    /os\.environ\.get\("DRIVE_EVAL_SPLIT"\)/,
+    "the end-state suite reads the one split setting",
+  );
+  assert.match(
+    py,
+    /reading split/,
+    "a reading-only split falls back to the committed tasks, and says so",
+  );
+  assert.match(
+    py,
+    /neither an end-state task nor a/,
+    "an entry of neither shape raises instead of reading as a skip",
+  );
+
+  // The compose file is the container the sandbox starts: one `default`
+  // service (Inspect's required name), a pinned base image, and rclone on
+  // PATH inside it.
+  assert.ok(existsSync(join(evals, "compose.yaml")), "compose.yaml ships beside the task");
+  const compose =
+    /** @type {{ services?: Record<string, { image?: unknown, command?: unknown, network_mode?: unknown, volumes?: unknown }> }} */ (
+      loadYaml("evals/agents/compose.yaml")
+    );
+  const svc = compose.services?.default;
+  assert.ok(svc, "the sandbox service is `default` (Inspect's required name)");
+  assert.match(String(svc.image), /^python:3\.12-bookworm$/, "the image is pinned");
+  assert.deepEqual(
+    svc.command,
+    ["sleep", "infinity"],
+    "the container stays up for Inspect to exec into",
+  );
+  assert.equal(
+    svc.network_mode,
+    "host",
+    "the container reaches the stand-in on the host's loopback",
+  );
+  assert.match(
+    JSON.stringify(svc.volumes ?? []),
+    /rclone:ro/,
+    "rclone is bind-mounted read-only onto the container's PATH",
+  );
+});
+
+test("the agent eval runs on a clock with a pass bar, and the release reads its score (drive#526)", () => {
+  const wf = read(".github/workflows/agent-eval.yml");
+  assert.match(wf, /schedule:/, "the eval runs on a schedule");
+  assert.match(wf, /cron: /, "…with a cron");
+  assert.match(wf, /workflow_dispatch:/, "…and can be run by hand before a release");
+  assert.match(
+    wf,
+    /runs-on: \[self-hosted, Linux, X64\]/,
+    "…on the own runners, where the split and the key live",
+  );
+  assert.match(wf, /DRIVE_EVAL_SPLIT/, "…on the held-out split");
+  assert.match(wf, /HELDOUT_PASS_BAR/, "…with the pass bar named");
+  assert.match(wf, /results\/latest\.json/, "…scored from the run's recorded output");
+  // Every action is pinned to a commit SHA, the convention ci.yml sets.
+  for (const [, uses] of wf.matchAll(/uses:\s*(\S+)/g)) {
+    assert.match(uses, /@[0-9a-f]{40}/, `action is SHA-pinned: ${uses}`);
+  }
+
+  const deploy = read(".github/workflows/deploy-production.yml");
+  assert.match(deploy, /agent-eval\.yml/, "the deploy reads the agent eval's runs");
+  assert.match(deploy, /pass bar/, "…and names the bar it enforces");
+  assert.match(deploy, /exit 1/, "…and a red score stops the deploy");
+  assert.match(deploy, /gate is not armed/, "…and warns, not fails, before the first run exists");
 });
