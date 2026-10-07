@@ -599,6 +599,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     method: "email",
     email: "newperson@example.com",
     card: true, // a card at sign-up (drive#387)
+    age: true, // and the 18+ box (drive#781)
   });
   assert.equal(start.status, 202, "a start emails a link");
   const accepted = await start.json();
