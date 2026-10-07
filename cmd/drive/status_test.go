@@ -321,13 +321,13 @@ func TestQueueWhyWordsMatchTheSources(t *testing.T) {
 
 func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"diskCache":{"outOfSpace":true}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.binary)
 	t.Setenv("DRIVE_RC_ADDR", c.addr)
 	if !cacheIsFull(home, true) {
@@ -341,13 +341,13 @@ func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 // telling the person to free disk space.
 func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"opt":{"CacheMaxSize":1073741824},"diskCache":{"bytesUsed":1610612736}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.binary)
 	t.Setenv("DRIVE_RC_ADDR", c.addr)
 	capBytes, usedBytes, ok := cacheState(home, true)

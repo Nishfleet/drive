@@ -13,6 +13,21 @@
 // secret, a key, another user's path, or raw error text. test/messages.test.mjs
 // enforces both shapes on every entry, so a new entry cannot ship a stack, a
 // token or a two-step fix-it list.
+//
+// SIGN_IN_COMMAND is the one place a sign-in command is written down. `drive
+// login` opens the browser, mints this machine's key and writes the storage
+// settings; `drive init` does not sign anyone in — it mounts the drive and
+// connects the agent tools, and on a machine with no credentials it fails its
+// own config check before it reaches a sign-in (drive#557). The api Worker's
+// pages, the emails, the home page and the CLI's table all read this one
+// string, so no surface can tell a person to run a command that cannot sign
+// them in. It lives in this module because it is the one with no imports of
+// its own, so everything here can read it without a cycle.
+export const SIGN_IN_COMMAND = "drive login";
+// The setup command that follows sign-in: it mounts the drive and connects
+// the agent tools. It lives here so the emails can name it without importing
+// core/status.js, which pulls auth and would cycle through email-send (drive#575).
+export const INSTALL_COMMAND = "drive init";
 // The one top-up prompt (drive#586): the $0 pause, the low balance line, the
 // "$2 left" email and the CLI all say it in these words.
 export const TOP_UP_PROMPT = "Top up to keep adding files.";
@@ -30,9 +45,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     next: "Raise the cap on the usage page to start writing again.",
   }),
   // The key this device (or agent, or branch) was using no longer works.
+  // `drive init` never signed anyone in — it mounts a drive and connects agent
+  // tools, and on a machine with no credentials it fails in its own config
+  // check before it reaches a sign-in (drive#557) — so the one command that
+  // signs this device back in is the constant above.
   "key-revoked": Object.freeze({
     what: "This device's key was revoked, so it can't reach the drive.",
-    next: "Sign in again to get a new key; your files are untouched.",
+    next: `Run ${SIGN_IN_COMMAND} to get a new key; your files are untouched.`,
   }),
   // One agent key reached its own cap (drive issue #171), so the drive took its
   // write powers away and the tool keeps reading. Nothing was deleted, and the
@@ -40,6 +59,14 @@ export const FAILURE_MESSAGES = Object.freeze({
   "agent-cap-reached": Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
+  }),
+  // The per-account live-key count cap (drive#552). Every mint is a vendor
+  // access key the storage server enforces, so the account's live count is
+  // the bound the vendor does not set. The number named here and
+  // keyprovider.js KEY_COUNT_CAP are pinned together by a test.
+  "key-count-cap": Object.freeze({
+    what: "This account already holds its limit of 20 active keys.",
+    next: "Revoke a key you no longer use, or let an hourly key expire, then mint again.",
   }),
   // A cap write from the usage page or `drive cap` reached a Worker with no
   // account store behind it (drive#421). The cap was not changed, so the next
@@ -137,6 +164,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This account is closed, so it cannot make a new key.",
     next: "Cancel the close while the account is still in its 30-day window to use it again.",
   }),
+  // POST /api/cap on an account whose close has landed (drive#537). The
+  // unguarded write used to set state back to active while closed_at stayed
+  // set, so purge never ran and cancelClose threw. The route now 409s before
+  // any write; the one next step is the same cancel as a closed-account mint.
+  "cap-account-closed": Object.freeze({
+    what: "This account is closed, so its spending cap cannot change.",
+    next: "Cancel the close while the account is still in its 30-day window to use it again.",
+  }),
   // A share link or upload page that does not open: unknown, revoked or past
   // its 7-day window (issue #19). One entry for all three on purpose — the
   // public routes must not tell a stranger which of those it was, and the one
@@ -178,6 +213,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This link has handed out as much of the file as it can.",
     next: "Ask the person who shared it for a new link.",
   }),
+  // A share link whose file was replaced after mint (drive issue #554). The
+  // link stored the file's etag and the live object no longer matches, so
+  // the bytes are refused rather than labelled: serving the new file would
+  // let a swapped-in payload ride the old link's downloads and judgment.
+  "share-changed": Object.freeze({
+    what: "This file has changed since the link was made.",
+    next: "Ask the person who sent it for a new one.",
+  }),
+  // Bytes whose SHA-256 is on the stock known-bad list, refused on share
+  // mint and on an upload-request drop (drive issue #554). Nothing was
+  // stored or linked.
+  "malware-refused": Object.freeze({
+    what: "That file did not pass the safety check.",
+    next: "Try a different file.",
+  }),
   // An upload-request drop named a file longer than the 255-character cap
   // (drive issue #549). Nothing was stored; the next step is a shorter name.
   "upload-name-too-long": Object.freeze({
@@ -208,6 +258,16 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
+  }),
+  // A devices-page revoke named a key this account does not hold (drive#525).
+  "key-not-found": Object.freeze({
+    what: "That key is not on this account.",
+    next: "Reload the devices page and pick a key that is still listed.",
+  }),
+  // A URL with more segments than /api/devices/<keyId>, or an empty id.
+  "key-path-unknown": Object.freeze({
+    what: "That is not a key path.",
+    next: "Open the key from the list.",
   }),
   // A URL with more segments than /api/branches/<name>/<action>.
   "branch-path-unknown": Object.freeze({

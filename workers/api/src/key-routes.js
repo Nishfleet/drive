@@ -9,10 +9,46 @@
 // (build step 1, drive#2), and presents them with HTTP Basic. That route is
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
-
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
-import { authorizePath } from "../../../core/keystore.js";
+import { authorizePath, KeyCountCapError } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
+import { enforceEdgeLimits } from "../../../core/rate-limit.js";
+
+/** The edge-limit binding the key mint runs behind (drive issue #552), read
+ * off env the way the device routes read theirs; the deploy config
+ * (workers/api/cloudflare.config.ts) declares it on its own namespace. */
+export const KEYS_LIMIT = "KEYS_RATE_LIMITER";
+
+import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
+
+/** Kinds drive#551 mails on: an agent, team or branch key, not a device key. */
+const KEY_SECURITY_EVENTS = Object.freeze({
+  agent: "agent-key-minted",
+  team: "team-key-minted",
+  branch: "branch-key-minted",
+});
+
+/**
+ * @param {{env?: unknown, account?: unknown, now?: () => number}} ctx
+ * @param {string} event
+ * @param {string} [deviceName]
+ */
+async function notifyFromCtx(ctx, event, deviceName) {
+  const mail = mailFromEnv(ctx.env);
+  const at = typeof ctx.now === "function" ? ctx.now() : Date.now();
+  const account =
+    typeof ctx.account === "object" && ctx.account !== null
+      ? /** @type {{email?: unknown}} */ (ctx.account)
+      : null;
+  await notifySecurityEvent({
+    email: mail.email,
+    mailFrom: mail.mailFrom,
+    to: account !== null && typeof account.email === "string" ? account.email : "",
+    event,
+    deviceName,
+    happenedAt: new Date(at).toISOString(),
+  });
+}
 
 /** The stand-in store: what core/keystore.js `createMemoryStore` returns and
  * what D1's adapter will have to match (drive#2). */
@@ -38,11 +74,38 @@ export async function listKeysRoute(request, ctx) {
  * POST /v1/keys — mint a key. The secret is in this response and nowhere
  * else: the store keeps a hash, so it cannot be re-read later.
  * @param {Request} request
- * @param {{store: KeyStore, account: {id: string, name: string}}} ctx
+ * @param {{store: KeyStore, account: {id: string, name: string}, env?: Record<string, any>}} ctx
  */
 export async function mintKeyRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  // The per-account edge limit on the mint (drive issue #552), ahead of the
+  // count cap: the count caps what the account may hold, this caps how fast
+  // mints are tried. The key is the caller's own account id — the account
+  // gate has already resolved it — so one account's loop cannot spend
+  // another account's mint quota, and the answer is the message table's.
+  // Unlike the public device routes (device-routes.js), the missing-binding
+  // case lets the mint through with a loud log rather than a 503: this route
+  // is behind the account gate and the count cap independently bounds the
+  // vendor keys, so a deployment that has not declared the binding is bound
+  // anyway — while the deploy config gate (test/deploy-api-worker.test.mjs)
+  // refuses to ship one that is not. A limiter that IS configured but fails
+  // to answer still takes the closed door, through `enforceEdgeLimits`.
+  const mintBinding = ctx.env?.[KEYS_LIMIT];
+  if (mintBinding === undefined) {
+    console.error(
+      "keys: the key-mint limiter is not configured; the live-key count cap is the only bound",
+      KEYS_LIMIT,
+    );
+  }
+  const limits =
+    mintBinding === undefined
+      ? []
+      : [{ binding: mintBinding, key: String(ctx.account.id), name: KEYS_LIMIT }];
+  const refused = await enforceEdgeLimits(limits, "keys");
+  if (refused !== null) {
+    return refused;
   }
   const read = await readJsonObject(request);
   if ("error" in read) {
@@ -72,12 +135,30 @@ export async function mintKeyRoute(request, ctx) {
   try {
     minted = await ctx.store.mintKey(ctx.account, { kind, name });
   } catch (error) {
+    // The live-key cap is the account's answer first: 409 with the message
+    // table's words, naming the cap the mint refused (drive issue #552), the
+    // same shape the agent's own cap answers with (409, agent-cap-reached).
+    // The cap error's own message is not shown to anyone; it is for the log.
+    if (error instanceof KeyCountCapError) {
+      console.error(
+        "keys: the mint was refused at the live-key count cap",
+        String(error.live),
+        error.accountId,
+      );
+      return errorResponse(409, failureMessage("key-count-cap"));
+    }
     // An unknown kind is the caller's mistake, not a server fault, and the
     // message is the keyprovider table's own (it names the known kinds).
     if (error instanceof TypeError || error instanceof Error) {
       return errorResponse(400, error.message);
     }
     throw error;
+  }
+  const event = Object.hasOwn(KEY_SECURITY_EVENTS, kind)
+    ? KEY_SECURITY_EVENTS[/** @type {keyof typeof KEY_SECURITY_EVENTS} */ (kind)]
+    : undefined;
+  if (event !== undefined) {
+    await notifyFromCtx(ctx, event, typeof name === "string" ? name : "a signed-in device");
   }
   return json(minted, 201);
 }
@@ -144,6 +225,7 @@ export async function revokeAllKeysRoute(request, ctx) {
   // credential that opens the storage API, so if the call fails only partway
   // the keys are already dead and nothing is left holding a way in.
   await ctx.store.revokeAllKeys(ctx.account);
+  await notifyFromCtx(ctx, "signed-out-everywhere", "this device");
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
 
