@@ -39,7 +39,6 @@ import {
   preChargeLimitStream,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { DAY_MS } from "./auth.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { json, readJsonObject } from "./http.js";
 import { bucketForAccount } from "./keyprovider.js";
@@ -47,6 +46,7 @@ import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { contentMd5, createS3Client, provisionBucket } from "./s3.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
+import { DAY_MS } from "./units.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";

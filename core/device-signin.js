@@ -23,8 +23,8 @@
 // (`{id, name, email}`, resolved by the core/status.js `signedInAccount` gate);
 // its fields are copied onto the code row, so a poll on another instance can
 // name the owner without this module holding an accounts table of its own.
-import { DAY_MS } from "./auth.js";
 import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { DAY_MS } from "./units.js";
 
 /**
  * Any device sign-in store: the shape the routes read. The in-memory
@@ -110,7 +110,7 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // ("the drive is reached on every visit, so signing in every week would be a
 // support ticket, not a security win"): a month bounds what a leak is worth
 // without asking a person to approve a code every few days. The month is three
-// tens of src/auth.js's own day, and keystore.test.js pins the two to each
+// tens of core/units.js's day, and keystore.test.js pins the two to each
 // other, so they cannot drift into two different months.
 export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
 

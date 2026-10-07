@@ -16,7 +16,7 @@
 // same instant are serialized by the database write itself, so the ceiling
 // cannot be outrun by a burst the way a read-then-write pair can.
 
-import { DAY_MS } from "../core/auth.js";
+import { DAY_MS } from "../core/units.js";
 
 /** Links one address may be sent inside one hour window. */
 export const SIGNIN_SEND_HOURLY_MAX = 5;

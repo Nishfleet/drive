@@ -7,11 +7,11 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
-import { DAY_MS } from "../core/auth.js";
 import { sendEmail } from "../core/email-send.js";
 import { scopeStore } from "../core/files.js";
 import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { DAY_MS } from "../core/units.js";
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** @typedef {ReturnType<typeof import("../core/devices.js").createD1DeviceStore>} DeviceStore */
@@ -22,7 +22,7 @@ export const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 
 export const CLOSE_GRACE_DAYS = 30;
 export const CLOSE_REMINDER_DAYS = 25;
-// One day in seconds, from src/auth.js's own day, so the grace window and every
+// One day in seconds, from core/units.js's day, so the grace window and every
 // other expiry in the repo cannot disagree about what a day is (issue #583).
 const DAY_SECONDS = DAY_MS / 1000;
 

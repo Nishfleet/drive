@@ -55,13 +55,12 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
-import { DAY_MS } from "../core/auth.js";
 import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { sendEmail } from "../core/email-send.js";
 // The decimal GB and the day are imported rather than restated: the storage
 // limit, the per-link upload total and the meter all divide by the same GB, and
 // every expiry in the repo is measured in the same day. The GB is
-// core/billing.js's own, beside GB_PER_TB; the day is core/auth.js's own
+// core/billing.js's own, beside GB_PER_TB; the day is core/units.js's
 // (issue #583).
 import {
   etagMatches,
@@ -79,6 +78,7 @@ import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { notifySecurityEvent } from "../core/security-event.js";
 import { formatBytes, unauthorizedResponse } from "../core/status.js";
+import { DAY_MS } from "../core/units.js";
 import { isMalwareBody } from "./malware.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
@@ -91,8 +91,8 @@ export const REQUEST_ENDPOINT = "/api/request";
 export const REQUEST_PAGE = "/upload.html";
 /** How long a link lasts, in days, when the caller does not choose. */
 export const DEFAULT_LINK_DAYS = 7;
-/** One day in milliseconds, the unit the expiry is measured in. Re-exported
- * from core/auth.js for the callers that import the day from here. */
+// One day in milliseconds, the unit the expiry is measured in. Re-exported
+// from core/units.js for the callers that import the day from here.
 export { DAY_MS };
 // Per-file ceiling on a public upload request (drive issue #208, from the
 // 00:35 review of #87). 32 MB stays inside a Workers isolate (128 MB) even

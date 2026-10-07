@@ -29,6 +29,7 @@ import { betterAuth } from "better-auth";
 import { magicLink, twoFactor } from "better-auth/plugins";
 import { sha256Hex } from "./db.js";
 import { sendEmail } from "./email-send.js";
+import { DAY_MS } from "./units.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
 
@@ -59,19 +60,11 @@ export const AUTH_COOKIE_PREFIX = "drive";
 export const SIGNIN_LINK_TTL_SECONDS = 600;
 
 /**
- * One day in milliseconds. Declared here beside the session TTLs that are
- * measured in it, and exported, because src/auth.js depends on nothing but the
- * email sender: every module in the repo can import the day from here without
- * closing an import cycle. src/share.js re-exports it for the callers that
- * import it from there (issue #583).
- */
-export const DAY_MS = 24 * 60 * 60 * 1000;
-
-/**
  * How long a session lives, and how often it is refreshed. Thirty days is the
  * browser-session length a person expects from a web app, refreshed when it is
  * used, so signing in every week would be a support ticket rather than a
- * security win.
+ * security win. The day is core/units.js's, so this module does not export a
+ * second copy.
  */
 export const SESSION_TTL_SECONDS = (30 * DAY_MS) / 1000;
 

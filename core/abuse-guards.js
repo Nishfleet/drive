@@ -16,10 +16,10 @@
 // call, and no secret. The two prefixes keep a posted string from ever
 // equalling another person's stand-in, so nobody can lock an address out.
 
-import { DAY_MS } from "./auth.js";
 import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { failureMessage } from "./messages.js";
+import { DAY_MS } from "./units.js";
 
 /** @typedef {ReturnType<typeof import("./devices.js").createD1DeviceStore>} DeviceStore */
 
