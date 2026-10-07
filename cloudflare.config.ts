@@ -2,8 +2,10 @@ import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // The cron trips this Worker runs, spelled out below in `triggers` and
-// read from core/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
-// src/search.js (REINDEX_SCHEDULE) by the `scheduled` handler in src/index.js.
+// read back out of the modules that own them — core/meter.js (METER_CRON,
+// METER_RECONCILE_SCHEDULE), src/search.js (REINDEX_SCHEDULE),
+// src/account-close.js (CLOSE_SCHEDULE) and src/malware.js
+// (KNOWN_BAD_FEED_SCHEDULE) — by the `scheduled` handler in src/index.js.
 //
 // They are spelled in both places on purpose, and this import list is why it
 // must: an import here is a *config dependency*. @cloudflare/config executes
@@ -100,8 +102,9 @@ export default defineConfig({
       // The known-bad feed load (drive#826, KNOWN_BAD_FEED_SCHEDULE in
       // src/malware.js): the Cron Trigger that reads the stock public
       // MalwareBazaar SHA-256 list into D1. It runs last of the nightly trips,
-      // after the close cron, and it is the only trip that talks to an outside
-      // host — the request path reads the table it fills.
+      // after the close cron, and it is the only one of this Worker's cron
+      // trips that makes an outbound call — the request path reads the table
+      // it fills.
       triggers.scheduled({ schedule: "0 7 * * *" }),
       // One message per account from the meter crons (drive#519). Both
       // queues were created on the account on 2026-10-06; see the note at

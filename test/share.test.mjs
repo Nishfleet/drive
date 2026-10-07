@@ -601,6 +601,86 @@ test("a feed that is not a feed fails the load and keeps the rows it had", async
   );
 });
 
+test("a load the size of the real export writes in batches, and a 5xx is asked for twice", async () => {
+  const db = createTestD1();
+  /** @type {number[]} */
+  const batchSizes = [];
+  const counted = /** @type {import("./harness.mjs").TestD1} */ (
+    /** @type {unknown} */ ({
+      ...db,
+      /** @param {Array<{sql: string, params?: unknown[]}>} statements */
+      async batch(statements) {
+        batchSizes.push(statements.length);
+        // What core/db.js's own batch does: D1 takes statements, so a wrapper
+        // around a test D1 has to prepare and bind them the same way.
+        return db.batch(statements.map(({ sql, params = [] }) => db.prepare(sql).bind(...params)));
+      },
+    })
+  );
+  // The export is about 1,500 hashes, which is 15 batches, so the chunk size is
+  // the one thing a two-hash test would never reach. Each batch is one D1
+  // transaction, so a load that dies halfway leaves the batches that landed
+  // and not a half-written one.
+  const many = Array.from({ length: 250 }, (_, at) => at.toString(16).padStart(64, "0"));
+  const loaded = await loadKnownBadFeed(counted, {
+    fetch: async () => new Response(many.join("\r\n")),
+    now,
+  });
+  assert.equal(loaded.hashes, 250);
+  assert.equal(loaded.rows, 250);
+  assert.deepEqual(batchSizes, [100, 100, 50]);
+
+  // The retry the comment in core/fetch-retry.js promises is the half a test
+  // that drives one answer would never see: the 5xx is asked for twice and only
+  // the second answer decides the load.
+  let calls = 0;
+  const retried = await loadKnownBadFeed(createTestD1(), {
+    fetch: async () => {
+      calls += 1;
+      const first = calls === 1;
+      return new Response(first ? "unavailable" : FEED_HASH_A, {
+        status: first ? 503 : 200,
+      });
+    },
+    now,
+  });
+  assert.equal(calls, 2);
+  assert.equal(retried.hashes, 1);
+});
+
+test("the two routes that can hit the list bind everything a refusal needs", () => {
+  // Every other pin here drives the handler directly, which is the right way
+  // to prove the behaviour and the wrong way to prove the route wired it: a
+  // mint route that dropped `db: c.env.DRIVE_DB` would pass this whole file
+  // and answer 200s in production, because the handler would simply have no
+  // database to read. So the wiring is read out of src/index.js beside them,
+  // in the style test/monitoring.test.mjs already uses for its crons.
+  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  /**
+   * One `app.<verb>(...)` registration, from its line to the next one. The
+   * blocks are matched by their registration line rather than by a handler
+   * call, because three routes share handleShareRequest and the upload route
+   * spells its own path as a template.
+   * @param {RegExp} opens
+   * @returns {string}
+   */
+  const block = (opens) => {
+    const line = src.split("\n").find((it) => opens.test(it));
+    assert.ok(line !== undefined, `src/index.js registers ${opens.source}`);
+    const start = src.indexOf(line);
+    const end = src.indexOf("\n  app.", start + line.length);
+    return src.slice(start, end === -1 ? src.length : end);
+  };
+  const mint = block(/^\s*app\.post\(SHARE_ENDPOINT,/);
+  assert.match(mint, /db: c\.env\.DRIVE_DB/, "the mint reads the feed half of the list");
+  assert.match(mint, /\.\.\.mailFromEnv\(c\.env\)/, "the mint can mail the refusals");
+  assert.match(mint, /deviceName: sessionLabel\(c\.req\.raw\)/, "the mint names the device");
+  const upload = block(/^\s*app\.post\([^\n]*\/upload`,/);
+  assert.match(upload, /db: c\.env\.DRIVE_DB/, "the drop reads the feed half of the list");
+  assert.match(upload, /owner: ownerFor\(c\.env\)/, "the drop knows which account owns the link");
+  assert.match(upload, /\.\.\.mailFromEnv\(c\.env\)/, "the drop can mail the refusals");
+});
+
 test("a hash the feed loaded is refused with the feed untouched", async () => {
   // The point of the split (drive issue #826): a mint reads one D1 row, so the
   // check on a person's request path makes no call at all. A fetch that is

@@ -1517,8 +1517,8 @@ const handler = {
     }
     // The known-bad feed load (drive issue #826): one download of the stock
     // public SHA-256 list into D1, on its own trip. It runs before the store
-    // is built because it needs no storage, and it is the only trip that
-    // talks to an outside host — every request that reads the list reads the
+    // is built because it needs no storage, and it is the only one of this
+    // Worker's cron trips that makes an outbound call — every request that reads the list reads the
     // rows this leaves behind (src/malware.js).
     if (event.cron === KNOWN_BAD_FEED_SCHEDULE) {
       return withCronCheckIn(event, "known-bad-feed", async () => {
