@@ -20,22 +20,33 @@
  * own id for the row that now holds its hash. A raw storage provider persists
  * no rows, so it has no id to hand back, which is why this is a type of its
  * own rather than KeyProvider with an optional field (drive#371).
- * @typedef {{mint: (scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
+ * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>, swapPrepaidToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
  *
  * @typedef {object} KeyProvider
- * @property {(scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedCredential>} mint
+ * @property {(scope: KeyScope, options?: {expiresAt?: number|null, cappedReason?: string|null}) => Promise<MintedCredential>} mint
  *   `options.expiresAt` is the epoch second a credential bounded by a clock
- *   stops at, and a provider whose vendor expires keys takes it
+ *   stops at, and a provider whose vendor expires keys takes it.
+ *   `options.cappedReason` is ignored here: a raw storage provider persists
+ *   no rows. AccountKeyProvider writes the marker on the devices row.
  * @property {(keyId: string) => Promise<void>} [revoke] withdraws the
  *   credential at the provider, so a revoked row is also a key that stops
  *   working (drive#371). A provider whose credential is bounded anyway — an STS
  *   session — has no revoke, and its caller checks for one rather than
  *   assuming it.
- * @property {(keyId: string) => Promise<MintedKey>} [swapToReadOnly] Replaces a
+ * @property {(keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>} [swapToReadOnly] Replaces a
  *   write-capable key with a read-only one on the same prefix (cap reached).
+ *   `options.cappedReason` is the one word the freeze records naming which cap
+ *   took the key down (drive#661), carried from the swap plan; a caller that
+ *   passes none records no reason, which reads back as "no reason recorded".
  *   Optional because the api's own store mints the replacement itself and only
  *   needs the provider's mint: the boundary a swap keeps is the bucket, which
  *   the store rebuilds from the account id rather than asking the vendor.
+ * @property {() => Promise<unknown>} [list] The provider's keys, read-only.
+ *   Optional because a raw storage provider persists no keys to list. The
+ *   entry shape is the vendor's own (the iDrive reseller API answers an array
+ *   of records), so the answer is deliberately `unknown` here: the only
+ *   consumers are the nightly sweep's count and an operator checking a
+ *   revoke really landed.
  * @property {true} [namesSession] Whether this provider's mints are
  *   credentials that die on their own: the STS path (s3-keys.js) mints a
  *   session of `sessionSeconds` that the vendor itself ends, so a credential
@@ -113,6 +124,21 @@ export const KEY_TTL_SECONDS = Object.freeze({
   s3: AGENT_KEY_TTL_SECONDS,
   branch: AGENT_KEY_TTL_SECONDS,
 });
+
+/**
+ * The most live keys one account may hold (drive issue #552). Each mint is a
+ * vendor access key the storage server enforces until something revokes it,
+ * so the account count is the bound the vendor itself does not set — its
+ * reseller API documents no per-account key limit (checked 2026-10-06,
+ * idrive.com/s3-storage-e2/reseller-api) — and a looping script with one
+ * device token must not be that mint's only speed bump. Twenty is far above
+ * what a person with devices and agents holds (the hourly kinds expire and
+ * the sweep removes their vendor keys), and far below anything a vendor would
+ * ever have to refuse. The message the account reads names this number, and
+ * the pin that keeps the two together is in
+ * test/integration/key-count-cap-d1.test.mjs.
+ */
+export const KEY_COUNT_CAP = 20;
 
 /**
  * The seconds a kind's credential lives, or null when it never expires. An

@@ -11,7 +11,7 @@
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { escapeHtml } from "./escape-html.js";
-import { TOP_UP_PROMPT } from "./messages.js";
+import { INSTALL_COMMAND, SIGN_IN_COMMAND, TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
 export { DEFAULT_CAP_USD };
@@ -152,25 +152,32 @@ function requireMoney(value, name) {
  */
 export function welcomeTemplate(data = {}) {
   const subject = "Your drive is ready";
+  // Each command is named exactly once, in the list, and the prose below says
+  // what the pair does rather than repeating them (drive#557): the sign-in is
+  // the constant SIGN_IN_COMMAND and the setup is INSTALL_COMMAND, so this
+  // email cannot drift from the first-run page, the home page or the failure
+  // table into telling someone that one command signs them in when it does not.
+  const steps = `  ${SIGN_IN_COMMAND}\n  ${INSTALL_COMMAND}`;
+  const explanation = `Signing in opens the browser and mints this machine's key; the setup that follows makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Both are safe to run again.`;
   const lines = [
     "Welcome to Drive.",
     "",
     "Your drive is a plain folder that streams from object storage, so big files open without downloading first.",
     "",
-    "One command sets it up:",
+    "Sign in, then set it up:",
     "",
-    "  drive init",
+    steps,
     "",
-    "It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again.",
+    explanation,
     "",
     "Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.",
   ];
   const html_lines = [
     "<p>Welcome to Drive.</p>",
     "<p>Your drive is a plain folder that streams from object storage, so big files open without downloading first.</p>",
-    "<p>One command sets it up:</p>",
-    "<ul><li>drive init</li></ul>",
-    "<p>It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again.</p>",
+    "<p>Sign in, then set it up:</p>",
+    `<ul><li>${SIGN_IN_COMMAND}</li><li>${INSTALL_COMMAND}</li></ul>`,
+    `<p>${explanation}</p>`,
     "<p>Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
@@ -658,6 +665,47 @@ export function deviceApproveNoticeTemplate(data = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// 11) Upload arrivals -- one mail a day per upload link, listing the day's
+//     drops (drive issue #684). { ownerName, folder, arrivals: [{name,
+//     sizeLabel}] }. sizeLabel is preformatted by the caller (src/share.js)
+//     so this module stays free of the byte-formatting helpers.
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function uploadArrivalsTemplate(data = {}) {
+  const ownerName = requireText(data.ownerName, "ownerName");
+  const folder = requireText(data.folder, "folder");
+  if (!Array.isArray(data.arrivals) || data.arrivals.length === 0) {
+    throw new TypeError(`arrivals must be a non-empty list, got ${String(data.arrivals)}`);
+  }
+  const arrivals = data.arrivals.map((entry) => {
+    if (entry === null || typeof entry !== "object") {
+      throw new TypeError(`an arrival must be an object, got ${String(entry)}`);
+    }
+    const a = /** @type {{name?: unknown, sizeLabel?: unknown}} */ (entry);
+    return {
+      name: requireText(a.name, "arrival name"),
+      sizeLabel: requireText(a.sizeLabel, "arrival sizeLabel"),
+    };
+  });
+  const count = arrivals.length;
+  const subject =
+    count === 1 ? "A file arrived in your drive" : `${count} files arrived in your drive`;
+  const opener =
+    count === 1 ? `1 file arrived in ${folder}.` : `${count} files arrived in ${folder}.`;
+  const lines = [`${ownerName},`, "", opener, ""];
+  const html_lines = [`<p>${escapeHtml(ownerName)},</p>`, `<p>${escapeHtml(opener)}</p>`];
+  for (const arrival of arrivals) {
+    lines.push(`- ${arrival.name} (${arrival.sizeLabel})`);
+    html_lines.push(`<p>${escapeHtml(arrival.name)} (${escapeHtml(arrival.sizeLabel)})</p>`);
+  }
+  lines.push("", "These came through an upload link you shared.");
+  html_lines.push("<p>These came through an upload link you shared.</p>");
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+}
+
+// ---------------------------------------------------------------------------
 // 12) Security event -- one template for keys, links, logout and cap
 //     (drive#551). { event, deviceName, happenedAt, detail? }
 // ---------------------------------------------------------------------------
@@ -739,6 +787,7 @@ export const EMAIL_KINDS = Object.freeze([
   "top-up-receipt",
   "low-balance",
   "device-approve-notice",
+  "upload-arrivals",
   "security-event",
 ]);
 
@@ -757,6 +806,7 @@ const TEMPLATES = Object.freeze({
   "top-up-receipt": topUpReceiptTemplate,
   "low-balance": lowBalanceTemplate,
   "device-approve-notice": deviceApproveNoticeTemplate,
+  "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
 });
 
