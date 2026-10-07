@@ -14,7 +14,8 @@
 //      deployment with no auth at all all read as signed out.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { passkey } from "@better-auth/passkey";
@@ -24,6 +25,7 @@ import { getMigrations } from "better-auth/db/migration";
 import { magicLink, twoFactor } from "better-auth/plugins";
 import {
   authFor,
+  authForPasskey,
   createAuth,
   IGNORING_SENTENCE,
   SIGNIN_LINK_PATH,
@@ -562,8 +564,9 @@ test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
 test("the built Worker entry no longer contains the passkey stack", (t) => {
   // drive#846: @simplewebauthn/server (and the asn1/x509 stack it pulls) must
   // sit in a chunk loaded only for /api/auth/passkey/*, not in the isolate
-  // script every request parses. CI runs `npm run build` before `npm test`;
-  // a local run without a build has nothing to pin.
+  // script every request parses. `.github/workflows/ci.yml` runs `npm run
+  // build` (the "Build the site" step) before `npm test`; a local run
+  // without a build has nothing to pin, same as test/speed-ratchet.test.mjs.
   const entry = fileURLToPath(
     new URL("../.cloudflare/output/v0/workers/default/bundle/index.js", import.meta.url),
   );
@@ -582,4 +585,40 @@ test("the built Worker entry no longer contains the passkey stack", (t) => {
     /^import .+ from "\.\/assets\/auth-passkey-/m,
     "the Worker entry must not statically import the passkey chunk; shared bundler helpers must not live in it",
   );
+  const assets = join(dirname(entry), "assets");
+  const passkeyChunks = readdirSync(assets).filter(
+    (name) => name.startsWith("auth-passkey-") && name.endsWith(".js"),
+  );
+  assert.ok(
+    passkeyChunks.length > 0,
+    "the passkey stack must sit in its own chunk under bundle/assets",
+  );
+  const firstChunk = passkeyChunks[0];
+  assert.ok(firstChunk, "the passkey stack must sit in its own chunk under bundle/assets");
+  const passkeySource = readFileSync(join(assets, firstChunk), "utf8");
+  assert.equal(
+    passkeySource.includes("//#region node_modules/@simplewebauthn/server"),
+    true,
+    "the passkey chunk is where @simplewebauthn/server must live",
+  );
+});
+
+test("authForPasskey is the same closed door as authFor, and follows a secret change", async () => {
+  const made = createTestD1();
+  assert.equal(await authForPasskey({ DRIVE_DB: made }), null, "no secret, no passkey auth");
+  const env = {
+    DRIVE_DB: made,
+    BETTER_AUTH_SECRET: SECRET,
+    BETTER_AUTH_URL: TEST_BASE_URL,
+  };
+  const first = await authForPasskey(env);
+  const again = await authForPasskey(env);
+  assert.ok(first, "all three set: the passkey auth instance exists");
+  assert.equal(first, again, "the same env twice is the same passkey auth instance");
+  const rotated = await authForPasskey({
+    ...env,
+    BETTER_AUTH_SECRET: `${SECRET}-rotated`,
+  });
+  assert.ok(rotated, "a new secret still builds passkey auth");
+  assert.notEqual(rotated, first, "a new secret is a new passkey instance");
 });

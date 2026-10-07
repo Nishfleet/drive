@@ -65,26 +65,28 @@ export default defineConfig({
  * @returns {Plugin}
  */
 function keepPasskeyOnDemand(): Plugin {
-  const output = {
-    codeSplitting: {
-      groups: [
-        {
-          name: "validator",
-          test: /node_modules[\\/]validator[\\/]/,
-          priority: 80,
-        },
-      ],
-    },
-  };
   return {
     name: "drive-keep-passkey-on-demand",
     enforce: "post",
     configEnvironment(name) {
-      if (name === "client") return;
+      // The site Worker is Vite's `ssr` environment. The api Worker
+      // (`drive_api`) and the client page do not load the passkey module.
+      if (name !== "ssr") return;
       return {
         build: {
-          rolldownOptions: { output },
-          rollupOptions: { output },
+          rolldownOptions: {
+            output: {
+              codeSplitting: {
+                groups: [
+                  {
+                    name: "validator",
+                    test: /node_modules[\\/]validator[\\/]/,
+                    priority: 80,
+                  },
+                ],
+              },
+            },
+          },
         },
       };
     },

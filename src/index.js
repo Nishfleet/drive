@@ -652,6 +652,7 @@ const csrfWhenBrowser = async (c, next) => {
 // would otherwise be a second, anonymous way to mail a link and make an
 // account around those. Anything off the list is a 404 before the library
 // sees it.
+const PASSKEY_AUTH_PATH = /^\/api\/auth\/passkey\/[a-z-]+\/?$/;
 const AUTH_FAMILY_ALLOWED =
   /^\/api\/auth\/(?:get-session|two-factor\/[a-z-]+|passkey\/[a-z-]+)\/?$/;
 
@@ -659,7 +660,7 @@ const authApiHandler = async (/** @type {DriveContext} */ c) => {
   if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
     return c.json({ error: "Not found." }, 404);
   }
-  const auth = /\/passkey\//.test(c.req.path) ? await authForPasskey(c.env) : authFor(c.env);
+  const auth = PASSKEY_AUTH_PATH.test(c.req.path) ? await authForPasskey(c.env) : authFor(c.env);
   if (!auth) {
     return c.json(signinClosedBody(), 503);
   }
