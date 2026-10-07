@@ -335,6 +335,9 @@ func TestLaunchdPlistClearsADeadMountBeforeStart(t *testing.T) {
 	if !strings.Contains(args[2], "umount") || !strings.Contains(args[2], "-f") {
 		t.Errorf("launchd pre-start script = %q, want a forced umount of a dead NFS entry", args[2])
 	}
+	if strings.Contains(args[2], `umount "$1"`) {
+		t.Errorf("launchd pre-start script = %q, want umount -f only: a plain umount hangs on a hard NFS mount", args[2])
+	}
 	if !strings.Contains(args[2], "mount -t nfs") {
 		t.Errorf("launchd pre-start script = %q, want an NFS mount-table check before umount", args[2])
 	}

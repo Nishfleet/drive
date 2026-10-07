@@ -75,20 +75,18 @@ func runStatus(args []string) error {
 	}
 	home := common.home
 	goos := CurrentGOOS()
-	on, err := Mounted(goos, home)
-	if err != nil {
-		return err
-	}
+	on, listErr := Mounted(goos, home)
 	mountDir := DefaultMountDir(home)
-	if goos == "windows" && on {
+	if goos == "windows" && on && listErr == nil {
 		if letter, err := windowsMountLetter(); err == nil {
 			mountDir = windowsVolumeRoot(letter)
 		}
 	}
 	var readErr error
-	if on {
+	if listErr == nil && on {
 		_, readErr = countEntries(mountDir, 2*time.Second)
 	}
+	on, readErr = mountView(on, listErr, readErr)
 	renderMountState(os.Stdout, on, readErr, mountDir, goos, home)
 	queue, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
@@ -157,6 +155,16 @@ func runStatus(args []string) error {
 	noticeUpdateOnceADay(updateNoticeOptions{home: home})
 
 	return nil
+}
+
+// mountView turns a mount-table result into what `drive status` should
+// show. A listing failure (findmnt or `mount` timed out) is a stale mount,
+// not a command error, so the next step stays `drive unmount`.
+func mountView(on bool, listErr, readErr error) (bool, error) {
+	if listErr != nil {
+		return true, listErr
+	}
+	return on, readErr
 }
 
 // renderMountState prints the mount's answer to "is it working": mounted and

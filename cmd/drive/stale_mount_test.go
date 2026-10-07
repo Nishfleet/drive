@@ -143,6 +143,9 @@ exit 0
 	if !strings.Contains(string(body), mountDir) {
 		t.Errorf("fusermount3 args = %q, want %s", body, mountDir)
 	}
+	if !strings.Contains(string(body), "-uz") {
+		t.Errorf("fusermount3 args = %q, want lazy -uz, not a blocking -u", body)
+	}
 }
 
 func writeStubCommand(t *testing.T, dir, name, body string) {

@@ -472,7 +472,7 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 	// argv for exec, so paths with spaces stay one argument.
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("/bin/sh"))
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("-c"))
-	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/mount -t nfs | grep -F " on $1 (" >/dev/null 2>&1 && { /sbin/umount "$1" 2>/dev/null || /sbin/umount -f "$1"; }; shift; exec "$@"`))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/mount -t nfs | grep -F " on $1 (" >/dev/null 2>&1 && /sbin/umount -f "$1"; shift; exec "$@"`))
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("drive-mount"))
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(p.MountDir))
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
@@ -1161,9 +1161,11 @@ func clearStaleMountDir(goos, mountDir string) error {
 func lazyUnmount(goos, mountDir string) error {
 	var err error
 	if goos == "darwin" {
-		err = runUmount(mountDir)
+		// A hard NFS mount whose nfsd is gone hangs a plain umount, so the
+		// stale path uses -f and never tries the blocking form first.
+		err = runUmountFlag(mountDir, "-f")
 	} else {
-		err = runFusermount(mountDir)
+		err = runFusermountFlag(mountDir, "-uz")
 	}
 	if err == nil {
 		return nil

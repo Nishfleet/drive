@@ -403,17 +403,27 @@ func stopMount(goos, home string) error {
 	if err == nil && !on && !mountDirNotConnected(goos, mountDir) {
 		return nil
 	}
+	stale := err != nil || mountDirNotConnected(goos, mountDir)
 	// fusermount3 ships with current FUSE; fusermount is the older name. Every
 	// call site runs a literal binary name, never a variable, and the only
 	// argument is the mount dir (the caller's --home); exec.Command takes an
-	// argument vector and no shell.
+	// argument vector and no shell. A stale entry uses the lazy/force flag
+	// only: a plain -u / umount can hang on ENOTCONN or a hard NFS mount.
 	if goos == "darwin" {
-		if err := runUmount(mountDir); err != nil {
+		if stale {
+			if err := runUmountFlag(mountDir, "-f"); err != nil {
+				return fmt.Errorf("unmount %s: %w", mountDir, err)
+			}
+		} else if err := runUmount(mountDir); err != nil {
 			return fmt.Errorf("unmount %s: %w", mountDir, err)
 		}
 		return expectUnmounted(goos, home)
 	}
-	if err := runFusermount(mountDir); err != nil {
+	if stale {
+		if err := runFusermountFlag(mountDir, "-uz"); err != nil {
+			return fmt.Errorf("unmount %s: %w", mountDir, err)
+		}
+	} else if err := runFusermount(mountDir); err != nil {
 		return fmt.Errorf("unmount %s: %w", mountDir, err)
 	}
 	return expectUnmounted(goos, home)
@@ -425,8 +435,12 @@ func runUmount(mountDir string) error {
 	if _, err := exec.Command("umount", mountDir).CombinedOutput(); err == nil {
 		return nil
 	}
+	return runUmountFlag(mountDir, "-f")
+}
+
+func runUmountFlag(mountDir, umountFlag string) error {
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount" and literal flag -f; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("umount", "-f", mountDir).CombinedOutput()
+	out, err := exec.Command("umount", umountFlag, mountDir).CombinedOutput()
 	return unmountError("umount", err, out)
 }
 

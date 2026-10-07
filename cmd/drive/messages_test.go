@@ -227,6 +227,22 @@ func TestStatusAnswersInUnderTenLines(t *testing.T) {
 	}
 }
 
+func TestMountViewTreatsAListingFailureAsStale(t *testing.T) {
+	on, err := mountView(false, fmt.Errorf("findmnt /tmp/Drive: timed out"), nil)
+	if !on || err == nil {
+		t.Fatalf("mountView = on=%v err=%v, want a stale listing", on, err)
+	}
+	var b strings.Builder
+	renderMountState(&b, on, err, "/tmp/Drive", "linux", "/tmp")
+	got := b.String()
+	if !strings.Contains(got, "stale") || !strings.Contains(got, "drive unmount") {
+		t.Errorf("listing timeout = %q, want a stale mount and drive unmount", got)
+	}
+	if strings.Contains(got, "drive mount") {
+		t.Errorf("listing timeout = %q, want only drive unmount as the next command", got)
+	}
+}
+
 func TestRenderMountState(t *testing.T) {
 	var b strings.Builder
 	renderMountState(&b, false, nil, "/tmp/Drive", "linux", "/tmp")
