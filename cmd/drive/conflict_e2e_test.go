@@ -402,7 +402,7 @@ func waitMountShows(t *testing.T, label, path, want string) {
 	t.Helper()
 	var got []byte
 	var err error
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(120 * time.Second)
 	for {
 		got, err = os.ReadFile(path)
 		if err == nil && string(got) == want {

@@ -956,7 +956,12 @@ func TestConflictGuardKeepsASaveWhoseObjectAnotherDevicesFailedUploadRemoved(t *
 	// before the guard read it: the plain path is empty from the first poll.
 	f.pending = nil
 	delete(f.objects, "report.txt")
-	for i := range int(15 * time.Second / conflictInterval) {
+	// 15s of empty path: past the old 10s budget, inside the watch window.
+	emptyFor := 15 * time.Second
+	if emptyFor <= 10*time.Second || emptyFor >= conflictWatchWindow {
+		t.Fatalf("the empty phase %v must sit between the old 10s budget and the %v window", emptyFor, conflictWatchWindow)
+	}
+	for i := range int(emptyFor / conflictInterval) {
 		if _, err := g.pass(context.Background(), f); err != nil {
 			t.Fatalf("pass %d while the other upload waits to retry: %v", i, err)
 		}
