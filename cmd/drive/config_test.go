@@ -281,8 +281,9 @@ func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
 	}
 }
 
-// withProductBin fills DriveBin with a fixture path so renderer tests can
-// assert the login item execs this CLI. The paths are not install locations.
+// withProductBin fills DriveBin with a path shaped like the one the platform's
+// installer writes (the same paths the prefetch units are tested with), so a
+// renderer test asserts the vector a real login item carries.
 func withProductBin(p MountPlan) MountPlan {
 	switch p.GOOS {
 	case "windows":

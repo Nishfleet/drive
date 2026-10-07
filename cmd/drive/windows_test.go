@@ -752,12 +752,14 @@ func TestWindowsTaskXMLCarriesAWorkingDirectory(t *testing.T) {
 		"--cache-dir": p.CacheDir,
 		"--log-file":  p.LogPath,
 	} {
-		derived := p.ConfigPath
+		var derived string
 		switch name {
 		case "--cache-dir":
 			derived = DefaultCacheDir(p.Home)
 		case "--log-file":
 			derived = filepath.Join(DefaultConfigDir(p.Home), "mount.log")
+		default:
+			derived = RcloneConfigPath(p.Home)
 		}
 		if path != derived {
 			t.Errorf("%s = %q, want the path the product derives from --home %q: %q", name, path, p.Home, derived)

@@ -46,10 +46,9 @@ func TestMountPassesTheDownloadURLThroughTheEnvironmentOnly(t *testing.T) {
 	if strings.Contains(unit, "grantpayload") {
 		t.Errorf("the 0644 systemd unit carries the download grant:\n%s", unit)
 	}
-	// The launchd item runs the product (drive#515): it reads the grant from
-	// the 0600 rclone.env and hands it to the rclone child as an environment
-	// variable. So the plist itself carries no grant, the same as the 0644
-	// systemd unit: never on the command line, and never in the login item.
+	// The launchd item runs the product (drive#515), so the plist carries no
+	// grant either: the product reads rclone.env and hands it to its rclone child
+	// as an environment variable.
 	darwin := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", cfg)
 	plist := LaunchdPlist(darwin)
 	if strings.Contains(plist, "grantpayload") || strings.Contains(plist, testDownloadURL) {
