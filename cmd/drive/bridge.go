@@ -163,7 +163,14 @@ func (c *rcClient) stats(ctx context.Context) (vfsStats, error) { return c.Stats
 func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 	return c.Refresh(ctx, recursive)
 }
-func (c *rcClient) remote() string { return c.Remote() }
+func (c *rcClient) refreshDirs(ctx context.Context, dirs []string) error {
+	return c.RefreshDirs(ctx, dirs)
+}
+func vfsRefreshReplyError(reply map[string]any, skipFailed bool) error {
+	return rc.VFSRefreshReplyError(reply, skipFailed)
+}
+func (c *rcClient) reachable(ctx context.Context) error { return c.Reachable(ctx) }
+func (c *rcClient) remote() string                      { return c.Remote() }
 func (c *rcClient) queue(ctx context.Context) ([]queueEntry, error) {
 	return c.Queue(ctx)
 }

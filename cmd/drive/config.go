@@ -28,7 +28,7 @@ const (
 	vfsCacheModeValue        = "full"
 	vfsWriteBackValue        = "5s"
 	vfsCacheMaxValue         = "20G"
-	vfsDirCacheTimeValue     = "5s"   // see VFSArgs: S3 sends no change notifications
+	vfsDirCacheTimeValue     = "24h"  // issue #541: a kept-offline folder still opens after the network has been down; listings stay fresh via vfs/refresh from the fill loop while storage answers
 	vfsChunkStreamSize       = "32M"  // --buffer-size: in-memory buffer per transfer
 	vfsReadAheadValue        = "128k" // first-chunk size: small files stay one VFS read; a video is not pulled in
 	vfsReadChunkSizeValue    = "32M"  // one read buffer per stream; 32M x 2 streams = 64 MiB per open file (issue #543)

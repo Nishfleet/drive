@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,20 +115,98 @@ func (c *Client) Stats(ctx context.Context) (VFSStats, error) {
 	return s, nil
 }
 
-// refresh asks rclone to refresh the mount's directory cache, so a file just
-// written to the object store (or a folder just kept offline) is visible to
-// the read the fill does next. rclone's vfs/refresh is the stock call for
-// this; the loop does not list the object store a second way. The fill always
-// passes recursive=false: a whole-tree refresh on a timer is the bug in
-// drive#568, and a non-recursive root refresh is enough for the reads this
-// pass makes. The conflict guard (#30) shares this call with recursive=false.
+// Refresh asks rclone to refresh the mount's directory cache, so a file just
+// written to the object store is visible to the other machine and to the
+// read the fill does next. rclone's vfs/refresh is the stock call for this.
+// The fill always passes recursive=false: a whole-tree refresh on a timer is
+// the bug in drive#568. The conflict guard (#30) shares this call with
+// recursive=false. Callers must not invoke this while storage is down:
+// rclone forces the cache stale before it re-lists (issue #541).
 func (c *Client) Refresh(ctx context.Context, recursive bool) error {
 	params := map[string]string{"fs": c.fs}
 	if recursive {
 		params["recursive"] = "true"
 	}
 	var reply map[string]any
-	return c.Call(ctx, "vfs/refresh", params, &reply)
+	if err := c.Call(ctx, "vfs/refresh", params, &reply); err != nil {
+		return err
+	}
+	return VFSRefreshReplyError(reply, false)
+}
+
+// RefreshDirs refreshes named directories (rclone rc vfs/refresh dir=...).
+// A path that is a file or is missing is skipped: the caller may pass a
+// kept-offline file's parent and a folder in the same list.
+func (c *Client) RefreshDirs(ctx context.Context, dirs []string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	params := map[string]string{"fs": c.fs}
+	for i, d := range dirs {
+		key := "dir"
+		if i > 0 {
+			key = "dir" + strconv.Itoa(i+1)
+		}
+		params[key] = d
+	}
+	var reply map[string]any
+	if err := c.Call(ctx, "vfs/refresh", params, &reply); err != nil {
+		return err
+	}
+	return VFSRefreshReplyError(reply, true)
+}
+
+// VFSRefreshReplyError reads rclone's vfs/refresh JSON. A listing error is
+// inside result with HTTP 200. skipFailed is for named dirs: a listed name
+// that is a file, or that does not exist, is not a failure — but any other
+// error string in a named dir is returned, so a real listing problem never
+// hides behind an OK (issue #541).
+func VFSRefreshReplyError(reply map[string]any, skipFailed bool) error {
+	raw, ok := reply["result"]
+	if !ok {
+		// A reply with no result is not success: rclone's vfs/refresh
+		// always answers with one, so a caller that reads its absence as an
+		// OK would hide a changed remote-control shape behind a stale
+		// listing for --dir-cache-time (24h) (issue #541).
+		return fmt.Errorf("rclone rc vfs/refresh: reply carries no result object")
+	}
+	result, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("rclone rc vfs/refresh: result is %T, want an object", raw)
+	}
+	for p, v := range result {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("rclone rc vfs/refresh: result[%q] is %T, want a string", p, v)
+		}
+		if s == "OK" {
+			continue
+		}
+		if skipFailed && namedDirNotFound(s) {
+			continue
+		}
+		return fmt.Errorf("rclone rc vfs/refresh %s: %s", p, s)
+	}
+	return nil
+}
+
+func namedDirNotFound(s string) bool {
+	l := strings.ToLower(s)
+	return strings.Contains(l, "not found") || strings.Contains(l, "not a directory") || strings.Contains(l, "is a file")
+}
+
+// Reachable asks the object store for the remote's root listing, not through
+// the VFS, so a dead backend is a named error and the directory cache is
+// left alone. operations/list with no recurse is one directory, the same
+// shape vfs/refresh uses when it is safe to call.
+func (c *Client) Reachable(ctx context.Context) error {
+	// A dead S3 endpoint can hang operations/list until the fill's 30s
+	// pass budget; three seconds is enough to see a live stand-in and
+	// short enough that a dropped link does not stall keep-warm.
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var reply map[string]any
+	return c.Call(probeCtx, "operations/list", map[string]string{"fs": c.fs, "remote": ""}, &reply)
 }
 
 // Remote is the mounted remote, so an interface value carries what rc needs.

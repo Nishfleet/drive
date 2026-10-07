@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -56,6 +57,9 @@ const loopbackRCAddr = "127.0.0.1:5572"
 // read what happened without re-running it. It reports the cache's own
 // numbers (before and after) rather than a guess: bytesUsed is vfs/stats.
 type FillResult struct {
+	// Refreshed reports that the pass ran, which is not the same as saying
+	// listings are fresh: a pass with storage down runs, refreshes nothing and
+	// only keeps the kept-offline set warm (issue #541).
 	Refreshed   bool
 	Idle        bool
 	BytesBefore int64
@@ -74,6 +78,12 @@ func (r FillResult) Ran() bool { return r.Refreshed }
 type fillBackend interface {
 	stats(ctx context.Context) (vfsStats, error)
 	refresh(ctx context.Context, recursive bool) error
+	refreshDirs(ctx context.Context, dirs []string) error
+	// reachable reports whether the object store answers. vfs/refresh
+	// forces the directory cache stale before it re-lists (rclone
+	// vfs/dir.go readDir), so a refresh while storage is down makes
+	// every later open fail (issue #541, rclone#1963).
+	reachable(ctx context.Context) error
 	// fs is the mounted remote, the value a stats call is addressed to.
 	remote() string
 }
@@ -106,19 +116,34 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	// under the cap, so a fill never competes with a foreground open and never
 	// loops the drive once the cache is full (drive#568).
 	offline := len(targets.offline) > 0
-	fillRecent := idle && !atCap && len(targets.recent) > 0
-	if !offline && !fillRecent {
-		res.Idle = ShouldFill(offline, load1, load5)
-		return res, nil
-	}
 	res.Idle = ShouldFill(offline, load1, load5)
+	storageUp := c.reachable(ctx) == nil
+	// A recently-opened file is filled only while storage answers. The probe
+	// is a list on the mount's own remote, so it is the same question the read
+	// asks: with the link down the file is either already in the cache or
+	// cannot be fetched at all, and trying anyway turns one dropped link into
+	// one I/O error per recently-opened file on every pass. A kept-offline set
+	// is different and still warms (#115): those files are the promise, and a
+	// read rclone already has is not a round trip.
+	fillRecent := storageUp && idle && !atCap && len(targets.recent) > 0
 	// A non-recursive root refresh, and never a recursive one: a whole-tree
 	// refresh every minute is what listed the drive and re-read it forever
-	// (drive#568). A file newly kept inside an existing subdirectory needs no
-	// recursive refresh: the mount's own --dir-cache-time (5s) expires that
-	// subdirectory's listing long before the next 10s offline pass.
-	if err := c.refresh(ctx, false); err != nil {
-		return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+	// (drive#568). Freshness for the other machine is this call, while
+	// storage answers (issue #541). A dead backend must not be refreshed:
+	// rclone forces the directory cache stale before it re-lists, so a
+	// failed refresh would turn a kept-offline folder into I/O errors.
+	if storageUp {
+		if err := c.refresh(ctx, false); err != nil {
+			return res, fmt.Errorf("fill: refresh directory cache: %w", err)
+		}
+		if dirs := listingDirs(targets); len(dirs) > 0 {
+			if err := c.refreshDirs(ctx, dirs); err != nil {
+				return res, fmt.Errorf("fill: refresh the folders: %w", err)
+			}
+		}
+	}
+	if !offline && !fillRecent {
+		return res, nil
 	}
 	res.Refreshed = true
 
@@ -171,6 +196,47 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 			FormatBytes(res.BytesBefore+recentBytes), FormatBytes(res.CapBytes))
 	}
 	return res, nil
+}
+
+// listingDirs is the folders vfs/refresh should freshen besides the root:
+// a kept-offline folder itself, and the parent of a kept or recently-opened
+// file. The root is refreshed separately. Nested saves in those folders
+// would otherwise stay invisible until --dir-cache-time (24h) expired
+// (issue #541).
+func listingDirs(targets fillTargets) []string {
+	seen := map[string]struct{}{}
+	var dirs []string
+	add := func(rel string) {
+		rel = strings.Trim(rel, "/")
+		if rel == "" || rel == "." {
+			return
+		}
+		if _, ok := seen[rel]; ok {
+			return
+		}
+		seen[rel] = struct{}{}
+		dirs = append(dirs, rel)
+	}
+	consider := func(rel string) {
+		full := filepath.Join(targets.root, filepath.FromSlash(rel))
+		info, err := os.Stat(full)
+		if err == nil && info.IsDir() {
+			add(rel)
+			return
+		}
+		parent := path.Dir(strings.Trim(rel, "/"))
+		if parent != "." && parent != "/" {
+			add(parent)
+		}
+	}
+	for _, rel := range targets.offline {
+		consider(rel)
+	}
+	for _, rel := range targets.recent {
+		consider(rel)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // liveCacheBytes is the current size of rclone's own VFS cache directory, the
