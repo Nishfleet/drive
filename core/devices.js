@@ -159,7 +159,7 @@ function changesOf(result) {
  * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
  *   caller proves a write landed
  */
-export function renewDeviceCredentialRow(
+function renewDeviceCredentialRow(
   /** @type {D1Database} */ db,
   /** @type {string} */ keyId,
   /** @type {string} */ accessKeyId,
