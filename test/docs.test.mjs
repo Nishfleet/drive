@@ -824,6 +824,52 @@ test("the shipped docs do not preload Inter", () => {
   assert.doesNotMatch(html, /inter-/i, "the docs HTML must not preload or link Inter");
 });
 
+test("every docs page links the served favicon", () => {
+  // drive#546: without a rel="icon" link every tab fetched /favicon.ico and
+  // hit the 404 page. The home page and every docs page point at the one
+  // served SVG.
+  assert.ok(
+    existsSync(new URL("../public/favicon.svg", import.meta.url)),
+    "public/favicon.svg must ship",
+  );
+  const docsHtml = readdirSync(siteDir).filter(
+    (name) => name.endsWith(".html") && name !== "404.html",
+  );
+  assert.ok(docsHtml.length >= 10, "the docs home and every page must have built");
+  for (const name of docsHtml) {
+    assert.match(
+      shipped(name),
+      /<link\s+rel="icon"\s+href="\/favicon\.svg"/,
+      `${name} must carry <link rel="icon" href="/favicon.svg">`,
+    );
+  }
+});
+
+test("every docs table is wrapped in a scroll container and stays a table", () => {
+  // drive#546: Chrome ignores overflow on a table box, so a wide table cannot
+  // scroll on its own. The markdown renderer wraps each table in
+  // .table-wrap (overflow-x: auto); the theme keeps display: table so the
+  // cells stay aligned.
+  const theme = readFileSync(
+    new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(theme, /\.VPDoc \.table-wrap\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(theme, /\.VPDoc table\s*\{[^}]*display:\s*table/);
+  const docsHtml = readdirSync(siteDir).filter(
+    (name) => name.endsWith(".html") && name !== "404.html",
+  );
+  let tables = 0;
+  for (const name of docsHtml) {
+    const html = shipped(name);
+    const all = (html.match(/<table\b/g) ?? []).length;
+    const wrapped = (html.match(/<div class="table-wrap"><table\b/g) ?? []).length;
+    tables += all;
+    assert.equal(wrapped, all, `${name}: every <table> must sit inside .table-wrap`);
+  }
+  assert.ok(tables > 0, "the benchmark and security pages ship tables");
+});
+
 test("the docs carry the home page's design tokens, not a different palette", () => {
   // The site palette lives in the shared stylesheet (public/site.css, drive
   // #71 / #152 / #458), which the pricing page links; the docs site cannot

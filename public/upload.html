@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Drive — send files</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="Drop files into a shared folder. The owner sees them on their drive.">
   <meta name="robots" content="noindex">
   <!-- The palette, the reset and the page chrome are in the shared site
@@ -127,14 +128,6 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-input[type="file"] {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-
 .status {
   min-height: 1.55em;
   margin: 0;
@@ -188,7 +181,7 @@ input[type="file"] {
     <p class="hint" id="page-line">This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.</p>
 
     <div class="drop" id="drop" hidden>
-      <input type="file" id="file-input" multiple>
+      <input type="file" id="file-input" multiple hidden>
       <button type="button" id="choose">Choose files</button>
       <p class="hint" id="hint">or drop them anywhere on this page</p>
     </div>

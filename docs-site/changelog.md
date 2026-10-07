@@ -53,6 +53,13 @@ the live site.
   from the terminal, and ten one-time recovery codes are shown once when you
   turn it on. You can also add a passkey, which is a way to sign in and is not
   asked for when you approve a device. The security page has the recovery rule.
+- The home page, the upload page and the docs pages pass the accessibility
+  engine's checks, on a desktop and on a phone. The home page's tagline is
+  dark enough to read on the orange, a wide docs table now scrolls sideways
+  inside itself instead of dragging the page with it, the upload page's file
+  picker is no longer an unlabelled stop in the keyboard order, the closing
+  banner is plain text a screen reader reads out, and every page links the
+  favicon instead of asking for the old missing one.
 - Your drive never works on an old copy: the app says which build it is when
   it talks to the server, and the server tells an old build to run
   `drive update` instead of failing in some other way.

@@ -56,6 +56,7 @@ export const SITE = Object.freeze({
   // The one public page this site ships, so the sitemap lists exactly this.
   homePath: "/",
   ogImagePath: "/og.png",
+  faviconPath: "/favicon.svg",
   robotsPath: "/robots.txt",
   sitemapPath: "/sitemap.xml",
   llmsPath: "/llms.txt",
