@@ -10,20 +10,14 @@
 // the page sets and the CLI prints arrives finished in the summary's `labels`
 // (core/billing.js). This module holds only the words, so a dollar can never be
 // written down twice.
-import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
-
-/**
- * The usage page itself, served from public/usage.html by the asset layer.
- * Linked from the first-run page so the page is reachable.
- */
-export const USAGE_PATH = "/usage";
+import { BILLING_CONFIG, MINUTE_MS, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
 /**
  * How often the page re-reads the month while it is open and visible. The
  * month moves slowly, so a minute is fresh enough and quiet enough for a tab
  * left open; a hidden tab stops asking entirely.
  */
-export const USAGE_POLL_INTERVAL_MS = 60000;
+export const USAGE_POLL_INTERVAL_MS = MINUTE_MS;
 
 // The words both surfaces use, in one table. The 3x hint is built from
 // BILLING_CONFIG, so the page cannot quote a multiplier the bill does not use,

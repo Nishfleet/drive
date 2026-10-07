@@ -130,7 +130,10 @@ func LoadOffline(home string) (OfflineIndex, error) {
 	}
 	var idx OfflineIndex
 	if err := json.Unmarshal(raw, &idx); err != nil {
-		return OfflineIndex{}, fmt.Errorf("parse %s: %w", OfflineIndexPath(home), err)
+		// The named failure the status line prints (drive#544): a half-written
+		// offline.json is a file this command wrote, and the person needs its
+		// path rather than the JSON error.
+		return OfflineIndex{}, failDetail("offline-list-unreadable", err, OfflineIndexPath(home))
 	}
 	return idx, nil
 }

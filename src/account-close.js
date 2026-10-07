@@ -11,6 +11,7 @@ import { sendEmail } from "../core/email-send.js";
 import { scopeStore } from "../core/files.js";
 import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { DAY_MS } from "../core/units.js";
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** @typedef {ReturnType<typeof import("../core/devices.js").createD1DeviceStore>} DeviceStore */
@@ -21,7 +22,7 @@ export const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 
 export const CLOSE_GRACE_DAYS = 30;
 export const CLOSE_REMINDER_DAYS = 25;
-const DAY_SECONDS = 24 * 60 * 60;
+const DAY_SECONDS = DAY_MS / 1000;
 
 // The account close cron runs on its own schedule, not inside the meter's
 // reconcile trip (drive#522). Sharing the reconcile's trigger meant the two
@@ -61,7 +62,7 @@ export const CLOSE_COPY = Object.freeze({
  * @param {unknown} value
  * @returns {string}
  */
-export function normalizeEmail(value) {
+function normalizeEmail(value) {
   if (typeof value !== "string") {
     return "";
   }
@@ -288,7 +289,7 @@ export const PURGE_BATCH = 1000;
  * @param {{startAfter?: string, saveProgress?: (cursor: string) => Promise<void>}} [options]
  * @returns {Promise<string|null>}
  */
-export async function purgeAccountFiles(store, account, options = {}) {
+async function purgeAccountFiles(store, account, options = {}) {
   const scoped = scopeStore(store, account);
   let cursor = options.startAfter;
   for (;;) {
@@ -310,7 +311,7 @@ export async function purgeAccountFiles(store, account, options = {}) {
  * @param {D1Database} db
  * @param {string} accountId
  */
-export async function purgeAccountRecords(db, accountId) {
+async function purgeAccountRecords(db, accountId) {
   await db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(accountId).run();
   await db.prepare("DELETE FROM file_versions WHERE account_id = ?1").bind(accountId).run();
 }

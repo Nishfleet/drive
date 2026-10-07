@@ -887,14 +887,19 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
     "`lint` is the one tool's own check: it fails on a lint finding and on an unformatted file",
   );
   assert.equal(
+    pkg.scripts["lint:exports"],
+    "knip",
+    "`lint:exports` is the dead-code check: it fails on an export nothing imports",
+  );
+  assert.equal(
     pkg.scripts.format,
     "biome format --write .",
     "`format` is the same tool writing the fix",
   );
   assert.equal(
     pkg.scripts.check,
-    "npm run typecheck && npm run lint",
-    "`check` is the one aggregate gate the suite and the hooks run: types, then lint",
+    "npm run typecheck && npm run lint && npm run lint:exports",
+    "`check` is the one aggregate gate the suite and the hooks run: types, then lint, then the dead-export lint",
   );
   assert.equal(
     pkg.scripts.pretest,

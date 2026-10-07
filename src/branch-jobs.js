@@ -96,7 +96,7 @@ export function branchJob(body) {
  * @param {BranchJobsQueue} queue
  * @param {BranchJob} job
  */
-export async function sendBranchJob(queue, job) {
+async function sendBranchJob(queue, job) {
   const body = branchJob(job);
   if (typeof queue.send === "function") {
     await queue.send(body);

@@ -51,14 +51,15 @@
 
 import {
   accountFirstChargedAt,
-  accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
+import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { sendEmail } from "../core/email-send.js";
 import {
   etagMatches,
   joinPath,
+  preChargeStoredBytes,
   previewContentType,
   previewDisposition,
   safeFileName,
@@ -72,6 +73,7 @@ import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { notifySecurityEvent } from "../core/security-event.js";
 import { formatBytes, unauthorizedResponse } from "../core/status.js";
+import { DAY_MS } from "../core/units.js";
 import { isMalwareBody } from "./malware.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
@@ -84,8 +86,7 @@ export const REQUEST_ENDPOINT = "/api/request";
 export const REQUEST_PAGE = "/upload.html";
 /** How long a link lasts, in days, when the caller does not choose. */
 export const DEFAULT_LINK_DAYS = 7;
-/** One day in milliseconds, the unit the expiry is measured in. */
-export const DAY_MS = 24 * 60 * 60 * 1000;
+export { DAY_MS };
 // Per-file ceiling on a public upload request (drive issue #208, from the
 // 00:35 review of #87). 32 MB stays inside a Workers isolate (128 MB) even
 // while the stream is copied into one buffer to count it; the platform's
@@ -98,7 +99,7 @@ export const REQUEST_FILE_MAX_BYTES = 32_000_000;
 // while the owner sleeps: a stranger is bounded to 1 GB through the link,
 // on top of the owner's spending cap. The owner may set a different total
 // when they mint the page (POST /api/request {folder, maxBytes}).
-export const REQUEST_TOTAL_MAX_BYTES = 1_000_000_000;
+export const REQUEST_TOTAL_MAX_BYTES = BYTES_PER_GB;
 // The most open links one account may hold (drive issue #549): 50 share links
 // and 50 upload pages. A script with one account cannot mint unbounded tokens
 // to walk, and an owner with a burst of links revokes one to make room.
@@ -115,18 +116,19 @@ const REMOVE_CHUNK = 64;
 // The one-a-day bound (drive issue #684): 20 hours, so the shared nightly
 // cron at any time of day mails a link once, and a trip that fires twice
 // inside a day is caught by the stamp rather than by the clock.
-export const DIGEST_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+const DIGEST_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
 // The longest file name an upload page accepts (drive issue #549): the same
 // 255 the owner's own Files page lives with, checked before the body is read.
 export const REQUEST_NAME_MAX_LENGTH = 255;
 // A per-link total above this is a number the owner cannot mean (drive issue
 // #549): 1 TB is the pre-charge storage ceiling, so a link promising more
-// could never be honoured anyway.
-export const REQUEST_TOTAL_MAX_CEILING_BYTES = 1_000_000_000_000;
+// could never be honoured anyway. The TB is the billing one, so a promise can
+// never outrun the ceiling it is checked against.
+const REQUEST_TOTAL_MAX_CEILING_BYTES = GB_PER_TB * BYTES_PER_GB;
 // How many times a shared file's own size a link may serve before it stops
 // (drive issue #549): a share is for showing a file, not for hosting it as a
 // seed, and 30x a file is far above the handful of opens a person makes.
-export const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
+const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
 // A link whose row is this old and no longer open can be pruned (drive issue
 // #549): expired and revoked rows are kept 90 days so the owner's list still
 // shows what they did, then removed.
@@ -411,7 +413,7 @@ export function shareRow(record, now, base) {
  * @param {number} now
  * @param {string} base
  */
-export function requestRow(record, now, base) {
+function requestRow(record, now, base) {
   const state = linkState(record, now);
   const count = Number.isFinite(record.uploadCount) ? record.uploadCount : 0;
   const bytes = Number.isFinite(record.uploadBytes) ? record.uploadBytes : 0;
@@ -1234,7 +1236,7 @@ async function ownerNameFor(resolver, accountId) {
  *
  * @param {Request} request
  */
-export function baseFromRequest(request) {
+function baseFromRequest(request) {
   return new URL(request.url).origin;
 }
 
@@ -1877,12 +1879,16 @@ export async function handleRequestUploadRequest(request, files, links, capState
   ) {
     return json({ error: failureMessage("upload-paused-balance") }, 403);
   }
+  const contentType = request.headers.get("content-type") || "application/octet-stream";
+  // The request row names the owner, so that is the prefix the write lands
+  // under — the same scopeStore /api/files/upload writes through. The guard
+  // reads the same store, so this is built before it.
+  const scoped = scopeStore(files, { id: record.accountId, name: "" });
   if (options.db) {
-    // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
-    // not on the length header a stranger's client sent. An empty body counts
-    // as 1 byte once the drive is at 1 TB, the same edge core/files.js holds.
-    const stored = await accountStoredBytes(options.db, record.accountId);
+    // The owner's 1 TB pre-charge limit, judged on bytes actually read, and
+    // branch copies count too (drive#800) through the same shared read.
     const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
+    const stored = await preChargeStoredBytes(options.db, scoped, record.accountId, firstChargedAt);
     const blocked = preChargeUploadBlocked({
       firstChargedAt,
       storedBytes: stored,
@@ -1892,10 +1898,6 @@ export async function handleRequestUploadRequest(request, files, links, capState
       return json({ error: blocked }, 403);
     }
   }
-  const contentType = request.headers.get("content-type") || "application/octet-stream";
-  // The request row names the owner, so that is the prefix the write lands
-  // under — the same scopeStore /api/files/upload writes through.
-  const scoped = scopeStore(files, { id: record.accountId, name: "" });
   // This stat is the ordinary-duplicate answer: a drop of a name that is
   // already stored gets the same 409 on every backend, before any bytes are
   // reserved or written. It is NOT the race answer — the gap between this

@@ -45,6 +45,9 @@ import { failureMessage } from "./messages.js";
 // added here is operational: the default cap and the download allowance.
 import { PRICE, usualPlanMonthlyUsd } from "./pricing.js";
 import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
+import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
+
+export { BYTES_PER_GB, MINUTE_MS };
 
 // The month's average divides by the minutes in that UTC calendar month
 // (drive#531): 40,320 for a 28-day February up to 44,640 for a 31-day month.
@@ -52,7 +55,6 @@ import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 // 1.019 TB, which broke "never more than $10 per TB" (the maximum then; it is $15 now). So
 // there is no month constant: every function below takes the month's length
 // as input, and minutesInMonth() is the one place it is worked out.
-const MINUTE_MS = 60_000;
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
 // The month a "kept all month" quote is worked over when the caller names
 // none. A size held all month bills the same in every month length, so the
@@ -62,9 +64,6 @@ export const QUOTE_MONTH_MINUTES = 31 * 1440;
 // Exported for the same reason: the docs page's worked table divides by it too,
 // so a docs example and an invoice example cannot disagree about what a TB is.
 export const GB_PER_TB = 1000;
-const BYTES_PER_GB = 1e9;
-
-export { BYTES_PER_GB };
 
 /** 1/1000 of a cent: 10 MB a month is 20 millicents ($0.0002). */
 export const MILLICENTS_PER_CENT = 1000;

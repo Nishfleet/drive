@@ -384,7 +384,7 @@ func mintToolKey(env Env, t Tool) error {
 // `drive agents revoke <tool>`.
 func runAgents(args []string) error {
 	api := os.Getenv("DRIVE_API_URL")
-	home := os.Getenv("HOME")
+	home := DefaultHome()
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
