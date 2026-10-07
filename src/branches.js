@@ -1582,7 +1582,14 @@ async function joinCreateParts(db, branch, snapshots, base, cursor, written) {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error(`a create part under ${key} is not a file map`);
       }
-      Object.assign(snapshot, /** @type {Record<string, Fingerprint>} */ (parsed));
+      // Each part's own entries are copied in one at a time, and only the ones
+      // that name a file, so a key like `__proto__` in a part cannot reach the
+      // snapshot's prototype and a malformed part cannot smuggle a non-file in.
+      for (const [rel, fp] of Object.entries(/** @type {Record<string, unknown>} */ (parsed))) {
+        if (fp !== null && typeof fp === "object" && !Array.isArray(fp) && rel !== "__proto__") {
+          snapshot[rel] = /** @type {Fingerprint} */ (fp);
+        }
+      }
     }
     const saved = await saveSnapshot(db, branch.id, snapshot, snapshots, key);
     if (!saved.success) {
