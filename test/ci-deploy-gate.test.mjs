@@ -34,6 +34,31 @@ test("ci.yml runs on merge_group so the main merge queue gets verify and go", ()
   assert.match(CI, /^ {2}go:\n/m);
 });
 
+// drive#799: the two-device conflict proof is a named step of the go job,
+// so a merge-group run cannot drop it (the paths filter skips `changes`,
+// and the job then runs every step). The step has no continue-on-error.
+test("the go job still runs the two-device conflict proof", () => {
+  const start = CI.search(/^ {2}go:\n/m);
+  assert.notEqual(start, -1, "ci.yml has a go job");
+  const rest = CI.slice(start);
+  const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
+  const body = next ? rest.slice(0, 1 + next.index) : rest;
+  assert.match(
+    body,
+    /- name: Two-device conflict proof\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s\n/,
+  );
+  const step = body.slice(body.indexOf("- name: Two-device conflict proof"));
+  const stepEnd = step.search(/\n {6}- /);
+  const lines = (stepEnd === -1 ? step : step.slice(0, stepEnd)).split("\n");
+  for (const line of lines) {
+    assert.doesNotMatch(
+      line,
+      /continue-on-error/,
+      `the proof step never continues: ${line.trim()}`,
+    );
+  }
+});
+
 test("deploy starts from a successful CI run on a main push, never from push", () => {
   const on = onBlock(DEPLOY);
   assert.match(

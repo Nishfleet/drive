@@ -187,7 +187,7 @@ func Login(home, apiBase, device string, out io.Writer) error {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
 	}
-	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
+	if err := WriteRcloneEnv(home, cfg, "", "", ""); err != nil {
 		return err
 	}
 	if previous.DeviceToken != "" && previous.DeviceToken != token.Token {

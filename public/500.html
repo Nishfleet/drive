@@ -6,6 +6,9 @@
   <title>Drive — something went wrong</title>
   <meta name="description" content="That did not work. The error is logged, and the home page has the price and the way in.">
   <meta name="robots" content="noindex">
+  <!-- drive#546: the one served favicon, so no tab asks for /favicon.ico and
+       gets the 404 page. -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <!-- The site's own 5xx page (drive#584). src/index.js serves this file from
        app.onError when a page request fails, so a browser gets the site's
        chrome instead of a bare JSON body. Same chrome, palette and type as the

@@ -10,6 +10,22 @@ the live site.
 
 ## 2026-10-06
 
+- A branch copies the files your folder held when you made the branch, not the
+  files it holds when the copy runs. A file added in between is not in the
+  branch, and the next branch takes it. A file that grew in between is copied in
+  full, and `drive diff` reports it as changed in the original.
+- An upload link now says who it belongs to. The page a stranger opens shows
+  the owner's name above the folder, and once a day the owner gets one email
+  listing the files that arrived through that link since the last one, rather
+  than one email per file.
+- An account holds at most 20 live keys, and a mint past that is refused with
+  the words to fix it. The storage vendor sets no limit of its own, and a
+  nightly sweep removes the vendor keys of expired or revoked entries and
+  records how many keys the vendor holds.
+- A share link fixes on the file's version at the moment you make it. If that
+  file is replaced afterwards, the link refuses with a short page instead of
+  handing out the new bytes. A file on the stock known-bad hash list is
+  refused when you share it and when someone drops it on an upload page.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a
@@ -19,6 +35,16 @@ the live site.
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states
   where files are stored and what each key can do.
+- `drive doctor`: one block with the versions, the mount state, the log's last
+  lines and the api answer, to paste into a support message.
+- `drive --help` no longer names tracker rows, and names the page below
+  instead. Two failure lines fixed: the Linux unmount hint names the
+  `fusermount` fallback the code runs, and the key-still-live line no longer
+  repeats its own next step.
+- New docs page, [When something goes wrong](/troubleshooting): the three
+  commands to run, the log on each system, a new laptop, a lost laptop, your
+  email, and taking your files out. Linked from the 404 page and from
+  `drive status`.
 
 ## 2026-10-05
 
@@ -27,6 +53,13 @@ the live site.
   from the terminal, and ten one-time recovery codes are shown once when you
   turn it on. You can also add a passkey, which is a way to sign in and is not
   asked for when you approve a device. The security page has the recovery rule.
+- The home page, the upload page and the docs pages pass the accessibility
+  engine's checks, on a desktop and on a phone. The home page's tagline is
+  dark enough to read on the orange, a wide docs table now scrolls sideways
+  inside itself instead of dragging the page with it, the upload page's file
+  picker is no longer an unlabelled stop in the keyboard order, the closing
+  banner is plain text a screen reader reads out, and every page links the
+  favicon instead of asking for the old missing one.
 - Your drive never works on an old copy: the app says which build it is when
   it talks to the server, and the server tells an old build to run
   `drive update` instead of failing in some other way.
@@ -207,7 +240,8 @@ the live site.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
 - These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
-  Limits, Benchmarks, Security and this changelog, each also served as Markdown.
+  When something goes wrong, Limits, Benchmarks, Security and this changelog,
+  each also served as Markdown.
 - The FAQ page: it publishes an answer only once the scoreboard row under it
   is a measured win, so a line we have not measured yet stays off it.
 

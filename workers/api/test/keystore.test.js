@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SESSION_TTL_SECONDS } from "../../../core/auth.js";
 import { readGrant } from "../../../core/grant.js";
-import { bucketForAccount, CAPABILITIES_BY_KIND } from "../../../core/keyprovider.js";
+import {
+  bucketForAccount,
+  CAPABILITIES_BY_KIND,
+  KEY_COUNT_CAP,
+} from "../../../core/keyprovider.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   authorizePath,
@@ -12,6 +16,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_REFRESH_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
+  KeyCountCapError,
   renewDeviceTokenWindow,
   renewKeyWindow,
 } from "../../../core/keystore.js";
@@ -147,6 +152,18 @@ test("an unknown key kind is refused before any key is made", async () => {
     /Unknown key kind/,
   );
   assert.equal((await store.listKeys(account)).length, 0);
+});
+
+test("mintTeamKey is refused at the same live-key cap as mintKey", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { account } = await signedInAccount(store);
+  for (let i = 0; i < KEY_COUNT_CAP; i++) {
+    await store.mintKey(account, { kind: "agent", name: `k${i}` });
+  }
+  await assert.rejects(
+    () => store.mintTeamKey(account, "team_x", "read_write", { name: "member" }),
+    KeyCountCapError,
+  );
 });
 
 test("a revoked key is refused and does not come back", async () => {
