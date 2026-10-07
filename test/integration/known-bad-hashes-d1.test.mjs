@@ -26,12 +26,15 @@ import {
   loadKnownBadFeed,
   parseKnownBadFeed,
 } from "../../src/malware.js";
+import { createD1LinkStore, newRequestRecord } from "../../src/share.js";
 import { createTestD1, DRIVE_MIGRATIONS, knownBadHashRows } from "../harness.mjs";
 
 /** The instant every load in this file is stamped with (epoch millis). */
 const NOW = 1_794_000_000_000;
 /** One day later: the next load's export is the feed's own recent window. */
 const LATER = NOW + 86_400_000;
+/** The upload-request link the 0043 quiet-window test stamps. */
+const REQUEST_TOKEN = "BBBBBBBBBBBBBBBBBBBBBB";
 
 /** The full default schema minus 0042: the state production is in the moment
  * 0042 lands. Filtered by name, not by position, so a file appended to
@@ -55,11 +58,12 @@ const migration0042 = () =>
   );
 
 /** The digest the test's feed carries at `index`: 64 lowercase hex digits,
- * distinct for every index and never all zeros, so an unknown digest is a real
- * unknown one.
+ * distinct for every index and never all zeros (index 1 is the first value,
+ * so 0 does not read as the 64-zero digest a parser bug could produce), so
+ * an unknown digest is a real unknown one.
  * @param {number} index
  * @returns {string} */
-const digest = (index) => index.toString(16).padStart(64, "0");
+const digest = (index) => (index + 1).toString(16).padStart(64, "0");
 
 /**
  * A feed body: a header of `#` lines, then one digest per line with CRLF
@@ -317,4 +321,27 @@ test("the load writes across the batch boundary, nothing lost at the end", async
     250,
     "the count the next load reads is real",
   );
+});
+
+test("0043 stamps the quiet window on the real schema: null until a notice is sent", async () => {
+  // The column is the flood cap's memory (drive issue #826): the full real
+  // migration set makes the table, so the write and the read here are the
+  // exact statements the route runs, on the schema the deploy ships.
+  const db = createTestD1();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-1", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  // The read half: a link never noticed reads back null, so the route mails
+  // on its first refusal, and so does every link minted before 0043.
+  const fresh = await links.requests.get(REQUEST_TOKEN);
+  assert.ok(fresh);
+  assert.equal(fresh.malwareNoticeAt, null);
+  // The write half: the stamp follows a sent notice, and a later read on a
+  // fresh store carries it, the way a repeat refusal inside the window
+  // reads it back.
+  await links.requests.stampMalwareNotice(REQUEST_TOKEN, NOW + 1_000);
+  const stamped = await createD1LinkStore(db).requests.get(REQUEST_TOKEN);
+  assert.ok(stamped);
+  assert.equal(stamped.malwareNoticeAt, NOW + 1_000);
 });

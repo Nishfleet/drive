@@ -203,6 +203,7 @@ test("minting a share or upload-request link sends one mail, and a failure still
     {
       now,
       token: "AAAAAAAAAAAAAAAAAAAAAA",
+      db: null,
       limiter: {
         async limit() {
           return { success: true };
@@ -230,6 +231,7 @@ test("minting a share or upload-request link sends one mail, and a failure still
   const fromBrowser = await handleShareRequest(browserReq, files, links, account, {
     now,
     token: "CCCCCCCCCCCCCCCCCCCCCC",
+    db: null,
     limiter: {
       async limit() {
         return { success: true };

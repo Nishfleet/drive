@@ -58,6 +58,7 @@ import {
   linkIsOpen,
   linkState,
   linkStateLabel,
+  MALWARE_NOTICE_QUIET_MS,
   MAX_OPEN_LINKS,
   newLinkToken,
   newRequestRecord,
@@ -245,6 +246,11 @@ function withLimits(options = {}) {
     now,
     ipLimiter: allowLimiter(),
     linkLimiter: allowLimiter(),
+    // db is a required key on the upload-request drop (the known-bad and
+    // prepaid halves read through it, drive issue #826), so a bare call
+    // names it: null is the deliberate no-database call, and the in-memory
+    // list half still answers the stock signatures.
+    db: null,
     ...options,
   };
 }
@@ -984,6 +990,10 @@ test("a known-bad refusal mails the owner, and a mailer that is down still refus
   const record = await links.requests.get("BBBBBBBBBBBBBBBBBBBBBB");
   assert.ok(record);
   assert.equal(record.uploadCount, 0);
+  // The stamp follows the mail, never the refusal (drive issue #826): this
+  // test's vendor is down, the owner read nothing, and the link stays
+  // unstamped so the next refusal tries the mail again.
+  assert.equal(record.malwareNoticeAt, null);
 });
 
 /**
@@ -1121,6 +1131,142 @@ test("a refused drop with no owner address to notify is loud, and still refuses"
     (await list()).map((row) => row.name),
     ["eicar.txt"],
   );
+  // No mail went out, so nothing is stamped: the window never opens on a
+  // notice that was not sent, and the loud log above repeats on every
+  // refusal until the address is fixed (drive issue #826).
+  const unstamped = await links.requests.get(TOKEN);
+  assert.ok(unstamped);
+  assert.equal(unstamped.malwareNoticeAt, null);
+});
+
+test("a repeated known-bad drop inside the quiet window mails once, and the window reopening mails again", async () => {
+  // The window is the flood cap (drive issue #826): a stranger who holds the
+  // link can repeat a known-bad POST at the link limiter's pace, and the
+  // first refusal already told the owner what to do. Repeats inside the
+  // window answer the same 403 and mail nothing; when the window reopens,
+  // the next refusal mails a fresh notice, so a second stranger on the same
+  // link is not hidden by the first.
+  const { files, links, list } = drive();
+  const made = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    files,
+    links,
+    account,
+    { now, token: TOKEN, limiter: allowLimiter() },
+  );
+  assert.equal(made.status, 201);
+  const mail = mailer();
+  /**
+   * One refusal at a chosen instant, with the owner and the mailer bound.
+   * @param {number} at
+   */
+  const dropAt = async (at) =>
+    handleRequestUploadRequest(
+      new Request(
+        `${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=${encodeURIComponent("eicar.txt")}`,
+        {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: EICAR_BODY,
+        },
+      ),
+      files,
+      links,
+      () => "active",
+      withLimits({
+        now: at,
+        owner: async () => ({ id: account.id, name: account.name, email: "owner@example.com" }),
+        email: mail,
+        mailFrom: MAIL_FROM,
+      }),
+    );
+  const first = await dropAt(now);
+  assert.equal(first.status, 403);
+  assert.equal(mail.sent.length, 1);
+  // Inside the window: the same 403, and no second mail.
+  const repeat = await dropAt(now + 60 * 60 * 1000);
+  assert.equal(repeat.status, 403);
+  assert.equal((await repeat.json()).error, failureMessage("malware-refused"));
+  assert.equal(mail.sent.length, 1, "a repeat inside the window mails nothing");
+  assert.equal((await links.requests.get(TOKEN))?.malwareNoticeAt, now);
+  // The window reopens a day later: the next refusal mails again, and the
+  // stamp moves to the notice that caused it.
+  const reopened = await dropAt(now + MALWARE_NOTICE_QUIET_MS + 60 * 60 * 1000);
+  assert.equal(reopened.status, 403);
+  assert.equal(mail.sent.length, 2);
+  assert.equal(
+    (await links.requests.get(TOKEN))?.malwareNoticeAt,
+    now + MALWARE_NOTICE_QUIET_MS + 60 * 60 * 1000,
+  );
+  // A refusal never writes the file and never spends the link's counts.
+  assert.deepEqual(
+    (await list()).map((row) => row.name),
+    [],
+  );
+  assert.equal((await links.requests.get(TOKEN))?.uploadCount, 0);
+});
+
+test("a drop or a mint without db fails loud instead of losing the known-bad half", async () => {
+  // db is a required key on both routes' handlers (drive issue #826): null
+  // is the deliberate no-database call the in-memory list half serves, and
+  // undefined is a caller bug. The handler throws instead of silently
+  // running with neither the list half nor the prepaid-balance guard, so a
+  // call site the pin test cannot see (a wrapper, an app.on route) fails on
+  // its first request rather than passing every check.
+  const { files, links } = drive();
+  // The cast is the point: the call omits db on purpose, and the handler's
+  // own guard is what turns the omission into the TypeError this test pins
+  // (drive issue #826).
+  const dropWithoutDb = /** @type {Parameters<typeof handleRequestUploadRequest>[4]} */ (
+    /** @type {unknown} */ ({ now, ipLimiter: allowLimiter(), linkLimiter: allowLimiter() })
+  );
+  await assert.rejects(
+    () =>
+      handleRequestUploadRequest(
+        new Request(`${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=a.txt`, {
+          method: "POST",
+          body: "x",
+        }),
+        files,
+        links,
+        () => "active",
+        dropWithoutDb,
+      ),
+    TypeError,
+  );
+  await assert.rejects(
+    () =>
+      handleShareRequest(
+        new Request(api(SHARE_ENDPOINT), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "/a.txt" }),
+        }),
+        files,
+        links,
+        account,
+        { now, limiter: allowLimiter() },
+      ),
+    TypeError,
+  );
+  // The limiter is answered first: a request the edge refuses keeps its own
+  // words even on a half-configured deployment.
+  const limited = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/a.txt" }),
+    }),
+    files,
+    links,
+    account,
+    { now, limiter: denyLimiter() },
+  );
+  assert.equal(limited.status, 429);
 });
 
 test("the cron trigger loads the feed into D1, and the list answers from it", async () => {
@@ -1310,7 +1456,7 @@ test("the public routes need a cap resolver, and refuse a made-up answer", async
         createMemoryStore(),
         links,
         "read_only",
-        { now },
+        { now, db: null },
       ),
     TypeError,
   );
@@ -1600,7 +1746,7 @@ test("one account cannot revoke another account's link", async () => {
     store,
     links,
     account,
-    { now, limiter: allowLimiter(), token: TOKEN },
+    { now, db: null, limiter: allowLimiter(), token: TOKEN },
   );
   assert.equal(made.status, 201);
 
@@ -1936,7 +2082,7 @@ test("a share link downloads from the owner's bucket, and another account cannot
     files,
     links,
     owner,
-    { now, limiter: allowLimiter(), token: TOKEN },
+    { now, db: null, limiter: allowLimiter(), token: TOKEN },
   );
   assert.equal(made.status, 201);
   const opened = await handleShareFileRequest(
@@ -2395,7 +2541,7 @@ test("a public upload without its rate-limit bindings is refused before any byte
     store,
     links,
     () => "active",
-    { now },
+    { now, db: null },
   );
   assert.equal(upload.status, 503);
   assert.equal((await upload.json()).error, failureMessage("unexpected"));

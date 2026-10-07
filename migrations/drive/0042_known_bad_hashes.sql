@@ -1,8 +1,8 @@
 -- The known-bad hash list, loaded from a stock public feed (drive issue #826).
--- Numbered 0041 because 0039 belongs to drive#802's file_index_fts and 0040 to
--- the branch reserved-bytes column: drive#619's gate refuses a new file that
--- shares a prefix, and a shared prefix leaves the apply order to the
--- filesystem.
+-- Numbered 0042 because 0039 belongs to drive#802's file_index_fts, 0040 to the
+-- branch reserved-bytes column, and 0041 to main's daily-draws table: drive#619's
+-- gate refuses a new file that shares a prefix, and a shared prefix leaves the
+-- apply order to the filesystem.
 -- The feed half of src/malware.js's list: abuse.ch MalwareBazaar's SHA-256
 -- export, downloaded daily by the KNOWN_BAD_FEED_SCHEDULE cron and stored here,
 -- so the share-mint and upload-request-drop checks read one indexed row instead

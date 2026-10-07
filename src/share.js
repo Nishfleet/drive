@@ -133,6 +133,14 @@ const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
 // #549): expired and revoked rows are kept 90 days so the owner's list still
 // shows what they did, then removed.
 export const LINK_RETENTION_DAYS = 90;
+// How long a link stays quiet about repeated known-bad drops (drive issue
+// #826): the first refusal through a link mails the owner, repeats inside
+// the window answer the same 403 and mail nothing, and the window reopening
+// mails a fresh notice. Without it, anyone holding the link can mail the
+// owner once per POST at the link's rate-limit pace; with it, the flood is
+// one mail a day per link, and a stranger the owner has already been told
+// about cannot crowd out a new one.
+export const MALWARE_NOTICE_QUIET_MS = 24 * 60 * 60 * 1000;
 // 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.
@@ -481,7 +489,8 @@ export const UPLOAD_PAGE_LINE =
  * @typedef {{token: string, accountId: string, folder: string,
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
  *   uploadCount: number, uploadBytes: number, maxBytes: number, maxFiles: number,
- *   digestAt: number|null, pendingUploads: string}} RequestRecord
+ *   digestAt: number|null, pendingUploads: string,
+ *   malwareNoticeAt: number|null}} RequestRecord
  * @typedef {object} LinkStore
  * @property {object} shares
  * @property {(record: ShareRecord) => Promise<ShareRecord>} shares.create
@@ -501,6 +510,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(token: string, name: string, bytes: number) => Promise<RequestRecord|null>} requests.recordArrival
  * @property {(token: string, at: number, count: number) => Promise<RequestRecord|null>} requests.markDigestSent
  * @property {() => Promise<RequestRecord[]>} requests.listPendingDigests
+ * @property {(token: string, at: number) => Promise<void>} requests.stampMalwareNotice
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -509,7 +519,7 @@ export const UPLOAD_PAGE_LINE =
 const SHARE_COLUMNS =
   "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes, etag";
 const REQUEST_COLUMNS =
-  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files, digest_at, pending_uploads";
+  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes, max_files, digest_at, pending_uploads, malware_notice_at";
 
 /**
  * A share row as the ShareRecord the handlers read. A column that is NULL is
@@ -559,6 +569,10 @@ function toRequestRecord(row) {
     maxFiles: Number(row.max_files ?? REQUEST_MAX_FILES),
     digestAt: row.digest_at === null || row.digest_at === undefined ? null : Number(row.digest_at),
     pendingUploads: typeof row.pending_uploads === "string" ? row.pending_uploads : "[]",
+    malwareNoticeAt:
+      row.malware_notice_at === null || row.malware_notice_at === undefined
+        ? null
+        : Number(row.malware_notice_at),
   };
 }
 
@@ -696,7 +710,7 @@ export function createD1LinkStore(db) {
         await db
           .prepare(
             `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
           )
           .bind(
             record.token,
@@ -711,6 +725,7 @@ export function createD1LinkStore(db) {
             record.maxFiles,
             record.digestAt ?? null,
             record.pendingUploads ?? "[]",
+            record.malwareNoticeAt ?? null,
           )
           .run();
         return { ...record };
@@ -850,6 +865,17 @@ export function createD1LinkStore(db) {
           [],
         );
         return rows.map(toRequestRecord);
+      },
+      async stampMalwareNotice(token, at) {
+        // The quiet window's write half (drive issue #826): the time of the
+        // last notice actually sent, so the route mails a repeated known-bad
+        // refusal only when this stamp is NULL or out of the window. The
+        // stamp follows the mail, never the refusal, so an owner address
+        // that is missing stays unstamped and the loud log keeps repeating.
+        await db
+          .prepare("UPDATE upload_requests SET malware_notice_at = ?1 WHERE token = ?2")
+          .bind(at, token)
+          .run();
       },
     },
   };
@@ -1094,6 +1120,9 @@ export function newRequestRecord({
     maxFiles,
     digestAt: null,
     pendingUploads: "[]",
+    // A minted link has never been noticed, so the quiet window reads null
+    // and the first known-bad refusal mails (drive issue #826).
+    malwareNoticeAt: null,
   };
 }
 
@@ -1324,7 +1353,7 @@ export function folderDisplayName(folder) {
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string, email?: string|null}|null} account the signed-in account, or null when signed out
- * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database|null, email?: unknown, mailFrom?: string, deviceName?: string}} [options]
+ * @param {{now?: number, token?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database|null, email?: unknown, mailFrom?: string, deviceName?: string}} [options] db is required for the mint: the POST branch throws when it is undefined, so a new call site cannot lose the known-bad half without a sound
  */
 export async function handleShareRequest(request, files, links, account, options = {}) {
   if (!account) {
@@ -1357,6 +1386,20 @@ export async function handleShareRequest(request, files, links, account, options
     );
     if (limited) {
       return limited;
+    }
+    // The mint's known-bad half reads the list through options.db (drive
+    // issue #826). The GET and LIST branches need no database, but a mint
+    // without one would hash nothing and share anything, so undefined is a
+    // thrown TypeError here, not a silent half-check: null is the deliberate
+    // no-database call, undefined is a bug. The route pins db in
+    // test/share.test.mjs too, but the pin reads src/index.js only, and a
+    // mint served through another wrapper must fail just as loud. The
+    // limiter is answered first, so a request that cannot reach the mint
+    // keeps its 429 even on a half-configured deployment.
+    if (options.db === undefined) {
+      throw new TypeError(
+        "handleShareRequest's mint needs options.db; pass null when a call has no database",
+      );
     }
     const read = await readJsonObject(request);
     if ("error" in read) {
@@ -1853,9 +1896,9 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, owner?: unknown, email?: unknown, mailFrom?: string, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db: D1Database|null, prepaidPause?: boolean, owner?: unknown, email?: unknown, mailFrom?: string, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>}} options db is a required key: undefined throws after the limiters, so a new call site cannot lose the known-bad half without a sound; null is the deliberate no-database call the in-memory list half serves
  */
-export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
+export async function handleRequestUploadRequest(request, files, links, capState, options) {
   const now = options.now ?? Date.now();
   if (request.method !== "POST") {
     return methodNotAllowed("POST", "POST a file to upload it.");
@@ -1885,6 +1928,18 @@ export async function handleRequestUploadRequest(request, files, links, capState
   );
   if (limited) {
     return limited;
+  }
+  if (options.db === undefined) {
+    // The same gate the mint branch carries (drive issue #826): the
+    // known-bad check and the prepaid-balance guard both read through
+    // options.db, and a caller that omits the key would silently run the
+    // drop with neither. null is the deliberate no-database call the
+    // in-memory list half serves; undefined is a bug. The limiters are
+    // answered first, so a request the edge refuses keeps its answer even
+    // on a half-configured deployment.
+    throw new TypeError(
+      "handleRequestUploadRequest needs options.db; pass null when a call has no database",
+    );
   }
   const name = url.searchParams.get("name") || "";
   if (!name) {
@@ -1933,26 +1988,44 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // A known-bad body dropped through a public upload link tells the link's
     // owner, not the stranger (drive issue #826): the resolver read happens
     // here, on the refusal, so the owner's address only reaches the mailer.
-    const ownerEmail = await ownerEmailFor(options.owner, record.accountId);
-    if (ownerEmail === "") {
-      // Loud, and named: without this line a misbound resolver or an account row
-      // with no address turns off the notification half of this refusal with
-      // nothing an operator can read. core/security-event.js logs that it
-      // skipped too, but that line names no link, and a notice nobody can act
-      // on is the failure worth seeing.
-      console.error(
-        `drive share: no owner address to notify for a refused upload through /s/${record.token}`,
-      );
+    // The quiet window (drive issue #826): a stranger who holds the link
+    // can repeat a known-bad POST at the link limiter's pace, and a notice
+    // per POST is an inbox anyone with the link can flood. The first notice
+    // a link sends stamps the row (migrations/drive/0043); repeats inside
+    // the window answer the same 403 and mail nothing; when the window
+    // reopens the next refusal mails a fresh notice. The stamp follows the
+    // mail, never the refusal, so an owner address that is missing stays
+    // unstamped and the loud log below keeps repeating until it is fixed.
+    // The mint half does not need this: the actor there is the signed-in
+    // owner, who can only flood the address they already own.
+    if (
+      record.malwareNoticeAt === null ||
+      now - record.malwareNoticeAt >= MALWARE_NOTICE_QUIET_MS
+    ) {
+      const ownerEmail = await ownerEmailFor(options.owner, record.accountId);
+      if (ownerEmail === "") {
+        // Loud, and named: without this line a misbound resolver or an account row
+        // with no address turns off the notification half of this refusal with
+        // nothing an operator can read. core/security-event.js logs that it
+        // skipped too, but that line names no link, and a notice nobody can act
+        // on is the failure worth seeing.
+        console.error(
+          `drive share: no owner address to notify for a refused upload through /s/${record.token}`,
+        );
+      }
+      const notice = await notifySecurityEvent({
+        email: options.email,
+        mailFrom: options.mailFrom,
+        to: ownerEmail,
+        event: "malware-refused",
+        deviceName: sessionLabel(request),
+        happenedAt: new Date(now).toISOString(),
+        detail: `An upload through /s/${record.token} was refused for a file on the known-bad list.`,
+      });
+      if (notice.sent) {
+        await links.requests.stampMalwareNotice(record.token, now);
+      }
     }
-    await notifySecurityEvent({
-      email: options.email,
-      mailFrom: options.mailFrom,
-      to: ownerEmail,
-      event: "malware-refused",
-      deviceName: sessionLabel(request),
-      happenedAt: new Date(now).toISOString(),
-      detail: `An upload through /s/${record.token} was refused for a file on the known-bad list.`,
-    });
     return json({ error: failureMessage("malware-refused") }, 403);
   }
   if (
