@@ -580,3 +580,220 @@ test("rclone: a 0-ghost account is not refused at the byte cap", async () => {
   });
   assert.equal(write.response.status, 201);
 });
+
+// Mutation-killing cases (stock Stryker one-off on core/billing.js fair-use
+// functions, drive#364): the bad-input errors, the exact words, the date
+// and the stay arithmetic.
+
+test("payAfterFeeCents refuses bad cents and a bad fee, and keeps the exact edge values", () => {
+  assert.throws(() => payAfterFeeCents(-1), /payCents must be 0 or more whole cents, got -1/);
+  assert.throws(() => payAfterFeeCents(1.5), /payCents must be 0 or more whole cents, got 1.5/);
+  assert.throws(() => payAfterFeeCents(Number.NaN), /payCents must be 0 or more whole cents/);
+  assert.throws(
+    () => payAfterFeeCents(100, -1),
+    /feeBps must be a whole number below 10000, got -1/,
+  );
+  assert.throws(() => payAfterFeeCents(100, 0.5), /feeBps must be a whole number below 10000/);
+  assert.throws(() => payAfterFeeCents(100, 10000), /feeBps must be a whole number below 10000/);
+  assert.equal(payAfterFeeCents(1500, 0), 1500, "a zero fee is allowed");
+  assert.equal(payAfterFeeCents(0), 0, "zero cents is allowed");
+  assert.equal(payAfterFeeCents(10000, 9999), 1);
+});
+
+test("the limit rounds the break-even up to the byte and refuses a limit past the safe range", () => {
+  // cost 500 + 500 = 1000 cents per TB divides a TB exactly, so the ceil
+  // has no remainder and must not add a byte.
+  const storage = { ...STORAGE, idriveCostCentsPerTbMonth: 500, backupCostCentsPerTbMonth: 500 };
+  const exact = fairUseLimitBytes({
+    size30Bytes: 200 * GB,
+    config: config15,
+    storage: { ...storage, fairUseFloorMultiple: 1 },
+  });
+  assert.equal(exact % GB, 0, `the limit ${exact} is a whole number of GB`);
+  assert.ok(exact > 200 * GB, "break-even beats the 1x floor here");
+  // The shipped cost: the limit is the smallest whole byte that pays for itself.
+  const limit = fairUseLimitBytes({ size30Bytes: 200 * GB, config: config15 });
+  const cost = BigInt(storageCostCentsPerTbMonth(STORAGE));
+  const afterFee = BigInt(Math.round((limit * Number(cost)) / TB));
+  const ceil = (afterFee * BigInt(TB) + cost - 1n) / cost;
+  assert.equal(BigInt(limit), ceil);
+  assert.throws(
+    () => fairUseLimitBytes({ size30Bytes: Number.MAX_SAFE_INTEGER, config: config15 }),
+    /past the safe integer range/,
+  );
+});
+
+test("a storage cost of zero or a part of a cent is refused, not divided by", () => {
+  for (const cost of [
+    { idriveCostCentsPerTbMonth: 0, backupCostCentsPerTbMonth: 0 },
+    { idriveCostCentsPerTbMonth: 500.5, backupCostCentsPerTbMonth: 230 },
+    { idriveCostCentsPerTbMonth: -500, backupCostCentsPerTbMonth: 0 },
+  ]) {
+    assert.throws(
+      () =>
+        fairUseLimitBytes({ size30Bytes: TB, config: config15, storage: { ...STORAGE, ...cost } }),
+      TypeError,
+    );
+  }
+  assert.throws(
+    () =>
+      fairUseLimitBytes({
+        size30Bytes: TB,
+        config: config15,
+        storage: { ...STORAGE, idriveCostCentsPerTbMonth: 0, backupCostCentsPerTbMonth: 0 },
+      }),
+    /cost per TB must be a whole number of cents above 0, got 0/,
+  );
+});
+
+test("fairUseLimitBytes and fairUseCheck name the bad input", () => {
+  // @ts-expect-error a bad argument on purpose
+  assert.throws(() => fairUseLimitBytes(null), /fairUseLimitBytes needs \{size30Bytes\}, got null/);
+  // @ts-expect-error a bad argument on purpose
+  assert.throws(() => fairUseLimitBytes("x"), /fairUseLimitBytes needs \{size30Bytes\}, got x/);
+  assert.throws(
+    () => fairUseLimitBytes({ size30Bytes: -1 }),
+    /size30Bytes must be 0 or more whole bytes, got -1/,
+  );
+  // @ts-expect-error a bad argument on purpose
+  assert.throws(() => fairUseCheck(null), /fairUseCheck needs a snapshot, got null/);
+  // @ts-expect-error a bad argument on purpose
+  assert.throws(() => fairUseCheck(7), /fairUseCheck needs a snapshot, got 7/);
+  for (const field of ["liveBytes", "ghostBytes", "uploadBytes", "size30Bytes", "now"]) {
+    assert.throws(
+      () => check({ [field]: -1 }),
+      new RegExp(`${field} must be 0 or more whole bytes, got -1`),
+    );
+    assert.throws(
+      () => check({ [field]: 1.5 }),
+      new RegExp(`${field} must be 0 or more whole bytes`),
+    );
+  }
+  assert.throws(
+    () => check({ ghostBytes: 3 * TB, uploadBytes: TB, oldestGhostCreatedAt: -5 }),
+    /oldestGhostCreatedAt must be 0 or more whole bytes, got -5/,
+  );
+});
+
+test("fairUseLine prints each of its four sentences exactly", () => {
+  // @ts-expect-error a bad argument on purpose
+  assert.throws(() => fairUseLine(7), /fairUseLine needs a fairUseCheck result, got 7/);
+  // @ts-expect-error a bad argument on purpose
+  assert.throws(() => fairUseLine(null), /fairUseLine needs a fairUseCheck result, got null/);
+  assert.throws(
+    () => fairUseLine({ remainingBytes: -1, allowed: true, opensAt: 0 }),
+    /remainingBytes must be 0 or more whole bytes, got -1/,
+  );
+  assert.throws(
+    () => fairUseLine({ remainingBytes: 0, allowed: true, opensAt: -1 }),
+    /opensAt must be 0 or more whole bytes, got -1/,
+  );
+  assert.throws(
+    () => fairUseLine({ remainingBytes: 0, allowed: true, opensAt: 0, now: -1 }),
+    /now must be 0 or more whole bytes, got -1/,
+  );
+  const opensAt = Date.parse("2026-11-05T12:00:00.000Z");
+  const open = fairUseLine({ remainingBytes: 1500, allowed: true, opensAt: NOW, now: NOW });
+  assert.equal(open.remaining, "1.5 KB of upload room left.");
+  assert.equal(open.why, "Young deletes still count toward the pause until they age out.");
+  assert.equal(open.opens, "Uploads are open.");
+  const paused = fairUseLine({ remainingBytes: 0, allowed: false, opensAt, now: NOW });
+  assert.equal(paused.remaining, "No upload room left.");
+  assert.equal(paused.why, "Uploads pause because young deletes still count until 5 Nov 2026.");
+  assert.equal(paused.opens, "Uploads open again on 5 Nov 2026.");
+  assert.equal(
+    paused.copy,
+    "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+  );
+  // The date is in UTC, so the last second of a UTC day does not roll over.
+  const late = fairUseLine({
+    remainingBytes: 0,
+    allowed: false,
+    opensAt: Date.parse("2026-11-05T23:59:59.000Z"),
+  });
+  assert.match(late.opens, /on 5 Nov 2026\.$/);
+  // Allowed but not yet open: opensAt after now says when. Equal says open.
+  const later = fairUseLine({ remainingBytes: 5, allowed: true, opensAt: NOW + 1, now: NOW });
+  assert.match(later.opens, /^Uploads open again on /);
+  const same = fairUseLine({ remainingBytes: 5, allowed: true, opensAt: NOW, now: NOW });
+  assert.equal(same.opens, "Uploads are open.");
+  const before = fairUseLine({ remainingBytes: 5, allowed: true, opensAt: NOW - 1, now: NOW });
+  assert.equal(before.opens, "Uploads are open.");
+  // A missing `now` means "now is opensAt", so an allowed line reads open.
+  assert.equal(
+    fairUseLine({ remainingBytes: 5, allowed: true, opensAt: NOW }).opens,
+    "Uploads are open.",
+  );
+  assert.throws(() => Object.assign(open, { copy: "x" }), TypeError, "the line is frozen");
+});
+
+test("fairUseCheck opens uploads at the oldest ghost plus the stay, or now plus the stay", () => {
+  const stay = STORAGE.minimumStayDays * DAY_MS;
+  const oldest = NOW - 2 * DAY_MS;
+  const refused = check({
+    ghostBytes: 3 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: oldest,
+  });
+  assert.equal(refused.allowed, false);
+  assert.equal(refused.opensAt, oldest + stay);
+  assert.equal(refused.usedBytes, 4 * TB);
+  assert.equal(refused.limitBytes, 2 * TB);
+  const noOldest = check({ ghostBytes: 3 * TB, uploadBytes: TB, size30Bytes: TB });
+  assert.equal(noOldest.opensAt, NOW + stay, "no ghost date means the stay counts from now");
+  const nullOldest = check({
+    ghostBytes: 3 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: null,
+  });
+  assert.equal(nullOldest.opensAt, NOW + stay);
+  const zeroOldest = check({
+    ghostBytes: 3 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: 0,
+  });
+  assert.equal(zeroOldest.opensAt, stay, "a date of 0 is a date, not a missing one");
+  const ok = check({ uploadBytes: 1, oldestGhostCreatedAt: oldest });
+  assert.equal(ok.allowed, true);
+  assert.equal(ok.opensAt, NOW, "an allowed upload does not wait");
+  assert.equal(ok.line.opens, "Uploads are open.");
+  const oneDay = check({
+    ghostBytes: 3 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    storage: { ...STORAGE, minimumStayDays: 1 },
+  });
+  assert.equal(oneDay.opensAt, NOW + DAY_MS, "the stay comes from the storage argument");
+  assert.equal(Object.isFrozen(oneDay), true);
+});
+
+test("a provider with no minimum stay reports live + upload and every byte of room", () => {
+  const result = check({
+    liveBytes: 5,
+    ghostBytes: 100,
+    uploadBytes: 7,
+    storage: { ...STORAGE, minimumStayDays: 0 },
+  });
+  assert.equal(result.usedBytes, 12);
+  assert.equal(result.opensAt, NOW);
+  assert.equal(result.limitBytes, Number.MAX_SAFE_INTEGER);
+  assert.equal(result.remainingBytes, Number.MAX_SAFE_INTEGER);
+  assert.equal(result.line.opens, "Uploads are open.");
+  assert.equal(result.line.why, "Young deletes still count toward the pause until they age out.");
+  assert.equal(Object.isFrozen(result), true);
+});
+
+test("the default storage config applies when none is passed", () => {
+  const result = fairUseCheck({
+    liveBytes: 0,
+    ghostBytes: 3 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    now: NOW,
+    config: config15,
+  });
+  assert.equal(result.opensAt, NOW + STORAGE.minimumStayDays * DAY_MS);
+});
