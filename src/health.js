@@ -113,6 +113,11 @@ import { meterFreshness } from "../core/meter.js";
 //     route fails closed without. Probing it with a fresh random key would
 //     not prove the per-IP bucket and would add a billed op on every poll
 //     (drive#539).
+//   - API, the api Worker's service binding (drive#342). It is a second
+//     Worker with its own GET /v1/health, reached through this one; a lost
+//     binding already answers every /v1/* request with the message table's
+//     closed door (src/index.js forwardToApi), and probing it here would make
+//     the site's health page on the api Worker's.
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read

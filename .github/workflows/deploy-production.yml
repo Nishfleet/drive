@@ -187,6 +187,17 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy the api Worker
+        # drive#342: the api Worker ships first, from the same build output
+        # (`npm run build` writes .cloudflare/output/v0/workers/drive-api).
+        # The site Worker's `API` service binding (cloudflare.config.ts) names
+        # it, and Cloudflare fails a deploy whose binding has no target, so
+        # the order is the point. drive-api has no workers.dev address of its
+        # own; it is reached only through the site Worker, behind Access.
+        run: npx cf deploy --prebuilt --worker drive-api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy the Worker
         # `npm run build` (cf build) already wrote .cloudflare/output, so
         # --prebuilt uploads that output instead of building a second time.
@@ -207,6 +218,19 @@ jobs:
             "302 https://nish345.cloudflareaccess.com/"*) ;;
             *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
           esac
+          # The api family is behind the same gate (drive#342): /v1/* on the
+          # site redirects to Access, and drive-api has no address of its own.
+          v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/v1/health)
+          echo "/v1/health answered: ${v1%%\?*}"
+          case "$v1" in
+            "302 https://nish345.cloudflareaccess.com/"*) ;;
+            *) echo "::error::the api family is reachable without the Access sign-in"; exit 1 ;;
+          esac
+          api=$(curl -s -o /dev/null -w '%{http_code}' https://drive-api.nishant345.workers.dev/v1/health)
+          echo "drive-api workers.dev answered: $api"
+          if [ "$api" = "200" ]; then
+            echo "::error::drive-api has a public workers.dev address"; exit 1
+          fi
       - name: Check the live Worker version and health
         # The new version must be the one serving, and /api/health must answer
         # {"ok":true}. Access answers a runner with a 302, so the health call

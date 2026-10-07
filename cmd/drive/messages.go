@@ -275,6 +275,17 @@ var messageTable = map[string][2]string{
 		"rclone could not copy those files into the drive.",
 		"Run `rclone config` to check the remote, then run `drive import` again.",
 	},
+	// The api address is behind Cloudflare Access (the live test address,
+	// drive#342), and the stock tool that gets an Access token is missing.
+	"access-cloudflared-missing": {
+		"This drive address is behind Cloudflare Access, and cloudflared is not installed.",
+		"Install cloudflared: brew install cloudflared",
+	},
+	// cloudflared ran but handed back no token for the address.
+	"access-login-failed": {
+		"The Cloudflare Access sign-in for {1} did not finish.",
+		"Run `cloudflared access login {1}`, then run the drive command again.",
+	},
 	"import-cache-full": {
 		"The import did not start: the drive's cache is full, so new saves can't upload.",
 		"Run `drive status` to see what is waiting and why, then import again once the uploads catch up.",

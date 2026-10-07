@@ -189,6 +189,12 @@ export const SIGNIN_COPY = Object.freeze({
   // the site's header, so a person who is in sees how to leave, never Sign in.
   signOut: "Sign out",
   signOutEverywhere: "Sign out everywhere",
+  // The live test address only (src/access-signin.js): a person Cloudflare
+  // Access already proved signs in with that identity. The page shows the
+  // button, with the proven address after these words, only when the route
+  // answers; everywhere else the route does not exist and the button stays
+  // hidden.
+  accessButton: "Continue as",
 });
 
 /**
@@ -289,7 +295,7 @@ export function refuseSignupWithoutCard(card) {
  * @param {string} email
  * @returns {Promise<boolean>}
  */
-async function emailHasUser(env, email) {
+export async function emailHasUser(env, email) {
   const db = env.DRIVE_DB;
   if (db === undefined || db === null || typeof db !== "object" || !("prepare" in db)) {
     return false;

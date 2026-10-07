@@ -52,11 +52,10 @@ export default defineConfig({
       // Worker that answers that address has to be the one that receives it.
       // It forwards the request over a service binding (src/index.js) rather
       // than serving it, so the api Worker's own gate, limits and words answer
-      // it. The binding itself is not declared here yet: Cloudflare fails this
-      // Worker's deploy against a service binding whose target Worker does not
-      // exist, and the api Worker is a separate deployable that no deploy ships
-      // until its deploy step lands, so until then /v1/* is the closed door
-      // src/index.js answers rather than a family that pretends to be routed.
+      // it. The binding is `API` below; the deploy ships drive-api first
+      // (.github/workflows/deploy-production.yml), because Cloudflare fails
+      // this Worker's deploy against a service binding whose target Worker
+      // does not exist.
       runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
@@ -193,6 +192,13 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
+      // The api Worker (drive#342), reached only through this binding: drive-api
+      // has no workers.dev address of its own (workers/api/cloudflare.config.ts),
+      // so every /v1/* request passes this Worker's Cloudflare Access gate
+      // first. drive-api must be deployed before this Worker, or this Worker's
+      // deploy fails against a binding with no target; the deploy job ships it
+      // first.
+      API: bindings.worker({ worker: "drive-api" }),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.

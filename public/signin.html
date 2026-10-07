@@ -223,6 +223,14 @@ button:disabled {
         <p class="hint">Signing up means you agree to the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
       </form>
 
+      <!-- The live test address only (src/access-signin.js, drive#342): the
+           script shows this button when GET /api/signin/access names a
+           Cloudflare Access identity. Everywhere else that route is a 404 and
+           the button stays hidden. -->
+      <p id="access-signin" hidden>
+        <button class="primary" id="access-button" type="button">Continue as <span id="access-email"></span></button>
+      </p>
+
       <!-- drive#558: shown only when the sign-in started from the
            device-approval page (?next= in the address bar). The string is
            SIGNIN_COPY.deviceNote (src/signin.js), and the script below unhides
@@ -369,6 +377,49 @@ form.addEventListener("submit", (event) => {
   start("email", emailInput.value.trim()).finally(() => {
     emailButton.disabled = false;
   });
+});
+
+// "Continue as <email>" (src/access-signin.js): offered only when the route
+// answers with an identity Cloudflare Access proved. The card box above is the
+// same sign-up rule the email path keeps (drive#387).
+const ACCESS_ENDPOINT = "/api/signin/access";
+const accessBlock = document.getElementById("access-signin");
+const accessButton = document.getElementById("access-button");
+const accessEmail = document.getElementById("access-email");
+fetch(ACCESS_ENDPOINT)
+  .then((response) => (response.ok ? response.json() : null))
+  .then((identity) => {
+    if (identity !== null && typeof identity.email === "string") {
+      accessEmail.textContent = identity.email;
+      accessBlock.hidden = false;
+    }
+  })
+  .catch(() => {});
+accessButton.addEventListener("click", async () => {
+  accessButton.disabled = true;
+  try {
+    const response = await fetch(ACCESS_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ card: cardInput !== null && cardInput.checked }),
+    });
+    const payload = await response.json();
+    if (response.ok && typeof payload.redirect === "string") {
+      window.location.assign(payload.redirect);
+      return;
+    }
+    say(
+      typeof payload.error === "string" && payload.error.length > 0
+        ? payload.error
+        : UNEXPECTED_MESSAGE,
+      "error",
+    );
+  } catch (networkError) {
+    console.error("signin: access sign-in failed", networkError);
+    say(OFFLINE_MESSAGE, "error");
+  } finally {
+    accessButton.disabled = false;
+  }
 });
 
 for (const button of document.querySelectorAll("[data-method]")) {

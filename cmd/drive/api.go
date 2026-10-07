@@ -286,6 +286,12 @@ func (c *APIClient) send(method, path string, body, out any) (bool, error) {
 	}
 	response, err := client.Do(request)
 	if err != nil {
+		// The Cloudflare Access step (cfaccess.go) fails with its own table
+		// words, such as the cloudflared install step; keep them.
+		var f *failure
+		if errors.As(err, &f) {
+			return false, f
+		}
 		return false, failDetail("offline", err)
 	}
 	defer response.Body.Close()

@@ -78,6 +78,7 @@ import {
   handleTopUpRequest,
   TOPUP_ENDPOINT,
 } from "../core/topup.js";
+import { ACCESS_SIGNIN_PATH, handleAccessSignin } from "./access-signin.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -221,6 +222,10 @@ export const PUBLIC_ROUTES = Object.freeze([
   HEALTH_PATH,
   SIGNIN_ENDPOINT,
   SIGNIN_LINK_PATH,
+  // "Continue as <email>" on the live test address (src/access-signin.js): a
+  // verified Cloudflare Access identity is the whole proof, and the route does
+  // not exist unless ACCESS_AUD and ACCESS_TEAM_DOMAIN are set.
+  ACCESS_SIGNIN_PATH,
   `${SHARE_LINK_PREFIX}/*`,
   `${REQUEST_ENDPOINT}/info`,
   `${REQUEST_ENDPOINT}/upload`,
@@ -326,18 +331,11 @@ function prepaidPauseFromEnv(env) {
 }
 
 /**
- * The api Worker's service binding, read off this Worker's own env as the
- * optional value it is until the api Worker is deployed (drive#156/#341,
- * #342). It is read here rather than declared in cloudflare.config.ts for the
- * same reason devStorage's two vars are: a declared binding is required at
- * deploy, and Cloudflare fails this Worker's own deploy against a service
- * binding whose target Worker does not exist
- * (https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#deployment
- * — "the target Worker must be deployed first, before Worker A. Otherwise,
- * when you attempt to deploy Worker A, deployment will fail"). So the
- * binding is declared when the deploy step ships drive-api beside this
- * Worker, and until then the /v1/* family answers its closed door instead of
- * pretending to be routed.
+ * The api Worker's service binding (drive#156/#341, #342), declared as `API`
+ * in cloudflare.config.ts. The deploy ships drive-api before this Worker,
+ * because Cloudflare fails a deploy against a service binding whose target
+ * does not exist. It is still read as optional here, so an env without it (a
+ * test, a local run) answers the /v1/* closed door rather than throwing.
  * @param {Env} env
  * @returns {Env & {API?: Fetcher}}
  */
@@ -1130,6 +1128,10 @@ export function createApp() {
   app.post(SIGNIN_ENDPOINT, (c) => handleSigninRequest(c.req.raw, c.env));
   // The link a sign-in email carries (drive#181): GET only.
   app.get(SIGNIN_LINK_PATH, (c) => handleSigninLinkVerify(c.req.raw, c.env));
+  // Sign-in with the identity Cloudflare Access proved, on the test address
+  // only (drive#342; src/access-signin.js answers 404 when it is not set up).
+  app.get(ACCESS_SIGNIN_PATH, (c) => handleAccessSignin(c.req.raw, c.env));
+  app.post(ACCESS_SIGNIN_PATH, (c) => handleAccessSignin(c.req.raw, c.env));
 
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
