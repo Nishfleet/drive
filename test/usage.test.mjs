@@ -499,6 +499,24 @@ test("the upload line rides the usage answer beside capLine", async () => {
   );
   assert.equal(missingSnapshot.status, 200, "missing snapshot fields must not 500");
   assert.equal((await missingSnapshot.json()).fairUseLine, null);
+  const uncomputable = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      ...account,
+      fairUse: {
+        liveBytes: 0,
+        ghostBytes: 0,
+        size30Bytes: Number.MAX_SAFE_INTEGER,
+        oldestGhostCreatedAt: null,
+        now: Date.parse("2026-10-06T00:00:00.000Z"),
+      },
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(uncomputable.status, 200, "a check that cannot compute a limit must not 500");
+  assert.equal((await uncomputable.json()).fairUseLine, null);
   assert.throws(
     () =>
       handleUsageRequest(

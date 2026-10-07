@@ -107,6 +107,20 @@ test("at 200 GB break-even is above 2x, so live + ghost may reach about 493 GB",
   assert.equal(over.allowed, false);
 });
 
+test("a size30 that is not a whole GB still bills and stays in whole bytes", () => {
+  const odd = 500 * GB + 1;
+  const limit = fairUseLimitBytes({ size30Bytes: odd, config: config15 });
+  assert.equal(Number.isSafeInteger(limit), true, `limit ${limit} must be a whole byte count`);
+  const result = check({
+    liveBytes: odd,
+    ghostBytes: 0,
+    uploadBytes: 1,
+    size30Bytes: odd,
+  });
+  assert.equal(Number.isSafeInteger(result.limitBytes), true);
+  assert.equal(typeof result.allowed, "boolean");
+});
+
 test("at 750 GB break-even is about 2.47x, above the 2x floor", () => {
   const limit = fairUseLimitBytes({ size30Bytes: 750 * GB, config: config15 });
   const ratio = limit / (750 * GB);
@@ -447,6 +461,102 @@ test("refuse-on mails once and stamps the 30-day notice", async () => {
   assert.equal(sent.length, 1);
 });
 
+test("two concurrent pause notices mail once", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acct_race";
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, "person@example.com", NOW)
+    .run();
+  /** @type {unknown[]} */
+  const sent = [];
+  const email = {
+    sent,
+    /** @param {unknown} message */
+    async send(message) {
+      sent.push(message);
+      return { messageId: "<fair-use@drive.example>" };
+    },
+  };
+  const paused = check({
+    liveBytes: 0,
+    ghostBytes: 2 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: NOW - DAY_MS,
+  });
+  const args = {
+    email,
+    from: "noreply@drive.example",
+    now: NOW,
+    refuse: true,
+  };
+  const [first, second] = await Promise.all([
+    sendFairUsePauseIfDue(db, accountId, paused, args),
+    sendFairUsePauseIfDue(db, accountId, paused, args),
+  ]);
+  assert.equal(first || second, true);
+  assert.equal(first && second, false, "only one of the two concurrent sends may mail");
+  assert.equal(sent.length, 1);
+  const row = sqlite
+    .prepare("SELECT fair_use_notice_sent_at FROM accounts WHERE id = ?1")
+    .get(accountId);
+  assert.equal(row.fair_use_notice_sent_at, NOW);
+});
+
+test("a failed send puts the notice stamp back so a later upload can retry", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acct_retry";
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, "person@example.com", NOW)
+    .run();
+  let fail = true;
+  /** @type {unknown[]} */
+  const sent = [];
+  const email = {
+    sent,
+    /** @param {unknown} message */
+    async send(message) {
+      if (fail) {
+        throw new Error("provider down");
+      }
+      sent.push(message);
+      return { messageId: "<fair-use@drive.example>" };
+    },
+  };
+  const paused = check({
+    liveBytes: 0,
+    ghostBytes: 2 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: NOW - DAY_MS,
+  });
+  await assert.rejects(
+    () =>
+      sendFairUsePauseIfDue(db, accountId, paused, {
+        email,
+        from: "noreply@drive.example",
+        now: NOW,
+        refuse: true,
+      }),
+    /provider down/,
+  );
+  const afterFail = sqlite
+    .prepare("SELECT fair_use_notice_sent_at FROM accounts WHERE id = ?1")
+    .get(accountId);
+  assert.equal(afterFail.fair_use_notice_sent_at, null);
+  fail = false;
+  const mailed = await sendFairUsePauseIfDue(db, accountId, paused, {
+    email,
+    from: "noreply@drive.example",
+    now: NOW,
+    refuse: true,
+  });
+  assert.equal(mailed, true);
+  assert.equal(sent.length, 1);
+});
+
 test("the prune drops fair-use decisions older than the retention cutoff", async () => {
   const { db, sqlite } = makeMeteredDB();
   const now = NOW;
@@ -557,8 +667,8 @@ test("rclone writes check Content-Length before the body, or the 100 MB cap", as
   assert.equal(capped.response.status, 201);
   assert.deepEqual(
     capped.sizes,
-    [UPLOAD_FILE_MAX_BYTES, 1],
-    "a headerless body is checked again at its real size",
+    [0, 1],
+    "a headerless body is checked at 0 first, then at its real size",
   );
   const refused = await rcloneWrite({
     body: "x",
@@ -759,6 +869,10 @@ test("fairUseLine prints each of its four sentences exactly", () => {
     fairUseLine({ remainingBytes: 5, allowed: true, opensAt: NOW }).opens,
     "Uploads are open.",
   );
+  const exact = fairUseLine({ remainingBytes: 0, allowed: true, opensAt: NOW, now: NOW });
+  assert.equal(exact.remaining, "No upload room left.");
+  assert.equal(exact.opens, "Another upload will not fit.");
+  assert.match(exact.copy, /No upload room left\. .* Another upload will not fit\./);
   assert.throws(() => Object.assign(open, { copy: "x" }), TypeError, "the line is frozen");
 });
 

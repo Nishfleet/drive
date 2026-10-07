@@ -537,9 +537,12 @@ export function fairUseLimitBytes(input) {
     return Number.MAX_SAFE_INTEGER;
   }
   const config = billingConfig(input.config ?? BILLING_CONFIG);
-  const tb = size30Bytes / BYTES_PER_TB;
+  // size30 is whole bytes. The bill takes GB-minutes, which is
+  // (bytes / 1e9) * minutes — a real number when size30 is not a whole GB.
+  // monthBillCents accepts that and rounds to integer cents. Rounding size30
+  // to a whole GB first would mis-bill a 500 MB drive.
   const payCents = monthBillCents({
-    gbMinutes: tb * GB_PER_TB * QUOTE_MONTH_MINUTES,
+    gbMinutes: (size30Bytes / BYTES_PER_GB) * QUOTE_MONTH_MINUTES,
     monthMinutes: QUOTE_MONTH_MINUTES,
     config,
   }).storageCents;
@@ -573,8 +576,14 @@ export function fairUseLine(status) {
   const why = status.allowed
     ? "Young deletes still count toward the pause until they age out."
     : `Uploads pause because young deletes still count until ${date}.`;
+  // remaining 0 and allowed together means this exact size still fits, but
+  // another byte will not. "Uploads are open" would contradict "no room left".
   const opens =
-    status.allowed && opensAt <= now ? "Uploads are open." : `Uploads open again on ${date}.`;
+    remaining === 0 && status.allowed
+      ? "Another upload will not fit."
+      : status.allowed && opensAt <= now
+        ? "Uploads are open."
+        : `Uploads open again on ${date}.`;
   return Object.freeze({
     remaining: `${room}.`,
     why,
@@ -1176,14 +1185,20 @@ function fairUseLineFromAccount(account) {
   if (oldest !== undefined && oldest !== null && !isWholeByteCount(oldest)) {
     return null;
   }
-  return fairUseCheck({
-    liveBytes: fields.liveBytes,
-    ghostBytes: fields.ghostBytes,
-    uploadBytes: 0,
-    size30Bytes: fields.size30Bytes,
-    oldestGhostCreatedAt: oldest,
-    now,
-  }).line.copy;
+  try {
+    return fairUseCheck({
+      liveBytes: fields.liveBytes,
+      ghostBytes: fields.ghostBytes,
+      uploadBytes: 0,
+      size30Bytes: fields.size30Bytes,
+      oldestGhostCreatedAt: oldest,
+      now,
+    }).line.copy;
+  } catch {
+    // A snapshot that the check cannot turn into a limit (a break-even past
+    // the safe integer range) hides the line rather than 500ing the usage page.
+    return null;
+  }
 }
 
 /** @param {unknown} value */

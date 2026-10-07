@@ -42,6 +42,7 @@ import { failureMessage } from "../core/messages.js";
 import {
   downloadRecorder,
   fairUseSnapshot,
+  fairUseUploadCheck,
   HOUR_MS,
   handleStorageEventRequest,
   hourStart,
@@ -51,11 +52,8 @@ import {
   monthStart,
   pruneHiddenVersions,
   reconcileMeter,
-  recordFairUseDecision,
   recordNightlySizes,
-  runFairUseCheck,
   runMeterCron,
-  sendFairUsePauseIfDue,
   toMillis,
 } from "../core/meter.js";
 import {
@@ -713,42 +711,12 @@ function fairUseUploadOptions(env) {
   return {
     fairUseRefuse: refuse,
     onFairUseError: (/** @type {unknown} */ error) => captureError(error, "fair-use snapshot"),
-    /**
-     * @param {string} accountId
-     * @param {number} uploadBytes
-     */
-    fairUseForUpload: async (accountId, uploadBytes) => {
-      try {
-        const { snapshot, check } = await runFairUseCheck(db, accountId, uploadBytes);
-        try {
-          await recordFairUseDecision(
-            db,
-            accountId,
-            snapshot,
-            check,
-            uploadBytes,
-            refuse && check.wouldRefuse,
-          );
-        } catch (error) {
-          captureError(error, "fair-use decision record");
-        }
-        if (check.wouldRefuse && refuse) {
-          try {
-            await sendFairUsePauseIfDue(db, accountId, check, {
-              email: env.EMAIL,
-              from: secrets.MAIL_FROM ?? "",
-              refuse,
-            });
-          } catch (error) {
-            captureError(error, "fair-use notice");
-          }
-        }
-        return check;
-      } catch (error) {
-        captureError(error, "fair-use snapshot");
-        return null;
-      }
-    },
+    fairUseForUpload: fairUseUploadCheck(db, {
+      refuse,
+      onError: captureError,
+      email: env.EMAIL,
+      from: secrets.MAIL_FROM ?? "",
+    }),
   };
 }
 

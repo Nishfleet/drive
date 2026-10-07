@@ -12,11 +12,7 @@ import {
 } from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
-import {
-  recordFairUseDecision,
-  runFairUseCheck,
-  sendFairUsePauseIfDue,
-} from "../../../core/meter.js";
+import { fairUseUploadCheck } from "../../../core/meter.js";
 import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
 import { fairUseRefuseOn } from "../../../core/pricing.js";
 import { createD1QueueStore } from "../../../core/queues.js";
@@ -525,44 +521,12 @@ function storeFor(env) {
         console.error("fair-use snapshot", error);
       },
       fairUseForUpload: env.DRIVE_DB
-        ? async (/** @type {string} */ accountId, /** @type {number} */ uploadBytes) => {
-            try {
-              const { snapshot, check } = await runFairUseCheck(
-                env.DRIVE_DB,
-                accountId,
-                uploadBytes,
-              );
-              const refuse = fairUseRefuseOn(env);
-              try {
-                await recordFairUseDecision(
-                  env.DRIVE_DB,
-                  accountId,
-                  snapshot,
-                  check,
-                  uploadBytes,
-                  refuse && check.wouldRefuse,
-                );
-              } catch (error) {
-                console.error("fair-use decision record", error);
-              }
-              if (check.wouldRefuse && refuse) {
-                try {
-                  const from = typeof env.MAIL_FROM === "string" ? env.MAIL_FROM : "";
-                  await sendFairUsePauseIfDue(env.DRIVE_DB, accountId, check, {
-                    email: env.EMAIL,
-                    from,
-                    refuse,
-                  });
-                } catch (error) {
-                  console.error("fair-use notice", error);
-                }
-              }
-              return check;
-            } catch (error) {
-              console.error("fair-use snapshot", error);
-              return null;
-            }
-          }
+        ? fairUseUploadCheck(env.DRIVE_DB, {
+            refuse: fairUseRefuseOn(env),
+            onError: (error, job) => console.error(job, error),
+            email: env.EMAIL,
+            from: typeof env.MAIL_FROM === "string" ? env.MAIL_FROM : "",
+          })
         : undefined,
     });
     keyStoreDb = env.DRIVE_DB;

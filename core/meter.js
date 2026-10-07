@@ -2371,6 +2371,59 @@ export async function runFairUseCheck(db, accountId, uploadBytes, now = Date.now
   return Object.freeze({ snapshot, check });
 }
 
+/**
+ * The upload-path adapter both Workers share (drive#364): one snapshot, one
+ * check, record every decision, mail a would-refuse at most once per 30 days.
+ * A throw fails open and is reported, so a missing meter never pauses by
+ * guesswork.
+ * @param {D1Database} db
+ * @param {{
+ *   refuse: boolean,
+ *   onError: (error: unknown, job: string) => void,
+ *   email?: {send: Function},
+ *   from?: string,
+ * }} options
+ * @returns {(accountId: string, uploadBytes: number) => Promise<(ReturnType<typeof fairUseCheck>)|null>}
+ */
+export function fairUseUploadCheck(db, options) {
+  /**
+   * @param {string} accountId
+   * @param {number} uploadBytes
+   */
+  return async (accountId, uploadBytes) => {
+    try {
+      const { snapshot, check } = await runFairUseCheck(db, accountId, uploadBytes);
+      try {
+        await recordFairUseDecision(
+          db,
+          accountId,
+          snapshot,
+          check,
+          uploadBytes,
+          options.refuse && check.wouldRefuse,
+        );
+      } catch (error) {
+        options.onError(error, "fair-use decision record");
+      }
+      if (check.wouldRefuse && options.refuse) {
+        try {
+          await sendFairUsePauseIfDue(db, accountId, check, {
+            email: options.email,
+            from: options.from ?? "",
+            refuse: options.refuse,
+          });
+        } catch (error) {
+          options.onError(error, "fair-use notice");
+        }
+      }
+      return check;
+    } catch (error) {
+      options.onError(error, "fair-use snapshot");
+      return null;
+    }
+  };
+}
+
 const FAIR_USE_DECISION_SQL = `INSERT INTO fair_use_decisions
   (account_id, decided_at, live_bytes, ghost_bytes, upload_bytes, size30_bytes, limit_bytes, would_refuse, refused)
   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`;
@@ -2412,6 +2465,7 @@ const FAIR_USE_NOTICE_READ_SQL =
   "SELECT email, fair_use_notice_sent_at FROM accounts WHERE id = ?1";
 const FAIR_USE_NOTICE_STAMP_SQL = `UPDATE accounts SET fair_use_notice_sent_at = ?2
   WHERE id = ?1 AND (fair_use_notice_sent_at IS NULL OR fair_use_notice_sent_at <= ?3)`;
+const FAIR_USE_NOTICE_REVERT_SQL = "UPDATE accounts SET fair_use_notice_sent_at = ?2 WHERE id = ?1";
 
 /**
  * Mails the pause once per 30 days (drive#364). No address or no EMAIL
@@ -2453,14 +2507,28 @@ export async function sendFairUsePauseIfDue(db, accountId, check, options = {}) 
     console.error("fair-use: MAIL_FROM is not set, so no pause notice went out");
     return false;
   }
-  await sendEmail(/** @type {import("./email-send.js").EmailBinding} */ (options.email), {
-    to: email,
-    from: options.from,
-    kind: "fair-use-pause",
-    data: { copy: check.line.copy },
-  });
+  // Claim the 30-day slot before sending, so two concurrent would-refuses
+  // cannot both mail. A send that throws puts the stamp back so a later
+  // upload can retry.
   const cutoff = now - 30 * DAY_MS;
-  await db.prepare(FAIR_USE_NOTICE_STAMP_SQL).bind(accountId, now, cutoff).run();
+  const claimed = await db.prepare(FAIR_USE_NOTICE_STAMP_SQL).bind(accountId, now, cutoff).run();
+  if (typeof claimed.meta?.changes !== "number") {
+    throw new TypeError("fair-use notice stamp reported no change count");
+  }
+  if (claimed.meta.changes === 0) {
+    return false;
+  }
+  try {
+    await sendEmail(/** @type {import("./email-send.js").EmailBinding} */ (options.email), {
+      to: email,
+      from: options.from,
+      kind: "fair-use-pause",
+      data: { copy: check.line.copy },
+    });
+  } catch (error) {
+    await db.prepare(FAIR_USE_NOTICE_REVERT_SQL).bind(accountId, lastMs).run();
+    throw error;
+  }
   return true;
 }
 

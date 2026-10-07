@@ -429,12 +429,12 @@ export async function storageWriteRoute(request, ctx) {
     return errorResponse(402, failureMessage("balance-empty"));
   }
   // Fair-use runs before the body is read (drive#364): rclone writes often
-  // declare Content-Length, and a headerless body is checked at the same
-  // 100 MB cap the web upload uses, so an over-limit account cannot sneak a
-  // write of any size past the pause.
+  // declare Content-Length. A headerless body is checked at 0 first, then
+  // again at the real size, matching the web upload, so a small chunked
+  // PUT is not judged as a 100 MB write.
   const declared = request.headers.get("content-length");
   /** @type {number} */
-  let checkBytes = UPLOAD_FILE_MAX_BYTES;
+  let checkBytes = 0;
   if (declared !== null) {
     const length = Number(declared);
     if (!Number.isSafeInteger(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
