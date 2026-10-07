@@ -26,6 +26,7 @@ import {
   EVENT_TOKEN_HEADER,
   EVENTS_PER_BATCH,
   EVENTS_SEEN_RETENTION_MS,
+  fairUseSnapshot,
   folderAccount,
   gbMinutesInHour,
   HOUR_GB_MINUTES_SQL,
@@ -2257,6 +2258,70 @@ test("a run over an account with no drift changes nothing and reports zero", asy
   });
   assert.equal(db.tables.usage_minutes.size, 0, "nothing rolled, nothing rewritten");
   assert.equal(db.tables.meter_rollup_state.size, 0, "and the watermark is untouched");
+});
+
+test("a young delete still reconciles: live + ghost matches the provider listing", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acc1";
+  const now = at("2026-10-06T00:00:00.000Z");
+  const day = 24 * 60 * MINUTE_MS;
+  const created = now - 5 * day;
+  const hidden = now - day;
+  await db
+    .prepare("INSERT OR IGNORE INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, `${accountId}@drive.test`, created)
+    .run();
+  db.insertVersion({
+    accountId,
+    fileId: "live",
+    path: `/u/${accountId}/live.bin`,
+    sizeBytes: GB,
+    createdAt: created,
+    hiddenAt: null,
+  });
+  db.insertVersion({
+    accountId,
+    fileId: "ghost",
+    path: `/u/${accountId}/gone.bin`,
+    sizeBytes: GB,
+    createdAt: created,
+    hiddenAt: hidden,
+  });
+  const store = providerStore({
+    "u/acc1/": [
+      versionAt({
+        b2FileId: "live",
+        path: "u/acc1/live.bin",
+        sizeBytes: GB,
+        createdAt: created,
+        hiddenAt: null,
+      }),
+      versionAt({
+        b2FileId: "ghost",
+        path: "u/acc1/gone.bin",
+        sizeBytes: GB,
+        createdAt: created,
+        hiddenAt: hidden,
+      }),
+    ],
+  });
+  /** @type {Array<{our: number, vendor: number}>} */
+  const gaps = [];
+  await reconcileMeter(db, store, now, (ourBytes, vendorBytes) => {
+    gaps.push({ our: ourBytes, vendor: vendorBytes });
+  });
+  const snapshot = await fairUseSnapshot(db, accountId, now);
+  assert.equal(snapshot.liveBytes, GB);
+  assert.equal(snapshot.ghostBytes, GB, "the young hide is a ghost, not written off");
+  assert.deepEqual(gaps, [{ our: 2 * GB, vendor: 2 * GB }]);
+  const decision = sqlite
+    .prepare(
+      "SELECT ghost_bytes, live_bytes, refused FROM fair_use_decisions WHERE account_id = ?1",
+    )
+    .get(accountId);
+  assert.equal(decision.live_bytes, GB);
+  assert.equal(decision.ghost_bytes, GB);
+  assert.equal(decision.refused, 0);
 });
 
 test("a version with no row is inserted and a version the provider lost is marked", async () => {

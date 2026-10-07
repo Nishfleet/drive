@@ -223,7 +223,8 @@ func TestReadCostLinePrintsTheWorkersFairUseLine(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var u UsageSummary
 		u.CapLine = "Cap $20.00: $0.00 counted this month, $20.00 left."
-		u.FairUseLine = fairUseLine
+		line := fairUseLine
+		u.FairUseLine = &line
 		u.Cap.State = "active"
 		_ = json.NewEncoder(w).Encode(u)
 	}))
@@ -236,6 +237,23 @@ func TestReadCostLinePrintsTheWorkersFairUseLine(t *testing.T) {
 	})
 	if !strings.Contains(out, fairUseLine) {
 		t.Errorf("got %q, want the Worker's fair-use line printed as-is", out)
+	}
+}
+
+func TestReadCostLineKeepsWorkingWhenFairUseLineIsNull(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"capLine":"Cap $20.00: $0.00 counted this month, $20.00 left.","fairUseLine":null,"balanceLine":null,"cap":{"state":"active"}}`))
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want success when the Worker sends fairUseLine null", reason)
+		}
+	})
+	if !strings.Contains(out, "Cap $20.00") {
+		t.Errorf("got %q, want the cap line when fairUseLine is null", out)
 	}
 }
 

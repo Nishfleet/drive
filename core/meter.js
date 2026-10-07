@@ -2436,11 +2436,18 @@ const FAIR_USE_NOTICE_STAMP_SQL = `UPDATE accounts SET fair_use_notice_sent_at =
  * @param {D1Database} db
  * @param {string} accountId
  * @param {{line: {copy: string}, opensAt: number}} check
- * @param {{email?: {send: Function}, from?: string, now?: number}} options
+ * @param {{email?: {send: Function}, from?: string, now?: number, refuse?: boolean}} options
+ *   `refuse` is whether FAIR_USE_REFUSE is on. Report-only must pass false
+ *   (or omit it): no mail, no stamp.
  */
 export async function sendFairUsePauseIfDue(db, accountId, check, options = {}) {
   if (!db) {
     throw new Error("fair-use notice: METER_DB binding is not configured");
+  }
+  // Report-only (FAIR_USE_REFUSE not "on") records the would-refuse and
+  // must not mail or start the 30-day notice clock (drive#364).
+  if (options.refuse !== true) {
+    return false;
   }
   const now = options.now ?? Date.now();
   const row = await db.prepare(FAIR_USE_NOTICE_READ_SQL).bind(accountId).first();
@@ -2595,11 +2602,13 @@ function providerMillis(value, field) {
  *   provider's own listing, walked one account prefix at a time, so the
  *   provider is a parameter and the reconciler stays provider-agnostic
  * @param {number|Date|string} now the run instant
+ * @param {(ourBytes: number, vendorBytes: number) => void} [onFairUseGap]
+ *   compared live + ghost with the provider listing (Active + Deleted).
  * @returns {Promise<{accounts: number, versions: number, inserted: number,
  *   hidden: number, marked: number, skipped: number,
  *   earliestAffectedHour: number|null}>}
  */
-export async function reconcileMeter(db, store, now = Date.now()) {
+export async function reconcileMeter(db, store, now = Date.now(), onFairUseGap) {
   if (!db) {
     throw new Error("reconciler: METER_DB binding is not configured");
   }
@@ -2623,6 +2632,9 @@ export async function reconcileMeter(db, store, now = Date.now()) {
   for (const account of accounts) {
     try {
       const one = await reconcileAccount(db, store, account, at);
+      if (one.fairUse && typeof onFairUseGap === "function") {
+        onFairUseGap(one.fairUse.ourBytes, one.fairUse.vendorBytes);
+      }
       result.versions += one.versions;
       result.inserted += one.inserted;
       result.hidden += one.hidden;
@@ -2688,7 +2700,8 @@ export async function reconcileMeter(db, store, now = Date.now()) {
  * @param {string} account
  * @param {number|Date|string} now
  * @returns {Promise<{versions: number, inserted: number, hidden: number,
- *   marked: number, skipped: number, earliestAffectedHour: number|null}>}
+ *   marked: number, skipped: number, earliestAffectedHour: number|null,
+ *   fairUse: {ourBytes: number, vendorBytes: number}|null}>}
  */
 export async function reconcileAccount(db, store, account, now) {
   if (typeof account !== "string" || account === "") {
@@ -2827,6 +2840,30 @@ export async function reconcileAccount(db, store, account, now) {
     // all, so a half-fixed ledger cannot exist.
     await db.batch(statements);
   }
+  /** @type {{ourBytes: number, vendorBytes: number}|null} */
+  let fairUse = null;
+  try {
+    const snapshot = await fairUseSnapshot(db, account, at);
+    const check = fairUseCheck({ ...snapshot, uploadBytes: 0 });
+    await recordFairUseDecision(db, account, snapshot, check, 0, false);
+    let vendorBytes = 0;
+    for (const raw of listed) {
+      const size = Number(/** @type {{sizeBytes?: unknown}} */ (raw).sizeBytes);
+      if (Number.isSafeInteger(size) && size >= 0) {
+        vendorBytes += size;
+      }
+    }
+    fairUse = {
+      ourBytes: snapshot.liveBytes + snapshot.ghostBytes,
+      vendorBytes,
+    };
+  } catch (recordError) {
+    console.error(
+      "meter reconciler: fair-use record failed",
+      `account=${account}`,
+      recordError instanceof Error ? recordError.message : String(recordError),
+    );
+  }
   return {
     versions: listed.length,
     inserted,
@@ -2834,6 +2871,7 @@ export async function reconcileAccount(db, store, account, now) {
     marked,
     skipped,
     earliestAffectedHour,
+    fairUse,
   };
 }
 

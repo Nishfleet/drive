@@ -33,6 +33,7 @@ import { enforceAccountCap } from "../core/cap.js";
 import { reconcileAccount, toMillis } from "../core/meter.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { reportFairUseVendorGap } from "./monitoring.js";
 
 export const METER_JOBS_QUEUE = "drive-meter-jobs";
 export const METER_JOBS_DEAD_LETTER_QUEUE = "drive-meter-jobs-dlq";
@@ -196,11 +197,15 @@ export function meterJobHandlers(deps) {
     /** @param {MeterJob} job */
     [METER_JOB_KINDS.hourly]: (job) => runHourlyAccountJob(deps, job),
     /** @param {MeterJob} job */
-    [METER_JOB_KINDS.reconcile]: (job) => {
+    [METER_JOB_KINDS.reconcile]: async (job) => {
       if (!deps.store) {
         throw new Error("the meter reconcile job needs the storage store");
       }
-      return reconcileAccount(deps.meterDb, deps.store, job.accountId, job.at);
+      const one = await reconcileAccount(deps.meterDb, deps.store, job.accountId, job.at);
+      if (one.fairUse) {
+        reportFairUseVendorGap(one.fairUse.ourBytes, one.fairUse.vendorBytes);
+      }
+      return one;
     },
   };
 }

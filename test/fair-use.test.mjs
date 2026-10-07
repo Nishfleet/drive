@@ -17,8 +17,14 @@ import {
   monthlyBillForStoredTb,
   payAfterFeeCents,
 } from "../core/billing.js";
+import { UPLOAD_FILE_MAX_BYTES } from "../core/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
-import { fairUseSnapshot, ghostFromVersions } from "../core/meter.js";
+import {
+  fairUseSnapshot,
+  ghostFromVersions,
+  pruneHiddenVersions,
+  sendFairUsePauseIfDue,
+} from "../core/meter.js";
 import {
   buildPrice,
   fairUseRefuseOn,
@@ -26,6 +32,7 @@ import {
   STORAGE,
   storageCostCentsPerTbMonth,
 } from "../core/pricing.js";
+import { storageWriteRoute } from "../workers/api/src/key-routes.js";
 import { at, makeMeteredDB } from "./d1-sqlite.mjs";
 
 const GB = 1e9;
@@ -352,4 +359,220 @@ test("the snapshot does not count a folder-move successor as a ghost", async () 
   const snapshot = await fairUseSnapshot(db, accountId, now);
   assert.equal(snapshot.liveBytes, TB);
   assert.equal(snapshot.ghostBytes, 0);
+});
+
+test("report-only does not mail a pause or stamp the 30-day notice", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acct_notice";
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, "person@example.com", NOW)
+    .run();
+  /** @type {unknown[]} */
+  const sent = [];
+  const email = {
+    sent,
+    /** @param {unknown} message */
+    async send(message) {
+      sent.push(message);
+      return { messageId: "<fair-use@drive.example>" };
+    },
+  };
+  const paused = check({
+    liveBytes: 0,
+    ghostBytes: 2 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: NOW - DAY_MS,
+  });
+  const mailed = await sendFairUsePauseIfDue(db, accountId, paused, {
+    email,
+    from: "noreply@drive.example",
+    now: NOW,
+    refuse: false,
+  });
+  assert.equal(mailed, false);
+  assert.equal(sent.length, 0);
+  const row = sqlite
+    .prepare("SELECT fair_use_notice_sent_at FROM accounts WHERE id = ?1")
+    .get(accountId);
+  assert.equal(row.fair_use_notice_sent_at, null);
+});
+
+test("refuse-on mails once and stamps the 30-day notice", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acct_mail";
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, "person@example.com", NOW)
+    .run();
+  /** @type {unknown[]} */
+  const sent = [];
+  const email = {
+    sent,
+    /** @param {unknown} message */
+    async send(message) {
+      sent.push(message);
+      return { messageId: "<fair-use@drive.example>" };
+    },
+  };
+  const paused = check({
+    liveBytes: 0,
+    ghostBytes: 2 * TB,
+    uploadBytes: TB,
+    size30Bytes: TB,
+    oldestGhostCreatedAt: NOW - DAY_MS,
+  });
+  const mailed = await sendFairUsePauseIfDue(db, accountId, paused, {
+    email,
+    from: "noreply@drive.example",
+    now: NOW,
+    refuse: true,
+  });
+  assert.equal(mailed, true);
+  assert.equal(sent.length, 1);
+  const row = sqlite
+    .prepare("SELECT fair_use_notice_sent_at FROM accounts WHERE id = ?1")
+    .get(accountId);
+  assert.equal(row.fair_use_notice_sent_at, NOW);
+  const again = await sendFairUsePauseIfDue(db, accountId, paused, {
+    email,
+    from: "noreply@drive.example",
+    now: NOW + DAY_MS,
+    refuse: true,
+  });
+  assert.equal(again, false);
+  assert.equal(sent.length, 1);
+});
+
+test("the prune drops fair-use decisions older than the retention cutoff", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const now = NOW;
+  await db
+    .prepare(
+      "INSERT INTO meter_rollup_state (id, rolled_through) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET rolled_through = ?1",
+    )
+    .bind(now)
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO fair_use_decisions
+        (account_id, decided_at, live_bytes, ghost_bytes, upload_bytes, size30_bytes, limit_bytes, would_refuse, refused)
+       VALUES (?1, ?2, 0, 0, 0, 0, 0, 0, 0)`,
+    )
+    .bind("old", now - 40 * DAY_MS)
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO fair_use_decisions
+        (account_id, decided_at, live_bytes, ghost_bytes, upload_bytes, size30_bytes, limit_bytes, would_refuse, refused)
+       VALUES (?1, ?2, 0, 0, 0, 0, 0, 0, 0)`,
+    )
+    .bind("recent", now - DAY_MS)
+    .run();
+  const pruned = await pruneHiddenVersions(db, now);
+  assert.equal(pruned.skipped, null);
+  const left = sqlite
+    .prepare("SELECT account_id FROM fair_use_decisions ORDER BY account_id")
+    .all()
+    .map((row) => row.account_id);
+  assert.deepEqual(left, ["recent"]);
+});
+
+/**
+ * @param {{
+ *   body: string,
+ *   contentLength?: number | null,
+ *   wouldRefuse?: boolean,
+ *   fairUseRefuse?: boolean,
+ * }} input
+ */
+async function rcloneWrite(input) {
+  /** @type {number[]} */
+  const sizes = [];
+  /** @type {string[]} */
+  const stored = [];
+  const device = { prefix: "u/acct/", accountId: "acct", capabilities: ["write"] };
+  const store = {
+    authenticate: async () => device,
+    canWrite: () => true,
+    balancePaused: async () => false,
+    fairUseRefuse: input.fairUseRefuse !== false,
+    onFairUseError: () => {},
+    /**
+     * @param {unknown} _device
+     * @param {number} bytes
+     */
+    fairUseForUpload: async (_device, bytes) => {
+      sizes.push(bytes);
+      return {
+        wouldRefuse: input.wouldRefuse === true,
+        line: { copy: "paused" },
+      };
+    },
+    /** @param {string} path */
+    putObject: (path) => {
+      stored.push(path);
+    },
+  };
+  const url = new URL("https://api.drive.test/v1/storage/object?path=u/acct/file.bin");
+  /** @type {Record<string, string>} */
+  const headers = {
+    authorization: `Basic ${Buffer.from("ak:secret").toString("base64")}`,
+  };
+  /** @type {RequestInit} */
+  const init = { method: "PUT", headers };
+  if (input.contentLength === null) {
+    // A streamed body so Node does not add Content-Length, matching rclone's
+    // chunked PUT.
+    init.duplex = "half";
+    init.body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(input.body));
+        controller.close();
+      },
+    });
+  } else {
+    if (input.contentLength !== undefined) {
+      headers["content-length"] = String(input.contentLength);
+    }
+    init.body = input.body;
+  }
+  const response = await storageWriteRoute(new Request(url, init), { store, url });
+  return { response, sizes, stored };
+}
+
+test("rclone writes check Content-Length before the body, or the 100 MB cap", async () => {
+  const declared = await rcloneWrite({ body: "twelve-bytes", contentLength: 12 });
+  assert.equal(declared.response.status, 201);
+  assert.deepEqual(declared.sizes, [12]);
+  assert.deepEqual(declared.stored, ["u/acct/file.bin"]);
+  const capped = await rcloneWrite({ body: "x", contentLength: null });
+  assert.equal(capped.response.status, 201);
+  assert.deepEqual(capped.sizes, [UPLOAD_FILE_MAX_BYTES]);
+  const refused = await rcloneWrite({
+    body: "x",
+    contentLength: 1,
+    wouldRefuse: true,
+    fairUseRefuse: true,
+  });
+  assert.equal(refused.response.status, 429);
+  assert.deepEqual(refused.stored, []);
+});
+
+test("rclone: a 0-ghost account is not refused at the byte cap", async () => {
+  const result = check({
+    liveBytes: 0,
+    ghostBytes: 0,
+    uploadBytes: UPLOAD_FILE_MAX_BYTES,
+    size30Bytes: 0,
+  });
+  assert.equal(result.wouldRefuse, false);
+  const write = await rcloneWrite({
+    body: "ok",
+    contentLength: null,
+    wouldRefuse: result.wouldRefuse,
+    fairUseRefuse: true,
+  });
+  assert.equal(write.response.status, 201);
 });

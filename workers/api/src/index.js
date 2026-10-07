@@ -545,12 +545,13 @@ function storeFor(env) {
               } catch (error) {
                 console.error("fair-use decision record", error);
               }
-              if (check.wouldRefuse) {
+              if (check.wouldRefuse && refuse) {
                 try {
                   const from = typeof env.MAIL_FROM === "string" ? env.MAIL_FROM : "";
                   await sendFairUsePauseIfDue(env.DRIVE_DB, accountId, check, {
                     email: env.EMAIL,
                     from,
+                    refuse,
                   });
                 } catch (error) {
                   console.error("fair-use notice", error);

@@ -1154,21 +1154,40 @@ function fairUseLineFromAccount(account) {
     return null;
   }
   if (typeof snapshot !== "object") {
-    throw new TypeError(`account.fairUse must be a snapshot, got ${String(snapshot)}`);
+    return null;
   }
   const fields =
     /** @type {{liveBytes?: unknown, ghostBytes?: unknown, size30Bytes?: unknown, oldestGhostCreatedAt?: unknown, now?: unknown}} */ (
       snapshot
     );
-  const now = fields.now === undefined ? Date.now() : wholeBytes(fields.now, "fairUse.now");
+  if (
+    !isWholeByteCount(fields.liveBytes) ||
+    !isWholeByteCount(fields.ghostBytes) ||
+    !isWholeByteCount(fields.size30Bytes)
+  ) {
+    return null;
+  }
+  const now = fields.now === undefined ? Date.now() : fields.now;
+  if (!isWholeByteCount(now)) {
+    return null;
+  }
+  const oldest = fields.oldestGhostCreatedAt;
+  if (oldest !== undefined && oldest !== null && !isWholeByteCount(oldest)) {
+    return null;
+  }
   return fairUseCheck({
     liveBytes: fields.liveBytes,
     ghostBytes: fields.ghostBytes,
     uploadBytes: 0,
     size30Bytes: fields.size30Bytes,
-    oldestGhostCreatedAt: fields.oldestGhostCreatedAt,
+    oldestGhostCreatedAt: oldest,
     now,
   }).line.copy;
+}
+
+/** @param {unknown} value */
+function isWholeByteCount(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 const QUOTE_HEADERS = Object.freeze({

@@ -10,6 +10,7 @@
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
 
+import { UPLOAD_FILE_MAX_BYTES } from "../../../core/files.js";
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { authorizePath } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
@@ -381,10 +382,23 @@ export async function storageWriteRoute(request, ctx) {
   if (await ctx.store.balancePaused(device)) {
     return errorResponse(402, failureMessage("balance-empty"));
   }
-  const body = new Uint8Array(await request.arrayBuffer());
+  // Fair-use runs before the body is read (drive#364): rclone writes often
+  // declare Content-Length, and a headerless body is checked at the same
+  // 100 MB cap the web upload uses, so an over-limit account cannot sneak a
+  // write of any size past the pause.
+  const declared = request.headers.get("content-length");
+  /** @type {number} */
+  let checkBytes = UPLOAD_FILE_MAX_BYTES;
+  if (declared !== null) {
+    const length = Number(declared);
+    if (!Number.isSafeInteger(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
+      return errorResponse(413, failureMessage("body-too-large"));
+    }
+    checkBytes = length;
+  }
   if (typeof ctx.store.fairUseForUpload === "function") {
     try {
-      const result = await ctx.store.fairUseForUpload(device, body.byteLength);
+      const result = await ctx.store.fairUseForUpload(device, checkBytes);
       if (
         result !== null &&
         result !== undefined &&
@@ -397,6 +411,7 @@ export async function storageWriteRoute(request, ctx) {
       ctx.store.onFairUseError(error);
     }
   }
+  const body = new Uint8Array(await request.arrayBuffer());
   ctx.store.putObject(authorized.path, body);
   return json(
     { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },

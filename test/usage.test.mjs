@@ -490,6 +490,15 @@ test("the upload line rides the usage answer beside capLine", async () => {
   ).json();
   assert.equal(typeof withFairUse.fairUseLine, "string");
   assert.match(withFairUse.fairUseLine, /upload room left/i);
+  const missingSnapshot = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    { ...account, fairUse: { ghostBytes: 0 } },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(missingSnapshot.status, 200, "missing snapshot fields must not 500");
+  assert.equal((await missingSnapshot.json()).fairUseLine, null);
   assert.throws(
     () =>
       handleUsageRequest(

@@ -111,6 +111,7 @@ import {
 import {
   captureError,
   reportBillingGap,
+  reportFairUseVendorGap,
   reportPurgeFailures,
   withCronCheckIn,
 } from "./monitoring.js";
@@ -713,11 +714,12 @@ function fairUseUploadOptions(env) {
         } catch (error) {
           captureError(error, "fair-use decision record");
         }
-        if (check.wouldRefuse) {
+        if (check.wouldRefuse && refuse) {
           try {
             await sendFairUsePauseIfDue(db, accountId, check, {
               email: env.EMAIL,
               from: secrets.MAIL_FROM ?? "",
+              refuse,
             });
           } catch (error) {
             captureError(error, "fair-use notice");
@@ -1584,7 +1586,7 @@ const handler = {
           );
           console.log(`meter: queued ${sent} reconcile account job(s)`);
         } else {
-          await reconcileMeter(env.METER_DB, files, event.scheduledTime);
+          await reconcileMeter(env.METER_DB, files, event.scheduledTime, reportFairUseVendorGap);
         }
         // Retention (drive issue #564): the reconciler has finished its
         // repairs, so the prune sees the row set the provider listings have
