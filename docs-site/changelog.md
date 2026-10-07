@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-06
 
+- A branch copies the files your folder held when you made the branch, not the
+  files it holds when the copy runs. A file added in between is not in the
+  branch, and the next branch takes it. A file that grew in between is copied in
+  full, and `drive diff` reports it as changed in the original.
 - An upload link now says who it belongs to. The page a stranger opens shows
   the owner's name above the folder, and once a day the owner gets one email
   listing the files that arrived through that link since the last one, rather
