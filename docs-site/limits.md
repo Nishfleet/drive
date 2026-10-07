@@ -63,6 +63,13 @@ would rather you read it here than find out in week three.
   adds a byte to your bill.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
+- **A save made outside the web page is counted at the nightly run.**
+  Everything you save through the Files page is in your usage, your cap and
+  your search the moment you save it. A file you save through the mounted
+  drive folder, the S3 API or an agent tool reaches your usage, your cap and
+  your search at the nightly run instead: search at 03:00 UTC, the meter at
+  04:00 UTC. Whichever way you saved the file, the nightly run is what makes
+  the number right.
 - **Search on an account of a million files.** Search reads a trigram index
   over your file names, so it does not scan the whole drive: at a **1,000,000
   file** account, a search for the name of one file answers in about **5

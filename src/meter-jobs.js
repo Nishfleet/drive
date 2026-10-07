@@ -30,14 +30,24 @@
 // changes.
 
 import { enforceAccountCap } from "../core/cap.js";
+import { scopeStore, validatePath } from "../core/files.js";
 import { reconcileAccount, toMillis } from "../core/meter.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { reindexObject } from "./search.js";
 
 /** The kinds of message the meter sends, one account each. */
 export const METER_JOB_KINDS = Object.freeze({
   hourly: "meter.hourly",
   reconcile: "meter.reconcile",
+  /**
+   * One named object, not one account: a signed storage event
+   * (`/api/storage-events/signed`, #831) enqueues this so the object's search
+   * row is corrected in its own invocation, with its own retry, instead of
+   * waiting for the night's walk. The meter's own rows were already written by
+   * the event that sent it.
+   */
+  object: "meter.object",
 });
 
 // Cloudflare's own limit on messages in one sendBatch call.
@@ -45,7 +55,7 @@ const SEND_BATCH_LIMIT = 100;
 
 /**
  * @typedef {{sendBatch(messages: Array<{body: unknown}>): Promise<unknown>}} MeterJobsQueue
- * @typedef {{kind: string, accountId: string, at: number, through?: number}} MeterJob
+ * @typedef {{kind: string, accountId: string, at: number, through?: number, path?: string}} MeterJob
  */
 
 /**
@@ -80,6 +90,24 @@ export async function sendMeterJobs(queue, kind, accountIds, fields) {
 }
 
 /**
+ * Sends one message per named object, in batches the platform accepts. The
+ * signed intake's half of `sendMeterJobs`: a bucket notification names keys,
+ * not accounts, so its messages are keyed by the path the event resolved.
+ * @param {MeterJobsQueue} queue
+ * @param {Array<{accountId: string, path: string, at: number}>} jobs
+ * @returns {Promise<number>} the messages sent
+ */
+export async function sendObjectJobs(queue, jobs) {
+  const messages = jobs.map((job) => ({
+    body: meterJob({ kind: METER_JOB_KINDS.object, ...job }),
+  }));
+  for (let start = 0; start < messages.length; start += SEND_BATCH_LIMIT) {
+    await queue.sendBatch(messages.slice(start, start + SEND_BATCH_LIMIT));
+  }
+  return messages.length;
+}
+
+/**
  * A message body checked into a job, or a TypeError naming what is wrong.
  * @param {unknown} body
  * @returns {MeterJob}
@@ -102,6 +130,16 @@ function meterJob(body) {
   };
   if (job.kind === METER_JOB_KINDS.hourly) {
     return { ...job, through: toMillis(/** @type {number} */ (raw.through), "through") };
+  }
+  if (job.kind === METER_JOB_KINDS.object) {
+    // The path is checked here, beside the other shape checks, so a malformed
+    // message is refused before a handler runs rather than retried five times
+    // for a body that can never be right.
+    const checked = validatePath(raw.path);
+    if (checked.error) {
+      throw new TypeError(`a meter object job needs a file path, got ${String(raw.path)}`);
+    }
+    return { ...job, path: checked.path };
   }
   return job;
 }
@@ -150,6 +188,7 @@ export async function handleMeterJobs(batch, handlers) {
  *   mailFrom?: string,
  *   settle?: import("../core/prepaid.js").SettleDeps,
  *   store?: import("../core/files.js").FileStore,
+ *   searchDb?: D1Database,
  * }} MeterJobDeps
  */
 
@@ -197,6 +236,23 @@ export function meterJobHandlers(deps) {
         throw new Error("the meter reconcile job needs the storage store");
       }
       return reconcileAccount(deps.meterDb, deps.store, job.accountId, job.at);
+    },
+    /** @param {MeterJob} job */
+    [METER_JOB_KINDS.object]: (job) => {
+      if (!deps.searchDb) {
+        throw new Error("the meter object job needs the file index database");
+      }
+      if (!deps.store) {
+        throw new Error("the meter object job needs the storage store");
+      }
+      const path = /** @type {string} */ (job.path);
+      const account = { id: job.accountId };
+      // The row is stamped as of the instant this handler runs, the
+      // way `withIndex` and the nightly walk stamp theirs: passing the
+      // message's own `at` would let a retried message move the
+      // row's `modified_at` backwards past the save that overwrote
+      // it. `job.at` stays the message's provenance, not its stamp.
+      return reindexObject(deps.searchDb, scopeStore(deps.store, account), account, path);
     },
   };
 }

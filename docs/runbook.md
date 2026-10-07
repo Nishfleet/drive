@@ -155,4 +155,41 @@ service token before any monitor can reach it:
 Two tokens, one job each. Both are scoped to `/api/health` only, so neither
 can open the drive itself, and a leaked monitor token is revoked and
 replaced on its own, without touching the deploy smoke's credentials or
-deploying anything (review finding on PR #697).
+deploying anything (review finding on PR #697)
+
+## Registering a bucket's storage notifications (drive#831)
+
+Two doors take a bucket's events, and only one of them is open today:
+
+| Door | Credential | What it does |
+| --- | --- | --- |
+| `POST /api/storage-events` | `METER_EVENT_TOKEN` in a header | Meters the event. No index job, so the object's search row waits for the nightly reindex. |
+| `POST /api/storage-events/signed` | a Standard Webhooks signature (`STORAGE_EVENTS_WEBHOOK_SECRET`) | Meters the event and enqueues a single-object index job, so the row is right in minutes. |
+
+The signed door ships closed: with `STORAGE_EVENTS_WEBHOOK_SECRET` unset it
+answers `503` and accepts nothing, the same closed door
+`/api/billing/webhook` answers with `DODO_WEBHOOK_SECRET` unset. That name is
+not declared in `cloudflare.config.ts` on purpose - a declared
+`bindings.secret()` with no value behind it fails every deploy - so the two
+steps below are the operator's, in this order:
+
+1. Set the secret: `npx wrangler secret put STORAGE_EVENTS_WEBHOOK_SECRET --env production`,
+   with a value of the Standard Webhooks shape (`whsec_<32 random bytes, base64>`).
+2. Add one notification rule per bucket in the provider's own console
+   (iDrive e2 / MinIO: KeySpace event notifications) pointed at
+   `https://drive-pricing.nishant345.workers.dev/api/storage-events/signed`
+   for `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`. A rule that cannot sign
+   (a vendor webhook carrying only a bearer token) stays on
+   `/api/storage-events` with `METER_EVENT_TOKEN`.
+3. Confirm it: post one signed event (headers `webhook-id`,
+   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`;
+   body the fixture in `test/storage-events-signed.test.mjs`, a create with
+   `eventName`, `keyName` `u/<account>/notes.md`, and `bucket` that account's
+   own name) and expect `{"ok":true,"stored":1,"deduped":0,"enqueued":1}`.
+   Repost the same `webhook-id` and expect `stored:0`, `deduped:1`,
+   `enqueued:0`. Then wait for the next nightly run and confirm the row is
+   there.
+
+Until step 2 is done for a bucket, a file saved into it through the drive
+folder, the S3 API or an agent tool is metered and indexed at the nightly run
+(03:00 and 04:00 UTC), which is what the limits page says today.

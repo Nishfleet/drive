@@ -272,6 +272,51 @@ export async function searchDrive(db, account, query, options = {}) {
 
 // ---------------------------------------------------------------- the feeds
 
+/**
+ * Keeps one object's index row current from the store: a HEAD on the key, then
+ * the row is written or dropped. This is the single-object half of
+ * `reconcileIndex`, for the one object a storage event names (#831) - a bucket
+ * notification carries a key, not a folder, and until the events are wired the
+ * night's walk is the only thing that would correct the row.
+ *
+ * The row it writes is the row the nightly walk writes, so both paths agree:
+ * `store.stat` answers the content type and size but no modification time (an
+ * S3 HEAD has nothing to say about when a set of bytes was last written
+ * through this deployment), so the instant the event or the caller supplies is
+ * carried as the row's `modified_at`, exactly as `withIndex` carries the moment
+ * its own write returned. A row whose object is gone is deleted rather than
+ * zeroed, and a path under the trash holds no row at all - the same row set
+ * the walk builds.
+ * @param {D1Database} db
+ * @param {FileStore} store the account's own scoped store
+ * @param {{id: string}} account
+ * @param {string} path a drive path, `/` prefixed
+ * @param {{now?: () => number}} [options]
+ * @returns {Promise<{indexed: boolean, sizeBytes: number, tookMs: number}>} the
+ * one row's outcome, never an `error` key: a failure is a thrown Error.
+ */
+export async function reindexObject(db, store, account, path, options = {}) {
+  const { now = () => Date.now() } = options;
+  if (!db || !store) {
+    throw new Error("reindexObject needs a database and a store");
+  }
+  const checked = validatePath(path);
+  if (checked.error) {
+    throw new Error(`reindexObject needs a file path, got ${String(path)}`);
+  }
+  const at = now();
+  const entry = await store.stat(checked.path);
+  // A row for the trash holds no place in the index (the walk skips those
+  // paths), so a trashed row is dropped whatever the store answers.
+  if (entry === null || locate(checked.path).trashed) {
+    await db.batch([deleteStatement(db, account, checked.path)]);
+    return { indexed: false, sizeBytes: 0, tookMs: now() - at };
+  }
+  const row = fileRow(account, checked.path, { size: entry.size, modified: at }, at);
+  await db.batch(upsertStatements(db, [row]));
+  return { indexed: true, sizeBytes: row.size_bytes, tookMs: now() - at };
+}
+
 /** The name, parent and trash state of a validated drive path.
  * @param {string} path */
 function locate(path) {
