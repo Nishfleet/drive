@@ -95,6 +95,7 @@ function month(storedGb, overrides = {}) {
     // The month the answer belongs to (drive#559), the field the Worker adds on
     // its way out: the page names the month in the browser's words from it.
     monthIso: MONTH_ISO,
+    fairUseLine: null,
   };
 }
 
@@ -432,6 +433,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "capLine",
     "cardOnFile",
     "downloads",
+    "fairUseLine",
     "gbMonths",
     "labels",
     "maximumUsd",
@@ -444,6 +446,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "uploadLine",
   ]);
   assert.equal(body.uploadLine, null, "no device store means no queue to report");
+  assert.equal(body.fairUseLine, null, "no meter snapshot means no fair-use line");
   assert.equal(typeof body.capLine, "string", "capLine still rides beside it");
 
   // A queue handed in is checked by uploadProgress(), which throws on a value
@@ -469,6 +472,51 @@ test("the upload line rides the usage answer beside capLine", async () => {
     MONTH_ISO,
   ).json();
   assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
+  const withFairUse = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      ...account,
+      fairUse: {
+        liveBytes: 0,
+        ghostBytes: 0,
+        size30Bytes: 0,
+        oldestGhostCreatedAt: null,
+        now: Date.parse("2026-10-06T00:00:00.000Z"),
+      },
+    },
+    null,
+    null,
+    MONTH_ISO,
+  ).json();
+  assert.equal(typeof withFairUse.fairUseLine, "string");
+  assert.match(withFairUse.fairUseLine, /upload room left/i);
+  const missingSnapshot = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    { ...account, fairUse: { ghostBytes: 0 } },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(missingSnapshot.status, 200, "missing snapshot fields must not 500");
+  assert.equal((await missingSnapshot.json()).fairUseLine, null);
+  const uncomputable = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      ...account,
+      fairUse: {
+        liveBytes: 0,
+        ghostBytes: 0,
+        size30Bytes: Number.MAX_SAFE_INTEGER,
+        oldestGhostCreatedAt: null,
+        now: Date.parse("2026-10-06T00:00:00.000Z"),
+      },
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(uncomputable.status, 200, "a check that cannot compute a limit must not 500");
+  assert.equal((await uncomputable.json()).fairUseLine, null);
   assert.throws(
     () =>
       handleUsageRequest(
@@ -594,6 +642,7 @@ function emptyMonth(overrides = {}) {
     // The month the answer belongs to (drive#559), the field the Worker adds on
     // its way out: an empty month still belongs to a named month.
     monthIso: MONTH_ISO,
+    fairUseLine: null,
   };
 }
 
@@ -616,6 +665,7 @@ const PAGE_IDS = Object.freeze([
   "downloads-line",
   "open-public-links",
   "upload-line",
+  "fair-use-line",
   "cap-amount",
   "cap-slider",
   "cap-value",
@@ -1248,6 +1298,13 @@ test("the upload-progress line is the endpoint's words, rendered and nothing els
     /uploadLineEl\.textContent = summary\.uploadLine === null \? "" : summary\.uploadLine;/,
   );
   assert.match(page, /uploadLineEl\.hidden = summary\.uploadLine === null;/);
+  assert.match(page, /<p class="upload-line" id="fair-use-line" hidden><\/p>/);
+  assert.match(page, /summary\.fairUseLine !== null && typeof summary\.fairUseLine !== "string"/);
+  assert.match(
+    page,
+    /fairUseLineEl\.textContent = summary\.fairUseLine === null \? "" : summary\.fairUseLine;/,
+  );
+  assert.match(page, /fairUseLineEl\.hidden = summary\.fairUseLine === null;/);
   // No byte arithmetic and no word table of its own: the page never formats a
   // size for this line, and never spells the fragments it renders.
   const script = page.slice(page.indexOf("<script>"));

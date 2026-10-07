@@ -41,6 +41,8 @@ import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
 import {
   downloadRecorder,
+  fairUseSnapshot,
+  fairUseUploadCheck,
   HOUR_MS,
   handleStorageEventRequest,
   hourStart,
@@ -62,6 +64,7 @@ import {
   settleBalances,
 } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { fairUseRefuseOn } from "../core/pricing.js";
 import { createD1QueueStore } from "../core/queues.js";
 import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
@@ -108,6 +111,7 @@ import {
 import {
   captureError,
   reportBillingGap,
+  reportFairUseVendorGap,
   reportPurgeFailures,
   reportUnbillableAccounts,
   withCronCheckIn,
@@ -237,7 +241,7 @@ export const PUBLIC_ROUTES = Object.freeze([
  * @param {Env} env
  */
 function dodoEnv(env) {
-  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string}} */ (
+  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string, FAIR_USE_REFUSE?: string}} */ (
     /** @type {unknown} */ (env)
   );
 }
@@ -685,10 +689,36 @@ const filesHandler = async (c) => {
           prepaidPause: prepaidPauseOn(c.env),
           accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
           recordDownload: downloadRecorder(c.env.DRIVE_DB),
+          ...fairUseUploadOptions(c.env),
         }
       : { prepaidPause: prepaidPauseOn(c.env) },
   );
 };
+
+/**
+ * The fair-use upload check (drive#364): one snapshot, one check, record every
+ * decision, mail a would-refuse at most once per 30 days. A throw fails open
+ * and is reported, so a missing meter never pauses an upload by guesswork.
+ * @param {Env} env
+ */
+function fairUseUploadOptions(env) {
+  const db = env.DRIVE_DB;
+  if (!db) {
+    return {};
+  }
+  const refuse = fairUseRefuseOn(env);
+  const secrets = dodoEnv(env);
+  return {
+    fairUseRefuse: refuse,
+    onFairUseError: (/** @type {unknown} */ error) => captureError(error, "fair-use snapshot"),
+    fairUseForUpload: fairUseUploadCheck(db, {
+      refuse,
+      onError: captureError,
+      email: env.EMAIL,
+      from: secrets.MAIL_FROM ?? "",
+    }),
+  };
+}
 
 /**
  * Create the Hono app. All route logic lives here so the Worker export is a
@@ -921,9 +951,18 @@ export function createApp() {
           pauseOn: prepaidPauseOn(c.env),
         })
       : null;
+    /** @type {Awaited<ReturnType<typeof fairUseSnapshot>>|undefined} */
+    let fairUse;
+    if (c.env.DRIVE_DB) {
+      try {
+        fairUse = await fairUseSnapshot(c.env.DRIVE_DB, account.id);
+      } catch (error) {
+        captureError(error, "fair-use snapshot");
+      }
+    }
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, usage, openPublicLinks },
+      { ...account, capUsd, cardOnFile, usage, fairUse, openPublicLinks },
       await liveQueueFor(c.env, account),
       balance,
       // The month these numbers belong to, sent as its first instant (drive#559):
@@ -1158,6 +1197,7 @@ export function createApp() {
         linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
         db: c.env.DRIVE_DB,
         prepaidPause: prepaidPauseOn(c.env),
+        ...fairUseUploadOptions(c.env),
       }),
     ),
   );
@@ -1558,7 +1598,7 @@ const handler = {
           );
           console.log(`meter: queued ${sent} reconcile account job(s)`);
         } else {
-          await reconcileMeter(env.METER_DB, files, event.scheduledTime);
+          await reconcileMeter(env.METER_DB, files, event.scheduledTime, reportFairUseVendorGap);
         }
         // Retention (drive issue #564): the reconciler has finished its
         // repairs, so the prune sees the row set the provider listings have

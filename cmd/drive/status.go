@@ -648,6 +648,11 @@ type UsageSummary struct {
 	// (core/topup.js balanceLine) with the top-up prompt when it is low or $0.
 	// Empty from a Worker that has no balance store yet.
 	BalanceLine string `json:"balanceLine"`
+	// FairUseLine is the fair-use pause line (drive#364), written by the
+	// Worker (core/billing.js fairUseLine) from the same check the upload
+	// path uses. Null (or empty) when the meter could not be read: the
+	// Worker sends JSON null, which a Go string cannot decode.
+	FairUseLine *string `json:"fairUseLine"`
 	Cap         struct {
 		CapUsd       float64 `json:"capUsd"`
 		CountedUsd   float64 `json:"countedUsd"`
@@ -701,6 +706,11 @@ func readCostLine(apiBase, token string) string {
 	fmt.Println(line)
 	if balance := strings.TrimSpace(u.BalanceLine); balance != "" {
 		fmt.Println(balance)
+	}
+	if u.FairUseLine != nil {
+		if fairUse := strings.TrimSpace(*u.FairUseLine); fairUse != "" {
+			fmt.Println(fairUse)
+		}
 	}
 	return ""
 }

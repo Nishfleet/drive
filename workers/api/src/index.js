@@ -12,7 +12,9 @@ import {
 } from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
+import { fairUseUploadCheck } from "../../../core/meter.js";
 import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
+import { fairUseRefuseOn } from "../../../core/pricing.js";
 import { createD1QueueStore } from "../../../core/queues.js";
 import { signedInAccount } from "../../../core/status.js";
 import { createD1TeamStore } from "../../../core/teams.js";
@@ -514,6 +516,18 @@ function storeFor(env) {
         env.DRIVE_DB && prepaidPauseOn(env)
           ? (accountId) => writesPaused(env.DRIVE_DB, accountId)
           : undefined,
+      fairUseRefuse: fairUseRefuseOn(env),
+      onFairUseError: (/** @type {unknown} */ error) => {
+        console.error("fair-use snapshot", error);
+      },
+      fairUseForUpload: env.DRIVE_DB
+        ? fairUseUploadCheck(env.DRIVE_DB, {
+            refuse: fairUseRefuseOn(env),
+            onError: (error, job) => console.error(job, error),
+            email: env.EMAIL,
+            from: typeof env.MAIL_FROM === "string" ? env.MAIL_FROM : "",
+          })
+        : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }

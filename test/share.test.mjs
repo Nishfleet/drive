@@ -221,7 +221,7 @@ function denyLimiter() {
  * Options the public upload route needs in tests: the two edge limiters
  * production binds, plus the clock. A call that omits them is the fail-closed
  * 503, which is not what the size/cap tests are asking.
- * @param {{now?: number, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} [options]
  */
 function withLimits(options = {}) {
   return {
@@ -440,6 +440,36 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
     (await list()).map((row) => row.name),
     ["eicar.txt"],
   );
+  const record = await links.requests.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.uploadCount, 0);
+});
+
+test("a fair-use pause refuses a drop through an upload request when refuse is on", async () => {
+  const { files, links, request } = drive();
+  const made = await request("/", { token: TOKEN });
+  assert.equal(made.status, 201);
+  const line = {
+    copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+  };
+  const dropped = await handleRequestUploadRequest(
+    new Request(`${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=big.bin`, {
+      method: "POST",
+      body: "twelve-bytes",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits({
+      fairUseRefuse: true,
+      fairUseForUpload: async () => ({ wouldRefuse: true, line }),
+    }),
+  );
+  assert.equal(dropped.status, 429);
+  assert.deepEqual(await dropped.json(), {
+    error: failureMessage("fair-use-pause"),
+    fairUseLine: line.copy,
+  });
   const record = await links.requests.get(TOKEN);
   assert.ok(record);
   assert.equal(record.uploadCount, 0);

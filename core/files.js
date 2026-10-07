@@ -2581,7 +2581,7 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
  *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
  *   can read stored bytes, whether the pause at a $0 balance is on
  *   (drive#586), and the account's own state, so a read-only drive refuses a
@@ -2964,11 +2964,50 @@ async function listingEntry(store, path) {
 }
 
 /**
+ * The fair-use pause for one upload size (drive#364). Null means write on.
+ * A missing Content-Length is checked as 0 first, then again with the real
+ * size once the body has been read, so a headerless body cannot sneak past.
+ * @param {{id: string}} account
+ * @param {number} uploadBytes
+ * @param {{fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} options
+ * @returns {Promise<Response|null>}
+ */
+export async function fairUseRefuseResponse(account, uploadBytes, options) {
+  if (typeof options.fairUseForUpload !== "function") {
+    return null;
+  }
+  try {
+    const result = await options.fairUseForUpload(account.id, uploadBytes);
+    if (result === null || result === undefined) {
+      return null;
+    }
+    if (typeof result !== "object" || typeof result.wouldRefuse !== "boolean") {
+      throw new TypeError("fairUseForUpload must return a fairUseCheck result or null");
+    }
+    if (result.wouldRefuse === true && options.fairUseRefuse === true) {
+      if (
+        typeof result.line !== "object" ||
+        result.line === null ||
+        typeof result.line.copy !== "string"
+      ) {
+        throw new TypeError("fairUseCheck result needs line.copy");
+      }
+      return json({ error: failureMessage("fair-use-pause"), fairUseLine: result.line.copy }, 429);
+    }
+  } catch (error) {
+    if (typeof options.onFairUseError === "function") {
+      options.onFairUseError(error);
+    }
+  }
+  return null;
+}
+
+/**
  * @param {Request} request
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -3003,6 +3042,14 @@ async function uploadRequest(request, url, store, account, options = {}) {
     // the upload. Listing, downloads, deletes and restores never come here.
     // 402, so a client can tell "add money" from every other refusal.
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
+  }
+  const paused = await fairUseRefuseResponse(
+    account,
+    incomingLength === null ? 0 : incomingLength,
+    options,
+  );
+  if (paused) {
+    return paused;
   }
   if (options.db) {
     const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
@@ -3056,6 +3103,10 @@ async function uploadRequest(request, url, store, account, options = {}) {
       }
       payload = read.bytes;
       contentLength = read.length;
+      const pausedAfterRead = await fairUseRefuseResponse(account, contentLength, options);
+      if (pausedAfterRead) {
+        return pausedAfterRead;
+      }
     }
     await store.write(path, payload, contentType, { contentLength });
   } catch (error) {

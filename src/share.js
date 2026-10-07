@@ -58,6 +58,7 @@ import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { sendEmail } from "../core/email-send.js";
 import {
   etagMatches,
+  fairUseRefuseResponse,
   joinPath,
   preChargeStoredBytes,
   previewContentType,
@@ -1792,7 +1793,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("../core/files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1865,6 +1866,10 @@ export async function handleRequestUploadRequest(request, files, links, capState
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
+  }
+  const paused = await fairUseRefuseResponse({ id: record.accountId }, sized.bytes, options);
+  if (paused) {
+    return paused;
   }
   // sized.body is the Uint8Array takeUploadBody already copied from the
   // request, so hashing it does not consume the bytes writeIfAbsent stores.

@@ -13,6 +13,7 @@ import {
   captureError,
   monitorConfig,
   reportBillingGap,
+  reportFairUseVendorGap,
   reportPurgeFailures,
   withCronCheckIn,
 } from "../src/monitoring.js";
@@ -190,6 +191,22 @@ test("reportPurgeFailures raises an error naming the failed purges, and none whe
   assert.equal(level, "error");
   assert.match(/** @type {string} */ (message), /2 purge\(s\) failed/);
   assert.match(/** @type {string} */ (message), /purged 1 account\(s\)/);
+});
+
+test("reportFairUseVendorGap warns when our meter and the vendor differ by more than 1%", () => {
+  const sentry = fakeSentry();
+  reportFairUseVendorGap(1000, 1000, sentry);
+  assert.equal(sentry.calls.length, 0);
+  reportFairUseVendorGap(1020, 1000, sentry);
+  assert.equal(sentry.calls.length, 1);
+  const [message, level] = sentry.calls[0].args;
+  assert.equal(level, "warning");
+  assert.match(/** @type {string} */ (message), /2\.00%/);
+  sentry.calls.length = 0;
+  reportFairUseVendorGap(1010, 1000, sentry);
+  assert.equal(sentry.calls.length, 0, "1% exactly is not over the line");
+  reportFairUseVendorGap(10, 0, sentry);
+  assert.equal(sentry.calls.length, 1);
 });
 
 test("the nightly close cron reports its resolved purge failures, not only rejections", () => {

@@ -218,6 +218,45 @@ func TestReadCostLinePrintsTheWorkersBalanceLine(t *testing.T) {
 	}
 }
 
+func TestReadCostLinePrintsTheWorkersFairUseLine(t *testing.T) {
+	const fairUseLine = "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $20.00: $0.00 counted this month, $20.00 left."
+		line := fairUseLine
+		u.FairUseLine = &line
+		u.Cap.State = "active"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want the cap and fair-use lines", reason)
+		}
+	})
+	if !strings.Contains(out, fairUseLine) {
+		t.Errorf("got %q, want the Worker's fair-use line printed as-is", out)
+	}
+}
+
+func TestReadCostLineKeepsWorkingWhenFairUseLineIsNull(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"capLine":"Cap $20.00: $0.00 counted this month, $20.00 left.","fairUseLine":null,"balanceLine":null,"cap":{"state":"active"}}`))
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want success when the Worker sends fairUseLine null", reason)
+		}
+	})
+	if !strings.Contains(out, "Cap $20.00") {
+		t.Errorf("got %q, want the cap line when fairUseLine is null", out)
+	}
+}
+
 func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string

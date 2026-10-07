@@ -70,6 +70,11 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "fair-use-pause")
+    return {
+      copy: "Your storage use is above the fair-use limit, so uploads are paused.",
+      replyTo: REPLY_TO,
+    };
   if (kind === "upload-arrivals") {
     return {
       ownerName: "Nish",

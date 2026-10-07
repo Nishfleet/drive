@@ -13,9 +13,12 @@
 // Worker's own event route are the same bytes, and reading them two ways is
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
+import { fairUseCheck } from "./billing.js";
+import { sendEmail } from "./email-send.js";
 import { decodeNotificationKey } from "./event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
+import { STORAGE } from "./pricing.js";
 import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //
 // Three jobs, in the order the issue lists them:
@@ -2106,6 +2109,7 @@ const VERSION_RETENTION_MS = VERSION_RETENTION_DAYS * 24 * HOUR_MS;
 
 const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
   WHERE hidden_at IS NOT NULL AND hidden_at < ?1`;
+const FAIR_USE_DECISIONS_PRUNE_SQL = "DELETE FROM fair_use_decisions WHERE decided_at < ?1";
 // The partial index that predicate reads (migrations/drive/
 // 0023_file_versions_hidden_at.sql), so the nightly delete is a range read
 // over hidden rows and not a full-table scan on the meter's fastest grower
@@ -2173,7 +2177,359 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
   if (typeof result.meta?.changes !== "number") {
     throw new TypeError("the retention delete reported no change count");
   }
+  // Fair-use decisions (drive#364) are kept for the same window the ghosts
+  // they describe can still exist, then dropped so the table cannot grow
+  // forever. A would-refuse older than the stay has already opened uploads.
+  await db.prepare(FAIR_USE_DECISIONS_PRUNE_SQL).bind(cutoff).run();
   return { pruned: result.meta.changes, cutoff, skipped: null };
+}
+
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Ghost bytes from already-loaded version rows (drive#364): a young hide
+ * (life shorter than the provider's minimum stay) still in the stay window,
+ * counted once per version id. A same-size successor that began at the hide
+ * instant is a folder move's copy-then-delete of the same bytes, so it is
+ * not a ghost — the bytes never left. A provider with 0 stay days has no
+ * ghosts.
+ *
+ * @param {ReadonlyArray<{b2FileId: string, sizeBytes: number, createdAt: number, hiddenAt: number|null}>} versions
+ * @param {number} now
+ * @param {{minimumStayDays?: number}} [storage]
+ * @returns {{bytes: number, oldestCreatedAt: number|null}}
+ */
+export function ghostFromVersions(versions, now, storage = STORAGE) {
+  if (!Array.isArray(versions)) {
+    throw new TypeError(`ghostFromVersions needs a list of versions, got ${String(versions)}`);
+  }
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new TypeError(`now must be 0 or more whole milliseconds, got ${String(now)}`);
+  }
+  const stayDays = storage.minimumStayDays ?? STORAGE.minimumStayDays;
+  if (!Number.isInteger(stayDays) || stayDays < 0) {
+    throw new TypeError(`minimumStayDays must be 0 or more whole days, got ${String(stayDays)}`);
+  }
+  if (stayDays === 0) {
+    return Object.freeze({ bytes: 0, oldestCreatedAt: null });
+  }
+  const stayMs = stayDays * DAY_MS;
+  /** @type {Map<string, (typeof versions)[number]>} */
+  const byId = new Map();
+  for (const version of versions) {
+    if (typeof version !== "object" || version === null) {
+      throw new TypeError(`ghostFromVersions needs version rows, got ${String(version)}`);
+    }
+    if (typeof version.b2FileId !== "string" || version.b2FileId === "") {
+      throw new TypeError("ghostFromVersions needs a version id on every row");
+    }
+    byId.set(version.b2FileId, version);
+  }
+  const unique = [...byId.values()];
+  let bytes = 0;
+  /** @type {number|null} */
+  let oldestCreatedAt = null;
+  for (const version of unique) {
+    if (version.hiddenAt === null || version.hiddenAt === undefined) {
+      continue;
+    }
+    if (!Number.isSafeInteger(version.sizeBytes) || version.sizeBytes < 0) {
+      throw new TypeError(
+        `sizeBytes must be 0 or more whole bytes, got ${String(version.sizeBytes)}`,
+      );
+    }
+    if (!Number.isSafeInteger(version.createdAt) || !Number.isSafeInteger(version.hiddenAt)) {
+      throw new TypeError("ghostFromVersions needs whole createdAt and hiddenAt");
+    }
+    const life = version.hiddenAt - version.createdAt;
+    if (life >= stayMs) {
+      continue;
+    }
+    if (version.createdAt + stayMs <= now) {
+      continue;
+    }
+    const handoff = unique.some(
+      (successor) =>
+        successor.b2FileId !== version.b2FileId &&
+        successor.sizeBytes === version.sizeBytes &&
+        successor.createdAt === version.hiddenAt,
+    );
+    if (handoff) {
+      continue;
+    }
+    bytes += version.sizeBytes;
+    if (oldestCreatedAt === null || version.createdAt < oldestCreatedAt) {
+      oldestCreatedAt = version.createdAt;
+    }
+  }
+  return Object.freeze({ bytes, oldestCreatedAt });
+}
+
+export const GHOST_BYTES_SQL = `SELECT
+    COALESCE(SUM(g.size_bytes), 0) AS ghost_bytes,
+    MIN(g.created_at) AS oldest_created_at
+  FROM (
+    SELECT v.b2_file_id, v.size_bytes, v.created_at
+      FROM file_versions v
+     WHERE v.account_id = ?1
+       AND v.hidden_at IS NOT NULL
+       AND (v.hidden_at - v.created_at) < ?2
+       AND (v.created_at + ?2) > ?3
+       AND NOT EXISTS (
+         SELECT 1 FROM file_versions s
+          WHERE s.account_id = v.account_id
+            AND s.size_bytes = v.size_bytes
+            AND s.created_at = v.hidden_at
+            AND s.b2_file_id != v.b2_file_id
+       )
+     GROUP BY v.b2_file_id
+  ) g`;
+
+export const SIZE30_BYTES_SQL = `SELECT COALESCE(MAX(stored_bytes), 0) AS size30_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1 AND hour >= ?2`;
+
+export const LIVE_BYTES_SQL = `SELECT COALESCE(SUM(size_bytes), 0) AS live_bytes
+  FROM file_versions
+  WHERE account_id = ?1 AND hidden_at IS NULL`;
+
+/**
+ * Live bytes, ghost bytes and size30 for one account at `now` (drive#364).
+ * size30 is the larger of the trailing-30-day peak in usage_minutes and the
+ * bytes live now, so an upload that has not yet rolled still raises it.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} [now]
+ * @param {typeof STORAGE} [storage]
+ */
+export async function fairUseSnapshot(db, accountId, now = Date.now(), storage = STORAGE) {
+  if (!db) {
+    throw new Error("fair-use snapshot: METER_DB binding is not configured");
+  }
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`fairUseSnapshot needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new TypeError(`now must be 0 or more whole milliseconds, got ${String(now)}`);
+  }
+  if (
+    typeof storage.minimumStayDays !== "number" ||
+    !Number.isInteger(storage.minimumStayDays) ||
+    storage.minimumStayDays < 0
+  ) {
+    throw new TypeError(
+      `storage.minimumStayDays must be 0 or more whole days, got ${String(storage.minimumStayDays)}`,
+    );
+  }
+  const stayMs = storage.minimumStayDays * DAY_MS;
+  const liveRow = await db.prepare(LIVE_BYTES_SQL).bind(accountId).first();
+  const liveBytes = Number(/** @type {{live_bytes?: unknown}|null} */ (liveRow)?.live_bytes ?? 0);
+  if (!Number.isSafeInteger(liveBytes) || liveBytes < 0) {
+    throw new TypeError(`live bytes must be 0 or more whole bytes, got ${String(liveBytes)}`);
+  }
+  let ghostBytes = 0;
+  /** @type {number|null} */
+  let oldestGhostCreatedAt = null;
+  if (stayMs > 0) {
+    const ghostRow = await db.prepare(GHOST_BYTES_SQL).bind(accountId, stayMs, now).first();
+    ghostBytes = Number(/** @type {{ghost_bytes?: unknown}|null} */ (ghostRow)?.ghost_bytes ?? 0);
+    const oldest = /** @type {{oldest_created_at?: unknown}|null} */ (ghostRow)?.oldest_created_at;
+    oldestGhostCreatedAt = oldest === null || oldest === undefined ? null : Number(oldest);
+    if (!Number.isSafeInteger(ghostBytes) || ghostBytes < 0) {
+      throw new TypeError(`ghost bytes must be 0 or more whole bytes, got ${String(ghostBytes)}`);
+    }
+    if (oldestGhostCreatedAt !== null && !Number.isSafeInteger(oldestGhostCreatedAt)) {
+      throw new TypeError(
+        `oldest ghost created_at must be whole milliseconds, got ${String(oldest)}`,
+      );
+    }
+  }
+  const windowStart = now - 30 * DAY_MS;
+  const peakRow = await db.prepare(SIZE30_BYTES_SQL).bind(accountId, windowStart).first();
+  const peakBytes = Number(
+    /** @type {{size30_bytes?: unknown}|null} */ (peakRow)?.size30_bytes ?? 0,
+  );
+  if (!Number.isSafeInteger(peakBytes) || peakBytes < 0) {
+    throw new TypeError(`size30 bytes must be 0 or more whole bytes, got ${String(peakBytes)}`);
+  }
+  const size30Bytes = Math.max(peakBytes, liveBytes);
+  return Object.freeze({ liveBytes, ghostBytes, size30Bytes, oldestGhostCreatedAt, now });
+}
+
+/**
+ * Snapshot plus the same check the upload path, the usage page and
+ * `drive status` share (drive#364). Missing data throws, so the caller can
+ * fail open and report rather than guessing a size.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} uploadBytes
+ * @param {number} [now]
+ */
+export async function runFairUseCheck(db, accountId, uploadBytes, now = Date.now()) {
+  const snapshot = await fairUseSnapshot(db, accountId, now);
+  const check = fairUseCheck({ ...snapshot, uploadBytes });
+  return Object.freeze({ snapshot, check });
+}
+
+/**
+ * The upload-path adapter both Workers share (drive#364): one snapshot, one
+ * check, record every decision, mail a would-refuse at most once per 30 days.
+ * A throw fails open and is reported, so a missing meter never pauses by
+ * guesswork.
+ * @param {D1Database} db
+ * @param {{
+ *   refuse: boolean,
+ *   onError: (error: unknown, job: string) => void,
+ *   email?: {send: Function},
+ *   from?: string,
+ * }} options
+ * @returns {(accountId: string, uploadBytes: number) => Promise<(ReturnType<typeof fairUseCheck>)|null>}
+ */
+export function fairUseUploadCheck(db, options) {
+  /**
+   * @param {string} accountId
+   * @param {number} uploadBytes
+   */
+  return async (accountId, uploadBytes) => {
+    try {
+      const { snapshot, check } = await runFairUseCheck(db, accountId, uploadBytes);
+      try {
+        await recordFairUseDecision(
+          db,
+          accountId,
+          snapshot,
+          check,
+          uploadBytes,
+          options.refuse && check.wouldRefuse,
+        );
+      } catch (error) {
+        options.onError(error, "fair-use decision record");
+      }
+      if (check.wouldRefuse && options.refuse) {
+        try {
+          await sendFairUsePauseIfDue(db, accountId, check, {
+            email: options.email,
+            from: options.from ?? "",
+            refuse: options.refuse,
+          });
+        } catch (error) {
+          options.onError(error, "fair-use notice");
+        }
+      }
+      return check;
+    } catch (error) {
+      options.onError(error, "fair-use snapshot");
+      return null;
+    }
+  };
+}
+
+const FAIR_USE_DECISION_SQL = `INSERT INTO fair_use_decisions
+  (account_id, decided_at, live_bytes, ghost_bytes, upload_bytes, size30_bytes, limit_bytes, would_refuse, refused)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`;
+
+/**
+ * One row per check, including report-only would-refuse (drive#364). The
+ * refused flag is whether this request actually stopped the upload.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{liveBytes: number, ghostBytes: number, size30Bytes: number, now: number}} snapshot
+ * @param {{limitBytes: number, wouldRefuse: boolean}} check
+ * @param {number} uploadBytes
+ * @param {boolean} refused
+ */
+export async function recordFairUseDecision(db, accountId, snapshot, check, uploadBytes, refused) {
+  if (!db) {
+    throw new Error("fair-use decision: METER_DB binding is not configured");
+  }
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`recordFairUseDecision needs an account id, got ${String(accountId)}`);
+  }
+  await db
+    .prepare(FAIR_USE_DECISION_SQL)
+    .bind(
+      accountId,
+      snapshot.now,
+      snapshot.liveBytes,
+      snapshot.ghostBytes,
+      uploadBytes,
+      snapshot.size30Bytes,
+      check.limitBytes,
+      check.wouldRefuse ? 1 : 0,
+      refused ? 1 : 0,
+    )
+    .run();
+}
+
+const FAIR_USE_NOTICE_READ_SQL =
+  "SELECT email, fair_use_notice_sent_at FROM accounts WHERE id = ?1";
+const FAIR_USE_NOTICE_STAMP_SQL = `UPDATE accounts SET fair_use_notice_sent_at = ?2
+  WHERE id = ?1 AND (fair_use_notice_sent_at IS NULL OR fair_use_notice_sent_at <= ?3)`;
+const FAIR_USE_NOTICE_REVERT_SQL = "UPDATE accounts SET fair_use_notice_sent_at = ?2 WHERE id = ?1";
+
+/**
+ * Mails the pause once per 30 days (drive#364). No address or no EMAIL
+ * binding is a skip, not a stamp, so a later send still goes out.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{line: {copy: string}, opensAt: number}} check
+ * @param {{email?: {send: Function}, from?: string, now?: number, refuse?: boolean}} options
+ *   `refuse` is whether FAIR_USE_REFUSE is on. Report-only must pass false
+ *   (or omit it): no mail, no stamp.
+ */
+export async function sendFairUsePauseIfDue(db, accountId, check, options = {}) {
+  if (!db) {
+    throw new Error("fair-use notice: METER_DB binding is not configured");
+  }
+  // Report-only (FAIR_USE_REFUSE not "on") records the would-refuse and
+  // must not mail or start the 30-day notice clock (drive#364).
+  if (options.refuse !== true) {
+    return false;
+  }
+  const now = options.now ?? Date.now();
+  const row = await db.prepare(FAIR_USE_NOTICE_READ_SQL).bind(accountId).first();
+  const fields = /** @type {{email?: unknown, fair_use_notice_sent_at?: unknown}|null} */ (row);
+  const email = typeof fields?.email === "string" ? fields.email.trim() : "";
+  if (email.length === 0) {
+    console.error(`fair-use: account ${accountId} is due a pause notice but has no email`);
+    return false;
+  }
+  const last = fields?.fair_use_notice_sent_at;
+  const lastMs = last === null || last === undefined ? null : Number(last);
+  if (lastMs !== null && Number.isSafeInteger(lastMs) && now - lastMs < 30 * DAY_MS) {
+    return false;
+  }
+  if (options.email === undefined) {
+    console.error("fair-use: no email binding on this deployment, so no pause notice went out");
+    return false;
+  }
+  if (typeof options.from !== "string" || options.from.trim().length === 0) {
+    console.error("fair-use: MAIL_FROM is not set, so no pause notice went out");
+    return false;
+  }
+  // Claim the 30-day slot before sending, so two concurrent would-refuses
+  // cannot both mail. A send that throws puts the stamp back so a later
+  // upload can retry.
+  const cutoff = now - 30 * DAY_MS;
+  const claimed = await db.prepare(FAIR_USE_NOTICE_STAMP_SQL).bind(accountId, now, cutoff).run();
+  if (typeof claimed.meta?.changes !== "number") {
+    throw new TypeError("fair-use notice stamp reported no change count");
+  }
+  if (claimed.meta.changes === 0) {
+    return false;
+  }
+  try {
+    await sendEmail(/** @type {import("./email-send.js").EmailBinding} */ (options.email), {
+      to: email,
+      from: options.from,
+      kind: "fair-use-pause",
+      data: { copy: check.line.copy },
+    });
+  } catch (error) {
+    await db.prepare(FAIR_USE_NOTICE_REVERT_SQL).bind(accountId, lastMs).run();
+    throw error;
+  }
+  return true;
 }
 
 const NIGHTLY_SIZES_WRITE_SQL = `INSERT INTO nightly_sizes
@@ -2297,11 +2653,13 @@ function providerMillis(value, field) {
  *   provider's own listing, walked one account prefix at a time, so the
  *   provider is a parameter and the reconciler stays provider-agnostic
  * @param {number|Date|string} now the run instant
+ * @param {(ourBytes: number, vendorBytes: number) => void} [onFairUseGap]
+ *   compared live + ghost with the provider listing (Active + Deleted).
  * @returns {Promise<{accounts: number, versions: number, inserted: number,
  *   hidden: number, marked: number, skipped: number,
  *   earliestAffectedHour: number|null}>}
  */
-export async function reconcileMeter(db, store, now = Date.now()) {
+export async function reconcileMeter(db, store, now = Date.now(), onFairUseGap) {
   if (!db) {
     throw new Error("reconciler: METER_DB binding is not configured");
   }
@@ -2325,6 +2683,9 @@ export async function reconcileMeter(db, store, now = Date.now()) {
   for (const account of accounts) {
     try {
       const one = await reconcileAccount(db, store, account, at);
+      if (one.fairUse && typeof onFairUseGap === "function") {
+        onFairUseGap(one.fairUse.ourBytes, one.fairUse.vendorBytes);
+      }
       result.versions += one.versions;
       result.inserted += one.inserted;
       result.hidden += one.hidden;
@@ -2390,7 +2751,8 @@ export async function reconcileMeter(db, store, now = Date.now()) {
  * @param {string} account
  * @param {number|Date|string} now
  * @returns {Promise<{versions: number, inserted: number, hidden: number,
- *   marked: number, skipped: number, earliestAffectedHour: number|null}>}
+ *   marked: number, skipped: number, earliestAffectedHour: number|null,
+ *   fairUse: {ourBytes: number, vendorBytes: number}|null}>}
  */
 export async function reconcileAccount(db, store, account, now) {
   if (typeof account !== "string" || account === "") {
@@ -2529,6 +2891,30 @@ export async function reconcileAccount(db, store, account, now) {
     // all, so a half-fixed ledger cannot exist.
     await db.batch(statements);
   }
+  /** @type {{ourBytes: number, vendorBytes: number}|null} */
+  let fairUse = null;
+  try {
+    const snapshot = await fairUseSnapshot(db, account, at);
+    const check = fairUseCheck({ ...snapshot, uploadBytes: 0 });
+    await recordFairUseDecision(db, account, snapshot, check, 0, false);
+    let vendorBytes = 0;
+    for (const raw of listed) {
+      const size = Number(/** @type {{sizeBytes?: unknown}} */ (raw).sizeBytes);
+      if (Number.isSafeInteger(size) && size >= 0) {
+        vendorBytes += size;
+      }
+    }
+    fairUse = {
+      ourBytes: snapshot.liveBytes + snapshot.ghostBytes,
+      vendorBytes,
+    };
+  } catch (recordError) {
+    console.error(
+      "meter reconciler: fair-use record failed",
+      `account=${account}`,
+      recordError instanceof Error ? recordError.message : String(recordError),
+    );
+  }
   return {
     versions: listed.length,
     inserted,
@@ -2536,6 +2922,7 @@ export async function reconcileAccount(db, store, account, now) {
     marked,
     skipped,
     earliestAffectedHour,
+    fairUse,
   };
 }
 

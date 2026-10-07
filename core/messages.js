@@ -486,6 +486,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The billing portal did not open, and no card was changed.",
     next: "Try again in a minute.",
   }),
+  // Fair-use pause (drive#364): young deletes would cost more than the
+  // account pays. Reading, downloading and deleting keep working.
+  "fair-use-pause": Object.freeze({
+    what: "Uploads are paused because young deletes still count.",
+    next: "You can still open, download and delete files, and nothing was charged.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the

@@ -660,6 +660,7 @@ h2 {
       <section aria-labelledby="uploads-heading">
         <h2 id="uploads-heading">Uploads</h2>
         <p class="upload-line" id="upload-line" hidden></p>
+        <p class="upload-line" id="fair-use-line" hidden></p>
         <p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file.</p>
       </section>
 
@@ -804,6 +805,7 @@ const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
 const openPublicLinksEl = document.getElementById("open-public-links");
 const uploadLineEl = document.getElementById("upload-line");
+const fairUseLineEl = document.getElementById("fair-use-line");
 const capAmount = document.getElementById("cap-amount");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
@@ -1052,6 +1054,7 @@ function render(summary) {
     // page cannot render, so it takes the unreachable state rather than
     // printing "null" or "undefined" where a line belongs.
     (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
+    (summary.fairUseLine !== null && typeof summary.fairUseLine !== "string") ||
     typeof summary.billCents !== "object" ||
     summary.billCents === null ||
     !Array.isArray(summary.billCents.lines) ||
@@ -1112,6 +1115,8 @@ function render(summary) {
   // it was sent and hides the line when there is no queue to report.
   uploadLineEl.textContent = summary.uploadLine === null ? "" : summary.uploadLine;
   uploadLineEl.hidden = summary.uploadLine === null;
+  fairUseLineEl.textContent = summary.fairUseLine === null ? "" : summary.fairUseLine;
+  fairUseLineEl.hidden = summary.fairUseLine === null;
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
   // month's maximum or the cap, whichever is larger, in whole dollars.

@@ -169,6 +169,41 @@ export function reportPurgeFailures(purgeFailures, purged, sentry = stockSentry)
 }
 
 /**
+ * Reports a gap between our fair-use meter and the vendor's stored bytes
+ * (drive#364). More than 1% either way is a warning: the pause is only as
+ * honest as the sizes it reads, and a silent drift would pause the wrong
+ * accounts or miss a pause.
+ * @param {number} ourBytes live + ghost we counted
+ * @param {number} vendorBytes the vendor's stored-bytes figure for the same account
+ * @param {Sentry} [sentry]
+ */
+export function reportFairUseVendorGap(ourBytes, vendorBytes, sentry = stockSentry) {
+  if (!Number.isSafeInteger(ourBytes) || ourBytes < 0) {
+    throw new TypeError(`ourBytes must be 0 or more whole bytes, got ${String(ourBytes)}`);
+  }
+  if (!Number.isSafeInteger(vendorBytes) || vendorBytes < 0) {
+    throw new TypeError(`vendorBytes must be 0 or more whole bytes, got ${String(vendorBytes)}`);
+  }
+  if (vendorBytes === 0) {
+    if (ourBytes === 0) {
+      return;
+    }
+    sentry.captureMessage(
+      `fair-use vendor gap: our meter is ${ourBytes} bytes and the vendor reports 0`,
+      "warning",
+    );
+    return;
+  }
+  const gap = Math.abs(ourBytes - vendorBytes) / vendorBytes;
+  if (gap > 0.01) {
+    sentry.captureMessage(
+      `fair-use vendor gap: ${(gap * 100).toFixed(2)}% — our ${ourBytes} bytes vs vendor ${vendorBytes} bytes`,
+      "warning",
+    );
+  }
+}
+
+/**
  * Reports an error that the runtime would otherwise swallow: a `waitUntil`
  * rejection never reaches the caller, and a `console.error` in the Worker
  * goes nowhere the on-call looks (issue #520). The rethrow at the call site
