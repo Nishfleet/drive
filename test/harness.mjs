@@ -34,11 +34,13 @@ import { applyMigrations, d1BindValue, MIGRATION_FILES } from "./d1-sqlite.mjs";
  * build one schema and test/d1-sqlite.test.mjs proves it.
  *
  * The hand-written array that used to sit here was the bug, not the concept of
- * a short list: seven files were in no list at all — the meter's tables, the
- * device sign-in tables, the billing pushes, the cap rebuilds and the abuse
- * guards — so a default-harness test could prove a thing true only of itself.
- * A migration added today lands here with no edit, and the next run either
- * reads the real column or fails.
+ * a short list: ten files in the folder were in no list at all (the same ten
+ * `test/d1-sqlite.test.mjs` names: stored-bytes, device codes, billing pushes,
+ * the two 0017 drops, the month-spend drop, nightly sizes, hidden_at,
+ * meter-scale, welcome_sent_at). `0005_meter.sql` and `0019_abuse_guards.sql`
+ * were already in the old list. A default-harness test could prove a thing
+ * true only of itself. A migration added today lands here with no edit, and
+ * the next run either reads the real column or fails.
  */
 export const DRIVE_MIGRATIONS = Object.freeze(MIGRATION_FILES.map((name) => `drive/${name}`));
 

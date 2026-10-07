@@ -58,10 +58,11 @@ import { createTestD1, createTestKv } from "./harness.mjs";
 // up to and not including the drop, plus the files after it that today's reader
 // names a column of. Nothing here is a copy of a migration list, so the order
 // and the SQL are the folder's own and cannot drift from what the deploy
-// applies; `READER_DEPENDS_ON` is a list of NAMES, and a reader that starts to
-// need a later migration fails these proofs with `no such column` until its
-// name goes in. That failure is the point: it is the next run's edit, not a
-// silently passing proof of nothing.
+// applies; `READER_DEPENDS_ON` is a list of NAMES that must sort after the
+// drop (a name at or before it throws, so it cannot double-apply or run out
+// of folder order), and a reader that starts to need a later migration fails
+// these proofs with `no such column` until its name goes in. That failure is
+// the point: it is the next run's edit, not a silently passing proof of nothing.
 //
 // The proofs are kept because what they measure is the reader's rule (drive#329:
 // the namespace the pointer names is the only source), and that rule has to hold
@@ -74,16 +75,22 @@ if (leftoverDropAt < 0) {
     `${LEFTOVER_COLUMN_DROP} is not in migrations/drive/; the leftover-column subset cannot be built`,
   );
 }
+const extraAfterDrop = READER_DEPENDS_ON.map((name) => {
+  const at = MIGRATION_FILES.indexOf(name);
+  if (at < 0) {
+    throw new Error(`${name} is not in migrations/drive/; add it under its real filename`);
+  }
+  if (at <= leftoverDropAt) {
+    throw new Error(
+      `${name} sorts at or before ${LEFTOVER_COLUMN_DROP}; READER_DEPENDS_ON is only files after the drop`,
+    );
+  }
+  return name;
+});
 const WITH_LEFTOVER_COLUMN = Object.freeze(
-  [
-    ...MIGRATION_FILES.slice(0, leftoverDropAt),
-    ...READER_DEPENDS_ON.map((name) => {
-      if (!MIGRATION_FILES.includes(name)) {
-        throw new Error(`${name} is not in migrations/drive/; add it under its real filename`);
-      }
-      return name;
-    }),
-  ].map((name) => `drive/${name}`),
+  [...MIGRATION_FILES.slice(0, leftoverDropAt), ...extraAfterDrop]
+    .sort()
+    .map((name) => `drive/${name}`),
 );
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
