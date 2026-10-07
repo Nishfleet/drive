@@ -168,13 +168,13 @@ func runUndo(args []string) error {
 func undoPreview(client *APIClient, name string) (RewindPreview, error) {
 	if strings.TrimSpace(name) != "" {
 		var answer rewindOneAnswer
-		if err := client.do("GET", rewindPathFor(name), nil, &answer); err != nil {
+		if err := client.Do("GET", rewindPathFor(name), nil, &answer); err != nil {
 			return RewindPreview{}, err
 		}
 		return answer.Rewind, nil
 	}
 	var answer rewindListAnswer
-	if err := client.do("GET", REWIND_PATH, nil, &answer); err != nil {
+	if err := client.Do("GET", REWIND_PATH, nil, &answer); err != nil {
 		return RewindPreview{}, err
 	}
 	newest, ok := newestRewindable(answer.Rewinds)
@@ -189,7 +189,7 @@ func undoPreview(client *APIClient, name string) (RewindPreview, error) {
 // same way: the branch's copy is gone and the original was never named.
 func undoNow(client *APIClient, name string) error {
 	var answer rewindDoneAnswer
-	if err := client.post(rewindPathFor(name), map[string]string{}, &answer); err != nil {
+	if err := client.Post(rewindPathFor(name), map[string]string{}, &answer); err != nil {
 		return err
 	}
 	if isBranchJobState(answer.State) {

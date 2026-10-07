@@ -107,11 +107,14 @@ func VFSArgs(cacheMax string) []string {
 		// much free space, whatever the max-size above would allow. That is
 		// what makes a cap a cap rather than a promise.
 		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
-		// S3 sends no change notifications, so without a short directory cache
-		// a save made on the other machine waits out rclone's 5-minute default
-		// before it is visible here. The step-3 two-machine proof measured it
-		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
-		// flag, still absent after 60 s without.
+		// S3 sends no change notifications. A short directory cache (5s) made
+		// the other machine see a save quickly, but rclone re-lists when the
+		// cache is older than this and returns the error on failure (no
+		// stale-on-error, rclone#1963), so a kept-offline folder became
+		// "Input/output error" five seconds after the network dropped
+		// (issue #541). Freshness is vfs/refresh from the fill loop while
+		// storage answers. 24h is "five minutes or more" so a listing
+		// survives a dropped link for a day's travel, not five seconds.
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
 		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),
@@ -287,7 +290,7 @@ func rcloneEnvRedacted(p MountPlan) string {
 
 func rcClientForMount(p MountPlan) *rcClient {
 	c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
-	c.user, c.pass = p.RCUser, p.RCPass
+	c.SetAuth(p.RCUser, p.RCPass)
 	return c
 }
 
@@ -309,14 +312,6 @@ func DeviceName() string {
 	}
 	return DefaultDeviceName()
 }
-
-// rcAddrEnvName is the environment variable that carries the remote
-// control's loopback address. Two mounts on one host cannot both bind one
-// address (drive#807), so a person's mount picks a free loopback port and
-// stores it in rclone.env under this name. DRIVE_RC_ADDR and --rc-addr still
-// override, which is how the two-machine proof (issue #30) and the tests pin
-// a port.
-const rcAddrEnvName = "DRIVE_RC_ADDR"
 
 // RCAddr is the loopback address a command that has not yet prepared a mount
 // would bind. A real `drive mount` overwrites it in prepareMountAuth with a
@@ -776,7 +771,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	// changed and the drive is up, the run says so and leaves the mount
 	// alone. A stopped drive still starts: an unchanged plan is not a
 	// reason to leave a mount down.
-	if !envChanged && mountWritesUnchanged(writes) {
+	if !envChanged && mountWritesUnchanged(goos, writes) {
 		up, probeErr := mountState(goos, home)
 		if probeErr != nil {
 			// A probe that cannot answer is not an answer, and the drive
@@ -872,10 +867,22 @@ type mountWrite struct {
 // login item would break open files (issue #561). A mode that drifted
 // (the config and the login item carry the storage secret, so both are
 // 0600) is a change too: the run repairs it.
-func mountWritesUnchanged(writes []mountWrite) bool {
+//
+// The mode is compared on every platform but Windows (drive#817): a
+// Windows file's permission bits are not the Unix ones, because the
+// file system stores only a read-only attribute and the OS answers a
+// stat with the whole mode every Unix write would use, so the 0600
+// this code asks for never matches what comes back and an unchanged
+// Windows mount would count as changed on every run. On Windows the
+// 0600 that does protect the file is asked for at the write, and the
+// bytes are what decide whether a re-run changed anything.
+func mountWritesUnchanged(goos string, writes []mountWrite) bool {
 	for _, w := range writes {
 		info, err := os.Stat(w.path)
-		if err != nil || info.Mode().Perm() != w.mode.Perm() {
+		if err != nil {
+			return false
+		}
+		if goos != "windows" && info.Mode().Perm() != w.mode.Perm() {
 			return false
 		}
 		onDisk, err := os.ReadFile(w.path)
