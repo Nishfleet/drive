@@ -60,6 +60,7 @@ const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.u
 // The Web Files page, which adopted the shared header and menu in drive#425 and
 // is now the third page under the one-navigation gate below.
 const filesPage = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
+const devicesPage = readFileSync(new URL("../public/devices.html", import.meta.url), "utf8");
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
@@ -355,6 +356,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   ]);
   assert.equal(body.labels.storedNow, "0 B");
   assert.equal(body.cardOnFile, false);
+  assert.equal(body.openPublicLinks, 0);
   // drive#417: an account with no card on file has had no charge taken, so the
   // page and the CLI are told that rather than presented with a bill. The cap
   // line is the account's own, unchanged by the card flag: only the charge
@@ -435,6 +437,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "maximumUsd",
     "meteredUsd",
     "monthIso",
+    "openPublicLinks",
     "saved",
     "storedDaily",
     "storedGb",
@@ -611,6 +614,7 @@ const PAGE_IDS = Object.freeze([
   "cost",
   "bill-lines",
   "downloads-line",
+  "open-public-links",
   "upload-line",
   "cap-amount",
   "cap-slider",
@@ -900,6 +904,7 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /<dd id="gb-months"><\/dd>/);
   assert.match(page, /<dd id="cost"><\/dd>/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
+  assert.match(page, /<dd id="open-public-links"><\/dd>/);
   assert.match(page, /<p class="cap-value" id="cap-value"><\/p>/);
   assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
   // A noscript reader is told why, instead of a page with nothing on it.
@@ -935,6 +940,17 @@ test("no bill is shown as if charged while no card is on file", async () => {
   await settle();
   assert.equal(elementOf(charged.elements, "cost").textContent, "$0.00");
   assert.equal(elementOf(charged.elements, "bill-lines").hidden, false);
+});
+
+test("the usage page shows the count of open public links", async () => {
+  assert.ok(page.includes(USAGE_LABELS.openPublicLinks));
+  const shown = runPage({
+    ...emptyMonth(),
+    uploadLine: null,
+    openPublicLinks: 3,
+  });
+  await settle();
+  assert.equal(elementOf(shown.elements, "open-public-links").textContent, "3");
 });
 
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {
@@ -1078,12 +1094,12 @@ test("the cap is a control, not a readout, and it saves through the api", async 
 });
 
 test("the pages' mastheads read as one navigation", () => {
-  // The review found the headers disagreeing. The three mastheads that carry a
-  // nav (usage, get-started and the Web Files page since drive#425) list Your
-  // files, Pricing, Get started, Usage, Sign in in that order (the Web Files
-  // link leads since #48 merged, and Sign in closes it since drive#10), and
+  // The review found the headers disagreeing. The mastheads that carry a
+  // nav (usage, get-started, files, and devices since drive#525) list Your
+  // files, Pricing, Get started, Usage, Devices, Sign in in that order (the Web Files
+  // link leads since #48 merged, Devices since #525, and Sign in closes it since drive#10), and
   // each marks itself. Sign out is a button, not a link, so a signed-out
-  // browser and a browser with no script still see the five links; JS swaps
+  // browser and a browser with no script still see the six links; JS swaps
   // Sign in for Sign out when the account is there (drive#423). The pricing
   // page's masthead is its wordmark alone — its links are its footer nav,
   // which is issue #11's and is checked below.
@@ -1092,6 +1108,7 @@ test("the pages' mastheads read as one navigation", () => {
     '<a href="/"',
     '<a href="/get-started"',
     '<a href="/usage"',
+    '<a href="/devices"',
     '<a href="/signin"',
   ];
   // The link each page marks as the one the reader is on.
@@ -1099,11 +1116,13 @@ test("the pages' mastheads read as one navigation", () => {
     ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
     ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
     ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
+    ["devices.html", /<a href="\/devices" aria-current="page">Devices<\/a>/],
   ]);
   for (const [name, html] of [
     ["usage.html", page],
     ["get-started.html", getStartedPage],
     ["files.html", filesPage],
+    ["devices.html", devicesPage],
   ]) {
     // The header's own links, and not the page's: a link elsewhere must not
     // satisfy this gate, and must not fail it either. The header is the markup
@@ -1114,7 +1133,7 @@ test("the pages' mastheads read as one navigation", () => {
     assert.deepEqual(
       links,
       nav,
-      `${name}'s header carries the site's five links, and nothing else, in the same order`,
+      `${name}'s header carries the site's six links, and nothing else, in the same order`,
     );
     assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
     assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
@@ -1156,6 +1175,7 @@ test("the pages' mastheads read as one navigation", () => {
   for (const [name, source] of [
     ["usage.html", page],
     ["files.html", filesPage],
+    ["devices.html", devicesPage],
     ["get-started.js", getStartedJs],
   ]) {
     assert.match(

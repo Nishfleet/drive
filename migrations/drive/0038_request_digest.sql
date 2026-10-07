@@ -1,0 +1,26 @@
+-- The per-link arrival digest (drive issue #684): one email a day to an
+-- upload link's owner, listing what arrived through that link since the last
+-- digest.
+--
+-- digest_at: epoch milliseconds when the last digest went out for this link.
+-- NULL is "never sent". It records the last send; it does not gate one. The
+-- one-a-day bound is the queue clear below plus the nightly schedule: a
+-- successful send empties pending_uploads and stamps this, so the next run
+-- finds nothing to mail until a new arrival lands, and only a link whose
+-- send failed keeps its queue unstamped for the next night's retry.
+--
+-- pending_uploads: a JSON array of {bytes, name} for each file written through
+-- the link since the last digest. It is bounded by the link's own max_files
+-- (100 by default, migrations/drive/0025_link_caps.sql): a link accepts at
+-- most max_files files over its whole life, and every successful drop appends
+-- exactly one entry, so the array cannot grow past the row it belongs to.
+-- A link whose owner has no address (or a deployment with no MAIL_FROM) is
+-- skipped each night and keeps at most that same max_files entries; it is
+-- logged and retried, never re-mailed to nobody.
+--
+-- Expand only (drive issue #170). Both columns are additive, and
+-- pending_uploads carries a DEFAULT, so the previous version of the code keeps
+-- INSERT-ing and reading upload_requests while these columns exist. D1 has no
+-- down-migration, so this is one-way and the row keeps the columns.
+ALTER TABLE upload_requests ADD COLUMN digest_at INTEGER;
+ALTER TABLE upload_requests ADD COLUMN pending_uploads TEXT NOT NULL DEFAULT '[]';

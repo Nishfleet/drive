@@ -89,22 +89,33 @@ const conflictPollMax = 100
 // heard about.
 const conflictProtectMax = 64 << 20
 
-// conflictClaimPolls is how long a path whose upload has left the queue
-// is watched while the plain path still holds the version that preceded
-// the save (the upload has not landed, or it landed on a path that had no
-// object). Such a path is not a decided conflict, and staying on it
-// forever would grow the map on a mount that never stops.
-const conflictClaimPolls = 20
+// conflictWatchWindow is how long the guard keeps watching a path after its
+// upload has left the queue, before it concludes nothing will land on top of
+// it. It has to outlast the other device's slowest ordinary landing. Two
+// uploads of one path at the same instant make one of them fail rclone's size
+// check, because the object it reads back is the other device's. rclone then
+// removes that object and retries after twice the write-back delay (10s), and
+// the retry after that waits twice as long again (20s). For that whole time the
+// plain path is either empty or holds the version that preceded the save, and
+// then another device's bytes land on top (drive#813). Watching for the 5s
+// write-back window alone, or for one retry, ends the watch just before that
+// landing and the losing save has no conflict copy.
+const conflictWatchWindow = 40 * time.Second
+
+// conflictClaimPolls is how long a path whose upload has left the queue is
+// watched while the plain path is empty or still holds the version that
+// preceded the save (the upload has not landed, or another device's failed
+// upload removed this device's object and is about to retry). Such a path is
+// not a decided conflict, and staying on it forever would grow the map on a
+// mount that never stops.
+const conflictClaimPolls = int(conflictWatchWindow / conflictInterval)
 
 // conflictWinPolls is how long the guard keeps watching after this
 // device's own save has landed at the plain path, before concluding the
-// save was not overwritten. Another device's upload can land on top of
-// this one for the whole of one sync window after it: a save made two
-// seconds later still has its five-second write-back to land on top of an
-// upload that landed a moment ago. The plain path is polled every
-// conflictInterval, so conflictWinPolls polls cover that window with
-// margin for rclone's own scheduling.
-const conflictWinPolls = 20
+// save was not overwritten. Another device's upload can land on top of this
+// one for the whole of conflictWatchWindow after it. The plain path is polled
+// every conflictInterval, so this many polls cover that window.
+const conflictWinPolls = int(conflictWatchWindow / conflictInterval)
 
 // conflictHashFailPolls is how many remote-hash failures one path may
 // take after it leaves the queue before the skip is named. Holding
