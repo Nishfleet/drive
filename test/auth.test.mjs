@@ -14,6 +14,7 @@
 //      deployment with no auth at all all read as signed out.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
