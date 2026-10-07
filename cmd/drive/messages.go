@@ -28,6 +28,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/Nishfleet/drive/internal/api"
 )
 
 // signInCommand is the one command that signs this machine in. The web
@@ -299,6 +301,18 @@ var messageTable = map[string][2]string{
 		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
 		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
 	},
+	"credentials-unreadable": {
+		"This device's saved drive settings could not be read ({1}).",
+		"Run `drive login` to write them back, or delete {1} by hand first if the same failure repeats.",
+	},
+	"offline-list-unreadable": {
+		"The list of files kept offline could not be read ({1}).",
+		"Delete {1} by hand, then run `drive offline` again for each file you want to keep.",
+	},
+	"device-key-expiring": {
+		"This drive's api minted this device's key to {1}, and `drive login` does not renew one.",
+		"Ask whoever runs this drive's api to mint device keys with no expiry, then run `drive login` again.",
+	},
 	"agent-key-missing": {
 		"{1}'s agent key is missing the settings its own mount needs.",
 		"Run `drive agents revoke {1}`, then `drive agents connect {1}`, to mint a full agent key.",
@@ -391,18 +405,5 @@ func printFailure(w io.Writer, err error) int {
 // the Worker's own refusals (APIError) split by status, anything else is the
 // network. err is never nil at a call site.
 func apiFailureKind(err error) string {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
-			return "key-revoked"
-		}
-		// 426 Upgrade Required is the api Worker's version gate (drive#560):
-		// this build is below the deployment's minimum, and the fix is one
-		// command, so it gets its own words instead of api-refused's.
-		if strings.Contains(apiErr.Status, "426") {
-			return "cli-too-old"
-		}
-		return "api-refused"
-	}
-	return "offline"
+	return api.FailureKind(err)
 }

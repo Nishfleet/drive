@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"html"
 	"io"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Nishfleet/drive/internal/atomicwrite"
 )
 
 func testStorage() StorageConfig {
@@ -1117,5 +1120,155 @@ func TestReadSecretKeyRejectsAnOversizeStdin(t *testing.T) {
 	_, err := ReadSecretKey("", true, strings.NewReader(strings.Repeat("a", maxSecretBytes+64)))
 	if err == nil {
 		t.Fatal("an unbounded pipe must not be read as a secret")
+	}
+}
+
+// TestDefaultHomeIsTheOSHomeDirectoryNotTheEnvironment is drive#544: the
+// default home used to be os.Getenv("HOME"), and Windows exports no HOME, so
+// every default path there resolved against an empty string.
+func TestDefaultHomeIsTheOSHomeDirectoryNotTheEnvironment(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	// The answer a Windows session gives: USERPROFILE.
+	const profile = `C:\Users\Jane`
+	userHomeDir = func() (string, error) { return profile, nil }
+	// A stale HOME is on the machine anyway. It is not the source any more.
+	t.Setenv("HOME", `/nonexistent/old-home`)
+	if got := DefaultHome(); got != profile {
+		t.Errorf("DefaultHome() = %q, want the OS's own home %q", got, profile)
+	}
+}
+
+func TestWindowsBuildWithNoHOMEResolvesTheConfigUnderTheProfile(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	const profile = `C:\Users\Jane`
+	userHomeDir = func() (string, error) { return profile, nil }
+	// What a Windows session has: no HOME at all (drive#544).
+	t.Setenv("HOME", "")
+
+	home := DefaultHome()
+	if home != profile {
+		t.Fatalf("DefaultHome() = %q, want %q with HOME unset", home, profile)
+	}
+	// The paths the config, the cache and the login task hang off must sit
+	// under the profile, not under an empty string. An empty home put them at
+	// `.config\drive` — a relative path that resolves against whatever folder
+	// the command ran from — and the login task runs from System32, so the
+	// mount it started read no rclone config and `drive status` answered from
+	// an empty cache with the mount down.
+	for name, got := range map[string]string{
+		"config dir":    DefaultConfigDir(home),
+		"cache dir":     DefaultCacheDir(home),
+		"credentials":   CredentialsPath(home),
+		"rclone config": RcloneConfigPath(home),
+		"mount log":     filepath.Join(DefaultConfigDir(home), "mount.log"),
+	} {
+		if !strings.HasPrefix(got, profile) {
+			t.Errorf("%s = %q, want it under the profile %q", name, got, profile)
+		}
+		if strings.HasPrefix(got, `.`) || strings.HasPrefix(got, `\`) {
+			t.Errorf("%s = %q is relative: a task that starts from System32 cannot open it", name, got)
+		}
+	}
+}
+
+func TestWriteFileAtomicSyncsTheBytesAndTheDirectory(t *testing.T) {
+	// The rename is a directory operation, not a promise: the bytes have to
+	// reach the disk before the rename, and the rename itself has to reach the
+	// disk after it, or a machine that loses power mid-write leaves a
+	// zero-length credentials.json (drive#544). Both calls are observed here
+	// because the writes are the only part a test can see.
+	var syncedFiles []string
+	var syncedDirs []string
+	origFile, origDir := atomicwrite.SyncFile, atomicwrite.SyncDir
+	t.Cleanup(func() { atomicwrite.SyncFile, atomicwrite.SyncDir = origFile, origDir })
+	atomicwrite.SyncFile = func(f *os.File) error {
+		syncedFiles = append(syncedFiles, f.Name())
+		return f.Sync()
+	}
+	atomicwrite.SyncDir = func(dir string) error {
+		syncedDirs = append(syncedDirs, dir)
+		return nil
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	if err := WriteFileAtomic(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	if len(syncedFiles) != 1 {
+		t.Fatalf("synced files = %v, want the temp file synced once", syncedFiles)
+	}
+	// The temp file is a sibling of its destination, so it is the same
+	// directory the rename moves it inside.
+	if got := filepath.Dir(syncedFiles[0]); got != dir {
+		t.Errorf("synced %s, want a sibling of %s", syncedFiles[0], path)
+	}
+	if len(syncedDirs) != 1 {
+		t.Fatalf("synced directories = %v, want one", syncedDirs)
+	}
+	if syncedDirs[0] != dir {
+		t.Errorf("synced directory %q, want the parent of %s", syncedDirs[0], path)
+	}
+}
+
+func TestWriteFileAtomicNamesTheFileWhenTheSyncRefuses(t *testing.T) {
+	origFile := atomicwrite.SyncFile
+	t.Cleanup(func() { atomicwrite.SyncFile = origFile })
+	atomicwrite.SyncFile = func(*os.File) error { return errors.New("no space left on device") }
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "offline.json")
+	err := WriteFileAtomic(path, []byte("{}\n"), 0o600)
+	if err == nil {
+		t.Fatal("a refused fsync must fail the write: the bytes are not on the disk")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error %v must name the file that was not saved", err)
+	}
+	// Nothing is renamed into place, and no temp file is left behind.
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("stat %s = %v, want no file", path, statErr)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("left behind %v", entries)
+	}
+}
+
+// TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses: the rename
+// is done by the time the directory fsync runs, so a machine that will not
+// fsync the directory has already put the bytes where the next read finds
+// them (drive#544). The command still says so, because nobody proved the
+// change reached the disk.
+func TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses(t *testing.T) {
+	orig := atomicwrite.SyncDir
+	t.Cleanup(func() { atomicwrite.SyncDir = orig })
+	atomicwrite.SyncDir = func(string) error { return errors.New("i/o error") }
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	err := WriteFileAtomic(path, []byte("{}\n"), 0o600)
+	if err == nil {
+		t.Fatal("an unconfirmed write must fail the command")
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "not confirmed") {
+		t.Errorf("error %v must name the file and that its durability is unproven", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read back: %v", readErr)
+	}
+	if string(got) != "{}\n" {
+		t.Errorf("contents = %q, want the new ones: the rename already happened", got)
+	}
+}
+func TestDefaultHomeIsEmptyWhenTheOSHasNoAnswer(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	userHomeDir = func() (string, error) { return "", errors.New("$HOME is not defined") }
+	if got := DefaultHome(); got != "" {
+		t.Errorf("DefaultHome = %q, want empty (the same empty the environment read gave)", got)
 	}
 }

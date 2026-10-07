@@ -27,7 +27,7 @@ export const AGENT_TOOLS = Object.freeze(["claude", "codex", "gemini", "cursor",
  * @param {"device"|"agent"|"s3"|"branch"} kind
  * @returns {Powers}
  */
-export function powersFor(kind) {
+function powersFor(kind) {
   const capabilities = CAPABILITIES_BY_KIND[kind];
   if (!capabilities) {
     throw new TypeError(`no such key kind: ${String(kind)}`);
@@ -65,7 +65,7 @@ export const KEY_POWERS = Object.freeze({
  * @param {"device"|"agent"|"s3"|"branch"} kind
  * @returns {StoragePowers}
  */
-export function storagePowersFor(kind) {
+function storagePowersFor(kind) {
   const switches = deleteSwitchesFor(powersFor(kind).capabilities);
   return {
     // The provider refuses a delete only when the mint sets this switch.

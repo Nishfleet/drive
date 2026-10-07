@@ -37,6 +37,7 @@ import { RECENTLY_DELETED_DAYS } from "../core/files.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
+import { DAY_MS } from "../core/units.js";
 import {
   diffBranch,
   discardBranch,
@@ -52,8 +53,6 @@ export const REWIND_ENDPOINT = "/api/rewind";
  * 30-day undo window (core/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @param {string} message
@@ -185,7 +184,7 @@ export async function rewindPreview(store, branch, now, snapshots) {
  * @param {{id: string}} account
  * @param {string} name
  */
-export async function rewindBranchRow(db, snapshots, store, account, name) {
+async function rewindBranchRow(db, snapshots, store, account, name) {
   const branch = (await listBranches(db, snapshots, store, account)).find(
     (row) => row.name === name,
   );

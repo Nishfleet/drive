@@ -43,7 +43,7 @@ export const QUEUE_REPORT_INTERVAL_SECONDS = 10;
  * How long a mount may stay silent when the queue has not changed (seconds).
  * The CLI posts on change plus this heartbeat (cmd/drive/report.go).
  */
-export const QUEUE_REPORT_HEARTBEAT_SECONDS = 5 * 60;
+const QUEUE_REPORT_HEARTBEAT_SECONDS = 5 * 60;
 
 /**
  * How old a report may be and still read as live (seconds). Three missed
