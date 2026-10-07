@@ -54,9 +54,11 @@ import {
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
-import { failureMessage } from "../core/messages.js";
+import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { unauthorizedResponse } from "../core/status.js";
+
+export { MAX_OPEN_BRANCHES };
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
@@ -97,8 +99,6 @@ export const BRANCH_ACTIVE_STATES = Object.freeze([
   "rewinding",
 ]);
 const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
-// Most branches one account may hold at once (drive#553). Counts every active-name state.
-export const MAX_OPEN_BRANCHES = 10;
 
 /** @typedef {{kind: string, done: number, total: number}} BranchProgress */
 /** @typedef {{send?: Function, sendBatch?: Function}|null} BranchQueue */
@@ -1937,10 +1937,10 @@ export async function createBranch(
         MAX_OPEN_BRANCHES,
       )
       .run();
-    if (!claimed.success) {
+    if (!claimed.success || typeof claimed.meta?.changes !== "number") {
       return { error: failureMessage("unexpected"), status: 500 };
     }
-    if (Number(claimed.meta?.changes ?? 0) === 0) {
+    if (claimed.meta.changes === 0) {
       return { error: failureMessage("branch-limit"), status: 409 };
     }
     claimId = Number(claimed.meta.last_row_id);

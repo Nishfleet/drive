@@ -59,7 +59,8 @@ function makeD1() {
     "drive/0015_branch_row_id.sql",
     // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
     // for the job columns and in-flight unique index it inserts through
-    // (drive#563).
+    // (drive#563). Not the whole folder: 0017_drop_branches_snapshot.sql
+    // removes the leftover column some proofs below still select.
     "drive/0016_founding.sql",
     "drive/0019_abuse_guards.sql",
     "drive/0030_branch_jobs.sql",
@@ -1235,12 +1236,10 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
   const { scoped, db, snapshots } = await driven();
   // Two creates start together below the cap: "held" is already open, and the
   // loser wants a different name, so nothing about the name refuses it. The
-  // earlier count check passes for both of them, so the only thing that
-  // separates the winner from the loser is the claim INSERT's WHERE clause:
-  // the loser inserts no row. That is the path the count check cannot cover,
-  // and the loser must hear the cap answer here rather than copy into a
-  // prefix another create is walking. This test answers the claim insert with
-  // no changed row, exactly what D1 reports the loser.
+  // only thing that separates the winner from the loser is the claim INSERT's
+  // WHERE clause: the loser inserts no row, and must hear the cap answer here
+  // rather than copy into a prefix another create is walking. This test
+  // answers the claim insert with no changed row, exactly what D1 reports.
   await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "held" });
   /** @type {Array<unknown>} */
   const copies = [];
