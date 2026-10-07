@@ -803,6 +803,7 @@ function fingerprintMapFromObject(raw) {
 }
 
 // Bytes under `root` from the store listing. Branch copies skip the file index (drive#553).
+/** @param {FileStore} store @param {string} root */
 async function storedBytesUnder(store, root) {
   let total = 0;
   for (const file of (await listFiles(store, root)).values()) {
@@ -2421,6 +2422,14 @@ function sourceMoved(named, total) {
 //   GET    /api/branches/<name>       the branch's diff
 //   POST   /api/branches/<name>/approve   copy it back
 //   POST   /api/branches/<name>/discard   throw it away
+/**
+ * @param {Request} request
+ * @param {unknown} db
+ * @param {SnapshotStore|null} snapshots
+ * @param {import("../core/files.js").FileStore|null} store
+ * @param {{id: string, name: string}|null} account
+ * @param {{now?: () => number, queue?: {send?: Function, sendBatch?: Function}|null, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ */
 export async function handleBranchesRequest(request, db, snapshots, store, account, options = {}) {
   const now = options.now ?? (() => Date.now());
   const queue = options.queue ?? null;
