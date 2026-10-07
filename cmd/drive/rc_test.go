@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -131,5 +132,56 @@ func TestResolveMountRCAddrDoesNotFallBackTo5572(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing") {
 		t.Errorf("error = %v, want missing stored address", err)
+	}
+}
+
+// vfs/refresh takes one folder per key: dir, dir2, dir3, ... rclone documents
+// this ("Any parameter key starting with dir will refresh that directory",
+// vfs/rc.go), so a kept-offline folder nested in another folder is one request,
+// not a second rc call. This runs the real rcClient.call through the rclone
+// shim and reads the form the shim forwarded, so the keys are checked on the
+// wire rather than in a fake (issue #541).
+func TestRefreshDirsAsksForEveryFolderInOneRequest(t *testing.T) {
+	var mu sync.Mutex
+	var sent map[string]string
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		sent = map[string]string{}
+		for k, v := range r.Form {
+			if strings.HasPrefix(k, "dir") && len(v) > 0 {
+				sent[k] = v[0]
+			}
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"result":{"photos":"OK","photos/2026":"OK"}}`))
+	})
+	if err := c.refreshDirs(context.Background(), []string{"photos", "photos/2026"}); err != nil {
+		t.Fatalf("refreshDirs: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]string{"dir": "photos", "dir2": "photos/2026"}
+	if len(sent) != len(want) {
+		t.Fatalf("refreshDirs sent %v, want %v", sent, want)
+	}
+	for k, v := range want {
+		if sent[k] != v {
+			t.Errorf("refreshDirs %s = %q, want %q", k, sent[k], v)
+		}
+	}
+}
+
+// The second folder's failure must reach the caller: vfs/refresh runs the
+// folder it can and reports the one it cannot, and a swallowed error would
+// leave a kept-offline folder reading a listing older than it thinks
+// (issue #541).
+func TestRefreshDirsSurfacesTheSecondFoldersFailure(t *testing.T) {
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":{"photos":"OK","photos/2026":"connection refused"}}`))
+	})
+	err := c.refreshDirs(context.Background(), []string{"photos", "photos/2026"})
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("refreshDirs = %v, want the second folder's failure named", err)
 	}
 }

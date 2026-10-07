@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -337,20 +338,22 @@ func OfflineCapBytes(home string) (int64, error) {
 // how many bytes it read. The read is through the mount, byte for byte the read
 // an app makes when it opens the file, so the copy lands in the cache
 // `--vfs-cache-max-size` already bounds and nowhere else — there is no
-// directory this product writes file bytes into.
+// directory this product writes file bytes into. ctx bounds each file's read,
+// so the fill loop's pass deadline stops a kept folder that outgrew the pass
+// (drive#742).
 //
 // A file that is already whole in the cache is read again rather than skipped:
 // reading it is what marks it as the most recently used item, which is
 // rclone's own eviction order (see the top of this file), and the read costs a
 // disk read because rclone serves it from disk.
-func KeepOffline(mountDir, rel string) (int64, error) {
+func KeepOffline(ctx context.Context, mountDir, rel string) (int64, error) {
 	full := filepath.Join(mountDir, filepath.FromSlash(rel))
 	info, err := os.Stat(full)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", rel, err)
 	}
 	if !info.IsDir() {
-		return fillReadFile(full)
+		return fillReadFile(ctx, full)
 	}
 	var total int64
 	err = filepath.WalkDir(full, func(p string, d fs.DirEntry, err error) error {
@@ -363,7 +366,7 @@ func KeepOffline(mountDir, rel string) (int64, error) {
 		if d.IsDir() {
 			return nil
 		}
-		n, err := fillReadFile(p)
+		n, err := fillReadFile(ctx, p)
 		if err != nil {
 			return err
 		}
@@ -441,7 +444,7 @@ func runOffline(args []string) error {
 	}
 	var read int64
 	for _, rel := range rels {
-		n, err := KeepOffline(mountDir, rel)
+		n, err := KeepOffline(context.Background(), mountDir, rel)
 		read += n
 		if err != nil {
 			return err

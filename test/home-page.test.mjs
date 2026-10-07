@@ -86,8 +86,9 @@ test("one h1, a main landmark, a skip link and a reduced-motion reset", () => {
   assert.match(html, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation: none !important/);
 });
 
-test("the main action is Get drive, to /signin, with a true pay-as-you-go line", () => {
-  assert.match(html, /<a class="btn" href="\/signin">Get drive/);
+test("the main action is Get drive, to the waitlist while sign-up is closed, with a true pay-as-you-go line", () => {
+  // drive#545: Get drive waitlist pin lives in test/version-1-claims.test.mjs
+  // so the two files cannot drift. This test keeps the prepaid hero line.
   // drive#586: prepaid. The line names the smallest top-up and what 200 GB
   // draws from it.
   const cta = html.match(
