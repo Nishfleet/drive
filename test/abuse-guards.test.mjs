@@ -1385,3 +1385,73 @@ test("givenBack counts accounts, not keys: two frozen keys on one account are bo
   assert.equal(keys.length, 2);
   assert.ok(keys.every((key) => key.capabilities.includes("write")));
 });
+
+test("the give-back leaves a sweep-frozen key alone when the spending cap holds the account", async () => {
+  // The SQL joins accounts.state = 'active', so a pre-charge-limit marker on
+  // an account the money cap already holds is not the give-back's to widen.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "held", { state: "read_only" });
+  db.insertVersion({ accountId: "held", fileId: "file-held", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("held")
+    .mint({ prefix: "u/held/", capabilities: WRITE_CAPS });
+  await applyCapSwap(
+    capSwapPlan(
+      await store.listCapKeys("held"),
+      { state: "read_only" },
+      {
+        reason: PRE_CHARGE_LIMIT_REASON,
+      },
+    ),
+    store.keyProviderFor("held"),
+  );
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  const after = deviceRow(sqlite, key.keyId);
+  assert.deepEqual(JSON.parse(String(after.capabilities)), ["list", "read"]);
+  assert.equal(after.capped_reason, PRE_CHARGE_LIMIT_REASON);
+});
+
+test("the give-back logs one account's failed swap and still reports it", async (t) => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "broken-back");
+  db.insertVersion({
+    accountId: "broken-back",
+    fileId: "big",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("broken-back")
+    .mint({ prefix: "u/broken-back/", capabilities: WRITE_CAPS });
+  await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+
+  sqlite
+    .prepare("UPDATE file_versions SET hidden_at = ?1 WHERE account_id = 'broken-back'")
+    .run(NOW);
+  const errorMock = t.mock.method(console, "error", () => {});
+  const report = await runPreChargeLimitCron({
+    db,
+    devices: {
+      listCapKeys: (accountId) => store.listCapKeys(accountId),
+      keyProviderFor: (accountId) => {
+        if (accountId === "broken-back") {
+          throw new Error("provider down on give-back");
+        }
+        return store.keyProviderFor(accountId);
+      },
+    },
+  });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 1, givenBack: 0 });
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+  const logged = errorMock.mock.calls
+    .map((call) => call.arguments.map(String).join(" "))
+    .join("\n");
+  assert.match(logged, /broken-back/, "the failure names the account it could not restore");
+  assert.match(logged, /provider down on give-back/, "the failure names what went wrong");
+});

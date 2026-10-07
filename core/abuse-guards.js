@@ -515,6 +515,8 @@ export async function preChargeOverLimitAccounts(db) {
  * account the spending cap holds (`accounts.state` read_only) are never
  * widened here, and the prepaid $0 pause caps no key, so it is not touched. An
  * account that has since paid is given back too: the limit no longer holds it.
+ * Keys the sweep froze before this reason existed still carry `spend-cap` and
+ * stay frozen until `drive init` mints a fresh write key.
  *
  * One account's failure is logged and the sweep moves on, the shape
  * runAccountCloseCron uses: the next account is still capped and the next
