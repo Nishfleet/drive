@@ -297,18 +297,18 @@ async function creditFromEvent(db, data, now, mail) {
     return json({ ok: false, ignored: "amount or currency not creditable" });
   }
   const customer = objectOrNull(data.customer);
-  // The card the payment was made with (drive#503). Dodo's payment event
-  // carries `payment_method_id`; some events carry the same value on `method`.
-  // This is the only place a fingerprint comes from, and it is behind the
-  // signature check, so a browser cannot choose it: nothing in the request
-  // body supplies a card (the sign-in form's posted fingerprint is gone,
-  // core/abuse-guards.js).
+  // The card the payment was made with (drive#503). Dodo keys a card on
+  // `payment_method_id`, the one field core/prepaid.js also reads off the live
+  // /payment-methods call, and it is behind the signature check so a browser
+  // cannot choose it: nothing in the request body supplies a card (the sign-in
+  // form's posted fingerprint is gone, core/abuse-guards.js). An event with no
+  // payment method id records no card at all rather than guessing one from
+  // another field -- an earlier `data.method` fallback could have given every
+  // account the same id and locked the second one out with nothing to show it.
+  // Absent is loud: the "card was not recorded" line below fires once per such
+  // payment, so a field-shape change surfaces instead of passing silently.
   const paymentMethodId =
-    typeof data.payment_method_id === "string"
-      ? data.payment_method_id
-      : typeof data.method === "string"
-        ? data.method
-        : null;
+    typeof data.payment_method_id === "string" ? data.payment_method_id : null;
   const credited = await creditTopUp(db, {
     accountId,
     paymentId,

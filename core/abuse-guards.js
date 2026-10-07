@@ -123,11 +123,12 @@ export async function cardFingerprintTaken(db, fingerprint, exceptAccountId) {
  * No fingerprint and no `card_added_at`: an account that has not paid has no
  * card, which is what `cardAdded` and `monthUsage` read (both fail closed), so
  * key minting stays shut until the payment webhook claims the real card. An
- * existing row is left exactly as it is, so this never clears a card, a cap,
- * or a closed state on a returning sign-in.
+ * existing row keeps its card, card_added_at, cap and closed state; only the
+ * email mirror is refreshed from the current session, which keeps a changed
+ * mailbox current for the card-holder notice (core/ledger.js reads it).
  * @param {D1Database} db
  * @param {{accountId: string, email: string, now?: number}} options
- * @returns {Promise<{created: boolean}>}
+ * @returns {Promise<void>}
  */
 export async function ensureBillingAccount(db, options) {
   if (typeof options !== "object" || options === null) {
@@ -149,11 +150,10 @@ export async function ensureBillingAccount(db, options) {
       `INSERT INTO accounts (id, email, created_at, state)
        VALUES (?1, ?2, ?3, 'active')
        ON CONFLICT(id) DO UPDATE SET
-         email = CASE WHEN excluded.email = '' THEN accounts.email ELSE excluded.email END`,
+         email = excluded.email`,
     )
     .bind(accountId, email, Math.floor(nowMs / 1000))
     .run();
-  return { created: true };
 }
 
 /**

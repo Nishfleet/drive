@@ -676,6 +676,64 @@ test("the verified webhook records the card, the customer and the first charge (
   );
 });
 
+test("an event with no payment method id records no card, so a constant field cannot lock an account out (drive#503)", async () => {
+  // drive#503: Dodo keys a card on `payment_method_id`, the one field
+  // core/prepaid.js also reads. A payment that carries some other field (the
+  // old hand fell back to `data.method`) must not become a card: a constant
+  // there would give every account the same fingerprint and shut the second
+  // one's key minting with nothing to show it. No payment method id means no
+  // card claim; the money still credits and the customer is still recorded.
+  const { db, sqlite } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const now = Date.parse("2026-10-05T13:00:00Z");
+  const body = JSON.stringify({
+    type: "payment.succeeded",
+    data: {
+      payment_id: "pay_nomethod",
+      total_amount: 1000,
+      tax: 0,
+      currency: "USD",
+      customer: { customer_id: "cus_nomethod" },
+      method: "card",
+      metadata: { purpose: TOPUP_PURPOSE, account_id: ACCOUNT, source: "topup" },
+    },
+  });
+  const response = await handleBillingWebhook(
+    new Request("https://drive.example/api/billing/webhook", {
+      method: "POST",
+      headers: {
+        "webhook-id": "msg_nomethod",
+        "webhook-timestamp": String(Math.floor(now / 1000)),
+        "webhook-signature": await signWebhook({
+          secret: SECRET,
+          id: "msg_nomethod",
+          timestamp: String(Math.floor(now / 1000)),
+          body,
+        }),
+      },
+      body,
+    }),
+    { db, secret: SECRET, now, email: `${ACCOUNT}@example.com`, mailFrom: MAIL_FROM },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    await response.json(),
+    { ok: true, credited: true },
+    "the money credits either way",
+  );
+  assert.equal(await balanceCents(db, ACCOUNT), 1000);
+  const account = sqlite
+    .prepare("SELECT card_fingerprint, card_added_at, dodo_customer_id FROM accounts WHERE id = ?")
+    .get(ACCOUNT);
+  assert.equal(account?.card_fingerprint, null, "a non-payment_method_id field is not a card");
+  assert.equal(
+    account?.card_added_at,
+    null,
+    "so key minting stays shut instead of guessing a shared id",
+  );
+  assert.equal(account?.dodo_customer_id, "cus_nomethod", "the customer is still recorded");
+});
+
 test("a second account paying with the same card is credited but not stamped (drive#503)", async () => {
   // The one-card-per-account guard cannot be about money. The card claim is
   // reported, the payment is still credited, and the refusing account keeps no
