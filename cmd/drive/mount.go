@@ -771,7 +771,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	// changed and the drive is up, the run says so and leaves the mount
 	// alone. A stopped drive still starts: an unchanged plan is not a
 	// reason to leave a mount down.
-	if !envChanged && mountWritesUnchanged(writes) {
+	if !envChanged && mountWritesUnchanged(goos, writes) {
 		up, probeErr := mountState(goos, home)
 		if probeErr != nil {
 			// A probe that cannot answer is not an answer, and the drive
@@ -867,10 +867,22 @@ type mountWrite struct {
 // login item would break open files (issue #561). A mode that drifted
 // (the config and the login item carry the storage secret, so both are
 // 0600) is a change too: the run repairs it.
-func mountWritesUnchanged(writes []mountWrite) bool {
+//
+// The mode is compared on every platform but Windows (drive#817): a
+// Windows file's permission bits are not the Unix ones, because the
+// file system stores only a read-only attribute and the OS answers a
+// stat with the whole mode every Unix write would use, so the 0600
+// this code asks for never matches what comes back and an unchanged
+// Windows mount would count as changed on every run. On Windows the
+// 0600 that does protect the file is asked for at the write, and the
+// bytes are what decide whether a re-run changed anything.
+func mountWritesUnchanged(goos string, writes []mountWrite) bool {
 	for _, w := range writes {
 		info, err := os.Stat(w.path)
-		if err != nil || info.Mode().Perm() != w.mode.Perm() {
+		if err != nil {
+			return false
+		}
+		if goos != "windows" && info.Mode().Perm() != w.mode.Perm() {
 			return false
 		}
 		onDisk, err := os.ReadFile(w.path)
