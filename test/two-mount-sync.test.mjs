@@ -479,11 +479,16 @@ async function waitForFile(mountDir, name, seconds, rcAddr) {
   const deadline = Date.now() + seconds * 1000;
   const started = Date.now();
   for (;;) {
+    // This proof drives vfs/refresh itself so a 24h directory cache still
+    // sees the other machine's save. The seconds it reports are therefore
+    // a floor (write-back plus one refresh), not the fill loop's interval.
+    // The refresh is called outside the try on purpose: a failed refresh
+    // must fail the proof with rclone's own message, not be swallowed into
+    // a bare timeout that hides why the save never appeared (issue #541).
+    // No fs= is passed: this machine has one mount, and rclone's vfs/refresh
+    // uses the only active VFS when fs is absent (vfs/rc.go, getVFS).
+    await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "vfs/refresh"]);
     try {
-      // This proof drives vfs/refresh itself so a 24h directory cache still
-      // sees the other machine's save. The seconds it reports are therefore
-      // a floor (write-back plus one refresh), not the fill loop's interval.
-      await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "vfs/refresh"]);
       await stat(path.join(mountDir, name));
       return { seconds: (Date.now() - started) / 1000 };
     } catch {

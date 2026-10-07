@@ -120,7 +120,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// 37519236130), so the queues are released together first. Storage is
 	// the truth for the bytes: a mount still holding the save that lost
 	// reads as if both files were the winner (merge-group run 37516493629).
-		candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
+	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
 	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
 	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
 	releaseSavesTogether(t, rcAClient, rcBClient, name)
