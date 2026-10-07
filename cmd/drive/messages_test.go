@@ -72,20 +72,25 @@ func TestFailureTableIsComplete(t *testing.T) {
 }
 
 func TestSharedKindsMatchThePageTable(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "messages.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "messages.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(page)
-	for _, kind := range []string{"offline", "key-revoked", "storage-down", "cap-reached", "unexpected", "disk-cache-full"} {
+	for _, kind := range []string{"offline", "key-revoked", "storage-down", "cap-reached", "unexpected", "disk-cache-full", "cli-too-old"} {
 		entry, ok := messageTable[kind]
 		if !ok {
 			t.Errorf("CLI table missing shared kind %s", kind)
 			continue
 		}
 		if !strings.Contains(text, entry[0]) {
-			t.Errorf("src/messages.js no longer carries the CLI what for %s: %q", kind, entry[0])
+			t.Errorf("core/messages.js no longer carries the CLI what for %s: %q", kind, entry[0])
 		}
+	}
+	// cli-too-old is printed by both the api Worker and the CLI, so its next
+	// line is the page table's words too (the JS table cannot carry backticks).
+	if next := messageTable["cli-too-old"][1]; !strings.Contains(text, next) {
+		t.Errorf("core/messages.js no longer carries the CLI next for cli-too-old: %q", next)
 	}
 }
 

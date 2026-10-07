@@ -7,7 +7,7 @@ limits-page sentence this issue asked for is written and is labelled as a stand-
 one-hour-minimum finding below is a billing change, so its numbers are exact and reproduced by a
 test (test/meter.test.mjs, "a move adds no billed bytes").**
 
-Space's edge, as recorded in the gap list (2026-09-30, internal, no public source): renaming a folder
+The competitor's edge, as recorded in the gap list (2026-09-30, internal, no public source): renaming a folder
 of 200 files takes them 99.0 ms because nothing is copied. That figure is not comparable with anything
 measured here — it is their network, their storage and their implementation, and this document never
 reproduces it. What we can reproduce is our own move, end to end, and the one thing that decides
@@ -71,7 +71,7 @@ whether it is honest: whether the storage server copies the bytes or the user's 
   the remote-control flags `--rc --rc-addr <loopback> --rc-no-auth` are added by
   `BuildMountPlan` (`cmd/drive/mount.go:263`) rather than `VFSArgs()`. A person's mount
   never sets a `DRIVE_BENCH_*` override, so none is set here.
-- Files: 200 × 64 KiB (Space's published shape for its 99 ms, so the two counts are over the same
+- Files: 200 × 64 KiB (the competitor's published shape for its 99 ms, so the two counts are over the same
   number of files) and 10 × 1 GiB (a 10 GiB folder, the "10 GB folder" this issue names). Both are
   sparse local files of zeros — content is irrelevant, only the byte count is.
 - "seconds" is the wall time of the `mv` through the mount, measured with `date +%s.%N` around it.
@@ -109,7 +109,7 @@ Readings worth quoting:
   objects. A 200-file folder costs 200 copy round trips whatever the link speed, which is why
   moving the mount `--transfers` knob would shave a constant off a small rename and change nothing
   about the per-object floor.
-- **Space's 99.0 ms is not reachable by tuning anything we ship.** It is their implementation of a
+- **The competitor's 99.0 ms is not reachable by tuning anything we ship.** It is their implementation of a
   folder rename on their storage model; ours is 200 CopyObject + 200 DeleteObject calls on S3. A
   *faster* move on this storage model would have to be a different storage model (point 6), which
   is product direction and not this issue's.
@@ -184,7 +184,7 @@ rclone config create fm s3 provider Minio endpoint http://127.0.0.1:39090 \
   --config /tmp/folder-moves-lab/rclone.conf
 rclone mkdir fm:fm-bucket --config /tmp/folder-moves-lab/rclone.conf
 
-# the two fixtures: Space's 200 x 64 KiB, and a 10 GiB folder
+# the two fixtures: the competitor's 200 x 64 KiB, and a 10 GiB folder
 mkdir -p src200 srcbig
 for i in $(seq -w 0 199); do truncate -s 65536 "src200/file-$i.bin"; done
 for i in $(seq -w 0 9); do truncate -s 1G "srcbig/file-$i.bin"; done

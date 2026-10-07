@@ -9,7 +9,7 @@ import {
   mintTtlSeconds,
   renewTtlSeconds,
   scopeFor,
-} from "../src/keyprovider.js";
+} from "../../../core/keyprovider.js";
 
 // drive#77 finding 4: the storage prefix is the safety boundary, so scopeFor
 // validates the account id and the branch name instead of trusting them.
@@ -141,7 +141,7 @@ test("an account id and branch name from the real id format are accepted", () =>
 
 // ---- the one-hour credential (drive issue #106) ----
 //
-// Space swaps a key for a one-hour scoped credential, so a leaked agent key
+// The competitor swaps a key for a one-hour scoped credential, so a leaked agent key
 // stops working on its own. The lifetime is a per-kind table for the same
 // reason the capabilities are: one place a kind's rules live, so a kind cannot
 // be given an hour in one file and forever in another.
@@ -159,11 +159,12 @@ test("the one lifetime table covers every kind, and only a device key never expi
 
 test("an unknown kind is refused a lifetime rather than handed an immortal credential", () => {
   assert.throws(
-    () => keyTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root")),
+    () => keyTtlSeconds(/** @type {import("../../../core/keyprovider.js").KeyKind} */ ("root")),
     /lifetime/i,
   );
   assert.throws(
-    () => mintTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root"), 900),
+    () =>
+      mintTtlSeconds(/** @type {import("../../../core/keyprovider.js").KeyKind} */ ("root"), 900),
     /lifetime/i,
   );
   // The renewal rule is handed the kind's ceiling rather than the kind, so it

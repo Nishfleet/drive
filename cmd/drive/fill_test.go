@@ -49,8 +49,10 @@ func TestBackgroundFillFlagsOnTheMount(t *testing.T) {
 		// The remote control is how the fill reads the cache and refreshes
 		// the directory, and it must be bound to loopback: rclone's rc is
 		// password-protected (drive#498), so a wildcard bind would still be an
-		// open control port on the network.
-		if !hasArgPair(args, "--rc-addr", "127.0.0.1:5572") {
+		// open control port on the network. A prepared mount picks a free
+		// port (drive#807); this check is the unprepared plan.
+		rcAddr := argValue(args, "--rc-addr")
+		if rcAddr == "" || !IsLoopbackAddr(rcAddr) {
 			t.Errorf("%s: mount is not binding the remote control to loopback:\n%v", tc.goos, args)
 		}
 		if !hasArg(args, "--rc") {
@@ -607,6 +609,53 @@ func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
 	}
 	if b.recursiveRefreshes != 0 {
 		t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
+	}
+}
+
+func TestFillTargetsHonoursCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reads := 0
+	targets := fillTargets{
+		ctx:     ctx,
+		offline: []string{"keep.bin"},
+		recent:  []string{"a.bin"},
+		readFile: func(string) (int64, error) {
+			reads++
+			return 1, nil
+		},
+	}
+	if _, err := targets.read(true, 1<<20); err == nil {
+		t.Fatal("a cancelled fill read returned no error")
+	}
+	if reads != 0 {
+		t.Errorf("a cancelled fill still read %d files", reads)
+	}
+}
+
+func TestFillTargetsSkipsUnpinnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("pin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var read []string
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"other.bin"},
+		readFile: func(p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			return 4, nil
+		},
+	}
+	if _, err := targets.read(false, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 0 {
+		t.Errorf("an unpinned file was filled: %v", read)
 	}
 }
 

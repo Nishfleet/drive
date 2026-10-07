@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — get started</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="Run one command on the Mac you want the drive on. Then run `drive status` on the machine to see the drive mounted.">
   <meta name="robots" content="noindex">
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
@@ -276,6 +277,7 @@ th {
     <a href="/">Pricing</a>
     <a href="/get-started" aria-current="page">Get started</a>
     <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
     <a href="/signin" id="nav-signin">Sign in</a>
     <noscript>
       <!-- Not Django: POST /api/signin refuses a cross-site post
@@ -302,10 +304,10 @@ th {
        link goes to the page where the close and the cancel both live. The
        styles are the shared stylesheet's, so the four pages that carry this
        aside are one banner. -->
-  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
-  </aside>
+  </div>
   <main>
     <section aria-labelledby="get-started-heading">
       <h1 id="get-started-heading">Get started</h1>
@@ -319,7 +321,7 @@ th {
     <section id="install-heading" aria-labelledby="install-heading-title">
       <h2 id="install-heading-title">Install, one line</h2>
       <ul class="install" id="install-lines">
-        <!-- Filled by get-started.js from src/status.js. One empty row per
+        <!-- Filled by get-started.js from core/status.js. One empty row per
              system holds the list's height, so the rows the script writes
              push nothing down (the CLS budget in lighthouserc.json). -->
         <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
@@ -331,7 +333,7 @@ th {
     <section id="command-heading" aria-labelledby="steps-heading">
       <h2 id="steps-heading">Three steps</h2>
       <ol class="steps" id="steps">
-        <!-- Filled by get-started.js from src/status.js -->
+        <!-- Filled by get-started.js from core/status.js -->
       </ol>
 
       <div class="command">
@@ -388,6 +390,8 @@ th {
       <a href="/refunds">Refunds</a>
       <a href="/acceptable-use">Acceptable use</a>
       <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
     </nav>
     <p>Pay from your balance, metered by the minute. <a href="/">See the price</a>.</p>
   </footer>

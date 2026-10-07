@@ -1,6 +1,6 @@
 package main
 
-// The CLI's one message table (drive#117, the CLI side of src/messages.js
+// The CLI's one message table (drive#117, the CLI side of core/messages.js
 // FAILURE_MESSAGES). Every error a person can read comes from this table and
 // carries two things:
 //
@@ -10,7 +10,7 @@ package main
 // No raw rclone or storage error reaches the terminal: the underlying detail
 // stays in the failure's detail (shown only with DRIVE_DEBUG=1) or in the
 // mount's own log, and the next step names where to look. The words for the
-// failures the drive has on every surface are copied from src/messages.js so
+// failures the drive has on every surface are copied from core/messages.js so
 // the CLI and the pages say the same thing; test/messages.test.mjs keeps that
 // table honest on the web side, and TestSharedKindsMatchThePageTable pins the
 // join here. Everything else is a CLI-shaped failure whose next step is an
@@ -29,6 +29,11 @@ import (
 	"strconv"
 	"strings"
 )
+
+// signInCommand is the one command that signs this machine in. The web
+// table's same string is core/messages.js SIGN_IN_COMMAND. The two cannot
+// import each other. drive#557: drive init does not sign anyone in.
+const signInCommand = "drive login"
 
 // failure is one entry of the message table, bound to a failure site. detail
 // is the underlying error, kept for DRIVE_DEBUG and for errors.As callers;
@@ -72,7 +77,7 @@ func (f *failure) Unwrap() error { return f.detail }
 // TestFailureTableIsComplete holds every entry to the two-sentence shape.
 var messageTable = map[string][2]string{
 	// The five kinds the drive shares with the web pages. Their what lines
-	// are the src/messages.js words; TestSharedKindsMatchThePageTable pins
+	// are the core/messages.js words; TestSharedKindsMatchThePageTable pins
 	// them together.
 	"offline": {
 		"You look offline.",
@@ -80,7 +85,7 @@ var messageTable = map[string][2]string{
 	},
 	"key-revoked": {
 		"This device's key was revoked, so it can't reach the drive.",
-		"Run `drive init` to sign in again to get a new key; your files are untouched.",
+		"Run `" + signInCommand + "` to get a new key; your files are untouched.",
 	},
 	"storage-down": {
 		"We can't reach storage right now.",
@@ -115,6 +120,20 @@ var messageTable = map[string][2]string{
 	"api-refused": {
 		"The drive's api refused the request.",
 		"Run `drive init` again; if it repeats, run `drive status` and keep its output.",
+	},
+	// The api Worker answered 426: this build is older than the minimum
+	// version the deployment still serves (drive#560). The fix is one exact
+	// command, so it is a CLI-shaped entry.
+	"cli-too-old": {
+		"This drive is too old for the server it talks to.",
+		"Run drive update to get the current version, then run the command again.",
+	},
+	// `drive update` landed but the mount did not come back (drive#560). The
+	// mount may still be the old binary, or it may be down after an unmount
+	// that did not remount, so the words name the one fact both share.
+	"update-restart": {
+		"Drive updated, but its mount did not restart, so this machine is not yet serving the new drive.",
+		"Run `drive status` to see the mount, then `drive mount` to start it.",
 	},
 	"api-down": {
 		"The drive's api is not answering right now.",
@@ -156,6 +175,10 @@ var messageTable = map[string][2]string{
 		"The drive folder {1} could not be created.",
 		"Check that the disk has room and that {1} is writable, then run the command again.",
 	},
+	"cache-clear-mounted": {
+		"The cache cannot be cleared while the drive is mounted.",
+		"Run `drive unmount`, then `drive cache --clear`, then `drive mount`.",
+	},
 	"mount-failed": {
 		"rclone exited before the drive mounted.",
 		"Read {1} for the exact cause, fix it, then run `drive mount` again.",
@@ -170,7 +193,7 @@ var messageTable = map[string][2]string{
 	},
 	"unmount-failed": {
 		"The drive at {1} did not come down.",
-		"Unmount it by hand (Linux: `fusermount3 -u {1}`; macOS: `sudo umount {1}`), then run the command again.",
+		"Unmount it by hand (Linux: `fusermount3 -u {1}`, or `fusermount -u {1}`; macOS: `sudo umount {1}`), then run the command again.",
 	},
 	"logout-leftover": {
 		"Logout finished, but {1} is still on disk.",
@@ -181,8 +204,8 @@ var messageTable = map[string][2]string{
 		"Start the mount and let them finish, or run `drive logout --force` to discard them.",
 	},
 	"key-still-live": {
-		"signed out here; the key is still live, run drive logout again when online",
-		"Run `drive logout` again when you are online, with `--api <url>` or DRIVE_API_URL set.",
+		"signed out here; the key is still live",
+		"Run `" + signInCommand + "`, then `drive logout` again, to turn it off.",
 	},
 	"key-still-live-elsewhere": {
 		"signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app, then run drive logout --forget-pending",
@@ -238,7 +261,7 @@ var messageTable = map[string][2]string{
 	},
 	"signout-everywhere-no-account": {
 		"There is no signed-in account on this device to sign out everywhere.",
-		"Run `drive init` to sign in, then run `drive logout --all --yes`.",
+		"Run `" + signInCommand + "`, then run `drive logout --all --yes`.",
 	},
 	"import-source": {
 		"That is not an rclone remote this command can import from.",
@@ -260,6 +283,18 @@ var messageTable = map[string][2]string{
 		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
 		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
 	},
+	"agent-key-missing": {
+		"{1}'s agent key is missing the settings its own mount needs.",
+		"Run `drive agents revoke {1}`, then `drive agents connect {1}`, to mint a full agent key.",
+	},
+	"agent-path-windows": {
+		"The agent path is not available on Windows yet, so {1} would work straight in your drive.",
+		"Use {1} inside your own drive folder for now, and watch the changelog for the agent path on Windows.",
+	},
+	"agent-path-timeout": {
+		"{1}'s agent path did not come up within {2} seconds.",
+		"Read {3}, then run `drive agents connect {1}` again.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.
@@ -275,7 +310,7 @@ func failDetail(kind string, detail error, args ...string) *failure {
 	entry, ok := messageTable[kind]
 	if !ok {
 		// A kind missing from the table is a programmer error, the same way
-		// failureMessage throws in src/messages.js. The CLI still has to print
+		// failureMessage throws in core/messages.js. The CLI still has to print
 		// a next step rather than crash, so it falls back to unexpected and
 		// keeps the missing kind in the detail for DRIVE_DEBUG=1.
 		missing := fmt.Errorf("no message table entry for %q", kind)
@@ -344,6 +379,12 @@ func apiFailureKind(err error) string {
 	if errors.As(err, &apiErr) {
 		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
 			return "key-revoked"
+		}
+		// 426 Upgrade Required is the api Worker's version gate (drive#560):
+		// this build is below the deployment's minimum, and the fix is one
+		// command, so it gets its own words instead of api-refused's.
+		if strings.Contains(apiErr.Status, "426") {
+			return "cli-too-old"
 		}
 		return "api-refused"
 	}

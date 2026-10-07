@@ -64,8 +64,8 @@ type rcClient struct {
 }
 
 // newRCClient builds the client for the mount's remote control. The address
-// is the one MountPlan puts on the command line, so there is one address in
-// the product, not one in the CLI and another in the fill loop.
+// is the one this mount stored in rclone.env and put on the command line, so
+// the fill loop and the CLI reach the same listener (drive#807).
 func newRCClient(binary, addr, fs string) *rcClient {
 	return &rcClient{binary: binary, addr: addr, fs: fs}
 }
@@ -117,15 +117,37 @@ func (c *rcClient) call(ctx context.Context, method string, params map[string]st
 	// method name and the loop's own constants.
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, c.binary, args...)
-	cmd.Stderr = nil
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	b, err := cmd.Output()
 	if err != nil {
+		if msg := rcErrorCause(stderr.String()); msg != "" {
+			return fmt.Errorf("rclone rc %s: %s: %w", method, msg, err)
+		}
 		return fmt.Errorf("rclone rc %s: %w", method, err)
 	}
 	if err := json.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("rclone rc %s: decode %s: %w", method, strings.TrimSpace(string(b)), err)
 	}
 	return nil
+}
+
+// rcErrorCause is one short line of rclone's stderr, so a listing of a
+// prefix that is not there yet can be told from a dead remote control
+// without printing a backend dump.
+func rcErrorCause(stderr string) string {
+	msg := strings.TrimSpace(stderr)
+	if msg == "" {
+		return ""
+	}
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	const max = 200
+	if len(msg) > max {
+		return msg[:max]
+	}
+	return msg
 }
 
 // stats reads the cache's live state from the running mount.
@@ -153,11 +175,11 @@ func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 	return c.call(ctx, "vfs/refresh", params, &reply)
 }
 
-// loopbackRCAddr is the address the mount's remote control binds. rclone's
-// default is localhost:5572; the plan sets it explicitly so the fill loop and
-// the operator reach the same one even on a host with another rclone running.
-// localhost only: the remote control is password-protected (drive#498) and
-// it must not be reachable off the machine.
+// loopbackRCAddr is rclone's own default remote-control address. A prepared
+// mount does not bind it: prepareMountAuth picks a free loopback port and
+// stores it in rclone.env so two mounts on one machine do not collide
+// (drive#807). The constant remains the unprepared fallback (dry-run, a
+// DRIVE_RC_ADDR that is not loopback) and the address tests refuse to reuse.
 const loopbackRCAddr = "127.0.0.1:5572"
 
 // FillResult is what one fill pass did, so `drive status` and the test can
@@ -257,6 +279,7 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	if budget < 0 {
 		budget = 0
 	}
+	targets.ctx = ctx
 	recentBytes, err := targets.read(fillRecent, budget)
 	if err != nil {
 		return res, fmt.Errorf("fill: read into cache: %w", err)
@@ -530,6 +553,9 @@ type fillTargets struct {
 	root    string
 	offline []string
 	recent  []string
+	// ctx is the pass deadline. A cancelled or timed-out pass stops between
+	// files rather than walking the rest of the set (drive#516).
+	ctx context.Context
 	// opens records a recently-opened file as filled; nil is a test that does
 	// not exercise the open registry.
 	opens *recentOpens
@@ -552,6 +578,9 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 			read = fillReadFile
 		}
 		for _, rel := range t.recent {
+			if err := t.ctxErr(); err != nil {
+				return spent, err
+			}
 			if spent >= budget {
 				break
 			}
@@ -573,6 +602,9 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 		}
 	}
 	for _, rel := range t.offline {
+		if err := t.ctxErr(); err != nil {
+			return spent, err
+		}
 		if _, err := KeepOffline(t.root, rel); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -581,6 +613,13 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 		}
 	}
 	return spent, nil
+}
+
+func (t fillTargets) ctxErr() error {
+	if t.ctx == nil {
+		return nil
+	}
+	return t.ctx.Err()
 }
 
 // fillReadFile reads one mounted file into io.Discard, which fills rclone's

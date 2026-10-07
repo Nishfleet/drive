@@ -25,7 +25,7 @@ type StorageConfig struct {
 	AccessKey string
 	SecretKey string
 	// SessionToken is the STS token a scoped credential is minted with
-	// (workers/api/src/s3-keys.js). A deployment whose keys are permanent has
+	// (core/s3-keys.js). A deployment whose keys are permanent has
 	// none, and then this is empty and no session_token line is written. A
 	// scoped key carries one, and without it the storage server answers
 	// InvalidTokenId (measured against the pinned MinIO, issue #241), so the
@@ -192,6 +192,11 @@ const (
 	rcloneRCUserEnv = "RCLONE_RC_USER"
 	rcloneRCPassEnv = "RCLONE_RC_PASS"
 	rcloneSecretEnv = "RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY"
+	// rcloneDownloadURLEnv is the S3 backend's download_url (the dl Worker).
+	// The URL carries the key's download grant (drive#517), so it rides with
+	// the secret in the 0600 environment and never on rclone's command line,
+	// where any local process could read it from the process list.
+	rcloneDownloadURLEnv = "RCLONE_CONFIG_DRIVE_DOWNLOAD_URL"
 )
 
 // secretWays names every safe way to hand the storage secret to `drive mount`,
@@ -566,7 +571,7 @@ func firstNonEmpty(vals ...string) string {
 // no_check_bucket is required for those same scoped keys. rclone's S3 backend
 // HeadBucket/CreateBucket-checks the bucket before a PutObject, including
 // when a remount drains the VFS cache. A drive key's session policy has
-// neither action (workers/api/src/s3-keys.js), so that check is 403 and the
+// neither action (core/s3-keys.js), so that check is 403 and the
 // queued file never goes up — which is the cap-raise path issue #241 proves.
 // A permanent key can HeadBucket, so the line is only written when a session
 // token is present.
@@ -609,25 +614,34 @@ func rcloneEnvPathBeside(configPath string) string {
 }
 
 // RCAuth is the random user and password the mount generates for rclone's
-// remote control. They live in rclone.env (mode 0600) and are what --rc-user /
-// --rc-pass and the one rc client send (drive#498).
+// remote control, and the loopback address that mount bound. They live in
+// rclone.env (mode 0600) and are what --rc-user / --rc-pass, --rc-addr and
+// the one rc client send (drive#498, drive#807).
 type RCAuth struct {
 	User string
 	Pass string
+	Addr string
 }
 
 // WriteRcloneEnv writes the 0600 EnvironmentFile rclone and systemd read: the
-// remote-control user/password (hex, so they need no quoting) and the storage
-// secret as rclone's own RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY. An empty rc
-// user (login, before the first mount) writes only the secret.
-func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
+// remote-control user/password (hex, so they need no quoting), the loopback
+// address that mount bound (drive#807), and the storage secret as rclone's
+// own RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY. An empty rc user (login, before
+// the first mount) writes only the secret.
+func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass, rcAddr string) error {
 	var b strings.Builder
 	if rcUser != "" {
 		fmt.Fprintf(&b, "%s=%s\n", rcloneRCUserEnv, rcUser)
 		fmt.Fprintf(&b, "%s=%s\n", rcloneRCPassEnv, rcPass)
 	}
+	if rcAddr != "" {
+		fmt.Fprintf(&b, "%s=%s\n", rcAddrEnvName, rcAddr)
+	}
 	if c.SecretKey != "" {
 		fmt.Fprintf(&b, "%s=%s\n", rcloneSecretEnv, systemdEnvQuote(c.SecretKey))
+	}
+	if c.DownloadURL != "" {
+		fmt.Fprintf(&b, "%s=%s\n", rcloneDownloadURLEnv, systemdEnvQuote(c.DownloadURL))
 	}
 	if b.Len() == 0 {
 		return nil
@@ -635,7 +649,8 @@ func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
 	return WriteFileAtomic(RcloneEnvPath(home), []byte(b.String()), 0o600)
 }
 
-// ReadRCAuth reads the remote-control user and password from rclone.env.
+// ReadRCAuth reads the remote-control user, password and bound address from
+// rclone.env.
 func ReadRCAuth(home string) (RCAuth, error) {
 	vals, err := parseRcloneEnvFile(RcloneEnvPath(home))
 	if err != nil {
@@ -644,7 +659,7 @@ func ReadRCAuth(home string) (RCAuth, error) {
 		}
 		return RCAuth{}, err
 	}
-	return RCAuth{User: vals[rcloneRCUserEnv], Pass: vals[rcloneRCPassEnv]}, nil
+	return RCAuth{User: vals[rcloneRCUserEnv], Pass: vals[rcloneRCPassEnv], Addr: vals[rcAddrEnvName]}, nil
 }
 
 func secretFromEnvFile(path string) (string, error) {

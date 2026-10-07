@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Drive — send files</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="Drop files into a shared folder. The owner sees them on their drive.">
   <meta name="robots" content="noindex">
   <!-- The palette, the reset and the page chrome are in the shared site
@@ -44,15 +45,21 @@ body {
   color: var(--ink);
 }
 
-.folder-line {
+.folder-line,
+.owner-line {
   color: var(--ink-soft);
   font-size: 15px;
   overflow-wrap: anywhere;
 }
 
-.folder-line strong {
+.folder-line strong,
+.owner-line strong {
   color: var(--ink);
   font-weight: 600;
+}
+
+.owner-line[hidden] {
+  display: none;
 }
 
 main {
@@ -121,14 +128,6 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-input[type="file"] {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-
 .status {
   min-height: 1.55em;
   margin: 0;
@@ -173,6 +172,7 @@ input[type="file"] {
   <header class="topbar">
     <span class="wordmark"><i aria-hidden="true"></i>drive</span>
     <span class="folder-line">Lands in <strong id="folder">&hellip;</strong></span>
+    <span class="owner-line" id="owner-line" hidden><span id="owner-label"></span> <strong id="owner"></strong></span>
   </header>
 
   <main>
@@ -181,7 +181,7 @@ input[type="file"] {
     <p class="hint" id="page-line">This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.</p>
 
     <div class="drop" id="drop" hidden>
-      <input type="file" id="file-input" multiple>
+      <input type="file" id="file-input" multiple hidden>
       <button type="button" id="choose">Choose files</button>
       <p class="hint" id="hint">or drop them anywhere on this page</p>
     </div>
@@ -211,6 +211,7 @@ const UPLOAD_PAGE_COPY = {
   title: "Drop files here",
   lede: "Files you drop land in the folder below. The owner sees them on their drive.",
   folderLabel: "Lands in",
+  ownerLabel: "Shared by",
   choose: "Choose files",
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
@@ -232,6 +233,8 @@ const REQUEST_UPLOAD_ENDPOINT = "/api/request/upload";
 
 const token = new URLSearchParams(location.search).get("k");
 const folderEl = document.getElementById("folder");
+const ownerEl = document.getElementById("owner");
+const ownerLine = document.getElementById("owner-line");
 const drop = document.getElementById("drop");
 const closed = document.getElementById("closed");
 const closedBody = document.getElementById("closed-body");
@@ -244,10 +247,22 @@ const status = document.getElementById("status");
 document.getElementById("page-title").textContent = UPLOAD_PAGE_COPY.title;
 document.getElementById("lede").textContent = UPLOAD_PAGE_COPY.lede;
 document.getElementById("page-line").textContent = UPLOAD_PAGE_LINE;
+document.getElementById("owner-label").textContent = UPLOAD_PAGE_COPY.ownerLabel;
 document.getElementById("closed-title").textContent = UPLOAD_PAGE_COPY.closedTitle;
 document.getElementById("closed-body").textContent = UPLOAD_PAGE_COPY.closedBody;
 choose.textContent = UPLOAD_PAGE_COPY.choose;
 document.getElementById("hint").textContent = UPLOAD_PAGE_COPY.hint;
+
+// The day a link stops working, in the zone of the browser showing it
+// (drive#559). The api Worker sends the instant and never words for it, because
+// a date rendered on a server in the UTC zone reads the wrong day at both ends
+// of a month.
+function untilLabel(iso) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  return `Until ${at.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+}
 
 function say(message, kind) {
   status.textContent = message || "";
@@ -290,8 +305,17 @@ async function open() {
     return;
   }
   folderEl.textContent = info.folder;
+  // Who the drive belongs to (drive issue #684). The info route sends the
+  // owner's display name; a deployment that cannot read it sends an empty
+  // string, and the line stays hidden rather than showing a blank label.
+  // An address in the name column is not a display name either, so the page
+  // drops it the same way instead of publishing it to a stranger.
+  if (info.owner && !info.owner.includes("@")) {
+    ownerEl.textContent = info.owner;
+    ownerLine.hidden = false;
+  }
   drop.hidden = false;
-  say(info.expiresLabel || "", "");
+  say(untilLabel(info.expiresAtIso), "");
 }
 
 async function uploadFiles(files) {

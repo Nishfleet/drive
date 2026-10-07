@@ -51,15 +51,15 @@ import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseListVersions } from "../src/files.js";
+import { parseListVersions } from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { createMemoryStore } from "../core/keystore.js";
+import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../core/meter.js";
+import { createS3Client, provisionBucket } from "../core/s3.js";
+import { createS3KeyProvider } from "../core/s3-keys.js";
+import { computeHiddenAt, versionMarkers } from "../core/s3-listing.js";
 import worker from "../src/index.js";
-import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../src/meter.js";
-import { computeHiddenAt, versionMarkers } from "../src/s3-listing.js";
 import { dispatch } from "../workers/api/src/index.js";
-import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
-import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
-import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 
@@ -445,7 +445,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   );
   assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
   // The dead-letter table was an earlier design that was replaced by the
-  // per-event rejection in the intake (src/meter.js recordEvents). The test
+  // per-event rejection in the intake (core/meter.js recordEvents). The test
   // keeps the assertion as a gate: the name must not appear in the schema.
   assert.ok(
     !Object.hasOwn(db.tables, "event_dead_letters"),
@@ -506,7 +506,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
  * account writes with: ListObjectVersions is the stock API for a versioned
- * bucket, and the parse is the shipped one (src/files.js
+ * bucket, and the parse is the shipped one (core/files.js
  * `createS3Store.listVersions` answers with it), so a version's stop time here
  * is the stop time the product reads in production. This proof's listing is
  * one page; the store folds the pages together and computes the stops once

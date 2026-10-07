@@ -127,18 +127,18 @@ func TestUploadLabel(t *testing.T) {
 }
 
 // TestUploadLabelMatchesThePageWords pins the CLI's queue words to the ones
-// the first-run page uses (src/status.js UPLOAD_LABEL). The page is JavaScript
+// the first-run page uses (core/status.js UPLOAD_LABEL). The page is JavaScript
 // and cannot import the Go, and the Go cannot import the page, so this
 // test is the join between the two copies.
 func TestUploadLabelMatchesThePageWords(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{upToDateLabel, "Uploading 1 file", "Uploading {files} files"} {
 		if !strings.Contains(html, want) {
-			t.Errorf("src/status.js no longer carries %q; "+
+			t.Errorf("core/status.js no longer carries %q; "+
 				"the page and the CLI must show the same words for the same queue", want)
 		}
 	}
@@ -299,35 +299,35 @@ func TestQueueWhySaysWhatIsWaitingAndWhy(t *testing.T) {
 }
 
 func TestQueueWhyWordsMatchTheSources(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{waitingToUploadWhy, waitingUnmountedWhy, waitingUnmountedNext} {
 		if !strings.Contains(html, want) {
-			t.Errorf("src/status.js no longer carries %q", want)
+			t.Errorf("core/status.js no longer carries %q", want)
 		}
 	}
-	messages, err := os.ReadFile(filepath.Join("..", "..", "src", "messages.js"))
+	messages, err := os.ReadFile(filepath.Join("..", "..", "core", "messages.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(messages)
 	if !strings.Contains(text, diskCacheFullWhat) || !strings.Contains(text, diskCacheFullNext) {
-		t.Errorf("src/messages.js no longer carries the disk-cache-full words; the CLI must print the table")
+		t.Errorf("core/messages.js no longer carries the disk-cache-full words; the CLI must print the table")
 	}
 }
 
 func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"diskCache":{"outOfSpace":true}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.binary)
 	t.Setenv("DRIVE_RC_ADDR", c.addr)
 	if !cacheIsFull(home, true) {
@@ -341,13 +341,13 @@ func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 // telling the person to free disk space.
 func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"opt":{"CacheMaxSize":1073741824},"diskCache":{"bytesUsed":1610612736}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
+	}))
 	t.Setenv("DRIVE_RCLONE", c.binary)
 	t.Setenv("DRIVE_RC_ADDR", c.addr)
 	capBytes, usedBytes, ok := cacheState(home, true)

@@ -1,5 +1,5 @@
 // The account gate (drive issue #73, north star: Safe). One gate —
-// signedInAccount() in src/status.js — stands in front of every /api/*
+// signedInAccount() in core/status.js — stands in front of every /api/*
 // route that touches an account, and every read and write is scoped to the
 // signed-in account's own prefix.
 //
@@ -20,23 +20,30 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { handleUsageRequest, USAGE_ENDPOINT } from "../core/billing.js";
+import { CAP_ENDPOINT } from "../core/cap.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT } from "../core/export.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
+import { STATUS_ENDPOINT } from "../core/status.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
-import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
-import { CAP_ENDPOINT } from "../src/cap.js";
-import { isSameOriginRequest } from "../src/email-send.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { DEVICES_ENDPOINT } from "../src/devices-page.js";
 import { HEALTH_PATH } from "../src/health.js";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
-import { AUTO_TOPUP_ENDPOINT } from "../src/prepaid.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
-import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
@@ -57,6 +64,9 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
 // shaped (`u/<id>/...`) and deliberately different lengths, so a prefix that
 // is not cut at a segment boundary would show up.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 /** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
@@ -107,6 +117,11 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/restore`,
   `${USAGE_ENDPOINT}`,
   `${USAGE_ENDPOINT}/`,
+  // drive#547: own-data export, served on the site Worker so a signed-in
+  // browser can download it before the api Worker is bound. Same gate as
+  // the usage read: the document is this account's records.
+  `${EXPORT_ENDPOINT}`,
+  `${EXPORT_ENDPOINT}/`,
   // drive issue #64: the spending cap write. Same gate as the usage read.
   `${CAP_ENDPOINT}`,
   `${CAP_ENDPOINT}/`,
@@ -156,6 +171,9 @@ const ACCOUNT_ROUTES = [
   // requires the same 401 for a stranger.
   `${PORTAL_ENDPOINT}`,
   `${PORTAL_ENDPOINT}/`,
+  // drive#525: the devices page lists keys and revokes one at the provider.
+  `${DEVICES_ENDPOINT}`,
+  `${DEVICES_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -185,6 +203,9 @@ function anonymous(request) {
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
       HEALTH_RATE_LIMITER: makeLimiter(),
       SHARE_DOWNLOAD_RATE_LIMITER: makeLimiter(),
+      // Tests inject the in-memory files store. Production never builds it
+      // (src/index.js storeFor, drive#505).
+      [TEST_FILES_STORE]: createMemoryStore(),
     },
     ctx,
   );
@@ -226,10 +247,12 @@ test("every route src/index.js registers is either public or behind the gate", a
         ACCOUNT_ROUTES.includes(path) ||
         path.startsWith(FILES_ENDPOINT) ||
         path.startsWith(USAGE_ENDPOINT) ||
+        path.startsWith(EXPORT_ENDPOINT) ||
         path.startsWith(STATUS_ENDPOINT) ||
         path.startsWith(SEARCH_ENDPOINT) ||
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
+        path.startsWith(DEVICES_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
         path.startsWith(STARTER_ENDPOINT) ||
@@ -263,6 +286,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         registered.some((path) => path.endsWith("/*") && route.startsWith(path.slice(0, -1))) ||
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
+        route.startsWith(EXPORT_ENDPOINT) ||
         route.startsWith(CAP_ENDPOINT) ||
         route.startsWith(BALANCE_ENDPOINT) ||
         route.startsWith(TOPUP_ENDPOINT) ||
@@ -271,6 +295,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(DEVICES_ENDPOINT) ||
         route.startsWith(STARTER_ENDPOINT) ||
         route.startsWith(CLOSE_ENDPOINT) ||
         route.startsWith(CLOSE_CANCEL_ENDPOINT) ||
@@ -291,12 +316,17 @@ test("a public route answers with no account", async () => {
   const health = await anonymous(new Request(`https://drive.test${HEALTH_PATH}`));
   assert.notEqual(health.status, 401, "the health probe must answer without an account");
   assert.equal(health.status, 503, "no bindings here is the honest unhealthy answer");
-  assert.deepEqual(await health.json(), { ok: false, failing: "WAITLIST_DB" });
+  // No sender either, so the email part says so beside the verdict (drive#522).
+  assert.deepEqual(await health.json(), {
+    ok: false,
+    failing: "WAITLIST_DB",
+    email: "not-ready",
+  });
 });
 
 test("an anonymous request to every account route is 401 and no data", async () => {
   const unauthorized = failureMessage("unauthorized");
-  // The words are the one message table's (src/messages.js), not a second copy
+  // The words are the one message table's (core/messages.js), not a second copy
   // written here, so the page and the endpoint cannot say different things.
   assert.equal(
     unauthorized,
@@ -471,7 +501,7 @@ test("a link token answers without an account, and never data", async () => {
     assert.match(await response.text(), /That link does not open anything/);
   }
   // And the owner's roots are the account's: a signed-out caller cannot list,
-  // mint or revoke on either feature, with the shared 401 (src/status.js).
+  // mint or revoke on either feature, with the shared 401 (core/status.js).
   const unauthorized = failureMessage("unauthorized");
   for (const route of [SHARE_ENDPOINT, REQUEST_ENDPOINT]) {
     for (const method of ["GET", "POST", "DELETE"]) {
@@ -542,6 +572,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
@@ -671,6 +702,7 @@ test("sign-out revokes the session the cookie names", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await workerFetch(
@@ -720,7 +752,7 @@ test("an anonymous files request never reaches the store", async () => {
 test("scopeStore puts every drive path under the account's own prefix", async () => {
   /** @type {Array<string[]>} */
   const seen = [];
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const recorder = {
     /** @param {string} path */
     async list(path) {
@@ -1023,7 +1055,13 @@ test("one CSRF middleware refuses a cross-site write on every account POST", asy
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
-  const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
+  const signedIn = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    ACCOUNT_A,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0, "an empty month bills $0: no minimum");
 });

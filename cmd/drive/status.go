@@ -28,11 +28,11 @@ import (
 //
 // Both answers come from something that already exists rather than a second
 // way to ask: rclone writes the queue as it queues it, and the api Worker
-// already computes the money in src/billing.js `usageSummary()`. This file
+// already computes the money in core/billing.js `usageSummary()`. This file
 // only renders what those two already know.
 
 // USAGE_PATH is the api Worker's monthly-usage endpoint (src/index.js routes
-// /api/usage to src/billing.js `handleUsageRequest`). The CLI reads the same
+// /api/usage to core/billing.js `handleUsageRequest`). The CLI reads the same
 // endpoint the usage page reads, so the numbers on this line and the numbers
 // on the page cannot disagree.
 const USAGE_PATH = "/api/usage"
@@ -41,6 +41,25 @@ const USAGE_PATH = "/api/usage"
 // runs when something is wrong, so a request that hangs must not turn a
 // status line into a hung terminal.
 const usageTimeout = 10 * time.Second
+
+// troubleshootingDocsLine is the line `drive status` adds as it ends (drive issue
+// #562): where to read about trouble. `drive status` is the command a person
+// runs when the drive is broken, so it is also the cheapest place to put the
+// page that answers the question — every run's closing lines, not only the
+// broken ones, so the page is found before the drive breaks — and it stays
+// one line because the command answers in under ten.
+//
+// It prints after the cost line and before the once-a-day update notice
+// (drive#560), so it is not always the very last line: on the day that notice
+// fires, the notice is. The docs page says "near the end" for the same reason.
+//
+// It is a function, not a constant, because defaultAPIBase is the embedded
+// site address and only a call can read it: the address is decided at run
+// time, so a const initializer over it does not compile. The address itself
+// is docsTroubleshootingURL's, the one place this PR names the page, and
+// TestHelpNamesTheDocsPageTheStatusLineNames holds the usage text's own copy
+// of it to the same one.
+func troubleshootingDocsLine() string { return "what to try: " + docsTroubleshootingURL() }
 
 // runStatus is `drive status`: is it working, what is waiting, how much am I
 // spending (drive#117). Three questions, under ten lines. The rclone config
@@ -94,6 +113,9 @@ func runStatus(args []string) error {
 	} else if why := queueWhy(on, cacheIsFull(home, on), paused, queue); why != "" {
 		fmt.Println(why)
 	}
+	if line := conflictGuardLine(home, time.Now()); line != "" {
+		fmt.Println(line)
+	}
 	if lines, reason := rcProgressLines(home, on); lines != "" {
 		fmt.Print(limitStatusLines(lines, 3))
 	} else if reason != "" {
@@ -128,6 +150,12 @@ func runStatus(args []string) error {
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
+	fmt.Println(troubleshootingDocsLine())
+	// The once-a-day update notice (drive#560): the last line `drive status`
+	// prints. It never fails the command, and it never prints more than once
+	// in 24 hours.
+	noticeUpdateOnceADay(updateNoticeOptions{home: home})
+
 	return nil
 }
 
@@ -382,8 +410,9 @@ func transfersLine(home string, on bool) string {
 // rclone is asked about nothing and no file format is invented here: the
 // queue is read where rclone itself records it.
 type VFSMeta struct {
-	Dirty bool  `json:"Dirty"`
-	Size  int64 `json:"Size"`
+	Dirty       bool   `json:"Dirty"`
+	Size        int64  `json:"Size"`
+	Fingerprint string `json:"Fingerprint"`
 }
 
 // PendingUploads counts the files rclone has in its VFS cache and has not
@@ -449,7 +478,7 @@ type Pending struct {
 }
 
 // UPLOAD_WORDS are the words `drive status` uses for the queue, kept next to
-// the words the first-run page uses for the same queue (src/status.js
+// the words the first-run page uses for the same queue (core/status.js
 // `UPLOAD_LABEL`). The page is a static asset and cannot import the module,
 // and the Go caller cannot import the page, so the two copies are the same
 // words by construction: an empty queue says "Up to date" on both, one file
@@ -474,6 +503,20 @@ const (
 	// dead upload reads as "waiting" and the person never learns it stopped.
 	uploadFailingAfterTries = 3
 )
+
+// conflictGuardLine is the status line for a conflict guard that cannot
+// keep up with the saves coming in: more saves are waiting for their first
+// hash than one pass can take (conflictSightMax), so protection of the rest
+// waits for the passes that follow. An empty string is "no answer": the
+// guard is not running, or it is keeping up, and neither is a problem to
+// name.
+func conflictGuardLine(home string, now time.Time) string {
+	behind := conflictGuardBehind(ConflictGuardStatePath(home), now)
+	if behind <= conflictSightMax {
+		return ""
+	}
+	return fmt.Sprintf("conflict guard behind by %d saves", behind)
+}
 
 // queueWhy is the line after the uploads count: what is waiting and why
 // (drive issue #107). An empty queue with space left is a complete state and
@@ -575,7 +618,7 @@ func UploadLabel(q Pending) string {
 	}
 }
 
-// UsageSummary is the shape GET /api/usage returns (src/billing.js
+// UsageSummary is the shape GET /api/usage returns (core/billing.js
 // `usageSummary()`): the month's numbers and the cap. The CLI decodes the two
 // halves it prints and no more, so the money is computed once, in the Worker,
 // by the code that owns the prices.
@@ -585,7 +628,7 @@ type UsageSummary struct {
 	MaximumUsd float64 `json:"maximumUsd"`
 	CapLine    string  `json:"capLine"`
 	// BalanceLine is the prepaid balance (drive#586), written by the Worker
-	// (src/topup.js balanceLine) with the top-up prompt when it is low or $0.
+	// (core/topup.js balanceLine) with the top-up prompt when it is low or $0.
 	// Empty from a Worker that has no balance store yet.
 	BalanceLine string `json:"balanceLine"`
 	Cap         struct {
@@ -617,6 +660,7 @@ func readCostLine(apiBase, token string) string {
 	if token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
+	req.Header.Set("user-agent", userAgent())
 	client := &http.Client{Timeout: usageTimeout}
 	resp, err := client.Do(req)
 	if err != nil {

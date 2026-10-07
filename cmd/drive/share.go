@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -13,7 +14,7 @@ import (
 )
 
 // Share links and upload requests on the CLI side (drive issue #19,
-// build-spec.md "Against Space": "Public file links and upload requests").
+// build-spec.md "Against the competitor": "Public file links and upload requests").
 //
 //   drive share <file>      a link anyone can open, logged out, for 7 days
 //   drive request <folder>  a page anyone can drop files onto, into one folder
@@ -54,7 +55,7 @@ type ShareLink struct {
 	Name         string `json:"name"`
 	URL          string `json:"url"`
 	StateLabel   string `json:"stateLabel"`
-	ExpiresLabel string `json:"expiresLabel"`
+	ExpiresAtIso string `json:"expiresAtIso"`
 }
 
 // RequestLink is the minted upload page (src/share.js `requestRow()`).
@@ -64,7 +65,7 @@ type RequestLink struct {
 	Name         string `json:"name"`
 	URL          string `json:"url"`
 	StateLabel   string `json:"stateLabel"`
-	ExpiresLabel string `json:"expiresLabel"`
+	ExpiresAtIso string `json:"expiresAtIso"`
 	UploadsLabel string `json:"uploadsLabel"`
 }
 
@@ -120,57 +121,57 @@ func runShare(args []string) error {
 	if err != nil {
 		return err
 	}
-	creds, err := LoadCredentials(common.home)
-	if err != nil {
-		return err
-	}
-	auth := creds.DeviceToken
-	switch {
-	case l.list:
-		if fs.NArg() > 0 {
-			return fmt.Errorf("--list takes no file argument, got %q", fs.Arg(0))
-		}
-		links, err := ListShares(endpoint, auth)
-		if err != nil {
-			return err
-		}
-		if len(links) == 0 {
-			fmt.Println("no share links")
+	// withFreshDeviceToken is the one re-sign-in (drive#557): the links routes
+	// are account routes behind the same device token as everything else, so a
+	// device whose sign-in lapsed heals here too instead of stopping dead.
+	return withFreshDeviceToken(common.home, l.api, os.Stdout, func(auth string) error {
+		switch {
+		case l.list:
+			if fs.NArg() > 0 {
+				return fmt.Errorf("--list takes no file argument, got %q", fs.Arg(0))
+			}
+			links, err := ListShares(endpoint, auth)
+			if err != nil {
+				return err
+			}
+			if len(links) == 0 {
+				fmt.Println("no share links")
+				return nil
+			}
+			for _, link := range links {
+				printShareLine(link)
+			}
+			return nil
+		case l.revoke != "":
+			if fs.NArg() > 0 {
+				return fmt.Errorf("--revoke takes no file argument, got %q", fs.Arg(0))
+			}
+			token, err := tokenFromArg(l.revoke)
+			if err != nil {
+				return err
+			}
+			link, err := RevokeShare(endpoint, auth, token)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("revoked: %s (%s)\n", link.URL, link.StateLabel)
 			return nil
 		}
-		for _, link := range links {
-			printShareLine(link)
+		if fs.NArg() != 1 {
+			return fmt.Errorf("name one file to share: drive share <file>")
 		}
-		return nil
-	case l.revoke != "":
-		if fs.NArg() > 0 {
-			return fmt.Errorf("--revoke takes no file argument, got %q", fs.Arg(0))
-		}
-		token, err := tokenFromArg(l.revoke)
+		path, err := drivePathArg(common.home, fs.Arg(0))
 		if err != nil {
 			return err
 		}
-		link, err := RevokeShare(endpoint, auth, token)
+		link, err := MintShare(endpoint, auth, path)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("revoked: %s (%s)\n", link.URL, link.StateLabel)
+		fmt.Println(link.URL)
+		fmt.Printf("%s, %s\n", link.Path, untilLabel(link.ExpiresAtIso))
 		return nil
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("name one file to share: drive share <file>")
-	}
-	path, err := drivePathArg(common.home, fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	link, err := MintShare(endpoint, auth, path)
-	if err != nil {
-		return err
-	}
-	fmt.Println(link.URL)
-	fmt.Printf("%s, %s\n", link.Path, link.ExpiresLabel)
-	return nil
+	})
 }
 
 // runRequest is `drive request`.
@@ -185,69 +186,82 @@ func runRequest(args []string) error {
 	if err != nil {
 		return err
 	}
-	creds, err := LoadCredentials(common.home)
-	if err != nil {
-		return err
-	}
-	auth := creds.DeviceToken
-	switch {
-	case l.list:
-		if fs.NArg() > 0 {
-			return fmt.Errorf("--list takes no folder argument, got %q", fs.Arg(0))
-		}
-		links, err := ListRequests(endpoint, auth)
-		if err != nil {
-			return err
-		}
-		if len(links) == 0 {
-			fmt.Println("no upload requests")
+	// The same one re-sign-in `drive share` gets (drive#557).
+	return withFreshDeviceToken(common.home, l.api, os.Stdout, func(auth string) error {
+		switch {
+		case l.list:
+			if fs.NArg() > 0 {
+				return fmt.Errorf("--list takes no folder argument, got %q", fs.Arg(0))
+			}
+			links, err := ListRequests(endpoint, auth)
+			if err != nil {
+				return err
+			}
+			if len(links) == 0 {
+				fmt.Println("no upload requests")
+				return nil
+			}
+			for _, link := range links {
+				printRequestLine(link)
+			}
+			return nil
+		case l.revoke != "":
+			if fs.NArg() > 0 {
+				return fmt.Errorf("--revoke takes no folder argument, got %q", fs.Arg(0))
+			}
+			token, err := tokenFromArg(l.revoke)
+			if err != nil {
+				return err
+			}
+			link, err := RevokeRequest(endpoint, auth, token)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("revoked: %s (%s)\n", link.URL, link.StateLabel)
 			return nil
 		}
-		for _, link := range links {
-			printRequestLine(link)
+		if fs.NArg() != 1 {
+			return fmt.Errorf("name one folder to collect into: drive request <folder>")
 		}
-		return nil
-	case l.revoke != "":
-		if fs.NArg() > 0 {
-			return fmt.Errorf("--revoke takes no folder argument, got %q", fs.Arg(0))
-		}
-		token, err := tokenFromArg(l.revoke)
+		folder, err := drivePathArg(common.home, fs.Arg(0))
 		if err != nil {
 			return err
 		}
-		link, err := RevokeRequest(endpoint, auth, token)
+		link, err := MintRequest(endpoint, auth, folder)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("revoked: %s (%s)\n", link.URL, link.StateLabel)
+		fmt.Println(link.URL)
+		fmt.Printf("%s, %s\n", link.Folder, untilLabel(link.ExpiresAtIso))
 		return nil
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("name one folder to collect into: drive request <folder>")
-	}
-	folder, err := drivePathArg(common.home, fs.Arg(0))
+	})
+}
+
+// untilLabel is a link's expiry as this machine reads it: "Until 7 Oct", the
+// day written in the zone the command ran in (drive#559). The api Worker sends
+// the instant and no words for it, the same way it sends no words for any other
+// date, because a date rendered on the server is a UTC date and a link that
+// dies on the 8th must not be printed as the 7th. An instant that will not
+// parse is printed as it arrived rather than guessed at: the row came from the
+// Worker, so its bytes are the best answer this command has.
+func untilLabel(iso string) string {
+	at, err := time.Parse(time.RFC3339, iso)
 	if err != nil {
-		return err
+		return iso
 	}
-	link, err := MintRequest(endpoint, auth, folder)
-	if err != nil {
-		return err
-	}
-	fmt.Println(link.URL)
-	fmt.Printf("%s, %s\n", link.Folder, link.ExpiresLabel)
-	return nil
+	return "Until " + at.Local().Format("2 Jan")
 }
 
 // printShareLine is one row of `drive share --list`: the token a person needs
 // for --revoke, the state, the expiry, and the link itself.
 func printShareLine(link ShareLink) {
-	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Path, link.URL)
+	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, untilLabel(link.ExpiresAtIso), link.Path, link.URL)
 }
 
 func printRequestLine(link RequestLink) {
 	// No header row: `drive request --list` is one line per link, six
 	// tab-separated fields, so a later header has to name them in this order.
-	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Folder, link.UploadsLabel, link.URL)
+	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, untilLabel(link.ExpiresAtIso), link.Folder, link.UploadsLabel, link.URL)
 }
 
 // tokenRE is the one token shape the api Worker mints and accepts: 22
@@ -394,6 +408,7 @@ func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 	if deviceToken != "" {
 		request.Header.Set("authorization", "Bearer "+deviceToken)
 	}
+	request.Header.Set("user-agent", userAgent())
 	client := &http.Client{Timeout: linkTimeout}
 	response, err := client.Do(request)
 	if err != nil {
@@ -416,18 +431,27 @@ func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 // Worker's {"error": "..."} is preferred; a body without one (an asset 404, a
 // proxy error page) is reported by status, and a body that cannot be read is
 // itself reported rather than swallowed.
+//
+// The answer is an *APIError rather than a bare fmt.Errorf so that a 401 from
+// the account gate is recognisable where it is made, which is what lets the
+// links commands below sign the machine back in and try once more on a fresh
+// token (drive#557). Before that it was a string, and no caller could tell a
+// dead sign-in from a file that was not there.
 func apiMessage(method, endpoint string, response *http.Response) error {
-	var body struct {
-		Error string `json:"error"`
-	}
-	readErr := json.NewDecoder(response.Body).Decode(&body)
-	if readErr == nil && body.Error != "" {
-		return fmt.Errorf("%s %s: %s", method, endpoint, body.Error)
-	}
+	raw, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if readErr != nil {
 		return fmt.Errorf("%s %s: %s (unreadable answer: %v)", method, endpoint, response.Status, readErr)
 	}
-	return fmt.Errorf("%s %s: %s", method, endpoint, response.Status)
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return fmt.Errorf("%s %s: %s (unreadable answer: %v)", method, endpoint, response.Status, err)
+	}
+	if body.Error == "" {
+		return &APIError{Method: method, Path: endpoint, Status: response.Status}
+	}
+	return &APIError{Method: method, Path: endpoint, Status: response.Status, Body: string(raw)}
 }
 
 func postJSON(endpoint, token string, body, out any) error {
@@ -442,8 +466,37 @@ func deleteJSON(endpoint, token string, body, out any) error {
 	return doJSON(http.MethodDelete, endpoint, token, body, out)
 }
 
+// withFreshDeviceToken runs call with this device's token and, if an account
+// route answers 401, signs this machine back in once and runs it again on the
+// new token (drive#557).
+//
+// The links routes take the same device token as the rest of the account gate
+// but are called through their own request path (doJSON), so without this they
+// were the one place a lapsed sign-in stopped working instead of healing. The
+// rules are the ones APIClient.do already follows: one retry, never a loop, and
+// a re-sign-in that fails reports why it failed rather than the 401 behind it.
+func withFreshDeviceToken(home, api string, out io.Writer, call func(token string) error) error {
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		return err
+	}
+	base, err := resolveAPIBase(home, api)
+	if err != nil {
+		return err
+	}
+	err = call(creds.DeviceToken)
+	if err == nil || !retryable401(err) {
+		return err
+	}
+	token, _, signInErr := deviceReSigner{home: home, base: base, out: out}.ReSignIn()
+	if signInErr != nil {
+		return fmt.Errorf("%w (the token was also refused with %s)", signInErr, apiRefusedStatus(err))
+	}
+	return call(token)
+}
+
 // drivePathArg turns what a person typed into the path the api Worker expects:
-// a path inside the drive, starting with a slash (src/files.js validatePath).
+// a path inside the drive, starting with a slash (core/files.js validatePath).
 // An absolute path under the mount dir is the form a shell's ~ expansion or a
 // Finder drag produces (`/Users/nish/Drive/Photos/cat.jpg`), so it is accepted
 // and the mount dir is dropped; anything else keeps its own segments. A

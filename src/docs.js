@@ -8,14 +8,15 @@
 // that drops a marker, or carries a number this file no longer produces, fails
 // CI instead of shipping a wrong price.
 //
-// The numbers come from src/billing.js, which is the one place the money is
+// The numbers come from core/billing.js, which is the one place the money is
 // worked out (drive issues #7, #53, #76) and the one the invoice, the usage
-// page and the cap all read; the sentences come from src/pricing.js, the one
+// page and the cap all read; the sentences come from core/pricing.js, the one
 // price source those numbers are built from (drive#463), so the docs cannot
 // ship a bill the invoice would not produce.
 //
 // Plain data and pure functions only, so `node --test` runs this directly (the
-// same reason src/status.js, src/seo.js and src/billing.js are plain).
+// same reason core/status.js, core/seo.js and core/billing.js are plain).
+
 import {
   BILLING_CONFIG,
   GB_PER_TB,
@@ -23,12 +24,12 @@ import {
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
   QUOTE_MONTH_MINUTES,
-} from "./billing.js";
-import { INSTALL_LINES } from "./install-lines.js";
+} from "../core/billing.js";
+import { INSTALL_LINES } from "../core/install-lines.js";
+import { PRICE } from "../core/pricing.js";
+import { SITE } from "../core/seo.js";
 import { AGENT_TOOLS, KEY_POWERS, STORAGE_POWERS } from "./keys.js";
-import { PRICE } from "./pricing.js";
 import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
-import { SITE } from "./seo.js";
 
 /**
  * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
@@ -98,7 +99,7 @@ const days = (n) => (n === 1 ? "1 day" : `${n} days`);
 /**
  * The sentence that says what happens when an agent key deletes a file. It is
  * built from what the storage provider enforces (src/keys.js STORAGE_POWERS,
- * read from the switches workers/api/src/idrive-keys.js mints with), not from
+ * read from the switches core/idrive-keys.js mints with), not from
  * the api Worker's capability table: an agent key talks to iDrive e2
  * directly, and iDrive takes its delete (drive#502). If a mint ever sets
  * `disable_delete_object`, this sentence changes with it.
@@ -179,13 +180,13 @@ export const KEY_TABLE = Object.freeze(
 // docs build instead of shipping an unmeasured claim.
 
 /**
- * Space's 1 TB price, as the scoreboard's "price at 1 TB" row records it
- * (docs/scoreboard.md, checked on spacefs.com 2026-09-30): about $20 month to
+ * The competitor's 1 TB price, as the scoreboard's "price at 1 TB" row records it
+ * (docs/scoreboard.md, checked 2026-09-30): about $20 month to
  * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
  * test/docs.test.mjs still fails if either number leaves that internal row.
  */
 export const RIVAL_1TB = Object.freeze({
-  name: "Space",
+  name: "The main competitor",
   monthToMonthUsd: 20,
   yearlyUsd: 15,
 });
@@ -208,7 +209,7 @@ export const FAQ = Object.freeze([
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
-      "You add money first, and storage and downloads are drawn from your balance as they are metered. Files are counted for at least one hour.",
+      "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
@@ -221,7 +222,7 @@ export const FAQ = Object.freeze([
       "agent features: spending cap",
     ],
     answer: [
-      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
+      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own folder at `~/Drive-agents/<tool>` on its own key.",
       "{{AGENT_DELETE}}",
       "The drive also carries a spending cap: the default is {{DEFAULT_CAP}} a month, you can change it on the usage page, and at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),
@@ -241,7 +242,7 @@ export const FAQ = Object.freeze([
 
 /**
  * One row's verdict out of docs/scoreboard.md's table, by its metric name.
- * The table's columns are | Metric | Space | Us | Verdict | Issue |, so the
+ * The table's columns are | Metric | Competitor | Us | Verdict | Issue |, so the
  * verdict is the fourth cell. A metric that is not in the table is an error,
  * not a null: a renamed row would otherwise read as "no verdict" and fail
  * later, with the metric name lost.
@@ -304,6 +305,7 @@ export function markerValues(extra = {}) {
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
     NO_PLANS: PRICE.noPlansLine,
+    VERSION_MINIMUM: PRICE.versionMinimumLine,
     PRICE_RULE: PRICE.rule,
     TRASH_BILLING: PRICE.trashLine,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),

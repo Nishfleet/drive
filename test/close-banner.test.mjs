@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { createD1DeviceStore } from "../core/devices.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_COPY,
@@ -35,7 +36,6 @@ import {
   handleCloseStatusRequest,
   purgeOnDate,
 } from "../src/account-close.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 // The shared banner script, served from the asset layer next to the pages that
@@ -59,6 +59,7 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 const SIGNED_IN_PAGES = [
   { name: "files.html", url: new URL("files.html", PUBLIC_DIR) },
   { name: "usage.html", url: new URL("usage.html", PUBLIC_DIR) },
+  { name: "devices.html", url: new URL("devices.html", PUBLIC_DIR) },
   { name: "starter.html", url: new URL("starter.html", PUBLIC_DIR) },
   { name: "get-started.html", url: new URL("../get-started.html", import.meta.url) },
 ];
@@ -297,8 +298,16 @@ test("the banner's markup is the same one on every signed-in page", () => {
   let first = [];
   for (const { name, url } of SIGNED_IN_PAGES) {
     const html = readFileSync(url, "utf8");
-    const banner = html.slice(html.indexOf('id="close-banner"'));
-    const ids = [...banner.slice(0, banner.indexOf("</aside>")).matchAll(/id="([\w-]+)"/g)].map(
+    // The banner is a <div role="status">, not an <aside>: role="status" is
+    // not allowed on aside, which axe reports as aria-allowed-role (drive#546).
+    const start = html.indexOf('<div class="close-banner"');
+    assert.notEqual(
+      start,
+      -1,
+      `${name}'s close banner must be a <div>, not an <aside> (drive#546)`,
+    );
+    const banner = html.slice(start);
+    const ids = [...banner.slice(0, banner.indexOf("</div>")).matchAll(/id="([\w-]+)"/g)].map(
       (match) => match[1],
     );
     if (first.length === 0) {
@@ -338,8 +347,11 @@ test("the shared script is one served file, and the public tree carries it", () 
 test("the Lighthouse script-count budget is still one, so get-started cannot add a second src", () => {
   // CI runs lhci before npm test. A second <script src> on get-started.html is
   // what failed verify on this branch: the page already loads its renderer.
-  const budgets = JSON.parse(readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"))
-    .ci.assert.assertions;
+  const budgets = JSON.parse(
+    readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"),
+  ).ci.assert.assertMatrix.find(
+    (/** @type {{matchingUrlPattern: string}} */ entry) => entry.matchingUrlPattern === ".*",
+  ).assertions;
   assert.deepEqual(budgets["resource-summary.script:count"], ["error", { maxNumericValue: 1 }]);
   assert.match(
     JSON.stringify(
@@ -469,6 +481,20 @@ test("the shipped banner reveals a pending close with the endpoint's date and ca
     what.textContent,
     payload.copy.pendingWhat.replace("{purgeOn}", String(payload.purgeOn)),
     "the sentence is the module's, with the endpoint's purge date filled in",
+  );
+  // drive#689: the day the banner shows is the day the cron acts on, and the
+  // zone came from purgeOnDate() through the endpoint's payload. The banner
+  // adds nothing and drops nothing, so the zone rides all the way to the
+  // reader without the sentence holding a copy of it.
+  assert.match(
+    String(payload.purgeOn),
+    / \(UTC\)$/,
+    "the endpoint's purge date names the zone the day is in",
+  );
+  assert.match(
+    String(what.textContent),
+    / \(UTC\)/,
+    "the sentence the reader sees states which zone the day is",
   );
   assert.equal(cancel.textContent, payload.copy.pendingCancel, "the link's words are the module's");
   assert.equal(cancel.href, "/usage", "the cancel link points at the usage page's cancel form");

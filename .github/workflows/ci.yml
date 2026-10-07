@@ -53,7 +53,7 @@ jobs:
   # the files inside those areas that the job still reads.
   changes:
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -125,12 +125,12 @@ jobs:
               - docs/scoreboard.md
               - docs/benchmarks.md
               - cmd/drive/main.go
-            # Read by the Go tests (os.ReadFile of ../../src and ../../workers).
+            # Read by the Go tests (os.ReadFile of ../../core).
             go_extra:
-              - src/messages.js
-              - src/seo.js
-              - src/status.js
-              - workers/api/src/queues.js
+              - core/messages.js
+              - core/seo.js
+              - core/status.js
+              - core/queues.js
 
   verify:
     needs: changes
@@ -139,8 +139,8 @@ jobs:
       (needs.changes.result != 'success' ||
        needs.changes.outputs.node == 'true' ||
        needs.changes.outputs.node_extra == 'true')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
-    timeout-minutes: 25 # own runners share the VPS with 10 builders: verify ran 6.5 min idle, passed 10 min under load (2026-10-04)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25 # verify ran 6.5 min idle and 10 min under load on our own runners (2026-10-04), so keep headroom on hosted runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,9 +149,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          # No cache on own runners: npm's cache is already on this disk, and
-          # the cache step zipped all 18 GB of it for 4.5 min per job (2026-10-05).
-          package-manager-cache: false
+          cache: npm
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: npm ci
@@ -230,6 +228,30 @@ jobs:
           -v "$PWD:/w" -w /w
           patrickhulce/lhci-client:0.15.1@sha256:558210c5e422a7babaaa09c285b7469da3f00fac1a9880c37883c65d666a7fc9
           lhci autorun --collect.settings.chromeFlags="--no-sandbox --headless=new"
+      # drive#759: the typecheck and the Biome check are a named step of
+      # their own, beside `npm test` and not inside it.
+      #
+      # What this adds is the fail-fast, not the coverage. `pretest` is
+      # `npm run check`, so `npm test` below already runs `tsc --noEmit`
+      # (through `pretypecheck`, which regenerates `.cloudflare/types` from
+      # cloudflare.config.ts) and then `biome check`, and both have gated
+      # every merge since "Pro standards: type-check all JavaScript in CI"
+      # (#125) landed pretest. What that wiring cannot give a reader of a
+      # red run is which of the two turned it red: the pretest output sits
+      # above the step it belongs to, so a Biome warning count reads as a
+      # failing test run. One extra step costs about three seconds and names
+      # both tools in the run log, where a type error is read as a type
+      # error.
+      #
+      # No `if:` here, which is the same gate `npm test` below runs under:
+      # the job-level `if:` on this `verify` job is the paths filter, so this
+      # runs whenever the tests run.
+      #
+      # No `--write` and no `--fix`, ever: `biome check` reports and exits
+      # non-zero, and the job must fail on the diff it was given rather than
+      # fix it and push on.
+      - name: Typecheck and Biome
+        run: npm run check
       - run: npm test
         env:
           # drive#582: the named proofs write one line per skip here, so the
@@ -273,19 +295,19 @@ jobs:
       (needs.changes.result != 'success' ||
        needs.changes.outputs.go == 'true' ||
        needs.changes.outputs.go_extra == 'true')
-    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
-    timeout-minutes: 20 # go took 8 min under load on own runners (2026-10-04)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20 # go took 8 min under load on our own runners (2026-10-04), so keep headroom on hosted runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # goreleaser below runs `check` only and publishes nothing, so the Go
+      # cache this job keeps never reaches a release artifact.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
         with:
           go-version: "1.24"
-          # No cache on own runners: Go's build cache is already on this disk,
-          # and saving it took 2 min per job (2026-10-05).
-          cache: false
+          cache: true
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry
       # fails the job rather than reaching it.

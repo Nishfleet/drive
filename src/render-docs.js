@@ -2,7 +2,7 @@
 // module is the only thing that turns them into the pages VitePress builds.
 //
 // Why not the stock VitePress path: every marker's value is read from
-// src/billing.js (the money), src/status.js (the one command) and src/keys.js
+// core/billing.js (the money), core/status.js (the one command) and src/keys.js
 // (what a key may do) at build time, and the Markdown copy the llms plugin
 // emits is the file before VitePress compiles it, so a Vue interpolation would
 // render for people and print a bare marker to agents. One pass over the pages
@@ -15,11 +15,11 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DOC_PAGES as SEO_DOC_PAGES } from "../core/seo.js";
 import { faqMarkdown, markerValues } from "./docs.js";
-import { DOC_PAGES as SEO_DOC_PAGES } from "./seo.js";
 
 // The pages that make up the docs, in the order the sitemap and the docs home
-// list them. The list itself lives in src/seo.js, with the sitemap and the root
+// list them. The list itself lives in core/seo.js, with the sitemap and the root
 // llms.txt, so a page cannot be built without being listed there (or listed
 // there without being built); this module only works out the file each entry
 // names. The file name is the page's last path segment: /docs/how-it-works is
@@ -86,6 +86,50 @@ export function cliUsageText() {
     throw new Error("cmd/drive/main.go has no `const usage = ...` block to render");
   }
   return match[1].trim();
+}
+
+/**
+ * The subcommands the CLI runs, from cmd/drive/main.go's `commands` table:
+ * the one place a subcommand exists, because the dispatch reads the table and
+ * the Go gates hold the agent notes and the help text to it. main answers
+ * `version` and `help` before the table, so they are answers a page may show
+ * as commands. Read here, so a docs gate and a Go gate cannot end up with
+ * two parses of one table.
+ * @returns {ReadonlySet<string>}
+ */
+export function cliSubcommands() {
+  const src = readFileSync(MAIN_GO, "utf8");
+  const start = src.indexOf("var commands = map[string]func([]string) error{");
+  if (start < 0) {
+    throw new Error("cmd/drive/main.go has no `var commands` table to read");
+  }
+  // Brace-count to the map's own close: a command value may carry braces of
+  // its own, and stopping at the first `}` would silently drop every command
+  // after it. The name pattern is the one the docs mention, digits and hyphens
+  // included, so a subcommand the CLI gains cannot be visible to one parse and
+  // invisible to the other.
+  const open = src.indexOf("{", start);
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close < 0) {
+    throw new Error("cmd/drive/main.go's command table has no closing brace");
+  }
+  const body = src.slice(open, close);
+  const names = [...body.matchAll(/"([a-z0-9-]+)":/g)].map((m) => m[1]);
+  if (names.length < 10) {
+    throw new Error("cmd/drive/main.go's command table parsed to fewer than 10 subcommands");
+  }
+  return new Set([...names, "version", "help"]);
 }
 
 /**

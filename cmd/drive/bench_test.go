@@ -167,7 +167,7 @@ func benchSetup(tb testing.TB) *benchStandin {
 		benchH = benchStart(tb)
 	})
 	if benchH == nil {
-		tb.Skip("this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
+		skipNoMount(tb, "this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
 	}
 	return benchH
 }
@@ -349,7 +349,7 @@ func benchCommit() string {
 }
 
 // BenchmarkVideoStartFirstByte times the first byte and the first 100 MB of the
-// 5 GB video through the mount, the same scenario Space publishes for 64 MiB
+// 5 GB video through the mount, the same scenario the competitor publishes for 64 MiB
 // and 256 MiB streams.
 func BenchmarkVideoStartFirstByte(b *testing.B) {
 	h := benchSetup(b)
@@ -425,7 +425,7 @@ func BenchmarkSaveReachesStorage(b *testing.B) {
 }
 
 // BenchmarkSmallEdit appends 4 KiB to a 64 MiB file and to a 2 GB file and
-// times each until the new size is in storage. Space publishes the 64 MiB case.
+// times each until the new size is in storage. The competitor publishes the 64 MiB case.
 func BenchmarkSmallEdit(b *testing.B) {
 	h := benchSetup(b)
 	const size = 4096
@@ -482,7 +482,7 @@ func BenchmarkListFolder(b *testing.B) {
 }
 
 // BenchmarkSmallFiles times a 4 KiB put, a 1 MiB put and a 1 MiB get, the
-// three figures Space publishes for files under 1 MiB.
+// three figures the competitor publishes for files under 1 MiB.
 func BenchmarkSmallFiles(b *testing.B) {
 	h := benchSetup(b)
 	for _, c := range []struct {
@@ -585,7 +585,7 @@ func BenchmarkVideoStartBandwidth(b *testing.B) {
 }
 
 // BenchmarkInstallToMounted times the path a new user walks: install the
-// binary, mount the drive, and read the first file. Space publishes about five
+// binary, mount the drive, and read the first file. The competitor publishes about five
 // minutes for its six-step quickstart.
 func BenchmarkInstallToMounted(b *testing.B) {
 	h := benchSetup(b)
@@ -630,7 +630,7 @@ func BenchmarkInstallToMounted(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit an unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit an unprivileged FUSE mount")
 	}
 	f, err := os.Open(filepath.Join(mountDir, "bench-install.bin"))
 	if err != nil {
@@ -679,7 +679,7 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountB).Run()
 	}()
 	if !waitForMount(b, mount, mountB) {
-		b.Skip("this host does not permit a second unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit a second unprivileged FUSE mount")
 	}
 
 	const name = "bench-sync.txt"
@@ -738,8 +738,8 @@ func BenchmarkFileOpen(b *testing.B) {
 	h.report(b, "file-open", "open", time.Since(start), 4096)
 }
 
-// BenchmarkBigFolderRename times renaming a folder through the mount. Space
-// publishes a 200-file move; quick scale uses the harness's listN.
+// BenchmarkBigFolderRename times renaming a folder through the mount. The
+// competitor publishes a 200-file move; quick scale uses the harness's listN.
 func BenchmarkBigFolderRename(b *testing.B) {
 	h := benchSetup(b)
 	const src = "bench-rename-src"
@@ -791,7 +791,7 @@ func BenchmarkMountReady(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit a second unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit a second unprivileged FUSE mount")
 	}
 	h.report(b, "mount-ready", "ready", time.Since(start), 0)
 }
@@ -884,7 +884,7 @@ func BenchmarkPrefetchMountReady(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit an unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit an unprivileged FUSE mount")
 	}
 	d := time.Since(start)
 	b.Logf("prefetch-bench metric=mount-ready value=%.3f unit=s", d.Seconds())
