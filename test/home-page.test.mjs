@@ -87,25 +87,8 @@ test("one h1, a main landmark, a skip link and a reduced-motion reset", () => {
 });
 
 test("the main action is Get drive, to the waitlist while sign-up is closed, with a true pay-as-you-go line", () => {
-  // drive#545: the buttons used to point at /signin, which refuses anyone
-  // without an invite. While sign-up is closed the action is the waitlist
-  // form on this page, tagged with where the person came from; the plain
-  // Sign in link keeps serving invited accounts.
-  assert.doesNotMatch(html, /<a class="btn" href="\/signin">Get drive/);
-  const buttons =
-    html.match(/<a class="btn" href="#waitlist" data-waitlist-source="[^"]+">Get drive/g) ?? [];
-  assert.equal(
-    buttons.length,
-    3,
-    `the page carries three Get drive buttons to the waitlist, found ${buttons.length}`,
-  );
-  for (const source of ["nav", "hero", "footer"]) {
-    assert.match(
-      html,
-      new RegExp(`data-waitlist-source="${source}"`),
-      `the ${source} button tags its source`,
-    );
-  }
+  // drive#545: Get drive waitlist pin lives in test/version-1-claims.test.mjs
+  // so the two files cannot drift. This test keeps the prepaid hero line.
   // drive#586: prepaid. The line names the smallest top-up and what 200 GB
   // draws from it.
   const cta = html.match(

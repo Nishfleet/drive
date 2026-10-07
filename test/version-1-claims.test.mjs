@@ -254,6 +254,18 @@ test("every Get drive button goes to the waitlist while sign-up is invite-only",
     3,
     `three Get drive buttons to the waitlist, found ${buttons.length}`,
   );
+  for (const source of ["nav", "hero", "footer"]) {
+    assert.match(
+      index,
+      new RegExp(`data-waitlist-source="${source}"`),
+      `the ${source} button tags its source`,
+    );
+  }
+  // The page's waitlist script already reads the tag (drive#11 form). The
+  // buttons reuse it so a click sets the hidden source field and focuses
+  // the email box, instead of only jumping to the fragment.
+  assert.match(index, /querySelectorAll\("\[data-waitlist-source\]"\)/);
+  assert.match(index, /sourceInput\.value = link\.dataset\.waitlistSource/);
 });
 
 test("get-started names Linux, not only Mac", () => {
@@ -330,6 +342,19 @@ test("the monthly receipt states its facts in the customer's words", () => {
   assert.match(
     text,
     /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+});
+
+test("the FAQ's Benchmarks link is a shipped docs page", () => {
+  assert.match(
+    read("docs-site/faq.md"),
+    /\[Benchmarks\]\(\/benchmarks\)/,
+    "the FAQ must send speed questions to the Benchmarks page",
+  );
+  assert.match(
+    shipped("benchmarks"),
+    /# Benchmarks/,
+    "the built Benchmarks page must exist for that FAQ link",
   );
 });
 
