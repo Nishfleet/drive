@@ -129,50 +129,46 @@ export function parseQuery(input) {
   return { words };
 }
 
-/**
- * One word as an FTS5 query term. FTS5 reads a bare word as text with its own
- * operators, so a word is wrapped in double quotes and an embedded quote is
- * doubled; that makes every character in it literal, which is the fold the
- * LIKE path gave for free. A space between two quoted terms is FTS5's AND, so
- * every word appearing in the name is the same rule the search already ran.
- * @param {string[]} words
- * @returns {string}
- */
+// One word as an FTS5 query term. FTS5 reads a bare word as text with its own
+// operators, so a word is wrapped in double quotes and an embedded quote is
+// doubled; that makes every character in it literal, which is the fold the
+// LIKE path gave for free. A space between two quoted terms is FTS5's AND, so
+// every word appearing in the name is the same rule the search already ran.
+/** @param {string[]} words
+ * @returns {string} */
 export function ftsQuery(words) {
   return words.map((word) => `"${word.replace(/"/g, '""')}"`).join(" ");
 }
 
-/** True when every word is long enough for the trigram index to hold it. One
- * word of fewer than {@link MIN_FTS_WORD_LENGTH} characters sends the whole
- * query down the LIKE path, because FTS5 would answer it with nothing.
- * @param {string[]} words */
+// True when every word is long enough for the trigram index to hold it. One
+// word of fewer than MIN_FTS_WORD_LENGTH characters sends the whole query
+// down the LIKE path, because FTS5 would answer it with nothing.
+/** @param {string[]} words */
 function ftsCanAnswer(words) {
   return words.every((word) => [...word].length >= MIN_FTS_WORD_LENGTH);
 }
 
-/**
- * The one SQL the search runs, in one of two shapes.
- *
- * The FTS5 shape (the one a normal query takes) matches through the trigram
- * index on `file_index_fts`, so the database reads the index and the rows it
- * names rather than every row the account has. Ranking is unchanged: a
- * whole-name match first, then a prefix match, then a match in the middle,
- * then the name. The two columns a result carries but the trigram index does
- * not keep — the size and the date — are read back from `file_index` by a
- * correlated subquery on its (account_id, path) primary key, which SQLite
- * evaluates only for the rows that survive the LIMIT.
- *
- * The LIKE shape answers a query with a word of one or two characters, which
- * the trigram tokenizer cannot index at all. It is the old statement, kept
- * whole, so a short query is still correct.
- *
- * `params` is returned so a test can assert the statement and the caller
- * cannot build SQL from input; `engine` names the shape so the caller and the
- * test can tell which one ran.
- * @param {string[]} words
+// The one SQL the search runs, in one of two shapes.
+//
+// The FTS5 shape (the one a normal query takes) matches through the trigram
+// index on `file_index_fts`, so the database reads the index and the rows it
+// names rather than every row the account has. Ranking is unchanged: a
+// whole-name match first, then a prefix match, then a match in the middle,
+// then the name. The two columns a result carries but the trigram index does
+// not keep — the size and the date — are read back from `file_index` by a
+// correlated subquery on its (account_id, path) primary key, which SQLite
+// evaluates only for the rows that survive the LIMIT.
+//
+// The LIKE shape answers a query with a word of one or two characters, which
+// the trigram tokenizer cannot index at all. It is the old statement, kept
+// whole, so a short query is still correct.
+//
+// `params` is returned so a test can assert the statement and the caller
+// cannot build SQL from input; `engine` names the shape so the caller and the
+// test can tell which one ran.
+/** @param {string[]} words
  * @param {{accountId: string, limit: number}} options
- * @returns {{sql: string, params: Array<string|number>, engine: "fts"|"like"}}
- */
+ * @returns {{sql: string, params: Array<string|number>, engine: "fts"|"like"}} */
 export function searchSql(words, { accountId, limit }) {
   if (!Array.isArray(words) || words.length === 0) {
     throw new Error("searchSql needs at least one word");
@@ -370,11 +366,11 @@ export function upsertStatements(db, rows) {
   return statements;
 }
 
-/** The one prepared statement that drops one row. The trigram table is keyed
- * by file_index's rowid and a trigger on file_index drops that row inside this
- * same DELETE (migration 0039), so the index row and the search row go
- * together and nothing here has to know the trigram table exists.
- * @param {D1Database} db
+// The one prepared statement that drops one row. The trigram table is keyed
+// by file_index's rowid and a trigger on file_index drops that row inside this
+// same DELETE (migration 0039), so the index row and the search row go
+// together and nothing here has to know the trigram table exists.
+/** @param {D1Database} db
  * @param {{id: string}} account
  * @param {string} path */
 export function deleteStatement(db, account, path) {
