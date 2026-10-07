@@ -277,14 +277,29 @@ func TestParseSizeSuffix(t *testing.T) {
 // (TestBackgroundFillFillsThroughTheCappedCache), and this one is what makes the
 // "the fill stops at the cap" branch a failing test rather than a comment.
 type countedBackend struct {
-	used      int64
-	cap       int64
+	used int64
+	cap  int64
+	// refreshes counts the root refreshes and nothing else, so "the listing
+	// was refreshed once" names one call. Named folders are counted
+	// separately: they are a different remote-control call (issue #541).
 	refreshes int
+	// namedDirRefreshes counts directories passed to refreshDirs (issue #541
+	// nested listings).
+	namedDirRefreshes int
 	// recursiveRefreshes counts the refreshes that asked for a whole-tree
 	// listing, which the fill must never do on a timer (drive#568).
 	recursiveRefreshes int
 	// addPerRead is how many bytes the fake read puts in the cache.
 	addPerRead int64
+	// unreach is the error reachable returns. Nil means storage answers,
+	// which is the fill's usual case; a set error is a dropped link
+	// (issue #541).
+	unreach error
+	// refreshErr is the error refresh answers with, which is the probe's
+	// blind window: the store answered the probe and the refresh then
+	// failed, so the pass must name it instead of reporting success
+	// (issue #541).
+	refreshErr error
 }
 
 func (b *countedBackend) stats(context.Context) (vfsStats, error) {
@@ -299,6 +314,16 @@ func (b *countedBackend) refresh(_ context.Context, recursive bool) error {
 	if recursive {
 		b.recursiveRefreshes++
 	}
+	return b.refreshErr
+}
+
+func (b *countedBackend) reachable(context.Context) error { return b.unreach }
+
+func (b *countedBackend) refreshDirs(_ context.Context, dirs []string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	b.namedDirRefreshes += len(dirs)
 	return nil
 }
 
@@ -322,8 +347,11 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		if res.Ran() {
 			t.Errorf("the fill ran with the cache at the %s cap", FormatBytes(capBytes))
 		}
-		if b.refreshes != 0 {
-			t.Errorf("the fill refreshed the directory %d times with the cache at the cap", b.refreshes)
+		if b.refreshes != 1 {
+			t.Errorf("the fill refreshed the directory %d times at the cap, want 1 (issue #541 freshness)", b.refreshes)
+		}
+		if b.recursiveRefreshes != 0 {
+			t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
 		}
 	})
 
@@ -338,6 +366,9 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		}
 		if b.used != 0 {
 			t.Errorf("the fill put %s in the cache on a busy machine", FormatBytes(b.used))
+		}
+		if b.refreshes != 1 {
+			t.Errorf("the busy machine still refreshes listings %d times, want 1 (issue #541 freshness)", b.refreshes)
 		}
 	})
 
@@ -596,10 +627,11 @@ func (c *fakeCache) touch(p string) {
 	c.order = append(c.order, p)
 }
 
-// A pass with nothing kept offline and nothing opened in the window must not
-// refresh the directory cache at all: the whole-tree refresh on a timer is the
-// bug (drive#568).
-func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
+// A pass with nothing kept offline and nothing opened in the window still
+// refreshes the root listing once, non-recursively, so the other machine's
+// save appears (issue #541). A whole-tree refresh on a timer is the bug
+// (drive#568) and must stay at zero.
+func TestFillRefreshesRootWhenNothingOpened(t *testing.T) {
 	b := &countedBackend{used: 1 << 30, cap: 20 << 30}
 	res, err := fillPass(context.Background(), b, fillTargets{}, 0.1, 0.1)
 	if err != nil {
@@ -608,11 +640,176 @@ func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
 	if res.Ran() {
 		t.Error("the fill ran with nothing opened and nothing kept offline")
 	}
-	if b.refreshes != 0 {
-		t.Errorf("the fill refreshed the directory cache %d times with nothing to fill, want none", b.refreshes)
+	if b.refreshes != 1 {
+		t.Errorf("the fill refreshed the directory cache %d times with nothing to fill, want 1 (issue #541 freshness)", b.refreshes)
 	}
 	if b.recursiveRefreshes != 0 {
 		t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
+	}
+}
+
+// A dropped link must not vfs/refresh: rclone forces the directory cache
+// stale before it re-lists, so a failed refresh would make every later
+// open fail (issue #541). The keep-warm of a kept-offline file still runs.
+func TestFillSkipsRefreshWhenStorageIsDownAndStillKeepWarms(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, unreach: errors.New("storage is down")}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage down: %v", err)
+	}
+	if !res.Ran() {
+		t.Error("the keep-warm pass did not run while storage was down")
+	}
+	if b.refreshes != 0 {
+		t.Errorf("the fill refreshed the directory %d times with storage down, want none", b.refreshes)
+	}
+}
+
+// A dropped link must not read recently-opened files either: the probe that
+// gated the refresh is a list on the same remote the read goes through, so a
+// file that is not already in the cache cannot be fetched, and trying turns
+// one dropped link into one I/O error per recently-opened file on every pass.
+// The kept-offline set is the opposite and still warms (#115).
+func TestFillSkipsRecentOpensWhenStorageIsDown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, unreach: errors.New("storage is down")}
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"opened.txt"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			reads = append(reads, p)
+			return int64(len(p)), nil
+		},
+	}
+	res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage down: %v", err)
+	}
+	if !res.Ran() {
+		t.Error("the keep-warm pass did not run while storage was down")
+	}
+	if len(reads) != 0 {
+		t.Errorf("the fill read %v with storage down, want no recently-opened file", reads)
+	}
+}
+
+// A recently-opened file is read through the same injected readFile, so the
+// assertion above is not vacuous: with storage back up the same targets fill
+// the opened file. This is the half of the rule that must not become "never
+// fill recent opens".
+func TestFillFillsRecentOpensWhenStorageAnswers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "opened.txt"), []byte("opened"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30}
+	targets := fillTargets{
+		root:   dir,
+		recent: []string{"opened.txt"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			reads = append(reads, p)
+			return 1, nil
+		},
+	}
+	res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage up: %v", err)
+	}
+	if !res.Ran() || !res.Idle {
+		t.Errorf("an idle fill with storage up did not run: %+v", res)
+	}
+	if len(reads) != 1 || reads[0] != filepath.Join(dir, "opened.txt") {
+		t.Errorf("the fill read %v with storage up, want the opened file", reads)
+	}
+}
+
+func TestFillRefreshesAKeptOfflineFolder(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "photos")
+	if err := os.Mkdir(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keep, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"photos"}}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass for a kept folder: %v", err)
+	}
+	if !res.Ran() {
+		t.Fatal("the keep-warm pass did not run")
+	}
+	if b.namedDirRefreshes != 1 {
+		t.Errorf("named directory refreshes = %d, want 1 (the kept folder)", b.namedDirRefreshes)
+	}
+}
+
+func TestVfsRefreshReplyError(t *testing.T) {
+	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"": "OK"}}, false); err != nil {
+		t.Errorf("OK: %v", err)
+	}
+	err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"": "connection refused"}}, false)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("root listing failure: %v", err)
+	}
+	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "directory not found"}}, true); err != nil {
+		t.Errorf("skipFailed must ignore a named-dir not-found: %v", err)
+	}
+	// Anything else in a named dir is real: a swallowed listing error would
+	// leave the machine reading a listing older than it thinks (issue #541).
+	err = vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "connection refused"}}, true)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("skipFailed must not swallow a real named-dir failure: %v", err)
+	}
+	// A reply with no result is not success: a caller that reads its
+	// absence as an OK hides a changed remote-control shape behind a
+	// listing that now stays stale for --dir-cache-time (24h) (issue #541).
+	err = vfsRefreshReplyError(map[string]any{"result": nil}, false)
+	if err == nil {
+		t.Error("a null result must be a named failure, not a silent OK")
+	}
+	if err := vfsRefreshReplyError(map[string]any{}, false); err == nil {
+		t.Error("an empty reply must be a named failure, not a silent OK")
+	}
+}
+
+// TestFillRefreshFailureIsNamed proves the window the keep-warm probe cannot
+// close: the store answers the probe and then the refresh fails (the link
+// drops, or the rc call outruns the pass budget). The fill must say so as a
+// named error rather than report a refreshed cache, and it must leave the
+// named folders alone, because a half-refreshed listing is what the caller
+// would read as fresh (issue #541; upstream rclone#1963 means the cache
+// rclone already forced stale cannot be un-staled, so the next pass's probe
+// and refresh is the recovery, not a retry inside this one).
+func TestFillRefreshFailureIsNamed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, refreshErr: errors.New("connection reset by peer")}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 0.1, 0.1)
+	if err == nil || !strings.Contains(err.Error(), "refresh directory cache") {
+		t.Fatalf("fillPass with a failing refresh: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Errorf("the error does not carry the backend's own message: %v", err)
+	}
+	if b.namedDirRefreshes != 0 {
+		t.Errorf("the fill refreshed %d named folders after the root refresh failed, want none: a half-refreshed listing is what the caller would read as fresh", b.namedDirRefreshes)
+	}
+	if res.Refreshed {
+		t.Error("the fill reported a refreshed directory cache from a refresh that failed")
 	}
 }
 

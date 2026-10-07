@@ -8,6 +8,15 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-07
+
+- A folder kept offline stays open even after the network has been down for
+  hours, not just seconds. Before, the drive's short directory cache turned
+  the kept-folder promise off after five seconds without a link, and every
+  open in the folder said Input/output error. Listings now stay fresh only
+  while the network answers, so during an outage you work from the copy you
+  have.
+
 ## 2026-10-06
 
 - A Rewind tab in the web app lists the branches an agent worked in, names the
