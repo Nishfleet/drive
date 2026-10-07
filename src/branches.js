@@ -826,6 +826,18 @@ async function storedBytesUnder(store, root) {
   return bytesOf((await listFiles(store, root)).values());
 }
 
+/**
+ * How many files this job has copied: the keys under the branch's own prefix,
+ * relative to the branch. A batch limit is about the files on disk, so this is
+ * the count that answers it (drive#844 in-run review).
+ * @param {FileStore} store a scoped store
+ * @param {Branch} branch
+ * @returns {Promise<number>}
+ */
+async function copiedFileCount(store, branch) {
+  return (await listFiles(store, branch.branchPrefix)).size;
+}
+
 /** How many of the account's own branches occupy an in-flight state right now:
  * the count the claim's own WHERE enforces (drive#553). Read back only to tell
  * a cap refusal from a byte-limit refusal, never to decide either (drive#801).
@@ -1414,7 +1426,17 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   // Progress is the files this job has copied, not the size of the snapshot it
   // copies: the snapshot is seeded with the whole frozen listing, so counting
   // its keys would report the branch finished on its first batch.
-  const files = doneSoFar + copied.copied;
+  //
+  // Which of the two real counts applies depends on the walk. While there is
+  // more source to walk it is this job's own count plus what this batch moved.
+  // On the batch that finishes the walk the saved snapshot already holds every
+  // file the branch will ever hold, so its size is the frozen listing and not
+  // the copy's size; the count is the files under the branch prefix instead.
+  // Adding the count to that size was the trap drive#844's review found: a
+  // resumed copy counted its own past batches again on the finishing batch, so
+  // a 1003 file branch passed BRANCH_FILE_LIMIT and the caller got a
+  // `branch-too-large` for a branch that fits.
+  const files = copied.done ? await copiedFileCount(store, branch) : doneSoFar + copied.copied;
   if (files > BRANCH_FILE_LIMIT) {
     await removePrefixFiles(store, branch.branchPrefix);
     const error = failureMessage("branch-too-large");
@@ -2167,6 +2189,44 @@ export async function createBranch(
   }
   const existing = await getBranch(db, snapshots, account, name);
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
+    // A copy the queue's retries used up (drive#844). The row is claimed in
+    // `creating`, its message was dead-lettered, and nothing else moves it:
+    // this 409 held the name for good, a caller had no way to say what to do
+    // when its own copy was half done, and the only way out was dropping the
+    // row. Finishing it is the same create the row already carries, started
+    // from the cursor the last batch stopped at, so the files that are left
+    // are copied and nothing is written twice. A different folder stays the
+    // 409 below, because resuming would copy the row's own source rather than
+    // the folder this create asked for.
+    if (
+      existing.state === "creating" &&
+      existing.jobKind === "create" &&
+      existing.sourcePrefix === folderPath
+    ) {
+      if (
+        await enqueueJob(queue, {
+          kind: "branch.create",
+          accountId: account.id,
+          branchId: existing.id,
+          name,
+        })
+      ) {
+        return {
+          name,
+          sourcePrefix: existing.sourcePrefix,
+          branchPrefix: existing.branchPrefix,
+          state: "creating",
+          createdAt: existing.createdAt,
+          changedBy: existing.changedBy,
+          files: existing.jobDone,
+          progress: { kind: "create", done: existing.jobDone, total: existing.jobTotal },
+        };
+      }
+      // No queue bound, or the send failed: the batches that are left run
+      // here, which is what this route has always answered with for a job it
+      // cannot hand out.
+      return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, existing.id));
+    }
     return { error: failureMessage("branch-exists"), status: 409 };
   }
   // The 1 TB pre-charge check: branch copies skip the file index, so the store
@@ -2572,7 +2632,20 @@ export async function discardBranch(db, snapshots, store, account, name, options
   if (branch.state === "approving") {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
-  if (branch.state === jobState && branch.jobKind === jobKind) {
+  // A row the queue's retries left claimed by a removal, finished by this
+  // call rather than refused (drive#844). It is the row's own job, picked up
+  // from the cursor the lost batch stopped at, so a second call continues the
+  // removal instead of listing the prefix again from the top. A cancel of a
+  // stuck rewind is the same door: what a discard does and what the stuck
+  // rewind started are one removal on one prefix - this branch's own copies -
+  // and both kinds close the row `discarded`, so the name comes back either
+  // way. A rewind does not take another job's row through this door: a rewind that
+  // is already running is finished before this point, and the rewind route's
+  // own state check refuses every other state (drive#844).
+  const finishesClaimedRemoval =
+    (branch.state === jobState && branch.jobKind === jobKind) ||
+    (jobKind === "discard" && branch.state === "rewinding" && branch.jobKind === "rewind");
+  if (finishesClaimedRemoval) {
     return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
   }
   const fromState = jobKind === "discard" && branch.state === "creating" ? "creating" : "open";

@@ -4,8 +4,10 @@
 // the shipped migrations.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
   BRANCH_JOBS_DEAD_LETTER_QUEUE,
   BRANCH_JOBS_MAX_RETRIES,
@@ -106,6 +108,58 @@ async function driven() {
 async function readText(store, path) {
   const object = await store.read(path);
   return object ? await new Response(object.body).text() : null;
+}
+
+// The batch limits are private to src/branches.js, so a test that needs a row
+// stuck mid-job reads them out of the source rather than restating them: a restated
+// number silently stops proving anything the day the batch size moves.
+const BRANCH_COPY_BATCH_LIMIT = batchLimit("BRANCH_JOB_BATCH_FILES");
+const BRANCH_DELETE_BATCH_LIMIT = batchLimit("BRANCH_DELETE_BATCH");
+
+/** @param {string} name */
+function batchLimit(name) {
+  const source = readFileSync(new URL("../src/branches.js", import.meta.url), "utf8");
+  const found = new RegExp(`^(?:export )?const ${name} = (\\d+);`, "m").exec(source);
+  assert.ok(found, `${name} is not a constant number in src/branches.js`);
+  return Number(found[1]);
+}
+
+/**
+ * A branch of a folder with more files in it than one job batch moves, so a row
+ * stuck part way through is a state that really happens. BRANCH_FILE_LIMIT caps
+ * the files a branch may copy, and the test lives in the same files, so the
+ * fixture goes just over one removal batch instead of to the cap.
+ */
+async function bigBranch() {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const total = BRANCH_DELETE_BATCH_LIMIT + 3;
+  /** @type {Promise<unknown>[]} */
+  const pending = [];
+  /** @param {string} path */
+  const write = (path) => {
+    pending.push(scoped.write(path, new Blob(["x"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      void Promise.all(pending).then(() => {
+        pending.length = 0;
+      });
+    }
+  };
+  for (let index = 0; index < total; index += 1) {
+    write(`/Photos/f${`${index}`.padStart(4, "0")}.txt`);
+  }
+  // A second folder of the same account, so a create that asks for this branch's
+  // held name over a different folder has a folder that really exists.
+  write("/Other/one.txt");
+  write("/Other/two.txt");
+  await Promise.all(pending);
+  return {
+    raw,
+    scoped,
+    total,
+    db: createTestD1(),
+    snapshots: createKvSnapshotStore(createTestKv()),
+  };
 }
 
 test("create, approve, discard and rewind routes answer 202 with progress", async () => {
@@ -1128,4 +1182,513 @@ test("approve of a branch still being created answers 409, not 500", async () =>
   assert.equal(/** @type {{status?: number}} */ (approved).status, 409);
   const row = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(row?.state, "creating");
+});
+
+/** A create the route can run: the limiter the route checks before the body. */
+const ALLOWED = { ipLimiter: { limit: () => Promise.resolve({ success: true }) } };
+
+/**
+ * The queue's retries, used up. The last delivery throws and the cleanup that
+ * would have closed the row fails with it, so the message is sent back for the
+ * dead-letter queue and the row keeps its claim: that is the stuck state this
+ * issue is about, because src/index.js logs "branch job exhausted cleanup
+ * failed" and leaves the row exactly where the batch died.
+ * @param {unknown} body the message the route enqueued for the row
+ */
+async function exhaustRetries(body) {
+  /** @type {{body: unknown, ack: () => void, retry: () => void, attempts: number, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body,
+    attempts: BRANCH_JOBS_MAX_RETRIES,
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  const stats = await handleBranchJobs(
+    { messages: [message] },
+    async () => {
+      throw new Error("the batch threw for the last time");
+    },
+    null,
+    async () => {
+      throw new Error("the cleanup could not close the row either");
+    },
+  );
+  assert.equal(stats.retried, 1);
+  assert.equal(message.acked, undefined, "nothing acked it, so the row keeps its job");
+}
+
+/**
+ * The queue's own retry loop, delivery by delivery, so the message that
+ * dead-letters really is the last delivery and not the first one to throw:
+ * `handleBranchJobs` alone only ever sees one message, and the production
+ * worst case is a row that worked for BRANCH_JOBS_MAX_RETRIES - 1 deliveries
+ * and then lost its store.
+ *
+ * @param {unknown} body
+ * @param {(job: unknown, delivery: number) => Promise<{continue?: boolean}>} run
+ *   the work one delivery does; the store only breaks on the last one
+ */
+async function exhaustRetriesAfterAStartedBatch(body, run) {
+  /** @type {{body: unknown, ack: () => void, retry: () => void, attempts: number, retried?: boolean}} */
+  const message = {
+    body,
+    attempts: 1,
+    ack() {},
+    retry() {
+      message.retried = true;
+    },
+  };
+  const exhausted = [];
+  for (let delivery = 1; delivery <= BRANCH_JOBS_MAX_RETRIES; delivery += 1) {
+    message.attempts = delivery;
+    const last = delivery === BRANCH_JOBS_MAX_RETRIES;
+    const stats = await handleBranchJobs(
+      { messages: [message] },
+      async () => {
+        if (last) {
+          // The store is gone for good on the last delivery, which is what
+          // dead-letters the message and leaves the row claimed.
+          throw new Error("the batch threw for the last time");
+        }
+        // A batch that reports more work left is acked and re-enqueued, which
+        // is the delivery that runs the next one.
+        return await run(body, delivery);
+      },
+      null,
+      async (job) => {
+        exhausted.push(job);
+        throw new Error("the cleanup could not close the row either");
+      },
+    );
+    if (last) {
+      assert.equal(stats.retried, 1, "the last delivery is retried");
+      assert.equal(stats.acked, 0, "and acked by nothing");
+    } else {
+      assert.equal(stats.acked, 1, `delivery ${delivery} worked`);
+      assert.equal(stats.retried, 0);
+    }
+  }
+  assert.equal(exhausted.length, 1, "the last delivery is the one the cleanup saw");
+  assert.ok(message.retried, "the message is dead-lettered, never acked");
+}
+
+/**
+ * Runs `batches` batches of the row's own job, the way the queue consumer runs
+ * it, so a stuck row is a real batch short of done instead of one that never
+ * started. The caller passes the count, because the two jobs have different
+ * phases: a removal removes up to BRANCH_DELETE_BATCH keys per batch, while a
+ * copy clears the prefix in one batch and then moves BRANCH_JOB_BATCH_FILES
+ * files per batch.
+ * @param {{raw: import("../src/branches.js").FileStore, scoped: import("../src/branches.js").FileStore, db: D1Database, snapshots: import("../src/branches.js").SnapshotStore}} setup
+ * @param {unknown} message
+ * @param {number} batches
+ */
+async function deliverBatches(setup, message, batches) {
+  const job = branchJob(message);
+  for (let batch = 0; batch < batches; batch += 1) {
+    const result = await processBranchJob(
+      setup.db,
+      setup.snapshots,
+      setup.scoped,
+      ACCOUNT,
+      job.branchId,
+    );
+    assert.equal(result.done, false, `batch ${batch} must leave the row open`);
+  }
+  // The queue asks the processor for the next message itself.
+  return { continue: true };
+}
+
+/**
+ * A row the queue left `rewinding`, with the removal it had started still half
+ * done. The branch is a copy of a folder with more files in it than one
+ * removal batch takes, so the row is left one real batch short of the end.
+ * @returns {Promise<{raw: import("../src/branches.js").FileStore, scoped: import("../src/branches.js").FileStore, db: D1Database, snapshots: import("../src/branches.js").SnapshotStore, queue: ReturnType<typeof fakeQueue>}>}
+ */
+async function stuckRewinding() {
+  const setup = await bigBranch();
+  const queue = fakeQueue();
+  await createBranch(
+    setup.db,
+    setup.snapshots,
+    setup.scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+  );
+  const started = await discardBranch(setup.db, setup.snapshots, setup.scoped, ACCOUNT, "work", {
+    kind: "rewind",
+    queue,
+  });
+  assert.equal(started.state, "rewinding");
+  assert.equal(queue.sent.length, 1);
+  // Real batches run before the retries run out, so the row is stuck with a
+  // cursor past the first batch of files and that batch already gone. A resume
+  // that started the walk from the top would re-list the removed keys, so the
+  // run below has to start from the cursor the row carries. One batch is enough
+  // to leave it stuck, because the branch holds more files than a removal
+  // batch takes.
+  await exhaustRetriesAfterAStartedBatch(queue.sent[0].body, async (job, delivery) => {
+    if (delivery === 1) {
+      return await deliverBatches(setup, job, 1);
+    }
+    return { continue: false };
+  });
+  const row = await getBranch(setup.db, setup.snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "rewinding", "one removal batch is short of the end");
+  assert.equal(row?.jobKind, "rewind");
+  assert.equal(row?.jobDone, BRANCH_DELETE_BATCH_LIMIT, "the lost delivery removed one batch");
+  return { ...setup, queue };
+}
+
+test("the rewind route resumes a rewind the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots, queue } = await stuckRewinding();
+  const total = BRANCH_DELETE_BATCH_LIMIT + 3;
+  // The lost delivery removed the first batch, so the copy is half gone and
+  // the name is still claimed. The file the cursor passed is gone; the rest is
+  // still there.
+  assert.equal(await readText(scoped, "/.branches/work/f0000.txt"), null);
+  assert.equal(await readText(scoped, `/.branches/work/f${total - 1}.txt`), "x");
+  const messagesBefore = queue.sent.length;
+
+  const resumed = await handleRewindRequest(
+    new Request("https://drive.test/api/rewind/work", { method: "POST" }),
+    db,
+    snapshots,
+    // The store as src/index.js hands it over: unscoped. handleRewindRequest
+    // scopes it after the account gate itself (drive#854), so handing it the
+    // fixture's already-scoped store scopes the path twice and the first
+    // branch-prefix listing throws.
+    raw,
+    ACCOUNT,
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(resumed.status, 202, "the resume answers like any other rewind");
+  const body = await resumed.json();
+  assert.equal(body.state, "discarded");
+  // Every file the row counted, which is the batch the lost delivery removed
+  // plus the ones this call took. A resume that started at the top of the
+  // prefix would count the whole copy again.
+  assert.equal(body.rewound, total);
+  // The resume finishes the row's own removal inside the request and sends no
+  // second message: the message for this row is the one that was dead-lettered.
+  assert.equal(queue.sent.length, messagesBefore);
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+  assert.equal(row?.jobKind, "");
+  assert.deepEqual(await raw.listKeys("acct-1/.branches/work"), [], "the branch prefix is empty");
+  assert.equal(await readText(scoped, "/Photos/f0000.txt"), "x", "the original is untouched");
+  // The one-active-name index released the name, so a new branch of it works.
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.ok(!("error" in again));
+});
+
+test("the discard route cancels a rewind the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await stuckRewinding();
+  const cancelled = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches/work/discard", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).state, "discarded");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+  assert.equal(row?.jobKind, "");
+  // Whatever the failed message had already removed stayed removed, and the
+  // rest of the copy goes with it: the prefix is empty, not re-walked.
+  assert.deepEqual(await raw.listKeys("acct-1/.branches/work"), []);
+  assert.equal(await readText(scoped, "/Photos/f0000.txt"), "x", "the original is untouched");
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.ok(!("error" in again));
+});
+
+test("the create route resumes a copy the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots, total } = await bigBranch();
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  // Real batches run before the retries run out, so the row is stuck with a
+  // cursor past the first copied batch. A resume that walked the source from
+  // the top again would re-copy them all, so the copy the resume finishes is
+  // proved by the row's own count. Two batches: the first clears the prefix,
+  // the second copies the first batch of files.
+  await exhaustRetriesAfterAStartedBatch(queue.sent[0].body, async (job, delivery) => {
+    if (delivery === 1) {
+      return await deliverBatches({ raw, scoped, db, snapshots }, job, 2);
+    }
+    return { continue: false };
+  });
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stuck?.state, "creating", "the row keeps its claim and its job");
+  assert.equal(stuck?.jobKind, "create");
+  assert.equal(
+    stuck?.jobDone,
+    BRANCH_COPY_BATCH_LIMIT,
+    "one copy batch is already on disk, and the row counts the files under its prefix once",
+  );
+  assert.equal(await readText(scoped, "/.branches/work/f0000.txt"), "x", "the first file copied");
+  assert.equal(
+    await readText(scoped, `/.branches/work/f${total - 1}.txt`),
+    null,
+    "the rest is still to copy",
+  );
+
+  // A different folder under the held name is still refused: resuming the row
+  // would copy the row's own source, not the one this create asked for.
+  const elsewhere = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Other", name: "work" }),
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    ALLOWED,
+  );
+  assert.equal(elsewhere.status, 409);
+  assert.equal((await elsewhere.json()).error, failureMessage("branch-exists"));
+  const stillStuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stillStuck?.state, "creating");
+
+  // The same create again resumes the row and runs the batches that are left
+  // here — the in-process stand-in this route has always answered with. The
+  // route answers 202 either way: with the queue it hands the job back, so the
+  // row is what says the copy is finished, not this body.
+  const resumed = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Photos", name: "work" }),
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    ALLOWED,
+  );
+  assert.equal(resumed.status, 202);
+  const body = await resumed.json();
+  assert.equal(body.branch.state, "open");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "open");
+  assert.equal(row?.jobKind, "");
+  assert.equal(row?.jobDone, total, "the row counts every file of the copy once");
+  // Every file of the copy is there, and the copy the lost delivery made is not
+  // made a second time: the branch prefix holds the source's own file count, so
+  // a walk that restarted would have carried the same keys over rather than
+  // doubling them, and the row's own count above is what says no file was
+  // counted twice.
+  assert.deepEqual(
+    (await scoped.list("/.branches/work")).map((entry) => entry.path).sort(),
+    Array.from(
+      { length: total },
+      (_unused, index) => `/.branches/work/f${`${index}`.padStart(4, "0")}.txt`,
+    ),
+  );
+  assert.equal(await readText(scoped, "/.branches/work/f0000.txt"), "x");
+  assert.equal(await readText(scoped, `/.branches/work/f${total - 1}.txt`), "x");
+});
+
+test("two deliveries that overlap on one row copy every file once (drive#844)", async () => {
+  const { scoped, db, snapshots, total } = await bigBranch();
+  const queue = fakeQueue();
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(stuck);
+  // Two real batches first: the copy clears the branch prefix before it walks
+  // the source, so the second is the one that moves files and gives the row a
+  // cursor past them. The overlap below is then two deliveries of a row that is
+  // genuinely part way through, which is what a queue does when its ack is slow
+  // or its retry overlaps.
+  for (let batch = 0; batch < 2; batch += 1) {
+    assert.equal((await processBranchJob(db, snapshots, scoped, ACCOUNT, stuck.id)).done, false);
+  }
+  const midRow = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(midRow?.jobDone, BRANCH_COPY_BATCH_LIMIT);
+
+  // Both deliveries read the same cursor and both copy a batch. Nothing here
+  // serializes them, which is the point: what keeps them from stepping on each
+  // other is that each batch re-reads the row's own cursor and the copy is a
+  // walk, so the loser of the two writes a cursor and a count that are the same
+  // shape as the winner's, and the next delivery reads that.
+  const overlap = await Promise.all([
+    processBranchJob(db, snapshots, scoped, ACCOUNT, stuck.id),
+    processBranchJob(db, snapshots, scoped, ACCOUNT, stuck.id),
+  ]);
+  for (const result of overlap) {
+    assert.equal(result.error, undefined, "neither overlap fails");
+    assert.equal(result.done, false);
+  }
+
+  // Drive the row to the end however the batches interleave, then hold the
+  // whole copy: every file of the source is there exactly once and the row's
+  // count is the source's file count, so no file was copied twice and none was
+  // skipped by the two deliveries having moved the cursor past it.
+  for (let step = 0; step < 40; step += 1) {
+    const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, stuck.id);
+    if (result.done) {
+      break;
+    }
+  }
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "open");
+  assert.equal(done?.jobDone, total, "the row counts each copied file once");
+  assert.deepEqual(
+    (await scoped.list("/.branches/work")).map((entry) => entry.name).sort(),
+    Array.from({ length: total }, (_unused, index) => `f${`${index}`.padStart(4, "0")}.txt`),
+  );
+});
+
+test("a resumed copy with the queue bound takes its message back (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  await exhaustRetries(queue.sent[0].body);
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(stuck?.state, "creating");
+  // The message above is the one the retries used up, so the resume's own is
+  // the next one in.
+  const messagesBefore = queue.sent.length;
+
+  const resumed = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Photos", name: "work" }),
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    { ...ALLOWED, queue },
+  );
+  assert.equal(resumed.status, 202);
+  const body = await resumed.json();
+  assert.equal(body.branch.state, "creating");
+  // One message for the row that had none, so the batches that are left run one
+  // at a time the way the queue runs them, not all inside the request.
+  assert.equal(queue.sent.length, messagesBefore + 1, "the resume put the row back");
+  assert.equal(
+    /** @type {{branchId?: number}} */ (queue.sent[messagesBefore].body).branchId,
+    stuck?.id,
+  );
+
+  const env = {
+    DRIVE_DB: db,
+    BRANCH_SNAPSHOTS: snapshots,
+    BRANCH_JOBS: queue,
+    [TEST_FILES_STORE]: raw,
+  };
+  const context = { waitUntil() {} };
+  // The exhausted message dies with the row's retries; only the resume's own
+  // messages run, the way the queue redelivers them one at a time.
+  queue.sent.splice(0, messagesBefore);
+  let steps = 0;
+  while (queue.sent.length > 0 && steps < 8) {
+    const next = queue.sent.shift();
+    assert.ok(next, `batch ${steps} must have a queued message`);
+    /** @type {{body: unknown, ack: () => void, retry: () => void, acked?: boolean}} */
+    const message = {
+      body: next.body,
+      ack() {
+        message.acked = true;
+      },
+      retry() {},
+    };
+    await workerQueue({ messages: [message] }, env, context);
+    assert.equal(message.acked, true, `batch ${steps} must ack`);
+    steps += 1;
+  }
+  assert.ok(steps >= 2, "clear then copy are separate batches");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "open");
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
+});
+
+test("the discard route cancels a copy the queue's retries left running (drive#844)", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  const queue = fakeQueue();
+  await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  await exhaustRetries(queue.sent[0].body);
+  const stuck = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(stuck, "the row is still there with its claim");
+  assert.equal(stuck.state, "creating");
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), null, "the copy never ran");
+
+  const cancelled = await handleBranchesRequest(
+    new Request("https://drive.test/api/branches/work/discard", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).state, "discarded");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(row?.state, "discarded");
+  assert.equal(row?.jobKind, "");
+  assert.equal(row?.reservedBytes, stuck.reservedBytes, "the claim it reserved stays the record");
+  // The clean state: the original is untouched and the name is free.
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.ok(!("error" in again));
 });

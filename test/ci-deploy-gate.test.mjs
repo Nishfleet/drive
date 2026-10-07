@@ -221,6 +221,33 @@ test("the deploy records a D1 restore point before any migration runs", () => {
   assert.doesNotMatch(step, /Authorization: Bearer \$/);
 });
 
+// drive#170, #178: the same one-way rule orders the deploy itself. The
+// databases sit outside the Worker version, so new tables and columns must
+// exist before the first request can reach code that reads them; a rollback
+// goes the other way (code back, data kept). The review of the known-bad
+// list (drive issue #826) asked for this pin, because nothing else held the
+// order: the workflow's comment says it, and prose is not a gate.
+test("the deploy applies D1 migrations before the Worker ships", () => {
+  const apply = DEPLOY.indexOf("- name: Apply D1 migrations");
+  const deploy = DEPLOY.indexOf("- name: Deploy the Worker");
+  assert.ok(apply !== -1, "the migration step is missing");
+  assert.ok(deploy !== -1, "the deploy step is missing");
+  assert.ok(apply < deploy, "migrations must apply before the Worker deploys");
+  // Both steps must stay fail-fast: a `continue-on-error` or an `if:` gate
+  // would let one run without the other, and the order would mean nothing.
+  for (const [name, step] of [
+    ["Apply D1 migrations", DEPLOY.slice(apply, deploy)],
+    ["Deploy the Worker", DEPLOY.slice(deploy)],
+  ]) {
+    const body = step.slice(
+      0,
+      step.search(/\n {6}- name: /) === -1 ? step.length : step.search(/\n {6}- name: /),
+    );
+    assert.doesNotMatch(body, /continue-on-error/, `${name} never continues on error`);
+    assert.doesNotMatch(body, /^\s+if:/m, `${name} has no gate of its own`);
+  }
+});
+
 // drive#501: the two named mount proofs must actually run, on a hosted
 // runner that can mount. The unit-test step uses -short and would skip them;
 // these named steps do not. TestLogoutStopsALiveMount cannot get its own
