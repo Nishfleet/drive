@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — sign in</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="Sign in to your drive: one link by email. We need a card at sign-up because there is no free tier.">
   <meta name="robots" content="noindex">
   <!-- drive issue #10: the sign-in screen from docs/build-spec.md's "Screens"
@@ -192,9 +193,12 @@ button:disabled {
     <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
     <p class="free">No plans. Your balance never expires.</p>
     <!-- drive#420: the one place this page says why a card is needed
-         (SIGNIN_COPY.needCard, src/signin.js). The tick box below carries only
-         the short consent line, and test/signin.test.mjs fails CI when a second
-         copy of the sentence comes back. -->
+         (SIGNIN_COPY.needCard, src/signin.js). A tick box on this form
+         made every returning customer consent again and was how a
+         stranger learned whether an address was new (drive#538).
+         The emailed link claims a test stand-in; a real card waits on
+         the Dodo key (drive#417, drive#325). test/signin.test.mjs fails
+         CI when a second copy of the sentence comes back. -->
     <p class="free">We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
 
     <div class="card">
@@ -207,10 +211,6 @@ button:disabled {
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
-        <label class="hint" for="card">
-          <input id="card" name="card" type="checkbox" value="on" required>
-          I understand a card is required
-        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
@@ -265,7 +265,6 @@ const METHODS = ["email"];
 
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
-const cardInput = document.getElementById("card");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
 
@@ -325,7 +324,6 @@ async function start(method, email) {
           : {
               method,
               email,
-              card: cardInput !== null && cardInput.checked,
               // undefined drops out of the JSON: a plain sign-in posts
               // exactly what it posted before drive#558.
               next: nextParam === "" ? undefined : nextParam,

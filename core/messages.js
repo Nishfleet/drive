@@ -60,6 +60,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
   }),
+  // The per-account live-key count cap (drive#552). Every mint is a vendor
+  // access key the storage server enforces, so the account's live count is
+  // the bound the vendor does not set. The number named here and
+  // keyprovider.js KEY_COUNT_CAP are pinned together by a test.
+  "key-count-cap": Object.freeze({
+    what: "This account already holds its limit of 20 active keys.",
+    next: "Revoke a key you no longer use, or let an hourly key expire, then mint again.",
+  }),
   // A cap write from the usage page or `drive cap` reached a Worker with no
   // account store behind it (drive#421). The cap was not changed, so the next
   // step is not to wait and retry: this deployment has to be wired first.
@@ -156,6 +164,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This account is closed, so it cannot make a new key.",
     next: "Cancel the close while the account is still in its 30-day window to use it again.",
   }),
+  // POST /api/cap on an account whose close has landed (drive#537). The
+  // unguarded write used to set state back to active while closed_at stayed
+  // set, so purge never ran and cancelClose threw. The route now 409s before
+  // any write; the one next step is the same cancel as a closed-account mint.
+  "cap-account-closed": Object.freeze({
+    what: "This account is closed, so its spending cap cannot change.",
+    next: "Cancel the close while the account is still in its 30-day window to use it again.",
+  }),
   // A share link or upload page that does not open: unknown, revoked or past
   // its 7-day window (issue #19). One entry for all three on purpose — the
   // public routes must not tell a stranger which of those it was, and the one
@@ -197,6 +213,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This link has handed out as much of the file as it can.",
     next: "Ask the person who shared it for a new link.",
   }),
+  // A share link whose file was replaced after mint (drive issue #554). The
+  // link stored the file's etag and the live object no longer matches, so
+  // the bytes are refused rather than labelled: serving the new file would
+  // let a swapped-in payload ride the old link's downloads and judgment.
+  "share-changed": Object.freeze({
+    what: "This file has changed since the link was made.",
+    next: "Ask the person who sent it for a new one.",
+  }),
+  // Bytes whose SHA-256 is on the stock known-bad list, refused on share
+  // mint and on an upload-request drop (drive issue #554). Nothing was
+  // stored or linked.
+  "malware-refused": Object.freeze({
+    what: "That file did not pass the safety check.",
+    next: "Try a different file.",
+  }),
   // An upload-request drop named a file longer than the 255-character cap
   // (drive issue #549). Nothing was stored; the next step is a shorter name.
   "upload-name-too-long": Object.freeze({
@@ -227,6 +258,16 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
+  }),
+  // A devices-page revoke named a key this account does not hold (drive#525).
+  "key-not-found": Object.freeze({
+    what: "That key is not on this account.",
+    next: "Reload the devices page and pick a key that is still listed.",
+  }),
+  // A URL with more segments than /api/devices/<keyId>, or an empty id.
+  "key-path-unknown": Object.freeze({
+    what: "That is not a key path.",
+    next: "Open the key from the list.",
   }),
   // A URL with more segments than /api/branches/<name>/<action>.
   "branch-path-unknown": Object.freeze({

@@ -14,9 +14,10 @@
 // takes neither. Turning them into the integers SQLite stores is what makes the
 // two the same engine rather than two similar ones.
 
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../core/auth.js";
+import { AUTH_COOKIE_PREFIX, createAuth } from "../core/auth.js";
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
@@ -96,10 +97,27 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // Share-link content pin (drive#554): shares.etag is the file's storage
+  // fingerprint at mint. Expand only, default empty so older rows keep
+  // serving by path.
+  "drive/0037_share_etag.sql",
+  // The per-link arrival digest (drive#684): upload_requests.digest_at and
+  // pending_uploads. Expand only; the upload path and the info route read the
+  // row through REQUEST_COLUMNS, so a schema without these cannot serve a link.
+  // Numbered 0038, the next free prefix after the other open migrations.
+  "drive/0038_request_digest.sql",
+  // The second factor's tables (drive#524): better-auth's `twoFactor` rows
+  // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
+  // plus the `user.twoFactorEnabled` flag. Additive only; the pin in
+  // test/auth.test.mjs holds this file against the library's own planner.
+  // Numbered 0034 because 0032 and 0033 belong to other open PRs and 0031 is on main.
+  "drive/0034_two_factor_passkey.sql",
   // The device-approval return path (drive#558): one row per sign-in link
   // token, written at the start step and consumed at the verify step, so a
   // link opened on a second device still lands on the approve page.
   "drive/0031_signin_return.sql",
+  // The prepaid-pause marker on devices (drive#789): the device store writes it.
+  "drive/0036_prepaid_paused_from.sql",
   // The reason marker on the devices row (drive#661): the one word naming
   // which cap took a key down, so a give-back pass (drive#656) can prove it.
   // Expand only, one nullable column on `devices`. `put()` writes the column
@@ -304,11 +322,23 @@ export function createTestD1(options = {}) {
         sqlite.exec(sql);
         return { count: 0, duration: 0 };
       },
+      // D1 runs a batch as one transaction: a statement that fails rolls the
+      // whole batch back. test/d1-sqlite.mjs keeps the same guarantee, so code
+      // that leans on it (the arrival digest's clear and stamp, drive#684) is
+      // tested against D1's behaviour, not a run of independent writes.
       /**
        * @param {Array<{sql: string, params?: unknown[]}>} statements
        */
       async batch(statements) {
-        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+        sqlite.exec("BEGIN");
+        try {
+          const results = statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+          sqlite.exec("COMMIT");
+          return results;
+        } catch (error) {
+          sqlite.exec("ROLLBACK");
+          throw error;
+        }
       },
     })
   );
@@ -382,6 +412,93 @@ export async function signIn(made, email) {
   return {
     cookie,
     account: { id: found.user.id, name: found.user.name, email: found.user.email },
+  };
+}
+
+/** Headers that carry a signed-in session, so a call can read the cookie. */
+/** @param {string} cookie */
+export const sessionHeaders = (cookie) => new Headers({ cookie, origin: TEST_BASE_URL });
+
+/**
+ * The TOTP code a real authentication app would show for `secret` — the same
+ * HMAC-SHA1, 6 digits, 30-second step the library verifies (RFC 6238). A test
+ * that needs a fresh code when one was already used asks for `1` (the next
+ * step), because a code is only valid inside its step.
+ * @param {string} secret the base32 secret from the enrollment TOTP URI
+ * @param {number} [step] the 30-second step offset, 0 being now
+ * @returns {string}
+ */
+export function totpCode(secret, step = 0) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  /** @type {number[]} */
+  const bytes = [];
+  let bits = 0;
+  let value = 0;
+  for (const character of secret.replace(/=+$/, "").toUpperCase()) {
+    const index = alphabet.indexOf(character);
+    if (index === -1) continue;
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  const counter = Math.floor(Date.now() / 30000) + step;
+  const buffer = Buffer.alloc(8);
+  buffer.writeUInt32BE(Math.floor(counter / 2 ** 32), 0);
+  buffer.writeUInt32BE(counter % 2 ** 32, 4);
+  const digest = createHmac("sha1", Buffer.from(bytes)).update(buffer).digest();
+  const offset = digest[digest.length - 1] & 0xf;
+  const code =
+    (((digest[offset] & 0x7f) << 24) |
+      (digest[offset + 1] << 16) |
+      (digest[offset + 2] << 8) |
+      digest[offset + 3]) %
+    10 ** 6;
+  return String(code).padStart(6, "0");
+}
+
+/**
+ * Arms the second factor on a fresh sign-in: enables two-factor
+ * authentication, then confirms it with one correct code — the step that sets
+ * the account's `twoFactorEnabled` and rotates the session. Answers the new
+ * session cookie (the one the browser carries afterwards), the TOTP secret,
+ * and the one-time recovery codes.
+ * @param {ReturnType<typeof createTestAuth>} made
+ * @param {string} email
+ * @returns {Promise<{cookie: string, secret: string, backupCodes: string[], account: {id: string, name: string, email: string}}>}
+ */
+export async function armTwoFactor(made, email) {
+  const signed = await signIn(made, email);
+  // `body: {}` is the library's default method, the reader: the enrollment URI
+  // and the ten one-time codes, which the caller must show once.
+  const enabled = /** @type {{totpURI: string, backupCodes: string[]}} */ (
+    await made.auth.api.enableTwoFactor({
+      body: {},
+      headers: sessionHeaders(signed.cookie),
+    })
+  );
+  const secret = new URL(enabled.totpURI).searchParams.get("secret");
+  if (secret === null) {
+    throw new Error("the enrollment TOTP URI carried no secret");
+  }
+  const confirm = await made.auth.api.verifyTOTP({
+    body: { code: totpCode(secret) },
+    headers: sessionHeaders(signed.cookie),
+    returnHeaders: true,
+  });
+  const rotated = confirm.headers
+    .getSetCookie()
+    .find((cookie) => cookie.startsWith(`__Secure-${AUTH_COOKIE_PREFIX}.session_token=`));
+  if (rotated === undefined) {
+    throw new Error("confirming the factor set no session cookie");
+  }
+  return {
+    cookie: rotated.split(";")[0],
+    secret,
+    backupCodes: enabled.backupCodes,
+    account: signed.account,
   };
 }
 

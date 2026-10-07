@@ -56,6 +56,7 @@ export const SITE = Object.freeze({
   // The one public page this site ships, so the sitemap lists exactly this.
   homePath: "/",
   ogImagePath: "/og.png",
+  faviconPath: "/favicon.svg",
   robotsPath: "/robots.txt",
   sitemapPath: "/sitemap.xml",
   llmsPath: "/llms.txt",
@@ -101,6 +102,10 @@ export const PAGES = Object.freeze([
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
+  // The devices page (drive#525): one account's keys, so it is noindex like
+  // files and usage. A crawler that reached it would see the heading and a
+  // signed-out status, never another account's keys.
+  Object.freeze({ path: "/devices.html", indexable: false }),
   // The upload-request page is a stranger's one-folder drop box, reached only
   // from a link the owner minted: noindex so a crawler never finds one
   // (issue #19). It carries its own title and description rather than
@@ -148,6 +153,7 @@ export const DOC_PAGES = Object.freeze([
   Object.freeze({ title: "Agents", path: "/docs/agents" }),
   Object.freeze({ title: "Pricing and your bill", path: "/docs/pricing" }),
   Object.freeze({ title: "FAQ", path: "/docs/faq" }),
+  Object.freeze({ title: "When something goes wrong", path: "/docs/troubleshooting" }),
   Object.freeze({ title: "Limits", path: "/docs/limits" }),
   Object.freeze({ title: "Benchmarks", path: "/docs/benchmarks" }),
   Object.freeze({ title: "Security", path: "/docs/security" }),

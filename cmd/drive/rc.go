@@ -14,9 +14,9 @@ import (
 // `drive pause`, `drive resume` and the per-file progress lines in
 // `drive status` (drive issue #100). Every question they ask is asked of the
 // running mount through rclone's own remote-control API (rclone.org/rc), over
-// the loopback address the mount already binds (mount.go RCAddr, the same
-// address the fill loop and the conflict guard use), so there is one rclone
-// rc client in this CLI and one address in the product.
+// the loopback address this mount stored in rclone.env (drive#807), so there is
+// one rclone rc client in this CLI and one address per mount, not one shared
+// 5572 that two mounts collide on.
 //
 // Measured on this host 2026-10-03 with rclone v1.75.1 against a
 // `rclone serve s3` stand-in:
@@ -79,10 +79,10 @@ const rcTimeout = 30 * time.Second
 
 // mountRCClient returns the remote-control client for this device's running
 // mount, or an error when the binary cannot be resolved. It is the same client
-// the background fill uses (fill_run.go newRCClient) on the same loopback
-// address MountPlan binds (RCAddr), so `drive pause`, `drive resume` and the
-// progress lines in `drive status` ask the running mount rather than guessing,
-// and the product has one rc client and one rc address.
+// the background fill uses (fill_run.go newRCClient) on the loopback address
+// this mount stored in rclone.env (drive#807), so `drive pause`, `drive resume`
+// and the progress lines in `drive status` ask this device's mount rather than
+// whoever bound 127.0.0.1:5572.
 //
 // The methods used here (core/bwlimit, vfs/queue, vfs/queue-set-expiry,
 // core/stats) take no `fs`
@@ -90,6 +90,10 @@ const rcTimeout = 30 * time.Second
 // same call the conflict guard already makes (conflict_guard.go queue); this
 // client omits `fs` when it has none, which is rclone's default for the
 // mounted VFS.
+//
+// Before any of those methods run, the client asks core/version so a stale
+// address or some other process on the port is a named failure, not a pause
+// of the wrong rclone.
 //
 // A caller that only prints a line must not fail on a machine with no rclone
 // installed, so a resolve failure is reported by the caller's error, not by
@@ -99,13 +103,67 @@ func mountRCClient(home string) (*rcClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rclone: %w", err)
 	}
-	c := newRCClient(binary, RCAddr(), "")
+	addr, err := resolveMountRCAddr(home)
+	if err != nil {
+		return nil, err
+	}
+	c := newRCClient(binary, addr, "")
 	auth, err := ReadRCAuth(home)
 	if err != nil {
 		return nil, fmt.Errorf("rclone rc auth: %w", err)
 	}
 	c.user, c.pass = auth.User, auth.Pass
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.requireVersion(ctx); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// resolveMountRCAddr is the address the CLI uses to reach this home's mount.
+// DRIVE_RC_ADDR wins (tests and --rc-addr), then the address prepareMountAuth
+// stored in rclone.env. The shipped 5572 is never a silent fallback: that is
+// how pause/status used to talk to whichever rclone owned the port (drive#807).
+func resolveMountRCAddr(home string) (string, error) {
+	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
+		if !IsLoopbackAddr(set) {
+			return "", fmt.Errorf("%s %s is not a loopback address: the mount's remote control binds loopback only", rcAddrEnvName, set)
+		}
+		return set, nil
+	}
+	auth, err := ReadRCAuth(home)
+	if err != nil {
+		return "", fmt.Errorf("rclone rc address: %w", err)
+	}
+	if auth.Addr == "" {
+		return "", fmt.Errorf("rclone rc address is missing from %s; run drive mount", RcloneEnvPath(home))
+	}
+	if !IsLoopbackAddr(auth.Addr) {
+		return "", fmt.Errorf("stored rc address %s is not a loopback address", auth.Addr)
+	}
+	return auth.Addr, nil
+}
+
+// rcVersion is the part of rclone rc core/version this client needs: a
+// non-empty version string means the listener is rclone, not some other
+// HTTP service on the stored port.
+type rcVersion struct {
+	Version string `json:"version"`
+}
+
+// requireVersion asks rclone who it is before the client acts. An empty
+// version or a failed call is a named error, so pause/status never mutate
+// a stranger on the port (drive#807).
+func (c *rcClient) requireVersion(ctx context.Context) error {
+	var v rcVersion
+	if err := c.call(ctx, "core/version", nil, &v); err != nil {
+		return fmt.Errorf("rclone rc core/version: %w", err)
+	}
+	if strings.TrimSpace(v.Version) == "" {
+		return fmt.Errorf("rclone rc core/version: empty version")
+	}
+	return nil
 }
 
 // rcCtx bounds one remote-control call. See rcTimeout.

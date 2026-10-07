@@ -107,6 +107,8 @@ export class IdriveKeyError extends Error {
     this.name = "IdriveKeyError";
     this.operation = operation;
     this.status = status;
+    /** @type {string} */
+    this.detail = detail;
   }
 }
 

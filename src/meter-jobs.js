@@ -32,6 +32,7 @@
 import { enforceAccountCap } from "../core/cap.js";
 import { reconcileAccount, toMillis } from "../core/meter.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
+import { pauseAccountKeys } from "../core/prepaid-pause.js";
 
 export const METER_JOBS_QUEUE = "drive-meter-jobs";
 export const METER_JOBS_DEAD_LETTER_QUEUE = "drive-meter-jobs-dlq";
@@ -176,6 +177,12 @@ export async function runHourlyAccountJob(deps, job) {
   });
   if (drawn.drawn > 0) {
     await settleBalances(deps.meterDb, [job.accountId], { ...deps.settle, now: job.at });
+  } else if (deps.settle?.devices) {
+    await pauseAccountKeys(job.accountId, {
+      db: deps.meterDb,
+      devices: deps.settle.devices,
+      pauseOn: deps.settle.pauseOn === true,
+    });
   }
   return drawn;
 }

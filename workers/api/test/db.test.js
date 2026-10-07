@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { all, first, newId, nowSeconds, run, sha256Hex } from "../../../core/db.js";
+import { all, first, newId, nowSeconds, run, sha256Bytes, sha256Hex } from "../../../core/db.js";
 
 // drive#77 finding 5: db.js had no test at all. These pin the binding rule
 // (every value is bound, never interpolated into SQL) and the two hash/id
@@ -103,4 +103,9 @@ test("sha256Hex matches the standard vectors the token store depends on", async 
     await sha256Hex("abc"),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
   );
+});
+
+test("sha256Bytes matches sha256Hex for the same UTF-8 bytes", async () => {
+  const bytes = new TextEncoder().encode("abc");
+  assert.equal(await sha256Bytes(bytes), await sha256Hex("abc"));
 });

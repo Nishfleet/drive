@@ -48,6 +48,10 @@ const REQUIRED_PATHS = [
   // unpaid account that has filled the 1 TB storage limit.
   "card-in-use",
   "pre-charge-storage-limit",
+  // The live-key count cap the key mint answers with (drive#552): a mint past
+  // the account's 20 live keys is refused with this one, the same shape the
+  // agent's own cap answers with.
+  "key-count-cap",
 ];
 
 // Every entry must have exactly these keys, no more, no less (sorted for the
