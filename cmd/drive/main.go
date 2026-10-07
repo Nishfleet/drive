@@ -93,7 +93,7 @@ Mount flags:
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --rc-addr     loopback address the mount's remote control binds (env
-                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+                DRIVE_RC_ADDR; default a free loopback port stored in rclone.env)
   --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
                 default the hostname)
   --foreground  run rclone in this process instead of the login item
