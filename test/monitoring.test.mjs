@@ -442,3 +442,75 @@ test("the SDK is gone from the source and the manifest, so it cannot reach the b
     "no @sentry dependency is declared",
   );
 });
+
+// The `sentry` parameter's default is `sentrySender()` with no DSN, so it is a
+// no-op by construction: a call site that stops passing the deployment's sender
+// posts nothing anywhere and says nothing about it. The SDK wrap made that
+// impossible by reading the DSN off `init`; with the wrap gone (drive#847) the
+// wiring is the code's to keep, so every call site in the entry is pinned
+// here. A new monitoring call that forgets it fails this test rather than
+// going quiet in production.
+const SENDER_CALLS = [
+  "captureError",
+  "reportBillingGap",
+  "reportPurgeFailures",
+  "reportUnbillableAccounts",
+  "withCronCheckIn",
+];
+
+/**
+ * The source text of one call, from its opening paren to its closing one,
+ * following nested parens so a call spread over several lines is matched
+ * whole.
+ *
+ * @param {string} src
+ * @param {string} name the callee, without its paren
+ * @param {number} from the byte offset to search from
+ * @returns {{text: string, end: number} | undefined}
+ */
+function callText(src, name, from = 0) {
+  const start = src.indexOf(`${name}(`, from);
+  if (start === -1) return undefined;
+  let depth = 0;
+  for (let i = start + name.length; i < src.length; i += 1) {
+    if (src[i] === "(") depth += 1;
+    if (src[i] !== ")") continue;
+    depth -= 1;
+    if (depth === 0) return { text: src.slice(start + name.length, i + 1), end: i };
+  }
+  return undefined;
+}
+
+test("every monitoring call in the entry passes the deployment's own sender", () => {
+  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  // The module's own exports are declared here too, so a definition is not a
+  // call site: `const sentryFor = (env) => ...` and the import statement are
+  // the only places these names appear without a sender argument.
+  const imported = new Set(
+    [...src.matchAll(/^import \{([^}]*)\} from "\.\/monitoring\.js";$/gm)]
+      .flatMap((m) => m[1].split(","))
+      .map((n) => n.trim())
+      .filter((n) => SENDER_CALLS.includes(n)),
+  );
+  assert.deepEqual(
+    [...imported].sort(),
+    SENDER_CALLS,
+    "the entry imports each monitoring call it uses, so no local stub shadows one",
+  );
+  let sites = 0;
+  for (const name of SENDER_CALLS) {
+    for (let found = callText(src, name); found; found = callText(src, name, found.end)) {
+      sites += 1;
+      assert.match(
+        found.text,
+        /sentryFor\(/,
+        `${name}(...) is passed a sender, because the default is a DSN-less no-op and a site that drops it stops reporting in silence`,
+      );
+    }
+  }
+  assert.equal(
+    sites,
+    10,
+    "the entry has the 10 monitoring call sites this guard walks: 5 cron check-ins, 1 request error, 4 reports",
+  );
+});
