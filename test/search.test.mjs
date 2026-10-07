@@ -18,6 +18,7 @@ import {
 import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
+import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -973,6 +974,10 @@ test("the deployed cron schedule is the one the module names", () => {
     TRASH_PURGE_SCHEDULE,
     REINDEX_SCHEDULE,
     CLOSE_SCHEDULE,
+    // The known-bad feed's own trip (drive#826), which the same handler
+    // answers above the others: it needs no storage, so it runs before
+    // `storeFor` throws for a deployment with none.
+    KNOWN_BAD_FEED_SCHEDULE,
   ];
   assert.deepEqual(
     [...declared].sort(),
