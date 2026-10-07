@@ -11,6 +11,7 @@ import {
   BRANCH_JOBS_MAX_RETRIES,
   BRANCH_JOBS_QUEUE,
   BRANCH_QUEUE_KINDS,
+  branchJob,
   branchJobsQueue,
   handleBranchJobs,
 } from "../src/branch-jobs.js";
@@ -566,11 +567,147 @@ test("approve plan lives in KV, not in the D1 job_cursor", async () => {
   assert.equal(cursor.added, undefined);
   assert.equal(cursor.branchFp, undefined);
   assert.equal(cursor.sourceFp, undefined);
+  assert.equal(cursor.changedN, 1);
+  assert.equal(cursor.addedN, 0);
+  assert.equal(cursor.planParts, true);
   assert.ok(JSON.stringify(cursor).length < 200, JSON.stringify(cursor));
-  const planJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
-  assert.ok(planJson);
-  const plan = JSON.parse(planJson);
-  assert.ok(Array.isArray(plan.changed) && plan.changed.includes("a.txt"));
+  const sliceJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan.changed.0`);
+  assert.ok(sliceJson);
+  const slice = JSON.parse(sliceJson);
+  assert.ok(Array.isArray(slice) && slice.includes("a.txt"));
+  const wholePlan = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
+  assert.equal(wholePlan, null, "the whole plan is never written as one value");
+});
+
+test("approve plan is written once per slice, not rewritten every batch", {
+  timeout: 240_000,
+}, async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/seed.txt", new Blob(["seed"]).stream(), "text/plain");
+  const db = createTestD1();
+  const planPrefix = `${snapshotKey(ACCOUNT, "work")}/approve-plan`;
+  const inner = createTestKv();
+  const counts = { planReads: 0, planPuts: 0, wholePlanPuts: 0 };
+  /** @param {string} key */
+  const isPlanKey = (key) => key === planPrefix || key.startsWith(`${planPrefix}.`);
+  const kv =
+    /** @type {KVNamespace & {values: Map<string, string>, reset(): void, planReads: number, planPuts: number, wholePlanPuts: number}} */ (
+      /** @type {unknown} */ ({
+        values: inner.values,
+        /** @param {string} key */
+        async get(key) {
+          if (isPlanKey(key)) {
+            counts.planReads += 1;
+          }
+          return inner.get(key);
+        },
+        /**
+         * @param {string} key
+         * @param {string} value
+         */
+        async put(key, value) {
+          if (isPlanKey(key)) {
+            counts.planPuts += 1;
+          }
+          if (key === planPrefix) {
+            counts.wholePlanPuts += 1;
+          }
+          return inner.put(key, value);
+        },
+        /** @param {string} key */
+        async delete(key) {
+          return inner.delete(key);
+        },
+        /** @param {{prefix?: string}} [options] */
+        async list(options = {}) {
+          return inner.list(options);
+        },
+        reset() {
+          counts.planReads = 0;
+          counts.planPuts = 0;
+        },
+        get planReads() {
+          return counts.planReads;
+        },
+        get planPuts() {
+          return counts.planPuts;
+        },
+        get wholePlanPuts() {
+          return counts.wholePlanPuts;
+        },
+      })
+    );
+  const snapshots = createKvSnapshotStore(kv);
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const pending = [];
+  for (let index = 0; index < 20_000; index += 1) {
+    pending.push(
+      scoped.write(`/.branches/work/${index}.txt`, new Blob(["x"]).stream(), "text/plain"),
+    );
+    if (pending.length === 200) {
+      await Promise.all(pending);
+      pending.length = 0;
+    }
+  }
+  await Promise.all(pending);
+  const queue = fakeQueue();
+  const started = await approveBranch(db, snapshots, scoped, ACCOUNT, "work", queue);
+  assert.equal(started.state, "approving");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+  /** @param {unknown} raw */
+  const ready = (raw) => {
+    if (typeof raw !== "string" || raw === "") {
+      return false;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && parsed.ready === true;
+  };
+  const applyReads = [];
+  const applyPuts = [];
+  let applyBatches = 0;
+  let wholePlanPuts = 0;
+  for (;;) {
+    const before = await db
+      .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
+      .bind(row.id)
+      .first();
+    const wasReady = ready(before?.job_cursor);
+    kv.reset();
+    const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    wholePlanPuts += kv.wholePlanPuts;
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    if (wasReady && result.done !== true) {
+      applyReads.push(kv.planReads);
+      applyPuts.push(kv.planPuts);
+      applyBatches += 1;
+    }
+    if (result.done) {
+      break;
+    }
+  }
+  assert.equal(wholePlanPuts, 0, "the whole-plan key is never written");
+  assert.ok(
+    applyBatches > 20_000 / BRANCH_JOB_BATCH_FILES - 2,
+    `the plan took ${applyBatches} apply batches`,
+  );
+  assert.ok(
+    applyPuts.every((writes) => writes === 0),
+    `a slice batch must not rewrite the plan, puts were ${applyPuts.slice(0, 5)}`,
+  );
+  const first = applyReads[0];
+  const last = applyReads[applyReads.length - 1];
+  assert.ok(
+    first !== undefined && last !== undefined && Math.abs(last - first) <= 2,
+    `a batch read ${first} plan keys on the first slice and ${last} on the last`,
+  );
+  assert.ok(
+    first !== undefined && first <= 4,
+    `each batch must read only its slice, first batch read ${first} plan keys`,
+  );
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "approved");
 });
 
 test("approve clash persists job_error on the row the poll reads", async () => {
@@ -759,6 +896,220 @@ test("handleBranchJobs acks and runs onExhausted after max retries", async () =>
   assert.equal(message.acked, true);
   assert.equal(message.retried, undefined);
   assert.equal(exhausted.length, 1);
+});
+
+/** A message shape the driver tests reuse: the same body can be delivered
+ * twice, and the flags prove what the handler did with it. Every test here
+ * must name a key of its own - the kind, account and branch ids - because
+ * `ackedCursors` is module state shared by all of them: two tests on one key
+ * can see each other's deliveries, and none of them starts with a cold map.
+ * @param {unknown} body @param {number} [attempts] */
+function branchMessage(body, attempts = 1) {
+  /** @type {{body: unknown, ack: () => void, retry: () => void, attempts: number, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body,
+    attempts,
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  return message;
+}
+
+test("a redelivered branch message whose cursor already moved is a no-op", async () => {
+  // The fourth bullet of drive#845. The queue delivers at least once, so a
+  // message this handler already acked can arrive again after its ack was
+  // lost; running it would repeat a batch the row already did. The message
+  // carries its own place in the chain, so the second delivery is recognised
+  // and does no work and writes nothing.
+  const body = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8451,
+    name: "work",
+    cursor: 3,
+  };
+  const queue = fakeQueue();
+  let batches = 0;
+  const first = branchMessage(body);
+  const ran = await handleBranchJobs(
+    { messages: [first] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(batches, 1);
+  assert.equal(ran.acked, 1);
+  assert.equal(ran.stale, 0);
+  assert.equal(first.acked, true);
+  // The continuation carries the next cursor, so the chain moves forward.
+  assert.equal(queue.sent.length, 1);
+  const continuation = /** @type {{body: {cursor?: number}}} */ (queue.sent[0]).body;
+  assert.equal(continuation.cursor, 4, "the continuation carries the next cursor");
+
+  // The redelivery: the same message again, after its batch ran and acked.
+  const redelivered = branchMessage({ ...body });
+  const second = await handleBranchJobs(
+    { messages: [redelivered] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(second.stale, 1, "the redelivery was dropped");
+  assert.equal(second.acked, 1, "and it is acked, so it is not retried forever");
+  assert.equal(second.retried, 0);
+  assert.equal(redelivered.acked, true);
+  assert.equal(redelivered.retried, undefined);
+  assert.equal(batches, 1, "the second delivery did no work");
+  assert.equal(queue.sent.length, 1, "and wrote nothing");
+
+  // A message from before the cursor field existed still runs: it cannot be
+  // checked against a redelivery, and running it is the safe side.
+  const old = branchMessage({
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8451,
+    name: "work",
+  });
+  const legacy = await handleBranchJobs({ messages: [old] }, async () => ({}), queue);
+  assert.equal(legacy.stale, 0, "a message with no cursor is never dropped");
+  assert.equal(old.acked, true);
+});
+
+test("a redelivered terminal batch is dropped, not run again", async () => {
+  // The last batch of a chain is work like every other: running it twice
+  // copies, deletes or applies the same files twice. The cursor map keeps the
+  // key after the chain ends, so its redelivery is a no-op too (drive#845).
+  const body = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8453,
+    name: "work",
+    cursor: 1,
+  };
+  const queue = fakeQueue();
+  let batches = 0;
+  const last = branchMessage(body);
+  const finished = await handleBranchJobs(
+    { messages: [last] },
+    async () => {
+      batches += 1;
+      return {};
+    },
+    queue,
+  );
+  assert.equal(finished.stale, 0, "the first delivery is not a redelivery");
+  assert.equal(batches, 1);
+  assert.equal(queue.sent.length, 0, "the chain ended, so nothing is enqueued");
+
+  // The same, finished message delivered again: no second batch.
+  const late = branchMessage({ ...body });
+  const again = await handleBranchJobs(
+    { messages: [late] },
+    async () => {
+      batches += 1;
+      return {};
+    },
+    queue,
+  );
+  assert.equal(again.stale, 1, "the terminal batch is remembered too");
+  assert.equal(again.retried, 0);
+  assert.equal(late.acked, true);
+  assert.equal(batches, 1, "and the last batch runs once");
+
+  // A new chain on the same row: its first message carries no cursor, so it
+  // runs and writes 0 over the finished chain's key instead of being dropped.
+  const fresh = branchMessage({
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8453,
+    name: "work",
+  });
+  const nextChain = await handleBranchJobs(
+    { messages: [fresh] },
+    async () => {
+      batches += 1;
+      return {};
+    },
+    queue,
+  );
+  assert.equal(nextChain.stale, 0, "a new chain's first message always runs");
+  assert.equal(batches, 2);
+  assert.equal(fresh.acked, true);
+});
+
+test("a branch job cursor must be a whole number", async () => {
+  const base = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8454,
+    name: "work",
+  };
+  for (const cursor of [-1, 1.5, {}, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => branchJob({ ...base, cursor }), TypeError, `cursor ${String(cursor)}`);
+  }
+  // 0 is the "no cursor" sentinel spelled out, so it is a first message.
+  assert.equal(branchJob({ ...base, cursor: 0 }).cursor, 0);
+});
+
+test("a continuation whose send fails after the ack never runs a second batch", async () => {
+  // The other half of drive#845: the ack comes before the continuation is
+  // enqueued, so a crash between them cannot leave two live messages for one
+  // batch. Here the enqueue fails after the ack, the message stays acked
+  // instead of being retried, and its redelivery is dropped as a no-op.
+  const body = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8452,
+    name: "work",
+    cursor: 2,
+  };
+  /** @type {{sent: Array<{body: unknown}>, send: (body: unknown) => Promise<unknown>}} */
+  const queue = {
+    sent: [],
+    send() {
+      return Promise.reject(new Error("send failed"));
+    },
+  };
+  let batches = 0;
+  const message = branchMessage(body);
+  const stats = await handleBranchJobs(
+    { messages: [message] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(batches, 1, "the batch ran once");
+  assert.equal(stats.acked, 1);
+  assert.equal(stats.retried, 0, "a batch that already acked is never retried");
+  assert.equal(message.acked, true);
+  assert.equal(message.retried, undefined);
+
+  // The same message delivered again, which is what an at-least-once queue
+  // does after a lost ack: it names a cursor this handler already acked, so
+  // it is dropped instead of doubling the batch.
+  const redelivered = branchMessage({ ...body });
+  const second = await handleBranchJobs(
+    { messages: [redelivered] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(batches, 1, "only one batch runs per job");
+  assert.equal(second.stale, 1);
+  assert.equal(second.retried, 0);
+  assert.equal(redelivered.acked, true);
 });
 
 test("approve of a branch still being created answers 409, not 500", async () => {
