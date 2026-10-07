@@ -727,6 +727,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		{itemPath, item, itemMode},
 		{prefetchPath, prefetchItem, 0o644},
 	}
+	if renewPath != "" && len(renewItem) > 0 {
+		writes = append(writes, mountWrite{renewPath, renewItem, 0o644})
+	}
 	// A dead FUSE or NFS entry is cleared first so a re-run whose files
 	// did not change still recovers after rclone dies (drive#805). A live
 	// answering mount is left alone, and the skip below can then keep it
@@ -807,11 +810,6 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	}
 	for _, w := range writes {
 		if err := WriteFileAtomic(w.path, w.data, w.mode); err != nil {
-			return err
-		}
-	}
-	if renewPath != "" && len(renewItem) > 0 {
-		if err := WriteFileAtomic(renewPath, renewItem, 0o644); err != nil {
 			return err
 		}
 	}

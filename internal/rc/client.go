@@ -51,7 +51,10 @@ func (c *Client) SetAuth(user, pass string) { c.user, c.pass = user, pass }
 // (drive#749). The body is a JSON POST to rclone's own rc HTTP API, never
 // argv and never `rclone rc --json`, because rclone v1.75.1 treats `--json @file`
 // as a literal blob (`invalid character '@'`) and `/proc/<pid>/cmdline` is
-// world-readable for the life of a CLI call.
+// world-readable for the life of a CLI call. The listener is loopback with
+// basic auth from rclone.env (mode 0600). The same secret is already in that
+// file; this call is how a live mount picks up a new session without wiping
+// the VFS cache.
 func (c *Client) UpdateRemoteConfig(cfg login.StorageConfig) error {
 	params := map[string]string{
 		"access_key_id":     cfg.AccessKey,
