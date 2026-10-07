@@ -91,8 +91,10 @@ export const SPEND_CAP_REASON = "spend-cap";
 export const PRE_CHARGE_LIMIT_REASON = "pre-charge-limit";
 
 /**
- * The reason a freeze may carry: the spending cap's by default, or the sweep's.
- * Any other word reads as the spending cap, so a hand-built plan cannot invent one.
+ * The reason a freeze may carry: the spending cap's by default, or the sweep's
+ * word when the plan names PRE_CHARGE_LIMIT_REASON (runPreChargeLimitCron does).
+ * Any other word, including a missing one, reads as the spending cap. A caller
+ * can name the sweep's word on purpose; it cannot invent a third.
  * @param {unknown} reason
  * @returns {string}
  */
@@ -405,9 +407,9 @@ export async function applyCapSwap(plan, provider) {
         : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
-    // A freeze names the spending cap unless the plan came from the sweep, and
-    // a raise names nothing (drive#661). A hand-built plan cannot write any
-    // other word: freezeReason() maps it to the spending cap's.
+    // A freeze names the spending cap unless the plan named the sweep's word,
+    // and a raise names nothing (drive#661). freezeReason() allows only those
+    // two words: anything else maps to the spending cap's.
     const reason = plan.state === "read_only" ? freezeReason(swap.cappedReason) : null;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {

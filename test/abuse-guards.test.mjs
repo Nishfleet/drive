@@ -32,7 +32,7 @@ import {
   preChargeStoredBytes,
   scopeStore,
 } from "../core/files.js";
-import { failureMessage } from "../core/messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import { writesPaused } from "../core/prepaid.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
@@ -1248,6 +1248,37 @@ test("the give-back leaves a spending-cap freeze, an agent-cap freeze and a cust
   assert.equal(widened.length, 1, "the sweep's own key is given back");
   const stillReadOnly = mixed.find((key) => key.keyId === readOnly.keyId);
   assert.deepEqual([...(stillReadOnly?.capabilities ?? [])], ["list", "read"]);
+});
+
+test("a pre-charge-limit row with no capped_from is not widened", async () => {
+  // A partial swap, or a hand-built row, can mark the sweep's reason without a
+  // restore record. capSwapPlan already plans no raise from a null cappedFrom;
+  // the give-back filter must skip it too, so givenBack stays 0.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "partial");
+  db.insertVersion({ accountId: "partial", fileId: "f", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("partial")
+    .mint({ prefix: "u/partial/", capabilities: WRITE_CAPS });
+  sqlite
+    .prepare(
+      "UPDATE devices SET capabilities = ?1, capped_from = NULL, capped_reason = ?2 WHERE id = ?3",
+    )
+    .run(JSON.stringify(["list", "read"]), PRE_CHARGE_LIMIT_REASON, key.keyId);
+  const before = deviceRow(sqlite, key.keyId);
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  assert.deepEqual(deviceRow(sqlite, key.keyId), before);
+  assert.deepEqual(JSON.parse(String(before.capabilities)), ["list", "read"]);
+});
+
+test("the freeze reason is storage-only: the message table never names it", () => {
+  // Grep of the tree: capped_reason is written by the cap, stored by devices,
+  // and read by the give-back. No HTML page or messages.js entry shows it.
+  const blob = JSON.stringify(FAILURE_MESSAGES);
+  assert.equal(blob.includes("pre-charge-limit"), false);
+  assert.equal(blob.includes("spend-cap"), false);
 });
 
 test("an agent-capped key on an account the sweep never froze is not widened by the give-back", async () => {

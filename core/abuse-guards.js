@@ -511,9 +511,10 @@ export async function preChargeOverLimitAccounts(db) {
  * open account holding a key with that reason, and fewer live bytes than the
  * limit (counted by accountStoredBytes, the sweep's own fragments), gets those
  * keys, and only those, back at the powers in `capped_from`. A key marked
- * `spend-cap` (the owner's cap, or an agent cap), a key with no reason, and an
- * account the spending cap holds (`accounts.state` read_only) are never
- * widened here, and the prepaid $0 pause caps no key, so it is not touched. An
+ * `spend-cap` (the owner's cap, or an agent cap), a key with no reason, a key
+ * with no `capped_from` record, and an account the spending cap holds
+ * (`accounts.state` read_only) are never widened here, and the prepaid $0
+ * pause caps no key, so it is not touched. An
  * account that has since paid is given back too: the limit no longer holds it.
  * Keys the sweep froze before this reason existed still carry `spend-cap` and
  * stay frozen until `drive init` mints a fresh write key.
@@ -601,6 +602,7 @@ async function givePreChargeKeysBack(db, devices) {
          FROM devices d
          JOIN accounts a ON a.id = d.account_id AND a.state = 'active'
         WHERE d.capped_reason = ?1
+          AND d.capped_from IS NOT NULL
           AND d.revoked_at IS NULL`,
     )
     .bind(PRE_CHARGE_LIMIT_REASON)
@@ -614,7 +616,10 @@ async function givePreChargeKeysBack(db, devices) {
         continue;
       }
       const keys = (await devices.listCapKeys(accountId)).filter(
-        (key) => key.cappedReason === PRE_CHARGE_LIMIT_REASON,
+        (key) =>
+          key.cappedReason === PRE_CHARGE_LIMIT_REASON &&
+          Array.isArray(key.cappedFrom) &&
+          key.cappedFrom.length > 0,
       );
       const plan = capSwapPlan(keys, { state: "active" });
       if (plan.swaps.length === 0) {
