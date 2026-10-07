@@ -432,6 +432,7 @@ export async function accountStoredAndBranchBytes(db, accountId, branchKeyPrefix
         WHERE ${LIVE_VERSION_ROWS}
           AND v.account_id = ?1`,
     )
+    // LIKE ESCAPE is `\`, so JS sends `\%` / `\_` / `\\` as one escaped char.
     .bind(accountId, `${branchKeyPrefix.replace(/[\\%_]/g, "\\$&")}%`)
     .first();
   const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);

@@ -674,13 +674,10 @@ test("preChargeStoredBytes refuses toward the limit when the branch store cannot
     sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
     createdAt: NOW,
   });
-  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
-  const stored = await preChargeStoredBytes(
-    db,
-    scopeStore(probe.store, { id: "unpaid" }),
-    "unpaid",
-    null,
-  );
+  const probe = instrumentBranchStore(scopeStore(createMemoryStore(), { id: "unpaid" }), {
+    fail: true,
+  });
+  const stored = await preChargeStoredBytes(db, probe.store, "unpaid", null);
   assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES);
   assert.equal(
     preChargeUploadBlocked({ firstChargedAt: null, storedBytes: stored, incomingBytes: 8 }),
@@ -719,7 +716,6 @@ test("a reconciled branch copy is counted once, not twice (drive#800, in-run rev
   });
   const stored = await preChargeStoredBytes(db, scoped, accountId, null);
   assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES - 100, "one copy counted once");
-  assert.notEqual(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES + 100, "not the double count");
   assert.equal(
     preChargeUploadBlocked({ firstChargedAt: null, storedBytes: stored, incomingBytes: 8 }),
     null,
@@ -815,13 +811,10 @@ test("the rows already over the limit refuse an upload without walking the store
     sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES,
     createdAt: NOW,
   });
-  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
-  const stored = await preChargeStoredBytes(
-    made.db,
-    scopeStore(probe.store, { id: accountId }),
-    accountId,
-    null,
-  );
+  const probe = instrumentBranchStore(scopeStore(createMemoryStore(), { id: accountId }), {
+    fail: true,
+  });
+  const stored = await preChargeStoredBytes(made.db, probe.store, accountId, null);
   assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES);
   assert.equal(probe.state.branchListings, 0, "no branch listing ran past the limit");
 });
