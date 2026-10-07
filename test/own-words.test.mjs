@@ -1,11 +1,12 @@
 // Customer-facing words are ours (drive issue #195).
 //
-// Space's product and feature names, read from their public site and docs on
-// the date next to each term. This file fails when any of them appear in the
-// paths customers see. Internal rival analysis in docs/spec.md,
-// docs/scoreboard.md and docs/build-spec.md is exempt, and those files are
-// not in the trees this test walks. Drive#387 dropped public rival names and
-// prices, so a "(Space $27)" comparison on a customer-facing path fails.
+// The main competitor's feature names and signature phrases, read from its
+// public site and docs on the date next to each term. This file fails when any
+// of them appear in the paths customers see. Internal rival analysis in
+// docs/spec.md, docs/scoreboard.md and docs/build-spec.md is exempt, and those
+// files are not in the trees this test walks. The rival's own name is barred
+// from every tracked file by test/no-rival-terms.test.mjs, so it is not a term
+// here. Drive#387 dropped public rival names and prices.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -15,65 +16,44 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-// Each term is a product name, feature name, or signature phrase from Space's
+// Each term is a feature name or signature phrase from the competitor's
 // public pages. The source is the URL it was read from, and the date is when
 // this file read it.
 const TERMS = Object.freeze([
   Object.freeze({
-    term: "SpaceFS",
-    source: "https://spacefs.com/",
-    date: "2026-10-02",
-    pattern: "SpaceFS",
-    flags: "gi",
-  }),
-  Object.freeze({
-    term: "Space AI",
-    source: "https://spacefs.com/",
-    date: "2026-10-02",
-    pattern: "Space AI",
-    flags: "g",
-  }),
-  Object.freeze({
     term: "Clipboard",
-    source: "https://spacefs.com/",
+    source: "the competitor's public site",
     date: "2026-10-02",
     pattern: String.raw`\bClipboard\b`,
     flags: "g",
   }),
   Object.freeze({
     term: "zero bytes on disk",
-    source: "https://spacefs.com/",
+    source: "the competitor's public site",
     date: "2026-10-02",
     pattern: "zero bytes on disk",
     flags: "gi",
   }),
   Object.freeze({
     term: "zero disk space",
-    source: "https://spacefs.com/",
+    source: "the competitor's public site",
     date: "2026-10-02",
     pattern: "zero disk space",
     flags: "gi",
   }),
   Object.freeze({
     term: "the infinite AI-native filesystem",
-    source: "https://spacefs.com/",
+    source: "the competitor's public site",
     date: "2026-10-02",
     pattern: "the infinite AI-native filesystem",
     flags: "gi",
   }),
   Object.freeze({
     term: "pin",
-    source: "https://spacefs.com/",
+    source: "the competitor's public site",
     date: "2026-10-02",
     pattern: String.raw`\b(?:un)?pin(?:ned|ning|s)?\b`,
     flags: "gi",
-  }),
-  Object.freeze({
-    term: "Space",
-    source: "https://spacefs.com/",
-    date: "2026-10-02",
-    pattern: String.raw`\bSpace\b`,
-    flags: "g",
   }),
 ]);
 
@@ -154,29 +134,12 @@ const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
 // moved into core/ with everything else, so a walk of src/ alone would stop
 // covering it.
 const PRODUCT_JS_TREES = ["core", "src"];
-// The rival's name lives in these two modules as internal data (scoreboard
-// figures, PRICE.rival). Nowhere else in the product trees may a "Space"
-// string pass.
-const RIVAL_NAME_FILES = new Set(["core/pricing.js", "src/docs.js"]);
-
-/** @param {string} text */
-function dropExactRivalName(text) {
-  return text
-    .split("\n")
-    .filter((line) => line !== "Space")
-    .join("\n");
-}
-
 /**
  * @param {string} path
  * @param {string} text
- * @param {{allowRivalName?: boolean}} [options]
  */
-function hitsIn(path, text, options = {}) {
-  let scanned = text;
-  if (options.allowRivalName) {
-    scanned = dropExactRivalName(scanned);
-  }
+function hitsIn(path, text) {
+  const scanned = text;
   const hits = [];
   for (const term of TERMS) {
     const re = new RegExp(term.pattern, term.flags.includes("g") ? term.flags : `${term.flags}g`);
@@ -412,7 +375,7 @@ function scanTree() {
       continue;
     }
     const strings = quotedStrings(readFileSync(join(root, rel), "utf8")).join("\n");
-    hits.push(...hitsIn(rel, strings, { allowRivalName: RIVAL_NAME_FILES.has(rel) }));
+    hits.push(...hitsIn(rel, strings));
   }
   for (const rel of walkFiles(join(root, "cmd"))) {
     if (!rel.endsWith(".go")) {
@@ -426,16 +389,17 @@ function scanTree() {
   return hits;
 }
 
-test("the term list names a source URL and the date it was read", () => {
+test("the term list names its source and the date it was read", () => {
   assert.ok(TERMS.length >= 5, "the list holds the names customers must not see");
   for (const term of TERMS) {
-    assert.match(term.source, /^https:\/\//, `${term.term} must cite the page it was read from`);
+    assert.match(
+      term.source,
+      /^the competitor's public (site|docs)$/,
+      `${term.term} must cite the competitor's page it was read from`,
+    );
     assert.match(term.date, /^\d{4}-\d{2}-\d{2}$/, `${term.term} must say when it was read`);
     assert.ok(term.pattern.length > 0, `${term.term} must have a pattern`);
   }
-  const spacefs = TERMS.find((term) => term.term === "SpaceFS");
-  assert.ok(spacefs, "SpaceFS stays in the list");
-  assert.match(spacefs.source, /^https:\/\//);
 });
 
 test("a planted rival term fails the scan", () => {
@@ -445,52 +409,14 @@ test("a planted rival term fails the scan", () => {
     "unpin the folder",
     "Zero bytes on disk.",
     "using zero disk space",
-    "Space AI",
     "Clipboard",
-    "SpaceFS",
     "the infinite AI-native filesystem",
-    "Ask Space to open it",
   ].join("\n");
   const hits = hitsIn("planted.txt", planted);
   const found = new Set(hits.map((hit) => hit.term));
   for (const term of TERMS) {
     assert.ok(found.has(term.term), `planting ${term.term} must fail the scan`);
   }
-});
-
-test("a price comparison that names the rival fails the public scan", () => {
-  assert.ok(
-    hitsIn("page.html", '<span class="compare">(Space $27)</span>').some(
-      (hit) => hit.term === "Space",
-    ),
-    "a (Space $27) span on a public page must fail",
-  );
-  assert.ok(
-    hitsIn("llms.txt", "2 TB = $16 ($16 of storage, against Space $27)").some(
-      (hit) => hit.term === "Space",
-    ),
-    "an against-Space figure in llms.txt must fail",
-  );
-  assert.deepEqual(
-    hitsIn("core/pricing.js", "Space", { allowRivalName: true }),
-    [],
-    "the rival name constant in pricing.js stays allowed",
-  );
-});
-
-test("the rival name constant is allowed only in the two comparison modules", () => {
-  const pricing = quotedStrings(readFileSync(join(root, "core/pricing.js"), "utf8")).join("\n");
-  assert.deepEqual(
-    hitsIn("core/pricing.js", pricing, { allowRivalName: true }).filter(
-      (hit) => hit.term === "Space",
-    ),
-    [],
-  );
-  const other = quotedStrings('export const title = "Space";').join("\n");
-  assert.ok(
-    hitsIn("core/status.js", other).some((hit) => hit.term === "Space"),
-    "a Space title in any other core module must fail",
-  );
 });
 
 test("a quote inside a regex does not hide later copy", () => {
