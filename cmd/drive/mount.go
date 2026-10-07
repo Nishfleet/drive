@@ -416,7 +416,18 @@ func (p MountPlan) productArgs() []string {
 }
 
 func (p MountPlan) productArgv() []string {
+	if p.isAgent() {
+		return append([]string{p.RcloneBin}, p.loginItemArgs()...)
+	}
 	return append([]string{p.DriveBin}, p.productArgs()...)
+}
+
+// isAgent reports a plan for an agent tool's own mount (agentmount.go,
+// drive#514): stock rclone on a separate key, with no remote control and none
+// of the product loops, so its login item stays a bare rclone. Only that path
+// sets EnvPath; the device mount's login item is `drive mount --foreground`.
+func (p MountPlan) isAgent() bool {
+	return p.EnvPath != ""
 }
 
 // lookupDriveBin is this process's own path. Tests replace it so a proof can
@@ -527,6 +538,18 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
 	fmt.Fprintf(&b, "\t<key>StandardOutPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
 	fmt.Fprintf(&b, "\t<key>StandardErrorPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
+	if p.isAgent() && (p.SecretKey != "" || p.DownloadURL != "") {
+		// An agent tool's rclone gets its secret from the 0600 plist, the
+		// launchd equivalent of systemd's EnvironmentFile (drive#498).
+		b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
+		if p.SecretKey != "" {
+			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneSecretEnv, html.EscapeString(p.SecretKey))
+		}
+		if p.DownloadURL != "" {
+			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneDownloadURLEnv, html.EscapeString(p.DownloadURL))
+		}
+		b.WriteString("\t</dict>\n")
+	}
 	b.WriteString("</dict>\n</plist>\n")
 	return b.String()
 }
@@ -537,8 +560,30 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 // rclone, which unmounts (its own docs), and SIGTERM is what systemd sends a
 // stopping unit by default.
 func SystemdUnit(p MountPlan) string {
+	if p.isAgent() {
+		return agentSystemdUnit(p)
+	}
 	return fmt.Sprintf(`[Unit]
 Description=drive: mount the drive and run the product loops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`, systemdCommandLine(p))
+}
+
+// agentSystemdUnit is the agent tool's login item: stock rclone, with its
+// secret in the 0600 EnvironmentFile and never in the 0644 unit (drive#498).
+func agentSystemdUnit(p MountPlan) string {
+	return fmt.Sprintf(`[Unit]
+Description=drive: %s mounted with stock rclone
 After=network-online.target
 Wants=network-online.target
 
@@ -551,14 +596,7 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, systemdEscapeArg(p.envFile()), systemdCommandLine(p))
-}
-
-func (p MountPlan) envFile() string {
-	if p.EnvPath != "" {
-		return p.EnvPath
-	}
-	return filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")
+`, p.Remote, systemdEscapeArg(p.EnvPath), systemdCommandLine(p))
 }
 
 // systemdCommandLine renders the product argument vector the way systemd reads
