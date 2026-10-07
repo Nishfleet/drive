@@ -28,6 +28,7 @@ import {
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
+  quoteForStoredTb,
   SAVED_COPY,
   savedLine,
   storedGb,
@@ -187,13 +188,6 @@ test("the bill is the meter below the maximum, the maximum above it", () => {
 });
 
 test("the 'you saved' lines: against our maximum and against a usual 1 TB plan", () => {
-  // 2 TB: metered $40, maximum $30. The usual plan is $27, which we pass, so
-  // the plan line hides (drive#642).
-  const capped = savedLine(monthBillCents({ size30Bytes: bytes(2000) }), bytes(2000));
-  assert.ok(capped);
-  assert.equal(capped.usd, 10);
-  assert.equal(capped.planUsd, 0);
-  assert.equal(capped.copy, "Our maximum saved you $10.00.");
   // 300 GB: bill $6 under the $15 maximum and the $15 plan.
   const uncapped = savedLine(monthBillCents({ size30Bytes: bytes(300) }), bytes(300));
   assert.ok(uncapped);
@@ -205,16 +199,36 @@ test("the 'you saved' lines: against our maximum and against a usual 1 TB plan",
   );
   // At 750 GB the meter is exactly the maximum and the plan, so nothing shows.
   assert.equal(savedLine(monthBillCents({ size30Bytes: bytes(750) }), bytes(750)), null);
-  // At 1 TB the usual-plan line hides (same $15). The maximum still saved $5
-  // against the uncapped meter.
-  const oneTb = savedLine(monthBillCents({ size30Bytes: bytes(1000) }), bytes(1000));
-  assert.ok(oneTb);
-  assert.equal(oneTb.planUsd, 0);
-  assert.equal(oneTb.usd, 5);
-  assert.equal(oneTb.copy, "Our maximum saved you $5.00.");
   assert.equal(savedLine(monthBillCents({ size30Bytes: 0 }), 0), null);
   assert.match(SAVED_COPY.plan, /\{plan\}/);
   assert.throws(() => savedLine(null, 0), TypeError);
+});
+
+test("no 'you saved' line is shown at 1 TB and above", () => {
+  // drive#642: at $15 a TB our bill is a usual plan's $15 at 1 TB and passes it
+  // above ($30 against $27 at 2 TB, $60 against $51 at 4 TB). A saving there
+  // is a cheaper-than claim that is false, so savedLine() answers null for
+  // every size from 1 TB up - including the "against our maximum" form, which
+  // is a saving of metered - storage on a capped month and not a price
+  // comparison at all. The usage page and the calculator read this function,
+  // so null is what both of them show.
+  for (const gb of [1000, 1001, 1500, 2000, 4000, 12000]) {
+    const bill = monthBillCents({ size30Bytes: bytes(gb) });
+    assert.equal(savedLine(bill, bytes(gb)), null, `${gb} GB shows no saving`);
+  }
+  // Just below the floor the line is still there, so the floor is the plan's
+  // included size and not "any big drive".
+  const under = savedLine(monthBillCents({ size30Bytes: bytes(999) }), bytes(999));
+  assert.ok(under, "999 GB still shows its saving");
+  assert.ok(under.planUsd > 0 || under.usd > 0);
+  // The savings calculator's own number obeys the same floor: /api/quote is a
+  // public surface, so a saving it quoted would be a claim on the page.
+  for (const tb of [1, 1.5, 2, 4]) {
+    assert.equal(quoteForStoredTb(tb).savedUsd, 0, `${tb} TB quotes no saving`);
+  }
+  assert.ok(quoteForStoredTb(0.2).savedUsd > 0, "200 GB still quotes its saving");
+  // The bill itself is untouched by the copy floor: 1 TB still bills $15.
+  assert.equal(quoteForStoredTb(1).billUsd, 15);
 });
 
 test("the cap counts min(metered, maximum), and bites only past the cap", () => {
@@ -414,7 +428,7 @@ test("the Worker routes the usage read to the handler", async () => {
 });
 
 test("every line is integer cents, whatever the meter recorded", () => {
-  for (const size30Bytes of [0, 1, 37, 21900, 43800, 1234567, 99999999]) {
+  for (const size30Bytes of [1, 37, 21900, 43800, 1234567, 99999999]) {
     {
       const bill = monthBillCents({
         size30Bytes,
@@ -469,6 +483,19 @@ test("a size30 above 2^53 bills and formats the exact integer", () => {
   assert.equal(summary.billCents.storageMillicents, Number(expectedMilli));
   assert.equal(summary.labels.size30, formatBytes(huge));
   assert.equal(Number.isFinite(summary.billUsd), true);
+});
+
+test("the usage read answers for an empty size30 month: 200, not a broken page", async () => {
+  // drive#642: a month the meter has not filled yet is an empty month.
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    { id: "1", name: "Your drive" },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).billUsd, 0);
 });
 
 test("the retired inputs fail loudly: peak, first month, month number", () => {

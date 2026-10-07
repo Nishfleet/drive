@@ -249,6 +249,94 @@ test("the strip's 60%-full drive bills what the page prints", () => {
   assert.ok(examplesNote().includes(PRICE.rule), "the examples note must carry the rule");
 });
 
+test("every saving a public sentence states is one the bill and the usual plan produce", () => {
+  // drive#642, the copy gate: at $15 a TB our bill is a usual 1 TB plan's $15
+  // at 1 TB and dearer above it ($30 against $27 at 2 TB, $60 against $51 at
+  // 4 TB). So a sentence that states a saving must be quoting a size UNDER 1
+  // TB, and the number must be the saving monthBillCents() and USUAL_PLAN
+  // produce for that size - never a typed one. A sentence that names 1 TB or
+  // more must carry the same-as line instead. Both halves are checked here,
+  // over every public surface, so the next worked example cannot be copied
+  // into a page from a memory of the old $10 maximum.
+  //
+  // Read as a reader reads it: the markup is gone (a class name like
+  // `class="save"` is not a saving claim) and the plan's own label is
+  // removed first, because "a usual 1 TB plan costs $15" names the PLAN's
+  // size and not a customer's.
+  const readText = (/** @type {string} */ text) =>
+    text
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/usual\s*1\s*TB\s*plan/gi, " ")
+      .replace(/\{\{[A-Z_]+\}\}/g, "")
+      .replace(/\s+/g, " ");
+  /** The saving a size below 1 TB produces, in dollars, the same math the
+   * calculator serves. */
+  const savingFor = (/** @type {number} */ tb) =>
+    Math.max(0, Math.round((usualPlanMonthlyUsd(tb) - billForAllMonth(tb).billUsd) * 100) / 100);
+  // What the shipped examples from that same function allow: the set a
+  // sentence with no size of its own may quote.
+  const exampleSavings = new Set(
+    PRICE.examples.map((row) => savingFor((row.toGb ?? row.gb) / 1000)),
+  );
+  /** A sentence's stored size in TB, from "200 GB" or "1 TB" or "2.5 TB".
+   * null when the sentence names no size. */
+  const sizeTb = (/** @type {string} */ sentence) => {
+    const match = sentence.match(/(\d+(?:\.\d+)?)\s*(GB|TB)\b/i);
+    if (!match) return null;
+    return match[2].toUpperCase() === "TB" ? Number(match[1]) : Number(match[1]) / 1000;
+  };
+  /** Every sentence that states a saving, with the file it came from. */
+  const savingSentences = publicTexts.flatMap(([file, text]) =>
+    (readText(text).match(/[^.]*\b(?:save|saved|saving)\b[^.]*\./gi) ?? []).map((sentence) => [
+      file,
+      sentence.replace(/\s+/g, " ").trim(),
+    ]),
+  );
+  assert.ok(savingSentences.length > 0, "the pages must carry at least one saving sentence");
+  for (const [file, sentence] of savingSentences) {
+    const amount = sentence.match(/save[d]?[^$]*\$(\d+(?:\.\d+)?)/i);
+    if (!amount) continue; // "we compare against a usual plan elsewhere": no number
+    const tb = sizeTb(sentence);
+    if (tb === null) {
+      // The receipt's own line names no size: its saving must be one the
+      // shipped examples produce, so no page can state a number the bill
+      // does not produce for any size we publish.
+      assert.ok(
+        exampleSavings.has(Number(amount[1])),
+        `${file} states a saving of $${amount[1]} that no shipped example produces: ${sentence}`,
+      );
+      continue;
+    }
+    assert.ok(
+      tb < 1,
+      `${file} states a saving of $${amount[1]} for ${tb} TB, where we cost the same or more than a usual plan: ${sentence}`,
+    );
+    assert.equal(
+      Number(amount[1]),
+      savingFor(tb),
+      `${file} states a saving of $${amount[1]} for ${tb} TB, where the bill and the usual plan produce $${savingFor(tb)}: ${sentence}`,
+    );
+  }
+  // The worked examples are the gate's own subject: an example at 1 TB or
+  // more must carry the same-as sentence and no saving, and one under 1 TB
+  // must carry the saving that same function produces for it.
+  for (const row of PRICE.examples) {
+    const tb = (row.toGb ?? row.gb) / 1000;
+    const sentence = exampleSentence(`${row.label} kept all month`);
+    if (tb >= 1) {
+      assert.equal(savingFor(tb), 0, `the ${row.label} example must claim no saving`);
+      assert.doesNotMatch(sentence, /save/i, `${row.label} must not claim a saving`);
+      assert.ok(
+        sentence.includes(PRICE.sameAsPlanLine),
+        `${row.label} must carry the same-as line: ${sentence}`,
+      );
+      continue;
+    }
+    assert.match(sentence, new RegExp(`you save \\$${savingFor(tb)}(?:\\.00)?\\b`));
+  }
+});
+
 test("the retired price words are gone from every public surface", () => {
   for (const [file, text] of publicTexts) {
     // The rival is named only by the neutral label (drive#463).
