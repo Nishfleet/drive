@@ -58,6 +58,7 @@ import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { sendEmail } from "../core/email-send.js";
 import {
   etagMatches,
+  fairUseRefuseResponse,
   joinPath,
   preChargeStoredBytes,
   previewContentType,
@@ -1866,32 +1867,9 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
   }
-  if (typeof options.fairUseForUpload === "function") {
-    try {
-      const result = await options.fairUseForUpload(record.accountId, sized.bytes);
-      if (result !== null && result !== undefined) {
-        if (typeof result !== "object" || typeof result.wouldRefuse !== "boolean") {
-          throw new TypeError("fairUseForUpload must return a fairUseCheck result or null");
-        }
-        if (result.wouldRefuse === true && options.fairUseRefuse === true) {
-          if (
-            typeof result.line !== "object" ||
-            result.line === null ||
-            typeof result.line.copy !== "string"
-          ) {
-            throw new TypeError("fairUseCheck result needs line.copy");
-          }
-          return json(
-            { error: failureMessage("fair-use-pause"), fairUseLine: result.line.copy },
-            429,
-          );
-        }
-      }
-    } catch (error) {
-      if (typeof options.onFairUseError === "function") {
-        options.onFairUseError(error);
-      }
-    }
+  const paused = await fairUseRefuseResponse({ id: record.accountId }, sized.bytes, options);
+  if (paused) {
+    return paused;
   }
   // sized.body is the Uint8Array takeUploadBody already copied from the
   // request, so hashing it does not consume the bytes writeIfAbsent stores.

@@ -445,6 +445,36 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
   assert.equal(record.uploadCount, 0);
 });
 
+test("a fair-use pause refuses a drop through an upload request when refuse is on", async () => {
+  const { files, links, request } = drive();
+  const made = await request("/", { token: TOKEN });
+  assert.equal(made.status, 201);
+  const line = {
+    copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+  };
+  const dropped = await handleRequestUploadRequest(
+    new Request(`${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=big.bin`, {
+      method: "POST",
+      body: "twelve-bytes",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits({
+      fairUseRefuse: true,
+      fairUseForUpload: async () => ({ wouldRefuse: true, line }),
+    }),
+  );
+  assert.equal(dropped.status, 429);
+  assert.deepEqual(await dropped.json(), {
+    error: failureMessage("fair-use-pause"),
+    fairUseLine: line.copy,
+  });
+  const record = await links.requests.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.uploadCount, 0);
+});
+
 test("a share minted before etag pinning still serves after a replace", async () => {
   const { upload, files, links } = drive();
   await upload("/", "notes.txt", "benign");
