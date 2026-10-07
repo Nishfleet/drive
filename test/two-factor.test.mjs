@@ -412,6 +412,45 @@ test("the site worker mounts the auth family and keeps cross-site posts out", as
   assert.equal(cross.status, 403);
 });
 
+// A same-origin POST to the enable endpoint is the one request the split is
+// for: it is the path the base instance has no handler for, so it is 404
+// unless TWO_FACTOR_PATH routed it to the instance that carries the plugin.
+// Drive it through the site Worker's real dispatch so the routing itself, not
+// just the import shape, is what fails when it regresses.
+test("a real second-factor request is routed to the instance that has the factor", async () => {
+  const made = createTestAuth({ twoFactor: true });
+  const env = siteEnv(made);
+  const signed = await signIn(made, "routed@example.com");
+  const answer = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/auth/two-factor/enable`, {
+      method: "POST",
+      headers: {
+        origin: TEST_BASE_URL,
+        cookie: signed.cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    env,
+  );
+  // 404 is the base instance's answer on this path, so the status alone says
+  // which instance was asked.
+  assert.equal(answer.status, 200, "the two-factor path reached the plugin instance");
+  const enabled = /** @type {{totpURI?: string, backupCodes?: string[]}} */ (await answer.json());
+  assert.equal(enabled.totpURI !== undefined, true, "the factor armed and returned its URI");
+  assert.equal(enabled.backupCodes?.length, 10, "ten recovery codes came back once");
+  // The factorless instance still answers the session read beside it: the
+  // split is per path, not a second store, so a browser's cookie works on
+  // both.
+  const session = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/auth/get-session`, {
+      headers: { cookie: signed.cookie },
+    }),
+    env,
+  );
+  assert.equal(session.status, 200);
+});
+
 // Review C: the public /api/auth/* mount serves only the second-factor and
 // passkey routes. The magic-link send (and verify) stay on /api/signin, which
 // carries the site's own limits, so an anonymous POST here mails nothing.

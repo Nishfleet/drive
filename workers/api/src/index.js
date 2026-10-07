@@ -544,9 +544,11 @@ export default {
       // device for an account that armed the factor verifies a TOTP or a
       // recovery code through the library's own endpoints (device-routes.js),
       // and those endpoints only exist on a chain the plugin registered
-      // (drive#848). It resolves the same way on every request — the factor's
-      // module is a module cache read after the first — so awaiting it here
-      // costs the approval path one microtask and nothing else.
+      // (drive#848). It is awaited here rather than only on the approval path
+      // because this middleware builds `accounts` once per request; after the
+      // first call that is a module-cache read plus a WeakMap lookup, and the
+      // plugin itself is already loaded into this isolate by any earlier
+      // request, so no request after the first pays for loading it.
       /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
       accounts: await twoFactorAuthFor(env),
       // The queue report's row lives on the same database the key store
