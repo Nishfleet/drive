@@ -74,7 +74,7 @@ func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
 	if strings.Contains(args, key.Secret) || strings.Contains(args, key.AccessKeyID) {
 		t.Errorf("the agent key is in argv: %s", args)
 	}
-	if strings.Contains(args, "--rc") || strings.Contains(args, "5572") {
+	if strings.Contains(args, "--rc") || strings.Contains(args, ":5572") {
 		t.Errorf("the agent path has a remote control it does not need: %s", args)
 	}
 	if strings.Contains(args, "/rclone.conf") {

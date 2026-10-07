@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -183,14 +185,15 @@ func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	targets := fillTargets{
 		root:   dir,
 		recent: []string{"a.bin", "b.bin"},
-		readFile: func(p string) (int64, error) {
+		readFile: func(_ context.Context, p string) (int64, error) {
 			read = append(read, filepath.Base(p))
 			return 60, nil
 		},
 	}
+	ctx := context.Background()
 	// The budget stops after the first file: one pass reads at most budget
 	// bytes, so a drive larger than the cache is filled over several passes.
-	if _, err := targets.read(true, 60); err != nil {
+	if _, err := targets.read(ctx, true, 60); err != nil {
 		t.Fatalf("read under the budget: %v", err)
 	}
 	if len(read) != 1 || read[0] != "a.bin" {
@@ -198,7 +201,7 @@ func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	}
 	// A pass that is not filling the recently-opened set reads none of them.
 	read = nil
-	if _, err := targets.read(false, 1<<20); err != nil {
+	if _, err := targets.read(ctx, false, 1<<20); err != nil {
 		t.Fatalf("read with the recent set off: %v", err)
 	}
 	if len(read) != 0 {
@@ -208,10 +211,10 @@ func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	// next pass sees the new tree. Reading a directory as a file is an error.
 	targets.recent = []string{"gone.bin"}
 	targets.readFile = nil
-	if _, err := targets.read(true, 1<<20); err != nil {
+	if _, err := targets.read(ctx, true, 1<<20); err != nil {
 		t.Errorf("a removed file failed the fill: %v", err)
 	}
-	if _, err := fillReadFile(dir); err == nil {
+	if _, err := fillReadFile(ctx, dir); err == nil {
 		t.Error("reading a directory as a file returned no error")
 	}
 }
@@ -377,7 +380,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		b := &countedBackend{used: capBytes - (1 << 20), cap: capBytes, addPerRead: 4 << 30}
 		targets := fillTargets{
 			recent: []string{"big.bin"},
-			readFile: func(string) (int64, error) {
+			readFile: func(context.Context, string) (int64, error) {
 				b.used += b.addPerRead
 				return b.addPerRead, nil
 			},
@@ -396,7 +399,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		b := &countedBackend{used: 1 << 30, cap: capBytes, addPerRead: 500 << 20}
 		targets := fillTargets{
 			recent: []string{"x.bin"},
-			readFile: func(string) (int64, error) {
+			readFile: func(context.Context, string) (int64, error) {
 				b.used += b.addPerRead
 				return b.addPerRead, nil
 			},
@@ -464,13 +467,13 @@ func TestFillTargetsWalksAKeptFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	targets := fillTargets{root: dir, offline: []string{"keep"}}
-	if _, err := targets.read(false, 0); err != nil {
+	if _, err := targets.read(context.Background(), false, 0); err != nil {
 		t.Fatalf("walking a kept-offline folder: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "keep", "new.txt"), []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := targets.read(false, 0); err != nil {
+	if _, err := targets.read(context.Background(), false, 0); err != nil {
 		t.Fatalf("a new file inside a kept-offline folder failed the keep-warm: %v", err)
 	}
 }
@@ -532,7 +535,7 @@ func TestFillDoesNotReDownloadADriveLargerThanTheCache(t *testing.T) {
 	targets := fillTargets{
 		root:  root,
 		opens: opens,
-		readFile: func(p string) (int64, error) {
+		readFile: func(_ context.Context, p string) (int64, error) {
 			reads++
 			n, err := cache.read(p)
 			b.used = cache.used
@@ -682,7 +685,7 @@ func TestFillSkipsRecentOpensWhenStorageIsDown(t *testing.T) {
 		root:    dir,
 		offline: []string{"keep.bin"},
 		recent:  []string{"opened.txt"},
-		readFile: func(p string) (int64, error) {
+		readFile: func(_ context.Context, p string) (int64, error) {
 			reads = append(reads, p)
 			return int64(len(p)), nil
 		},
@@ -713,7 +716,7 @@ func TestFillFillsRecentOpensWhenStorageAnswers(t *testing.T) {
 	targets := fillTargets{
 		root:   dir,
 		recent: []string{"opened.txt"},
-		readFile: func(p string) (int64, error) {
+		readFile: func(_ context.Context, p string) (int64, error) {
 			reads = append(reads, p)
 			return 1, nil
 		},
@@ -810,20 +813,243 @@ func TestFillRefreshFailureIsNamed(t *testing.T) {
 	}
 }
 
+// ---- one read stops at the pass deadline (drive issue #742) ----
+
+// A read in the fill loop stops at the next chunk boundary after the deadline.
+// The slow read is an OS pipe fed a piece at a time: without the deadline the
+// fill read consumes the whole pipe, which is what one large file did to a fill
+// pass (cmd/drive/fill_run.go checked the context only between files, so the
+// read of a file that outgrew the pass ran until the file ended).
+//
+// The bound is measured, not asserted by inspection: the deadline is cancelled
+// while the read is still going, and the bytes read after it may not exceed one
+// fillReadChunk, because the loop checks the context between two chunks.
+func TestFillReadStopsWithinOneChunkOfTheDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close(); w.Close() })
+
+	// The writer feeds the pipe one piece per tick for far longer than the
+	// deadline, so a read that ignored the context would still be reading
+	// chunks when this test's assertions run.
+	const ticks = 30
+	const piece = fillReadChunk / 2
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	var written atomic.Int64
+	go func() {
+		buf := bytes.Repeat([]byte("x"), piece)
+		for i := 0; i < ticks; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n, err := w.Write(buf)
+			written.Add(int64(n))
+			if err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	type outcome struct {
+		n   int64
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		n, err := readCtxChunked(ctx, r)
+		done <- outcome{n, err}
+	}()
+	// The deadline lands part way through the pipe: some chunks have been read
+	// and there are more to come. Take the writer's total after the cancel so it
+	// is an upper bound on what the read could have consumed before the deadline
+	// (the writer may add one more piece), and the assertion does not race the
+	// cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	atDeadline := written.Load()
+	if atDeadline == 0 {
+		t.Fatal("the writer fed the pipe nothing before the deadline, so the test cannot prove a stop")
+	}
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read was still running 5s after the deadline, so it did not stop at the pass deadline")
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("the read returned %v after the deadline, want %v", got.err, context.Canceled)
+	}
+	if extra := got.n - atDeadline; extra > fillReadChunk {
+		t.Errorf("the read continued for %d bytes after the deadline, want at most one %d-byte chunk "+
+			"(read %d bytes, %d had been written when the deadline landed)",
+			extra, fillReadChunk, got.n, atDeadline)
+	}
+}
+
+// The fill read honours the deadline at its entry as well as mid-read, and a
+// read whose deadline has not passed still reads the whole file: chunking the
+// read must not change what fills the cache.
+func TestFillReadFileStopsAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	const size = 3 * fillReadChunk
+	path := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A live deadline reads the whole file: the chunk boundary is the chunked
+	// read's own, not the file's.
+	n, err := fillReadFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("read a %d-byte file with the deadline unexpired: %v", size, err)
+	}
+	if n != size {
+		t.Errorf("read %d bytes of a %d-byte file, want all of it", n, size)
+	}
+	// A pass whose deadline has already passed reads nothing, rather than
+	// starting another file it must then abandon.
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	deadBytes, err := fillReadFile(dead, path)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("read with the deadline already passed returned %v, want %v", err, context.Canceled)
+	}
+	if deadBytes != 0 {
+		t.Errorf("read %d bytes with the deadline already passed, want 0", deadBytes)
+	}
+}
+
+// drive#742 at the fill pass itself: a read that hits the deadline reports the
+// context error, and the pass stops instead of reading the rest of the
+// recently-opened set. The stand-in read is the large file: the deadline lands
+// inside it, and the pass aborts on that error, so the bytes the failed read
+// got through are not part of the pass's result.
+func TestFillTargetsReadStopsWhenAReadHitsTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const gotThrough = 1 << 20
+	var read []string
+	targets := fillTargets{
+		root:   dir,
+		recent: []string{"a.bin", "b.bin", "c.bin"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			if len(read) > 1 {
+				return 10, nil
+			}
+			// The deadline lands inside this read: the chunked read returns the
+			// context error together with the bytes it read before the deadline.
+			cancel()
+			return gotThrough, context.Canceled
+		},
+	}
+	spent, err := targets.read(ctx, true, 1<<30)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("the read returned %v after the deadline, want %v", err, context.Canceled)
+	}
+	if len(read) != 1 || read[0] != "a.bin" {
+		t.Errorf("the pass read %v after the deadline, want only a.bin", read)
+	}
+	if spent != 0 {
+		t.Errorf("the pass reported %d bytes read, want 0: the pass aborts on the read "+
+			"error, so the failed read's bytes are not part of its result", spent)
+	}
+}
+
+// drive#742: the deadline lands while a large file is being read. The reader
+// stands in for a slow mounted file: it never ends, and the context is
+// cancelled during its third chunk. The read must return the context error
+// within one more chunk, not read on to the end.
+func TestReadCtxChunkedStopsWhenCancelledDuringARead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelAfterReader{cancelOn: 3, cancel: cancel}
+	done := make(chan struct{})
+	var n int64
+	var err error
+	go func() {
+		defer close(done)
+		n, err = readCtxChunked(ctx, r)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read kept going after the context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("read returned %v after cancel, want %v", err, context.Canceled)
+	}
+	if r.reads > r.cancelOn+1 {
+		t.Errorf("read %d chunks, cancelled during chunk %d: it must stop within one chunk", r.reads, r.cancelOn)
+	}
+	if want := int64(r.reads) * fillReadChunk; n != want {
+		t.Errorf("reported %d bytes, want %d (the chunks it read)", n, want)
+	}
+}
+
+// cancelAfterReader serves full chunks forever and cancels its context during
+// the cancelOn-th Read, as a deadline firing mid-file would.
+type cancelAfterReader struct {
+	cancelOn, reads int
+	cancel          context.CancelFunc
+}
+
+func (r *cancelAfterReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == r.cancelOn {
+		r.cancel()
+	}
+	time.Sleep(time.Millisecond)
+	return len(p), nil
+}
+
+// The fill's read chunk is the mount's shipped first chunk, --vfs-read-ahead
+// (vfsReadAheadValue): the fill stops on the requests rclone already serves at
+// the default tuning. The chunk is a compile-time constant, so a run that
+// retunes --vfs-read-ahead (VFS_READ_AHEAD) cannot widen the fill's own
+// deadline bound; this pins the shipped pair so a change to one is a change to
+// both (drive#742).
+func TestFillReadChunkMatchesTheMountReadAhead(t *testing.T) {
+	want, err := parseSizeSuffix(vfsReadAheadValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fillReadChunk != want {
+		t.Errorf("fillReadChunk is %d bytes, want the shipped --vfs-read-ahead, %s = %d; "+
+			"tune them together or the fill's deadline bound stops matching the mount's default read", fillReadChunk, vfsReadAheadValue, want)
+	}
+}
+
+// A cancelled pass stops before it reads the next file: the last thing the pass
+// checks before each file is the deadline, and a pass that is already cancelled
+// reads nothing at all. drive#742 keeps this between-files check while also
+// bounding a single file's read, so the two are separate tests.
 func TestFillTargetsHonoursCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	reads := 0
 	targets := fillTargets{
-		ctx:     ctx,
 		offline: []string{"keep.bin"},
 		recent:  []string{"a.bin"},
-		readFile: func(string) (int64, error) {
+		readFile: func(context.Context, string) (int64, error) {
 			reads++
 			return 1, nil
 		},
 	}
-	if _, err := targets.read(true, 1<<20); err == nil {
+	if _, err := targets.read(ctx, true, 1<<20); err == nil {
 		t.Fatal("a cancelled fill read returned no error")
 	}
 	if reads != 0 {
@@ -831,6 +1057,8 @@ func TestFillTargetsHonoursCancel(t *testing.T) {
 	}
 }
 
+// A file that is not kept offline and was not opened is not a target, so a
+// keep-warm pass reads nothing for it (drive#568).
 func TestFillTargetsSkipsUnpinnedFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("pin"), 0o644); err != nil {
@@ -844,12 +1072,12 @@ func TestFillTargetsSkipsUnpinnedFiles(t *testing.T) {
 		root:    dir,
 		offline: []string{"keep.bin"},
 		recent:  []string{"other.bin"},
-		readFile: func(p string) (int64, error) {
+		readFile: func(_ context.Context, p string) (int64, error) {
 			read = append(read, filepath.Base(p))
 			return 4, nil
 		},
 	}
-	if _, err := targets.read(false, 1<<20); err != nil {
+	if _, err := targets.read(context.Background(), false, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	if len(read) != 0 {

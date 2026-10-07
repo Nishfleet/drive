@@ -100,7 +100,7 @@ Mount flags:
   --rc-addr     loopback address the mount's remote control binds (env
                 DRIVE_RC_ADDR; default a free loopback port stored in rclone.env)
   --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
-                default the hostname)
+                default the hostname, with a suffix when it is a stock model name)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
@@ -110,6 +110,8 @@ mounted drive.
 
 Login flags:
   --api    drive api base URL (env DRIVE_API_URL, default the live site)
+  --device  name this device is called in the account (default the hostname,
+            with a suffix when it is a stock model name)
 
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
