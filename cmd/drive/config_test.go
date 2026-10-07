@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Nishfleet/drive/internal/atomicwrite"
 )
 
 func testStorage() StorageConfig {
@@ -1103,13 +1105,13 @@ func TestWriteFileAtomicSyncsTheBytesAndTheDirectory(t *testing.T) {
 	// because the writes are the only part a test can see.
 	var syncedFiles []string
 	var syncedDirs []string
-	origFile, origDir := syncFile, syncDir
-	t.Cleanup(func() { syncFile, syncDir = origFile, origDir })
-	syncFile = func(f *os.File) error {
+	origFile, origDir := atomicwrite.SyncFile, atomicwrite.SyncDir
+	t.Cleanup(func() { atomicwrite.SyncFile, atomicwrite.SyncDir = origFile, origDir })
+	atomicwrite.SyncFile = func(f *os.File) error {
 		syncedFiles = append(syncedFiles, f.Name())
 		return f.Sync()
 	}
-	syncDir = func(dir string) error {
+	atomicwrite.SyncDir = func(dir string) error {
 		syncedDirs = append(syncedDirs, dir)
 		return nil
 	}
@@ -1136,9 +1138,9 @@ func TestWriteFileAtomicSyncsTheBytesAndTheDirectory(t *testing.T) {
 }
 
 func TestWriteFileAtomicNamesTheFileWhenTheSyncRefuses(t *testing.T) {
-	origFile := syncFile
-	t.Cleanup(func() { syncFile = origFile })
-	syncFile = func(*os.File) error { return errors.New("no space left on device") }
+	origFile := atomicwrite.SyncFile
+	t.Cleanup(func() { atomicwrite.SyncFile = origFile })
+	atomicwrite.SyncFile = func(*os.File) error { return errors.New("no space left on device") }
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "offline.json")
@@ -1165,9 +1167,9 @@ func TestWriteFileAtomicNamesTheFileWhenTheSyncRefuses(t *testing.T) {
 // them (drive#544). The command still says so, because nobody proved the
 // change reached the disk.
 func TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses(t *testing.T) {
-	orig := syncDir
-	t.Cleanup(func() { syncDir = orig })
-	syncDir = func(string) error { return errors.New("i/o error") }
+	orig := atomicwrite.SyncDir
+	t.Cleanup(func() { atomicwrite.SyncDir = orig })
+	atomicwrite.SyncDir = func(string) error { return errors.New("i/o error") }
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
@@ -1186,21 +1188,6 @@ func TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses(t *testing.T
 		t.Errorf("contents = %q, want the new ones: the rename already happened", got)
 	}
 }
-
-// TestSyncDirPathAcceptsARealDirectory: syncFile and syncDir are variables
-// the tests above stand in for, so the directory half is never observed with
-// its real implementation. This one leaves every stand-in alone and proves
-// the platform function this package ships fsyncs a directory handle the way
-// os.Open opens one -- read-only, which is exactly the handle POSIX allows
-// fsync on (sync_unix.go, drive#544). The file half is os.File.Sync itself,
-// and its wiring into the write is what the stand-in tests observe.
-func TestSyncDirPathAcceptsARealDirectory(t *testing.T) {
-	dir := t.TempDir()
-	if err := syncDirPath(dir); err != nil {
-		t.Errorf("syncDirPath(%s) on this platform: %v", dir, err)
-	}
-}
-
 func TestDefaultHomeIsEmptyWhenTheOSHasNoAnswer(t *testing.T) {
 	orig := userHomeDir
 	t.Cleanup(func() { userHomeDir = orig })

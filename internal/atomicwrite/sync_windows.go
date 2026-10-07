@@ -1,9 +1,9 @@
 //go:build windows
 
-package main
+package atomicwrite
 
-// syncDirPath is the Windows half of the directory fsync (config.go
-// WriteFileAtomic). FlushFileBuffers needs write access to the handle and
+// syncDirPath is the Windows half of the directory fsync (atomicwrite.go).
+// FlushFileBuffers needs write access to the handle and
 // os.Open on a directory is read-only here, so calling it would be a refusal
 // rather than a promise. On Windows the guarantee this change delivers is the
 // file fsync alone: the bytes are on the disk before the rename, which is the
