@@ -576,3 +576,86 @@ test("a card-less month shows no charge, and the money is untouched", () => {
   // untouched (see the usage endpoint's own test).
   assert.equal(usageSummary({ ...usage, cardOnFile: true }).labels.cost, usd(800));
 });
+
+test("the bill is refused unless the month carries its size30 bill", () => {
+  // A bill is never guessed from a month that did not say what it stored.
+  for (const notAMonth of [null, undefined, 42, "2026-10", true]) {
+    assert.throws(
+      () => monthBillCents(notAMonth),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /^monthBillCents needs a month object/);
+        return true;
+      },
+    );
+  }
+  assert.throws(
+    () => monthBillCents({}),
+    /^TypeError: month\.size30Bytes is the bill \(drive#642\): the charge follows the biggest size in the last 30 days$/,
+  );
+  assert.throws(() => monthBillCents({ peakBytes: bytes(100) }), /month\.size30Bytes is the bill/);
+  assert.throws(
+    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: -1 }),
+    /^TypeError: month\.downloadBytes must be a number of 0 or more, got -1$/,
+  );
+  assert.throws(
+    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: 1.5 }),
+    /^TypeError: month\.downloadBytes must be 0 or more whole bytes, got 1\.5$/,
+  );
+});
+
+test("the usage summary is refused unless the usage carries its size30 bill", () => {
+  for (const usage of [null, undefined, 12, "2026-10"]) {
+    assert.throws(
+      () => usageSummary(usage),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /^usageSummary needs a usage object/);
+        return true;
+      },
+    );
+  }
+  assert.throws(
+    () => usageSummary({ storedGb: 0, storedDaily: [], downloadBytes: 0, capUsd: 5 }),
+    /^TypeError: usage\.size30Bytes is the bill \(drive#642\)$/,
+  );
+  assert.throws(
+    () =>
+      usageSummary({
+        size30Bytes: bytes(100),
+        storedGb: 100,
+        storedDaily: [],
+        downloadBytes: 0,
+        capUsd: 5,
+        size30ReachedDay: "2026-02-30",
+      }),
+    /^TypeError: usage\.size30ReachedDay must be a real YYYY-MM-DD date, got 2026-02-30$/,
+  );
+  assert.throws(
+    () =>
+      usageSummary({
+        size30Bytes: bytes(100),
+        storedGb: 100,
+        storedDaily: [],
+        downloadBytes: 0,
+        capUsd: 5,
+        todayDrawMillicents: -5,
+      }),
+    /^TypeError: usage\.todayDrawMillicents must be a number of 0 or more, got -5$/,
+  );
+});
+
+test("the maximum is the whole bill above the meter's rate, at 900 GB and at 12 TB", () => {
+  // 900 GB metered is $18 and the $15 per TB maximum is lower, so the maximum
+  // is the bill. 12 TB metered is $240 against a $180 maximum.
+  const nineHundred = monthBillCents({ size30Bytes: bytes(900) });
+  assert.equal(nineHundred.meteredCents, 1800, "the meter's own rate at 900 GB is $18");
+  assert.equal(nineHundred.maximumCents, 1500);
+  assert.equal(nineHundred.storageCents, 1500, "the maximum is the bill");
+  assert.equal(nineHundred.totalCents, 1500);
+
+  const twelveTb = monthBillCents({ size30Bytes: bytes(12_000) });
+  assert.equal(twelveTb.meteredCents, 24_000, "the meter's own rate at 12 TB is $240");
+  assert.equal(twelveTb.maximumCents, 18_000);
+  assert.equal(twelveTb.storageCents, 18_000);
+});

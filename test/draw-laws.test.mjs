@@ -7,8 +7,8 @@
 //   1. a draw is never negative, and never more than that day's own share of
 //      the month plus the remainder carried into it - the remainder is the
 //      only lawful overflow, and it is carried, never charged twice;
-//   2. a draw never rises when size30 does not rise: a day that stores less
-//      than the trailing 30-day peak bills the same or less, never more;
+//   2. money drawn never runs ahead of money billed: the carry can only hold
+//      a day's draw back, never spend it early, whatever the sizes did;
 //   3. thirty daily draws at a constant size equal that month's price exactly,
 //      in whole integer units - a remainder is carried until it makes a whole
 //      millicent, then drawn, so nothing is dropped and nothing is doubled;
@@ -103,24 +103,23 @@ test("a 30-day total never passes the monthly price of the biggest size in that 
   fc.assert(
     fc.property(sizeHistory, (sizes) => {
       const state = freshDrawState();
-      let biggest = 0;
-      for (const bytes of sizes) {
-        biggest = Math.max(biggest, bytes);
+      const span = sizes.slice(0, DRAW_DAYS);
+      for (const bytes of span) {
         drawOneDay(monthMillis(bytes), state);
       }
-      const span = sizes.slice(0, DRAW_DAYS);
       if (span.length < DRAW_DAYS) {
         return; // the span law is about a full 30 days
       }
       const biggestInSpan = Math.max(...span);
       const monthOfBiggest = monthBillCents({ size30Bytes: biggestInSpan });
+      const shareOfBiggest = monthOfBiggest.totalMillicents;
       assert.ok(
         state.drawnCents <= monthOfBiggest.totalCents,
         `the ${span.length}-day total ${state.drawnCents}c must not pass the ${biggestInSpan / GB} GB month ${monthOfBiggest.totalCents}c`,
       );
       assert.ok(
-        state.drawnMillicents <= monthMillis(biggestInSpan) + DRAW_DAYS * biggest,
-        "the millicent total follows the same law",
+        state.drawnMillicents <= shareOfBiggest,
+        `the ${span.length}-day millicent total ${state.drawnMillicents} must not pass the ${shareOfBiggest} millicent month of the biggest size in the span`,
       );
       assert.ok(
         state.unposted >= 0 && state.unposted < 1000,
@@ -163,22 +162,28 @@ test("thirty daily draws at a constant size equal that month's price exactly", (
   );
 });
 
-test("a draw never rises when size30 does not rise", () => {
+test("money drawn never runs ahead of the money billed so far", () => {
   fc.assert(
     fc.property(sizeHistory, (sizes) => {
       const state = freshDrawState();
-      let lastBytes = -1;
-      let lastDraw = -1;
+      let billedMillicents = 0;
       for (const bytes of sizes) {
-        const drew = drawOneDay(monthMillis(bytes), state);
-        if (bytes <= lastBytes) {
-          assert.ok(
-            drew <= lastDraw,
-            `a draw never rises when size30 does not rise: ${bytes / GB} GB drew ${drew} after ${lastDraw}`,
-          );
-        }
-        lastBytes = bytes;
-        lastDraw = drew;
+        const monthly = monthMillis(bytes);
+        drawOneDay(monthly, state);
+        billedMillicents += monthly;
+        // Each day's step accounts for the month plus the carry it was handed
+        // (draw * 30 + carry = month + carried in), so the days telescope:
+        // every millicent drawn had been billed first, and the only money not
+        // yet drawn is the sub-carry the last day still holds.
+        assert.ok(
+          DRAW_DAYS * state.drawnMillicents <= billedMillicents,
+          `${sizes.length} days drew ${state.drawnMillicents} millicents from ${billedMillicents} billed`,
+        );
+        assert.equal(
+          DRAW_DAYS * state.drawnMillicents + state.thirtyRemainder,
+          billedMillicents,
+          "the days telescope: what is not drawn is the carry, nothing is lost",
+        );
       }
     }),
     { numRuns: 300 },
