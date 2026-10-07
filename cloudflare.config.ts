@@ -302,13 +302,16 @@ export default defineConfig({
       // and real copy work. Per IP it sits at 10 a minute, the upload-request
       // limit: far above a person or agent making a handful of branches, far
       // below a script churning them. One minute, the family's period.
-      // Namespace 1012: 1001-1005 are this Worker, 1006/1007 are the api
-      // Worker's device pair, 1008 is the share download, 1009/1010/1011 are
-      // the health, download and mint pair above. A namespace another binding
-      // already uses fails the deploy with 10021, and
-      // test/deploy-api-worker.test.mjs fails on the first duplicate it finds.
+      // Namespace 1013: 1001-1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair, 1008 is the share download, 1009/1010 are the
+      // health and download pair above, 1011 is this Worker's mint limit, and
+      // 1012 is the api Worker's KEYS_RATE_LIMITER (drive#745), which landed
+      // on main while this issue was in rework and took the number this
+      // binding first chose. A namespace another binding already uses fails
+      // the deploy with 10021, and test/deploy-api-worker.test.mjs fails on
+      // the first duplicate it finds.
       BRANCH_RATE_LIMITER: bindings.rateLimit({
-        namespace: "1012",
+        namespace: "1013",
         simple: { limit: 10, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
