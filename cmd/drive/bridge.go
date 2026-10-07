@@ -121,6 +121,7 @@ func rcloneEnvPathBeside(configPath string) string { return login.EnvPathBeside(
 func secretFromEnvFile(path string) (string, error) {
 	return login.SecretFromEnvFile(path)
 }
+func systemdEnvQuote(v string) string { return login.EnvQuote(v) }
 
 // ---- rclone helper (internal/rc) ----
 

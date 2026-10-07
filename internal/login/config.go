@@ -377,10 +377,10 @@ func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass, rcAddr string)
 		fmt.Fprintf(&b, "%s=%s\n", RCAddrEnv, rcAddr)
 	}
 	if c.SecretKey != "" {
-		fmt.Fprintf(&b, "%s=%s\n", SecretEnv, systemdEnvQuote(c.SecretKey))
+		fmt.Fprintf(&b, "%s=%s\n", SecretEnv, EnvQuote(c.SecretKey))
 	}
 	if c.DownloadURL != "" {
-		fmt.Fprintf(&b, "%s=%s\n", DownloadURLEnv, systemdEnvQuote(c.DownloadURL))
+		fmt.Fprintf(&b, "%s=%s\n", DownloadURLEnv, EnvQuote(c.DownloadURL))
 	}
 	if b.Len() == 0 {
 		return nil
@@ -438,10 +438,10 @@ func parseRcloneEnvFile(path string) (map[string]string, error) {
 	return out, nil
 }
 
-// systemdEnvQuote quotes a value for systemd's EnvironmentFile and for this
+// EnvQuote quotes a value for systemd's EnvironmentFile and for this
 // CLI's own parser: double quotes, with \, ", $ and ` escaped, so a storage
 // secret cannot break out of its line.
-func systemdEnvQuote(v string) string {
+func EnvQuote(v string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for _, r := range v {
