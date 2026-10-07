@@ -269,7 +269,7 @@ async function proof(t, rcloneBin, workDir) {
          (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
        VALUES (?, ?, ?, ?, 0, ?)`,
     )
-    .run(accountId, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
+    .run(accountId, monthStart(at), 1000 * minutesInMonth(at), 1000 * 1e9, at);
 
   /** @param {{accessKeyId: string, secret: string, sessionToken?: string|null}} key */
   const credFor = (key) => ({

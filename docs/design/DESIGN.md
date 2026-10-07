@@ -5,6 +5,10 @@ Shoulders Display, Instrument Sans, JetBrains Mono, one orange accent on
 warm paper. Every page a visitor can reach from that home page uses the
 same tokens. How loud the page is depends on who it is for.
 
+**Pitch (drive#642):** pay only for what you use. The home page leads with
+that, not "cheaper than a plan", because at 1 TB we cost the same $15 as a
+usual plan and above 1 TB we cost more.
+
 ## Public pages (loud)
 
 signin, starter, get-started, upload, docs, 404.

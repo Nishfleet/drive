@@ -157,6 +157,9 @@ func runStatus(args []string) error {
 			fmt.Printf("this month: unknown (%s)\n", reason)
 		}
 	}
+	if line := deviceRenewStatusLine(home); line != "" {
+		fmt.Println(line)
+	}
 	fmt.Println(troubleshootingDocsLine())
 	// The once-a-day update notice (drive#560): the last line `drive status`
 	// prints. It never fails the command, and it never prints more than once
@@ -654,6 +657,12 @@ type UsageSummary struct {
 		RemainingUsd float64 `json:"remainingUsd"`
 		State        string  `json:"state"`
 	} `json:"cap"`
+	Labels struct {
+		Size30         string `json:"size30"`
+		Size30Reached  string `json:"size30Reached"`
+		Size30DropsOut string `json:"size30DropsOut"`
+		TodayDraw      string `json:"todayDraw"`
+	} `json:"labels"`
 }
 
 // readCostLine prints this month's cost and the cap, and returns the reason
@@ -699,6 +708,18 @@ func readCostLine(apiBase, token string) string {
 		return fail("api-answer").Error()
 	}
 	fmt.Println(line)
+	if size30 := strings.TrimSpace(u.Labels.Size30); size30 != "" {
+		fmt.Println("Biggest size in the last 30 days: " + size30)
+		if reached := strings.TrimSpace(u.Labels.Size30Reached); reached != "" {
+			fmt.Println("Reached: " + reached)
+		}
+		if drops := strings.TrimSpace(u.Labels.Size30DropsOut); drops != "" {
+			fmt.Println("Drops out: " + drops)
+		}
+	}
+	if draw := strings.TrimSpace(u.Labels.TodayDraw); draw != "" {
+		fmt.Println("Today's draw: " + draw)
+	}
 	if balance := strings.TrimSpace(u.BalanceLine); balance != "" {
 		fmt.Println(balance)
 	}

@@ -42,6 +42,7 @@ type agentKey struct {
 	// not kept in step with the server: it is what a person reads, never what
 	// the CLI decides against (issue #106).
 	ExpiresAt *int64 `json:"expiresAt"`
+	ExpiresIn int    `json:"expiresIn,omitempty"`
 	Endpoint  string `json:"endpoint,omitempty"`
 	Bucket    string `json:"bucket,omitempty"`
 	Region    string `json:"region,omitempty"`

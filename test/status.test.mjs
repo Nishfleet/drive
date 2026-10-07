@@ -351,6 +351,9 @@ test("bytes stay one short line at both ends of the scale", () => {
   assert.equal(formatBytes(1_000), "1.0 KB");
   assert.equal(formatBytes(1_234_567_890), "1.2 GB");
   assert.equal(formatBytes(12_345_678_901), "12 GB");
+  const huge = 2n ** 53n + 1n;
+  assert.equal(formatBytes(huge), "9007 TB");
+  assert.notEqual(String(Number(huge)), huge.toString());
 });
 
 test("every empty screen says what to do first", () => {
