@@ -392,9 +392,9 @@ func runUnmount(args []string) error {
 	goos := CurrentGOOS()
 	home := common.home
 	mountDir := DefaultMountDir(home)
-	before, err := Mounted(goos, home)
-	if err != nil {
-		return err
+	before, listErr := Mounted(goos, home)
+	if listErr != nil {
+		before = true
 	}
 	if err := Unmount(goos, home); err != nil {
 		return err

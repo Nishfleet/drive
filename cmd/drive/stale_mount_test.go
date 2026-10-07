@@ -70,6 +70,54 @@ exit 1
 	}
 }
 
+// TestRunUnmountClearsAHungFindmntEntry is the CLI half of a wedged listing:
+// findmnt never returns, and `drive unmount` must still lazy-unmount instead
+// of returning the timeout without touching the mount.
+func TestRunUnmountClearsAHungFindmntEntry(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("findmnt and fusermount are the Linux unmount path")
+	}
+	home := t.TempDir()
+	mountDir := DefaultMountDir(home)
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "unmounted")
+	logPath := filepath.Join(bin, "fusermount.log")
+	t.Setenv("STALE_UNMOUNTED", marker)
+	t.Setenv("STALE_FUSERMOUNT_LOG", logPath)
+	writeStubCommand(t, bin, "findmnt", `
+if [ -f "$STALE_UNMOUNTED" ]; then
+  exit 1
+fi
+exec sleep 10
+`)
+	writeStubCommand(t, bin, "fusermount3", `
+printf '%s\n' "$@" > "$STALE_FUSERMOUNT_LOG"
+for a in "$@"; do
+  if [ "$a" = "-uz" ]; then
+    touch "$STALE_UNMOUNTED"
+    exit 0
+  fi
+done
+exit 1
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	if err := runUnmount([]string{"--home", home}); err != nil {
+		t.Fatalf("runUnmount: %v", err)
+	}
+	if time.Since(start) > 8*time.Second {
+		t.Fatalf("runUnmount took %s, want the 2s listing timeout then unmount", time.Since(start))
+	}
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("fusermount3 was not called: %v", err)
+	}
+	if !strings.Contains(string(body), "-uz") || !strings.Contains(string(body), mountDir) {
+		t.Errorf("fusermount3 args = %q, want -uz %s", body, mountDir)
+	}
+}
+
 // TestClearStaleMountDirLeavesALiveFindmntEntry is coordinator review (2):
 // a listed mount that still answers must not be lazy-unmounted. `drive mount`
 // over a working drive would otherwise detach writes still in rclone's cache.
