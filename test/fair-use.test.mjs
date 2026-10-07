@@ -520,25 +520,29 @@ async function rcloneWrite(input) {
   const headers = {
     authorization: `Basic ${Buffer.from("ak:secret").toString("base64")}`,
   };
-  /** @type {RequestInit} */
-  const init = { method: "PUT", headers };
-  if (input.contentLength === null) {
-    // A streamed body so Node does not add Content-Length, matching rclone's
-    // chunked PUT.
-    init.duplex = "half";
-    init.body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(input.body));
-        controller.close();
-      },
-    });
-  } else {
-    if (input.contentLength !== undefined) {
-      headers["content-length"] = String(input.contentLength);
-    }
-    init.body = input.body;
+  if (input.contentLength !== null && input.contentLength !== undefined) {
+    headers["content-length"] = String(input.contentLength);
   }
-  const response = await storageWriteRoute(new Request(url, init), { store, url });
+  const response = await storageWriteRoute(
+    new Request(url, {
+      method: "PUT",
+      headers,
+      ...(input.contentLength === null
+        ? {
+            // `duplex` is a Node/undici field the Workers RequestInit type
+            // does not carry; a streamed body needs it or the constructor throws.
+            ...{ duplex: "half" },
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(input.body));
+                controller.close();
+              },
+            }),
+          }
+        : { body: input.body }),
+    }),
+    { store, url },
+  );
   return { response, sizes, stored };
 }
 
