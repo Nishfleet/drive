@@ -618,11 +618,11 @@ func TestFillIssuesNoRefreshWithNothingOpened(t *testing.T) {
 
 // ---- one read stops at the pass deadline (drive issue #742) ----
 
-// A read in the fill loop stops within one read chunk of the deadline. The slow
-// read is an OS pipe fed a piece at a time: without the deadline the fill read
-// consumes the whole pipe, which is what one large file did to a fill pass
-// (cmd/drive/fill_run.go checked the context only between files, so the read of
-// a file that outgrew the pass ran until the file ended).
+// A read in the fill loop stops at the next chunk boundary after the deadline.
+// The slow read is an OS pipe fed a piece at a time: without the deadline the
+// fill read consumes the whole pipe, which is what one large file did to a fill
+// pass (cmd/drive/fill_run.go checked the context only between files, so the
+// read of a file that outgrew the pass ran until the file ended).
 //
 // The bound is measured, not asserted by inspection: the deadline is cancelled
 // while the read is still going, and the bytes read after it may not exceed one
@@ -671,13 +671,16 @@ func TestFillReadStopsWithinOneChunkOfTheDeadline(t *testing.T) {
 		done <- outcome{n, err}
 	}()
 	// The deadline lands part way through the pipe: some chunks have been read
-	// and there are more to come.
+	// and there are more to come. Take the writer's total after the cancel so it
+	// is an upper bound on what the read could have consumed before the deadline
+	// (the writer may add one more piece), and the assertion does not race the
+	// cancel.
 	time.Sleep(100 * time.Millisecond)
+	cancel()
 	atDeadline := written.Load()
 	if atDeadline == 0 {
 		t.Fatal("the writer fed the pipe nothing before the deadline, so the test cannot prove a stop")
 	}
-	cancel()
 	var got outcome
 	select {
 	case got = <-done:
@@ -762,9 +765,9 @@ func TestFillTargetsReadStopsWhenAReadHitsTheDeadline(t *testing.T) {
 	if len(read) != 1 || read[0] != "a.bin" {
 		t.Errorf("the pass read %v after the deadline, want only a.bin", read)
 	}
-	if spent != gotThrough {
-		t.Errorf("the pass reported %d bytes read, want the %d the stopped read got through, "+
-			"so the cap check sees the bytes the fill put in the cache", spent, gotThrough)
+	if spent != 0 {
+		t.Errorf("the pass reported %d bytes read, want 0: the pass aborts on the read "+
+			"error, so the failed read's bytes are not part of its result", spent)
 	}
 }
 
@@ -781,18 +784,20 @@ func TestFillReadFileRefusesANilContext(t *testing.T) {
 	}
 }
 
-// The fill's read chunk is the mount's own first chunk, --vfs-read-ahead
-// (vfsReadAheadValue): the fill stops on the requests rclone already serves,
-// and tuning the mount's read-ahead must not silently widen how far past the
-// deadline one read can run (drive#742).
+// The fill's read chunk is the mount's shipped first chunk, --vfs-read-ahead
+// (vfsReadAheadValue): the fill stops on the requests rclone already serves at
+// the default tuning. The chunk is a compile-time constant, so a run that
+// retunes --vfs-read-ahead (VFS_READ_AHEAD) cannot widen the fill's own
+// deadline bound; this pins the shipped pair so a change to one is a change to
+// both (drive#742).
 func TestFillReadChunkMatchesTheMountReadAhead(t *testing.T) {
 	want, err := parseSizeSuffix(vfsReadAheadValue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fillReadChunk != want {
-		t.Errorf("fillReadChunk is %d bytes, want the mount's --vfs-read-ahead, %s = %d; "+
-			"tune them together or the fill's deadline bound stops meaning the mount's read", fillReadChunk, vfsReadAheadValue, want)
+		t.Errorf("fillReadChunk is %d bytes, want the shipped --vfs-read-ahead, %s = %d; "+
+			"tune them together or the fill's deadline bound stops matching the mount's default read", fillReadChunk, vfsReadAheadValue, want)
 	}
 }
 

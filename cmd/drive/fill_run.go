@@ -571,6 +571,9 @@ type fillTargets struct {
 // pass context carries the fill timeout, and a read that ignores it would let
 // one large file read on long after the pass deadline and hold the loop hostage.
 func (t fillTargets) read(ctx context.Context, includeRecent bool, budget int64) (int64, error) {
+	if ctx == nil {
+		return 0, errors.New("fill: read with no context")
+	}
 	var spent int64
 	if includeRecent && budget > 0 {
 		read := t.readFile
@@ -578,11 +581,14 @@ func (t fillTargets) read(ctx context.Context, includeRecent bool, budget int64)
 			read = fillReadFile
 		}
 		for _, rel := range t.recent {
-			if spent >= budget {
-				break
-			}
+			// The deadline is checked before the budget so a pass that is
+			// already cancelled reports the cancellation even when the budget
+			// ran out on the previous file.
 			if err := ctx.Err(); err != nil {
 				return spent, err
+			}
+			if spent >= budget {
+				break
 			}
 			abs := filepath.Join(t.root, filepath.FromSlash(rel))
 			n, err := read(ctx, abs)
@@ -593,10 +599,9 @@ func (t fillTargets) read(ctx context.Context, includeRecent bool, budget int64)
 					}
 					continue
 				}
-				// A read the deadline stopped is still bytes on the way into the
-				// cache, so they count toward the cap check: returning the error
-				// must not also hide the bytes the pass already read (drive#742).
-				spent += n
+				// The pass aborts on a read error, so the bytes the failed read
+				// got through are not part of this pass's result: the caller
+				// abandons the pass and the next pass measures the cache again.
 				return spent, err
 			}
 			spent += n
@@ -633,9 +638,9 @@ const fillReadChunk = 128 << 10
 // cache for it, and reports how many bytes it read so `drive offline` (#115)
 // can say what it kept. The read is chunked under ctx, so a 10 GB file is a
 // sequence of reads rather than one allocation, and a cancelled or timed-out
-// read stops within one chunk of the deadline instead of reading to the end of
-// the file (drive#742). ctx must be non-nil: a nil one would make the read
-// unbounded, which is the bug this chunked read fixes.
+// read stops at the next chunk boundary after the deadline instead of reading
+// to the end of the file (drive#742). ctx must be non-nil: a nil one would make
+// the read unbounded, which is the bug this chunked read fixes.
 func fillReadFile(ctx context.Context, path string) (int64, error) {
 	if ctx == nil {
 		return 0, fmt.Errorf("read %s to fill: no context", path)
@@ -656,10 +661,13 @@ func fillReadFile(ctx context.Context, path string) (int64, error) {
 }
 
 // readCtxChunked copies f to io.Discard chunk by chunk, checking ctx before
-// each chunk so a cancelled or timed-out read returns between two chunks. The
-// read stays on the main path: a chunk read at the deadline is not dropped,
-// because dropping bytes the disk already read would under-report the cache
-// the fill just filled.
+// each chunk. A cancelled or timed-out read returns at the first chunk
+// boundary at or after the deadline: it stops within one chunk once the
+// in-flight Read returns. An os.File.Read that never returns cannot be
+// interrupted without closing the file, so the bound is on the bytes the fill
+// reads, not on a wedged read. The read stays on the main path: a chunk read at
+// the deadline is not dropped, because dropping bytes the disk already read
+// would under-report the cache the fill just filled.
 func readCtxChunked(ctx context.Context, f *os.File) (int64, error) {
 	buf := make([]byte, fillReadChunk)
 	var n int64
