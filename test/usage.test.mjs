@@ -27,6 +27,8 @@ import {
   usageSummary,
 } from "../core/billing.js";
 import { CAP_ENDPOINT } from "../core/cap.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { EXPORT_ENDPOINT, EXPORT_FILENAME } from "../core/export.js";
 import { PRICE } from "../core/pricing.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
 import { UPLOAD_LABEL, uploadProgress } from "../core/status.js";
@@ -58,6 +60,7 @@ const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.u
 // The Web Files page, which adopted the shared header and menu in drive#425 and
 // is now the third page under the one-navigation gate below.
 const filesPage = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
+const devicesPage = readFileSync(new URL("../public/devices.html", import.meta.url), "utf8");
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
@@ -354,6 +357,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   ]);
   assert.equal(body.labels.storedNow, "0 B");
   assert.equal(body.cardOnFile, false);
+  assert.equal(body.openPublicLinks, 0);
   // drive#417: an account with no card on file has had no charge taken, so the
   // page and the CLI are told that rather than presented with a bill. The cap
   // line is the account's own, unchanged by the card flag: only the charge
@@ -435,6 +439,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "maximumUsd",
     "meteredUsd",
     "monthIso",
+    "openPublicLinks",
     "saved",
     "storedDaily",
     "storedGb",
@@ -631,6 +636,7 @@ const PAGE_IDS = Object.freeze([
   "cost",
   "bill-lines",
   "downloads-line",
+  "open-public-links",
   "upload-line",
   "fair-use-line",
   "cap-amount",
@@ -921,6 +927,7 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /<dd id="gb-months"><\/dd>/);
   assert.match(page, /<dd id="cost"><\/dd>/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
+  assert.match(page, /<dd id="open-public-links"><\/dd>/);
   assert.match(page, /<p class="cap-value" id="cap-value"><\/p>/);
   assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
   // A noscript reader is told why, instead of a page with nothing on it.
@@ -956,6 +963,17 @@ test("no bill is shown as if charged while no card is on file", async () => {
   await settle();
   assert.equal(elementOf(charged.elements, "cost").textContent, "$0.00");
   assert.equal(elementOf(charged.elements, "bill-lines").hidden, false);
+});
+
+test("the usage page shows the count of open public links", async () => {
+  assert.ok(page.includes(USAGE_LABELS.openPublicLinks));
+  const shown = runPage({
+    ...emptyMonth(),
+    uploadLine: null,
+    openPublicLinks: 3,
+  });
+  await settle();
+  assert.equal(elementOf(shown.elements, "open-public-links").textContent, "3");
 });
 
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {
@@ -1099,12 +1117,12 @@ test("the cap is a control, not a readout, and it saves through the api", async 
 });
 
 test("the pages' mastheads read as one navigation", () => {
-  // The review found the headers disagreeing. The three mastheads that carry a
-  // nav (usage, get-started and the Web Files page since drive#425) list Your
-  // files, Pricing, Get started, Usage, Sign in in that order (the Web Files
-  // link leads since #48 merged, and Sign in closes it since drive#10), and
+  // The review found the headers disagreeing. The mastheads that carry a
+  // nav (usage, get-started, files, and devices since drive#525) list Your
+  // files, Pricing, Get started, Usage, Devices, Sign in in that order (the Web Files
+  // link leads since #48 merged, Devices since #525, and Sign in closes it since drive#10), and
   // each marks itself. Sign out is a button, not a link, so a signed-out
-  // browser and a browser with no script still see the five links; JS swaps
+  // browser and a browser with no script still see the six links; JS swaps
   // Sign in for Sign out when the account is there (drive#423). The pricing
   // page's masthead is its wordmark alone — its links are its footer nav,
   // which is issue #11's and is checked below.
@@ -1113,6 +1131,7 @@ test("the pages' mastheads read as one navigation", () => {
     '<a href="/"',
     '<a href="/get-started"',
     '<a href="/usage"',
+    '<a href="/devices"',
     '<a href="/signin"',
   ];
   // The link each page marks as the one the reader is on.
@@ -1120,11 +1139,13 @@ test("the pages' mastheads read as one navigation", () => {
     ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
     ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
     ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
+    ["devices.html", /<a href="\/devices" aria-current="page">Devices<\/a>/],
   ]);
   for (const [name, html] of [
     ["usage.html", page],
     ["get-started.html", getStartedPage],
     ["files.html", filesPage],
+    ["devices.html", devicesPage],
   ]) {
     // The header's own links, and not the page's: a link elsewhere must not
     // satisfy this gate, and must not fail it either. The header is the markup
@@ -1135,7 +1156,7 @@ test("the pages' mastheads read as one navigation", () => {
     assert.deepEqual(
       links,
       nav,
-      `${name}'s header carries the site's five links, and nothing else, in the same order`,
+      `${name}'s header carries the site's six links, and nothing else, in the same order`,
     );
     assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
     assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
@@ -1177,6 +1198,7 @@ test("the pages' mastheads read as one navigation", () => {
   for (const [name, source] of [
     ["usage.html", page],
     ["files.html", filesPage],
+    ["devices.html", devicesPage],
     ["get-started.js", getStartedJs],
   ]) {
     assert.match(
@@ -1375,4 +1397,91 @@ test("the usage read ignores the retired founding column on the account's row", 
     .bind(signedInAccount.id)
     .run();
   assert.deepEqual((await read()).billCents, noRow.billCents, "the column changes nothing");
+});
+
+test("the usage page links the export route with the module's words (drive#547)", () => {
+  assert.equal(EXPORT_ENDPOINT, "/api/export");
+  assert.ok(page.includes(USAGE_LABELS.exportHeading), "the heading is the module's word");
+  assert.ok(page.includes(USAGE_LABELS.exportWhat), "the purpose sentence is the module's word");
+  assert.ok(
+    page.includes(`href="${EXPORT_ENDPOINT}"`),
+    "the page must download from the endpoint the Worker routes",
+  );
+  assert.ok(
+    page.includes(`download="${EXPORT_FILENAME}"`),
+    "the link names the JSON file the route serves",
+  );
+  assert.ok(page.includes(`>${USAGE_LABELS.exportAction}</a>`), "the action is the module's word");
+});
+
+test("the export route answers 200 for a signed-in account with no api binding (drive#547)", async () => {
+  // The deploy shape today: the site Worker has DRIVE_DB and a session cookie,
+  // and no API service binding. GET /api/export must still answer 200, because
+  // that is the path the usage page downloads and /v1/export is 503 until the
+  // api Worker is bound.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account } = await signIn(made, "export@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const devices = createD1DeviceStore(made.db);
+  await devices.put({
+    id: "key_export",
+    accountId: account.id,
+    name: "export laptop",
+    kind: "device",
+    accessKeyId: "b2_export",
+    secretHash: "hash_export",
+    prefix: `u/${account.id}/`,
+    capabilities: ["read", "write"],
+    createdAt: 1_700_000_000,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  await made.db
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', 12)",
+    )
+    .bind(account.id, "/notes.txt", "notes.txt")
+    .run();
+
+  const response = await workerFetch(
+    new Request(`https://drive.test${EXPORT_ENDPOINT}`, { headers: { cookie } }),
+    env,
+  );
+  assert.equal(response.status, 200, "a signed-in export must answer 200 without the api binding");
+  assert.match(
+    response.headers.get("content-disposition") ?? "",
+    new RegExp(`filename="${EXPORT_FILENAME}"`),
+  );
+  const body = await response.json();
+  assert.equal(body.account.id, account.id, "the document is this account's");
+  assert.equal(body.account.email, account.email);
+  assert.equal(body.complete, true);
+  assert.deepEqual(
+    body.keys,
+    await devices.listPublic(account),
+    "the key list is listPublic's own rows, the same shape GET /v1/export carries",
+  );
+  assert.equal(body.files.length, 1);
+  assert.equal(body.files[0].path, "/notes.txt");
+  assert.deepEqual(Object.keys(body.next), ["fileCursor", "versionCursor"]);
+
+  // A cursor past the only file is an empty page, not a repeat of notes.txt.
+  // The cap-and-continue walk itself lives in workers/api/test/export.test.js
+  // against this same handler.
+  const nextPage = await workerFetch(
+    new Request(
+      `https://drive.test${EXPORT_ENDPOINT}?fileCursor=${encodeURIComponent("/notes.txt")}`,
+      { headers: { cookie } },
+    ),
+    env,
+  );
+  assert.equal(nextPage.status, 200);
+  const nextBody = await nextPage.json();
+  assert.equal(nextBody.files.length, 0, "a cursor past the last file repeats nothing");
+  assert.equal(nextBody.complete, true);
 });

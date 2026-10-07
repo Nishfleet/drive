@@ -125,13 +125,16 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 		"--dir-cache-time", "5s",
 		"--cache-dir", cacheDir,
 		"--rc", "--rc-addr", rcAddr, "--rc-no-auth")
+	// RcloneConfig never writes secret_access_key (drive#498). The secret
+	// reaches rclone the same way seedStandin already does: seedEnv.
+	cmd.Env = seedEnv
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer stopStandinProcess(cmd, mountDir)
 	if !waitForMount(t, cmd, mountDir) {
-		t.Skipf("this host will not bring up the mount on %s (%s)", mountDir, mountSkipReason())
+		skipNoMount(t, "this host will not bring up the mount on %s (%s)", mountDir, mountSkipReason())
 	}
 
 	if _, err := KeepOffline(mountDir, "keep.bin"); err != nil {

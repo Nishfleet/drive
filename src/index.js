@@ -22,6 +22,7 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
   createS3Store,
   FILES_ENDPOINT,
@@ -62,8 +63,10 @@ import {
   prepaidPauseOn,
   settleBalances,
 } from "../core/prepaid.js";
+import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { fairUseRefuseOn } from "../core/pricing.js";
 import { createD1QueueStore } from "../core/queues.js";
+import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -96,6 +99,7 @@ import {
   handleBranchesRequest,
   processBranchJob,
 } from "./branches.js";
+import { DEVICES_ENDPOINT, handleDevicesRequest } from "./devices-page.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import {
   handleMeterJobs,
@@ -132,7 +136,12 @@ import {
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
 } from "./share.js";
-import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import {
+  handleSigninLinkVerify,
+  handleSigninRequest,
+  SIGNIN_ENDPOINT,
+  signinClosedBody,
+} from "./signin.js";
 import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import { handleWaitlistRequest } from "./waitlist.js";
@@ -199,9 +208,18 @@ const API_PATH_PREFIX = "/v1";
 //     Standard Webhooks signature over the raw body is the gate
 //     (core/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
 //     it answers 503, a closed door.
+// The auth family Better Auth is mounted under (basePath "api/auth",
+// src/auth.js). One value for the account gate's public list and the route
+// table, so the two cannot drift: the one place a caller with no session must
+// reach is the auth family, to enroll a passkey or turn a factor on before
+// there is a session at all. isPublic (below) strips the trailing "/*", so a
+// signed-out caller reaches every /api/auth/... path.
+const AUTH_FAMILY = "/api/auth/*";
+
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
+  AUTH_FAMILY,
   SEND_EMAIL_PATH,
   HEALTH_PATH,
   SIGNIN_ENDPOINT,
@@ -288,6 +306,25 @@ function closeDepsFor(env) {
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
     now: () => Date.now(),
+  };
+}
+
+/**
+ * The prepaid key swap's live deps (drive#589): the same D1 device store the
+ * cap walk uses, so a $0 pause hits the same rows. Missing DRIVE_DB is null,
+ * and the callers skip the swap rather than inventing an in-memory store.
+ * @param {Env} env
+ * @returns {{pauseOn: boolean, devices: ReturnType<typeof createD1DeviceStore>}|null}
+ */
+function prepaidPauseFromEnv(env) {
+  if (!env.DRIVE_DB) {
+    return null;
+  }
+  return {
+    pauseOn: prepaidPauseOn(env),
+    devices: createD1DeviceStore(env.DRIVE_DB, {
+      keyProvider: keyProviderFor(env) ?? undefined,
+    }),
   };
 }
 
@@ -580,6 +617,42 @@ const csrfWhenBrowser = async (c, next) => {
   return next();
 };
 
+// ------------------------------------------------- the sign-in family (Better Auth)
+// Better Auth's own routes, mounted as one public family under its basePath
+// (src/auth.js). The site's own /api/signin forward reaches the same library
+// internally (src/signin.js), and this mount is the second factor's surface:
+// two-factor enrollment and verification, recovery-code generation and
+// passkey registration (drive#524) are the stock endpoints an already
+// signed-in browser session calls from the account pages. The prefix is in
+// PUBLIC_ROUTES so the account gate passes it: a session cookie is the whole
+// credential here, exactly as it is for the site's own pages, and the POSTs
+// behind it are writes on an existing session, so this app's same-origin
+// check above still runs first and a cross-site form post is refused before
+// the library sees one. Better Auth applies its own trusted-origin rule on
+// top of that. With no sign-in configuration the family answers the same
+// closed door the /api/signin forward answers (src/signin.js).
+//
+// Only the second-factor and passkey surface is served here. The magic-link
+// send, its verify and every other stock route stay on the site's own
+// /api/signin forward, which carries the per-IP edge limits, the per-address
+// send ceiling (purgeExpiredSigninSends) and the sign-up rules; this mount
+// would otherwise be a second, anonymous way to mail a link and make an
+// account around those. Anything off the list is a 404 before the library
+// sees it.
+const AUTH_FAMILY_ALLOWED =
+  /^\/api\/auth\/(?:get-session|two-factor\/[a-z-]+|passkey\/[a-z-]+)\/?$/;
+
+const authApiHandler = async (/** @type {DriveContext} */ c) => {
+  if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
+    return c.json({ error: "Not found." }, 404);
+  }
+  const auth = authFor(c.env);
+  if (!auth) {
+    return c.json(signinClosedBody(), 503);
+  }
+  return auth.handler(c.req.raw);
+};
+
 /** @param {DriveContext} c */
 const filesHandler = async (c) => {
   const account = c.get("account");
@@ -706,6 +779,14 @@ export function createApp() {
   // is what holds it. /api/starter is a write route under this one rule
   // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
+
+  // The sign-in family (Better Auth) under its basePath (src/auth.js),
+  // mounted after both checks above: PUBLIC_ROUTES passes it through the
+  // account gate, and a cross-site browser post is refused here first.
+  // Method-limited to GET and POST, which is the whole stock surface, so a
+  // request with any other method is a 405 rather than a page-less call into
+  // the library.
+  app.on(["GET", "POST"], AUTH_FAMILY, authApiHandler);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -846,6 +927,7 @@ export function createApp() {
     /** @type {Record<string, unknown>|null} */
     let usage = null;
     if (!account) return unauthorizedResponse();
+    let openPublicLinks = 0;
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
       capUsd = await store.getCapUsd(account.id);
@@ -858,6 +940,11 @@ export function createApp() {
       usage = /** @type {Record<string, unknown>} */ (
         await store.monthUsage(account.id, { capUsd })
       );
+      const now = Date.now();
+      const links = linksFor(c.env);
+      openPublicLinks =
+        (await links.shares.countOpen(account.id, now)) +
+        (await links.requests.countOpen(account.id, now));
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -884,7 +971,7 @@ export function createApp() {
     }
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, usage, fairUse },
+      { ...account, capUsd, cardOnFile, usage, fairUse, openPublicLinks },
       await liveQueueFor(c.env, account),
       balance,
       // The month these numbers belong to, sent as its first instant (drive#559):
@@ -896,6 +983,25 @@ export function createApp() {
       // would be a second answer to the same question.
       new Date(monthStart(Date.now())).toISOString(),
     );
+  });
+
+  // Own-data export (drive#547): the same handler GET /v1/export runs, served
+  // here so a signed-in browser can download it before the api Worker is bound.
+  // The account gate already answered 401 for a stranger. No DRIVE_DB means
+  // no keys and no file rows, which is a truthful empty export, not a 503.
+  app.get(EXPORT_ENDPOINT, (c) => {
+    const account = c.get("account");
+    if (!account) return unauthorizedResponse();
+    const db = c.env.DRIVE_DB;
+    return exportRoute(c.req.raw, {
+      store: {
+        listKeys: (acct) => (db ? createD1DeviceStore(db).listPublic(acct) : Promise.resolve([])),
+      },
+      db: db ?? null,
+      account,
+      now: Date.now,
+      url: new URL(c.req.url),
+    });
   });
 
   // The prepaid balance (drive#586): the balance and recent ledger lines, and
@@ -935,6 +1041,23 @@ export function createApp() {
     });
   });
 
+  // Devices page (drive#525): list live keys and revoke one at the provider.
+  // The site Worker holds DRIVE_DB, so this route works while the api Worker
+  // is undeployed (#342). The store is built with the same keyProviderFor
+  // the cap and close paths use, so a revoke here withdraws the vendor key.
+  /** @param {DriveContext} c */
+  const devicesHandler = (c) => {
+    const db = c.env.DRIVE_DB;
+    const store = db
+      ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
+      : null;
+    return handleDevicesRequest(c.req.raw, c.get("account"), store);
+  };
+  app.get(DEVICES_ENDPOINT, devicesHandler);
+  app.delete(DEVICES_ENDPOINT, devicesHandler);
+  app.get(`${DEVICES_ENDPOINT}/*`, devicesHandler);
+  app.delete(`${DEVICES_ENDPOINT}/*`, devicesHandler);
+
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
   // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
@@ -947,7 +1070,24 @@ export function createApp() {
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
-    return handleCapRequest(c.req.raw, c.get("account"), store);
+    const answered = await handleCapRequest(c.req.raw, c.get("account"), store, {
+      ...mailFromEnv(c.env),
+      deviceName: sessionLabel(c.req.raw),
+    });
+    const account = c.get("account");
+    // After a cap raise, restore what the prepaid pause took (drive#589),
+    // because a pause that ran first left no `capped_from` for the raise to
+    // read. The swap is a no-op when the balance is still $0 or the pause
+    // never took a key. Only a cap write that actually ran (2xx) does this:
+    // a 400 must not swap keys.
+    if (answered.ok && store && account && db) {
+      await pauseAccountKeys(account.id, {
+        db,
+        devices: store,
+        pauseOn: prepaidPauseOn(c.env),
+      });
+    }
+    return answered;
   });
 
   // Account close (drive#235): confirm by typing email, keys revoked at once,
@@ -989,6 +1129,8 @@ export function createApp() {
         // The mint route's own bound (drive issue #549). The per-account
         // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -1009,6 +1151,8 @@ export function createApp() {
       handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account"), {
         // The mint route's own bound (drive issue #549).
         limiter: c.env.REQUEST_MINT_RATE_LIMITER,
+        ...mailFromEnv(c.env),
+        deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
@@ -1073,6 +1217,7 @@ export function createApp() {
       secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
       email: c.env.EMAIL,
       mailFrom: dodoEnv(c.env).MAIL_FROM ?? "",
+      ...(prepaidPauseFromEnv(c.env) ?? {}),
     }),
   );
 
@@ -1330,6 +1475,7 @@ const handler = {
         // the draws above are written, and a retry must not wait on a mail
         // outage.
         const dodo = dodoEnv(env);
+        const pause = prepaidPauseFromEnv(env);
         await settleBalances(env.METER_DB, drawn.accounts, {
           email: env.EMAIL,
           mailFrom: dodo.MAIL_FROM ?? "",
@@ -1338,7 +1484,33 @@ const handler = {
           baseUrl: dodo.DODO_BASE_URL,
           fetch: dodo.DODO_FETCH ?? globalThis.fetch,
           now,
+          ...(pause ?? {}),
         });
+        // Accounts the hour did not draw still need the swap: a cap raise
+        // with no usage this hour, or PREPAID_PAUSE flipped on against
+        // accounts already at $0.
+        if (pause) {
+          const drawnSet = new Set(drawn.accounts);
+          for (const accountId of await listMeteredAccounts(env.METER_DB)) {
+            if (!drawnSet.has(accountId)) {
+              try {
+                await pauseAccountKeys(accountId, {
+                  db: env.METER_DB,
+                  devices: pause.devices,
+                  pauseOn: pause.pauseOn,
+                });
+              } catch (error) {
+                // One account's failed swap must not skip the rest or the
+                // over-limit trip below. The next hour retries it.
+                console.error(
+                  "prepaid: the key swap failed",
+                  `account=${accountId}`,
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
+            }
+          }
+        }
         // The pre-charge limit's own trip (drive#536). The web upload path has
         // held 1 TB free since drive#464, but a mount holds a storage key and
         // writes past any page, so the same hourly run reads the over-limit
@@ -1638,6 +1810,7 @@ const handler = {
           productId: dodo.DODO_TOPUP_PRODUCT_ID,
           baseUrl: dodo.DODO_BASE_URL,
           fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+          ...(prepaidPauseFromEnv(env) ?? {}),
         },
         store,
       }),
