@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — notes starter</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="An optional notes starter for your drive: a vault your notes app opens, a daily note, and one note your agent reads. Off by default, and never required.">
   <!-- drive issue #15: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
@@ -263,10 +264,10 @@ button:disabled {
        link goes to the page where the close and the cancel both live. The
        styles are the shared stylesheet's, so the four pages that carry this
        aside are one banner. -->
-  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
-  </aside>
+  </div>
   <main>
     <section aria-labelledby="starter-heading">
       <h1 id="starter-heading">Notes starter</h1>

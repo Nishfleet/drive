@@ -260,7 +260,7 @@ func applyDeviceCredential(home string, creds Credentials, cfg StorageConfig) er
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
 	}
-	if err := WriteRcloneEnv(home, cfg, auth.User, auth.Pass); err != nil {
+	if err := WriteRcloneEnv(home, cfg, auth.User, auth.Pass, auth.Addr); err != nil {
 		return err
 	}
 	creds.AccessKeyID = cfg.AccessKey

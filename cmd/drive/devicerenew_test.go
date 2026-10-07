@@ -46,7 +46,7 @@ func TestLoginAcceptsAnExpiringDeviceKey(t *testing.T) {
 	t.Cleanup(func() { openURL = origOpen })
 	api.approved["dev_secret"] = true
 
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	creds, err := LoadCredentials(home)
@@ -85,7 +85,7 @@ func TestApplyDeviceCredentialRewritesRcloneConfAndLeavesTheCache(t *testing.T) 
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteRcloneEnv(home, cfg, "rcuser", "rcpass"); err != nil {
+	if err := WriteRcloneEnv(home, cfg, "rcuser", "rcpass", ""); err != nil {
 		t.Fatal(err)
 	}
 	creds := Credentials{KeyID: "key_laptop", AccessKeyID: cfg.AccessKey, KeyExpiresAt: time.Now().Unix() + 100, KeyTTLSeconds: 900}
@@ -168,7 +168,7 @@ func TestRenewDeviceKeyOnceRewritesBeforeExpiry(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 	api.approved["dev_secret"] = true
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	creds, err := LoadCredentials(home)
@@ -221,7 +221,7 @@ func TestRenewDeviceKeyOnceRecordsANamedFailure(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 	api.approved["dev_secret"] = true
-	if err := Login(home, server.URL, io.Discard); err != nil {
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	creds, loadErr := LoadCredentials(home)
@@ -258,7 +258,7 @@ func TestApplyDeviceCredentialAllowsAnEmptySessionToken(t *testing.T) {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteRcloneEnv(home, cfg, "rcuser", "rcpass"); err != nil {
+	if err := WriteRcloneEnv(home, cfg, "rcuser", "rcpass", ""); err != nil {
 		t.Fatal(err)
 	}
 	creds := Credentials{KeyID: "key_laptop", AccessKeyID: cfg.AccessKey}
@@ -287,7 +287,7 @@ func TestUpdateRemoteConfigPostsJSONAndKeepsSecretsOffArgv(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	c := newRCClient("/this-binary-must-not-run", strings.TrimPrefix(srv.URL, "http://"), "")
-	c.user, c.pass = "rcuser", "rcpass"
+	c.SetAuth("rcuser", "rcpass")
 	cfg := testStorage()
 	cfg.SecretKey = "sk_must_not_be_argv"
 	cfg.SessionToken = "tok_must_not_be_argv"

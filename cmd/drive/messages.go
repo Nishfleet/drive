@@ -28,6 +28,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/Nishfleet/drive/internal/api"
 )
 
 // signInCommand is the one command that signs this machine in. The web
@@ -155,6 +157,10 @@ var messageTable = map[string][2]string{
 		"rclone is not installed; the drive mounts with rclone.",
 		"Install it (macOS: `brew install rclone`; Linux: `sudo apt install rclone`) or point `--rclone` at the binary, then run `drive mount` again.",
 	},
+	"no-node": {
+		"Node.js is not installed; every drive agent tool runs its server through npx.",
+		"Install Node.js (which brings npx), then run the command again.",
+	},
 	"missing-config": {
 		"The drive is missing its storage settings: {1}.",
 		"Run `drive login` so this device gets its storage settings, then run the command again.",
@@ -173,7 +179,19 @@ var messageTable = map[string][2]string{
 	},
 	"drive-folder": {
 		"The drive folder {1} could not be created.",
-		"Check that the disk has room and that {1} is writable, then run the command again.",
+		"Check that {1} is writable and that the disk is not full, then run the command again.",
+	},
+	"stale-mount": {
+		"The drive at {1} is still listed as mounted, but it does not answer.",
+		"Run `drive unmount`.",
+	},
+	"mount-probe": {
+		"Could not check whether the drive is mounted at {1}: {2}.",
+		"Run `drive status`, then `drive mount` again.",
+	},
+	"cache-tag": {
+		"The drive's cache folder {1} could not be marked as a cache.",
+		"Check that {1} is writable, then run the command again.",
 	},
 	"cache-clear-mounted": {
 		"The cache cannot be cleared while the drive is mounted.",
@@ -193,7 +211,7 @@ var messageTable = map[string][2]string{
 	},
 	"unmount-failed": {
 		"The drive at {1} did not come down.",
-		"Unmount it by hand (Linux: `fusermount3 -u {1}`; macOS: `sudo umount {1}`), then run the command again.",
+		"Unmount it by hand (Linux: `fusermount3 -uz {1}`, or `fusermount -uz {1}`; macOS: `sudo umount -f {1}`), then run the command again.",
 	},
 	"logout-leftover": {
 		"Logout finished, but {1} is still on disk.",
@@ -204,7 +222,7 @@ var messageTable = map[string][2]string{
 		"Start the mount and let them finish, or run `drive logout --force` to discard them.",
 	},
 	"key-still-live": {
-		"signed out here; the key is still live, run drive logout again when online",
+		"signed out here; the key is still live",
 		"Run `" + signInCommand + "`, then `drive logout` again, to turn it off.",
 	},
 	"key-still-live-elsewhere": {
@@ -379,18 +397,5 @@ func printFailure(w io.Writer, err error) int {
 // the Worker's own refusals (APIError) split by status, anything else is the
 // network. err is never nil at a call site.
 func apiFailureKind(err error) string {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
-			return "key-revoked"
-		}
-		// 426 Upgrade Required is the api Worker's version gate (drive#560):
-		// this build is below the deployment's minimum, and the fix is one
-		// command, so it gets its own words instead of api-refused's.
-		if strings.Contains(apiErr.Status, "426") {
-			return "cli-too-old"
-		}
-		return "api-refused"
-	}
-	return "offline"
+	return api.FailureKind(err)
 }
