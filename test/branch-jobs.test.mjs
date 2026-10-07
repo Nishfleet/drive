@@ -11,6 +11,7 @@ import {
   BRANCH_JOBS_MAX_RETRIES,
   BRANCH_JOBS_QUEUE,
   BRANCH_QUEUE_KINDS,
+  branchJob,
   branchJobsQueue,
   handleBranchJobs,
 } from "../src/branch-jobs.js";
@@ -759,6 +760,220 @@ test("handleBranchJobs acks and runs onExhausted after max retries", async () =>
   assert.equal(message.acked, true);
   assert.equal(message.retried, undefined);
   assert.equal(exhausted.length, 1);
+});
+
+/** A message shape the driver tests reuse: the same body can be delivered
+ * twice, and the flags prove what the handler did with it. Every test here
+ * must name a key of its own - the kind, account and branch ids - because
+ * `ackedCursors` is module state shared by all of them: two tests on one key
+ * can see each other's deliveries, and none of them starts with a cold map.
+ * @param {unknown} body @param {number} [attempts] */
+function branchMessage(body, attempts = 1) {
+  /** @type {{body: unknown, ack: () => void, retry: () => void, attempts: number, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body,
+    attempts,
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  return message;
+}
+
+test("a redelivered branch message whose cursor already moved is a no-op", async () => {
+  // The fourth bullet of drive#845. The queue delivers at least once, so a
+  // message this handler already acked can arrive again after its ack was
+  // lost; running it would repeat a batch the row already did. The message
+  // carries its own place in the chain, so the second delivery is recognised
+  // and does no work and writes nothing.
+  const body = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8451,
+    name: "work",
+    cursor: 3,
+  };
+  const queue = fakeQueue();
+  let batches = 0;
+  const first = branchMessage(body);
+  const ran = await handleBranchJobs(
+    { messages: [first] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(batches, 1);
+  assert.equal(ran.acked, 1);
+  assert.equal(ran.stale, 0);
+  assert.equal(first.acked, true);
+  // The continuation carries the next cursor, so the chain moves forward.
+  assert.equal(queue.sent.length, 1);
+  const continuation = /** @type {{body: {cursor?: number}}} */ (queue.sent[0]).body;
+  assert.equal(continuation.cursor, 4, "the continuation carries the next cursor");
+
+  // The redelivery: the same message again, after its batch ran and acked.
+  const redelivered = branchMessage({ ...body });
+  const second = await handleBranchJobs(
+    { messages: [redelivered] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(second.stale, 1, "the redelivery was dropped");
+  assert.equal(second.acked, 1, "and it is acked, so it is not retried forever");
+  assert.equal(second.retried, 0);
+  assert.equal(redelivered.acked, true);
+  assert.equal(redelivered.retried, undefined);
+  assert.equal(batches, 1, "the second delivery did no work");
+  assert.equal(queue.sent.length, 1, "and wrote nothing");
+
+  // A message from before the cursor field existed still runs: it cannot be
+  // checked against a redelivery, and running it is the safe side.
+  const old = branchMessage({
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8451,
+    name: "work",
+  });
+  const legacy = await handleBranchJobs({ messages: [old] }, async () => ({}), queue);
+  assert.equal(legacy.stale, 0, "a message with no cursor is never dropped");
+  assert.equal(old.acked, true);
+});
+
+test("a redelivered terminal batch is dropped, not run again", async () => {
+  // The last batch of a chain is work like every other: running it twice
+  // copies, deletes or applies the same files twice. The cursor map keeps the
+  // key after the chain ends, so its redelivery is a no-op too (drive#845).
+  const body = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8453,
+    name: "work",
+    cursor: 1,
+  };
+  const queue = fakeQueue();
+  let batches = 0;
+  const last = branchMessage(body);
+  const finished = await handleBranchJobs(
+    { messages: [last] },
+    async () => {
+      batches += 1;
+      return {};
+    },
+    queue,
+  );
+  assert.equal(finished.stale, 0, "the first delivery is not a redelivery");
+  assert.equal(batches, 1);
+  assert.equal(queue.sent.length, 0, "the chain ended, so nothing is enqueued");
+
+  // The same, finished message delivered again: no second batch.
+  const late = branchMessage({ ...body });
+  const again = await handleBranchJobs(
+    { messages: [late] },
+    async () => {
+      batches += 1;
+      return {};
+    },
+    queue,
+  );
+  assert.equal(again.stale, 1, "the terminal batch is remembered too");
+  assert.equal(again.retried, 0);
+  assert.equal(late.acked, true);
+  assert.equal(batches, 1, "and the last batch runs once");
+
+  // A new chain on the same row: its first message carries no cursor, so it
+  // runs and writes 0 over the finished chain's key instead of being dropped.
+  const fresh = branchMessage({
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8453,
+    name: "work",
+  });
+  const nextChain = await handleBranchJobs(
+    { messages: [fresh] },
+    async () => {
+      batches += 1;
+      return {};
+    },
+    queue,
+  );
+  assert.equal(nextChain.stale, 0, "a new chain's first message always runs");
+  assert.equal(batches, 2);
+  assert.equal(fresh.acked, true);
+});
+
+test("a branch job cursor must be a whole number", async () => {
+  const base = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8454,
+    name: "work",
+  };
+  for (const cursor of [-1, 1.5, {}, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => branchJob({ ...base, cursor }), TypeError, `cursor ${String(cursor)}`);
+  }
+  // 0 is the "no cursor" sentinel spelled out, so it is a first message.
+  assert.equal(branchJob({ ...base, cursor: 0 }).cursor, 0);
+});
+
+test("a continuation whose send fails after the ack never runs a second batch", async () => {
+  // The other half of drive#845: the ack comes before the continuation is
+  // enqueued, so a crash between them cannot leave two live messages for one
+  // batch. Here the enqueue fails after the ack, the message stays acked
+  // instead of being retried, and its redelivery is dropped as a no-op.
+  const body = {
+    kind: BRANCH_QUEUE_KINDS.create,
+    accountId: "acct-845",
+    branchId: 8452,
+    name: "work",
+    cursor: 2,
+  };
+  /** @type {{sent: Array<{body: unknown}>, send: (body: unknown) => Promise<unknown>}} */
+  const queue = {
+    sent: [],
+    send() {
+      return Promise.reject(new Error("send failed"));
+    },
+  };
+  let batches = 0;
+  const message = branchMessage(body);
+  const stats = await handleBranchJobs(
+    { messages: [message] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(batches, 1, "the batch ran once");
+  assert.equal(stats.acked, 1);
+  assert.equal(stats.retried, 0, "a batch that already acked is never retried");
+  assert.equal(message.acked, true);
+  assert.equal(message.retried, undefined);
+
+  // The same message delivered again, which is what an at-least-once queue
+  // does after a lost ack: it names a cursor this handler already acked, so
+  // it is dropped instead of doubling the batch.
+  const redelivered = branchMessage({ ...body });
+  const second = await handleBranchJobs(
+    { messages: [redelivered] },
+    async () => {
+      batches += 1;
+      return { continue: true };
+    },
+    queue,
+  );
+  assert.equal(batches, 1, "only one batch runs per job");
+  assert.equal(second.stale, 1);
+  assert.equal(second.retried, 0);
+  assert.equal(redelivered.acked, true);
 });
 
 test("approve of a branch still being created answers 409, not 500", async () => {
