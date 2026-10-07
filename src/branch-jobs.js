@@ -52,17 +52,25 @@ const BRANCH_JOB_CURSOR_UNSET = 0;
  * least once, so a message this handler finished can arrive again after its
  * ack was lost; the second delivery would run a batch the row already did
  * (drive#845). The durable half of that fix is the ack order below, which
- * leaves no window where two messages for one job are live at once; this map
- * drops the duplicate in the case the platform redelivers anyway. An isolate
- * is evicted and restarts with an empty map, which costs a bounded duplicate
- * batch, never an overlapping pair.
+ * closes the window where two messages for one job are live inside one isolate;
+ * this map drops the duplicate in the case the platform redelivers anyway. An
+ * isolate is evicted and restarts with an empty map, which costs a bounded
+ * duplicate batch, never an overlapping pair.
+ *
+ * A key outlives its chain: the last batch is work like every other, and a
+ * redelivery of it is the duplicate this exists to stop. A newer job on the same
+ * row is a new chain and starts with a producer message that carries no cursor,
+ * which always runs and writes 0 over the old key, so an ended chain never
+ * shadows a live one.
  * @type {Map<string, number>}
  */
 const ackedCursors = new Map();
 
-/** Above this many remembered cursors the map forgets the oldest: a stuck
- * chain's key is held until part 3's resume lands, and no live account keeps
- * more than a handful of open jobs. */
+/** Above this many remembered cursors the map forgets the oldest. A key is
+ * written again on every batch it keeps out of a redelivery, and `Map.set`
+ * alone does not refresh an existing key's place in the insertion order, so
+ * the delete below runs first: without it a live chain that is older than the
+ * eviction edge loses its guard. */
 const ACKED_CURSORS_LIMIT = 10_000;
 
 /**
@@ -77,12 +85,15 @@ function ackedCursorKey(job) {
 }
 
 /**
- * Remembers that this job's message at `cursor` ran and was acked. A job
- * whose chain ended forgets itself, so an in-process caller that sends the
- * same message again is never mistaken for a redelivery (drive#845).
+ * Remembers that this job's message at `cursor` ran and was acked. A job with
+ * no cursor remembers 0, which is what every first message writes, so an older
+ * chain's key is replaced rather than left standing in its way.
  * @param {BranchJob} job
  */
 function rememberAckedCursor(job) {
+  // Delete before set: a live chain must count as recently used, or the
+  // eviction below can forget it while newer, finished keys stay.
+  ackedCursors.delete(ackedCursorKey(job));
   if (ackedCursors.size >= ACKED_CURSORS_LIMIT) {
     const oldest = ackedCursors.keys().next();
     if (!oldest.done) {
@@ -98,8 +109,9 @@ function rememberAckedCursor(job) {
  * chain: the producer's first message has none, and each continuation send
  * stamps the next one. A message whose cursor is at or behind the highest
  * this isolate acked for the job is a redelivery of finished work, so it is
- * acked as a no-op. A message with no cursor cannot be checked and runs,
- * which is the safe side: the row's own guards hold the work.
+ * acked as a no-op. A message with no cursor, or one carrying the 0 sentinel
+ * that means the same thing, names a first message and runs, which is the safe
+ * side: the row's own guards hold the work.
  * @param {BranchJob} job
  * @returns {boolean} false when the message is a redelivery of finished work
  */
@@ -157,8 +169,10 @@ export function branchJob(body) {
   }
   // The cursor is the message's place in its job's chain. It rides the message
   // so a redelivery that arrives after this isolate acked that work is a
-  // no-op instead of a second batch on one job (drive#845). A body without one
-  // is every message from before this change, and it runs.
+  // no-op instead of a second batch on one job (drive#845). No producer sends
+  // 0: a first message omits it, and a continuation is cursor + 1, so 0 is
+  // only ever the "no cursor" sentinel spelled out, and such a message runs
+  // as a first message.
   const cursorRaw = raw.cursor;
   if (cursorRaw !== undefined && cursorRaw !== null) {
     const cursor = Number(cursorRaw);
@@ -210,11 +224,13 @@ async function sendBranchJob(queue, job) {
  * order left a window where a finished batch was acked only after its
  * successor was already queued: a crash between the two left a live message
  * and an unacked one for the same work, and the redelivery ran a second
- * overlapping batch. A continuation whose send fails after the ack leaves the
+ * overlapping batch. That window is closed inside this isolate; a redelivery
+ * that lands on another isolate is still dropped by the row's own guards, not
+ * by this one. A continuation whose send fails after the ack leaves the
  * message acked and the chain stopped, which the resume route reads, rather
  * than a retry that repeats the batch. A redelivered message whose cursor
- * this isolate already acked is a no-op: it is acked without running the
- * processor and without enqueueing anything.
+ * this isolate already acked - its chain ended or not - is a no-op: it is
+ * acked without running the processor and without enqueueing anything.
  * @param {{messages: readonly {body: unknown, ack(): void, retry(): void, attempts?: number}[]}} batch
  * @param {(job: BranchJob) => Promise<{continue?: boolean}>} process
  * @param {BranchJobsQueue|null} [queue] the producer, so a batch that has more
@@ -222,7 +238,8 @@ async function sendBranchJob(queue, job) {
  * @param {(body: unknown, error: unknown) => Promise<unknown>} [onExhausted]
  *   runs when retries are used up, so a stuck creating/approving row does not
  *   occupy the name forever
- * @returns {Promise<{acked: number, retried: number, stale: number}>}
+ * @returns {Promise<{acked: number, retried: number, stale: number}>} `acked`
+ *   counts every message acked, the redeliveries in `stale` included
  */
 export async function handleBranchJobs(batch, process, queue = null, onExhausted = undefined) {
   let acked = 0;
@@ -253,11 +270,11 @@ export async function handleBranchJobs(batch, process, queue = null, onExhausted
           ...job,
           cursor: (job.cursor ?? BRANCH_JOB_CURSOR_UNSET) + 1,
         });
-      } else {
-        // The chain ended here, or there is no producer to continue it with,
-        // so this job's cursors are no longer needed (drive#845).
-        ackedCursors.delete(ackedCursorKey(job));
       }
+      // The key stays when the chain ends: the last batch is work like every
+      // other, and a redelivery of it is the duplicate this exists to stop. A
+      // newer job on the same row is a new chain, and its first message
+      // carries no cursor, which runs and writes 0 over the old key (drive#845).
     } catch (error) {
       const body = /** @type {{kind?: unknown, accountId?: unknown, name?: unknown}|null} */ (
         message.body
