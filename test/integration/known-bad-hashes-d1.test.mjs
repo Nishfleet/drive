@@ -1,4 +1,4 @@
-// 0041 adds the two tables the stock known-bad SHA-256 feed loads into (drive
+// 0042 adds the two tables the stock known-bad SHA-256 feed loads into (drive
 // issue #826): `known_bad_hashes`, one row per digest, and
 // `known_bad_feed_state`, the one row that records the last successful load.
 // This file applies the REAL migration file, in the real order, against
@@ -33,14 +33,14 @@ const NOW = 1_794_000_000_000;
 /** One day later: the next load's export is the feed's own recent window. */
 const LATER = NOW + 86_400_000;
 
-/** The full default schema minus 0041: the state production is in the moment
- * 0041 lands. Filtered by name, not by position, so a file appended to
+/** The full default schema minus 0042: the state production is in the moment
+ * 0042 lands. Filtered by name, not by position, so a file appended to
  * DRIVE_MIGRATIONS does not silently change what this builds.
  * @returns {readonly string[]} */
-const migrationsBefore0041 = () =>
-  DRIVE_MIGRATIONS.filter((name) => !name.endsWith("0041_known_bad_hashes.sql"));
+const migrationsBefore0042 = () =>
+  DRIVE_MIGRATIONS.filter((name) => !name.endsWith("0042_known_bad_hashes.sql"));
 /** @returns {ReturnType<typeof createTestD1>} */
-const driveBefore0041 = () => createTestD1({ migrations: migrationsBefore0041() });
+const driveBefore0042 = () => createTestD1({ migrations: migrationsBefore0042() });
 
 /**
  * The real migration file, read from disk rather than copied into the test. A
@@ -48,9 +48,9 @@ const driveBefore0041 = () => createTestD1({ migrations: migrationsBefore0041() 
  * tables or the primary key, so the file itself is what runs here.
  * @returns {string}
  */
-const migration0041 = () =>
+const migration0042 = () =>
   readFileSync(
-    new URL("../../migrations/drive/0041_known_bad_hashes.sql", import.meta.url),
+    new URL("../../migrations/drive/0042_known_bad_hashes.sql", import.meta.url),
     "utf8",
   );
 
@@ -105,11 +105,11 @@ const feedResponse = (text, options = {}) => {
   return /** @type {Response} */ (/** @type {unknown} */ (answer));
 };
 
-test("0041 makes the WRITE path write every hash and stamp the load", async () => {
-  // The drive as production is the moment 0041 lands: every migration up to it
+test("0042 makes the WRITE path write every hash and stamp the load", async () => {
+  // The drive as production is the moment 0042 lands: every migration up to it
   // applied, no known-bad rows yet.
-  const db = driveBefore0041();
-  db.sqlite.exec(migration0041());
+  const db = driveBefore0042();
+  db.sqlite.exec(migration0042());
   assert.equal(await lastKnownBadFeedLoad(db), null, "no load has ever landed");
 
   const loaded = await loadKnownBadFeed(db, {
@@ -135,7 +135,7 @@ test("0041 makes the WRITE path write every hash and stamp the load", async () =
   );
 });
 
-test("0041 makes the READ path answer from the row, with no network of its own", async () => {
+test("0042 makes the READ path answer from the row, with no network of its own", async () => {
   const db = createTestD1();
   await loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(2)), now: NOW });
 
@@ -173,8 +173,8 @@ test("the digest column is what the read looks up: the key, not a scan", async (
   assert.doesNotMatch(plan, /SCAN known_bad_hashes/, `plan: ${plan}`);
 });
 
-test("0041 is additive: two new tables, and no existing column changes", async () => {
-  const db = driveBefore0041();
+test("0042 is additive: two new tables, and no existing column changes", async () => {
+  const db = driveBefore0042();
   const countTable = () =>
     db.sqlite
       .prepare(
@@ -189,13 +189,13 @@ test("0041 is additive: two new tables, and no existing column changes", async (
     .map((row) => row.name);
 
   // The real file runs, exactly as D1 runs it.
-  db.sqlite.exec(migration0041());
+  db.sqlite.exec(migration0042());
 
   const tablesAfter = countTable();
   assert.deepEqual(
     tablesAfter.filter((name) => !tablesBefore.includes(name)),
     ["known_bad_feed_state", "known_bad_hashes"],
-    "0041 added exactly two tables",
+    "0042 added exactly two tables",
   );
   assert.deepEqual(
     db.sqlite
@@ -207,10 +207,10 @@ test("0041 is additive: two new tables, and no existing column changes", async (
   );
 });
 
-test("0041 can be applied twice without failing or duplicating a row", async () => {
-  const db = driveBefore0041();
-  db.sqlite.exec(migration0041());
-  db.sqlite.exec(migration0041());
+test("0042 can be applied twice without failing or duplicating a row", async () => {
+  const db = driveBefore0042();
+  db.sqlite.exec(migration0042());
+  db.sqlite.exec(migration0042());
   await loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(2)), now: NOW });
   await loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(2)), now: LATER });
   assert.equal(knownBadHashRows(db).length, 2, "one row a digest, however many loads run");
@@ -242,7 +242,7 @@ test("the state row really is one row: id 2 is refused by the check itself", asy
 
 test("a hash that cycles out of the feed stays refused, and keeps its first sighting", async () => {
   const db = createTestD1({
-    migrations: [...migrationsBefore0041(), "drive/0041_known_bad_hashes.sql"],
+    migrations: [...migrationsBefore0042(), "drive/0042_known_bad_hashes.sql"],
   });
   await loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(3)), now: NOW });
 
@@ -272,8 +272,8 @@ test("a hash that cycles out of the feed stays refused, and keeps its first sigh
   );
 });
 
-test("a Worker deployed before 0041 has no table to read, and the read says so", async () => {
-  const db = driveBefore0041();
+test("a Worker deployed before 0042 has no table to read, and the read says so", async () => {
+  const db = driveBefore0042();
   await assert.rejects(
     () => isKnownBadHash(db, digest(0)),
     /no such table: known_bad_hashes/,
@@ -287,7 +287,7 @@ test("a Worker deployed before 0041 has no table to read, and the read says so",
   );
 });
 
-test("0041's parse drops a shape change instead of storing a row that can never match", async () => {
+test("0042's parse drops a shape change instead of storing a row that can never match", async () => {
   assert.deepEqual(
     parseKnownBadFeed(feedBody(2)),
     [digest(0), digest(1)],
@@ -298,7 +298,7 @@ test("0041's parse drops a shape change instead of storing a row that can never 
 
 test("the load writes across the batch boundary, nothing lost at the end", async () => {
   const db = createTestD1({
-    migrations: [...migrationsBefore0041(), "drive/0041_known_bad_hashes.sql"],
+    migrations: [...migrationsBefore0042(), "drive/0042_known_bad_hashes.sql"],
   });
   const loaded = await loadKnownBadFeed(db, {
     fetch: async () => feedResponse(feedBody(250)),
