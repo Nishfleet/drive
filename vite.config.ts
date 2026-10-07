@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
 import { FIRST_RUN_COMMAND, FIRST_RUN_STEPS } from "./core/status.js";
@@ -29,6 +29,7 @@ export default defineConfig({
     }),
     staticFirstRunShell(),
     webAnalyticsBeacon(),
+    deadAuthCryptoShim(),
   ],
   environments: {
     client: {
@@ -118,6 +119,231 @@ function webAnalyticsBeacon(): Plugin {
         // file on disk is what ships, so the file on disk is what is checked.
         assertSingleBeacon(readFileSync(file, "utf8"), page);
       }
+    },
+  };
+}
+
+/**
+ * Better Auth's JWT and password crypto, replaced in the Worker builds
+ * (drive issue #851).
+ *
+ * The problem. Better Auth registers every route its router knows even when a
+ * deployment's config means the route can never run, and its modules import
+ * their crypto statically. So the site Worker's entry parsed jose (~76 KB of
+ * JWT code) and @noble/hashes on every request even though core/auth.js signs
+ * in with magic links only: sessions live in D1 (not JWT or JWE cookies),
+ * email and password sign-in is off, social providers are empty, and nothing
+ * in the app sends verification email. PR #848/#849 moved the two-factor
+ * plugins into an on-demand chunk; jose itself stayed in the entry's static
+ * graph through better-auth's crypto/jwt.mjs, cookies/jwt.mjs and
+ * api/routes/email-verification.mjs, which import it (or its jose code)
+ * whether or not a flow that uses them is configured.
+ *
+ * The fix is a build-time alias, not a fork: when a Worker module imports one
+ * of the dead modules below, this plugin hands back a stub that keeps the
+ * module's export names but throws on every call. The bundles no longer carry
+ * jose or the hashed-crypto code those modules alone pulled in; the flows this
+ * deployment does run (magic link tokens, passkey assertions, TOTP and backup
+ * codes, database sessions) use other modules that stay real.
+ *
+ * What is replaced, and the config line that makes it dead:
+ *
+ * - `jose`, the package: only reachable through the flows named below.
+ * - better-auth/dist/crypto/jwt.mjs: sign and verify run for JWT/JWE session
+ *   cookie storage (session.store.sessionStrategy), the session cookie cache
+ *   (session.cookieCache) and email verification tokens. drive uses database
+ *   sessions, has no cookieCache and sends no verification email.
+ * - better-auth/dist/cookies/jwt.mjs: verifies a session cache cookie signed
+ *   against a JWKS — the cookieCache setup drive does not have.
+ * - better-auth/dist/crypto/purpose.mjs: derives the key for the social
+ *   sign-in state cookie; socialProviders is {}.
+ * - better-auth/dist/crypto/password.mjs: hashes passwords;
+ *   emailAndPassword.enabled is false.
+ *
+ * The constants in cookies/jwt.mjs keep their real values: they are inert
+ * strings that live code reads. Every stub that throws names this plugin and
+ * the config to change, so a future core/auth.js that enables a replaced flow
+ * fails at the call site with the fix in the message instead of failing a
+ * cryptic assertion elsewhere.
+ *
+ * The detector is test/bundle-auth-crypto.test.mjs: it reads the built
+ * manifest's reachable chunks and fails if jose or @noble/hashes reappears.
+ * @returns {Plugin}
+ */
+function deadAuthCryptoShim(): Plugin {
+  // The NUL prefix marks a virtual module: rolldown never looks for it on
+  // disk, and the built chunks carry it as a region marker, not a path.
+  const shimId = (name: string) => `\0drive-auth-shim/${name}`;
+  // "If this error fired, do this": every stub shares the escape hatch, so a
+  // message that points back at this file is the whole fix path.
+  const escapeHatch =
+    "If this error fired, core/auth.js now enables a flow that needs it: " +
+    "remove the matching stub in vite.config.ts (the deadAuthCryptoShim " +
+    "plugin), rebuild, and re-measure with test/bundle-auth-crypto.test.mjs.";
+  /** @param {string} what @returns {string} */
+  const dead = (what: string) =>
+    `throw new Error(${JSON.stringify(
+      `drive (${what}): this code was removed from the Worker bundle by ` +
+        "the deadAuthCryptoShim plugin (drive issue #851), because no flow " +
+        `this deployment configures calls it. ${escapeHatch}`,
+    )});`;
+
+  // The names every kept better-auth module imports from "jose" (the union
+  // across its dist files). Functions and classes throw on use; `errors` is
+  // read for its members' `code` at module level, so it is a real object of
+  // stub classes; `base64url` is an object in jose itself, so it stays one.
+  const joseFunctions = [
+    "EncryptJWT",
+    "SignJWT",
+    "UnsecuredJWT",
+    "calculateJwkThumbprint",
+    "createLocalJWKSet",
+    "createRemoteJWKSet",
+    "customFetch",
+    "decodeJwt",
+    "decodeProtectedHeader",
+    "exportJWK",
+    "generateKeyPair",
+    "importJWK",
+    "importPKCS8",
+    "jwtDecrypt",
+    "jwtVerify",
+  ];
+  const joseErrors = {
+    JOSEError: "ERR_JOSE_GENERIC",
+    JWKSTimeout: "ERR_JWKS_TIMEOUT",
+    JWKSInvalid: "ERR_JWKS_INVALID",
+    JWKSMultipleMatchingKeys: "ERR_JWKS_MULTIPLE_MATCHING_KEYS",
+    JWKSNoMatchingKey: "ERR_JWKS_NO_MATCHING_KEY",
+    JWSSignatureVerificationFailed: "ERR_JWS_SIGNATURE_VERIFICATION_FAILED",
+    JWTExpired: "ERR_JWT_EXPIRED",
+    JWTClaimValidationFailed: "ERR_JWT_CLAIM_VALIDATION_FAILED",
+  };
+  // jose/errors (a subpath import): the error classes the stubs stand in for.
+  const joseErrorShim = [
+    `const stubError = (name, code) => class extends Error { static code = code; constructor(message) { super(message); this.name = name; } };`,
+    ...Object.entries(joseErrors).map(
+      ([name, code]) =>
+        `export const ${name} = stubError(${JSON.stringify(name)}, ${JSON.stringify(code)});`,
+    ),
+  ].join("\n");
+
+  const joseShim = [
+    `const stubError = (name, code) => class extends Error { static code = code; constructor(message) { super(message); this.name = name; } };`,
+    `const fail = () => { ${dead("jose")} };`,
+    ...joseFunctions.map((name) => `export function ${name}() { fail(); }`),
+    `export const base64url = { encode: () => fail(), decode: () => fail() };`,
+    `export const errors = {`,
+    ...Object.entries(joseErrors).map(
+      ([name, code]) => `  ${name}: stubError(${JSON.stringify(name)}, ${JSON.stringify(code)}),`,
+    ),
+    `};`,
+  ].join("\n");
+
+  // better-auth/dist/crypto/jwt.mjs's own export surface.
+  const authJwtShim = ["signJWT", "symmetricEncodeJWT", "symmetricDecodeJWT", "verifyJWT"]
+    .map(
+      (name) =>
+        `export function ${name}() { throw new Error(${JSON.stringify(
+          `drive (better-auth crypto/jwt ${name}): JWT and JWE cookie crypto runs ` +
+            "only for JWT/JWE session storage (session.store.sessionStrategy), the " +
+            "session cookie cache (session.cookieCache) and email verification " +
+            `tokens, none of which this deployment enables. ${escapeHatch}`,
+        )}); }`,
+    )
+    .join("\n");
+
+  // better-auth/dist/cookies/jwt.mjs: constants keep their real values.
+  const cookiesJwtShim = [
+    `export const SESSION_COOKIE_JWT_TYPE = "better-auth.session-cache+jwt";`,
+    `export const SESSION_COOKIE_JWT_AUDIENCE = "better-auth:session-cache";`,
+    `export const SESSION_COOKIE_JWT_ISSUER = "better-auth:session-cache";`,
+    [
+      "getSessionCookieJwtVerifyOptions",
+      "parseSessionCookieJwtPayload",
+      "verifySessionCookieJwtWithJwks",
+    ]
+      .map(
+        (name) =>
+          `export function ${name}() { throw new Error(${JSON.stringify(
+            `drive (better-auth cookies/jwt ${name}): a JWKS-verified session cookie ` +
+              "only runs with the session cookie cache (session.cookieCache), which " +
+              `this deployment does not enable. ${escapeHatch}`,
+          )}); }`,
+      )
+      .join("\n"),
+  ].join("\n");
+
+  const purposeShim = `export function derivePurposeKey() { throw new Error(${JSON.stringify(
+    "drive (better-auth crypto/purpose derivePurposeKey): this derives the key " +
+      "for the social sign-in state cookie, and socialProviders is empty in " +
+      `core/auth.js. ${escapeHatch}`,
+  )}); }`;
+
+  const passwordShim = ["hashPassword", "verifyPassword"]
+    .map(
+      (name) =>
+        `export function ${name}() { throw new Error(${JSON.stringify(
+          "drive (better-auth crypto/password " +
+            `${name}): password hashing runs only for email and password sign-in, ` +
+            "and emailAndPassword.enabled is false in core/auth.js. " +
+            `${escapeHatch}`,
+        )}); }`,
+    )
+    .join("\n");
+
+  /** The shim each virtual id carries. */
+  const shims = {
+    jose: joseShim,
+    "jose-subpath": joseErrorShim,
+    "better-auth-crypto-jwt": authJwtShim,
+    "better-auth-cookies-jwt": cookiesJwtShim,
+    "better-auth-crypto-purpose": purposeShim,
+    "better-auth-crypto-password": passwordShim,
+  };
+  // The better-auth dist files, as paths relative to better-auth/dist, whose
+  // importers are redirected to the shim above. A file is here only because a
+  // core/auth.js config line makes its code unreachable (see the list above).
+  const distFiles = {
+    "crypto/jwt.mjs": "better-auth-crypto-jwt",
+    "cookies/jwt.mjs": "better-auth-cookies-jwt",
+    "crypto/purpose.mjs": "better-auth-crypto-purpose",
+    "crypto/password.mjs": "better-auth-crypto-password",
+  };
+
+  return {
+    name: "drive-dead-auth-crypto-shim",
+    // Pre: win the resolve before Vite's own resolver answers for the bare
+    // `jose` specifier and the dist files' relative imports.
+    enforce: "pre",
+    applyToEnvironment(environment) {
+      // The Worker builds are the bundle that must not carry the dead code;
+      // the client pages import neither better-auth nor jose, and a future
+      // one that did should get the real package rather than this stub.
+      return environment.name !== "client";
+    },
+    resolveId(source, importer) {
+      // `jose` and its subpaths: better-auth's api/routes/email-verification.mjs
+      // imports its JWTExpired error class from "jose/errors", so the whole
+      // prefix goes to the shim, not just the bare package name.
+      if (source === "jose" || source.startsWith("jose/")) {
+        return source === "jose" ? shimId("jose") : shimId("jose-subpath");
+      }
+      if (importer === undefined || !source.startsWith(".")) return null;
+      // Relative imports from a module on disk: resolve them the way the
+      // resolver would, so the match is on the file better-auth ships, not
+      // on the spelling of one importer's specifier.
+      const target = resolve(dirname(importer), source).split(sep).join("/");
+      for (const [file, name] of Object.entries(distFiles)) {
+        if (target.endsWith(`/better-auth/dist/${file}`)) return shimId(name);
+      }
+      return null;
+    },
+    load(id) {
+      const name = id.startsWith("\0drive-auth-shim/")
+        ? id.slice("\0drive-auth-shim/".length)
+        : undefined;
+      return name !== undefined && name in shims ? shims[name as keyof typeof shims] : null;
     },
   };
 }
