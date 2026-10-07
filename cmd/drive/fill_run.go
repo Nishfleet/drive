@@ -209,7 +209,11 @@ func (c *rcClient) refreshDirs(ctx context.Context, dirs []string) error {
 func vfsRefreshReplyError(reply map[string]any, skipFailed bool) error {
 	raw, ok := reply["result"]
 	if !ok {
-		return nil
+		// A reply with no result is not success: rclone's vfs/refresh
+		// always answers with one, so a caller that reads its absence as an
+		// OK would hide a changed remote-control shape behind a stale
+		// listing for --dir-cache-time (24h) (issue #541).
+		return fmt.Errorf("rclone rc vfs/refresh: reply carries no result object")
 	}
 	result, ok := raw.(map[string]any)
 	if !ok {

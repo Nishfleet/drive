@@ -292,6 +292,11 @@ type countedBackend struct {
 	// which is the fill's usual case; a set error is a dropped link
 	// (issue #541).
 	unreach error
+	// refreshErr is the error refresh answers with, which is the probe's
+	// blind window: the store answered the probe and the refresh then
+	// failed, so the pass must name it instead of reporting success
+	// (issue #541).
+	refreshErr error
 }
 
 func (b *countedBackend) stats(context.Context) (vfsStats, error) {
@@ -306,7 +311,7 @@ func (b *countedBackend) refresh(_ context.Context, recursive bool) error {
 	if recursive {
 		b.recursiveRefreshes++
 	}
-	return nil
+	return b.refreshErr
 }
 
 func (b *countedBackend) reachable(context.Context) error { return b.unreach }
@@ -763,6 +768,45 @@ func TestVfsRefreshReplyError(t *testing.T) {
 	err = vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "connection refused"}}, true)
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("skipFailed must not swallow a real named-dir failure: %v", err)
+	}
+	// A reply with no result is not success: a caller that reads its
+	// absence as an OK hides a changed remote-control shape behind a
+	// listing that now stays stale for --dir-cache-time (24h) (issue #541).
+	err = vfsRefreshReplyError(map[string]any{"result": nil}, false)
+	if err == nil {
+		t.Error("a null result must be a named failure, not a silent OK")
+	}
+	if err := vfsRefreshReplyError(map[string]any{}, false); err == nil {
+		t.Error("an empty reply must be a named failure, not a silent OK")
+	}
+}
+
+// TestFillRefreshFailureIsNamed proves the window the keep-warm probe cannot
+// close: the store answers the probe and then the refresh fails (the link
+// drops, or the rc call outruns the pass budget). The fill must say so as a
+// named error rather than report a refreshed cache, and it must leave the
+// named folders alone, because a half-refreshed listing is what the caller
+// would read as fresh (issue #541; upstream rclone#1963 means the cache
+// rclone already forced stale cannot be un-staled, so the next pass's probe
+// and refresh is the recovery, not a retry inside this one).
+func TestFillRefreshFailureIsNamed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, refreshErr: errors.New("connection reset by peer")}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 0.1, 0.1)
+	if err == nil || !strings.Contains(err.Error(), "refresh directory cache") {
+		t.Fatalf("fillPass with a failing refresh: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Errorf("the error does not carry the backend's own message: %v", err)
+	}
+	if b.namedDirRefreshes != 0 {
+		t.Errorf("the fill refreshed %d named folders after the root refresh failed, want none: a half-refreshed listing is what the caller would read as fresh", b.namedDirRefreshes)
+	}
+	if res.Refreshed {
+		t.Error("the fill reported a refreshed directory cache from a refresh that failed")
 	}
 }
 

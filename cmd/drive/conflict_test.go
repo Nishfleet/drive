@@ -141,6 +141,11 @@ type fakeConflictBackend struct {
 	// the object store not answering, so the pass must leave the
 	// directory cache (24h) alone (issue #541).
 	down error
+	// refreshErr is only the vfs/refresh error, which is the probe's
+	// blind window: the store answered reachable and the refresh then
+	// failed, so the pass must name that failure instead of leaving the
+	// copy in a listing nobody can see (issue #541).
+	refreshErr error
 }
 
 type objectVersion struct {
@@ -262,8 +267,8 @@ func hashFile(p string) (string, error) {
 }
 
 func (f *fakeConflictBackend) refresh(_ context.Context, _ bool) error {
-	if f.failWith != nil {
-		return f.failWith
+	if f.refreshErr != nil {
+		return f.refreshErr
 	}
 	f.refreshed++
 	return nil
@@ -367,6 +372,38 @@ func TestConflictGuardSkipsTheRefreshWhenStorageIsDown(t *testing.T) {
 	}
 	if len(res.Claimed) != 1 {
 		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardNamesTheRefreshFailureAfterAClaim is the guard's
+// other half of the #541 rule, the one the probe cannot close: the store
+// answers reachable and the refresh then fails, so the pass must name the
+// failure rather than leave the listing stale behind a copy nobody can see.
+// rclone has no stale-on-error (rclone#1963), so the next pass's probe and
+// refresh is the recovery path, which TestConflictGuardSkipsTheRefreshWhen
+// StorageIsDown above and the fill's own mirror prove.
+func TestConflictGuardNamesTheRefreshFailureAfterAClaim(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-is-the-other-machines-save\n")
+	f.refreshErr = errors.New("connection reset by peer")
+	res, err := g.pass(context.Background(), f)
+	if err == nil || !strings.Contains(err.Error(), "refresh after claiming") {
+		t.Fatalf("pass with a failing refresh: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Errorf("the error does not carry the backend's own message: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Errorf("copied %v, want [%s]: the copy still lands, only the refresh failed", f.copied, want)
+	}
+	if len(res.Claimed) != 1 {
+		t.Errorf("Claimed = %+v, want the one conflict copy that must be retried on the next pass", res.Claimed)
 	}
 }
 
