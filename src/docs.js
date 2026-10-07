@@ -42,7 +42,7 @@ const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per 
  * same function the usage page and `drive usage` read.
  * @param {number} size30Bytes
  */
-export function meteredUsdFor(size30Bytes) {
+function meteredUsdFor(size30Bytes) {
   return meteredMonthlyBillUsd(size30Bytes);
 }
 

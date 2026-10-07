@@ -56,13 +56,8 @@ export { BYTES_PER_GB, MINUTE_MS };
 // there is no month constant: every function below takes the month's length
 // as input, and minutesInMonth() is the one place it is worked out.
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
-// The month a "kept all month" quote is worked over when the caller names
-// none. A size held all month bills the same in every month length, so the
-// choice changes no figure. It is the longest month, the one the old divisor
-// over-billed, so the worked examples are the ones the issue checked.
-export const QUOTE_MONTH_MINUTES = 31 * 1440;
-// Exported for the same reason: the docs page's worked table divides by it too,
-// so a docs example and an invoice example cannot disagree about what a TB is.
+// Exported so a docs example and an invoice example cannot disagree about
+// what a TB is.
 export const GB_PER_TB = 1000;
 
 /** 1/1000 of a cent: 10 MB a month is 20 millicents ($0.0002). */
