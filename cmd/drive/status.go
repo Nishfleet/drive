@@ -75,20 +75,18 @@ func runStatus(args []string) error {
 	}
 	home := common.home
 	goos := CurrentGOOS()
-	on, err := Mounted(goos, home)
-	if err != nil {
-		return err
-	}
+	on, listErr := Mounted(goos, home)
 	mountDir := DefaultMountDir(home)
-	if goos == "windows" && on {
+	if goos == "windows" && on && listErr == nil {
 		if letter, err := windowsMountLetter(); err == nil {
 			mountDir = windowsVolumeRoot(letter)
 		}
 	}
 	var readErr error
-	if on {
+	if listErr == nil && on {
 		_, readErr = countEntries(mountDir, 2*time.Second)
 	}
+	on, readErr = mountView(on, listErr, readErr)
 	renderMountState(os.Stdout, on, readErr, mountDir, goos, home)
 	queue, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
@@ -169,18 +167,28 @@ func runStatus(args []string) error {
 	return nil
 }
 
+// mountView turns a mount-table result into what `drive status` should
+// show. A listing failure (findmnt or `mount` timed out) is a stale mount,
+// not a command error, so the next step stays `drive unmount`.
+func mountView(on bool, listErr, readErr error) (bool, error) {
+	if listErr != nil {
+		return true, listErr
+	}
+	return on, readErr
+}
+
 // renderMountState prints the mount's answer to "is it working": mounted and
-// answering, mounted but not answering, or not mounted with the exact start
-// command. It is a function so all three branches stay testable without a
-// real FUSE mount.
+// answering, a stale mount that is still listed but does not answer, or not
+// mounted with the exact start command. It is a function so all three
+// branches stay testable without a real FUSE mount.
 func renderMountState(w io.Writer, on bool, readErr error, mountDir, goos, home string) {
 	switch {
 	case on && readErr == nil:
 		fmt.Fprintf(w, "drive: mounted at %s\n", mountDir)
 	case on:
-		silence := failDetail("folder-silent", readErr, (2 * time.Second).String(), mountLogHint(goos, home))
-		fmt.Fprintf(w, "drive: not responding at %s (%s)\n", mountDir, silence.What)
-		fmt.Fprintf(w, "  next: %s\n", silence.Next)
+		stale := failDetail("stale-mount", readErr, mountDir)
+		fmt.Fprintf(w, "drive: stale mount at %s (%s)\n", mountDir, stale.What)
+		fmt.Fprintf(w, "  next: %s\n", stale.Next)
 	default:
 		fmt.Fprintf(w, "drive: not mounted\n")
 		fmt.Fprintf(w, "  next: run `drive mount` (see `drive mount --help` for its flags)\n")

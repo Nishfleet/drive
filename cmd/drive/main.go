@@ -389,7 +389,29 @@ func runUnmount(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	return Unmount(CurrentGOOS(), common.home)
+	goos := CurrentGOOS()
+	home := common.home
+	mountDir := DefaultMountDir(home)
+	before, listErr := Mounted(goos, home)
+	if listErr != nil {
+		before = true
+	}
+	if err := Unmount(goos, home); err != nil {
+		return err
+	}
+	after, err := Mounted(goos, home)
+	if err != nil {
+		return err
+	}
+	if after {
+		return failf("unmount-failed", mountDir)
+	}
+	if before {
+		fmt.Printf("drive: unmounted %s\n", mountDir)
+	} else {
+		fmt.Printf("drive: no mount at %s\n", mountDir)
+	}
+	return nil
 }
 
 // countEntries lists a mount dir with a deadline. A FUSE mount whose backing
