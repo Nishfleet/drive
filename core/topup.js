@@ -297,12 +297,25 @@ async function creditFromEvent(db, data, now, mail) {
     return json({ ok: false, ignored: "amount or currency not creditable" });
   }
   const customer = objectOrNull(data.customer);
+  // The card the payment was made with (drive#503). Dodo's payment event
+  // carries `payment_method_id`; some events carry the same value on `method`.
+  // This is the only place a fingerprint comes from, and it is behind the
+  // signature check, so a browser cannot choose it: nothing in the request
+  // body supplies a card (the sign-in form's posted fingerprint is gone,
+  // core/abuse-guards.js).
+  const paymentMethodId =
+    typeof data.payment_method_id === "string"
+      ? data.payment_method_id
+      : typeof data.method === "string"
+        ? data.method
+        : null;
   const credited = await creditTopUp(db, {
     accountId,
     paymentId,
     amountCents,
     grossCents: total,
     customerId: typeof customer?.customer_id === "string" ? customer.customer_id : null,
+    paymentMethodId,
     now,
   });
   if (!credited.accountFound) {
@@ -315,6 +328,18 @@ async function creditFromEvent(db, data, now, mail) {
       `payment=${paymentId}`,
     );
     return json({ ok: false, ignored: "no such account" });
+  }
+  // The card is claimed server-side from the event (drive#503), and a card
+  // another live account already holds is refused. The money is credited
+  // either way: the one-account-per-card rule never holds a payment, and the
+  // line below is what says so to a person.
+  if (credited.card !== undefined && !credited.card.claimed) {
+    console.error(
+      "billing webhook: a top-up was credited but its card was not recorded",
+      `account=${accountId}`,
+      `payment=${paymentId}`,
+      credited.card.error,
+    );
   }
   if (credited.credited) {
     // A receipt only when money moved, and only once: a replayed event

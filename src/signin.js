@@ -48,11 +48,7 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import {
-  claimCardFingerprint,
-  pendingCardAccountId,
-  signupCardFingerprint,
-} from "../core/abuse-guards.js";
+import { ensureBillingAccount, pendingCardAccountId } from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
@@ -614,12 +610,15 @@ export async function handleSigninLinkVerify(request, env) {
       // Drop any leftover unauthenticated hold for this address so an old
       // start cannot move a stranger's fingerprint onto the new account
       // (drive#538). pendingCardAccountId lowercases, so a mixed-case
-      // mailbox still matches the hold id. Then claim `test:<email>` on
-      // the real id when the account has no card yet. That is the stand-in
-      // while Dodo is unset (drive#417, drive#325), not a real card: a
-      // clash is logged, and the person still signs in. The start-step
-      // 400 for a missing checkbox is gone: that answer is how a stranger
-      // learned whether the address already had an account.
+      // mailbox still matches the hold id.
+      //
+      // Nothing here writes a card fingerprint (drive#503). The `test:<email>`
+      // stand-in this used to claim was a string the browser's checkbox
+      // produced, so every new address got a distinct one and the
+      // one-account-per-card guard never fired; the card is now recorded from
+      // the verified payment webhook (core/ledger.js creditTopUp). An account
+      // whose payment has not landed simply has no card yet, which reads as
+      // "no card" everywhere else too (core/devices.js cardAdded).
       try {
         await /** @type {D1Database} */ (driveDb)
           .prepare("DELETE FROM accounts WHERE id = ?1")
@@ -630,33 +629,21 @@ export async function handleSigninLinkVerify(request, env) {
           `card-step leftover hold for account ${account.id} did not clear: ${String(cause)}`,
         );
       }
+      // The billing row this account needs, written without a card. It used to
+      // appear as a side effect of claiming the stand-in fingerprint above, so
+      // it is now its own call: no fingerprint, no card_added_at, and an
+      // existing row left untouched. A failure is logged loudly and the
+      // sign-in still lands, because the cap write and the key mint each make
+      // their own row.
       try {
-        const existing = await /** @type {D1Database} */ (driveDb)
-          .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
-          .bind(account.id)
-          .first();
-        const held =
-          existing === null || existing === undefined
-            ? null
-            : /** @type {{card_fingerprint?: unknown}} */ (existing).card_fingerprint;
-        if (typeof held !== "string" || held === "") {
-          const fingerprint = signupCardFingerprint({ card: true, email: account.email });
-          if (fingerprint === null) {
-            throw new TypeError("signupCardFingerprint returned no card for a proven address");
-          }
-          const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
-            accountId: account.id,
-            email: account.email,
-            fingerprint,
-          });
-          if ("error" in claimed) {
-            console.error(
-              `card-step claim for account ${account.id} did not finish: ${claimed.error}`,
-            );
-          }
-        }
+        await ensureBillingAccount(/** @type {D1Database} */ (driveDb), {
+          accountId: account.id,
+          email: account.email,
+        });
       } catch (cause) {
-        console.error(`card-step claim for account ${account.id} did not finish: ${String(cause)}`);
+        console.error(
+          `billing row for account ${account.id} did not write: ${String(cause)}`,
+        );
       }
       // The account's own bucket exists from the first sign-in (drive#540):
       // the verify step provisions `drv-<id>` through the one provisionBucket

@@ -604,3 +604,142 @@ test("an agent key at $0 cannot write, keeps its powers, and writes again after 
   });
   assert.equal((await write(store, `/u/${ACCOUNT}/c.md`)).status, 201, "the same key, no new mint");
 });
+
+test("the verified webhook records the card, the customer and the first charge (drive#503)", async () => {
+  // One signed event carries all three of the identities the audit found read
+  // and written nowhere: which card paid, which Dodo customer it belongs to,
+  // and that this account has now been charged. The browser supplies none of
+  // them (the sign-in no longer writes a `test:<email>` stand-in), so this
+  // webhook is the whole record.
+  const { db, sqlite } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  const email = fakeEmail();
+  const send = async (/** @type {string} */ id, /** @type {string} */ body) =>
+    handleBillingWebhook(
+      new Request("https://drive.example/api/billing/webhook", {
+        method: "POST",
+        headers: {
+          "webhook-id": id,
+          "webhook-timestamp": String(Math.floor(now / 1000)),
+          "webhook-signature": await signWebhook({
+            secret: SECRET,
+            id,
+            timestamp: String(Math.floor(now / 1000)),
+            body,
+          }),
+        },
+        body,
+      }),
+      { db, secret: SECRET, now, email, mailFrom: MAIL_FROM },
+    );
+
+  const body = JSON.stringify({
+    type: "payment.succeeded",
+    data: {
+      payment_id: "pay_card",
+      total_amount: 2500,
+      tax: 0,
+      currency: "USD",
+      customer: { customer_id: "cus_card" },
+      payment_method_id: "pm_visa_4242",
+      metadata: { purpose: TOPUP_PURPOSE, account_id: ACCOUNT, source: "topup" },
+    },
+  });
+  const answer = await send("msg_card", body);
+  assert.equal(answer.status, 200);
+  assert.deepEqual(await answer.json(), { ok: true, credited: true });
+
+  const account = sqlite
+    .prepare(
+      `SELECT card_fingerprint, card_added_at, dodo_customer_id, first_charged_at
+         FROM accounts WHERE id = ?`,
+    )
+    .get(ACCOUNT);
+  assert.equal(account?.card_fingerprint, "dodo:pm_visa_4242", "the card, from the event body");
+  assert.equal(account?.dodo_customer_id, "cus_card");
+  assert.equal(account?.first_charged_at, Math.floor(now / 1000));
+  assert.ok(Number(account?.card_added_at) > 0, "card_added_at is stamped, so key minting opens");
+  assert.equal(await balanceCents(db, ACCOUNT), 2500);
+
+  // The same event replayed credits nothing and rewrites nothing.
+  const replay = await send("msg_card", body);
+  assert.deepEqual(await replay.json(), { ok: true, credited: false });
+  const after = sqlite
+    .prepare("SELECT card_fingerprint, card_added_at FROM accounts WHERE id = ?")
+    .get(ACCOUNT);
+  assert.equal(after?.card_fingerprint, "dodo:pm_visa_4242");
+  assert.equal(
+    after?.card_added_at,
+    account?.card_added_at,
+    "the replay leaves card_added_at exactly as the first event stamped it",
+  );
+});
+
+test("a second account paying with the same card is credited but not stamped (drive#503)", async () => {
+  // The one-card-per-account guard cannot be about money. The card claim is
+  // reported, the payment is still credited, and the refusing account keeps no
+  // fingerprint rather than the first one's.
+  const { db, sqlite } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await putAccount(db, "acc-second");
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  const first = await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_1",
+    amountCents: 1000,
+    now,
+    customerId: "cus_1",
+    paymentMethodId: "pm_shared",
+  });
+  assert.deepEqual(first.card, { claimed: true, fingerprint: "dodo:pm_shared" });
+  const second = await creditTopUp(db, {
+    accountId: "acc-second",
+    paymentId: "pay_2",
+    amountCents: 1000,
+    now,
+    customerId: "cus_2",
+    paymentMethodId: "pm_shared",
+  });
+  assert.equal(second.credited, true, "the money is credited whatever the card says");
+  assert.equal(second.card?.claimed, false);
+  assert.equal(second.card?.error, failureMessage("card-in-use"));
+  assert.equal(await balanceCents(db, "acc-second"), 1000);
+  assert.equal(
+    sqlite.prepare("SELECT card_fingerprint FROM accounts WHERE id = ?").get("acc-second")
+      ?.card_fingerprint,
+    null,
+  );
+  // A payment with no payment method (an old or unusual event) credits and
+  // claims nothing rather than inventing a card.
+  const third = await creditTopUp(db, {
+    accountId: "acc-second",
+    paymentId: "pay_3",
+    amountCents: 1000,
+    now,
+  });
+  assert.equal(third.card, undefined, "no card on the event, no card claim");
+  assert.equal(await balanceCents(db, "acc-second"), 2000);
+});
+
+test("a payment with no customer id credits and claims the card, and the alarm finds it (drive#503)", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  const result = await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_nocuser",
+    amountCents: 1000,
+    now,
+    customerId: null,
+    paymentMethodId: "pm_only",
+  });
+  assert.equal(result.credited, true);
+  assert.equal(result.card?.claimed, true);
+  assert.equal(
+    sqlite.prepare("SELECT dodo_customer_id FROM accounts WHERE id = ?").get(ACCOUNT)
+      ?.dodo_customer_id,
+    null,
+    "no customer on the event means none is written, and the gap alarm will name it",
+  );
+});

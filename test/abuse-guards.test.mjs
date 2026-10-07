@@ -10,6 +10,7 @@ import {
   attachPendingCardAccount,
   cardFingerprintTaken,
   claimCardFingerprint,
+  ensureBillingAccount,
   HOLD_TTL_SECONDS,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   PreChargeLimitError,
@@ -17,8 +18,8 @@ import {
   preChargeLimitStream,
   preChargeOverLimitAccounts,
   preChargeUploadBlocked,
+  paymentCardFingerprint,
   runPreChargeLimitCron,
-  signupCardFingerprint,
 } from "../core/abuse-guards.js";
 import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
 import { createD1DeviceStore } from "../core/devices.js";
@@ -70,13 +71,53 @@ test("the pre-charge storage limit is 1 TB in decimal bytes", () => {
   assert.equal(PRE_CHARGE_STORAGE_LIMIT_BYTES, 1_000_000_000_000);
 });
 
-test("the card-step test double reads a posted fingerprint, else one from the email", () => {
+test("a card fingerprint comes from the provider's payment, never from a request", () => {
+  // drive#503: the browser's posted fingerprint and the `test:<email>` stand-in
+  // are gone, so the only string that can become a card is the provider's own
+  // payment-method id, namespaced so it cannot collide with another value.
+  assert.equal(paymentCardFingerprint("pm_123"), "dodo:pm_123");
+  assert.equal(paymentCardFingerprint(" pm_123 "), "dodo:pm_123");
+  assert.equal(paymentCardFingerprint(""), null);
+  assert.equal(paymentCardFingerprint("   "), null);
+  assert.equal(paymentCardFingerprint(undefined), null);
+  assert.equal(paymentCardFingerprint(null), null);
+  assert.equal(paymentCardFingerprint(42), null);
+});
+
+test("the billing row is written with no card, and a returning sign-in never clears one", async () => {
+  // drive#503: the row used to appear as a side effect of claiming the
+  // `test:<email>` stand-in, so removing the browser fingerprint would have
+  // left a new account with no row at all. It is written explicitly now, with
+  // no fingerprint and no card_added_at, and a returning sign-in leaves an
+  // account that already has a card exactly as it is.
+  const { db, sqlite } = makeMeteredDB();
+  await ensureBillingAccount(db, { accountId: "fresh", email: "fresh@example.com", now: NOW });
+  const fresh = sqlite.prepare("SELECT * FROM accounts WHERE id = ?").get("fresh");
+  assert.equal(fresh?.card_fingerprint, null, "no card from the sign-in");
+  assert.equal(fresh?.card_added_at, null, "so cardAdded still fails closed");
+  assert.equal(fresh?.state, "active");
+  await ensureBillingAccount(db, { accountId: "fresh", email: "fresh@example.com", now: NOW });
   assert.equal(
-    signupCardFingerprint({ card: true, cardFingerprint: "fp_visa", email: "a@b.co" }),
-    "posted:fp_visa",
+    sqlite.prepare("SELECT COUNT(*) AS n FROM accounts WHERE id = ?").get("fresh")?.n,
+    1,
+    "a returning sign-in does not add a second row",
   );
-  assert.equal(signupCardFingerprint({ card: "on", email: "A@B.co" }), "test:a@b.co");
-  assert.equal(signupCardFingerprint({ card: false, email: "a@b.co" }), null);
+
+  await ensureBillingAccount(db, { accountId: "paid", email: "paid@example.com", now: NOW });
+  await claimCardFingerprint(db, {
+    accountId: "paid",
+    email: "paid@example.com",
+    fingerprint: "dodo:pm_paid",
+    now: NOW,
+  });
+  await ensureBillingAccount(db, {
+    accountId: "paid",
+    email: "paid@example.com",
+    now: NOW + 3_600_000,
+  });
+  const paid = sqlite.prepare("SELECT * FROM accounts WHERE id = ?").get("paid");
+  assert.equal(paid?.card_fingerprint, "dodo:pm_paid", "the card survives a later sign-in");
+  assert.equal(paid?.card_added_at, Math.floor(NOW / 1000), "and its stamp is not moved");
 });
 
 test("a second active account with the same card fingerprint is refused in plain words", async () => {
@@ -374,31 +415,25 @@ test("claiming a card stamps card_added_at and nothing else about the price", as
   assert.equal(row.founding_reserved, null, "the retired founding columns are never written");
 });
 
-test("a posted fingerprint can never equal another address's checkbox stand-in", async () => {
-  // A stranger posting "test:victim@example.com" must not lock the victim out.
+test("a card one provider id names is one card, whoever holds the account", async () => {
+  // Two accounts paying with the same card: the second is refused, which is the
+  // guard's whole point, and the namespace means a stranger cannot reach a
+  // victim's card by posting its string (drive#503, the posted path is gone).
   const { db } = makeMeteredDB();
-  const posted = signupCardFingerprint({
-    card: true,
-    cardFingerprint: "test:victim@example.com",
-    email: "attacker@example.com",
-  });
-  assert.equal(posted, "posted:test:victim@example.com");
-  const attacker = await claimCardFingerprint(db, {
-    accountId: pendingCardAccountId("attacker@example.com"),
-    email: "attacker@example.com",
-    fingerprint: /** @type {string} */ (posted),
-    now: NOW,
-  });
-  assert.equal("error" in attacker, false);
   const victim = await claimCardFingerprint(db, {
     accountId: pendingCardAccountId("victim@example.com"),
     email: "victim@example.com",
-    fingerprint: /** @type {string} */ (
-      signupCardFingerprint({ card: true, email: "victim@example.com" })
-    ),
+    fingerprint: /** @type {string} */ (paymentCardFingerprint("pm_victim")),
     now: NOW,
   });
   assert.equal("error" in victim, false, JSON.stringify(victim));
+  const attacker = await claimCardFingerprint(db, {
+    accountId: pendingCardAccountId("attacker@example.com"),
+    email: "attacker@example.com",
+    fingerprint: /** @type {string} */ (paymentCardFingerprint("pm_victim")),
+    now: NOW,
+  });
+  assert.deepEqual(attacker, { error: failureMessage("card-in-use") });
 });
 
 test("a card-step hold nobody followed gives its card back after a day", async () => {
