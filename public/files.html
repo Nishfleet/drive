@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Drive — your files</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
@@ -540,13 +541,14 @@ dialog.viewer::backdrop {
        link goes to the page where the close and the cancel both live. The
        styles are the shared stylesheet's, so the four pages that carry this
        aside are one banner. -->
-  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
-  </aside>
+  </div>
   <nav class="tabs" aria-label="Views">
     <button type="button" id="tab-files" aria-pressed="true">Files</button>
     <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
+    <button type="button" id="tab-rewind" aria-pressed="false">Rewind</button>
   </nav>
 
   <main>
@@ -605,12 +607,20 @@ const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
 const RESTORE_ENDPOINT = "/api/files/restore";
+// The rewind read and the one-click rewind (drive#774). src/rewind.js owns the
+// route, so the page names it once and never builds a path of its own.
+const REWIND_ENDPOINT = "/api/rewind";
 // The window is src/files.js's number and nothing in this script reads it:
 // test/files.test.mjs reads it out of this line so the page cannot drift
 // from the module. The underscore says the reader is the test, not the
 // script, so a linter leaves the line alone (drive#92).
 const _RECENTLY_DELETED_DAYS = 30;
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
+// The rewind tab's own line: it names what the list holds, and what the one
+// button on a row does. The other two views keep the files line they have
+// always had.
+const REWIND_PAGE_LINE =
+  "Every branch an agent worked in, with the files it changed. Rewind puts your files back exactly as they were.";
 
 // The page's copy for a preview, one entry per kind src/files.js names. A kind
 // with no viewer still says the one thing to do.
@@ -658,6 +668,18 @@ const DELETE_COPY = {
   done: "Moved to Recently deleted.",
 };
 const RESTORE_COPY = { done: "Put back." };
+// The rewind tab's words (drive#774). Every reason a rewind is not possible
+// comes from src/rewind.js as a flag on the row, so the page holds no second
+// copy of that rule: the two reasons are `unavailableReason`, and what the
+// button is about to do is one sentence.
+const REWIND_COPY = {
+  confirm: "Rewind this branch? The agent's work is thrown away, and your files go back to what they were.",
+  done: "Rewound. Your files are back as they were.",
+  empty: {
+    what: "Nothing to rewind.",
+    next: "A branch an agent works in shows up here, ready to put back.",
+  },
+};
 
 // A date as a person reads it, in the time zone of the browser showing it
 // (drive#559). The Worker sends instants and never words for them: a date
@@ -713,6 +735,7 @@ const viewerDownload = document.getElementById("viewer-download");
 const viewerClose = document.getElementById("viewer-close");
 const tabFiles = document.getElementById("tab-files");
 const tabDeleted = document.getElementById("tab-deleted");
+const tabRewind = document.getElementById("tab-rewind");
 
 let path = "/";
 let view = "folder";
@@ -985,6 +1008,125 @@ function appendRows(rows) {
   }
 }
 
+// The rewind row (drive#774). One branch an agent worked in, and the files
+// its work changed. The counts and the reason a rewind is not possible both
+// come off the row src/rewind.js sends, so the list and the one-branch read
+// cannot disagree about what a rewind would undo.
+function rewindCountsLabel(files) {
+  return [
+    files.added.length ? `${files.added.length} added` : "",
+    files.changed.length ? `${files.changed.length} changed` : "",
+    files.removed.length ? `${files.removed.length} removed` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+// The files a rewind would undo, named rather than only counted: three of
+// them and how many more there are, so a long branch does not push the row
+// off the screen.
+function rewindNamesLabel(files) {
+  const names = [...files.added, ...files.changed, ...files.removed];
+  if (names.length <= 3) return names.join(", ");
+  return `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`;
+}
+
+function rewindWhy(preview) {
+  if (preview.unavailableReason === "window-closed") {
+    return `The ${preview.windowDays}-day window closed on ${dayLabel(preview.restorableUntil)}.`;
+  }
+  if (preview.unavailableReason === "already-closed") {
+    return "Already approved or thrown away.";
+  }
+  return "";
+}
+
+function rewindRowFor(preview) {
+  const li = document.createElement("li");
+  li.className = "row";
+
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "Rew";
+  li.append(icon);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = preview.changedBy
+    ? `Rewind ${preview.changedBy}'s work`
+    : "Rewind the agent's work";
+  meta.append(name);
+  const sub = document.createElement("p");
+  sub.className = "sub";
+  sub.textContent = [
+    preview.files.count === 1 ? "1 file" : `${preview.files.count} files`,
+    rewindCountsLabel(preview.files),
+    preview.sourcePrefix,
+    whenLabel(preview.createdAt),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  meta.append(sub);
+  const files = document.createElement("p");
+  files.className = "sub";
+  files.textContent = rewindNamesLabel(preview.files);
+  if (files.textContent) meta.append(files);
+  const why = rewindWhy(preview);
+  if (why) {
+    const line = document.createElement("p");
+    line.className = "sub";
+    line.textContent = why;
+    meta.append(line);
+  }
+  li.append(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (preview.canRewind) {
+    const rewind = document.createElement("button");
+    rewind.type = "button";
+    rewind.textContent = "Rewind";
+    rewind.addEventListener("click", () => rewindThis(preview));
+    actions.append(rewind);
+  }
+  li.append(actions);
+  return li;
+}
+
+function renderRewinds(rewinds) {
+  list.textContent = "";
+  if (rewinds.length === 0) {
+    emptyWhat.textContent = REWIND_COPY.empty.what;
+    emptyNext.textContent = REWIND_COPY.empty.next;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  for (const preview of rewinds) list.append(rewindRowFor(preview));
+}
+
+// One tap and the agent's work is thrown away: the branch's copy goes and the
+// original is left exactly as it is, which is the same discard `drive discard`
+// performs. The confirm names the trade, because the branch's own work is not
+// recoverable afterwards.
+async function rewindThis(preview) {
+  if (!window.confirm(REWIND_COPY.confirm)) {
+    return;
+  }
+  try {
+    await api(`${REWIND_ENDPOINT}/${encodeURIComponent(preview.name)}`, {
+      method: "POST",
+    });
+    say(REWIND_COPY.done, "done");
+    refresh(true);
+  } catch (error) {
+    reportFailure(error);
+  }
+}
+
 function renderRows(rows) {
   list.textContent = "";
   if (rows.length === 0) {
@@ -1112,6 +1254,17 @@ async function refresh(keepStatus) {
     say("");
   }
   try {
+    // The rewind tab reads its own route rather than the files listing: the
+    // rows are branches, not files, and the page renders them with its own
+    // row shape (drive#774). The More button has no place here, so it goes.
+    if (view === "rewind") {
+      showSignedIn();
+      const payload = await api(REWIND_ENDPOINT);
+      crumbs.textContent = "";
+      renderRewinds(payload.rewinds || []);
+      showMore(null);
+      return;
+    }
     const payload = await listPage(null);
     showSignedIn();
     nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
@@ -1212,7 +1365,9 @@ async function restoreFile(row) {
 function setTab() {
   tabFiles.setAttribute("aria-pressed", String(view === "folder"));
   tabDeleted.setAttribute("aria-pressed", String(view === "deleted"));
-  document.getElementById("page-line").textContent = PAGE_LINE;
+  tabRewind.setAttribute("aria-pressed", String(view === "rewind"));
+  document.getElementById("page-line").textContent =
+    view === "rewind" ? REWIND_PAGE_LINE : PAGE_LINE;
 }
 
 tabFiles.addEventListener("click", () => {
@@ -1223,6 +1378,12 @@ tabFiles.addEventListener("click", () => {
 
 tabDeleted.addEventListener("click", () => {
   view = "deleted";
+  setTab();
+  refresh();
+});
+
+tabRewind.addEventListener("click", () => {
+  view = "rewind";
   setTab();
   refresh();
 });

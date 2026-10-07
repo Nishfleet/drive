@@ -115,6 +115,37 @@ export function reportBillingGap(gapHours, watermark, lastClosed, sentry = stock
 }
 
 /**
+ * Reports the accounts that are storing files and hold no billing customer
+ * (drive#503). The provider's push skips such an account — there is no
+ * customer to bill — and the prepaid draw runs against a balance only a
+ * top-up opens, so an account whose first payment never landed (a webhook
+ * that failed, an account from before the column existed) uses the drive and
+ * is billed by nobody, with nothing naming it. The card fingerprint and the
+ * customer id are both written from the verified payment webhook now
+ * (core/ledger.js), so a gap here means that write has not happened for that
+ * account: a failed webhook, or a payment that predates the fix.
+ *
+ * A count and the oldest metered hour, never an id or an email: this text
+ * reaches a Sentry issue. A warning, not an error: the hour's work landed,
+ * and the next run asks again.
+ *
+ * @param {{accounts: number, since: number|null}} gap
+ * @param {Sentry} [sentry] injectable for tests
+ */
+export function reportUnbillableAccounts(gap, sentry = stockSentry) {
+  if (gap.accounts <= 0) {
+    return;
+  }
+  sentry.captureMessage(
+    `billing gap: ${gap.accounts} account(s) are storing files with no billing customer id, ` +
+      `oldest since ${
+        gap.since === null ? "an unknown hour" : new Date(gap.since).toISOString()
+      }; their usage is not billed until a payment webhook writes the id`,
+    "warning",
+  );
+}
+
+/**
  * Reports the account close cron's partial purge failures (review finding on
  * PR #697). The cron catches one account's failed purge so the other
  * accounts still close, and resolves with a count — a count that read as

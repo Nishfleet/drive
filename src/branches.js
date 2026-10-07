@@ -46,11 +46,20 @@
 // Worker's key scoping (core/keyprovider.js), so a branch name and
 // a branch key prefix can never accept a different shape of name.
 
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
+  preChargeUploadBlocked,
+} from "../core/abuse-guards.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
-import { failureMessage } from "../core/messages.js";
+import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { unauthorizedResponse } from "../core/status.js";
+
+export { MAX_OPEN_BRANCHES };
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
@@ -65,7 +74,7 @@ import { unauthorizedResponse } from "../core/status.js";
  *   snapshot: Record<string, Fingerprint>,
  *   snapshotKey: string, snapshotBytes: number,
  *   jobKind: string, jobDone: number, jobTotal: number, jobError: string,
- *   changed: number, sourceChanged: number}} Branch
+ *   changed: number, sourceChanged: number, reservedBytes: number}} Branch
  */
 
 /** How many files one job batch copies or deletes, so one invocation stays
@@ -73,23 +82,22 @@ import { unauthorizedResponse } from "../core/status.js";
  * plus a listing or two and a progress write is under 100 subrequests. */
 export const BRANCH_JOB_BATCH_FILES = 80;
 
-/** The remaining branch size cap once jobs run in batches (drive#563). The
- * snapshot for 100,000 files is ~11 MiB of JSON in memory, and the documented
- * plan in cloudflare.config.ts is this number. A larger folder is refused. */
-export const BRANCH_FILE_LIMIT = 100_000;
+// Remaining branch size cap once jobs run in batches (drive#563).
+const BRANCH_FILE_LIMIT = 100_000;
 
 /** Keys per DeleteObjects call, the provider's own ceiling (core/files.js
  * removeBatch, drive#565). */
-export const BRANCH_DELETE_BATCH = 1000;
+const BRANCH_DELETE_BATCH = 1000;
 
 /** States that occupy the one-active-name unique index (migration 0030). */
-export const BRANCH_ACTIVE_STATES = Object.freeze([
+const BRANCH_ACTIVE_STATES = Object.freeze([
   "open",
   "creating",
   "approving",
   "discarding",
   "rewinding",
 ]);
+const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
 
 /** @typedef {{kind: string, done: number, total: number}} BranchProgress */
 /** @typedef {{send?: Function, sendBatch?: Function}|null} BranchQueue */
@@ -178,16 +186,23 @@ function approveWalkKey(key) {
   return `${key}/approve-walk`;
 }
 
-/**
- * The size cap one Workers KV namespace puts on one value: 25 MiB. One
- * snapshot entry measured ~117 bytes (test/branches-snapshot.test.mjs), so
- * the cap is a file count - about 215,000 entries in one string - and a
- * branch past it was refused by the namespace with nothing in this design to
- * catch it (drive issue #564). The chunker splits at an order of magnitude
- * under the cap, so a write that grows between measuring and landing still
- * fits, and a snapshot grows into more chunks instead of into a refusal.
+/** KV key that marks a snapshot as the listing the claim froze (drive#802).
+ * The marker is what tells the copy job the snapshot it reads is the whole
+ * claim-time listing and not a batch's partial one. `snapshot_bytes` cannot say
+ * that on its own: a create queued before this shipped writes its snapshot one
+ * batch at a time, so after its first batch the row also carries bytes, and
+ * reading `only` off those bytes would make batch two copy only what batch one
+ * had already copied and open a branch with everything after it missing. A row
+ * claimed before this shipped has no marker key at all and copies the whole
+ * source as before.
+ * @param {string} key the branch's snapshot key
  */
-export const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
+function frozenSnapshotKey(key) {
+  return `${key}/frozen`;
+}
+
+// KV value cap is 25 MiB; split a snapshot an order of magnitude under it (drive#564).
+const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
 
 /**
  * The marker inside a chunked snapshot's manifest. A value at the snapshot
@@ -778,6 +793,93 @@ function fingerprintMapFromObject(raw) {
   return files;
 }
 
+/** @param {Iterable<Fingerprint>} files */
+function bytesOf(files) {
+  let n = 0;
+  for (const file of files) n += file.size;
+  return n;
+}
+
+// Bytes under `root` from the store listing. Branch copies skip the file index (drive#553).
+/** @param {FileStore} store @param {string} root */
+async function storedBytesUnder(store, root) {
+  return bytesOf((await listFiles(store, root)).values());
+}
+
+/** How many of the account's own branches occupy an in-flight state right now:
+ * the count the claim's own WHERE enforces (drive#553). Read back only to tell
+ * a cap refusal from a byte-limit refusal, never to decide either (drive#801).
+ * @param {D1Database} db @param {string} accountId @returns {Promise<number>}
+ */
+async function accountActiveBranchCount(db, accountId) {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS active FROM branches WHERE account_id = ?1 AND state IN " +
+        `(${ACTIVE_STATE_LIST})`,
+    )
+    .bind(accountId)
+    .first();
+  return Number(/** @type {{active?: unknown} | null | undefined} */ (row)?.active ?? 0);
+}
+
+/** The sentinel a check passes when it has no branch row of its own to leave
+ * out of the reservation sum (drive#801). Branch ids start at 1 (migration
+ * 0015), so `id != 0` excludes nothing and skips no real row. */
+const NO_RESERVATION_YET = 0;
+
+/** The bytes every create still queued on this account has reserved: the
+ * `reserved_bytes` its claim measured, summed over the rows that have not
+ * copied yet (drive#801).
+ *
+ * A queued create's bytes are in neither the file index (branch copies skip
+ * it) nor the store walk, because `/.branches` is only walked once the copy
+ * lands. Without this sum ten queued creates of a 100 GB folder each measured
+ * only their own folder, each passed the guard that should have refused the
+ * later ones, and then all ten copies went on to write. `COALESCE` reads a row
+ * written before migration 0040 as zero, which is what it holds: nothing this
+ * deployment measured for it. Such a row is stopped by the copy job's own
+ * re-check before its first batch (drive#553), not by this sum.
+ *
+ * `excludeId` drops one row from the sum, and no call site leaves it unset: the
+ * copy job's own re-check passes the branch it is copying. That row's bytes are
+ * already the `incomingBytes` of the same check, so leaving its reservation in
+ * `storedBytes` counts them twice and discards a branch that was legal when it
+ * was claimed (drive#801 in-run review). D1's `!=` never yields NULL here,
+ * because `id` is the row's primary key and is never NULL.
+ * @param {D1Database} db @param {string} accountId @param {number} excludeId
+ * @returns {Promise<number>}
+ */
+async function queuedReservedBytes(db, accountId, excludeId) {
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(SUM(reserved_bytes), 0) AS reserved FROM branches " +
+        "WHERE account_id = ?1 AND state = 'creating' AND id != ?2",
+    )
+    .bind(accountId, excludeId)
+    .first();
+  const reserved = Number(
+    /** @type {{reserved?: unknown} | null | undefined} */ (row)?.reserved ?? 0,
+  );
+  if (!Number.isFinite(reserved) || reserved < 0) {
+    throw new TypeError(`branches.reserved_bytes must be 0 or more, got ${reserved}`);
+  }
+  return reserved;
+}
+
+/** @param {D1Database} db @param {FileStore} store @param {{id: string}} account @param {number} incomingBytes @param {number} excludeReservedId */
+async function branchCopyBlocked(db, store, account, incomingBytes, excludeReservedId) {
+  const firstChargedAt = await accountFirstChargedAt(db, account.id);
+  if (firstChargedAt !== null) return null;
+  return preChargeUploadBlocked({
+    firstChargedAt,
+    storedBytes:
+      (await accountStoredBytes(db, account.id)) +
+      (await storedBytesUnder(store, BRANCHES_ROOT)) +
+      (await queuedReservedBytes(db, account.id, excludeReservedId)),
+    incomingBytes,
+  });
+}
+
 /** The fingerprint of one file, or null when it is not there. One listing of
  * its parent, so reading a fingerprint never downloads the bytes. When
  * `listings` is handed in, each parent is listed once and later lookups read
@@ -815,13 +917,18 @@ async function fileFingerprint(store, path, listings) {
  * @param {FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
- * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, snapshot?: Record<string, Fingerprint>}} [options]
+ * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, snapshot?: Record<string, Fingerprint>, only?: Record<string, Fingerprint>}} [options]
+ *   `only` is the listing frozen when the branch was claimed (drive#802). With
+ *   it the copy writes exactly those paths, no matter what the source holds
+ *   now; without it the copy walks the source as it is, which is how a folder
+ *   that grew between the claim and the queued copy was written for free.
  * @returns {Promise<{snapshot: Record<string, Fingerprint>, cursor: {current: string, skip: number, pending: string[]}, done: boolean, copied: number}>}
  */
 async function copyFolder(store, source, dest, options = {}) {
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
   /** @type {Record<string, Fingerprint>} */
   const snapshot = { ...(options.snapshot ?? {}) };
+  const only = options.only;
   let current = options.cursor?.current ?? source;
   let skip = options.cursor?.skip ?? 0;
   let pending = [...(options.cursor?.pending ?? [])];
@@ -839,6 +946,23 @@ async function copyFolder(store, source, dest, options = {}) {
       }
       const rel = relativePath(source, entry.path);
       if (rel === null) {
+        continue;
+      }
+      // The claim's listing decides what is in the branch, and the live walk
+      // only finds where it now lives. A path the claim never measured
+      // arrived after it and is not written. A path the source deleted after
+      // it is measured, is never found here, and stays in the snapshot as a
+      // file the original lost — the diff reports it, the copy does not
+      // resurrect it. The fingerprint recorded is the frozen one, because the
+      // snapshot answers "what the source held when the branch was taken",
+      // while the size handed to the copy is the live one so a file that grew
+      // is still copied whole rather than cut at the frozen length.
+      const frozen = only === undefined ? undefined : only[rel];
+      if (frozen !== undefined && typeof frozen.size === "number") {
+        files.push({ rel, path: entry.path, size: entry.size ?? 0, fp: frozen });
+        continue;
+      }
+      if (only !== undefined) {
         continue;
       }
       files.push({ rel, path: entry.path, size: entry.size ?? 0, fp: fingerprint(entry) });
@@ -994,6 +1118,14 @@ function toBranch(row, snapshot) {
       typeof row.source_changed_count === "number"
         ? row.source_changed_count
         : Number(row.source_changed_count ?? 0) || 0,
+    // What the claim measured for this row (migration 0040, drive#801). Kept
+    // after the copy runs, as the record of what the claim reserved; it is
+    // never cleared. Absent on a row written before the column, which reads as
+    // zero: nobody measured it, or its bytes are in the store now.
+    reservedBytes:
+      typeof row.reserved_bytes === "number"
+        ? row.reserved_bytes
+        : Number(row.reserved_bytes ?? 0) || 0,
   };
 }
 
@@ -1004,9 +1136,7 @@ function toBranch(row, snapshot) {
 const BRANCH_COLUMNS =
   "id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, " +
   "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, job_error, " +
-  "changed_count, source_changed_count";
-
-const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
+  "changed_count, source_changed_count, reserved_bytes";
 
 /** One of the account's own branches, or null. A name from another account is
  * "no such branch".
@@ -1226,6 +1356,31 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       console.error?.(`create walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
     }
   }
+  // What the claim froze (drive#802): the source listing as of claim time,
+  // stored under the row's own snapshot pointer, and marked by the claim with
+  // its own key. The marker is the test, not the snapshot's byte length: a
+  // create queued before that shipped has no marker and keeps copying the
+  // source as it is, which is what its bytes already on the row must not turn
+  // off. Its own snapshot is written a batch at a time, so reading `only` off
+  // `snapshot_bytes` would have made batch two copy batch one's files again and
+  // open a branch missing everything after the first 80.
+  const frozenMarker = await snapshots.get(frozenSnapshotKey(branch.snapshotKey));
+  const only = frozenMarker !== null && frozenMarker !== undefined ? branch.snapshot : undefined;
+  if (doneSoFar === 0) {
+    const incomingBytes =
+      only !== undefined
+        ? bytesOf(Object.values(only))
+        : await storedBytesUnder(store, branch.sourcePrefix);
+    // This check asks one question: has the account gone over the limit while
+    // this branch waited? Its own reservation is left out of the sum because
+    // its own bytes are the `incomingBytes` just measured, and the other queued
+    // rows are in it, because theirs are not (drive#801 in-run review).
+    const blocked = await branchCopyBlocked(db, store, account, incomingBytes, branch.id);
+    if (blocked !== null) {
+      await failJob(db, branch.id, "discarded", blocked);
+      return { error: blocked, status: 403, done: true };
+    }
+  }
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
@@ -1234,8 +1389,12 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       pending,
     },
     snapshot: branch.snapshot,
+    only,
   });
-  const files = Object.keys(copied.snapshot).length;
+  // Progress is the files this job has copied, not the size of the snapshot it
+  // copies: the snapshot is seeded with the whole frozen listing, so counting
+  // its keys would report the branch finished on its first batch.
+  const files = doneSoFar + copied.copied;
   if (files > BRANCH_FILE_LIMIT) {
     await removePrefixFiles(store, branch.branchPrefix);
     const error = failureMessage("branch-too-large");
@@ -1250,6 +1409,11 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   if (copied.done) {
     try {
       await clearScratch(snapshots, walkKey);
+      // The frozen listing is the branch's snapshot from here on, so the marker
+      // has done its job and goes with the walk's scratch (drive#802). It is
+      // only read while the copy runs, and a finished branch's copy never
+      // resumes, so leaving it would be a key that outlives its job.
+      await clearScratch(snapshots, frozenSnapshotKey(branch.snapshotKey));
     } catch (error) {
       console.error?.(`create walk cleanup failed for ${branch.id}: ${errorText(error)}`);
     }
@@ -1817,30 +1981,96 @@ export async function createBranch(
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
     return { error: failureMessage("branch-exists"), status: 409 };
   }
+  // The 1 TB pre-charge check: branch copies skip the file index, so the store
+  // listing is what counts (drive#553). A charged account is lifted (drive#464).
+  // The open-branch cap is the claim INSERT's WHERE, so a race cannot land 11.
+  const listed = await listFiles(store, folderPath);
+  const incomingBytes = bytesOf(listed.values());
+  // No row to exclude: this create has no claim yet, so every other queued
+  // row's reservation belongs in the sum, and this folder's own bytes are the
+  // `incomingBytes` being measured here for the first time (drive#801).
+  const blocked = await branchCopyBlocked(db, store, account, incomingBytes, NO_RESERVATION_YET);
+  if (blocked !== null) {
+    return { error: blocked, status: 403 };
+  }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
+  const snapKey = snapshotKey(account, name);
   // Claim the name before touching the store. The partial unique index on
-  // (account_id, name) where state = 'open' then makes this the one create
-  // that may copy into the prefix: two creates of a name in the same moment
-  // can no longer both walk and clear /.branches/<name>/ and overwrite each
-  // other's copies, because the loser fails this INSERT before it copies
-  // anything. The snapshot lands after the copy, so a row that is claimed but
-  // interrupted is closed by the catch below rather than left open on an
-  // empty prefix. The leftover `snapshot` column is omitted (drive#329) and
-  // takes its own `DEFAULT '{}'`.
+  // (account_id, name) over the in-flight states (migrations/drive/0030) then
+  // makes this the one create that may copy into the prefix: two creates of a
+  // name in the same moment can no longer both walk and clear
+  // /.branches/<name>/ and overwrite each other's copies, because the loser
+  // fails this INSERT before it copies anything. The snapshot lands after the
+  // copy, so a row that is claimed but interrupted is closed by the catch
+  // below rather than left open on an empty prefix. The leftover `snapshot`
+  // column is omitted (drive#329) and takes its own `DEFAULT '{}'`.
+  // The cap is the same INSERT's WHERE (branches_account_created_idx, migration 0015),
+  // and the claim carries the byte total the guard just measured in
+  // `reserved_bytes` (migration 0040), so a create queued behind this one is
+  // measured against the bytes this one is about to write. The reservation is
+  // released by the state itself: a row that leaves 'creating' has copied bytes
+  // the store walk can see.
   let claimId;
   try {
-    const snapKey = snapshotKey(account, name);
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
-          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind) " +
-          "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,?7,'create')",
+          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind, " +
+          "reserved_bytes) " +
+          "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',?9 " +
+          "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
+          `(${ACTIVE_STATE_LIST})) < ?8` +
+          // The reservation sum rides this same statement, the way the cap's
+          // count already does, so D1 serializes the two: two creates that both
+          // read a stale sum cannot both land a reservation the third create
+          // would then measure against (drive#801 in-run review). The sum is
+          // what the database can measure - the file index and the store walk
+          // are both outside this statement, and the copy job re-checks those
+          // before its first batch.
+          // A first charge lifts the limit (drive#464), inside the statement as
+          // well as outside it, or a charged account's claim would still be
+          // refused by a rule it has paid to be free of.
+          " AND ((SELECT first_charged_at FROM accounts WHERE id = ?1) IS NOT NULL" +
+          " OR (SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches " +
+          "WHERE account_id = ?1 AND state = 'creating') + " +
+          "(SELECT COALESCE(SUM(v.size_bytes), 0) FROM file_versions v " +
+          "WHERE v.account_id = ?1 AND v.hidden_at IS NULL) + ?9 <= " +
+          `${PRE_CHARGE_STORAGE_LIMIT_BYTES})`,
       )
-      .bind(account.id, name, folderPath, branchPrefix, snapKey, createdAt, changedBy)
+      .bind(
+        account.id,
+        name,
+        folderPath,
+        branchPrefix,
+        snapKey,
+        createdAt,
+        changedBy,
+        MAX_OPEN_BRANCHES,
+        incomingBytes,
+      )
       .run();
-    if (!claimed.success) {
+    if (!claimed.success || typeof claimed.meta?.changes !== "number") {
       return { error: failureMessage("unexpected"), status: 500 };
+    }
+    if (claimed.meta.changes === 0) {
+      // The statement's WHERE now refuses on the cap OR on the byte limit, so
+      // zero changed rows does not say which. The refusal is read back from the
+      // same live state rather than guessed, because the two answer different
+      // sentences: the cap is a 409 about branches, the limit a 403 about
+      // storage (drive#801 in-run review).
+      const atCap = (await accountActiveBranchCount(db, account.id)) >= MAX_OPEN_BRANCHES;
+      if (!atCap) {
+        const reraced = await branchCopyBlocked(
+          db,
+          store,
+          account,
+          incomingBytes,
+          NO_RESERVATION_YET,
+        );
+        return { error: reraced ?? failureMessage("pre-charge-storage-limit"), status: 403 };
+      }
+      return { error: failureMessage("branch-limit"), status: 409 };
     }
     claimId = Number(claimed.meta.last_row_id);
     if (!Number.isInteger(claimId) || claimId < 1) {
@@ -1888,6 +2118,59 @@ export async function createBranch(
     }
     return await attempt();
   };
+  // The frozen marker only means anything while a copy runs. Every path that
+  // gives the claim up — a listing that failed, an enqueue that failed, a run
+  // that threw or reported an error — takes it with, so a marker never outlives
+  // the claim it froze for: it would otherwise sit in KV pointing at a snapshot
+  // a later row of the same name now owns, and that row's copy would skip
+  // whatever the source gained before it ran.
+  const dropFrozenMarker = async () => {
+    try {
+      await clearScratch(snapshots, frozenSnapshotKey(snapKey));
+    } catch (error) {
+      console.error?.(
+        `branch marker cleanup failed for ${account.id}/${name}: ${errorText(error)}`,
+      );
+    }
+  };
+  // Freeze what the copy will write, before the claim is handed out (drive#802).
+  // The copy itself is queued and runs later (drive#563), and between these two
+  // moments the source folder can grow: a copy that walks the source as it is
+  // then writes files the claim never measured, so a branch lands bytes nothing
+  // reserved. The listing taken here is the branch's snapshot — the source's
+  // paths, sizes and fingerprints as of this instant — stored under the pointer
+  // the row already carries, so the row names what it reserved without a second
+  // column. The create job copies exactly this list, so a folder that grows
+  // after the claim is simply not in the branch until the next one.
+  try {
+    const saved = await saveSnapshot(
+      db,
+      claimId,
+      fingerprintMapToObject(listed),
+      snapshots,
+      snapKey,
+    );
+    if (!saved.success) {
+      if (!(await abandonClaim())) {
+        console.error?.(`branch freeze for ${account.id}/${name} left row ${claimId} claimed`);
+      }
+      return { error: failureMessage("unexpected"), status: 500 };
+    }
+    // Marked after the snapshot lands, never before: a marker whose listing
+    // failed to write would send the copy after bytes the claim never measured,
+    // which is the leak this issue closes. A claim that fails here abandons, so
+    // no row is ever left claimed with a frozen listing nobody copies.
+    await snapshots.put(frozenSnapshotKey(snapKey), JSON.stringify({ frozen: true }));
+  } catch (error) {
+    console.error?.(`branch listing failed for ${account.id}/${name}: ${errorText(error)}`);
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch freeze for ${account.id}/${name} left row ${claimId} claimed; ` +
+          "the name stays claimed until drive discard clears it",
+      );
+    }
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
   if (
     await enqueueJob(queue, {
       kind: "branch.create",
@@ -1910,6 +2193,7 @@ export async function createBranch(
   try {
     const ran = await runBranchJobToEnd(db, snapshots, store, account, claimId);
     if (ran.error) {
+      await dropFrozenMarker();
       if (!(await abandonClaim()) && ran.status !== 400) {
         console.error?.(
           `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
@@ -1930,6 +2214,7 @@ export async function createBranch(
     };
   } catch (error) {
     console.error?.(`branch copy failed for ${account.id}/${name}: ${errorText(error)}`);
+    await dropFrozenMarker();
     try {
       await removePrefixFiles(store, branchPrefix);
     } catch (cleanupError) {
@@ -2258,37 +2543,25 @@ function sourceMoved(named, total) {
 
 // ---------------------------------------------------------------- the route
 
+// The /api/branches* handlers. The account gate is in front of it
+// (src/index.js): no account is a 401 with no data, before the store or the
+// database is touched. The routes are:
+//   GET    /api/branches              list this account's branches
+//   POST   /api/branches              {folder, name} — make a branch
+//   GET    /api/branches/<name>       the branch's diff
+//   POST   /api/branches/<name>/approve   copy it back
+//   POST   /api/branches/<name>/discard   throw it away
 /**
- * The /api/branches* handlers. The account gate is in front of it
- * (src/index.js): no account is a 401 with no data, before the store or the
- * database is touched. The routes are:
- *
- *   GET    /api/branches              list this account's branches
- *   POST   /api/branches              {folder, name} — make a branch
- *   GET    /api/branches/<name>       the branch's diff
- *   POST   /api/branches/<name>/approve   copy it back
- *   POST   /api/branches/<name>/discard   throw it away
- *
  * @param {Request} request
- * @param {unknown} db the branches table
- * @param {SnapshotStore|null} snapshots the KV snapshot store; a request with
- *   no namespace is a 503, because the legacy column a branch could fall back
- *   to is gone (drive#329) and the health check already reports the missing
- *   binding by name
- * @param {import("../core/files.js").FileStore|null} store the shared, unscoped store
- * @param {{id: string, name: string}|null} account the signed-in account
- * @param {() => number} now
- * @param {{send?: Function, sendBatch?: Function}|null} [queue]
+ * @param {unknown} db
+ * @param {SnapshotStore|null} snapshots
+ * @param {import("../core/files.js").FileStore|null} store
+ * @param {{id: string, name: string}|null} account
+ * @param {{now?: () => number, queue?: {send?: Function, sendBatch?: Function}|null, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
-export async function handleBranchesRequest(
-  request,
-  db,
-  snapshots,
-  store,
-  account,
-  now = () => Date.now(),
-  queue = null,
-) {
+export async function handleBranchesRequest(request, db, snapshots, store, account, options = {}) {
+  const now = options.now ?? (() => Date.now());
+  const queue = options.queue ?? null;
   if (!account) {
     return unauthorizedResponse();
   }
@@ -2318,6 +2591,19 @@ export async function handleBranchesRequest(
       return json({ branches });
     }
     if (request.method === "POST") {
+      const limited = await enforceEdgeLimits(
+        [
+          {
+            binding: options.ipLimiter,
+            key: clientIpKey(request, "branch-create"),
+            name: "BRANCH_RATE_LIMITER",
+          },
+        ],
+        "branch-create",
+      );
+      if (limited) {
+        return limited;
+      }
       const read = await readJsonBody(request);
       if (read.error) {
         return json({ error: read.error }, 400);

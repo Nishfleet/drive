@@ -210,8 +210,8 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
 
 /** @returns {{kind: "missing"} | {kind: "ok", bytes: number} | {kind: "empty"}} */
 function workerBundle() {
-  // `cf build` writes the isolate script at default/bundle/index.js and the
-  // unused SQLite dialect chunks beside it under bundle/assets. Static HTML
+  // `cf build` writes the isolate script at default/bundle/index.js and any
+  // code-split Worker chunks beside it under bundle/assets. Static HTML
   // lives in default/assets and Lighthouse already budgets it.
   const dir = fileURLToPath(
     new URL("../.cloudflare/output/v0/workers/default/bundle/", import.meta.url),
@@ -253,4 +253,63 @@ test("the site Worker bundle stays within its baseline size", (t) => {
     `the site Worker bundle is ${bytes} bytes, over the ${budget.mean}-byte budget. Shrink it, or raise the row in bench/baseline.json with the number that justified it.`,
   );
   t.diagnostic(`site-bundle: ${bytes} bytes, budget ${budget.mean} bytes`);
+});
+
+/**
+ * Every chunk the Worker can reach from its own entry, following the Vite
+ * manifest's own static and dynamic edges. Walking the graph rather than
+ * reading every key is the point: a chunk that ships only because something
+ * deep in the graph dynamically imports it is still a chunk the browser
+ * downloads, and a name this test never thought of is still a name the
+ * pattern below catches.
+ * @param {Record<string, {file?: string, src?: string, imports?: string[], dynamicImports?: string[]}>} manifest
+ * @returns {string[]} one `src -> file` line per reachable chunk
+ */
+function reachableChunks(manifest) {
+  const seen = new Set();
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {string[]} */
+  const queue = ["virtual:cloudflare/worker-entry"];
+  while (queue.length > 0) {
+    const key = queue.pop();
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    const entry = manifest[key];
+    if (entry === undefined) {
+      // A manifest that points at a chunk it does not describe means the walk
+      // below is reading a shape it does not understand, which would turn
+      // this into a test that always passes. Fail instead.
+      throw new Error(`site-bundle manifest names a chunk it does not describe: ${key}`);
+    }
+    lines.push(`${entry.src ?? key} -> ${entry.file ?? "(inlined)"}`);
+    for (const next of [...(entry.imports ?? []), ...(entry.dynamicImports ?? [])]) {
+      queue.push(next);
+    }
+  }
+  return lines;
+}
+
+test("the site Worker bundle does not ship an unused SQL dialect", (t) => {
+  const manifestPath = fileURLToPath(
+    new URL("../.cloudflare/output/v0/workers/default/bundle/.vite/manifest.json", import.meta.url),
+  );
+  if (!existsSync(manifestPath)) {
+    t.skip("no Worker build output; CI runs npm run build before npm test");
+    return;
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  // Matched against the source path and the emitted file name together: a
+  // dialect named `dialect/postgres` or shipped as `assets/dist-*.js` is
+  // caught by the pattern on one side or the other, and Kysely's own
+  // `sqlite-introspector` chunk — 285,706 bytes of origin/main's bundle — is
+  // named by neither the `dialect` nor the `kysely` stem.
+  const dialects = reachableChunks(manifest).filter((line) =>
+    /dialect|sqlite-introspector|kysely/.test(line),
+  );
+  assert.deepEqual(
+    dialects,
+    [],
+    `unused SQL dialect chunks are reachable from the Worker entry: ${dialects.join(", ")}`,
+  );
 });

@@ -68,6 +68,7 @@ import {
   versionMarkers,
 } from "../core/s3-listing.js";
 import worker from "../src/index.js";
+import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
@@ -432,7 +433,7 @@ test("a row sends the instant, not a sentence, and an entry with no date sends n
  * @property {Record<string, string>} dataset
  * @property {Record<string, string>} attributes
  * @property {boolean} disabled
- * @property {Record<string, (event: any) => any>} listeners
+ * @property {Record<string, (event?: any) => any>} listeners
  * @property {{add(): void, toggle(): void, contains: () => boolean}} classList
  * @property {StubElement[]} appended
  * @property {(child: StubElement) => StubElement} append
@@ -533,6 +534,9 @@ function loadFilesPage() {
       if (where.includes("view=deleted")) {
         return { ok: true, status: 200, json: async () => ({ rows: [], nextCursor: null }) };
       }
+      if (where.includes("/api/rewind")) {
+        return { ok: true, status: 200, json: async () => ({ rewinds: [] }) };
+      }
       return {
         ok: true,
         status: 200,
@@ -591,6 +595,172 @@ test("a row rendered in the browser's own zone shows the local day", () => {
   } finally {
     process.env.TZ = "UTC";
   }
+});
+
+// ---------------------------------------------------------------- the rewind tab
+
+/** One turn of the event loop, so a page handler that awaited a fetch finishes. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// The rewind screen's own words (drive#774). The screen is a static asset and
+// no module owns these sentences, so the page is where they live and this test
+// file is what pins them: a rewording has to be a deliberate edit in both
+// places.
+const REWIND_PAGE_LINE =
+  "Every branch an agent worked in, with the files it changed. Rewind puts your files back exactly as they were.";
+const REWIND_DONE_COPY = "Rewound. Your files are back as they were.";
+const REWIND_EMPTY_COPY = Object.freeze({
+  what: "Nothing to rewind.",
+  next: "A branch an agent works in shows up here, ready to put back.",
+});
+
+/**
+ * A preview as src/rewind.js sends it: the branch row with its file counts and
+ * the two flags the screen renders. Only the fields the page reads are here.
+ * @param {object} over
+ * @returns {Record<string, any>}
+ */
+const rewindPreview = (over) =>
+  Object.assign(
+    {
+      name: "agent-1",
+      sourcePrefix: "/Photos",
+      state: "open",
+      changedBy: "claude",
+      createdAt: new Date(now - 60_000).toISOString(),
+      ageDays: 0,
+      windowDays: 30,
+      restorableUntil: new Date(now + 30 * 86_400_000).toISOString(),
+      canRewind: true,
+      unavailableReason: null,
+      files: { added: ["/Photos/new.jpg"], changed: [], removed: ["/Photos/old.jpg"], count: 2 },
+      progress: { kind: "", done: 0, total: 0 },
+    },
+    over,
+  );
+
+test("rewind: the tab lists an agent's work and sends the branch back in one tap", async () => {
+  // drive#774, the screen the /api/rewind route needed. The route was live and
+  // tested with no caller, so this is the missing caller: the third tab reads
+  // it, the row names the agent and what a rewind would undo, and the one
+  // button POSTs that branch's name to the route src/rewind.js owns.
+  const { sandbox, listed } = loadFilesPage();
+  await settled();
+  /** @type {Array<[string, string]>} */
+  const sent = [];
+  // The page's one confirm is the rewind's; the stub stands for the person
+  // who clicked OK.
+  sandbox.window = { confirm: () => true };
+  sandbox.fetch = async (/** @type {string} */ url, /** @type {any} */ options) => {
+    sent.push([String(url), options?.method ?? "GET"]);
+    if (String(url) === REWIND_ENDPOINT) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          rewinds: [
+            rewindPreview({}),
+            rewindPreview({
+              name: "agent-2",
+              changedBy: "codex",
+              state: "discarded",
+              canRewind: false,
+              unavailableReason: "already-closed",
+              files: { added: [], changed: [], removed: [], count: 3 },
+            }),
+            rewindPreview({
+              name: "agent-3",
+              state: "open",
+              canRewind: false,
+              unavailableReason: "window-closed",
+            }),
+          ],
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ rewinds: [] }) };
+  };
+
+  // The tab is the door: it flips the pressed state, sets its own page line,
+  // and reads the route the page's constant names.
+  sandbox.document.getElementById("tab-rewind").listeners.click();
+  await settled();
+  assert.deepEqual(sent[0], [REWIND_ENDPOINT, "GET"], "the tab reads /api/rewind");
+  assert.equal(
+    sandbox.document.getElementById("tab-rewind").attributes["aria-pressed"],
+    "true",
+    "the tab a person is looking at is the pressed one",
+  );
+  assert.equal(sandbox.document.getElementById("page-line").textContent, REWIND_PAGE_LINE);
+
+  // Three rows, read back out of the page the way a browser would show them.
+  /** @type {StubElement[]} */
+  const rows = listed.appended;
+  assert.equal(rows.length, 3, "one row per branch the route listed");
+  /** @param {StubElement} row @returns {StubElement} */
+  const nameOf = (row) => {
+    const node = row.appended[1].appended.find(
+      (/** @type {StubElement} */ node) => node.className === "name",
+    );
+    assert.ok(node, "every row names what its button rewinds");
+    return node;
+  };
+  /** @param {StubElement} row @returns {StubElement[]} */
+  const subsOf = (row) =>
+    row.appended[1].appended.filter((/** @type {StubElement} */ node) => node.className === "sub");
+  assert.equal(nameOf(rows[0]).textContent, "Rewind claude's work", "the row names the agent");
+  assert.match(
+    subsOf(rows[0])[0].textContent,
+    /^2 files · 1 added, 1 removed · \/Photos · /,
+    "the row says how many files a rewind would undo, and what happened to them",
+  );
+  assert.equal(
+    subsOf(rows[0])[1].textContent,
+    "/Photos/new.jpg, /Photos/old.jpg",
+    "the files are named, not only counted",
+  );
+  // A branch that cannot be rewound answers with the reason, and no button:
+  // the reason comes off the row src/rewind.js sent, not from a rule the page
+  // holds a second copy of.
+  assert.equal(
+    subsOf(rows[1])[subsOf(rows[1]).length - 1].textContent,
+    "Already approved or thrown away.",
+  );
+  assert.match(
+    subsOf(rows[2])[subsOf(rows[2]).length - 1].textContent,
+    /^The 30-day window closed on /,
+    "a window that closed says which day it closed, off the row's own windowDays",
+  );
+  // Only the branch that can still be rewound offers the button; the other two
+  // answer with the sentence instead of a button that would do nothing.
+  /** @param {StubElement} row @returns {StubElement} */
+  const actions = (row) => row.appended[2];
+  assert.equal(actions(rows[1]).appended.length, 0, "a closed branch offers no button");
+  assert.equal(actions(rows[2]).appended.length, 0, "a closed window offers no button");
+  assert.equal(actions(rows[0]).appended[0].textContent, "Rewind");
+
+  // One tap: the branch goes to the route by name, and the page says what
+  // happened.
+  actions(rows[0]).appended[0].listeners.click();
+  await settled();
+  assert.deepEqual(sent[1], [`${REWIND_ENDPOINT}/agent-1`, "POST"]);
+  assert.equal(sandbox.document.getElementById("status").textContent, REWIND_DONE_COPY);
+});
+
+test("rewind: nothing to rewind is a sentence, not an empty screen", async () => {
+  const { sandbox, listed } = loadFilesPage();
+  await settled();
+  sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => ({ rewinds: [] }) });
+  sandbox.document.getElementById("tab-rewind").listeners.click();
+  await settled();
+  assert.equal(listed.appended.length, 0, "no rows to show");
+  assert.equal(
+    sandbox.document.getElementById("empty").hidden,
+    false,
+    "the empty state is shown, rather than a list with nothing in it",
+  );
+  assert.equal(sandbox.document.getElementById("empty-what").textContent, REWIND_EMPTY_COPY.what);
+  assert.equal(sandbox.document.getElementById("empty-next").textContent, REWIND_EMPTY_COPY.next);
 });
 
 // ---------------------------------------------------------------- the routes
@@ -1283,10 +1453,11 @@ function moveRecorder(inner, big, onCopy) {
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
+     * @param {{ifAbsent?: boolean}} [options]
      */
-    async copy(from, to, size) {
-      calls.push(`copy ${from} ${to} ${size}`);
-      const done = await inner.copy(from, to, size);
+    async copy(from, to, size, options) {
+      calls.push(`copy ${from} ${to} ${size}${guardText(options)}`);
+      const done = await inner.copy(from, to, size, options);
       if (onCopy) {
         await onCopy();
       }
@@ -1297,6 +1468,74 @@ function moveRecorder(inner, big, onCopy) {
       return inner.listVersions(path);
     },
   };
+}
+
+/**
+ * A recorded call's guard as text: `if empty` for a copy asked to land on an
+ * empty path, `if <etag>` for a conditional remove, nothing for neither.
+ * @param {{ifMatch?: string|null, ifAbsent?: boolean}} [options]
+ * @returns {string}
+ */
+function guardText(options) {
+  if (options?.ifAbsent === true) return " if empty";
+  return typeof options?.ifMatch === "string" ? ` if ${options.ifMatch}` : "";
+}
+
+/**
+ * The copy's other seam, on the far side: `beforeCopy` lands the save after the
+ * route has listed the destination (so the copy carries that destination's
+ * ETag) and before the copy writes, which is the window drive issue #605 is
+ * about. The delete's guard is the conditional remove that comes after its copy,
+ * so its own test uses the seam in `moveRecorder` above.
+ * @param {import("../core/files.js").FileStore} inner
+ * @param {() => Promise<void>} beforeCopy
+ * @param {string[]} [calls]
+ * @returns {import("../core/files.js").FileStore & {calls: string[]}}
+ */
+function beforeCopyRecorder(inner, beforeCopy, calls = []) {
+  return {
+    ...inner,
+    calls,
+    async list(path) {
+      calls.push(`list ${path}`);
+      return inner.list(path);
+    },
+    async read(path) {
+      calls.push(`read ${path}`);
+      return inner.read(path);
+    },
+    async write(path, body, contentType) {
+      calls.push(`write ${path}`);
+      return inner.write(path, body, contentType);
+    },
+    async remove(path, options) {
+      calls.push(`remove ${path}${guardText(options)}`);
+      return inner.remove(path, options);
+    },
+    async copy(from, to, size, options) {
+      calls.push(`copy ${from} ${to} ${size}${guardText(options)}`);
+      // The save lands in the window the issue names: the route has listed the
+      // destination, and the copy has not written yet.
+      await beforeCopy();
+      return inner.copy(from, to, size, options);
+    },
+    async listVersions(path) {
+      return inner.listVersions(path);
+    },
+  };
+}
+
+/**
+ * The ETag for these bytes, the same hex SHA-256 the memory store's
+ * `memoryEtag` produces, in the one form a listing and a HEAD can both carry.
+ * A fake storage answers both from a plain string with it, so the route's
+ * comparison sees the same string on both sides of the guard it is being
+ * tested through (drive issue #605).
+ * @param {string} body
+ * @returns {string}
+ */
+function etagFor(body) {
+  return createHash("sha256").update(body).digest("hex");
 }
 
 /**
@@ -1369,7 +1608,9 @@ test("delete and restore move a 200 MB object by copying it in the storage, not 
     `copy u/1/big.iso u/1/.trash/${trash} ${big}`,
     `remove u/1/big.iso if ${live}`,
     `list u/1/.trash/big.iso`,
-    `copy u/1/.trash/${trash} u/1/big.iso ${big}`,
+    "list u/1/",
+    `copy u/1/.trash/${trash} u/1/big.iso ${big} if empty`,
+    "list u/1/",
     `remove u/1/.trash/${trash} if ${parkedEtag}`,
   ]);
   assert.ok(await scoped.read("/big.iso"));
@@ -1440,6 +1681,166 @@ test("a save that lands while a restore is putting the file back is kept too", a
   const parked = await scoped.read(`${TRASH_PATH}/${trash}`);
   assert.ok(parked);
   assert.equal(await new Response(parked.body).text(), "the second parked copy");
+});
+
+test("a save at the live path is kept, and a restore over it answers 409", async () => {
+  // The issue's case: park a file, land a save at that path, restore, and the
+  // save is still the live bytes. A file already there is refused before any
+  // copy, so the restore cannot throw those bytes away (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the parked text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  await scoped.write("/notes.md", "the file that was saved after the delete", "text/markdown");
+  const moved = moveRecorder(store, null, undefined);
+
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), moved, account, now);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  assert.ok(
+    !moved.calls.some((entry) => entry.startsWith("copy ")),
+    `a restore over a live file must not copy, got ${JSON.stringify(moved.calls)}`,
+  );
+  const live = await scoped.read("/notes.md");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the file that was saved after the delete");
+  const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the parked text");
+});
+
+test("a save that lands after the restore copy is kept, and the restore answers 409", async () => {
+  // The window CopyObject cannot close: the destination listed empty, the copy
+  // wrote, and a save landed on the live path before the restore looked again.
+  // The save stays, the parked copy stays, and the person is told
+  // (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the parked text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  const moved = moveRecorder(store, null, async () => {
+    await scoped.write("/notes.md", "the save that landed while the copy ran", "text/markdown");
+  });
+
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), moved, account, now);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  const live = await scoped.read("/notes.md");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the save that landed while the copy ran");
+  const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the parked text");
+});
+
+test("a restore that finds nothing at the live path is still held to it being empty", async () => {
+  // The case the reviewer named and the route previously did not prove: the
+  // destination listing finds nothing, so the guard is "still empty" rather
+  // than an ETag, and a save that creates the path after that listing is the
+  // same loss as one that replaces a file there. Driven through the route, not
+  // through the store, because a store-level test passes whether or not the
+  // route asks for the guard at all (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the parked text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  // Nothing is at the live path when the restore lists it, and this save lands
+  // in the window between that listing and the copy.
+  const moved = beforeCopyRecorder(store, async () => {
+    await scoped.write("/notes.md", "the save that created the path", "text/markdown");
+  });
+  /** @param {Request} request */
+  const call = (request) => handleFilesRequest(request, moved, account, now);
+
+  const response = await call(moveCall("/restore", "/notes.md"));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  assert.ok(
+    moved.calls.some((entry) => entry.startsWith("copy ") && entry.endsWith(" if empty")),
+    `the copy asked to land on an empty path, got ${JSON.stringify(moved.calls)}`,
+  );
+  const live = await scoped.read("/notes.md");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the save that created the path");
+  // The parked copy is still parked, so the refused restore lost nothing.
+  const parked = await scoped.read(`${TRASH_PATH}/${trashName("/notes.md", now)}`);
+  assert.ok(parked);
+  assert.equal(await new Response(parked.body).text(), "the parked text");
+});
+
+test("a restore with nothing at the live path still puts the file back", async () => {
+  // The guard must not turn a restore into a refusal: a path the restore
+  // creates carries no ETag to hold to, so the copy lands as it always did
+  // (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "notes.md", "the old text", "text/markdown");
+  await firstCall(moveCall("/delete", "/notes.md"));
+  const moved = moveRecorder(store, null, undefined);
+
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), moved, account, now);
+  assert.equal(response.status, 200);
+  const live = await scoped.read("/notes.md");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the old text");
+  // The copy was held to the destination staying empty, because the route's
+  // listing found nothing there to name: a guard, and a different one from the
+  // ETag a path with a file on it is held to.
+  assert.ok(
+    moved.calls.some(
+      (entry) => entry.startsWith("copy u/1/.trash/") && entry.endsWith(" 12 if empty"),
+    ),
+    `the copy was held to an empty destination, got ${JSON.stringify(moved.calls)}`,
+  );
+});
+
+test("a restore whose copy gets a new ETag still succeeds and removes the parked copy", async () => {
+  // A copy of a multipart upload does not keep the source's ETag, so the
+  // listing after the copy must be compared with the ETag the copy returned,
+  // not the parked one (drive issue #605).
+  const { store, upload, scoped, call: firstCall } = drive();
+  await upload("/", "big.iso", "the parked text", "text/plain");
+  await firstCall(moveCall("/delete", "/big.iso"));
+  const liveKey = "u/1/big.iso";
+  let landed = false;
+  const fresh = {
+    ...store,
+    async copy(
+      /** @type {string} */ from,
+      /** @type {string} */ to,
+      /** @type {number|undefined} */ size,
+      /** @type {any} */ options,
+    ) {
+      await store.copy(from, to, size, options);
+      landed = true;
+      return "abc123-7";
+    },
+    async list(/** @type {string} */ path) {
+      const rows = await store.list(path);
+      return landed
+        ? rows.map((row) => (row.path === liveKey ? { ...row, etag: "abc123-7" } : row))
+        : rows;
+    },
+  };
+
+  const response = await handleFilesRequest(moveCall("/restore", "/big.iso"), fresh, account, now);
+  assert.equal(response.status, 200);
+  const live = await scoped.read("/big.iso");
+  assert.ok(live);
+  assert.equal(await new Response(live.body).text(), "the parked text");
+  assert.equal(await scoped.read(`${TRASH_PATH}/${trashName("/big.iso", now)}`), null);
+});
+
+test("the S3 copy resolves to the ETag the storage's answer names", async () => {
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.method === "HEAD") return new Response(null, { status: 404 });
+    return new Response("<CopyObjectResult><ETag>&#34;new-9&#34;</ETag></CopyObjectResult>", {
+      status: 200,
+    });
+  };
+  const scoped = scopeStore(
+    createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  assert.equal(await scoped.copy("/parked.txt", "/notes.md", 4, { ifAbsent: true }), "new-9");
 });
 
 test("a storage that answers 412 to a conditional remove is a file left alone", async () => {
@@ -1525,6 +1926,311 @@ test("a delete the S3 store refuses answers 409, and the file is not lost", asyn
   const parked = trashStorePath(trashName("/notes.md", now));
   assert.ok(objects.has(`u/acct-a${parked}`), "the parked copy is in the store");
   assert.ok(objects.has(liveKey), "the key the store refused is still there");
+});
+
+test("a restore the S3 store would put over a saved file answers 409 and keeps both", async () => {
+  // The issue's case on the adapter the deployed Worker uses: a save already
+  // sits at the live path, so the restore must refuse before any copy. A PUT
+  // here would throw those bytes away (drive issue #605).
+  const parkedKey = `u/acct-a${trashStorePath(trashName("/notes.md", now))}`;
+  const liveKey = "u/acct-a/notes.md";
+  /** @type {Map<string, string>} */
+  const objects = new Map([
+    [parkedKey, "the parked text"],
+    [liveKey, "the file that was saved after the delete"],
+  ]);
+  /** @type {string[]} */
+  const requests = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const key = decodeURIComponent(new URL(request.url).pathname).slice("/drive/".length);
+    const source = request.headers.get("x-amz-copy-source");
+    const prefix = new URL(request.url).searchParams.get("prefix");
+    requests.push(`${request.method} ${key} ?${prefix}`);
+    if (request.method === "GET" && prefix !== null) {
+      const deeper = [...objects.keys()].filter(
+        (candidate) => candidate.startsWith(prefix) && candidate.slice(prefix.length).includes("/"),
+      );
+      const rows = [...objects.keys()]
+        .filter(
+          (candidate) =>
+            candidate.startsWith(prefix) && !candidate.slice(prefix.length).includes("/"),
+        )
+        .map(
+          (candidate) =>
+            `<Contents><Key>${candidate}</Key><Size>${objects.get(candidate)?.length ?? 0}</Size><ETag>"${etagFor(objects.get(candidate) ?? "")}"</ETag><LastModified>2026-10-06T00:00:00.000Z</LastModified></Contents>`,
+        )
+        .join("");
+      const prefixes = deeper
+        .map(
+          (candidate) =>
+            `<CommonPrefixes><Prefix>${candidate.slice(0, candidate.indexOf("/", prefix.length) + 1)}</Prefix></CommonPrefixes>`,
+        )
+        .join("");
+      return new Response(
+        `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${rows}${prefixes}</ListBucketResult>`,
+        { status: 200 },
+      );
+    }
+    if (request.method === "PUT" && source !== null) {
+      objects.set(key, objects.get(decodeURIComponent(source).slice("/drive/".length)) ?? "");
+      return new Response('<CopyObjectResult><ETag>"copied"</ETag></CopyObjectResult>', {
+        status: 200,
+      });
+    }
+    if (request.method === "DELETE") {
+      return new Response(null, { status: 412 });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
+  const acct = { id: "acct-a", name: "A" };
+
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), store, acct, now);
+  assert.equal(
+    response.status,
+    409,
+    `status was ${response.status}, requests ${JSON.stringify(requests)}`,
+  );
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  assert.ok(
+    !requests.some((entry) => entry.startsWith("PUT ")),
+    `the refused restore never wrote over the save, got ${JSON.stringify(requests)}`,
+  );
+  assert.equal(objects.get(liveKey), "the file that was saved after the delete");
+  assert.equal(objects.get(parkedKey), "the parked text");
+});
+
+test("a multipart copy re-checks its guard after the parts, before the object exists", async () => {
+  // A multipart copy is many requests wide — one per byte range, then the
+  // completion — so a guard read before the first part can be many round-trips
+  // stale by the time the object exists. It is read again there, next to the
+  // write it guards (drive issue #605).
+  const gib = 1024 ** 3;
+  const sixGb = 6 * gib;
+  /** @type {boolean} whether a save has created the destination, set below */
+  let destinationHeld = false;
+  /** @type {string[]} */
+  const requests = [];
+  /** @type {undefined | (() => void)} lands after the guard's first read */
+  let afterFirstHead;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = String(request.url);
+    requests.push(
+      `${request.method} ${new URL(url).search} ${url.replace("http://127.0.0.1:9000/drive/u/acct-a", "")}`,
+    );
+    if (request.method === "HEAD") {
+      // The destination is empty on the first read and holds the save on the
+      // second, which is what a save landing mid-copy looks like to the store.
+      return new Response(
+        null,
+        destinationHeld ? { status: 200, headers: { etag: '"saved"' } } : { status: 404 },
+      );
+    }
+    if (url.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><Bucket>drive</Bucket><Key>k</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (url.includes("partNumber=")) {
+      // The save lands in the copy, between the guard's first read and the
+      // completion: this is the request the copy makes while it works.
+      if (afterFirstHead) {
+        const lands = afterFirstHead;
+        afterFirstHead = undefined;
+        lands();
+      }
+      return new Response(
+        `<CopyPartResult><ETag>&#34;etag-${new URL(url).searchParams.get("partNumber")}&#34;</ETag><LastModified>2026-10-02T00:00:00.000Z</LastModified></CopyPartResult>`,
+      );
+    }
+    if (request.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    return new Response(
+      "<CompleteMultipartUploadResult><Key>k</Key><ETag>whole</ETag></CompleteMultipartUploadResult>",
+    );
+  };
+  const scoped = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+
+  // A save lands while the parts are being copied, not before them: the first
+  // guard read passes, because at that moment the destination is still empty.
+  // The second read sees the save, so the object is never completed over it.
+  afterFirstHead = () => {
+    destinationHeld = true;
+  };
+  await assert.rejects(
+    scoped.copy("/Photos/archive.iso", "/.branches/work/archive.iso", sixGb, {
+      ifAbsent: true,
+    }),
+    (error) => error instanceof ChangedUnderUsError,
+  );
+  const heads = requests.filter((entry) => entry.startsWith("HEAD"));
+  assert.equal(
+    heads.length,
+    2,
+    `the guard is read before the parts and again after them: ${JSON.stringify(requests.slice(0, 3))}`,
+  );
+  assert.ok(
+    !requests.some((entry) => entry.startsWith("POST ?uploadId=")),
+    `the object was never completed over the save: ${JSON.stringify(requests.slice(-3))}`,
+  );
+  // The parts already uploaded are still stored and billed until the upload is
+  // aborted, so the guard refusing after the parts is still a failed copy and
+  // takes the same abort with it. Nothing is left behind for a provider to
+  // clean up later (drive issue #605).
+  assert.ok(
+    requests.some((entry) => entry.startsWith("DELETE ?uploadId=")),
+    `the failed copy aborted its upload: ${JSON.stringify(requests.slice(-3))}`,
+  );
+});
+
+test("a restore onto a path a save creates is refused by the S3 store too", async () => {
+  // The other half of the guard, and the case the route reaches when its
+  // listing found nothing at the destination: nothing there is held to as
+  // "still empty", so a save that creates the path before the copy is refused
+  // instead of overwritten (drive issue #605).
+  /** @type {Map<string, string>} */
+  const objects = new Map();
+  /** @type {string[]} */
+  const requests = [];
+  /** @type {undefined | (() => void)} lands after the guard's HEAD */
+  let afterHead;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const key = decodeURIComponent(new URL(request.url).pathname).slice("/drive/".length);
+    requests.push(`${request.method} ${key}`);
+    if (request.method === "HEAD") {
+      if (afterHead) {
+        const lands = afterHead;
+        afterHead = undefined;
+        lands();
+      }
+      const etag = objects.get(key);
+      return etag === undefined
+        ? new Response(null, { status: 404 })
+        : new Response("", { status: 200, headers: { etag } });
+    }
+    if (request.method === "PUT") {
+      objects.set(key, '"copied"');
+      return new Response("<CopyObjectResult/>", { status: 200 });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
+  const scoped = scopeStore(store, { id: "acct-a" });
+
+  // The destination was empty when the route listed it, and a save created it
+  // before the copy's guard read it, so the copy is refused.
+  afterHead = () => objects.set("u/acct-a/notes.md", '"saved-after-the-listing"');
+  await assert.rejects(
+    scoped.copy("/parked.txt", "/notes.md", 4, { ifAbsent: true }),
+    (error) => error instanceof ChangedUnderUsError && error.path === "u/acct-a/notes.md",
+  );
+  assert.equal(objects.get("u/acct-a/notes.md"), '"saved-after-the-listing"', "the save is kept");
+  assert.ok(
+    !requests.includes("PUT u/acct-a/notes.md"),
+    `the refused copy never reached the storage, got ${JSON.stringify(requests)}`,
+  );
+
+  // Nothing created it, so the copy lands as a restore onto an empty path must.
+  objects.delete("u/acct-a/notes.md");
+  await scoped.copy("/parked.txt", "/notes.md", 4, { ifAbsent: true });
+  assert.ok(requests.includes("PUT u/acct-a/notes.md"));
+});
+
+test("a copy whose destination cannot be read fails loudly", async () => {
+  // A HEAD that fails for any reason other than "not there" is a real failure.
+  // Answering "nothing is at that key" to a storage that could not say would
+  // turn a permission error into a copy over bytes it could not read
+  // (drive issue #605).
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.method === "HEAD") {
+      return new Response("<Error/>", { status: 403 });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
+  const scoped = scopeStore(store, { id: "acct-a" });
+
+  await assert.rejects(
+    scoped.copy("/parked.txt", "/notes.md", 4, { ifAbsent: true }),
+    /could not read u\/acct-a\/notes\.md before the copy/,
+  );
+});
+
+test("an oversize fallback keeps the empty-destination guard and aborts the upload", async () => {
+  // No size is passed, so the single CopyObject goes first and S3 refuses it as
+  // too large. The multipart copy that follows is still held to an empty
+  // destination: the HEAD before completion finds a save, so the copy throws and
+  // the upload is aborted (drive issue #605).
+  /** @type {string[]} */
+  const requests = [];
+  let destinationHeads = 0;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = String(request.url);
+    requests.push(`${request.method} ${new URL(url).search}`);
+    if (request.method === "HEAD") {
+      if (url.endsWith("/parked.txt")) {
+        return new Response(null, { status: 200, headers: { "content-length": "6442450944" } });
+      }
+      destinationHeads += 1;
+      return destinationHeads === 1
+        ? new Response(null, { status: 404 })
+        : new Response(null, { status: 200, headers: { etag: '"saved"' } });
+    }
+    if (request.method === "PUT" && !url.includes("partNumber=")) {
+      return new Response(
+        "<Error><Code>InvalidRequest</Code><Message>The specified copy source is larger than the maximum allowable size for a copy source</Message></Error>",
+        { status: 400 },
+      );
+    }
+    if (url.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (url.includes("partNumber=")) {
+      return new Response("<CopyPartResult><ETag>&#34;p&#34;</ETag></CopyPartResult>");
+    }
+    if (request.method === "DELETE") return new Response(null, { status: 204 });
+    return new Response(
+      "<CompleteMultipartUploadResult><ETag>whole</ETag></CompleteMultipartUploadResult>",
+    );
+  };
+  const scoped = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  await assert.rejects(
+    scoped.copy("/parked.txt", "/notes.md", undefined, { ifAbsent: true }),
+    (error) => error instanceof ChangedUnderUsError,
+  );
+  assert.ok(
+    requests.some((entry) => entry.startsWith("DELETE ?uploadId=")),
+    "the upload was aborted",
+  );
+  assert.ok(!requests.some((entry) => entry.startsWith("POST ?uploadId=")), "never completed");
+});
+
+test("a memory copy of a missing source reports the missing source, not a changed destination", async () => {
+  const store = createMemoryStore();
+  await store.write("u/1/there.txt", "x", "text/plain");
+  await assert.rejects(
+    store.copy("u/1/missing.txt", "u/1/there.txt", undefined, { ifAbsent: true }),
+    /not in the drive/,
+  );
 });
 
 test("a path too long for a storage key is refused with its own message", async () => {
@@ -2669,9 +3375,23 @@ test("the page's script reads the same endpoints and the same window", () => {
     ["UPLOAD_ENDPOINT", `${FILES_ENDPOINT}/upload`],
     ["DELETE_ENDPOINT", `${FILES_ENDPOINT}/delete`],
     ["RESTORE_ENDPOINT", `${FILES_ENDPOINT}/restore`],
+    // The rewind tab's route (drive#774) is src/rewind.js's constant, so the
+    // page names the one path the Worker serves and never a path of its own.
+    ["REWIND_ENDPOINT", REWIND_ENDPOINT],
   ]) {
     assert.ok(page.includes(`const ${name} = "${endpoint}";`), `the page must call ${endpoint}`);
   }
+  // The screen needs its door: the tab the click handler listens on.
+  assert.ok(page.includes('id="tab-rewind"'), "the page needs the rewind tab");
+  // The one sentence that names the trade a rewind makes. It is the page's own
+  // copy (no module owns it), so this file's rewind block pins it in the
+  // browser and this line keeps the page carrying it at all.
+  assert.ok(
+    page.includes(
+      "Rewind this branch? The agent's work is thrown away, and your files go back to what they were.",
+    ),
+    "the page must say what a rewind costs before it does it",
+  );
   // The 30-day window is core/files.js's number, and the page carries it only so
   // this gate can read it back: nothing in the page's own script touches it, so
   // a linter reads the line as dead and renames it. The underscore is the
@@ -2727,8 +3447,8 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   assert.ok(script.includes("if (!keepStatus)"));
   assert.equal(
     (script.match(/refresh\(true\);/g) || []).length,
-    3,
-    "delete, restore and upload all reload under their own result line",
+    4,
+    "delete, restore, upload and rewind all reload under their own result line",
   );
   // An upload failure says what happened; it never reads as done.
   assert.ok(script.includes("The upload did not finish. Try again."));
@@ -3159,7 +3879,10 @@ test("a deleted file nests under its own path, so restore is one prefix LIST", a
   assert.equal(parked.length, 1);
   assert.match(/** @type {string} */ (parked[0].name), /^[0-9]+$/);
 
-  // The restore asks that one prefix and nothing wider: no full-trash walk.
+  // The restore asks that one prefix for the parked versions, plus the live
+  // path listed before the copy and again after it, so a save that lands
+  // during the copy is still seen (drive issue #605). Nothing wider: no
+  // full-trash walk, which is what the drive#570 nested layout was for.
   /** @type {string[]} */
   const lists = [];
   const origList = store.list.bind(store);
@@ -3175,11 +3898,15 @@ test("a deleted file nests under its own path, so restore is one prefix LIST", a
     }),
   );
   assert.equal(restored.status, 200);
-  assert.equal(lists.length, 1, "the restore is ONE listing");
+  const trashWalks = lists.filter((path) => path.includes(TRASH_PATH));
+  assert.equal(trashWalks.length, 1, "the restore is ONE trash listing");
   assert.ok(
-    lists[0].includes(`${TRASH_PATH}/holiday.jpg`),
-    `the one listing is the file's own parked prefix, got ${lists[0]}`,
+    trashWalks[0].includes(`${TRASH_PATH}/holiday.jpg`),
+    `the one trash listing is the file's own parked prefix, got ${trashWalks[0]}`,
   );
+  // The live path is listed before the copy and again after it.
+  const destinationWalks = lists.filter((path) => !path.includes(TRASH_PATH));
+  assert.deepEqual(destinationWalks, ["u/1/", "u/1/"]);
 });
 
 // ------------------------------------------------- Range, validators, HEAD (drive#570)

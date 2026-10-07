@@ -229,13 +229,7 @@ func updateDrive(o updateOptions) error {
 	}
 	home := o.home
 	if home == "" {
-		home = os.Getenv("HOME")
-	}
-	if home == "" {
-		dir, homeErr := os.UserHomeDir()
-		if homeErr == nil {
-			home = dir
-		}
+		home = DefaultHome()
 	}
 	// The installed binary changed while the mount was running, and a mount
 	// serves the code it started with, so the update does not take effect on

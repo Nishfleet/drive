@@ -100,7 +100,8 @@ function deviceFromRow(row) {
     prefix: String(r.prefix ?? ""),
     capabilities: parseJsonList(r.capabilities),
     createdAt: Number(r.created_at ?? 0),
-    // Null is a key that never expires (a person's own device key); a column
+    // Null is a key that never expires, which a person's own device key is only
+    // when the provider named no session of its own (drive#544); a column
     // written before drive#106 is null too, so an existing row keeps the life
     // it had rather than being handed an expiry it was never minted with.
     expiresAt: r.expires_at === null || r.expires_at === undefined ? null : Number(r.expires_at),
@@ -960,6 +961,84 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * How many of the account's keys are live: not revoked, and not past
+     * their own hour. This is the count the mint cap (drive#552) is measured
+     * on — an hourly key that expired can no longer authenticate, and the
+     * nightly sweep removes its vendor key, so it is no longer one of the
+     * credentials the account holds.
+     * @param {string} accountId
+     * @param {number} atSeconds the read's now, in epoch seconds
+     * @returns {Promise<number>}
+     */
+    async countLiveKeys(accountId, atSeconds) {
+      const row = /** @type {{n?: number}|null|undefined} */ (
+        await first(
+          db,
+          `SELECT COUNT(*) AS n FROM devices
+            WHERE account_id = ?1
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?2)`,
+          accountId,
+          atSeconds,
+        )
+      );
+      return typeof row?.n === "number" ? row.n : 0;
+    },
+
+    /**
+     * The rows whose vendor key may still exist while the row itself is
+     * dead: revoked rows, and rows whose hour has passed (the vendor's key
+     * has no hour of its own — 0012 put the hour on our row only). Live is
+     * `expires_at > at` (countLiveKeys); sweepable is `expires_at <= at`, so
+     * the exact expiry second frees the cap slot and is swept the same night.
+     * A row the sweep has already stamped (0033 `vendor_key_removed_at`) is
+     * left out, so one vendor key is removed at most once and the sweep's
+     * work cannot grow with every key the account ever held. Rows with no
+     * vendor key id (the stand-in credential, which never reached the vendor)
+     * are left out too: there is nothing there to remove.
+     * @param {number} atSeconds the sweep's now, in epoch seconds
+     * @param {number} limit the most rows one sweep takes
+     * @returns {Promise<Array<{keyId: string, vendorKeyId: string, name: string, kind: string}>>}
+     */
+    async listSweepableKeys(atSeconds, limit) {
+      const result = await db
+        .prepare(
+          `SELECT id, b2_key_id, name, kind FROM devices
+           WHERE vendor_key_removed_at IS NULL
+             AND b2_key_id IS NOT NULL AND b2_key_id != ''
+             AND (revoked_at IS NOT NULL
+                  OR (expires_at IS NOT NULL AND expires_at <= ?1))
+           ORDER BY created_at
+           LIMIT ?2`,
+        )
+        .bind(atSeconds, limit)
+        .all();
+      return (result.results ?? [])
+        .filter((row) => typeof row?.id === "string" && typeof row?.b2_key_id === "string")
+        .map((row) => ({
+          keyId: /** @type {string} */ (row.id),
+          vendorKeyId: /** @type {string} */ (row.b2_key_id),
+          name: typeof row.name === "string" ? row.name : "",
+          kind: typeof row.kind === "string" ? row.kind : "",
+        }));
+    },
+
+    /**
+     * Stamp one row's vendor key as accounted for. Written once by the sweep
+     * after the vendor stopped holding the key; read by nothing else.
+     * @param {string} keyId
+     * @param {number} atSeconds
+     */
+    async markVendorKeyRemoved(keyId, atSeconds) {
+      await run(
+        db,
+        "UPDATE devices SET vendor_key_removed_at = ?1 WHERE id = ?2",
+        atSeconds,
+        keyId,
+      );
+    },
+
+    /**
      * The row a storage key authenticates, or null. A revoked key, a wrong
      * secret and a credential past its hour are all null: the caller learns
      * only that the key does not work, never which half was wrong.
@@ -1248,6 +1327,37 @@ export function createD1DeviceStore(db, options = {}) {
      */
     async cardAdded(accountId) {
       return readCardAdded(accountId);
+    },
+
+    /**
+     * The Better Auth `user` row behind an account id (drive issue #684), for
+     * the display name an upload page and its digest show. The `user` table is
+     * Better Auth's own (migrations/drive/0005_better_auth.sql) and `id` is
+     * its primary key, so the upload link row's `account_id` is the id here;
+     * the read matches src/auth.js's own columns rather than the `accounts`
+     * billing row. `name` is the row's own value and may be blank: a caller
+     * that shows a name to a stranger must not fall back to the address, and
+     * the digest caller that may use the address already has `email`. A blank
+     * address (an account that cannot be mailed) reads null, so the caller
+     * reports it instead of mailing nobody.
+     * @param {string} accountId
+     * @returns {Promise<{id: string, name: string, email: string}|null>}
+     */
+    async accountById(accountId) {
+      const row = /** @type {{id?: unknown, name?: unknown, email?: unknown}|null|undefined} */ (
+        await first(db, 'SELECT id, name, email FROM "user" WHERE id = ?1', accountId)
+      );
+      if (row === null || row === undefined || typeof row.id !== "string" || row.id === "") {
+        return null;
+      }
+      if (typeof row.email !== "string" || row.email === "") {
+        return null;
+      }
+      return {
+        id: row.id,
+        name: typeof row.name === "string" ? row.name : "",
+        email: row.email,
+      };
     },
 
     /**

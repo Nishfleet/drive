@@ -77,17 +77,15 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 		return err
 	}
 	endpoint := base + RevokePath
-	client := &http.Client{
-		Timeout: revokeTimeout,
-		// The key rides in the Authorization header, and Go's client replays
-		// that header on a redirect it follows — so a redirect is a way to put
-		// the storage secret somewhere it was never meant to go, including a
-		// downgrade from https to http on the same host. The revoke endpoint is
-		// a fixed route on a configured host and never redirects, so nothing is
-		// followed and a 3xx falls out as the non-204 it is.
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := newHTTPClient(revokeTimeout)
+	// The key rides in the Authorization header, and Go's client replays
+	// that header on a redirect it follows — so a redirect is a way to put
+	// the storage secret somewhere it was never meant to go, including a
+	// downgrade from https to http on the same host. The revoke endpoint is
+	// a fixed route on a configured host and never redirects, so nothing is
+	// followed and a 3xx falls out as the non-204 it is.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
 	if err != nil {
@@ -147,15 +145,23 @@ func (noAPIKeyStore) Revoke(KeyPair) error {
 // revokeWarning is the sentence `drive logout` says when the local copy is
 // gone but the key is still live on the server. It is the acceptance text of
 // issue #75 and it is written to be read by someone who has just handed the
-// machine in, so it names the exact state and the exact next command.
-const revokeWarning = "signed out here; the key is still live, run drive logout again when online"
+// machine in, so it names the exact state.
+//
+// It is read out of the one message table instead of being spelled out here a
+// second time. The two wordings of this one sentence had drifted apart: the
+// table entry carried its own next line inside the first line as well
+// (drive issue #562), so a person was told what to do twice on one failure
+// while this variable still said the old single line. Reading it from
+// key-still-live means there is only ever one wording of the sentence, and
+// that entry's own next line remains the single place the retry step lives.
+var revokeWarning = messageTable["key-still-live"][0]
 
 // revokePendingWarning is said by a later `drive logout` that finds a receipt
 // from an earlier one whose revoke never landed (pendingRevokePath). The
 // receipt proves a key is still live but holds no secret, so this run cannot
-// revoke it; saying so is the whole point. It deliberately does not repeat
-// revokeWarning's "run drive logout again": with nothing left to authenticate
-// with, that command could not do it.
+// revoke it; saying so is the whole point. It deliberately does not carry the
+// retry step key-still-live names: with nothing left to authenticate with,
+// that command could not do it.
 //
 // It does name the way out. The person's next step is the devices page, where a
 // key nobody holds can be turned off, and after that the record has to be

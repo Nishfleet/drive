@@ -25,10 +25,13 @@
 // is a deployment that is not signed in — not one with a weak session or a
 // link that points at the wrong host.
 import { passkey } from "@better-auth/passkey";
-import { betterAuth } from "better-auth";
-import { magicLink, twoFactor } from "better-auth/plugins";
+import { betterAuth } from "better-auth/minimal";
+import { magicLink } from "better-auth/plugins/magic-link";
+import { twoFactor } from "better-auth/plugins/two-factor";
+import { d1Adapter } from "./auth-d1-adapter.js";
 import { sha256Hex } from "./db.js";
 import { sendEmail } from "./email-send.js";
+import { DAY_MS } from "./units.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
 
@@ -64,7 +67,7 @@ export const SIGNIN_LINK_TTL_SECONDS = 600;
  * used, so signing in every week would be a support ticket rather than a
  * security win.
  */
-export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+export const SESSION_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
 /**
  * The page a signed-in person lands on after following their link.
@@ -195,7 +198,9 @@ export async function consumeSigninReturn(db, token) {
 export function createAuth(options) {
   return betterAuth({
     appName: "drive",
-    database: options.database,
+    // Minimal Better Auth plus the D1 adapter: the full entry pulls Kysely
+    // and every unused SQL dialect into the site Worker bundle (drive#758).
+    database: d1Adapter(/** @type {D1Database} */ (options.database)),
     secret: options.secret,
     // The one address this deployment is served on. It is configuration, not
     // something read off the request, because a link mailed to a caller is
@@ -242,7 +247,7 @@ export function createAuth(options) {
       expiresIn: SESSION_TTL_SECONDS,
       // Refresh a session that is still being used, so an active person is not
       // signed out mid-week, and so an abandoned one still expires.
-      updateAge: 24 * 60 * 60,
+      updateAge: DAY_MS / 1000,
     },
     advanced: {
       cookiePrefix: AUTH_COOKIE_PREFIX,
@@ -341,7 +346,7 @@ export function createAuth(options) {
  * @param {string} baseURL the deployment's public address
  * @returns {string}
  */
-export function signinLink(token, baseURL) {
+function signinLink(token, baseURL) {
   return `${baseURL.replace(/\/$/, "")}${SIGNIN_LINK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
@@ -439,12 +444,8 @@ async function sendSigninLink(env, link) {
  */
 export const IGNORING_SENTENCE = "If you did not ask for this, ignore it.";
 
-/** The device line's unknown half: the words a request without a readable
- * user-agent gets, so the sentence still names a device. One string, so
- * every mail this code sends carries the same words in the same place.
- * @type {string}
- */
-export const UNKNOWN_DEVICE_NAME = "an unknown device";
+// Words a request without a readable user-agent gets, so the mail still names a device.
+const UNKNOWN_DEVICE_NAME = "an unknown device";
 
 /**
  * Product names this repo spells out, in the order they win: Edge, Opera,

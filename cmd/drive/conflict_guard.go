@@ -89,22 +89,33 @@ const conflictPollMax = 100
 // heard about.
 const conflictProtectMax = 64 << 20
 
-// conflictClaimPolls is how long a path whose upload has left the queue
-// is watched while the plain path still holds the version that preceded
-// the save (the upload has not landed, or it landed on a path that had no
-// object). Such a path is not a decided conflict, and staying on it
-// forever would grow the map on a mount that never stops.
-const conflictClaimPolls = 20
+// conflictWatchWindow is how long the guard keeps watching a path after its
+// upload has left the queue, before it concludes nothing will land on top of
+// it. It has to outlast the other device's slowest ordinary landing. Two
+// uploads of one path at the same instant make one of them fail rclone's size
+// check, because the object it reads back is the other device's. rclone then
+// removes that object and retries after twice the write-back delay (10s), and
+// the retry after that waits twice as long again (20s). For that whole time the
+// plain path is either empty or holds the version that preceded the save, and
+// then another device's bytes land on top (drive#813). Watching for the 5s
+// write-back window alone, or for one retry, ends the watch just before that
+// landing and the losing save has no conflict copy.
+const conflictWatchWindow = 40 * time.Second
+
+// conflictClaimPolls is how long a path whose upload has left the queue is
+// watched while the plain path is empty or still holds the version that
+// preceded the save (the upload has not landed, or another device's failed
+// upload removed this device's object and is about to retry). Such a path is
+// not a decided conflict, and staying on it forever would grow the map on a
+// mount that never stops.
+const conflictClaimPolls = int(conflictWatchWindow / conflictInterval)
 
 // conflictWinPolls is how long the guard keeps watching after this
 // device's own save has landed at the plain path, before concluding the
-// save was not overwritten. Another device's upload can land on top of
-// this one for the whole of one sync window after it: a save made two
-// seconds later still has its five-second write-back to land on top of an
-// upload that landed a moment ago. The plain path is polled every
-// conflictInterval, so conflictWinPolls polls cover that window with
-// margin for rclone's own scheduling.
-const conflictWinPolls = 20
+// save was not overwritten. Another device's upload can land on top of this
+// one for the whole of conflictWatchWindow after it. The plain path is polled
+// every conflictInterval, so this many polls cover that window.
+const conflictWinPolls = int(conflictWatchWindow / conflictInterval)
 
 // conflictHashFailPolls is how many remote-hash failures one path may
 // take after it leaves the queue before the skip is named. Holding
@@ -221,6 +232,12 @@ type conflictBackend interface {
 	// is never true here: a conflict copy is always in the folder
 	// whose save was lost, so only that folder's listing changed.
 	refresh(ctx context.Context, recursive bool) error
+	// reachable reports whether the object store answers. The post-claim
+	// refresh must never run against a dead backend: rclone forces the
+	// directory cache stale before it re-lists, so a failed refresh would
+	// make every kept-offline open fail until the cache expired
+	// (issue #541, rclone#1963).
+	reachable(ctx context.Context) error
 }
 
 // ConflictResult is what one guard pass did, so a proof and a log
@@ -447,9 +464,17 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		// directory cache is what a listing of the mount reads, so
 		// both devices need it refreshed to see them; this one does
 		// it for its own listing. The other device sees the copy on
-		// its next listing, which is the same 5s --dir-cache-time
-		// step 3 measures for any save: no save is pushed to the
-		// other machine, and this is no different.
+		// the fill loop's next vfs/refresh while storage answers
+		// (issue #541): no save is pushed to the other machine, and
+		// this is no different.
+		// A back-end that has gone down between the claim and this call is
+		// left alone: vfs/refresh forces the directory cache stale before it
+		// re-lists, so the refresh would poison the 24h cache and turn a
+		// kept-offline folder into Input/output errors (issue #541). The fill
+		// loop refreshes when the link comes back.
+		if err := b.reachable(ctx); err != nil {
+			return res, nil
+		}
 		if err := b.refresh(ctx, false); err != nil {
 			return res, fmt.Errorf("conflict: refresh after claiming: %w", err)
 		}
@@ -1011,281 +1036,6 @@ func freeConflictName(ctx context.Context, b conflictBackend, path, device strin
 		}
 	}
 	return "", fmt.Errorf("ran out of conflict names for %s", path)
-}
-
-// queueEntry is one upload in the mount's VFS queue, in rclone's own
-// field names (the JSON keys come straight from vfs/queue).
-type queueEntry struct {
-	Name      string  `json:"name"`
-	Size      int64   `json:"size"`
-	ID        int     `json:"id"`
-	Tries     int     `json:"tries"`
-	Uploading bool    `json:"uploading"`
-	Delay     float64 `json:"delay"`
-	Expiry    float64 `json:"expiry"`
-}
-
-// queue is rclone's own list of this mount's pending uploads: the
-// paths this device has saved and storage has not taken yet. It is
-// the only handle on the window in which a conflicting save happens,
-// and it is rclone's answer to the question, not a second index
-// this product keeps.
-func (c *rcClient) queue(ctx context.Context) ([]queueEntry, error) {
-	params := map[string]string{}
-	if c.fs != "" {
-		params["fs"] = c.fs
-	}
-	var reply struct {
-		Queue []queueEntry `json:"queue"`
-	}
-	if err := c.call(ctx, "vfs/queue", params, &reply); err != nil {
-		return nil, err
-	}
-	if reply.Queue == nil {
-		return []queueEntry{}, nil
-	}
-	return reply.Queue, nil
-}
-
-// remoteHas reports whether an object exists at the plain path.
-// A missing object is an answer, not an error.
-func (c *rcClient) remoteHas(ctx context.Context, name string) (bool, error) {
-	var reply struct {
-		Item json.RawMessage `json:"item"`
-	}
-	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
-		return false, err
-	}
-	return string(reply.Item) != "null", nil
-}
-
-// parentContents names the files one folder of the remote holds. The
-// folder is asked for first (operations/stat): a folder that is not
-// there yet holds no paths and that is an answer, because the first
-// save into a new folder queues before rclone has created the folder
-// in storage. The listing itself is rclone's operations/list, which
-// names files at that one level — the level the saves in it live at.
-func (c *rcClient) parentContents(ctx context.Context, dir string) (map[string]bool, error) {
-	if dir != "" {
-		var statReply struct {
-			Item json.RawMessage `json:"item"`
-		}
-		if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": dir}, &statReply); err != nil {
-			if isRemoteMissing(err) {
-				return map[string]bool{}, nil
-			}
-			return nil, err
-		}
-		if string(statReply.Item) == "null" {
-			return map[string]bool{}, nil
-		}
-	}
-	var reply struct {
-		List []struct {
-			Name  string `json:"Name"`
-			IsDir bool   `json:"IsDir"`
-		} `json:"list"`
-	}
-	if err := c.call(ctx, "operations/list", map[string]string{"fs": c.fs, "remote": dir}, &reply); err != nil {
-		if isRemoteMissing(err) {
-			return map[string]bool{}, nil
-		}
-		return nil, err
-	}
-	present := make(map[string]bool, len(reply.List))
-	for _, entry := range reply.List {
-		if !entry.IsDir {
-			present[entry.Name] = true
-		}
-	}
-	return present, nil
-}
-
-// remoteHash is the md5 of the object at the plain path, and "" when
-// there is no object there. Existence is asked first: operations/hashsum
-// on a path that is not there is an error, and a save that lands where
-// nothing was is exactly the case the rule has to name, so "no object" is
-// an answer and only a failed read is an error.
-func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) {
-	exists, err := c.remoteHas(ctx, name)
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		return "", nil
-	}
-	var reply struct {
-		Hashsum []string `json:"hashsum"`
-	}
-	hashErr := c.call(ctx, "operations/hashsum", map[string]string{
-		"fs": c.fs, "remote": name, "hashType": "md5",
-	}, &reply)
-	if hashErr == nil {
-		hash, err := matchHashSum(reply.Hashsum, name)
-		if err == nil && hash != "" {
-			return hash, nil
-		}
-		hashErr = err
-	}
-	fp, fpErr := c.remoteFingerprint(ctx, name)
-	if fpErr != nil {
-		if hashErr != nil {
-			return "", hashErr
-		}
-		return "", fpErr
-	}
-	return fp, nil
-}
-
-// remoteVersion is the object's size and mtime from operations/stat, and
-// ok is false when there is no object at the plain path.
-func (c *rcClient) remoteVersion(ctx context.Context, name string) (int64, time.Time, bool, error) {
-	var reply struct {
-		Item *struct {
-			Size    int64     `json:"Size"`
-			ModTime time.Time `json:"ModTime"`
-		} `json:"item"`
-	}
-	if err := c.call(ctx, "operations/stat", map[string]string{"fs": c.fs, "remote": name}, &reply); err != nil {
-		return 0, time.Time{}, false, err
-	}
-	if reply.Item == nil {
-		return 0, time.Time{}, false, nil
-	}
-	return reply.Item.Size, reply.Item.ModTime, true, nil
-}
-
-// sameVersion reports whether an object is the file this device hashed.
-// The mtime is compared to the second because a backend may keep less
-// precision than the local filesystem does.
-func sameVersion(size int64, modTime time.Time, localSize int64, localMtime time.Time) bool {
-	if size != localSize || localMtime.IsZero() {
-		return false
-	}
-	d := modTime.Sub(localMtime)
-	return d < time.Second && d > -time.Second
-}
-
-// remoteFingerprint is the object's ETag or version when MD5 is missing
-// (multipart S3 uploads, web uploads). rclone's operations/stat ID is the
-// S3 ETag; size and modtime are the fallback when even that is empty.
-func (c *rcClient) remoteFingerprint(ctx context.Context, name string) (string, error) {
-	var reply struct {
-		Item struct {
-			ID      string            `json:"ID"`
-			Size    int64             `json:"Size"`
-			ModTime string            `json:"ModTime"`
-			Hashes  map[string]string `json:"Hashes"`
-		} `json:"item"`
-	}
-	if err := c.call(ctx, "operations/stat", map[string]string{
-		"fs": c.fs, "remote": name,
-	}, &reply); err != nil {
-		return "", err
-	}
-	if md5 := reply.Item.Hashes["MD5"]; md5 != "" {
-		return md5, nil
-	}
-	if reply.Item.ID != "" {
-		return "etag:" + reply.Item.ID, nil
-	}
-	return fmt.Sprintf("ver:%d:%s", reply.Item.Size, reply.Item.ModTime), nil
-}
-
-// matchHashSum picks the one hash of name out of a hashsum reply. The
-// reply echoes other paths when the remote names a prefix, so the
-// entry is matched by the name that follows the hash rather than by
-// taking the first line.
-func matchHashSum(lines []string, name string) (string, error) {
-	base := remoteBase(name)
-	var fallback string
-	for _, line := range lines {
-		hash, path, ok := splitHashLine(line)
-		if !ok {
-			continue
-		}
-		// The remote that was asked for is matched first, so two files
-		// that share a base name in different folders cannot trade
-		// hashes. The base name is the fallback for a backend that
-		// answers with the name its fs was asked for, and only when it
-		// is the only entry: a reply carrying other paths is not
-		// answered by guessing which one was meant.
-		if path == name {
-			return hash, nil
-		}
-		if path == base && fallback == "" {
-			fallback = hash
-		}
-	}
-	if fallback != "" && len(lines) == 1 {
-		return fallback, nil
-	}
-	return "", fmt.Errorf("no md5 for %q in %v", name, lines)
-}
-
-// splitHashLine splits one hashsum reply line into its hash and its path.
-// The hash is the first field and the path is the rest of the line, because
-// a path may contain spaces: "report (conflict, mac).txt" is one name, not
-// the word after the hash.
-func splitHashLine(line string) (hash, path string, ok bool) {
-	// rclone prints "hash  path" with two spaces. An empty MD5 (multipart
-	// ETag without md5 metadata) is "  path", which TrimSpace would turn
-	// into a path-only line and then into an error. Keep the two-space
-	// split so an empty hash is still a hash.
-	trimmed := strings.TrimRight(line, " \t\n")
-	if trimmed == "" {
-		return "", "", false
-	}
-	if i := strings.Index(trimmed, "  "); i >= 0 {
-		return strings.TrimSpace(trimmed[:i]), strings.TrimSpace(trimmed[i+2:]), true
-	}
-	i := strings.IndexAny(trimmed, " \t")
-	if i <= 0 {
-		return "", "", false
-	}
-	return trimmed[:i], strings.TrimSpace(trimmed[i+1:]), true
-}
-
-// remoteBase is the last segment of a '/'-separated remote path.
-func remoteBase(name string) string {
-	if i := strings.LastIndex(name, "/"); i >= 0 {
-		return name[i+1:]
-	}
-	return name
-}
-
-// copyLocalToRemote copies one file this device can read into the
-// mount's own remote with rclone's own copy operation: the object
-// store already holds the upload path and the credentials, and rclone
-// is already the thing that talks to it, so this is not a second way
-// to write to storage. srcRemote is relative to srcRoot, which for a
-// conflict copy is this device's own mount.
-func (c *rcClient) copyLocalToRemote(ctx context.Context, srcRoot, srcRemote, dstRemote string) error {
-	srcFs := srcRoot
-	if filepath.IsAbs(srcRoot) {
-		// Force the local backend. rclone's cache folder is named
-		// drive{XXXX} when the remote has extra config, and `{XXXX}`
-		// is also rclone's connection-string config syntax.
-		srcFs = ":local:" + srcRoot
-	}
-	var reply map[string]any
-	return c.call(ctx, "operations/copyfile", map[string]string{
-		"srcFs":     srcFs,
-		"srcRemote": srcRemote,
-		"dstFs":     c.fs,
-		"dstRemote": dstRemote,
-	}, &reply)
-}
-
-// isRemoteMissing reports a path rclone does not have yet: a listing or
-// stat of a prefix that has never been written is "no files", not a
-// failed pass.
-func isRemoteMissing(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "directory not found")
 }
 
 // ConflictGuardStatePath is where the running guard reports how far

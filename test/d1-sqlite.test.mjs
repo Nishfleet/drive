@@ -1,8 +1,9 @@
-// The D1 adapter's binding contract (test/d1-sqlite.mjs). Two paths run the
-// meter's real SQL against node:sqlite - the D1 adapter (bindForNodeSqlite) and
-// the raw handle every test reads rows back from - and both must bind a
-// numbered placeholder the way D1 does: `?N` takes the value at index N - 1,
-// including when the statement uses one index in two places.
+// The D1 stand-ins' contract, and the binding rules both of them share
+// (test/d1-sqlite.mjs and test/harness.mjs). Two paths run the meter's real SQL
+// against node:sqlite - the D1 adapter (bindForNodeSqlite) and the raw handle
+// every test reads rows back from - and both must bind a numbered placeholder
+// the way D1 does: `?N` takes the value at index N - 1, including when the
+// statement uses one index in two places.
 //
 // The raw handle used to rewrite `?1` to `?` in appearance order, so `?1` twice
 // became two placeholders carrying one bound value and the second read NULL.
@@ -10,10 +11,274 @@
 // NULL and a caller that coalesces it reads 0 (drive#163's month window summed
 // every month to 0; drive#231 files it). These tests read the same shapes back
 // through the raw handle and the adapter, so the two paths cannot drift again.
+//
+// The tests below the numbered ones are the other half of the same bargain
+// (drive#579): a stand-in for the database is only worth having if it refuses
+// what the database refuses, commits what the database commits, and hands back
+// the row a `RETURNING` clause returned. A stand-in that is laxer than D1 is
+// how a test proves something true only of itself.
 
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { test } from "node:test";
-import { makeMeteredDB } from "./d1-sqlite.mjs";
+import { MIGRATION_FILES, makeMeteredDB } from "./d1-sqlite.mjs";
+import { createTestD1, DRIVE_MIGRATIONS } from "./harness.mjs";
+
+/**
+ * The migration list the harness applies and the folder it comes from, so a
+ * test never runs against a schema production does not have.
+ */
+test("the harness's migration list IS the folder, read from disk", () => {
+  const folder = readdirSync(new URL("../migrations/drive/", import.meta.url))
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
+  assert.deepEqual([...MIGRATION_FILES], folder, "the applied list is not the folder");
+  assert.deepEqual(
+    [...DRIVE_MIGRATIONS],
+    folder.map((name) => `drive/${name}`),
+    "the list tests hand to createTestD1 is not the folder, prefixed",
+  );
+  // The files the hand-written lists left out. This is main's own
+  // DRIVE_MIGRATIONS, diffed against the folder, not a memory of it: a test
+  // bound a column of one of these on a schema that did not have it.
+  for (const name of [
+    "0006_usage_stored_bytes.sql",
+    "0007_device_codes.sql",
+    "0013_billing_pushes.sql",
+    "0017_agent_caps_drop_month_key.sql",
+    "0017_drop_branches_snapshot.sql",
+    "0018_agent_caps_drop_month_spend.sql",
+    "0022_nightly_sizes.sql",
+    "0023_file_versions_hidden_at.sql",
+    "0025_meter_scale.sql",
+    "0029_welcome_sent_at.sql",
+  ]) {
+    assert.ok(DRIVE_MIGRATIONS.includes(`drive/${name}`), `${name} is missing from the list`);
+  }
+  // And the default really applies all of them: the tables a file near the end
+  // creates exist on a database built with no options at all.
+  const db = createTestD1();
+  const tables = db.sqlite
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+    .all()
+    .map((row) => row.name);
+  for (const table of ["events_seen", "device_tokens", "billing_pushes"]) {
+    assert.ok(tables.includes(table), `the default schema has no ${table} table`);
+  }
+  const guards = db.sqlite
+    .prepare("PRAGMA table_info(accounts)")
+    .all()
+    .map((row) => row.name);
+  assert.ok(guards.includes("card_fingerprint"), "accounts carries no card_fingerprint column");
+});
+
+test("the harness refuses a bind value D1 refuses, in D1's own words", async () => {
+  const db = createTestD1();
+  // D1's type conversion table (developers.cloudflare.com/d1/worker-api/,
+  // "Type conversion", footnote 5): a query carrying `undefined` answers a
+  // D1_TYPE_ERROR. The harness used to turn it into NULL, so a statement that
+  // production refuses ran here and wrote a NULL into a NOT NULL column.
+  await assert.rejects(
+    () => db.prepare("SELECT ?1 AS v").bind(undefined).first(),
+    /D1_TYPE_ERROR/,
+    "an undefined bind must fail here the way it fails on D1",
+  );
+  // A Date is not in that table at all, and the harness used to bind its epoch
+  // millis: code that writes an instant passed on this engine and threw
+  // D1_TYPE_ERROR on every real request.
+  await assert.rejects(
+    () => db.prepare("SELECT ?1 AS v").bind(new Date(1_800_000_000_000)).first(),
+    /D1_TYPE_ERROR/,
+    "a Date bind must fail here the way it fails on D1",
+  );
+  // A boolean IS in that table (footnote 3): D1 casts it to an INTEGER, 1 for
+  // true, and reads it back as 1. Coercing it is matching D1, not hiding it,
+  // so the adapter keeps doing it - what it must not do is refuse a bind the
+  // database takes, because then a passing test would mean nothing.
+  /**
+   * The value a bind comes back as, through one `SELECT ?1`.
+   * @param {unknown} value
+   */
+  const bound = async (value) => {
+    const row = await db.prepare("SELECT ?1 AS v").bind(value).first();
+    return /** @type {{v: unknown}} */ (row).v;
+  };
+  assert.equal(await bound(true), 1);
+  assert.equal(await bound(false), 0);
+  assert.equal(await bound("x"), "x");
+  assert.equal(await bound(null), null);
+  assert.equal(await bound(42), 42);
+});
+
+test("the harness's batch is a transaction: a failure leaves no rows behind", async () => {
+  const db = createTestD1();
+  /** @returns {number} */
+  const rows = () =>
+    Number(
+      /** @type {{n: number}} */ (db.sqlite.prepare("SELECT COUNT(*) AS n FROM events_seen").get())
+        .n,
+    );
+  assert.equal(rows(), 0);
+  // The second statement PREPARES fine and fails when it runs - a duplicate
+  // primary key. D1 sends a batch as one transaction, so the first statement's
+  // row rolls back with it. Run as two independent writes, the dedup row would
+  // survive and a test would read a half-written event as a whole one.
+  // (A statement that fails at prepare cannot prove this: it throws while the
+  // batch is being built, so the first write never happens at all.)
+  await assert.rejects(
+    () =>
+      db.batch([
+        db
+          .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
+          .bind("half-written", 1_800_000_000_000),
+        db
+          .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
+          .bind("half-written", 1_800_000_000_000),
+      ]),
+    /UNIQUE constraint failed/i,
+  );
+  assert.equal(rows(), 0, "the first statement's row rolled back with the failed batch");
+  // A batch that does commit commits every statement, order preserved.
+  const results = await db.batch([
+    db.prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)").bind("one", 1),
+    db.prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)").bind("two", 2),
+  ]);
+  assert.equal(results.length, 2);
+  assert.equal(rows(), 2);
+});
+
+test("an INSERT ... RETURNING comes back as the row it wrote, under both adapters", async () => {
+  // The shape src/share.js and src/waitlist.js write. D1 answers such a write
+  // with the row in `results`; the meter's adapter used to route every write
+  // through `run()` and answer `results: []`, so the row read back as no row
+  // at all - a link created and immediately looked up came back missing.
+  const sql =
+    "INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2) RETURNING b2_event_id, received_at";
+  /** @type {[string, D1Database][]} */
+  const adapters = [
+    ["harness", createTestD1()],
+    ["meter adapter", makeMeteredDB().db],
+  ];
+  for (const [name, db] of adapters) {
+    const written = await db.prepare(sql).bind(`evt-${name}`, 1_800_000_000_000).run();
+    assert.equal(written.results.length, 1, `${name} returned no row for the row it wrote`);
+    assert.equal(written.results[0].b2_event_id, `evt-${name}`);
+    assert.equal(written.results[0].received_at, 1_800_000_000_000);
+    assert.equal(written.meta.changes, 1, `${name} reported the write as changing nothing`);
+    // The same statement through first(): the row, and the one column the
+    // caller names. `first()` used to ignore its column argument, so a caller
+    // that read a scalar in production read a whole row here.
+    // Spread: node:sqlite hands back a null-prototype row, so the object is
+    // compared as the plain record it reads as.
+    const numbered = db
+      .prepare(
+        "SELECT received_at AS t, b2_event_id AS id FROM events_seen WHERE received_at = ?2 AND b2_event_id = ?1",
+      )
+      .bind(`evt-${name}`, 1_800_000_000_000);
+    const row = await numbered.first();
+    assert.deepEqual({ ...row }, { t: 1_800_000_000_000, id: `evt-${name}` });
+    assert.equal(
+      await numbered.first("t"),
+      1_800_000_000_000,
+      `${name} ignored first()'s column on a numbered statement`,
+    );
+    // `meta.changes` is this statement's own count: `changes()` after a CREATE
+    // still names the last INSERT, and a `WITH ... INSERT` does not start with
+    // INSERT, so guessing from the SQL text answered the wrong number.
+    const created = await db
+      .prepare(`CREATE TABLE tmp_chg_${name.replaceAll(" ", "_")} (id TEXT PRIMARY KEY)`)
+      .run();
+    assert.equal(created.meta.changes, 0, `${name} reported a CREATE as changing rows`);
+    const replaced = await db
+      .prepare("INSERT OR REPLACE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
+      .bind(`evt-${name}`, 2)
+      .run();
+    assert.equal(replaced.meta.changes, 1, `${name} missed INSERT OR REPLACE`);
+    const viaWith = await db
+      .prepare(
+        "WITH new_row AS (SELECT ?1 AS id, ?2 AS at) INSERT INTO events_seen (b2_event_id, received_at) SELECT id, at FROM new_row",
+      )
+      .bind(`with-${name}`, 3)
+      .run();
+    assert.equal(viaWith.meta.changes, 1, `${name} missed a WITH ... INSERT`);
+    // And no row is null, in both adapters.
+    assert.equal(
+      await db
+        .prepare("SELECT b2_event_id FROM events_seen WHERE b2_event_id = ?1")
+        .bind("nope")
+        .first(),
+      null,
+    );
+    assert.equal(
+      await db
+        .prepare("SELECT b2_event_id FROM events_seen WHERE b2_event_id = ?1")
+        .bind("nope")
+        .first("b2_event_id"),
+      null,
+    );
+  }
+});
+
+test("both stand-ins bind a value the way D1's conversion table does", async () => {
+  // One table, in one place (test/d1-sqlite.mjs `d1BindValue`), so the meter's
+  // adapter and the drive-side harness cannot bind one value two ways. The
+  // types node:sqlite takes on its own are the trap: it stores a `Date` as
+  // NULL, which is a write D1 refuses to send (drive#579).
+  /** @type {[string, D1Database][]} */
+  const adapters = [
+    ["harness", createTestD1()],
+    ["meter adapter", makeMeteredDB().db],
+  ];
+  for (const [name, db] of adapters) {
+    /**
+     * The value a bind comes back as, through one `SELECT ?1`.
+     * @param {unknown} value
+     */
+    const bound = async (value) => {
+      const row = await db.prepare("SELECT ?1 AS v").bind(value).first();
+      return /** @type {{v: unknown}} */ (row).v;
+    };
+    assert.equal(await bound(true), 1, `${name} did not cast a boolean to D1's INTEGER`);
+    assert.equal(await bound(false), 0, `${name} did not cast a boolean to D1's INTEGER`);
+    assert.equal(await bound("x"), "x", `${name} rebinding a string`);
+    assert.equal(await bound(42), 42, `${name} rebound a number`);
+    assert.equal(await bound(null), null, `${name} rebound null`);
+    await assert.rejects(
+      () => db.prepare("SELECT ?1 AS v").bind(undefined).first(),
+      /D1_TYPE_ERROR/,
+      `${name} must refuse an undefined bind the way D1 refuses it`,
+    );
+    await assert.rejects(
+      () => db.prepare("SELECT ?1 AS v").bind(new Date(1_800_000_000_000)).first(),
+      /D1_TYPE_ERROR/,
+      `${name} must refuse a Date bind the way D1 refuses it`,
+    );
+  }
+});
+
+test("the harness's default schema and the meter adapter's are the same schema", () => {
+  // Names alone are not the schema: a column, an index or a constraint missing
+  // from one stand-in and not the other is exactly the drift this issue is
+  // about, and it is invisible to a name comparison. Every table, its columns
+  // in declared order with their types, NOT NULL and defaults, and every index
+  // and trigger, are compared here.
+  /** @param {{prepare(sql: string): {all(): Record<string, unknown>[]}}} sqlite */
+  const shapeOf = (sqlite) =>
+    sqlite
+      .prepare(
+        "SELECT type, name, tbl_name, COALESCE(sql, '') AS sql FROM sqlite_master " +
+          "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+      )
+      .all()
+      .map(
+        (row) => `${row.type} ${row.tbl_name}.${row.name}: ${String(row.sql).replace(/\s+/g, " ")}`,
+      );
+  assert.deepEqual(
+    shapeOf(createTestD1().sqlite),
+    shapeOf(makeMeteredDB().sqlite),
+    "the two D1 stand-ins built different schemas out of one folder",
+  );
+});
 
 /**
  * Two whole hours of one account, so a window can include exactly one of them.

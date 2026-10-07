@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +166,54 @@ func TestRunImportDrivesRcloneCopy(t *testing.T) {
 func TestUsageListsImport(t *testing.T) {
 	if !strings.Contains(usage, "drive import") {
 		t.Fatal("usage must list drive import")
+	}
+}
+
+// TestImportIntoWindowsTargetsTheVolumeRoot is drive#544: the destination used
+// to be the bare drive letter, and `D:` is a drive-relative path, so the copy
+// landed in whatever folder was last used on that drive instead of at the top.
+func TestImportIntoWindowsTargetsTheVolumeRoot(t *testing.T) {
+	orig := windowsImportDest
+	t.Cleanup(func() { windowsImportDest = orig })
+	const letter = "D:"
+	windowsImportDest = func() (string, error) {
+		return windowsVolumeRoot(letter), nil
+	}
+
+	home := t.TempDir()
+	plan, err := BuildImportPlan("windows", home, "/usr/bin/rclone", "photos:Movies", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The literal, not windowsVolumeRoot(letter) on both sides: a stand-in
+	// that returned the bare letter would satisfy a self-referential check
+	// and reproduce the drive-relative bug this test exists to pin.
+	if want := `D:\`; plan.Dest != want {
+		t.Errorf("dest = %q, want the volume root %q", plan.Dest, want)
+	}
+	if got, want := strings.Join(plan.Args(), " "), `copy photos:Movies D:\`; got != want {
+		t.Errorf("args = %q, want rclone copy into the volume root %q", got, want)
+	}
+	// The production helper itself, with no stand-in installed: `D:` becomes
+	// the volume root `D:\`, and a path that is already rooted is left alone.
+	for _, tc := range []struct{ letter, want string }{
+		{"D:", `D:\`},
+		{`D:\`, `D:\`},
+		{"E:", `E:\`},
+	} {
+		if got := windowsVolumeRoot(tc.letter); got != tc.want {
+			t.Errorf("windowsVolumeRoot(%q) = %q, want %q", tc.letter, got, tc.want)
+		}
+	}
+}
+
+func TestImportIntoWindowsSurfacesTheLetterLookupFailure(t *testing.T) {
+	// The mount's letter lookup runs schtasks, which is absent off Windows: a
+	// named failure from it reaches the person instead of an empty destination.
+	orig := windowsImportDest
+	t.Cleanup(func() { windowsImportDest = orig })
+	windowsImportDest = func() (string, error) { return "", errors.New("schtasks: not found") }
+	if _, err := BuildImportPlan("windows", t.TempDir(), "/usr/bin/rclone", "photos:", false); err == nil {
+		t.Fatal("expected the letter lookup failure to reach the caller")
 	}
 }

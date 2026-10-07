@@ -21,6 +21,7 @@ import {
 } from "../core/cap.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
+import { unbillableAccounts } from "../core/dodo.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
@@ -34,6 +35,7 @@ import {
   TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
 import { bearerToken, errorResponse } from "../core/http.js";
+import { runKeySweep } from "../core/key-sweep.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
@@ -113,6 +115,7 @@ import {
   reportBillingGap,
   reportFairUseVendorGap,
   reportPurgeFailures,
+  reportUnbillableAccounts,
   withCronCheckIn,
 } from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
@@ -136,6 +139,7 @@ import {
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
+  sendArrivalDigests,
 } from "./share.js";
 import {
   handleSigninLinkVerify,
@@ -552,6 +556,20 @@ function capStateFor(env) {
   return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
 }
 
+/**
+ * The resolver the public upload page asks for a link owner's display name
+ * (drive issue #684): the Better Auth `user` row for the account that minted
+ * the link, so a stranger opening the link sees whose drive it is. It is the
+ * same per-call device store `capStateFor` uses, and the same resolver feeds
+ * the nightly arrival digest (`sendArrivalDigests`), so the name on the page
+ * and the name in the mail come from one read.
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<{id: string, name: string, email: string}|null>}
+ */
+function ownerFor(env) {
+  return (accountId) => createD1DeviceStore(env.DRIVE_DB).accountById(accountId);
+}
+
 // Account-gated middleware resolves the caller once, from the request's own
 // credentials and nothing else (core/status.js signedInAccount over
 // core/auth.js authFor), and puts that account on Hono's context. Every handler
@@ -887,8 +905,11 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
-      () => Date.now(),
-      branchJobsQueue(c.env),
+      {
+        now: () => Date.now(),
+        queue: branchJobsQueue(c.env),
+        ipLimiter: c.env.BRANCH_RATE_LIMITER,
+      },
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -1197,7 +1218,9 @@ export function createApp() {
     ),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env), {
+      owner: ownerFor(c.env),
+    }),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
     withFileStore(c, (store) =>
@@ -1488,6 +1511,27 @@ const handler = {
           now,
           ...(pause ?? {}),
         });
+        // The billing gap that is an account rather than an hour (drive#503):
+        // the accounts storing files whose first payment never landed, so no
+        // customer id was written and nothing bills them. Reported beside the
+        // draw above, and wrapped because a detector that throws must not
+        // fail a trigger whose draws are already written — the next hour asks
+        // again.
+        try {
+          const unbillable = await unbillableAccounts(env.METER_DB, { now });
+          if (unbillable.accounts > 0) {
+            console.log(
+              "billing gap: accounts storing files with no customer id",
+              `accounts=${unbillable.accounts}`,
+            );
+          }
+          reportUnbillableAccounts(unbillable);
+        } catch (error) {
+          console.error(
+            "billing gap: the unbillable-account report failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
         // Accounts the hour did not draw still need the swap: a cap raise
         // with no usage this hour, or PREPAID_PAUSE flipped on against
         // accounts already at $0.
@@ -1619,6 +1663,36 @@ const handler = {
             `link retention: pruned ${purged.shares} share rows, ` +
               `${purged.requests} upload-request rows`,
           );
+          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+          // The arrival digest (drive issue #684): one mail a day to a link's
+          // owner, listing what arrived through that link since the last one.
+          // It shares the close cron's settings and its fire-and-forget shape:
+          // the reconcile trip should not wait on a mail send, and an idle
+          // deployment with no MAIL_FROM queues nothing rather than failing
+          // every night. The no-sender case is logged once a night, so a
+          // deployment that lost its MAIL_FROM says so here instead of keeping
+          // every arrival queued with nothing in the log.
+          if (secrets.MAIL_FROM) {
+            context.waitUntil(
+              sendArrivalDigests(env.DRIVE_DB, {
+                email: env.EMAIL,
+                mailFrom: secrets.MAIL_FROM,
+                owner: ownerFor(env),
+                now: toMillis(event.scheduledTime, "scheduledTime"),
+              })
+                .then((result) => {
+                  console.log(`upload digests: sent=${result.sent} skipped=${result.skipped}`);
+                })
+                .catch((error) => {
+                  // Log and resolve: a rejected waitUntil is reported by the
+                  // runtime, but the reconcile trip's own work above has already
+                  // finished and must not appear to have failed with it.
+                  console.error(`upload arrival digest failed: ${String(error)}`);
+                }),
+            );
+          } else {
+            console.warn("upload arrival digest skipped: this deployment has no MAIL_FROM");
+          }
           // Sign-in counter retention (drive#725): a row whose day window
           // ended more than a day ago is deleted, so the public sign-in route
           // cannot make this table keep every address anybody typed. It deletes
@@ -1655,9 +1729,10 @@ const handler = {
           throw new Error("the account close cron needs the drive database");
         }
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const devices = createD1DeviceStore(env.DRIVE_DB);
         const close = await runAccountCloseCron({
           db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
+          devices,
           store: files,
           email: env.EMAIL,
           mailFrom: secrets.MAIL_FROM ?? "",
@@ -1684,6 +1759,19 @@ const handler = {
             `account close: mailed=${close.mailed} reminded=${close.reminded} purged=${close.purged}`,
           );
         }
+        // The vendor-key sweep (drive issue #552), on the same store: remove
+        // the dead rows' vendor access keys and record how many keys the
+        // vendor holds. A deployment whose provider has no removal (the
+        // S3/STS one, whose sessions expire on their own) is skipped loudly
+        // by the sweep itself. A missing provider with leftover vendor keys
+        // fails this trigger rather than reporting success. The shared iDrive
+        // provider is the one with keys to remove. Awaited like the account
+        // close above: a sweep that failed must be a failed trigger, not a
+        // run that reported success. The provider is read off the same env
+        // the api Worker reads, so the two Workers mint with one credential
+        // and the sweep removes what that credential minted.
+        const provider = keyProviderFor(env);
+        await runKeySweep({ devices, provider, now: event.scheduledTime });
       });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
