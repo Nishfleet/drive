@@ -859,8 +859,9 @@ export function createApp() {
   app.post(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
 
   // Agent undo (build step 11, issue #13): the one-click rewind of an agent's
-  // work, on the branch copy src/branches.js already keeps. Same store handling
-  // as the branches route above.
+  // work, on the branch copy src/branches.js already keeps. Same store
+  // handling as the branches route above: the store goes in unscoped and
+  // handleRewindRequest scopes it after the account gate (drive#854).
   /** @param {DriveContext} c */
   const rewindHandler = (c) =>
     handleRewindRequest(

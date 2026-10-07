@@ -195,6 +195,9 @@ func (c *rcClient) cacheOutOfSpace(ctx context.Context) (bool, error) {
 func (c *rcClient) cacheStats(ctx context.Context) (vfsStats, error) {
 	return c.CacheStats(ctx)
 }
+func (c *rcClient) updateRemoteConfig(cfg StorageConfig) error {
+	return c.UpdateRemoteConfig(cfg)
+}
 
 func PauseStatePath(home string) string { return rc.PauseStatePath(home) }
 func SetPaused(home string) error       { return rc.SetPaused(home) }

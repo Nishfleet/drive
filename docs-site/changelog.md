@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-07
 
+- When this computer's storage key is a short session, the drive renews it
+  before it ends and keeps uploads that were already waiting. `drive login`
+  accepts that kind of key because that loop is running.
 - A folder kept offline stays open even after the network has been down for
   hours, not just seconds. Before, the drive's short directory cache turned
   the kept-folder promise off after five seconds without a link, and every

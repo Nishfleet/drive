@@ -738,7 +738,7 @@ func LoginItemFiles(goos, home string) []string {
 	if goos == "windows" {
 		return nil
 	}
-	return []string{LoginItemPath(goos, home), PrefetchLoginItemPath(goos, home)}
+	return []string{LoginItemPath(goos, home), PrefetchLoginItemPath(goos, home), DeviceRenewLoginItemPath(goos, home)}
 }
 
 // Mount writes the rclone config and the login item, then starts the mount.
@@ -773,6 +773,8 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	// nothing at all, and prints the config with both keys redacted.
 	prefetchItem := []byte(PrefetchLoginItem(goos, p.DriveBin, home))
 	prefetchPath := PrefetchLoginItemPath(goos, home)
+	renewItem := []byte(DeviceRenewLoginItem(goos, p.DriveBin, home))
+	renewPath := DeviceRenewLoginItemPath(goos, home)
 	if dryRun {
 		p.RCUser, p.RCPass = "<redacted>", "<redacted>"
 		item := []byte(LoginItem(goos, p))
@@ -780,6 +782,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		fmt.Printf("--- %s ---\n%s", RcloneEnvPath(home), rcloneEnvRedacted(p))
 		fmt.Printf("--- %s ---\n%s", itemPath, item)
 		fmt.Printf("--- %s ---\n%s", prefetchPath, prefetchItem)
+		if renewPath != "" {
+			fmt.Printf("--- %s ---\n%s", renewPath, renewItem)
+		}
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
 		return nil
 	}
@@ -807,6 +812,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		{p.ConfigPath, []byte(RcloneConfig(c)), 0o600},
 		{itemPath, item, itemMode},
 		{prefetchPath, prefetchItem, 0o644},
+	}
+	if renewPath != "" && len(renewItem) > 0 {
+		writes = append(writes, mountWrite{renewPath, renewItem, 0o644})
 	}
 	// A dead FUSE or NFS entry is cleared first so a re-run whose files
 	// did not change still recovers after rclone dies (drive#805). A live
@@ -879,6 +887,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 				fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 			}
+			if err := startDeviceRenewSidecar(goos, home, renewPath, foreground); err != nil {
+				fmt.Fprintf(os.Stderr, "note: device-key renew login item not started (%v); it is written at %s\n", err, renewPath)
+			}
 			excludeTransientFromBackup(goos, p)
 			return nil
 		}
@@ -889,6 +900,12 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		}
 	}
 	if foreground {
+		// A leftover device-renew sidecar from a previous login-item mount
+		// would remint beside the in-process loop. Stop it before that loop
+		// starts.
+		if err := stopDeviceRenewLoginItem(goos, home); err != nil {
+			fmt.Fprintf(os.Stderr, "note: device-key renew login item not stopped (%v)\n", err)
+		}
 		// Return here, before startLoginItem, so `drive mount --foreground`
 		// cannot register the login item again (drive#515).
 		// The files go into the drive once it is up. If it never comes up,
@@ -929,6 +946,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	placed = true
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
+	}
+	if err := startDeviceRenewSidecar(goos, home, renewPath, foreground); err != nil {
+		fmt.Fprintf(os.Stderr, "note: device-key renew login item not started (%v); it is written at %s\n", err, renewPath)
 	}
 	// The cache holds the mount's transient bytes (issue #561); keep macOS's
 	// own backup tool off it. Everywhere else the CACHEDIR.TAG marker is the
@@ -1229,6 +1249,15 @@ func mountForeground(p MountPlan, home string) error {
 			fmt.Fprintf(os.Stderr, "drive: queue report: %v\n", err)
 		}
 	}()
+	renewCtx, cancelRenew := context.WithCancel(context.Background())
+	if deviceRenewEnabled() {
+		go func() {
+			_, _ = MountedDir(p.GOOS, p.MountDir)
+			if err := runDeviceRenewLoop(renewCtx, home, os.Getenv("DRIVE_API_URL")); err != nil && !errors.Is(err, context.Canceled) {
+				fmt.Fprintf(os.Stderr, "drive: device key renew: %v\n", err)
+			}
+		}()
+	}
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
 	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
@@ -1256,6 +1285,7 @@ func mountForeground(p MountPlan, home string) error {
 	cancelFill()
 	cancelConflict()
 	cancelQueue()
+	cancelRenew()
 	if runErr != nil {
 		// rclone's own words are in its log, never on the terminal: the person
 		// gets the table's what and the log path to read (drive#117).
@@ -1407,6 +1437,9 @@ func Unmount(goos, home string) error {
 	}
 	if err := stopPrefetchLoginItem(goos, home); err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
+	}
+	if err := stopDeviceRenewLoginItem(goos, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not disable the device-key renew login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
 	var disableErr error
