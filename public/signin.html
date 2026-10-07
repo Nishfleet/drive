@@ -211,6 +211,15 @@ button:disabled {
           <input id="card" name="card" type="checkbox" value="on" required>
           I understand a card is required
         </label>
+        <!-- drive#781: the terms say an account holder must be 18 or older
+             (public/terms.html, drive#547). The sentence above the box is
+             SIGNIN_COPY.needAge and the route refuses a start without the
+             box with those same words; the label is the short consent line. -->
+        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
+        <label class="hint" for="age">
+          <input id="age" name="age" type="checkbox" value="on" required aria-describedby="age-sentence">
+          I am 18 or older
+        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
@@ -266,6 +275,7 @@ const METHODS = ["email"];
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
 const cardInput = document.getElementById("card");
+const ageInput = document.getElementById("age");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
 
@@ -326,8 +336,11 @@ async function start(method, email) {
               method,
               email,
               card: cardInput !== null && cardInput.checked,
-              // undefined drops out of the JSON: a plain sign-in posts
-              // exactly what it posted before drive#558.
+              age: ageInput !== null && ageInput.checked,
+              // `next` is undefined and drops out of the JSON unless this sign-in
+              // started from the device-approve page (drive#558). The age box
+              // (drive#781) is always sent, so a plain sign-in carries method,
+              // email, card and age.
               next: nextParam === "" ? undefined : nextParam,
             },
       ),

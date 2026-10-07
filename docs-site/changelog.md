@@ -18,6 +18,9 @@ the live site.
   the words to fix it. The storage vendor sets no limit of its own, and a
   nightly sweep removes the vendor keys of expired or revoked entries and
   records how many keys the vendor holds.
+- Opening an account now asks for a tick that you are 18 or older, and the
+  sign-in route refuses to open one without it. The terms already carry the
+  rule.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a

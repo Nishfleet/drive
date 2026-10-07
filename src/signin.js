@@ -151,6 +151,13 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
+  // drive#781: the terms say an account holder must be 18 or older
+  // (public/terms.html, drive#547), and this page is where the person agrees.
+  // The label is short the way cardConsent is; needAge is the sentence the
+  // page shows above the box, and it is also the route's own refusal, so a
+  // start with no age box gets the words the page already showed.
+  needAge: "You must be 18 or older to open an account.",
+  ageConsent: "I am 18 or older",
   noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
@@ -227,7 +234,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, age?: unknown, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -262,13 +269,24 @@ export function readSigninRequest(body) {
 }
 
 /**
+ * Whether a posted field is a tick. The page's checkbox posts "on"; JSON posts
+ * true. The one four-value check every required sign-up box reads, so the card
+ * (drive#387) and the age box (drive#781) cannot drift from each other.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isTick(value) {
+  return value === true || value === "true" || value === "on" || value === "1";
+}
+
+/**
  * Whether a posted field is a card-at-sign-up yes. The page's checkbox posts
  * "on"; JSON posts true. Anything else is not a card.
  * @param {unknown} value
  * @returns {boolean}
  */
 export function hasSignupCard(value) {
-  return value === true || value === "true" || value === "on" || value === "1";
+  return isTick(value);
 }
 
 /**
@@ -280,6 +298,17 @@ export function hasSignupCard(value) {
  */
 export function refuseSignupWithoutCard(card) {
   return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
+}
+
+/**
+ * Opening an account without the age box is refused (drive#781). Returning
+ * the need-age sentence, or null when the box is ticked. The terms carry the
+ * rule (public/terms.html, drive#547); this is the route's refusal.
+ * @param {unknown} age
+ * @returns {string|null}
+ */
+export function refuseSignupWithoutAge(age) {
+  return isTick(age) ? null : SIGNIN_COPY.needAge;
 }
 
 /**
@@ -304,7 +333,7 @@ async function emailHasUser(env, email) {
 /**
  * The start step: the method and, for the email method, the address.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, age?: unknown, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -327,6 +356,7 @@ function readStart(body) {
     email,
     card: body.card,
     cardFingerprint: body.cardFingerprint,
+    age: body.age,
     // The device-approval return path (drive#558): the approve page sent the
     // person here with ?next= its own URL. Validated here, at the read, so a
     // hand-edited link is dropped rather than stored — the same drop
@@ -523,6 +553,13 @@ export async function handleSigninRequest(request, env) {
     const refused = refuseSignupWithoutCard(read.card);
     if (refused !== null) {
       return json({ error: refused }, 400);
+    }
+    // drive#781: the age box is the second required tick on a new account.
+    // It is checked after the card, the order the page shows the two boxes
+    // in, so a start that carries neither is answered with the card's words.
+    const ageRefused = refuseSignupWithoutAge(read.age);
+    if (ageRefused !== null) {
+      return json({ error: ageRefused }, 400);
     }
     fingerprint = signupCardFingerprint({
       card: read.card,
