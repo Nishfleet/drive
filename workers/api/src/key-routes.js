@@ -10,7 +10,7 @@
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
 
-import { UPLOAD_FILE_MAX_BYTES } from "../../../core/files.js";
+import { fairUseRefuseResponse, UPLOAD_FILE_MAX_BYTES } from "../../../core/files.js";
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { authorizePath } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
@@ -396,22 +396,35 @@ export async function storageWriteRoute(request, ctx) {
     }
     checkBytes = length;
   }
-  if (typeof ctx.store.fairUseForUpload === "function") {
-    try {
-      const result = await ctx.store.fairUseForUpload(device, checkBytes);
-      if (
-        result !== null &&
-        result !== undefined &&
-        result.wouldRefuse === true &&
-        ctx.store.fairUseRefuse === true
-      ) {
-        return errorResponse(429, failureMessage("fair-use-pause"));
-      }
-    } catch (error) {
-      ctx.store.onFairUseError(error);
-    }
+  // The store takes the device, the shared refusal takes an account and the
+  // store's own options, so one adapter feeds both and the 429 is the web's.
+  const fairUse = {
+    fairUseRefuse: ctx.store.fairUseRefuse,
+    onFairUseError: ctx.store.onFairUseError,
+    fairUseForUpload:
+      typeof ctx.store.fairUseForUpload === "function"
+        ? (/** @type {string} */ _accountId, /** @type {number} */ bytes) =>
+            ctx.store.fairUseForUpload(device, bytes)
+        : undefined,
+  };
+  const account = { id: device.accountId };
+  const paused = await fairUseRefuseResponse(account, checkBytes, fairUse);
+  if (paused) {
+    return paused;
   }
   const body = new Uint8Array(await request.arrayBuffer());
+  // The declared length is the client's word. The bytes read are the truth:
+  // a body over the cap is refused, and a length that differed is checked
+  // again at its real size, as the web upload does (drive#364).
+  if (body.byteLength > UPLOAD_FILE_MAX_BYTES) {
+    return errorResponse(413, failureMessage("body-too-large"));
+  }
+  if (body.byteLength !== checkBytes) {
+    const pausedAfterRead = await fairUseRefuseResponse(account, body.byteLength, fairUse);
+    if (pausedAfterRead) {
+      return pausedAfterRead;
+    }
+  }
   ctx.store.putObject(authorized.path, body);
   return json(
     { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },

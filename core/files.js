@@ -2930,7 +2930,7 @@ async function listingEntry(store, path) {
  * @param {{fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void}} options
  * @returns {Promise<Response|null>}
  */
-async function fairUseRefuseResponse(account, uploadBytes, options) {
+export async function fairUseRefuseResponse(account, uploadBytes, options) {
   if (typeof options.fairUseForUpload !== "function") {
     return null;
   }

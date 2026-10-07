@@ -553,7 +553,11 @@ test("rclone writes check Content-Length before the body, or the 100 MB cap", as
   assert.deepEqual(declared.stored, ["u/acct/file.bin"]);
   const capped = await rcloneWrite({ body: "x", contentLength: null });
   assert.equal(capped.response.status, 201);
-  assert.deepEqual(capped.sizes, [UPLOAD_FILE_MAX_BYTES]);
+  assert.deepEqual(
+    capped.sizes,
+    [UPLOAD_FILE_MAX_BYTES, 1],
+    "a headerless body is checked again at its real size",
+  );
   const refused = await rcloneWrite({
     body: "x",
     contentLength: 1,
@@ -562,6 +566,35 @@ test("rclone writes check Content-Length before the body, or the 100 MB cap", as
   });
   assert.equal(refused.response.status, 429);
   assert.deepEqual(refused.stored, []);
+  assert.equal(
+    (await refused.response.json()).fairUseLine,
+    "paused",
+    "the rclone refusal carries the same fair-use line as the web 429",
+  );
+});
+
+test("rclone: an understated Content-Length is refused at the cap and re-checked by fair-use", async () => {
+  const big = "x".repeat(UPLOAD_FILE_MAX_BYTES + 1);
+  const capped = await rcloneWrite({ body: big, contentLength: 5 });
+  assert.equal(capped.response.status, 413);
+  assert.deepEqual(capped.stored, []);
+
+  const body = "twelve-bytes";
+  const rechecked = await rcloneWrite({ body, contentLength: 1 });
+  assert.equal(rechecked.response.status, 201);
+  assert.deepEqual(rechecked.sizes, [1, body.length], "the real size is checked after the read");
+
+  const refused = await rcloneWrite({
+    body,
+    contentLength: 1,
+    wouldRefuse: true,
+    fairUseRefuse: true,
+  });
+  assert.equal(refused.response.status, 429);
+  assert.deepEqual(refused.stored, []);
+
+  const honest = await rcloneWrite({ body, contentLength: body.length });
+  assert.deepEqual(honest.sizes, [body.length], "an honest length is checked once");
 });
 
 test("rclone: a 0-ghost account is not refused at the byte cap", async () => {
