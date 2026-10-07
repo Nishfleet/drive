@@ -38,7 +38,7 @@ import { IdriveKeyError } from "./idrive-keys.js";
  * not stop the rows behind it in the same 100, and a row that fails stays in
  * the next night's batch the way a failed close purge does.
  */
-export const KEY_SWEEP_LIMIT = 100;
+const KEY_SWEEP_LIMIT = 100;
 
 /** The vendor's own words for "there is no such key". Their error body's
  * code (`access_key_non_existant`) and the prose they also return. Both land

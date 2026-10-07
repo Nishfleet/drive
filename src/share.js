@@ -123,7 +123,7 @@ const REMOVE_CHUNK = 64;
 // The one-a-day bound (drive issue #684): 20 hours, so the shared nightly
 // cron at any time of day mails a link once, and a trip that fires twice
 // inside a day is caught by the stamp rather than by the clock.
-export const DIGEST_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+const DIGEST_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
 // The longest file name an upload page accepts (drive issue #549): the same
 // 255 the owner's own Files page lives with, checked before the body is read.
 export const REQUEST_NAME_MAX_LENGTH = 255;

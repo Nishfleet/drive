@@ -10,7 +10,7 @@
   ],
   "project": ["core/**/*.js", "src/**/*.js", "workers/**/*.js"],
   "ignoreBinaries": ["unshare", "ffmpeg", "ffprobe", "mount", "findmnt"],
-  "ignoreDependencies": ["axe-core", "rolldown"],
+  "ignoreDependencies": ["axe-core", "rolldown", "zod"],
   "rules": {
     "files": "error",
     "dependencies": "error",

@@ -126,7 +126,7 @@ export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
  * bound it keeps is the same one the fixed TTL kept: a token nothing uses is
  * dead at most TTL + REFRESH after it was minted.
  */
-export const DEVICE_TOKEN_REFRESH_SECONDS = 24 * 60 * 60;
+export const DEVICE_TOKEN_REFRESH_SECONDS = DAY_MS / 1000;
 
 /**
  * The expiry a live device token carries after a request at `at`. One rule,

@@ -673,7 +673,7 @@ function deviceApproveNoticeTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function uploadArrivalsTemplate(data = {}) {
+function uploadArrivalsTemplate(data = {}) {
   const ownerName = requireText(data.ownerName, "ownerName");
   const folder = requireText(data.folder, "folder");
   if (!Array.isArray(data.arrivals) || data.arrivals.length === 0) {
@@ -732,7 +732,7 @@ const SECURITY_LINK = Object.freeze({
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function securityEventTemplate(data = {}) {
+function securityEventTemplate(data = {}) {
   const event = data.event;
   if (typeof event !== "string" || !Object.hasOwn(SECURITY_EVENT_COPY, event)) {
     throw new TypeError(
