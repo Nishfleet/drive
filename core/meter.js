@@ -16,6 +16,7 @@
 import { decodeNotificationKey } from "./event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
+import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
@@ -128,18 +129,10 @@ export function toMillis(value, field) {
 // stopped (drive issue #104).
 export const MINIMUM_MINUTES_PER_VERSION = 60;
 
-export const MINUTE_MS = 60_000;
-
-// One GB in bytes, decimal (1e9), because the GB in this repo's prices is the
-// decimal one: docs/build-spec.md prices at 2 cents per GB-month and reads
-// the $1 free credit as "about 50 GB", core/billing.js stores
-// BYTES_PER_GB = 1e9 and GB_PER_TB = 1000, and the provider-usage-report
-// comparison the done-when makes is GB-months too. `size_bytes` itself is
-// always bytes; this constant is only the divisor of the GB-minutes math.
-// Declared here rather than imported from billing.js because this module
-// imports files.js, which imports abuse-guards.js, which imports billing.js:
-// taking the GB from billing would close a cycle (issue #583).
-export const BYTES_PER_GB = 1e9;
+// The decimal GB and the minute are core/units.js's. Re-exported so the
+// meter SQL and the invoice keep one name each without this module importing
+// billing.js (that import would cycle: meter → files → abuse-guards → billing).
+export { BYTES_PER_GB, MINUTE_MS };
 
 export const HOUR_MS = 60 * MINUTE_MS;
 

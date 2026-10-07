@@ -140,12 +140,8 @@ export async function storageEventsRoute(request, ctx) {
     return errorResponse(400, parsed.error);
   }
   for (const event of parsed.events) {
-    // The line the step 1 proof quotes: the event's own name, the version the
-    // bucket created and when. No bytes, no secret and no object path: the key
-    // names the customer's file, and this route holds no account identity to
-    // pair with it - the key is `u/<account>/...`, so an account here would come
-    // out of the key itself. The count of events the bucket sent is in the
-    // answer below, which is what the step 1 proof needs (issue #583).
+    // Log the event name, version and time only. The object key is the
+    // customer's file path, so it stays out of Worker logs (issue #583).
     console.log(
       `[api] storage event ${event.eventName} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
     );
