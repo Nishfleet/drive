@@ -169,10 +169,30 @@ export function snapshotKey(account, name) {
 /** KV key for the approve plan (path lists). The lists of a large branch do
  * not fit in `job_cursor` (D1's 1 MiB row limit, the same reason snapshots
  * moved to KV in drive#252). The D1 cursor only stores `{ready, addedI, …}`.
+ *
+ * The plan itself is stored as one slice key per batch of paths (drive#843),
+ * not as one value rewritten on every batch. `${key}/approve-plan` is never
+ * written as the whole list; each slice is `${key}/approve-plan.<list>.<i>`.
  * @param {string} key the branch's snapshot key
  */
 function approvePlanKey(key) {
   return `${key}/approve-plan`;
+}
+
+/** The plan's three list names, in the order the approve applies them. */
+const PLAN_LIST_NAMES = /** @type {const} */ (["added", "changed", "removed"]);
+
+/** @typedef {{added: string[], changed: string[], removed: string[]}} PlanLists */
+
+/**
+ * One slice of one plan list. A batch reads this key and nothing else of the
+ * plan (drive#843).
+ * @param {string} planKey
+ * @param {"added"|"changed"|"removed"} list
+ * @param {number} sliceIndex
+ */
+function approvePlanSliceKey(planKey, list, sliceIndex) {
+  return `${planKey}.${list}.${sliceIndex}`;
 }
 
 /** Remove a job's scratch key once the job is done; a store without delete
@@ -2297,10 +2317,152 @@ export async function failJob(db, id, state, error) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function stringList(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+
+/**
+ * @param {Record<string, unknown>} stored
+ * @returns {{added: number, changed: number, removed: number}}
+ */
+function planListSizes(stored) {
+  /**
+   * @param {string} name
+   * @returns {number}
+   */
+  const size = (name) => {
+    const value = stored[name];
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  };
+  return { added: size("addedN"), changed: size("changedN"), removed: size("removedN") };
+}
+
+/**
+ * Which plan list this batch is working down, and where in it: the first one
+ * whose index is behind its own length, in the order the approve applies them
+ * (drive#843).
+ * @param {Record<string, unknown>} stored
+ * @returns {{list: "added"|"changed"|"removed", start: number}}
+ */
+function startedPlanList(stored) {
+  /**
+   * @param {string} name
+   * @returns {number}
+   */
+  const index = (name) => {
+    const value = stored[name];
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  };
+  const sizes = planListSizes(stored);
+  for (const list of PLAN_LIST_NAMES) {
+    const done = index(`${list}I`);
+    if (done < sizes[list]) {
+      return { list, start: done };
+    }
+  }
+  return { list: "removed", start: 0 };
+}
+
+/**
+ * Write each plan list as batch-sized slices so an apply batch can get one
+ * slice and never rewrite the whole plan (drive#843).
+ * @param {SnapshotStore} snapshots
+ * @param {string} planKey
+ * @param {PlanLists} lists
+ */
+async function writeApprovePlan(snapshots, planKey, lists) {
+  for (const list of PLAN_LIST_NAMES) {
+    const paths = lists[list];
+    let sliceIndex = 0;
+    for (let offset = 0; offset < paths.length; offset += BRANCH_JOB_BATCH_FILES) {
+      await snapshots.put(
+        approvePlanSliceKey(planKey, list, sliceIndex),
+        JSON.stringify(paths.slice(offset, offset + BRANCH_JOB_BATCH_FILES)),
+      );
+      sliceIndex += 1;
+    }
+  }
+}
+
+/**
+ * The paths in one slice of one list, from the plan-wide index `start`.
+ * @param {SnapshotStore} snapshots
+ * @param {string} planKey
+ * @param {"added"|"changed"|"removed"} list
+ * @param {number} start
+ * @returns {Promise<string[]|null>}
+ */
+async function readApprovePlanSlice(snapshots, planKey, list, start) {
+  const sliceIndex = Math.floor(start / BRANCH_JOB_BATCH_FILES);
+  const offset = start % BRANCH_JOB_BATCH_FILES;
+  const raw = await snapshots.get(approvePlanSliceKey(planKey, list, sliceIndex));
+  if (raw === null) {
+    return null;
+  }
+  try {
+    const paths = stringList(JSON.parse(raw));
+    return paths.slice(offset);
+  } catch (error) {
+    console.error?.(`approve plan slice is not JSON for ${planKey}: ${errorText(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Every path of one plan list, for the answer the finishing batch returns.
+ * @param {SnapshotStore} snapshots
+ * @param {string} planKey
+ * @param {"added"|"changed"|"removed"} list
+ * @param {number} count
+ * @returns {Promise<string[]>}
+ */
+async function readApprovePlanList(snapshots, planKey, list, count) {
+  /** @type {string[]} */
+  const paths = [];
+  const slices = Math.ceil(count / BRANCH_JOB_BATCH_FILES);
+  for (let index = 0; index < slices; index += 1) {
+    const raw = await snapshots.get(approvePlanSliceKey(planKey, list, index));
+    if (raw === null) {
+      throw new Error(`approve plan slice ${list}.${index} is missing under ${planKey}`);
+    }
+    try {
+      paths.push(...stringList(JSON.parse(raw)));
+    } catch (error) {
+      throw new Error(`approve plan slice ${list}.${index} is not JSON: ${errorText(error)}`);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Drop every slice the plan wrote, and the legacy whole-plan key if one is
+ * still there from a job that started before this change.
+ * @param {SnapshotStore} snapshots
+ * @param {string} planKey
+ * @param {{added: number, changed: number, removed: number}} sizes
+ */
+async function clearApprovePlan(snapshots, planKey, sizes) {
+  for (const list of PLAN_LIST_NAMES) {
+    const slices = Math.ceil(sizes[list] / BRANCH_JOB_BATCH_FILES);
+    for (let index = 0; index < slices; index += 1) {
+      await clearScratch(snapshots, approvePlanSliceKey(planKey, list, index));
+    }
+  }
+  await clearScratch(snapshots, planKey);
+}
+
+/**
  * One approve batch: the first call diffs once and stores the path lists in
  * KV (not D1 `job_cursor`); later calls apply the next files using those
  * lists and one LIST per parent. Clash checks use a live fingerprint, not
  * the first-batch snapshot, so a source write between batches still fails.
+ *
+ * After the plan is written, a batch reads only the slice it is about to
+ * apply and records progress in the D1 cursor, so the plan is never rewritten
+ * whole (drive#843).
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots
  * @param {FileStore} store
@@ -2409,19 +2571,22 @@ async function processApproveBatch(db, snapshots, store, branch) {
       return { ...result, done: true };
     }
     const total = diff.added.length + diff.changed.length + diff.removed.length;
-    await snapshots.put(
-      planKey,
-      JSON.stringify({
-        added: diff.added,
-        changed: diff.changed,
-        removed: diff.removed,
-        appliedAdded: [],
-        appliedChanged: [],
-        appliedRemoved: [],
-      }),
-    );
+    await writeApprovePlan(snapshots, planKey, {
+      added: diff.added,
+      changed: diff.changed,
+      removed: diff.removed,
+    });
     await writeJobProgress(db, branch.id, {
-      cursor: { ready: true, addedI: 0, changedI: 0, removedI: 0 },
+      cursor: {
+        ready: true,
+        addedI: 0,
+        changedI: 0,
+        removedI: 0,
+        addedN: diff.added.length,
+        changedN: diff.changed.length,
+        removedN: diff.removed.length,
+        planParts: true,
+      },
       done: 0,
       total,
     });
@@ -2434,56 +2599,64 @@ async function processApproveBatch(db, snapshots, store, branch) {
     }
     return { done: false };
   }
-  const planJson = await snapshots.get(planKey);
-  if (!planJson) {
-    const error = failureMessage("unexpected");
-    await failJob(db, branch.id, "open", error);
-    return { error, status: 500, done: true };
-  }
-  /** @type {{added?: unknown, changed?: unknown, removed?: unknown, appliedAdded?: unknown, appliedChanged?: unknown, appliedRemoved?: unknown}} */
-  let plan = {};
-  try {
-    plan = JSON.parse(planJson);
-  } catch (error) {
-    console.error?.(`approve plan is not JSON for ${branch.id}: ${errorText(error)}`);
-    const failed = failureMessage("unexpected");
-    await failJob(db, branch.id, "open", failed);
-    return { error: failed, status: 500, done: true };
-  }
-  /** @type {string[]} */
-  const added = Array.isArray(plan.added)
-    ? plan.added.filter((item) => typeof item === "string")
-    : [];
-  /** @type {string[]} */
-  const changed = Array.isArray(plan.changed)
-    ? plan.changed.filter((item) => typeof item === "string")
-    : [];
-  /** @type {string[]} */
-  const removed = Array.isArray(plan.removed)
-    ? plan.removed.filter((item) => typeof item === "string")
-    : [];
-  /** @type {{added: string[], changed: string[], removed: string[]}} */
-  const applied = {
-    added: Array.isArray(plan.appliedAdded)
-      ? plan.appliedAdded.filter((item) => typeof item === "string")
-      : [],
-    changed: Array.isArray(plan.appliedChanged)
-      ? plan.appliedChanged.filter((item) => typeof item === "string")
-      : [],
-    removed: Array.isArray(plan.appliedRemoved)
-      ? plan.appliedRemoved.filter((item) => typeof item === "string")
-      : [],
-  };
   let addedI = typeof stored.addedI === "number" ? stored.addedI : 0;
   let changedI = typeof stored.changedI === "number" ? stored.changedI : 0;
   let removedI = typeof stored.removedI === "number" ? stored.removedI : 0;
+  /** @type {PlanLists} */
+  let lists = { added: [], changed: [], removed: [] };
+  let sizes = planListSizes(stored);
+  const sliced = stored.planParts === true;
+  if (sliced) {
+    const started = startedPlanList(stored);
+    const slice = await readApprovePlanSlice(snapshots, planKey, started.list, started.start);
+    if (slice === null && sizes[started.list] > started.start) {
+      const error = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", error);
+      return { error, status: 500, done: true };
+    }
+    lists[started.list] = slice ?? [];
+  } else {
+    const planJson = await snapshots.get(planKey);
+    if (!planJson) {
+      const error = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", error);
+      return { error, status: 500, done: true };
+    }
+    try {
+      const plan = JSON.parse(planJson);
+      lists = {
+        added: stringList(plan.added),
+        changed: stringList(plan.changed),
+        removed: stringList(plan.removed),
+      };
+    } catch (error) {
+      console.error?.(`approve plan is not JSON for ${branch.id}: ${errorText(error)}`);
+      const failed = failureMessage("unexpected");
+      await failJob(db, branch.id, "open", failed);
+      return { error: failed, status: 500, done: true };
+    }
+    sizes = {
+      added: lists.added.length,
+      changed: lists.changed.length,
+      removed: lists.removed.length,
+    };
+  }
+  const added = lists.added;
+  const changed = lists.changed;
+  const removed = lists.removed;
   const snapshot = { ...branch.snapshot };
   const listings = new Map();
   let remaining = BRANCH_JOB_BATCH_FILES;
   let failure = null;
   try {
-    while (addedI < added.length && remaining > 0 && failure === null) {
-      const rel = added[addedI];
+    // A sliced plan's arrays are already the rest of this batch's slice, so
+    // the loop index is local. A legacy whole-plan value still uses the
+    // plan-wide index (drive#843).
+    let addedLocal = sliced ? 0 : addedI;
+    let changedLocal = sliced ? 0 : changedI;
+    let removedLocal = sliced ? 0 : removedI;
+    while (addedLocal < added.length && remaining > 0 && failure === null) {
+      const rel = added[addedLocal];
       const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
       if (sourceNow !== null) {
         failure = sourceMoved([rel], 1);
@@ -2494,12 +2667,12 @@ async function processApproveBatch(db, snapshots, store, branch) {
       if (branchNow !== null) {
         snapshot[rel] = branchNow;
       }
-      applied.added.push(rel);
+      addedLocal += 1;
       addedI += 1;
       remaining -= 1;
     }
-    while (changedI < changed.length && remaining > 0 && failure === null) {
-      const rel = changed[changedI];
+    while (changedLocal < changed.length && remaining > 0 && failure === null) {
+      const rel = changed[changedLocal];
       const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
       if (!sameFile(sourceNow, snapshot[rel])) {
         failure = sourceMoved([rel], 1);
@@ -2510,12 +2683,12 @@ async function processApproveBatch(db, snapshots, store, branch) {
       if (branchNow !== null) {
         snapshot[rel] = branchNow;
       }
-      applied.changed.push(rel);
+      changedLocal += 1;
       changedI += 1;
       remaining -= 1;
     }
-    while (removedI < removed.length && remaining > 0 && failure === null) {
-      const rel = removed[removedI];
+    while (removedLocal < removed.length && remaining > 0 && failure === null) {
+      const rel = removed[removedLocal];
       const sourceNow = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`, listings);
       if (!sameFile(sourceNow, snapshot[rel])) {
         failure = sourceMoved([rel], 1);
@@ -2523,7 +2696,7 @@ async function processApproveBatch(db, snapshots, store, branch) {
       }
       await store.remove(`${branch.sourcePrefix}/${rel}`);
       delete snapshot[rel];
-      applied.removed.push(rel);
+      removedLocal += 1;
       removedI += 1;
       remaining -= 1;
     }
@@ -2532,28 +2705,34 @@ async function processApproveBatch(db, snapshots, store, branch) {
     failure = { error: failureMessage("storage-down"), status: 500 };
   }
   await saveSnapshot(db, branch.id, snapshot, snapshots);
-  const appliedCount = applied.added.length + applied.changed.length + applied.removed.length;
-  const total = added.length + changed.length + removed.length;
+  const appliedCount = addedI + changedI + removedI;
+  const total = sizes.added + sizes.changed + sizes.removed;
   if (failure !== null) {
     await failJob(db, branch.id, "open", failure.error);
     return { ...failure, done: true };
   }
-  await snapshots.put(
-    planKey,
-    JSON.stringify({
-      added,
-      changed,
-      removed,
-      appliedAdded: applied.added,
-      appliedChanged: applied.changed,
-      appliedRemoved: applied.removed,
-    }),
-  );
-  if (addedI >= added.length && changedI >= changed.length && removedI >= removed.length) {
-    return await finishApprove(db, store, snapshots, branch, applied);
+  if (addedI >= sizes.added && changedI >= sizes.changed && removedI >= sizes.removed) {
+    /** @type {PlanLists} */
+    const applied = sliced
+      ? {
+          added: await readApprovePlanList(snapshots, planKey, "added", sizes.added),
+          changed: await readApprovePlanList(snapshots, planKey, "changed", sizes.changed),
+          removed: await readApprovePlanList(snapshots, planKey, "removed", sizes.removed),
+        }
+      : { added, changed, removed };
+    return await finishApprove(db, store, snapshots, branch, applied, sizes);
   }
   await writeJobProgress(db, branch.id, {
-    cursor: { ready: true, addedI, changedI, removedI },
+    cursor: {
+      ready: true,
+      addedI,
+      changedI,
+      removedI,
+      addedN: sizes.added,
+      changedN: sizes.changed,
+      removedN: sizes.removed,
+      planParts: sliced,
+    },
     done: appliedCount,
     total,
   });
@@ -2566,10 +2745,19 @@ async function processApproveBatch(db, snapshots, store, branch) {
  * @param {SnapshotStore} snapshots
  * @param {Branch} branch
  * @param {{added: string[], changed: string[], removed: string[]}} applied
+ * @param {{added: number, changed: number, removed: number}} [sizes]
  */
-async function finishApprove(db, store, snapshots, branch, applied) {
+async function finishApprove(db, store, snapshots, branch, applied, sizes) {
   try {
-    await clearScratch(snapshots, approvePlanKey(branch.snapshotKey));
+    await clearApprovePlan(
+      snapshots,
+      approvePlanKey(branch.snapshotKey),
+      sizes ?? {
+        added: applied.added.length,
+        changed: applied.changed.length,
+        removed: applied.removed.length,
+      },
+    );
   } catch (error) {
     console.error?.(`approve plan cleanup failed for ${branch.id}: ${errorText(error)}`);
   }
