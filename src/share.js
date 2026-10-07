@@ -902,7 +902,8 @@ function storedShareEtag(etag) {
 /**
  * Whether a minted share's pin disagrees with the live object. An empty
  * minted pin is a row from before the column existed, so it is not a
- * change.
+ * change. A pinned row whose live object reports no etag counts as changed:
+ * the link refuses rather than serve bytes it cannot match to the pin.
  *
  * @param {string|null|undefined} minted
  * @param {string|null|undefined} live
