@@ -60,6 +60,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
   }),
+  // The per-account live-key count cap (drive#552). Every mint is a vendor
+  // access key the storage server enforces, so the account's live count is
+  // the bound the vendor does not set. The number named here and
+  // keyprovider.js KEY_COUNT_CAP are pinned together by a test.
+  "key-count-cap": Object.freeze({
+    what: "This account already holds its limit of 20 active keys.",
+    next: "Revoke a key you no longer use, or let an hourly key expire, then mint again.",
+  }),
   // A cap write from the usage page or `drive cap` reached a Worker with no
   // account store behind it (drive#421). The cap was not changed, so the next
   // step is not to wait and retry: this deployment has to be wired first.
