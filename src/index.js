@@ -99,6 +99,10 @@ import {
 } from "./branches.js";
 import { DEVICES_ENDPOINT, handleDevicesRequest } from "./devices-page.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+// The known-bad feed's own module: the schedule string cloudflare.config.ts
+// spells out below, and the loader the cron branch calls. They live in the one
+// module that owns the list, beside the code the request path reads it with.
+import { KNOWN_BAD_FEED_SCHEDULE, loadKnownBadFeed } from "./malware.js";
 import {
   handleMeterJobs,
   METER_JOB_KINDS,
@@ -1086,6 +1090,10 @@ export function createApp() {
         // The mint route's own bound (drive issue #549). The per-account
         // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
+        // The known-bad list's D1 half (drive issue #826): a mint reads the
+        // rows the feed cron wrote, on the request, with no network of its
+        // own. The same binding every other authenticated route carries.
+        db: c.env.DRIVE_DB,
         ...mailFromEnv(c.env),
         deviceName: sessionLabel(c.req.raw),
       }),
@@ -1163,6 +1171,12 @@ export function createApp() {
         linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
         db: c.env.DRIVE_DB,
         prepaidPause: prepaidPauseOn(c.env),
+        // The known-bad refusal's owner (drive issue #826): a drop that hits
+        // the list tells the account the link belongs to, so the route hands
+        // the drop the one resolver that reads that account — the same
+        // `ownerFor` the public info page and the nightly digest use.
+        owner: ownerFor(c.env),
+        ...mailFromEnv(c.env),
         size30DayUnpaid: c.env.DRIVE_DB
           ? (accountId, extraBytes) => size30DayUnpaid(c.env.DRIVE_DB, accountId, extraBytes)
           : undefined,
@@ -1346,6 +1360,7 @@ const handler = {
       event.cron !== METER_RECONCILE_SCHEDULE &&
       event.cron !== CLOSE_SCHEDULE &&
       event.cron !== TRASH_PURGE_SCHEDULE &&
+      event.cron !== KNOWN_BAD_FEED_SCHEDULE &&
       event.cron !== REINDEX_SCHEDULE
     ) {
       throw new Error(`unknown cron: ${event.cron}`);
@@ -1547,6 +1562,30 @@ const handler = {
               `cap: enforcement failed for ${capFailures.length} account(s)`,
             );
           }
+        },
+        sentryFor(env),
+      );
+    }
+    // The known-bad feed load (drive issue #826): one download of the stock
+    // public SHA-256 list into D1, on its own trip. It runs before the store
+    // is built because it needs no storage, and it is the only one of this
+    // Worker's cron trips that makes an outbound call — every request that
+    // reads the list reads the rows this leaves behind (src/malware.js).
+    if (event.cron === KNOWN_BAD_FEED_SCHEDULE) {
+      return withCronCheckIn(
+        event,
+        "known-bad-feed",
+        async () => {
+          if (!env.DRIVE_DB) {
+            throw new Error("the known-bad feed needs DRIVE_DB");
+          }
+          const loaded = await loadKnownBadFeed(env.DRIVE_DB, {
+            now: toMillis(event.scheduledTime, "scheduledTime"),
+          });
+          console.log(
+            `known-bad feed: ${loaded.hashes} hash(es) from ${loaded.source}; ` +
+              `known_bad_hashes holds ${loaded.rows} row(s) as of ${loaded.loadedAt}`,
+          );
         },
         sentryFor(env),
       );

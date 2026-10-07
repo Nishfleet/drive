@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { run } from "../core/db.js";
 import {
   createMemoryStore,
   createS3Store,
@@ -27,8 +28,19 @@ import {
 } from "../core/files.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
-import { createApp } from "../src/index.js";
-import { EICAR_BODY, EICAR_SHA256, isKnownMalwareHash, malwareHashOf } from "../src/malware.js";
+import worker, { createApp } from "../src/index.js";
+import {
+  EICAR_BODY,
+  EICAR_SHA256,
+  isKnownBadHash,
+  KNOWN_BAD_FEED_SCHEDULE,
+  KNOWN_BAD_FEED_URL,
+  KNOWN_BAD_MAX_FEED_BYTES,
+  lastKnownBadFeedLoad,
+  loadKnownBadFeed,
+  malwareHashOf,
+  parseKnownBadFeed,
+} from "../src/malware.js";
 import {
   base64url,
   createD1LinkStore,
@@ -46,6 +58,7 @@ import {
   linkIsOpen,
   linkState,
   linkStateLabel,
+  MALWARE_NOTICE_QUIET_MS,
   MAX_OPEN_LINKS,
   newLinkToken,
   newRequestRecord,
@@ -70,7 +83,7 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
-import { createTestD1 } from "./harness.mjs";
+import { createTestD1, knownBadHashRows } from "./harness.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
@@ -86,7 +99,11 @@ const api = (path) => `https://drive.test${path}`;
 // test that proves nothing about the one the route reads.
 function drive() {
   const files = createMemoryStore();
-  const links = createD1LinkStore(createTestD1());
+  // The link rows and the known-bad hash rows are one real D1: the migration
+  // set test/harness.mjs applies carries both (drive#826), so a mint or a drop
+  // reads the hash table exactly the way the route does.
+  const db = createTestD1();
+  const links = createD1LinkStore(db);
   /**
    * @param {string} path
    * @param {string} name
@@ -117,7 +134,7 @@ function drive() {
   };
   /**
    * @param {string} path
-   * @param {{now?: number, token?: string}} [options]
+   * @param {{now?: number, token?: string, db?: import("./harness.mjs").TestD1, email?: unknown, mailFrom?: string, deviceName?: string, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
    */
   const share = (path, options = {}) =>
     handleShareRequest(
@@ -129,7 +146,7 @@ function drive() {
       files,
       links,
       account,
-      { now, limiter: allowLimiter(), ...options },
+      { now, db, limiter: allowLimiter(), ...options },
     );
   /** @param {{now?: number, token?: string}} [options] */
   const shareList = (options = {}) =>
@@ -152,7 +169,7 @@ function drive() {
     );
   /**
    * @param {string} folder
-   * @param {{now?: number, token?: string}} [options]
+   * @param {{now?: number, token?: string, db?: import("./harness.mjs").TestD1, limiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
    */
   const request = (folder, options = {}) =>
     handleRequestRequest(
@@ -188,6 +205,7 @@ function drive() {
   return {
     files,
     links,
+    db,
     upload,
     list,
     share,
@@ -221,13 +239,18 @@ function denyLimiter() {
  * Options the public upload route needs in tests: the two edge limiters
  * production binds, plus the clock. A call that omits them is the fail-closed
  * 503, which is not what the size/cap tests are asking.
- * @param {{now?: number, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, db?: import("./harness.mjs").TestD1, owner?: unknown, email?: unknown, mailFrom?: string, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 function withLimits(options = {}) {
   return {
     now,
     ipLimiter: allowLimiter(),
     linkLimiter: allowLimiter(),
+    // db is a required key on the upload-request drop (the known-bad and
+    // prepaid halves read through it, drive issue #826), so a bare call
+    // names it: null is the deliberate no-database call, and the in-memory
+    // list half still answers the stock signatures.
+    db: null,
     ...options,
   };
 }
@@ -410,9 +433,11 @@ test("replacing a file after mint refuses the share link", async () => {
 
 test("a known-bad hash is refused on share mint and on an upload-request drop", async () => {
   assert.equal(await malwareHashOf(EICAR_BODY), EICAR_SHA256);
-  assert.equal(isKnownMalwareHash(EICAR_SHA256), true);
-  assert.equal(isKnownMalwareHash(EICAR_SHA256.toUpperCase()), true);
-  assert.equal(isKnownMalwareHash("0".repeat(64)), false);
+  // The memory-only lookup (no db bound) is the EICAR half on its own, through
+  // the one door every caller shares: isKnownBadHash.
+  assert.equal(await isKnownBadHash(null, EICAR_SHA256), true);
+  assert.equal(await isKnownBadHash(null, EICAR_SHA256.toUpperCase()), true);
+  assert.equal(await isKnownBadHash(null, "0".repeat(64)), false);
 
   const { upload, share, files, links, list, request } = drive();
   await upload("/", "eicar.txt", EICAR_BODY);
@@ -443,6 +468,897 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
   const record = await links.requests.get(TOKEN);
   assert.ok(record);
   assert.equal(record.uploadCount, 0);
+});
+
+// ------------------------------------------------- the feed half of the list
+//
+// The two tests here that replace `globalThis.fetch` do so inside try/finally and
+// restore it in the finally, so they are safe under `node --test`'s default
+// serial runner: the replace is undone before the next test starts.
+
+/**
+ * Three digests the shape of the stock export's own rows carries: a line of 64
+ * lowercase hex digits, which is the only shape that can match a hash.
+ */
+const FEED_HASH_A = "8fb460478a744bba5a2e64f8f75ef9cd808c703ca216f1617e0a95b98211fdc2";
+const FEED_HASH_B = "e6577a39a2118414775c912dcb73b9ad41ce7610d836faae79060393437cc977";
+const FEED_HASH_C = "bc42463821051d086010c9ba1fb0a478606dcd8715adde6ec958567cba39e0df";
+
+test("the feed's own shape is the shape the loader takes", () => {
+  const text = [
+    "# MalwareBazaar recent malware samples (SHA256 hashes)",
+    "# Last updated: 2026-10-07 02:14:21 UTC",
+    "",
+    FEED_HASH_A,
+    FEED_HASH_B,
+    // The export repeats a line now and then, and every line ends CRLF.
+    FEED_HASH_B,
+    "",
+  ].join("\r\n");
+  assert.deepEqual(parseKnownBadFeed(text), [FEED_HASH_A, FEED_HASH_B]);
+  // A line that is not one hash is never a row: the comment is skipped, and
+  // the digest one digit short is dropped rather than stored, because a row
+  // that no hash can equal only hides how short the list really is. The upper
+  // case digest is the same hash, so it becomes a row in lower case.
+  assert.deepEqual(
+    parseKnownBadFeed(
+      `# ${FEED_HASH_C}\n${FEED_HASH_C.toUpperCase()}\n${FEED_HASH_C.slice(0, 63)}`,
+    ),
+    [FEED_HASH_C],
+  );
+  assert.deepEqual(parseKnownBadFeed(""), []);
+});
+
+test("a feed load writes every hash it carried and stamps the load", async () => {
+  const db = createTestD1();
+  assert.equal(await lastKnownBadFeedLoad(db), null);
+
+  const loaded = await loadKnownBadFeed(db, {
+    fetch: async () => new Response(`${FEED_HASH_A}\r\n${FEED_HASH_B}\r\n`),
+    now,
+  });
+  // A fresh table: two hashes carried, two rows written.
+  assert.deepEqual(loaded, {
+    hashes: 2,
+    rows: 2,
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+  });
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+    hashCount: 2,
+  });
+
+  // A second load adds, and never replaces: the row stays and `seen_at` keeps
+  // the first sighting, so a hash that has cycled out of the recent file stays
+  // refused. The state row moves to the load that just ran.
+  const again = await loadKnownBadFeed(db, {
+    fetch: async () => new Response(`${FEED_HASH_C}`),
+    now: now + 5000,
+    source: "https://example.test/feed",
+  });
+  assert.equal(again.rows, 3);
+  assert.equal(again.hashes, 1);
+  const rows = knownBadHashRows(db);
+  assert.deepEqual(
+    knownBadHashRows(db).map((row) => row.sha256),
+    [FEED_HASH_A, FEED_HASH_B, FEED_HASH_C].sort(),
+  );
+  const seenAt = new Map(rows.map((row) => [row.sha256, row.seenAt]));
+  // The one row that was already there still carries the first load's instant;
+  // the new one carries the second load's.
+  assert.equal(seenAt.get(FEED_HASH_A), Math.floor(now / 1000));
+  assert.equal(seenAt.get(FEED_HASH_C), Math.floor((now + 5000) / 1000));
+  assert.equal(await isKnownBadHash(db, FEED_HASH_B), true);
+  assert.equal(await isKnownBadHash(db, "0".repeat(64)), false);
+});
+
+test("a feed that is not a feed fails the load and keeps the rows it had", async () => {
+  const db = createTestD1();
+  await loadKnownBadFeed(db, {
+    fetch: async () => new Response(`${FEED_HASH_A}`),
+    now,
+  });
+
+  // The three loud cases: a 5xx the retry gave up on, a page that is not the
+  // export, and a feed whose shape changed into something with no hash in it.
+  // Each one throws rather than writing empty, so the cron monitor fails and
+  // the operator sees it; the rows already in the table keep standing either
+  // way, so the list is never empty.
+  /** @type {Array<[label: string, body: string, status: number]>} */
+  const notAFeed = [
+    ["a 503", "service unavailable", 503],
+    ["not the export", "<html>not the feed</html>", 200],
+    ["no hash in it", "# an empty export\r\n", 200],
+  ];
+  for (const [label, body, status] of notAFeed) {
+    await assert.rejects(
+      () =>
+        loadKnownBadFeed(db, {
+          fetch: async () => new Response(body, { status }),
+          now: now + 1000,
+        }),
+      /known-bad feed/,
+      label,
+    );
+  }
+  await assert.rejects(
+    () =>
+      loadKnownBadFeed(db, {
+        fetch: async () => new Response("", { status: 200 }),
+        now: now + 1000,
+      }),
+    /answered an empty body/,
+    "empty body is not a shape change",
+  );
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+    hashCount: 1,
+  });
+  assert.deepEqual(
+    knownBadHashRows(db).map((row) => row.sha256),
+    [FEED_HASH_A],
+  );
+});
+
+test("a load the size of the real export writes in batches, and a 5xx is asked for twice", async () => {
+  const db = createTestD1();
+  /** @type {number[]} */
+  const batchSizes = [];
+  const counted = /** @type {import("./harness.mjs").TestD1} */ (
+    /** @type {unknown} */ ({
+      ...db,
+      /** @param {Array<{sql: string, params?: unknown[]}>} statements */
+      async batch(statements) {
+        batchSizes.push(statements.length);
+        // What core/db.js's own batch does: D1 takes statements, so a wrapper
+        // around a test D1 has to prepare and bind them the same way.
+        return db.batch(statements.map(({ sql, params = [] }) => db.prepare(sql).bind(...params)));
+      },
+    })
+  );
+  // The export is about 1,500 hashes, which is 15 batches, so the chunk size is
+  // the one thing a two-hash test would never reach. Each batch is one D1
+  // transaction, so a load that dies halfway leaves the batches that landed
+  // and not a half-written one. This drives 250 of them, which is three
+  // batches: the ceil is the part under test, not the share.
+  const many = Array.from({ length: 250 }, (_, at) => at.toString(16).padStart(64, "0"));
+  const loaded = await loadKnownBadFeed(counted, {
+    fetch: async () => new Response(many.join("\r\n")),
+    now,
+  });
+  assert.equal(loaded.hashes, 250);
+  assert.equal(loaded.rows, 250);
+  assert.deepEqual(batchSizes, [100, 100, 50]);
+
+  // The retry the comment in core/fetch-retry.js promises is the half a test
+  // that drives one answer would never see: the 5xx is asked for twice and only
+  // the second answer decides the load.
+  let calls = 0;
+  const retried = await loadKnownBadFeed(createTestD1(), {
+    fetch: async () => {
+      calls += 1;
+      const first = calls === 1;
+      return new Response(first ? "unavailable" : FEED_HASH_A, {
+        status: first ? 503 : 200,
+      });
+    },
+    now,
+  });
+  assert.equal(calls, 2);
+  assert.equal(retried.hashes, 1);
+});
+
+test("a feed download stops at its byte ceiling and writes nothing", async () => {
+  // The ceiling bounds a download, not a hash list: the real export is about
+  // 100 KB, so the ceiling is forty times the thing it bounds and leaves room
+  // for a feed that grows without a shape change. What it buys is the failure
+  // a cron can report — a host that answers a page of ads where the export used
+  // to be would otherwise stream into the Worker's 128 MB isolate until the
+  // Worker died on its own memory. Both halves of the bound are proved here,
+  // because one check on its own can be lied to.
+
+  // The header half: a declared size over the ceiling is refused before the
+  // body is read at all, so the transfer is never started. The stand-in counts
+  // the reads: `text()` is the one way the body is taken, and a count of zero
+  // is the proof the header check came first. (A real Response cannot carry
+  // this proof, because its stream is pulled in the background by the runtime
+  // whether the loader wants it or not.)
+  let reads = 0;
+  const declared = /** @type {Response} */ (
+    /** @type {unknown} */ ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-length": String(KNOWN_BAD_MAX_FEED_BYTES + 1) }),
+      body: null,
+      async text() {
+        reads += 1;
+        return FEED_HASH_A;
+      },
+    })
+  );
+  await assert.rejects(
+    () => loadKnownBadFeed(createTestD1(), { fetch: async () => declared, now }),
+    /over the \d+-byte ceiling/,
+  );
+  assert.equal(reads, 0, "a declared size over the ceiling is refused before the body is read");
+
+  // The stream half: no declared size at all, so the header check has nothing
+  // to refuse and the only bound left is the count while the bytes arrive. The
+  // last chunk is the one byte that puts the body over, which is the half the
+  // header check cannot see, and the rows the load already wrote keep standing.
+  const db = createTestD1();
+  await loadKnownBadFeed(db, { fetch: async () => new Response(FEED_HASH_A), now });
+  const lyingBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("a".repeat(KNOWN_BAD_MAX_FEED_BYTES)));
+      controller.enqueue(new Uint8Array([0x61]));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    () => loadKnownBadFeed(db, { fetch: async () => new Response(lyingBody), now: now + 1000 }),
+    /over the \d+-byte ceiling/,
+    "a stream that declares nothing still stops at the ceiling",
+  );
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+    hashCount: 1,
+  });
+  assert.deepEqual(
+    knownBadHashRows(db).map((row) => row.sha256),
+    [FEED_HASH_A],
+  );
+});
+
+test("every route that can hit the list binds everything a refusal needs", () => {
+  // Every other pin here drives the handler directly, which is the right way
+  // to prove the behaviour and the wrong way to prove the route wired it: a
+  // mint route that dropped `db: c.env.DRIVE_DB` would pass this whole file
+  // and answer 200s in production, because the handler would simply have no
+  // database to read. So the wiring is read out of src/index.js beside them,
+  // in the style test/monitoring.test.mjs already uses for its crons.
+  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  /**
+   * Every `app.<verb>(...)` registration in src/index.js, as its own block
+   * with the comment lines stripped. The strip is the point: a route that
+   * dropped a binding and kept a comment naming it must fail here, so the pins
+   * below cannot be satisfied by prose. Built from the file rather than from a
+   * named handler, because the pin's job is the route that lands next: a third
+   * route registered after today is inside this list the day it lands.
+   * @returns {Array<string>}
+   */
+  const routes = () => {
+    const lines = src.split("\n");
+    /** @type {number[]} */
+    const starts = [];
+    for (const [at, line] of lines.entries()) {
+      if (/^\s*app\.\w+\(/.test(line)) {
+        starts.push(at);
+      }
+    }
+    return starts.map((start, index) => {
+      const stop = index + 1 < starts.length ? starts[index + 1] : lines.length;
+      return lines
+        .slice(start, stop)
+        .filter((it) => !/^\s*\/\//.test(it))
+        .join("\n");
+    });
+  };
+  // A share mint and an upload-request drop are the two places the check runs
+  // (src/share.js), and both are reached by a route that creates something: a
+  // POST. The same handler behind a GET or a DELETE reads or removes a link
+  // somebody already made, so it carries no options and is not on the list.
+  const creates = /^\s*app\.(post|put|patch)\(/;
+  const reaches = /(handleShareRequest|handleRequestUploadRequest)\(/;
+  const onTheList = routes().filter((route) => creates.test(route) && reaches.test(route));
+  assert.ok(onTheList.length > 0, "src/index.js registers a mint or a drop");
+  for (const route of onTheList) {
+    assert.match(route, /db: c\.env\.DRIVE_DB/, "the known-bad list's D1 half is bound");
+    assert.match(route, /\.\.\.mailFromEnv\(c\.env\)/, "a known-bad refusal can mail the owner");
+  }
+  const mint = onTheList.find((it) => /deviceName:/.test(it));
+  assert.ok(mint !== undefined, "the mint names the device in its mail");
+  const drop = onTheList.find((it) => /owner: ownerFor\(c\.env\)/.test(it));
+  assert.ok(drop !== undefined, "the drop names the owner its mail goes to");
+});
+
+test("a hash the feed loaded is refused with the feed untouched", async () => {
+  // The point of the split (drive issue #826): a mint reads one D1 row, so the
+  // check on a person's request path makes no call at all. A fetch that is
+  // wired to throw proves the feed is not read while someone waits.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("the request path must not read the feed");
+  };
+  try {
+    const { upload, share, db, links } = drive();
+    await upload("/", "notes.txt", "benign bytes");
+    await upload("/", "other.txt", "also benign");
+    await run(
+      db,
+      "INSERT INTO known_bad_hashes (sha256, seen_at) VALUES (?1, ?2)",
+      await malwareHashOf("benign bytes"),
+      Math.floor(now / 1000),
+    );
+
+    const refused = await share("/notes.txt", { token: TOKEN });
+    assert.equal(refused.status, 403);
+    assert.equal((await refused.json()).error, failureMessage("malware-refused"));
+    assert.equal(await links.shares.get(TOKEN), null);
+    // A file whose digest is not on the list still mints through the very same
+    // read, so the D1 half refuses one hash and not everything.
+    assert.equal((await share("/other.txt", { token: "BBBBBBBBBBBBBBBBBBBBBB" })).status, 201);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+/**
+ * The database a Worker really has when it is deployed before migration 0042.
+ * There are two shapes D1 can answer a missing table in, and a test that pins
+ * only one proves only that shape:
+ *
+ * - `prepare` throws synchronously, which is what a stand-in bound in a test
+ *   sees first, because core/db.js's `first()` calls `db.prepare(sql)` on the
+ *   way to `.bind(...).first()`;
+ * - `first()` returns a rejected promise, which is the shape the real D1 client
+ *   has: D1 rejects asynchronously, so nothing is thrown synchronously at all.
+ *
+ * The route has to answer an error either way, never a pass.
+ *
+ * @param {string} [message] what D1 answered
+ * @param {boolean} [rejects] true for the async shape
+ * @returns {import("./harness.mjs").TestD1}
+ */
+function unbounddb(message = "Error: no such table: known_bad_hashes", rejects = false) {
+  const standIn = rejects
+    ? {
+        prepare: () => ({
+          bind: () => ({
+            first: () => Promise.reject(new Error(message)),
+          }),
+        }),
+      }
+    : {
+        prepare() {
+          throw new Error(message);
+        },
+      };
+  return /** @type {import("./harness.mjs").TestD1} */ (/** @type {unknown} */ (standIn));
+}
+
+test("a database that throws is an error, not a pass", async () => {
+  // The refusal reads a row on every mint and every drop, so the day the
+  // Worker ships before the migration the read answers `no such table` all
+  // day. Nothing in isKnownBadHash catches that, and the day is not saved by
+  // one: a swallowed error is a mint of a file nobody checked, which is the
+  // thing this check exists to stop. Both public routes get the same answer,
+  // and both of the shapes D1 can answer in.
+  /**
+   * One mint and one drop against the same unmigrated database.
+   * @param {import("./harness.mjs").TestD1} db
+   */
+  const refuse = async (db) => {
+    const { upload, share, links, request, files } = drive();
+    await upload("/", "notes.txt", "benign bytes");
+    await upload("/", "eicar.txt", EICAR_BODY);
+    await assert.rejects(
+      share("/notes.txt", { db }),
+      /no such table/,
+      "the mint throws rather than minting",
+    );
+    assert.equal(await links.shares.get(TOKEN), null, "no link row is written either");
+
+    // The same read on the drop half, where the body is already in hand.
+    const made = await request("/", { token: "BBBBBBBBBBBBBBBBBBBBBB" });
+    assert.equal(made.status, 201);
+    await assert.rejects(
+      handleRequestUploadRequest(
+        new Request(
+          `${api(REQUEST_ENDPOINT)}/upload?k=BBBBBBBBBBBBBBBBBBBBBB&name=${encodeURIComponent("notes.txt")}`,
+          { method: "POST", headers: { "content-type": "text/plain" }, body: "benign bytes" },
+        ),
+        files,
+        links,
+        () => "active",
+        withLimits({ db, now }),
+      ),
+      /no such table/,
+      "the drop throws rather than storing",
+    );
+    const record = await links.requests.get("BBBBBBBBBBBBBBBBBBBBBB");
+    assert.ok(record);
+    assert.equal(record.uploadCount, 0, "no upload is counted either");
+
+    // The in-memory half decides before the row is read, so EICAR is refused
+    // even on the day the table is not there. A mint that cannot check the
+    // feed half still refuses the one body it can check.
+    const eicar = await share("/eicar.txt", { token: "CCCCCCCCCCCCCCCCCCCCCC", db });
+    assert.equal(eicar.status, 403);
+  };
+  await refuse(unbounddb());
+  await refuse(unbounddb("Error: D1_ERROR: no such table: known_bad_hashes", true));
+});
+/**
+ * A mailer double in the shape core/security-event.js's own caller uses,
+ * so a test can prove a notification went out without a vendor on the wire.
+ * @param {Error|null} [failure] what the vendor answers, which is the case a
+ *   refusal has to survive untouched
+ */
+function mailer(failure = null) {
+  /** @type {Array<{to: string, text: string, subject: string}>} */
+  const sent = [];
+  return {
+    sent,
+    /** @param {{to?: unknown, text?: unknown, subject?: unknown}} message */
+    async send(message) {
+      sent.push({
+        to: String(message.to),
+        text: String(message.text),
+        subject: String(message.subject),
+      });
+      if (failure !== null) {
+        throw failure;
+      }
+      return { messageId: "mid_1" };
+    },
+  };
+}
+
+const MAIL_FROM = "drive@example.com";
+
+test("a known-bad refusal mails the owner, and a mailer that is down still refuses", async () => {
+  // A hit on either public route tells the account the file or the link belongs
+  // to (drive issue #826): that is the only party who can look at it. The
+  // stranger's own answer stays the table's words, either way.
+  const owner = { id: account.id, name: account.name, email: "owner@example.com" };
+  const { upload, files, links, db, list } = drive();
+  await upload("/", "flagged.txt", "benign bytes");
+  // The row the feed leaves: a digest the in-memory half does not hold, so the
+  // refusal under test is the D1 half's and not EICAR's.
+  await run(
+    db,
+    "INSERT INTO known_bad_hashes (sha256, seen_at) VALUES (?1, ?2)",
+    await malwareHashOf("benign bytes"),
+    Math.floor(now / 1000),
+  );
+  const mail = mailer();
+  const minted = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/flagged.txt" }),
+    }),
+    files,
+    links,
+    owner,
+    {
+      now,
+      token: TOKEN,
+      limiter: allowLimiter(),
+      db,
+      email: mail,
+      mailFrom: MAIL_FROM,
+      deviceName: "office laptop",
+    },
+  );
+  assert.equal(minted.status, 403);
+  assert.equal((await minted.json()).error, failureMessage("malware-refused"));
+  assert.equal(mail.sent.length, 1);
+  assert.equal(mail.sent[0].to, "owner@example.com");
+  assert.match(mail.sent[0].subject, /security event/i);
+  assert.match(mail.sent[0].text, /A known-bad file was refused\./);
+  assert.match(mail.sent[0].text, /office laptop/);
+  assert.match(mail.sent[0].text, /share link mint was refused/);
+
+  // The drop half, through a link minted for the same account.
+  const made = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    files,
+    links,
+    owner,
+    { now, token: "BBBBBBBBBBBBBBBBBBBBBB", limiter: allowLimiter() },
+  );
+  assert.equal(made.status, 201);
+  const down = mailer(new Error("vendor down"));
+  const dropped = await handleRequestUploadRequest(
+    new Request(
+      `${api(REQUEST_ENDPOINT)}/upload?k=BBBBBBBBBBBBBBBBBBBBBB&name=${encodeURIComponent("eicar.txt")}`,
+      { method: "POST", headers: { "content-type": "text/plain" }, body: EICAR_BODY },
+    ),
+    files,
+    links,
+    () => "active",
+    withLimits({ db, now, owner: async () => owner, email: down, mailFrom: MAIL_FROM }),
+  );
+  assert.equal(dropped.status, 403, "a mail vendor that is down is not the stranger's problem");
+  assert.equal((await dropped.json()).error, failureMessage("malware-refused"));
+  assert.equal(down.sent.length, 1);
+  assert.equal(down.sent[0].to, "owner@example.com");
+  // The link's own token, so the owner knows which page it landed on. The
+  // stranger is named by what they used, not by who they are.
+  assert.match(down.sent[0].text, /\/s\/BBBBBBBBBBBBBBBBBBBBBB/);
+  assert.match(down.sent[0].text, /device named the drive CLI/);
+  // The clock the notice carries is the one the request was given, so an owner
+  // reading the mail can line it up against their own access log. The dots are
+  // escaped, so a date that is one character off is not a match.
+  const happenedAt = new Date(now).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(down.sent[0].text, new RegExp(`It happened at ${happenedAt}`));
+  assert.deepEqual(
+    (await list()).map((row) => row.name),
+    ["flagged.txt"],
+  );
+  const record = await links.requests.get("BBBBBBBBBBBBBBBBBBBBBB");
+  assert.ok(record);
+  assert.equal(record.uploadCount, 0);
+  // The stamp follows the mail, never the refusal (drive issue #826): this
+  // test's vendor is down, the owner read nothing, and the link stays
+  // unstamped so the next refusal tries the mail again.
+  assert.equal(record.malwareNoticeAt, null);
+});
+
+/**
+ * A store double that reports one file as REQUEST_FILE_MAX_BYTES and one byte
+ * more: the size a real listing claims for an object the storage would rather
+ * not send. `read` hands back a body that streams on demand and records the
+ * two things the mint is allowed to do with it — pull a byte, or cancel it —
+ * so a mint that hashes the body has to read one, and a mint that cancels it
+ * has not.
+ * @param {import("../core/files.js").FileStore} inner
+ * @param {number} size the size to claim
+ * @param {string[]} calls every call the double is given
+ * @returns {import("../core/files.js").FileStore & {calls: string[], pulled: number, cancelled: number}}
+ */
+function claimedStore(inner, size, calls) {
+  let pulled = 0;
+  let cancelled = 0;
+  return {
+    ...inner,
+    calls,
+    get pulled() {
+      return pulled;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+    /** @param {string} path */
+    async read(path) {
+      calls.push(`read ${path}`);
+      return {
+        body: new ReadableStream(
+          {
+            pull(controller) {
+              pulled += 1;
+              controller.enqueue(new Uint8Array([65]));
+              controller.close();
+            },
+            cancel() {
+              cancelled += 1;
+            },
+          },
+          // An empty queue: `pull` runs only when someone asks for a byte,
+          // which is the whole assertion this double exists to make.
+          { highWaterMark: 0 },
+        ),
+        contentType: "application/octet-stream",
+        size,
+        etag: '"big-etag"',
+        status: 200,
+      };
+    },
+  };
+}
+
+test("an oversize mint cancels the body, skips the hash and stores the etag", async () => {
+  // The check runs on the bytes a mint reads. A file the storage reports over
+  // REQUEST_FILE_MAX_BYTES is never read at all — the body the mint opened is
+  // cancelled before one byte is pulled — so there is no hash to check, and the
+  // one thing the row still needs, the etag pin, is stored as before.
+  const { upload, files, links, db } = drive();
+  await upload("/", "big.iso", "not-really-32-mb", "application/octet-stream");
+  const size = REQUEST_FILE_MAX_BYTES + 1;
+  /** @type {string[]} */
+  const calls = [];
+  const claim = claimedStore(files, size, calls);
+  const minted = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/big.iso" }),
+    }),
+    claim,
+    links,
+    account,
+    { now, token: TOKEN, limiter: allowLimiter(), db },
+  );
+  assert.equal(minted.status, 201, "an oversize file is still shareable");
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.etag, "big-etag");
+  assert.equal(record.maxDownloadBytes, shareDownloadCapFor(size));
+  assert.equal(claim.pulled, 0, "a 32 MB body is never pulled into the Worker to be hashed");
+  assert.equal(claim.cancelled, 1, "the body the mint opened is cancelled");
+  // Nothing about EICAR is involved here: the hash was never computed, so the
+  // refusal could not have been reached, and no write was made either.
+  assert.deepEqual(calls, ["read u/acct-1/big.iso"]);
+});
+
+test("a refused drop with no owner address to notify is loud, and still refuses", async () => {
+  // The notification half of a refusal is the part that can quietly do
+  // nothing: an unbound resolver, or an account row with no address, and the
+  // mail never goes. The stranger's answer does not change, and the operator
+  // gets the link's own token in the log (drive issue #826).
+  const { upload, files, links, list, db } = drive();
+  await upload("/", "eicar.txt", EICAR_BODY);
+  const made = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    files,
+    links,
+    account,
+    { now, token: TOKEN, limiter: allowLimiter() },
+  );
+  assert.equal(made.status, 201);
+  /** @type {string[]} */
+  const logged = [];
+  const realError = console.error;
+  console.error = (line) => logged.push(String(line));
+  try {
+    const dropped = await handleRequestUploadRequest(
+      new Request(
+        `${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=${encodeURIComponent("eicar.txt")}`,
+        { method: "POST", headers: { "content-type": "text/plain" }, body: EICAR_BODY },
+      ),
+      files,
+      links,
+      () => "active",
+      // No owner resolver and no mailer: the case that must be seen and not
+      // swallowed. The drop itself still has the db half bound.
+      withLimits({ db, now }),
+    );
+    assert.equal(dropped.status, 403);
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(
+    logged.some((line) => line.includes("drive share: no owner address to notify")),
+    `the missing recipient is logged, got: ${JSON.stringify(logged)}`,
+  );
+  assert.ok(logged.some((line) => line.includes(`/s/${TOKEN}`)));
+  logged.length = 0;
+  console.error = (line) => logged.push(String(line));
+  try {
+    const droppedAgain = await handleRequestUploadRequest(
+      new Request(
+        `${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=${encodeURIComponent("eicar.txt")}`,
+        { method: "POST", headers: { "content-type": "text/plain" }, body: EICAR_BODY },
+      ),
+      files,
+      links,
+      () => "active",
+      withLimits({
+        db,
+        now,
+        owner: async () => {
+          throw new Error("resolver down");
+        },
+      }),
+    );
+    assert.equal(droppedAgain.status, 403);
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(
+    logged.some(
+      (line) => line.includes("reading a link owner failed") && line.includes(`/s/${TOKEN}`),
+    ),
+    `a throw names the link, got: ${JSON.stringify(logged)}`,
+  );
+  assert.deepEqual(
+    (await list()).map((row) => row.name),
+    ["eicar.txt"],
+  );
+  // No mail went out, so nothing is stamped: the window never opens on a
+  // notice that was not sent, and the loud log above repeats on every
+  // refusal until the address is fixed (drive issue #826).
+  const unstamped = await links.requests.get(TOKEN);
+  assert.ok(unstamped);
+  assert.equal(unstamped.malwareNoticeAt, null);
+});
+
+test("a repeated known-bad drop inside the quiet window mails once, and the window reopening mails again", async () => {
+  // The window is the flood cap (drive issue #826): a stranger who holds the
+  // link can repeat a known-bad POST at the link limiter's pace, and the
+  // first refusal already told the owner what to do. Repeats inside the
+  // window answer the same 403 and mail nothing; when the window reopens,
+  // the next refusal mails a fresh notice, so a second stranger on the same
+  // link is not hidden by the first.
+  const { files, links, list } = drive();
+  const made = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    files,
+    links,
+    account,
+    { now, token: TOKEN, limiter: allowLimiter() },
+  );
+  assert.equal(made.status, 201);
+  const mail = mailer();
+  /**
+   * One refusal at a chosen instant, with the owner and the mailer bound.
+   * @param {number} at
+   */
+  const dropAt = async (at) =>
+    handleRequestUploadRequest(
+      new Request(
+        `${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=${encodeURIComponent("eicar.txt")}`,
+        {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: EICAR_BODY,
+        },
+      ),
+      files,
+      links,
+      () => "active",
+      withLimits({
+        now: at,
+        owner: async () => ({ id: account.id, name: account.name, email: "owner@example.com" }),
+        email: mail,
+        mailFrom: MAIL_FROM,
+      }),
+    );
+  const first = await dropAt(now);
+  assert.equal(first.status, 403);
+  assert.equal(mail.sent.length, 1);
+  // Inside the window: the same 403, and no second mail.
+  const repeat = await dropAt(now + 60 * 60 * 1000);
+  assert.equal(repeat.status, 403);
+  assert.equal((await repeat.json()).error, failureMessage("malware-refused"));
+  assert.equal(mail.sent.length, 1, "a repeat inside the window mails nothing");
+  assert.equal((await links.requests.get(TOKEN))?.malwareNoticeAt, now);
+  // The window reopens a day later: the next refusal mails again, and the
+  // stamp moves to the notice that caused it.
+  const reopened = await dropAt(now + MALWARE_NOTICE_QUIET_MS + 60 * 60 * 1000);
+  assert.equal(reopened.status, 403);
+  assert.equal(mail.sent.length, 2);
+  assert.equal(
+    (await links.requests.get(TOKEN))?.malwareNoticeAt,
+    now + MALWARE_NOTICE_QUIET_MS + 60 * 60 * 1000,
+  );
+  // A refusal never writes the file and never spends the link's counts.
+  assert.deepEqual(
+    (await list()).map((row) => row.name),
+    [],
+  );
+  assert.equal((await links.requests.get(TOKEN))?.uploadCount, 0);
+});
+
+test("a drop or a mint without db fails loud instead of losing the known-bad half", async () => {
+  // db is a required key on both routes' handlers (drive issue #826): null
+  // is the deliberate no-database call the in-memory list half serves, and
+  // undefined is a caller bug. The handler throws instead of silently
+  // running with neither the list half nor the prepaid-balance guard, so a
+  // call site the pin test cannot see (a wrapper, an app.on route) fails on
+  // its first request rather than passing every check.
+  const { files, links } = drive();
+  // The cast is the point: the call omits db on purpose, and the handler's
+  // own guard is what turns the omission into the TypeError this test pins
+  // (drive issue #826).
+  const dropWithoutDb = /** @type {Parameters<typeof handleRequestUploadRequest>[4]} */ (
+    /** @type {unknown} */ ({ now, ipLimiter: allowLimiter(), linkLimiter: allowLimiter() })
+  );
+  await assert.rejects(
+    () =>
+      handleRequestUploadRequest(
+        new Request(`${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=a.txt`, {
+          method: "POST",
+          body: "x",
+        }),
+        files,
+        links,
+        () => "active",
+        dropWithoutDb,
+      ),
+    TypeError,
+  );
+  await assert.rejects(
+    () =>
+      handleShareRequest(
+        new Request(api(SHARE_ENDPOINT), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "/a.txt" }),
+        }),
+        files,
+        links,
+        account,
+        { now, limiter: allowLimiter() },
+      ),
+    TypeError,
+  );
+  // The limiter is answered first: a request the edge refuses keeps its own
+  // words even on a half-configured deployment.
+  const limited = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/a.txt" }),
+    }),
+    files,
+    links,
+    account,
+    { now, limiter: denyLimiter() },
+  );
+  assert.equal(limited.status, 429);
+});
+
+test("the cron trigger loads the feed into D1, and the list answers from it", async () => {
+  // The whole loop, the way the platform runs it: the scheduled trigger answers
+  // its one HTTP call from a test stand-in, the load writes real D1 rows, and
+  // the check the routes call reads those rows with no call of its own.
+  const db = createTestD1();
+  const feed = [
+    "# MalwareBazaar recent malware samples (SHA256 hashes)",
+    FEED_HASH_A,
+    FEED_HASH_B,
+    "",
+  ].join("\r\n");
+  /** @type {string[]} */
+  const asked = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      asked.push(url);
+      if (url !== KNOWN_BAD_FEED_URL) {
+        return realFetch(input, init);
+      }
+      return new Response(feed);
+    }
+  );
+  try {
+    await /** @type {function} */ (worker.scheduled)(
+      { cron: KNOWN_BAD_FEED_SCHEDULE, scheduledTime: now, noRetry: true },
+      { DRIVE_DB: db },
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // One call, to the one URL, made by the cron and never by a person's request.
+  assert.deepEqual(asked, [KNOWN_BAD_FEED_URL]);
+  // The real record the load leaves, cited by the trigger's own timestamp.
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+    hashCount: 2,
+  });
+  const rows = knownBadHashRows(db);
+  assert.deepEqual(rows, [
+    { sha256: FEED_HASH_A, seenAt: Math.floor(now / 1000) },
+    { sha256: FEED_HASH_B, seenAt: Math.floor(now / 1000) },
+  ]);
+  // Only D1 holds the feed's half: the in-memory half is still just EICAR, so
+  // the same lookup with no db bound refuses EICAR and not the feed's rows.
+  assert.equal(await isKnownBadHash(db, FEED_HASH_A), true);
+  assert.equal(await isKnownBadHash(null, FEED_HASH_A), false);
+  assert.equal(await isKnownBadHash(null, EICAR_SHA256), true);
 });
 
 test("a share minted before etag pinning still serves after a replace", async () => {
@@ -578,7 +1494,7 @@ test("the public routes need a cap resolver, and refuse a made-up answer", async
         createMemoryStore(),
         links,
         "read_only",
-        { now },
+        { now, db: null },
       ),
     TypeError,
   );
@@ -868,7 +1784,7 @@ test("one account cannot revoke another account's link", async () => {
     store,
     links,
     account,
-    { now, limiter: allowLimiter(), token: TOKEN },
+    { now, db: null, limiter: allowLimiter(), token: TOKEN },
   );
   assert.equal(made.status, 201);
 
@@ -1204,7 +2120,7 @@ test("a share link downloads from the owner's bucket, and another account cannot
     files,
     links,
     owner,
-    { now, limiter: allowLimiter(), token: TOKEN },
+    { now, db: null, limiter: allowLimiter(), token: TOKEN },
   );
   assert.equal(made.status, 201);
   const opened = await handleShareFileRequest(
@@ -1663,7 +2579,7 @@ test("a public upload without its rate-limit bindings is refused before any byte
     store,
     links,
     () => "active",
-    { now },
+    { now, db: null },
   );
   assert.equal(upload.status, 503);
   assert.equal((await upload.json()).error, failureMessage("unexpected"));
