@@ -18,14 +18,15 @@
 // landed yet simply holds no fingerprint, and claimCardFingerprint writes it
 // when the webhook arrives.
 
-import { GB_PER_TB } from "./billing.js";
+import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { failureMessage } from "./messages.js";
+import { DAY_MS } from "./units.js";
 
 /** @typedef {ReturnType<typeof import("./devices.js").createD1DeviceStore>} DeviceStore */
 
 /** 1 TB in decimal bytes, the same GB the bill uses. */
-export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * 1e9;
+export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * BYTES_PER_GB;
 
 /** Accounts row id used at the card step, before Better Auth mints a user. */
 const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
@@ -35,7 +36,7 @@ const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
  * is deleted at the next card step, so a sign-up nobody finished cannot keep a
  * card locked. A day is far past the sign-in link's own life.
  */
-export const HOLD_TTL_SECONDS = 24 * 60 * 60;
+export const HOLD_TTL_SECONDS = DAY_MS / 1000;
 
 // What the 1 TB pre-charge limit counts (drive#536), written once and built
 // into both statements that read it: the live versions, which of those rows

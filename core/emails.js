@@ -402,7 +402,7 @@ function requireDay(value, name) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function accountClosedTemplate(data = {}) {
+function accountClosedTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
@@ -583,7 +583,7 @@ function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function topUpReceiptTemplate(data = {}) {
+function topUpReceiptTemplate(data = {}) {
   const amount = requireMoney(data.amountUsd, "amountUsd");
   const balance = requireMoney(data.balanceUsd, "balanceUsd");
   if (typeof data.auto !== "boolean") {
@@ -615,7 +615,7 @@ export function topUpReceiptTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function lowBalanceTemplate(data = {}) {
+function lowBalanceTemplate(data = {}) {
   const balance = requireMoney(data.balanceUsd, "balanceUsd");
   const auto =
     data.autoTopUpUsd === null || data.autoTopUpUsd === undefined
@@ -650,7 +650,7 @@ function requireText(value, name) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function deviceApproveNoticeTemplate(data = {}) {
+function deviceApproveNoticeTemplate(data = {}) {
   const deviceName = requireText(data.deviceName, "deviceName");
   const requestedAt = requireText(data.requestedAt, "requestedAt");
   const subject = "A device asked to connect to your drive";
@@ -680,7 +680,7 @@ export function deviceApproveNoticeTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function uploadArrivalsTemplate(data = {}) {
+function uploadArrivalsTemplate(data = {}) {
   const ownerName = requireText(data.ownerName, "ownerName");
   const folder = requireText(data.folder, "folder");
   if (!Array.isArray(data.arrivals) || data.arrivals.length === 0) {
@@ -739,7 +739,7 @@ const SECURITY_LINK = Object.freeze({
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function securityEventTemplate(data = {}) {
+function securityEventTemplate(data = {}) {
   const event = data.event;
   if (typeof event !== "string" || !Object.hasOwn(SECURITY_EVENT_COPY, event)) {
     throw new TypeError(
