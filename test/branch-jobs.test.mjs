@@ -19,6 +19,7 @@ import {
   BRANCH_JOB_BATCH_FILES,
   createBranch,
   createKvSnapshotStore,
+  diffBranch,
   discardBranch,
   getBranch,
   handleBranchesRequest,
@@ -241,6 +242,159 @@ test("a 20,000-file branch completes with under 100 subrequests per batch", {
   const done = await getBranch(db, snapshots, ACCOUNT, "work");
   assert.equal(done?.state, "open");
   assert.equal(done?.jobDone, 20_000);
+});
+
+test("a folder that grows after the claim copies the claimed listing only", async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  await scoped.write("/Photos/sub/b.txt", new Blob(["b"]).stream(), "text/plain");
+  const db = createTestD1();
+  const snapshots = createKvSnapshotStore(createTestKv());
+  const queue = fakeQueue();
+  const started = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(started.state, "creating");
+  assert.equal(queue.sent.length, 1);
+  // The claim froze the listing, so the row already names what it reserved:
+  // the two files, and the byte length of the value that holds them.
+  const claimed = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(claimed);
+  assert.deepEqual(Object.keys(claimed.snapshot).sort(), ["a.txt", "sub/b.txt"]);
+  assert.ok(claimed.snapshotBytes > 0, "the frozen listing is stored, not left at zero");
+
+  // The source folder grows after the claim and before the queued copy runs.
+  await scoped.write("/Photos/c.txt", new Blob(["c"]).stream(), "text/plain");
+  await scoped.write("/Photos/sub/d.txt", new Blob(["d"]).stream(), "text/plain");
+  // And a file the claim measured grows. The listing froze its size, but the
+  // copy is handed the live one, so it writes the whole file rather than cutting
+  // it at the frozen length — and the snapshot keeps the frozen fingerprint, so
+  // the diff still reports the original changing under the branch.
+  await scoped.write(
+    "/Photos/sub/b.txt",
+    new Blob(["b grown under the branch"]).stream(),
+    "text/plain",
+  );
+
+  // One batch at a time until the copy reports done. The accumulator is typed
+  // as the job's own return type so it keeps that shape instead of narrowing
+  // to the `{done: boolean}` seed (tsc rejects the assignment otherwise).
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let copied = { done: false };
+  for (let steps = 0; steps < 8 && copied.done !== true; steps += 1) {
+    copied = await processBranchJob(db, snapshots, scoped, ACCOUNT, claimed.id);
+  }
+  assert.ok(!("error" in copied) && copied.done, JSON.stringify(copied));
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "open");
+  // The branch listing matches the reservation exactly: what was written is
+  // the claimed list, and nothing the claim never measured is there for free.
+  assert.deepEqual(Object.keys(done?.snapshot ?? {}).sort(), ["a.txt", "sub/b.txt"]);
+  assert.equal(await readText(scoped, "/.branches/work/a.txt"), "a");
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b grown under the branch");
+  assert.equal(await readText(scoped, "/.branches/work/c.txt"), null);
+  assert.equal(await readText(scoped, "/.branches/work/sub/d.txt"), null);
+  assert.equal(done?.jobDone, 2);
+  assert.equal(done?.jobTotal, 2);
+
+  // The file that grew is whole in the branch, and the original still reads as
+  // changed under it: the diff names the grown file plus the two the source
+  // gained after the claim. Those two are in the original and not the branch,
+  // which is the whole point of the freeze — the next branch takes them.
+  const grown = await diffBranch(scoped, {
+    sourcePrefix: "/Photos",
+    branchPrefix: "/.branches/work",
+    snapshot: done?.snapshot ?? {},
+  });
+  assert.deepEqual(grown.sourceChanged, ["c.txt", "sub/b.txt", "sub/d.txt"]);
+  // Nothing the claim measured was lost or duplicated by the growth.
+  assert.deepEqual([...grown.current.keys()].sort(), ["a.txt", "sub/b.txt"]);
+
+  // The growth is not lost: a branch of the same folder again takes it.
+  const second = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "again" },
+    () => Date.now(),
+  );
+  assert.ok(!("error" in second) && second.state === "open", JSON.stringify(second));
+  assert.equal(await readText(scoped, "/.branches/again/c.txt"), "c");
+});
+
+test("a create queued before the freeze existed copies its whole source", async () => {
+  // The regression the freeze's marker exists for: a row claimed before the
+  // claim froze a listing writes its snapshot a batch at a time, so after the
+  // first batch the row already carries bytes. Reading `only` off those bytes
+  // would make batch two copy only what batch one had copied, and the branch
+  // would open missing every file past the first batch.
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  // More than one batch of files, so the copy cannot finish in a single pass.
+  const total = BRANCH_JOB_BATCH_FILES + 5;
+  const pending = [];
+  for (let index = 0; index < total; index += 1) {
+    pending.push(scoped.write(`/Photos/${index}.txt`, new Blob(["a"]).stream(), "text/plain"));
+    if (pending.length === 200) {
+      await Promise.all(pending.splice(0, 200));
+    }
+  }
+  await Promise.all(pending);
+  const db = createTestD1();
+  const snapshots = createKvSnapshotStore(createTestKv());
+  const key = snapshotKey(ACCOUNT, "legacy");
+  // The row exactly as the Worker before this issue wrote it: claimed with an
+  // empty snapshot pointer value and no frozen marker key, so the copy job
+  // takes its legacy path and walks the source as it is. It is written
+  // directly rather than through `createBranch`, because that call is what
+  // freezes the listing now — a row from it would carry the frozen listing and
+  // would prove nothing about the old Worker.
+  const claimed = await db
+    .prepare(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
+        "snapshot_key, snapshot_bytes, state, created_at, job_kind) " +
+        "VALUES (?1,?2,?3,?4,?5,0,'creating',?6,'create')",
+    )
+    .bind(
+      ACCOUNT.id,
+      "legacy",
+      "/Photos",
+      "/.branches/legacy",
+      key,
+      new Date(Date.now()).toISOString(),
+    )
+    .run();
+  assert.ok(claimed.success);
+  const id = Number(claimed.meta.last_row_id);
+  assert.equal(await snapshots.get(`${key}/frozen`), null, "no marker: this is a pre-freeze row");
+
+  /** @type {Awaited<ReturnType<typeof processBranchJob>>} */
+  let copied = { done: false };
+  let batches = 0;
+  for (let steps = 0; steps < 20 && copied.done !== true; steps += 1) {
+    copied = await processBranchJob(db, snapshots, scoped, ACCOUNT, id);
+    batches += 1;
+  }
+  assert.ok(!("error" in copied) && copied.done, JSON.stringify(copied));
+  // More than one batch, which is what makes a partial snapshot read as a
+  // frozen one the case this covers.
+  assert.ok(batches > 2, `the copy took ${batches} batches, more than the clear plus one copy`);
+  const done = await getBranch(db, snapshots, ACCOUNT, "legacy");
+  assert.equal(done?.state, "open");
+  // Every source file is in the branch: nothing past the first batch was lost
+  // to a partial snapshot being read as a frozen one.
+  assert.equal(Object.keys(done?.snapshot ?? {}).length, total);
+  assert.equal(done?.jobDone, total);
+  assert.equal(done?.jobTotal, total);
+  assert.equal(await readText(scoped, `/.branches/legacy/${total - 1}.txt`), "a");
 });
 
 test("approve of 1,000 changes issues one LIST per parent folder", async () => {

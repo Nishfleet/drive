@@ -10,11 +10,12 @@
 // The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
 //
 // The real card capture still waits on the Dodo key (#417). The fingerprint
-// here is the test double: a posted `cardFingerprint` (kept as
-// `posted:<value>`), or `test:<email>` when the existing card checkbox is the
-// only proof, the same shape PR 445 used for the card step itself. No Dodo
-// call, and no secret. The two prefixes keep a posted string from ever
-// equalling another person's stand-in, so nobody can lock an address out.
+// here is the test double: `test:<email>` claimed after the magic link is
+// followed, on the real account id (drive#538). A start request never writes
+// a hold and never takes a fingerprint from the body, so a stranger cannot
+// lock an address out. The `posted:` prefix still keeps a string a test
+// passes to signupCardFingerprint from ever equalling another person's
+// checkbox stand-in.
 
 import { GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
@@ -78,7 +79,7 @@ export function signupCardFingerprint(fields) {
   if (typeof posted === "string" && posted.trim() !== "") {
     return `posted:${posted.trim()}`;
   }
-  // Same four yes-values hasSignupCard reads (src/signin.js). Copied here so
+  // Same four yes-values the old start-step checkbox posted. Copied here so
   // this module does not import the route, which imports this file.
   const card = fields.card;
   if (card !== true && card !== "true" && card !== "on" && card !== "1") {

@@ -173,7 +173,11 @@ var messageTable = map[string][2]string{
 	},
 	"drive-folder": {
 		"The drive folder {1} could not be created.",
-		"Check that the disk has room and that {1} is writable, then run the command again.",
+		"Check that {1} is writable and that the disk is not full, then run the command again.",
+	},
+	"stale-mount": {
+		"The drive at {1} is still listed as mounted, but it does not answer.",
+		"Run `drive unmount`.",
 	},
 	"cache-clear-mounted": {
 		"The cache cannot be cleared while the drive is mounted.",
@@ -193,7 +197,7 @@ var messageTable = map[string][2]string{
 	},
 	"unmount-failed": {
 		"The drive at {1} did not come down.",
-		"Unmount it by hand (Linux: `fusermount3 -u {1}`; macOS: `sudo umount {1}`), then run the command again.",
+		"Unmount it by hand (Linux: `fusermount3 -uz {1}`, or `fusermount -uz {1}`; macOS: `sudo umount -f {1}`), then run the command again.",
 	},
 	"logout-leftover": {
 		"Logout finished, but {1} is still on disk.",
@@ -204,7 +208,7 @@ var messageTable = map[string][2]string{
 		"Start the mount and let them finish, or run `drive logout --force` to discard them.",
 	},
 	"key-still-live": {
-		"signed out here; the key is still live, run drive logout again when online",
+		"signed out here; the key is still live",
 		"Run `" + signInCommand + "`, then `drive logout` again, to turn it off.",
 	},
 	"key-still-live-elsewhere": {

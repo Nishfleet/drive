@@ -49,7 +49,6 @@
 // two different limits.
 
 import {
-  attachPendingCardAccount,
   claimCardFingerprint,
   pendingCardAccountId,
   signupCardFingerprint,
@@ -142,15 +141,10 @@ export const SIGNIN_COPY = Object.freeze({
   // them.
   lede: "One link by email.",
   // drive#387: a card at sign-up, and why, in plain words. The page says it
-  // once (drive#420), and needCard is also the server's own refusal, so a
-  // person who ticks the box without a card gets the same sentence the page
-  // already showed them once.
+  // once (drive#420). A tick box on the start form made every returning
+  // customer consent again (drive#538). Verify claims a test stand-in;
+  // a real card waits on the Dodo key (drive#417, drive#325).
   needCard: PRICE.needCard,
-  // drive#420: what the tick box is labelled, in short. The box used to carry
-  // the whole needCard sentence, which put the same words on the page three
-  // times and read as a legal box; the reason lives once above the box and the
-  // label says only that the person understands it.
-  cardConsent: "I understand a card is required",
   noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
@@ -227,7 +221,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -262,49 +256,12 @@ export function readSigninRequest(body) {
 }
 
 /**
- * Whether a posted field is a card-at-sign-up yes. The page's checkbox posts
- * "on"; JSON posts true. Anything else is not a card.
- * @param {unknown} value
- * @returns {boolean}
- */
-export function hasSignupCard(value) {
-  return value === true || value === "true" || value === "on" || value === "1";
-}
-
-/**
- * Sign-up without a card is refused (drive#387). Returning the need-card
- * sentence, or null when a card is present. No Dodo call: a missing key
- * still charges nobody (#325).
- * @param {unknown} card
- * @returns {string|null}
- */
-export function refuseSignupWithoutCard(card) {
-  return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
-}
-
-/**
- * True when Better Auth already holds this address, so this start is sign-in
- * rather than sign-up.
- * @param {SigninEnv} env
- * @param {string} email
- * @returns {Promise<boolean>}
- */
-async function emailHasUser(env, email) {
-  const db = env.DRIVE_DB;
-  if (db === undefined || db === null || typeof db !== "object" || !("prepare" in db)) {
-    return false;
-  }
-  const row = await /** @type {D1Database} */ (db)
-    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
-    .bind(email)
-    .first();
-  return row !== null && row !== undefined;
-}
-
-/**
  * The start step: the method and, for the email method, the address.
+ * A fingerprint or card field posted on the body is ignored (drive#538):
+ * claiming a card from an unauthenticated start is how a stranger locked
+ * an address out.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -325,8 +282,6 @@ function readStart(body) {
     step: "start",
     method,
     email,
-    card: body.card,
-    cardFingerprint: body.cardFingerprint,
     // The device-approval return path (drive#558): the approve page sent the
     // person here with ?next= its own URL. Validated here, at the read, so a
     // hand-edited link is dropped rather than stored — the same drop
@@ -511,53 +466,22 @@ export async function handleSigninRequest(request, env) {
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
   }
-  // A first-time address is sign-up: refuse it without a card (drive#387). A
-  // returning address is sign-in and already has an account. No Dodo call
-  // here, so an unset key still charges nobody (#325). The fingerprint is the
-  // test double (drive#464): a posted provider id, or `test:<email>` from the
-  // checkbox, the same stand-in PR 445 used for the card step itself.
-  const isNew = !(await emailHasUser(env, email));
-  /** @type {string|null} */
-  let fingerprint = null;
-  if (isNew) {
-    const refused = refuseSignupWithoutCard(read.card);
-    if (refused !== null) {
-      return json({ error: refused }, 400);
-    }
-    fingerprint = signupCardFingerprint({
-      card: read.card,
-      cardFingerprint: read.cardFingerprint,
-      email,
-    });
-    const driveDb = env.DRIVE_DB;
-    if (
-      fingerprint !== null &&
-      driveDb !== undefined &&
-      driveDb !== null &&
-      typeof driveDb === "object" &&
-      "prepare" in driveDb
-    ) {
-      // The user row does not exist until the link is followed. The hold row
-      // (id `hold:<email>`) is the live account for the card-fingerprint
-      // check until verify remaps it.
-      const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
-        accountId: pendingCardAccountId(email),
-        email,
-        fingerprint,
-      });
-      if ("error" in claimed) {
-        return json({ error: claimed.error }, 400);
-      }
-    }
-  }
+  // drive#538: the start step does not look the address up, does not refuse
+  // a missing card, and does not write a hold. Those three were how a
+  // stranger learned whether an address already had an account, and how they
+  // locked a new one out with a fingerprint the body carried. The card is
+  // claimed after the magic link is followed, on the real account id. The
+  // answer below is 202 for every well-formed address the send actually
+  // takes, known or unknown.
+  //
   // drive#550: the per-IP and global limits above bound mail volume per IP,
   // so a script spread across hosts still fills one inbox. This guard is
   // keyed on the address instead: 5 links an hour and 20 a day per inbox,
   // however many IPs the asks come from. The key is the lowercased address
-  // because that is the account key the user row is looked up by (the
-  // lower(email) query in emailHasUser), so Alice@, alice@ and ALICE@ share
-  // one ceiling. The check runs after validation and before the library is
-  // handed the send, so a refused address costs no link and no mail.
+  // because that is the account key the user row is looked up by, so Alice@,
+  // alice@ and ALICE@ share one ceiling. The check runs after validation and
+  // before the library is handed the send, so a refused address costs no
+  // link and no mail.
   //
   // The two answers differ on purpose. Over the limit the page still says
   // "check your inbox": answering differently would tell a stranger that
@@ -686,17 +610,53 @@ export async function handleSigninLinkVerify(request, env) {
     const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
     const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
     if (account !== null) {
-      // The person is signed in by now: Better Auth set the cookie above. A
-      // hold that cannot move (a clash with a card already on the account)
-      // is logged loudly and the hold stays where it was, rather than
-      // turning a good sign-in into a 500.
+      // The person is signed in by now: Better Auth set the cookie above.
+      // Drop any leftover unauthenticated hold for this address so an old
+      // start cannot move a stranger's fingerprint onto the new account
+      // (drive#538). pendingCardAccountId lowercases, so a mixed-case
+      // mailbox still matches the hold id. Then claim `test:<email>` on
+      // the real id when the account has no card yet. That is the stand-in
+      // while Dodo is unset (drive#417, drive#325), not a real card: a
+      // clash is logged, and the person still signs in. The start-step
+      // 400 for a missing checkbox is gone: that answer is how a stranger
+      // learned whether the address already had an account.
       try {
-        await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
-          email: account.email,
-          accountId: account.id,
-        });
+        await /** @type {D1Database} */ (driveDb)
+          .prepare("DELETE FROM accounts WHERE id = ?1")
+          .bind(pendingCardAccountId(account.email))
+          .run();
       } catch (cause) {
-        console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
+        console.error(
+          `card-step leftover hold for account ${account.id} did not clear: ${String(cause)}`,
+        );
+      }
+      try {
+        const existing = await /** @type {D1Database} */ (driveDb)
+          .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+          .bind(account.id)
+          .first();
+        const held =
+          existing === null || existing === undefined
+            ? null
+            : /** @type {{card_fingerprint?: unknown}} */ (existing).card_fingerprint;
+        if (typeof held !== "string" || held === "") {
+          const fingerprint = signupCardFingerprint({ card: true, email: account.email });
+          if (fingerprint === null) {
+            throw new TypeError("signupCardFingerprint returned no card for a proven address");
+          }
+          const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
+            accountId: account.id,
+            email: account.email,
+            fingerprint,
+          });
+          if ("error" in claimed) {
+            console.error(
+              `card-step claim for account ${account.id} did not finish: ${claimed.error}`,
+            );
+          }
+        }
+      } catch (cause) {
+        console.error(`card-step claim for account ${account.id} did not finish: ${String(cause)}`);
       }
       // The account's own bucket exists from the first sign-in (drive#540):
       // the verify step provisions `drv-<id>` through the one provisionBucket
@@ -762,7 +722,7 @@ export async function handleSigninLinkVerify(request, env) {
       // A lookup that cannot finish must not turn a session that was already
       // minted into a 500: the cookie below still carries the same intent for
       // the browser that opened the approve page, the same posture as the
-      // card-step hold above.
+      // card-step claim above.
       console.error(`signin return lookup did not finish: ${String(cause)}`);
     }
   }
