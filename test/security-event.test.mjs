@@ -282,6 +282,13 @@ test("changing the cap sends one mail, and a failure still saves the cap", async
       return stored.length === 0 ? 10 : stored[stored.length - 1] / 100;
     },
     /**
+     * @param {string} _accountId
+     * @returns {Promise<"active"|"read_only"|"closed">}
+     */
+    async accountState(_accountId) {
+      return "active";
+    },
+    /**
      * @param {unknown} _account
      * @param {number} cents
      */

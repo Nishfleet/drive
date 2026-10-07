@@ -56,17 +56,69 @@ func openBrowser(raw string) error {
 	}
 }
 
-func deviceName() string {
-	name, err := os.Hostname()
-	if err != nil || strings.TrimSpace(name) == "" {
+// deviceName is the name this device answers by at sign-in: the name
+// the person gave (--device), else the hostname — and a hostname that
+// is a stock model name (a new Mac's "MacBook-Air", which every Mac
+// of that model shares) carries a short machine suffix, so two such
+// Macs are two devices in the account, not one (issue #561). The
+// result is sanitized the way the mount sanitizes its conflict name
+// (DefaultDeviceName -> SanitizeDevice), so the name the account shows
+// and the name a conflict copy carries are one name.
+func deviceName(flag, hostname string) string {
+	if set := strings.TrimSpace(flag); set != "" {
+		if name := SanitizeDevice(set); name != "" {
+			return name
+		}
+	}
+	if strings.TrimSpace(hostname) == "" {
 		return "this device"
+	}
+	if name := SanitizeDevice(stockedHostname(hostname)); name != "" {
+		return name
+	}
+	return "this device"
+}
+
+// osHostname is the machine's own hostname, or "" when the OS gives
+// this machine none.
+func osHostname() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
 	}
 	return name
 }
 
+// loginDeviceName is the name this login will register: --device, else
+// DRIVE_DEVICE, else the name an earlier login saved, else the hostname
+// with a stock-name suffix. Sign-in, the minted key and the credentials
+// file all answer to this one name (issue #561).
+func loginDeviceName(flag, previous string) string {
+	return deviceName(firstNonEmpty(
+		strings.TrimSpace(flag),
+		strings.TrimSpace(os.Getenv(deviceEnvName)),
+		strings.TrimSpace(previous),
+	), osHostname())
+}
+
+// envDeviceName is the device name this process carries: DRIVE_DEVICE, else
+// the name `drive login --device` saved in the credentials file, else the
+// hostname with a stock-name suffix. Sign-in answers to the same name
+// the mount's conflict copies carry, so one device is one name.
+func envDeviceName(home string) string {
+	previous := ""
+	if creds, err := LoadCredentials(home); err == nil {
+		previous = creds.Device
+	}
+	return loginDeviceName("", previous)
+}
+
 // Login is `drive login`: device sign-in, mint this device's key, write the
 // storage settings so `drive init` and `drive mount` need no pasted keys.
-func Login(home, apiBase string, out io.Writer) error {
+// The name at sign-in is --device, else DRIVE_DEVICE, else the name an
+// earlier login saved, else the hostname, with a short machine suffix when
+// that hostname is a stock model name two Macs would share (issue #561).
+func Login(home, apiBase, device string, out io.Writer) error {
 	if strings.TrimSpace(apiBase) == "" {
 		return fail("no-api")
 	}
@@ -74,20 +126,34 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	token, account, err := SignIn(client, deviceName(), out)
-	if err != nil {
-		return err
-	}
-	client.Token = token
 	previous, loadErr := LoadCredentials(home)
 	if loadErr != nil {
 		// An unreadable credentials file is not a previous key we can
 		// revoke. Login still mints; the new file replaces the broken one.
 		previous = Credentials{}
 	}
-	key, err := client.MintKey("device", deviceName())
+	name := loginDeviceName(device, previous.Device)
+	token, err := SignIn(client, name, out)
 	if err != nil {
 		return err
+	}
+	client.Token = token.Token
+	key, err := client.MintKey("device", name)
+	if err != nil {
+		return err
+	}
+	// A device key is the one credential the CLI stores and never renews:
+	// there is no `drive key renew` for a device kind (issue #106 renews an
+	// agent key only), and the login task re-runs the mount with the key it
+	// was given rather than minting a new one. A provider that names a session
+	// of its own (the STS path, issue #462) is now recorded on the key's row
+	// (drive#544), so a device mint can answer with an hour on it, and storing
+	// one would leave storage settings on disk that stop signing requests an
+	// hour later, with `drive status` still reporting a mount that is not
+	// uploading. Refuse before anything is written: the files on disk stay the
+	// ones that worked.
+	if key.ExpiresAt != nil {
+		return failf("device-key-expiring", expiryLabel(key.ExpiresAt))
 	}
 	cfg := StorageConfig{
 		Endpoint:     key.Endpoint,
@@ -116,18 +182,27 @@ func Login(home, apiBase string, out io.Writer) error {
 		return failf("login-no-storage", strings.Join(missing, ", "))
 	}
 	creds := Credentials{
-		APIBase:      client.Base,
-		DeviceToken:  token,
-		AccountID:    account.ID,
-		AccountName:  account.Name,
-		AccountEmail: account.Email,
-		Endpoint:     cfg.Endpoint,
-		Bucket:       cfg.Bucket,
-		Prefix:       cfg.Prefix,
-		Region:       cfg.Region,
-		DownloadURL:  cfg.DownloadURL,
-		AccessKeyID:  cfg.AccessKey,
-		KeyID:        key.KeyID,
+		APIBase:     client.Base,
+		DeviceToken: token.Token,
+		// The expiry the sign-in answered is written down here, where the
+		// device token is written down (drive#557), so there is one place that
+		// knows how long this sign-in lasts and no path that stores a token
+		// without its date. A Worker that answered no expiry leaves it 0 and
+		// the token is still the one that works.
+		TokenExpiresAt: token.ExpiresAt,
+		AccountID:      token.Account.ID,
+		AccountName:    token.Account.Name,
+		AccountEmail:   token.Account.Email,
+		Endpoint:       cfg.Endpoint,
+		Bucket:         cfg.Bucket,
+		Prefix:         cfg.Prefix,
+		Region:         cfg.Region,
+		DownloadURL:    cfg.DownloadURL,
+		AccessKeyID:    cfg.AccessKey,
+		KeyID:          key.KeyID,
+		// The name sign-in and the key actually used, so a later login
+		// without --device registers the same device, not the hostname.
+		Device: name,
 	}
 	if err := SaveCredentials(home, creds); err != nil {
 		return err
@@ -135,10 +210,10 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
 	}
-	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
+	if err := WriteRcloneEnv(home, cfg, "", "", ""); err != nil {
 		return err
 	}
-	if previous.DeviceToken != "" && previous.DeviceToken != token {
+	if previous.DeviceToken != "" && previous.DeviceToken != token.Token {
 		// The queue row is keyed by the device token, so the old login's
 		// row would count this device twice for its freshness window.
 		base := previous.APIBase
@@ -158,7 +233,7 @@ func Login(home, apiBase string, out io.Writer) error {
 			fmt.Fprintf(out, "note: the previous device key could not be revoked (%v); it is still live\n", err)
 		}
 	}
-	who := accountLabel(account)
+	who := accountLabel(token.Account)
 	if who == "" {
 		fmt.Fprintln(out, "Signed in. Storage settings written. Run `drive init` to mount.")
 		return nil
@@ -170,6 +245,7 @@ func Login(home, apiBase string, out io.Writer) error {
 func runLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	api := fs.String("api", firstNonEmpty(os.Getenv("DRIVE_API_URL"), defaultAPIBase), "api Worker base URL")
+	device := fs.String("device", "", "name this device is called in the account (default: DRIVE_DEVICE, else the name a previous login saved, else the hostname, with a suffix when it is a stock model name)")
 	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
@@ -177,5 +253,5 @@ func runLogin(args []string) error {
 	if fs.NArg() > 0 {
 		return usageFailure(usage, fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
-	return Login(common.home, *api, os.Stdout)
+	return Login(common.home, *api, *device, os.Stdout)
 }

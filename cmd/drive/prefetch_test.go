@@ -13,8 +13,8 @@ func TestVFSArgsAddsReadAheadAndKeepsDirCacheAndSkipsRefresh(t *testing.T) {
 	if !hasArgPair(args, "--vfs-read-ahead", vfsReadAheadValue) {
 		t.Errorf("VFSArgs missing adjacent --vfs-read-ahead %s:\n%v", vfsReadAheadValue, args)
 	}
-	if !hasArgPair(args, "--dir-cache-time", "5s") {
-		t.Errorf("VFSArgs missing adjacent --dir-cache-time 5s:\n%v", args)
+	if !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
+		t.Errorf("VFSArgs missing adjacent --dir-cache-time %s:\n%v", vfsDirCacheTimeValue, args)
 	}
 	for _, a := range args {
 		if a == "--vfs-refresh" {

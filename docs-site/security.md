@@ -31,10 +31,14 @@ silently disagree with it.
 
 {{KEY_TABLE}}
 
-Read and write come from the capability table the server grants
-(workers/api/src/keyprovider.js). Delete and reach come from what the storage
-provider enforces on the key it mints (workers/api/src/idrive-keys.js), because
+Read and write come from the capability table the server grants. Delete and
+reach come from what the storage provider enforces on the key it mints, because
 a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
+
+On Linux and macOS, `drive init` mounts `~/Drive-agents/<tool>` for each tool
+on that tool's own key. The MCP server and the tool's allowed folders point at
+that folder, not at the folder you use. Windows is not in version 1, and the tool there still works inside
+your Drive, because the agent mount is not proven there.
 
 ## The spending cap
 
@@ -52,6 +56,38 @@ uploads that waited in the cache go up.
 that no longer exists cannot be used, and the next mount asks for a new one.
 Each agent tool is revoked on its own with `drive agents revoke <tool>`.
 
+## The second factor
+
+You can turn on a second factor for your account: a rotating six-digit code
+from an authentication app. While it is on, approving a new
+device — the "Approve `drive` on this Mac?" page — asks for that code after
+the code from the terminal. A code thief who has the terminal output but not
+your authentication app approves nothing.
+
+The recovery rule: when you turn the second factor on, the setup hands you
+ten one-time recovery codes once. They are never shown again, so store them
+somewhere safe right away. Each code works once, in place of the rotating
+code, and a used code is dead from then on.
+
+If you lose your authentication app, a recovery code approves a device and a
+signed-in session can turn the factor off or generate ten new codes. If you
+lose both the app and the codes, the sessions already signed in on your
+devices are what you have left. We cannot reset a factor for you in version 1:
+there is no support path that overrides it, by design — a second factor that
+support can switch off is not a second factor.
+
+A passkey is a way to sign in. It is not the second factor, and approving a
+new device does not accept it in place of the authentication-app code or a
+recovery code. An account that has a passkey and no authentication app is
+asked for no second factor when it approves a device.
+
+Approving a device with a device token alone, with no browser session, is
+refused for an account that has the second factor on, because only a browser
+session can present the code.
+
+Passkeys and the second factor are set up over the account api; there is no
+settings page for either in version 1.
+
 ## What we can and cannot reach
 
 Stated plainly, because a security page that lists only the good news is not
@@ -65,8 +101,8 @@ useful:
 - **A key, and a session running as you, can read your files.** That is the
   product: the point is that your agents can read them.
 - **We cannot keep your secrets for you.** They do not live in the Drive
-  repository or on this site, and the CLI reads them from the environment
-  rather than from a file inside the Drive folder.
+  repository or on this site. The CLI keeps them on this machine as files
+  only your user can read, never inside the Drive folder.
 
 ## Not claimed
 

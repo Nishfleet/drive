@@ -123,6 +123,8 @@ async function linkAndRequest(db, accountId, suffix) {
     uploadBytes: 0,
     maxBytes: 1_000_000,
     maxFiles: 100,
+    digestAt: null,
+    pendingUploads: "[]",
   });
   return { shareToken, requestToken, links };
 }

@@ -25,7 +25,7 @@
 // and a tool still looping after its first refusal is exactly what the number
 // should show.
 
-import { agentCapPlan, agentCapStatus, asMillis, dayKey, monthKey } from "./agentcaps.js";
+import { agentCapPlan, agentCapStatus, asMillis, dayKey } from "./agentcaps.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
 import { monthUsageThrough } from "./meter.js";
 
@@ -35,14 +35,10 @@ import { monthUsageThrough } from "./meter.js";
 // three is an agent. The account cap (core/cap.js, the nightly sweep) is what
 // bounds the person's own keys, so a daily request cap here would stop
 // somebody's own uploads, which is the failure these caps must not have.
-export const AGENT_KEY_KIND = "agent";
+const AGENT_KEY_KIND = "agent";
 
-/**
- * Whether this key is one the caps cover.
- * @param {{kind?: string}|null|undefined} device
- * @returns {boolean}
- */
-export function isAgentKey(device) {
+/** @param {{kind?: string}|null|undefined} device */
+function isAgentKey(device) {
   return device?.kind === AGENT_KEY_KIND;
 }
 
@@ -192,4 +188,4 @@ export function capKeyRow(device) {
   };
 }
 
-export { agentCapPlan, asMillis, dayKey, monthKey };
+export { agentCapPlan };

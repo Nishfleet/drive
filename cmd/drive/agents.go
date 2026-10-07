@@ -114,21 +114,24 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err != nil {
 			return env, err
 		}
-		token, account, err := SignIn(client, deviceName(), os.Stdout)
+		signed, err := SignIn(client, envDeviceName(env.Home), os.Stdout)
 		if err != nil {
 			return env, err
 		}
 		creds = Credentials{
-			APIBase:      client.Base,
-			DeviceToken:  token,
-			AccountID:    account.ID,
-			AccountName:  account.Name,
-			AccountEmail: account.Email,
+			APIBase:     client.Base,
+			DeviceToken: signed.Token,
+			// The sign-in's own expiry, kept with the token it belongs to
+			// (drive#557) for the same reason `drive login` keeps it.
+			TokenExpiresAt: signed.ExpiresAt,
+			AccountID:      signed.Account.ID,
+			AccountName:    signed.Account.Name,
+			AccountEmail:   signed.Account.Email,
 		}
 		if err := SaveCredentials(env.Home, creds); err != nil {
 			return env, err
 		}
-		who := accountLabel(account)
+		who := accountLabel(signed.Account)
 		if who == "" {
 			fmt.Println("Signed in")
 		} else {
@@ -139,6 +142,10 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 	if err != nil {
 		return env, err
 	}
+	// The same re-sign-in every other account route gets, so a `drive agents`
+	// that meets a dead sign-in heals itself instead of telling the person to
+	// sign in again (drive#557).
+	client.Re = deviceReSigner{home: env.Home, base: base, out: os.Stdout}
 	env.Minter = ToolMinter{Client: client, Home: env.Home}
 	return env, nil
 }
@@ -210,7 +217,21 @@ func initAgents(env Env, apiBase ...string) error {
 				continue
 			}
 		}
-		if err := t.Connect(env); err != nil {
+		// The tool's own path, mounted before Connect: the MCP server the
+		// command registers points at it, so it has to exist first.
+		dir, err := startToolAgentPath(env, t)
+		if err != nil {
+			printToolFailure(t.Name, err)
+			failed++
+			continue
+		}
+		// A copy per tool, so one tool's path never carries over to the next
+		// tool in the loop, one that has no key and keeps the drive folder.
+		toolEnv := env
+		if dir != "" {
+			toolEnv.AgentDir = dir
+		}
+		if err := t.Connect(toolEnv); err != nil {
 			printToolFailure(t.Name, err)
 			failed++
 			continue
@@ -227,7 +248,7 @@ func initAgents(env Env, apiBase ...string) error {
 			// point - an agent key can never delete. The hour is the other
 			// half of that key's promise (issue #106): it is an instant the
 			// api Worker renews while the tool uses it.
-			fmt.Printf("  %-8s connected (key: %s, never delete, %s)\n",
+			fmt.Printf("  %-8s connected (key: %s, %s)\n",
 				t.Name, strings.Join(key.Capabilities, ", "), expiryLabel(key.ExpiresAt))
 		}
 		connected++
@@ -240,6 +261,55 @@ func initAgents(env Env, apiBase ...string) error {
 	}
 	printFirstRunNext(os.Stdout, CurrentGOOS(), env.Home, env.DriveDir)
 	return nil
+}
+
+// startToolAgentPath mounts the tool's agent path and returns the directory
+// Connect should point the tool at. An empty directory means keep DriveDir
+// (Windows, or a tool with no key). Tests replace this so they can prove the
+// connect wiring without a FUSE mount.
+var startToolAgentPath = startToolAgentPathLive
+
+func startToolAgentPathLive(env Env, t Tool) (string, error) {
+	return agentPathForGOOS(CurrentGOOS(), env, t)
+}
+
+// agentPathForGOOS starts the tool's agent path: its own rclone mount, holding
+// the tool's own key (agentmount.go, drive#514). It is called once the tool's
+// key is on disk and just before Connect, because Connect points the tool's
+// MCP server and its allowed folder at the path.
+//
+// A path that does not come up is a named failure printed for that tool alone,
+// never a fall back to the person's drive folder: the whole point of the path
+// is that the mount holds the key storage already bounds. Windows has no
+// proven agent mount, so the tool keeps working in the person's drive folder
+// and the named failure is printed as a note.
+func agentPathForGOOS(goos string, env Env, t Tool) (string, error) {
+	if goos == "windows" {
+		fmt.Println("note:", failf("agent-path-windows", t.Name).Error())
+		return "", nil
+	}
+	key, err := agentKeyFor(env.Home, t.Name)
+	if err != nil {
+		return "", err
+	}
+	if key == nil {
+		return "", nil
+	}
+	device, err := LoadStorageConfig("", "", "", "", "", "", storageFromDisk(env.Home))
+	if err != nil {
+		return "", failDetail("missing-config", err)
+	}
+	if strings.TrimSpace(device.Endpoint) == "" || strings.TrimSpace(device.Bucket) == "" {
+		return "", failf("missing-config", "endpoint and bucket")
+	}
+	rclone, err := ResolveRclone("")
+	if err != nil {
+		return "", err
+	}
+	if err := mountAgentPaths(goos, env.Home, rclone, t.Name, device, *key, false); err != nil {
+		return "", err
+	}
+	return AgentMountDir(env.Home, t.Name), nil
 }
 
 // printToolFailure prints one agent-tool failure the same way main prints
@@ -314,7 +384,7 @@ func mintToolKey(env Env, t Tool) error {
 // `drive agents revoke <tool>`.
 func runAgents(args []string) error {
 	api := os.Getenv("DRIVE_API_URL")
-	home := os.Getenv("HOME")
+	home := DefaultHome()
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -401,13 +471,30 @@ func agents(env Env, positional []string, apiBase ...string) error {
 				return err
 			}
 		}
+		dir, err := startToolAgentPath(env, t)
+		if err != nil {
+			return err
+		}
+		if dir != "" {
+			env.AgentDir = dir
+		}
 		if err := t.Connect(env); err != nil {
 			return err
 		}
-		fmt.Printf("%s connected to %s (%s)\n", t.Name, env.DriveDir, where)
+		wherePath := env.AgentDir
+		if wherePath == "" {
+			wherePath = env.DriveDir
+		}
+		fmt.Printf("%s connected to %s (%s)\n", t.Name, wherePath, where)
 		return nil
 	}
-	// Revoke the key server-side first: the local copy is only deleted once
+	// Stop the agent path first, then revoke the key: a revoked agent's path
+	// must stop being readable even if the withdrawal at the provider takes a
+	// moment (agentmount.go UnmountAgent).
+	if err := UnmountAgent(CurrentGOOS(), env.Home, t.Name); err != nil {
+		return err
+	}
+	// Then revoke the key server-side: the local copy is only deleted once
 	// the api Worker says the key is dead, so a failed revoke leaves a key
 	// that still works rather than a key nothing can revoke. A tool with no
 	// stored key (never connected with a signed-in device) has nothing to

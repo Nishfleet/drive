@@ -20,7 +20,7 @@
  * own id for the row that now holds its hash. A raw storage provider persists
  * no rows, so it has no id to hand back, which is why this is a type of its
  * own rather than KeyProvider with an optional field (drive#371).
- * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>}} AccountKeyProvider
+ * @typedef {{mint: (scope: KeyScope, options?: {cappedReason?: string|null, expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<MintedKey>, swapPrepaidToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
  *
  * @typedef {object} KeyProvider
  * @property {(scope: KeyScope, options?: {expiresAt?: number|null, cappedReason?: string|null}) => Promise<MintedCredential>} mint
@@ -41,6 +41,12 @@
  *   Optional because the api's own store mints the replacement itself and only
  *   needs the provider's mint: the boundary a swap keeps is the bucket, which
  *   the store rebuilds from the account id rather than asking the vendor.
+ * @property {() => Promise<unknown>} [list] The provider's keys, read-only.
+ *   Optional because a raw storage provider persists no keys to list. The
+ *   entry shape is the vendor's own (the iDrive reseller API answers an array
+ *   of records), so the answer is deliberately `unknown` here: the only
+ *   consumers are the nightly sweep's count and an operator checking a
+ *   revoke really landed.
  * @property {true} [namesSession] Whether this provider's mints are
  *   credentials that die on their own: the STS path (s3-keys.js) mints a
  *   session of `sessionSeconds` that the vendor itself ends, so a credential
@@ -120,6 +126,21 @@ export const KEY_TTL_SECONDS = Object.freeze({
 });
 
 /**
+ * The most live keys one account may hold (drive issue #552). Each mint is a
+ * vendor access key the storage server enforces until something revokes it,
+ * so the account count is the bound the vendor itself does not set — its
+ * reseller API documents no per-account key limit (checked 2026-10-06,
+ * idrive.com/s3-storage-e2/reseller-api) — and a looping script with one
+ * device token must not be that mint's only speed bump. Twenty is far above
+ * what a person with devices and agents holds (the hourly kinds expire and
+ * the sweep removes their vendor keys), and far below anything a vendor would
+ * ever have to refuse. The message the account reads names this number, and
+ * the pin that keeps the two together is in
+ * test/integration/key-count-cap-d1.test.mjs.
+ */
+export const KEY_COUNT_CAP = 20;
+
+/**
  * The seconds a kind's credential lives, or null when it never expires. An
  * unknown kind is refused here rather than answered `null`: a typo silently
  * minting an immortal credential is the failure the whole table exists to
@@ -148,8 +169,12 @@ export function keyTtlSeconds(kind) {
  * for a fresh credential. The api's enforcement is the bound, so the bound
  * cannot be widened from a config file.
  *
- * `null` still means the kind never expires, and still only a person's own
- * device earns it.
+ * A kind with no ceiling of its own takes the provider's answer: the STS
+ * provider mints sessions that die (s3-keys.js DurationSeconds), and a row
+ * that read "never expires" over a credential that stops signing requests
+ * would be a lie (drive#544). A provider answer that is neither null nor a
+ * positive finite number is refused, not folded into the ceiling: folding
+ * one in is how a broken answer becomes "never expires" on the row.
  * @param {KeyKind} kind
  * @param {number|null|undefined} providerExpiresIn the provider session's own
  *   seconds, when it names one
@@ -157,16 +182,23 @@ export function keyTtlSeconds(kind) {
  */
 export function mintTtlSeconds(kind, providerExpiresIn) {
   const ceiling = keyTtlSeconds(kind);
-  if (ceiling === null) {
-    return null;
+  if (providerExpiresIn !== null && providerExpiresIn !== undefined) {
+    if (
+      typeof providerExpiresIn !== "number" ||
+      !Number.isFinite(providerExpiresIn) ||
+      providerExpiresIn <= 0
+    ) {
+      throw new TypeError(
+        `Provider session lifetime must be a positive number or null, got ${JSON.stringify(providerExpiresIn)}.`,
+      );
+    }
+    // No ceiling of its own: the provider's session is the only lifetime there is.
+    if (ceiling === null) {
+      return providerExpiresIn;
+    }
+    return Math.min(providerExpiresIn, ceiling);
   }
-  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
-    return ceiling;
-  }
-  if (providerExpiresIn <= 0) {
-    return ceiling;
-  }
-  return Math.min(providerExpiresIn, ceiling);
+  return ceiling;
 }
 
 /**
@@ -197,7 +229,7 @@ export function renewTtlSeconds(device, ceiling) {
 /** @typedef {"read_only"|"read_write"} TeamRole */
 
 /** @type {ReadonlyArray<TeamRole>} */
-export const TEAM_ROLES = ["read_only", "read_write"];
+const TEAM_ROLES = ["read_only", "read_write"];
 
 /**
  * The one role to capabilities table for a team member (drive#20). A team key

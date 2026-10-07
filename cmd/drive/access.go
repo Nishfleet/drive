@@ -30,9 +30,11 @@ func accessClaude(env Env) error {
 // inside the drive folder (see grantClaudeDrive below).
 const claudeSettingsPath = ".claude/settings.json"
 
-// grantClaudeDrive adds the drive folder to Claude Code's user-level
+// grantClaudeDrive adds the tool's agent path to Claude Code's user-level
 // permissions.additionalDirectories, creating the settings file when absent and
-// keeping every existing setting. It is idempotent: a second run changes nothing.
+// keeping every existing setting. A previously granted person's Drive folder is
+// dropped, because that mount holds the key that can delete (drive#514). It is
+// idempotent: a second run changes nothing.
 //
 // The additionalDirectories setting makes Claude's built-in file tools (Bash,
 // Read, Edit) treat the listed directories as allowed. However, it does NOT
@@ -60,12 +62,37 @@ func grantClaudeDrive(env Env) error {
 	if err != nil {
 		return fmt.Errorf("%s permissions.additionalDirectories: %w", path, err)
 	}
+	folder := env.AgentDir
+	if folder == "" {
+		folder = env.DriveDir
+	}
+	out := make([]string, 0, len(dirs)+1)
+	seen := false
 	for _, d := range dirs {
-		if d == env.DriveDir {
-			return nil // already granted, nothing to write
+		if d == env.DriveDir && env.DriveDir != folder {
+			continue
+		}
+		if d == folder {
+			seen = true
+		}
+		out = append(out, d)
+	}
+	if !seen {
+		out = append(out, folder)
+	}
+	if len(out) == len(dirs) {
+		same := true
+		for i := range out {
+			if out[i] != dirs[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return nil
 		}
 	}
-	perms["additionalDirectories"] = append(dirs, env.DriveDir)
+	perms["additionalDirectories"] = out
 	return writeJSONObject(path, doc)
 }
 
@@ -85,10 +112,12 @@ func writeNote(env Env, name string) error {
 	if name != claudeNoteName && name != agentsNoteName {
 		return fmt.Errorf("unknown note name %q", name)
 	}
-	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
-		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
+	// The note is written into the tool's agent path, the folder the
+	// filesystem server is actually given (drive#514).
+	if err := os.MkdirAll(env.AgentDir, 0o755); err != nil {
+		return fmt.Errorf("create agent path %s: %w", env.AgentDir, err)
 	}
-	path := filepath.Join(env.DriveDir, name)
+	path := filepath.Join(env.AgentDir, name)
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
@@ -102,7 +131,7 @@ func writeNote(env Env, name string) error {
 		if text != "" && !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
-		text += noteBody(env.DriveDir)
+		text += noteBody(env)
 	}
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
@@ -118,11 +147,12 @@ const noteMarker = "<!-- drive:agent-note -->"
 // and to branch before large edits. It names only subcommands the command
 // table runs (main.go commands; gate test TestNotesNameOnlyRealCommands,
 // drive#461) — it used to advertise `drive restore`, which no step ships.
-func noteBody(driveDir string) string {
+func noteBody(env Env) string {
 	return noteMarker + "\n" +
 		"# This is the drive\n\n" +
-		"The user's drive is `" + driveDir + "`, synced to every device and\n" +
-		"agent. The `drive` MCP server reads and writes this folder; start the\n" +
+		"The user's drive is `" + env.DriveDir + "`, synced to every device and\n" +
+		"agent. The `drive` MCP server reads and writes `" + env.AgentDir + "`, the\n" +
+		"folder the mount for this tool serves, so work here, and start the\n" +
 		"session in this folder so the server is allowed to serve it.\n\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve` when\n" +
 		"  the changes are ready to copy back.\n"
@@ -200,27 +230,5 @@ func writeJSONObject(path string, doc map[string]any) error {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	out = append(out, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create dir for %s: %w", path, err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".drive-settings-*")
-	if err != nil {
-		return fmt.Errorf("temp file for %s: %w", path, err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", path, err)
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename into place %s: %w", path, err)
-	}
-	return nil
+	return WriteFileAtomic(path, out, 0o600)
 }

@@ -25,6 +25,7 @@ Usage:
   drive diff <branch> [flags]           files added, changed or removed in a branch
   drive approve <branch> [flags]        copy a branch's changes back into the original
   drive discard <branch> [flags]        throw a branch away; the original is untouched
+  drive undo [branch] [flags]           rewind the last branch an agent worked in
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
@@ -32,13 +33,14 @@ Usage:
   drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
+  drive doctor [flags]     print the one block to paste into a support message
   drive pause [flags]      stop the bytes leaving the device; survives a restart
   drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
   drive cache              show the disk the mount's cache uses and its limit
   drive cache --max 5G     change that limit
   drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
-  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive share <file>       make a link anyone can open, logged out
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
@@ -70,9 +72,12 @@ Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
 
-Every failure prints what happened and the exact next step (drive#117).
+Every failure prints what happened and the exact next step.
 DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
 the mount's own log.
+
+When something goes wrong, the docs have a page for it:
+  https://drive-pricing.nishant345.workers.dev/docs/troubleshooting
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)
@@ -93,9 +98,9 @@ Mount flags:
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --rc-addr     loopback address the mount's remote control binds (env
-                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+                DRIVE_RC_ADDR; default a free loopback port stored in rclone.env)
   --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
-                default the hostname)
+                default the hostname, with a suffix when it is a stock model name)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
@@ -105,6 +110,8 @@ mounted drive.
 
 Login flags:
   --api    drive api base URL (env DRIVE_API_URL, default the live site)
+  --device  name this device is called in the account (default the hostname,
+            with a suffix when it is a stock model name)
 
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
@@ -120,6 +127,10 @@ Cache flags:
 
 Export flags:
   --out   file to write the export to; stdout when it is not given
+
+Doctor flags:
+  --api          api Worker base URL (env DRIVE_API_URL)
+  --logs <n>     how many log lines to print (default 20, 0 for none)
 
 Import flags:
   --rclone   path to the rclone binary (env DRIVE_RCLONE, default rclone)
@@ -157,12 +168,14 @@ var commands = map[string]func([]string) error{
 	"diff":      runDiff,
 	"approve":   runApprove,
 	"discard":   runDiscard,
+	"undo":      runUndo,
 	"mount":     runMount,
 	"unmount":   runUnmount,
 	"offline":   runOffline,
 	"online":    runOnline,
 	"uninstall": runUninstall,
 	"status":    runStatus,
+	"doctor":    runDoctor,
 	"pause":     runPause,
 	"resume":    runResume,
 	"cap":       runCap,
@@ -229,7 +242,7 @@ type commonFlags struct {
 
 func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.StringVar(&c.home, "home", os.Getenv("HOME"), "home directory")
+	fs.StringVar(&c.home, "home", DefaultHome(), "home directory")
 	fs.StringVar(&c.rclone, "rclone", "", "path to the rclone binary (default rclone from PATH)")
 	return c
 }
@@ -380,7 +393,29 @@ func runUnmount(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	return Unmount(CurrentGOOS(), common.home)
+	goos := CurrentGOOS()
+	home := common.home
+	mountDir := DefaultMountDir(home)
+	before, listErr := Mounted(goos, home)
+	if listErr != nil {
+		before = true
+	}
+	if err := Unmount(goos, home); err != nil {
+		return err
+	}
+	after, err := Mounted(goos, home)
+	if err != nil {
+		return err
+	}
+	if after {
+		return failf("unmount-failed", mountDir)
+	}
+	if before {
+		fmt.Printf("drive: unmounted %s\n", mountDir)
+	} else {
+		fmt.Printf("drive: no mount at %s\n", mountDir)
+	}
+	return nil
 }
 
 // countEntries lists a mount dir with a deadline. A FUSE mount whose backing

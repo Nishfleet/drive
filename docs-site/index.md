@@ -13,12 +13,14 @@ minute, never more than {{MAX_PER_TB}} for each TB.
 
 ## Start here
 
-- [Quickstart](/quickstart) — five steps from nothing to a mounted drive.
+- [Quickstart](/quickstart) — six steps from nothing to a mounted drive.
 - [How it works](/how-it-works) — plain files, the cache, restore, the bill.
 - [Agents](/agents) — `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](/pricing) — the rate, the maximum and four
   worked sizes.
 - [FAQ](/faq) — the questions we can answer with a measured number.
+- [When something goes wrong](/troubleshooting) — what to run first, the log
+  on each system, a new laptop, a lost laptop, your email, your files out.
 - [Limits](/limits) — what version 1 does not do, in plain words.
 - [Benchmarks](/benchmarks) — measured speed, including where we lose.
 - [Security](/security) — who can see your files, and what we cannot claim.

@@ -12,8 +12,9 @@
     "pretypecheck": "cf workers types",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
+    "lint:exports": "knip",
     "format": "biome format --write .",
-    "check": "npm run typecheck && npm run lint",
+    "check": "npm run typecheck && npm run lint && npm run lint:exports",
     "precheck": "npm run node:check",
     "pretest": "npm run check",
     "node:check": "node -e \"const major = Number(process.versions.node.split('.')[0]); if (major < 24) { console.error('drive needs Node 24 or later. You are on Node ' + process.version + '.'); console.error('The test adapter uses node:sqlite, which is experimental before Node 24.'); console.error('Fix: run nvm use (this repo pins .nvmrc), or install Node 24 from https://nodejs.org.'); process.exit(1); }\"",
@@ -21,7 +22,7 @@
     "docs:build": "npm run docs:render && vitepress build docs-site",
     "eval:sync-help": "node src/render-docs.js --sync-help",
     "eval:agents": "npm run docs:render && evals/agents/node_modules/.bin/promptfoo eval --config evals/agents/promptfooconfig.yaml --output evals/agents/results/latest.json ${DRIVE_EVAL_SPLIT:+--tests $DRIVE_EVAL_SPLIT} && npm run eval:agents:endstate",
-    "test": "npm run docs:build && node --test --test-skip-pattern 'a search returns in well under one second|the index search is under a second' && node --test --test-concurrency=1 --test-name-pattern 'a search returns in well under one second|the index search is under a second' test/search.test.mjs test/standin-search.test.mjs",
+    "test": "npm run docs:build && node --test --test-skip-pattern 'a search returns in under one second and reads only its matches|the index search is under a second' && node --test --test-concurrency=1 --test-name-pattern 'a search returns in under one second and reads only its matches|the index search is under a second' test/search.test.mjs test/standin-search.test.mjs",
     "eval:agents:install": "python3 -m venv evals/agents/.venv && evals/agents/.venv/bin/pip install -q -r evals/agents/requirements.txt",
     "eval:agents:endstate": "node src/render-docs.js && evals/agents/.venv/bin/inspect eval evals/agents/endstate.py"
   },
@@ -29,11 +30,13 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.7.7",
     "@sentry/cloudflare": "^11.4.0",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.7",
     "hono": "^4.13.12",
-    "validator": "^13.15.35"
+    "validator": "^13.15.35",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
@@ -43,6 +46,7 @@
     "@types/validator": "^13.15.10",
     "axe-core": "4.13.0",
     "cf": "^1.0.0-beta.10",
+    "knip": "^6.39.0",
     "puppeteer-core": "^25.12.0",
     "typescript": "^7.0.2",
     "urlpattern-polyfill": "^10.1.0",

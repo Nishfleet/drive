@@ -118,7 +118,7 @@ func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
 	var last BranchSummary
 	for attempt := 0; attempt < branchJobPollLimit; attempt++ {
 		var answer branchDiffAnswer
-		if err := client.do("GET", branchPathFor(name), nil, &answer); err != nil {
+		if err := client.Do("GET", branchPathFor(name), nil, &answer); err != nil {
 			return BranchSummary{}, err
 		}
 		last = answer.Branch
@@ -138,22 +138,21 @@ func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
 // `drive init` signed in to. That base fronts both /api/branches* and
 // /v1/keys (drive#156); there is no second keysBase. The token is this
 // device's, so a branch is made, keyed and approved as the signed-in account.
+// branchClient is the api client for a branch command. It keeps the branch
+// rules this file owns -- no signed-in device, no api base, and the empty token
+// is named here as `not-signed-in` rather than as a 401 the person cannot act
+// on -- and adds the one re-sign-in every account route gets, so a branch on a
+// device whose sign-in slipped past its window comes back on its own
+// (drive#557).
 func branchClient(home, api string) (*APIClient, error) {
-	creds, err := LoadCredentials(home)
+	client, err := signedInClient(home, api, os.Stdout)
 	if err != nil {
 		return nil, err
 	}
-	base, err := resolveAPIBase(home, api)
-	if err != nil {
-		return nil, err
-	}
-	if base == "" {
-		return nil, fail("no-api")
-	}
-	if strings.TrimSpace(creds.DeviceToken) == "" {
+	if strings.TrimSpace(client.Token) == "" {
 		return nil, fail("not-signed-in")
 	}
-	return NewAPIClient(base, creds.DeviceToken)
+	return client, nil
 }
 
 // branchPathFor names one branch's endpoint. The name is escaped, so a name
@@ -194,7 +193,7 @@ func defaultBranchName(folder string) string {
 func runBranch(args []string) error {
 	fs := flag.NewFlagSet("branch", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	name := fs.String("name", "", "branch name (the folder's own name unless given)")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
@@ -216,7 +215,7 @@ func runBranch(args []string) error {
 	}
 	var answer branchCreateAnswer
 	recovered := false
-	if err := client.post(BRANCHES_PATH, map[string]string{"folder": folder, "name": branchName}, &answer); err != nil {
+	if err := client.Post(BRANCHES_PATH, map[string]string{"folder": folder, "name": branchName}, &answer); err != nil {
 		if !isAPIStatus(err, "409") {
 			return err
 		}
@@ -225,7 +224,7 @@ func runBranch(args []string) error {
 		// so this run fetches it and mints the key the first run missed.
 		recovered = true
 		var existing branchDiffAnswer
-		if getErr := client.do("GET", branchPathFor(branchName), nil, &existing); getErr != nil {
+		if getErr := client.Do("GET", branchPathFor(branchName), nil, &existing); getErr != nil {
 			return getErr
 		}
 		answer.Branch = existing.Branch
@@ -359,7 +358,7 @@ func dropBranchKey(home, name string, client *APIClient) error {
 func runBranches(args []string) error {
 	fs := flag.NewFlagSet("branches", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -371,7 +370,7 @@ func runBranches(args []string) error {
 		return err
 	}
 	var answer branchListAnswer
-	if err := client.do("GET", BRANCHES_PATH, nil, &answer); err != nil {
+	if err := client.Do("GET", BRANCHES_PATH, nil, &answer); err != nil {
 		return err
 	}
 	if len(answer.Branches) == 0 {
@@ -396,7 +395,7 @@ func runBranches(args []string) error {
 func runDiff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -408,7 +407,7 @@ func runDiff(args []string) error {
 		return err
 	}
 	var answer branchDiffAnswer
-	if err := client.do("GET", branchPathFor(fs.Arg(0)), nil, &answer); err != nil {
+	if err := client.Do("GET", branchPathFor(fs.Arg(0)), nil, &answer); err != nil {
 		return err
 	}
 	printBranchDiff(answer.Branch.Name, answer.Diff)
@@ -441,7 +440,7 @@ func printBranchDiff(name string, diff BranchDiff) {
 func runApprove(args []string) error {
 	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -453,7 +452,7 @@ func runApprove(args []string) error {
 		return err
 	}
 	var answer branchApproveAnswer
-	if err := client.post(branchPathFor(fs.Arg(0))+"/approve", map[string]string{}, &answer); err != nil {
+	if err := client.Post(branchPathFor(fs.Arg(0))+"/approve", map[string]string{}, &answer); err != nil {
 		return err
 	}
 	if isBranchJobState(answer.State) {
@@ -474,7 +473,7 @@ func runApprove(args []string) error {
 func runDiscard(args []string) error {
 	fs := flag.NewFlagSet("discard", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -486,7 +485,7 @@ func runDiscard(args []string) error {
 		return err
 	}
 	var answer branchDiscardAnswer
-	if err := client.post(branchPathFor(fs.Arg(0))+"/discard", map[string]string{}, &answer); err != nil {
+	if err := client.Post(branchPathFor(fs.Arg(0))+"/discard", map[string]string{}, &answer); err != nil {
 		return err
 	}
 	if isBranchJobState(answer.State) {
