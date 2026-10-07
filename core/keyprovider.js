@@ -41,6 +41,12 @@
  *   Optional because the api's own store mints the replacement itself and only
  *   needs the provider's mint: the boundary a swap keeps is the bucket, which
  *   the store rebuilds from the account id rather than asking the vendor.
+ * @property {() => Promise<unknown>} [list] The provider's keys, read-only.
+ *   Optional because a raw storage provider persists no keys to list. The
+ *   entry shape is the vendor's own (the iDrive reseller API answers an array
+ *   of records), so the answer is deliberately `unknown` here: the only
+ *   consumers are the nightly sweep's count and an operator checking a
+ *   revoke really landed.
  * @property {true} [namesSession] Whether this provider's mints are
  *   credentials that die on their own: the STS path (s3-keys.js) mints a
  *   session of `sessionSeconds` that the vendor itself ends, so a credential
@@ -118,6 +124,21 @@ export const KEY_TTL_SECONDS = Object.freeze({
   s3: AGENT_KEY_TTL_SECONDS,
   branch: AGENT_KEY_TTL_SECONDS,
 });
+
+/**
+ * The most live keys one account may hold (drive issue #552). Each mint is a
+ * vendor access key the storage server enforces until something revokes it,
+ * so the account count is the bound the vendor itself does not set — its
+ * reseller API documents no per-account key limit (checked 2026-10-06,
+ * idrive.com/s3-storage-e2/reseller-api) — and a looping script with one
+ * device token must not be that mint's only speed bump. Twenty is far above
+ * what a person with devices and agents holds (the hourly kinds expire and
+ * the sweep removes their vendor keys), and far below anything a vendor would
+ * ever have to refuse. The message the account reads names this number, and
+ * the pin that keeps the two together is in
+ * test/integration/key-count-cap-d1.test.mjs.
+ */
+export const KEY_COUNT_CAP = 20;
 
 /**
  * The seconds a kind's credential lives, or null when it never expires. An
