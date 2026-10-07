@@ -110,6 +110,23 @@ function approveBody(fields) {
   return body.toString();
 }
 
+/**
+ * The account's "is the second factor armed" flag, which the factor plugin adds
+ * to the user at runtime.
+ *
+ * The cast is the same one `enableTwoFactor` above already needs, and for the
+ * same reason: `createAuth` takes the plugin as a parameter (drive#848), so
+ * TypeScript cannot see a second factor in the chain and drops the field the
+ * plugin adds to the user. It is on the session the plugin itself returns, so
+ * reading it is real and the value is asserted below.
+ * @param {{user?: unknown}|null|undefined} session
+ * @returns {unknown}
+ */
+function twoFactorEnabled(session) {
+  const user = /** @type {{twoFactorEnabled?: unknown}|null|undefined} */ (session?.user);
+  return user?.twoFactorEnabled;
+}
+
 // ---------------------------------------------------------------- enrollment
 
 test("enabling two-factor shows the recovery codes once and stores them encrypted", async () => {
@@ -137,14 +154,14 @@ test("enabling two-factor shows the recovery codes once and stores them encrypte
   const stored = String(row.backupCodes);
   assert.ok(!stored.includes(enabled.backupCodes[0]), "stored codes are not plaintext");
   const session = await made.auth.api.getSession({ headers: sessionHeaders(signed.cookie) });
-  assert.equal(session?.user.twoFactorEnabled, false, "flag is off until a code confirms");
+  assert.equal(twoFactorEnabled(session), false, "flag is off until a code confirms");
 });
 
 test("the first correct code arms the account and rotates the session", async () => {
   const made = apiMade();
   const armed = await armTwoFactor(made, "armed@example.com");
   const session = await made.auth.api.getSession({ headers: sessionHeaders(armed.cookie) });
-  assert.equal(session?.user.twoFactorEnabled, true);
+  assert.equal(twoFactorEnabled(session), true);
 });
 
 // ---------------------------------------------------------------- passkeys

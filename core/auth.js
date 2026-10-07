@@ -33,6 +33,7 @@ import { sendEmail } from "./email-send.js";
 import { DAY_MS } from "./units.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
+/** @typedef {typeof import("better-auth/plugins/two-factor").twoFactor} TwoFactor */
 
 /**
  * The namespace Better Auth puts in front of its cookies. `drive`, so the
@@ -200,7 +201,7 @@ export async function consumeSigninReturn(db, token) {
  * core/auth-two-factor.js and it does. Which one a request gets is the
  * caller's choice — `authFor` never passes it, `twoFactorAuthFor` always does.
  *
- * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>, twoFactorPlugin?: (options: {allowPasswordless: boolean}) => unknown}} options
+ * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>, twoFactorPlugin?: (options: {allowPasswordless: boolean}) => ReturnType<TwoFactor>}} options
  */
 export function createAuth(options) {
   return betterAuth({
@@ -478,7 +479,7 @@ function readyForAuth(env) {
  * secret, the address or the mailer.
  * @param {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>} cache
  * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
- * @param {((options: {allowPasswordless: boolean}) => unknown)|undefined} twoFactorPlugin
+ * @param {((options: {allowPasswordless: boolean}) => ReturnType<TwoFactor>)|undefined} twoFactorPlugin
  * @returns {Auth|null}
  */
 function cachedAuth(cache, env, twoFactorPlugin) {

@@ -670,9 +670,7 @@ const authApiHandler = async (/** @type {DriveContext} */ c) => {
   // that plugin is loaded on demand; every other route on this mount reads a
   // session or a passkey credential and does not. The closed door is checked
   // inside both, so an unconfigured deployment answers 503 either way.
-  const auth = TWO_FACTOR_PATH.test(c.req.path)
-    ? await twoFactorAuthFor(c.env)
-    : authFor(c.env);
+  const auth = TWO_FACTOR_PATH.test(c.req.path) ? await twoFactorAuthFor(c.env) : authFor(c.env);
   if (!auth) {
     return c.json(signinClosedBody(), 503);
   }

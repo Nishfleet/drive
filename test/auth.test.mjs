@@ -555,10 +555,7 @@ test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
 // the entry for every request and this fails on the next run.
 test("the second factor is reached only through the on-demand module", () => {
   const entry = readFileSync(new URL("../core/auth.js", import.meta.url), "utf8");
-  const onDemand = readFileSync(
-    new URL("../core/auth-two-factor.js", import.meta.url),
-    "utf8",
-  );
+  const onDemand = readFileSync(new URL("../core/auth-two-factor.js", import.meta.url), "utf8");
   // The entry imports the factor's module by path, and does so inside the
   // function that needs it: a top-level import is the thing this change is
   // about, so the shape of the import is the pin, not just its presence.
