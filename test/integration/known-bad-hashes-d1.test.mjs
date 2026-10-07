@@ -22,6 +22,8 @@ import {
   EICAR_SHA256,
   isKnownBadHash,
   KNOWN_BAD_FEED_URL,
+  KNOWN_BAD_MAX_LOAD_HASHES,
+  KNOWN_BAD_MIN_LOAD_SHARE,
   lastKnownBadFeedLoad,
   loadKnownBadFeed,
   parseKnownBadFeed,
@@ -320,6 +322,113 @@ test("the load writes across the batch boundary, nothing lost at the end", async
     (await lastKnownBadFeedLoad(db))?.hashCount,
     250,
     "the count the next load reads is real",
+  );
+});
+
+test("a short load fails the cron monitor and keeps the rows it had", async () => {
+  // The load's own shape detector (drive issue #838), on the real table: a
+  // download that is a truncation, a redirect or the wrong export parses
+  // cleanly and carries fewer digests than half of the last load's count, so
+  // the rows it would write are all refusals while every hash the real export
+  // lost became shareable again with nothing to show for it. It has to fail
+  // its own cron monitor instead of writing that short list.
+  const db = createTestD1();
+  const full = await loadKnownBadFeed(db, {
+    fetch: async () => feedResponse(feedBody(8)),
+    now: NOW,
+  });
+  assert.equal(full.hashes, 8);
+  // The policy the loader reads: half the count the last load stored, so the
+  // floor moves with the feed instead of being a number written down today.
+  assert.equal(KNOWN_BAD_MIN_LOAD_SHARE, 0.5, "the floor is half the previous load's count");
+  const floorOf8 = Math.floor(8 * KNOWN_BAD_MIN_LOAD_SHARE);
+
+  await assert.rejects(
+    () => loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(3)), now: LATER }),
+    new RegExp(`under the ${floorOf8} floor of the 8 its last load carried`),
+    "a load carrying under half the last load's count is refused before it writes",
+  );
+  // The written state keeps standing, which is what the schema already buys:
+  // the state row still names the load that succeeded, and every row that load
+  // wrote is still there, so nothing was refused in place of a real row.
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: nowSeconds(NOW),
+    hashCount: 8,
+  });
+  assert.deepEqual(
+    knownBadHashRows(db).map((row) => row.sha256),
+    Array.from({ length: 8 }, (_, index) => digest(index)),
+    "a refused load wrote no row of its own",
+  );
+
+  // Exactly the floor is a load that cleared it: the share is a bound on what
+  // the loader refuses, not a target, and a feed whose recent window shrank
+  // by half has not changed shape. It writes what it carries and nothing else.
+  const atFloor = await loadKnownBadFeed(db, {
+    fetch: async () => feedResponse(feedBody(4)),
+    now: LATER,
+  });
+  assert.equal(atFloor.hashes, 4);
+  assert.equal(atFloor.rows, 8, "the earlier rows keep standing; this load adds only its own");
+  assert.equal((await lastKnownBadFeedLoad(db))?.hashCount, 4);
+
+  // And the next load is measured against the one that just landed, so a
+  // shrink is caught relative to the feed's own latest shape.
+  await assert.rejects(
+    () => loadKnownBadFeed(db, { fetch: async () => feedResponse(feedBody(1)), now: LATER }),
+    new RegExp(
+      `under the ${Math.floor(4 * KNOWN_BAD_MIN_LOAD_SHARE)} floor of the 4 its last load carried`,
+    ),
+  );
+  assert.equal(knownBadHashRows(db).length, 8, "the second refusal wrote nothing either");
+});
+
+test("a load that drops under half the last count with no last count is only row-capped", async () => {
+  // The floor needs a previous count to be a floor: the first load this
+  // deployment ever makes has nothing to compare against, and refusing it
+  // would leave the list with no feed half at all. The row ceiling still
+  // applies to it.
+  const db = createTestD1();
+  const loaded = await loadKnownBadFeed(db, {
+    fetch: async () => feedResponse(feedBody(1)),
+    now: NOW,
+  });
+  assert.equal(loaded.hashes, 1);
+  assert.equal(loaded.rows, 1, "a single-hash first load is a load, not a refusal");
+});
+
+test("one load may write no more than the ceiling, and the ceiling itself is a load", async () => {
+  // The ceiling on the other side (drive issue #838): a source that changed
+  // shape into something huge — a full-database export where the recent window
+  // used to be — must not fill `known_bad_hashes` in one trip. The real export
+  // carries about 1,500 digests a day, so the ceiling is several times the
+  // thing it bounds and leaves room for the feed to grow without a shape
+  // change.
+  const db = createTestD1();
+  await assert.rejects(
+    () =>
+      loadKnownBadFeed(db, {
+        fetch: async () => feedResponse(feedBody(KNOWN_BAD_MAX_LOAD_HASHES + 1)),
+        now: NOW,
+      }),
+    /over the 10000-hash ceiling one load may write/,
+  );
+  assert.equal(knownBadHashRows(db).length, 0, "an over-ceiling load wrote nothing");
+  assert.equal(await lastKnownBadFeedLoad(db), null, "and stamped no load");
+
+  // The ceiling itself is a load that may write, on the same real table the
+  // previous loads wrote to, and the next load is measured against it.
+  const atCeiling = await loadKnownBadFeed(db, {
+    fetch: async () => feedResponse(feedBody(KNOWN_BAD_MAX_LOAD_HASHES)),
+    now: NOW,
+  });
+  assert.equal(atCeiling.hashes, KNOWN_BAD_MAX_LOAD_HASHES);
+  assert.equal(atCeiling.rows, KNOWN_BAD_MAX_LOAD_HASHES);
+  assert.equal(
+    (await lastKnownBadFeedLoad(db))?.hashCount,
+    KNOWN_BAD_MAX_LOAD_HASHES,
+    "the count the next load reads is the one that landed",
   );
 });
 

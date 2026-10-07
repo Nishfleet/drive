@@ -483,6 +483,7 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
 const FEED_HASH_A = "8fb460478a744bba5a2e64f8f75ef9cd808c703ca216f1617e0a95b98211fdc2";
 const FEED_HASH_B = "e6577a39a2118414775c912dcb73b9ad41ce7610d836faae79060393437cc977";
 const FEED_HASH_C = "bc42463821051d086010c9ba1fb0a478606dcd8715adde6ec958567cba39e0df";
+const FEED_HASH_D = "60ee0c1e9cfe4f4a4c4a5b0f2f5e6d7c8b9a0f1e2d3c4b5a6978879605a4b3c0";
 
 test("the feed's own shape is the shape the loader takes", () => {
   const text = [
@@ -1359,6 +1360,53 @@ test("the cron trigger loads the feed into D1, and the list answers from it", as
   assert.equal(await isKnownBadHash(db, FEED_HASH_A), true);
   assert.equal(await isKnownBadHash(null, FEED_HASH_A), false);
   assert.equal(await isKnownBadHash(null, EICAR_SHA256), true);
+});
+
+test("a short feed load fails its own cron monitor instead of writing a short list", async () => {
+  // The load's own shape detector (drive issue #838), the way the platform runs
+  // the load: the scheduled trigger, not a direct call to the loader. A
+  // download that is a truncation, a redirect or the wrong export parses
+  // cleanly and carries fewer than half the last load's digests, and every row
+  // it would write is a refusal while every hash the real export lost became
+  // shareable again with nothing to show for it. It has to fail its own cron
+  // monitor — the same loud way a feed that answered an error does — rather
+  // than write that short list.
+  const db = createTestD1();
+  const four = [FEED_HASH_A, FEED_HASH_B, FEED_HASH_C, FEED_HASH_D].join("\r\n");
+  await loadKnownBadFeed(db, { fetch: async () => new Response(four), now });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url !== KNOWN_BAD_FEED_URL) {
+        return realFetch(input, init);
+      }
+      return new Response(`${FEED_HASH_A}\r\n`);
+    }
+  );
+  try {
+    await assert.rejects(
+      () =>
+        /** @type {function} */ (worker.scheduled)(
+          { cron: KNOWN_BAD_FEED_SCHEDULE, scheduledTime: now + 60_000, noRetry: true },
+          { DRIVE_DB: db },
+          { waitUntil() {}, passThroughOnException() {} },
+        ),
+      /under the 2 floor of the 4 its last load carried/,
+      "the failed load reaches the cron monitor, which rethrows it",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  // Nothing was written, so the rows and the state row the last successful
+  // load left keep standing: the list is neither short nor full of rows
+  // nobody asked for.
+  assert.deepEqual(await lastKnownBadFeedLoad(db), {
+    source: KNOWN_BAD_FEED_URL,
+    loadedAt: Math.floor(now / 1000),
+    hashCount: 4,
+  });
+  assert.equal(knownBadHashRows(db).length, 4);
 });
 
 test("a share minted before etag pinning still serves after a replace", async () => {
