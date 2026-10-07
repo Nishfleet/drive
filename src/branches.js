@@ -1804,7 +1804,7 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
  * @param {number} branchId
  * @returns {Promise<BranchJobResult>}
  */
-async function runBranchJobToEnd(db, snapshots, store, account, branchId) {
+export async function runBranchJobToEnd(db, snapshots, store, account, branchId) {
   // Every batch moves at least one file or one folder, and a branch holds at
   // most BRANCH_FILE_LIMIT of each, so a folder-heavy tree still finishes.
   const cap = 2 * BRANCH_FILE_LIMIT + 200;
