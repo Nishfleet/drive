@@ -31,6 +31,9 @@ export const INSTALL_COMMAND = "drive init";
 // The one top-up prompt (drive#586): the $0 pause, the low balance line, the
 // "$2 left" email and the CLI all say it in these words.
 export const TOP_UP_PROMPT = "Top up to keep adding files.";
+// Most branches one account may hold at once (drive#553). The cap counts every
+// state that still holds a copy. src/branches.js imports this same number.
+export const MAX_OPEN_BRANCHES = 10;
 
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
@@ -59,6 +62,14 @@ export const FAILURE_MESSAGES = Object.freeze({
   "agent-cap-reached": Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
+  }),
+  // The per-account live-key count cap (drive#552). Every mint is a vendor
+  // access key the storage server enforces, so the account's live count is
+  // the bound the vendor does not set. The number named here and
+  // keyprovider.js KEY_COUNT_CAP are pinned together by a test.
+  "key-count-cap": Object.freeze({
+    what: "This account already holds its limit of 20 active keys.",
+    next: "Revoke a key you no longer use, or let an hourly key expire, then mint again.",
   }),
   // A cap write from the usage page or `drive cap` reached a Worker with no
   // account store behind it (drive#421). The cap was not changed, so the next
@@ -205,6 +216,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This link has handed out as much of the file as it can.",
     next: "Ask the person who shared it for a new link.",
   }),
+  // A share link whose file was replaced after mint (drive issue #554). The
+  // link stored the file's etag and the live object no longer matches, so
+  // the bytes are refused rather than labelled: serving the new file would
+  // let a swapped-in payload ride the old link's downloads and judgment.
+  "share-changed": Object.freeze({
+    what: "This file has changed since the link was made.",
+    next: "Ask the person who sent it for a new one.",
+  }),
+  // Bytes whose SHA-256 is on the stock known-bad list, refused on share
+  // mint and on an upload-request drop (drive issue #554). Nothing was
+  // stored or linked.
+  "malware-refused": Object.freeze({
+    what: "That file did not pass the safety check.",
+    next: "Try a different file.",
+  }),
   // An upload-request drop named a file longer than the 255-character cap
   // (drive issue #549). Nothing was stored; the next step is a shorter name.
   "upload-name-too-long": Object.freeze({
@@ -224,6 +250,12 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-exists": Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
+  }),
+  // Cap on branches one account may hold at once (drive#553). It says
+  // "branches", not "open branches", because a copy still held counts.
+  "branch-limit": Object.freeze({
+    what: `You have ${MAX_OPEN_BRANCHES} branches.`,
+    next: "Approve or discard one first.",
   }),
   // An upload-request drop named a file the owner already has. Overwriting
   // that file from a public link is the bug drive#518 closes.

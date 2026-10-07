@@ -32,9 +32,9 @@ We need a card at sign-up because there is no free tier.
 
 ## Downloads
 
-Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
-{{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
-for.
+Downloads are not in the published price, so nothing is charged for them
+today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store,
+then {{DOWNLOAD_RATE}} (planned).
 
 ## Version history
 
@@ -55,8 +55,7 @@ The last column is the whole month. An empty drive bills nothing.
 
 The pricing page has a public savings calculator: enter how many TB you keep
 all month, and it shows this month's bill beside our maximum and a usual 1 TB
-plan. The numbers come from the same function the invoice uses
-(`monthBillCents` via `GET /api/quote`).
+plan. The numbers come from the same function the invoice uses.
 
 ## Honest notes
 

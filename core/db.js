@@ -93,3 +93,14 @@ export async function sha256Hex(text) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return toHex(new Uint8Array(digest));
 }
+
+/**
+ * Hex SHA-256 of bytes. Share-link mint and upload-request uploads check
+ * this against the known-bad list (drive#554).
+ *
+ * @param {BufferSource} bytes
+ */
+export async function sha256Bytes(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return toHex(new Uint8Array(digest));
+}

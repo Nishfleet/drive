@@ -792,13 +792,21 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   One delete call for up to 1,000 paths. More is refused: 1,000 is the
  *   provider's own per-call ceiling, and a caller that chunks by it stays
  *   inside the run's subrequest budget (drive#565).
- * @property {(from: string, to: string, size?: number) => Promise<void>} copy
+ * @property {(from: string, to: string, size?: number, options?: {ifAbsent?: boolean}) => Promise<string|void>} copy
  *   A copy the storage itself makes, no bytes through this Worker: `drive
  *   branch` (build step 7) is a folder copy, and a copy that streamed every
  *   byte through us would make a 10 GB branch a 10 GB download and upload.
  *   `size` is the source's byte length when the caller already knows it (the
  *   listing it is copying from carries it), so a store can pick the copy S3
  *   needs for that many bytes without asking for the size again.
+ *   `options.ifAbsent` asks for an empty destination: a destination that holds
+ *   anything is left alone and the store throws `ChangedUnderUsError`, so a
+ *   restore cannot overwrite a save that landed at the path (drive issue #605).
+ *   The store reads the destination just before it writes, which narrows the
+ *   window but is not a lock: CopyObject has no destination precondition.
+ *   No options means the plain copy `drive branch` makes. The copy resolves to
+ *   the destination's new ETag when the store knows it (a copy of a multipart
+ *   upload does not keep the source's ETag), otherwise to nothing.
  * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
@@ -1026,9 +1034,9 @@ export function scopeStore(store, account) {
       // bytes it is holding, so scoping never drops a guard.
       return store.remove(toKey(path), options);
     },
-    async copy(from, to, size) {
+    async copy(from, to, size, options) {
       const [source, dest] = toKeys(from, to);
-      return store.copy(source, dest, size);
+      return store.copy(source, dest, size, options);
     },
     async listVersions(path) {
       // The versions come back under this account's own keys, so each one's
@@ -1386,7 +1394,7 @@ export function createMemoryStore() {
       }
       return found.sort((a, b) => a.path.localeCompare(b.path) || a.createdAt - b.createdAt);
     },
-    async copy(from, to) {
+    async copy(from, to, _size, options = {}) {
       const value = objects.get(from);
       if (!value) {
         // A copy of a file that is not there is a real failure (S3 answers
@@ -1394,11 +1402,17 @@ export function createMemoryStore() {
         // for a folder it did not copy.
         throw new Error(`cannot copy ${from}: that file is not in the drive`);
       }
+      // Nothing is awaited between this check and the write below, so in this
+      // stand-in no save can land between them (drive issue #605).
+      if (options.ifAbsent && objects.has(to)) {
+        throw new ChangedUnderUsError(to);
+      }
       // The bytes and their fingerprint move together; only the modified time
       // is the copy's own, exactly as S3's CopyObject behaves.
       const now = Date.now();
       startVersion(to, value.body.byteLength, now);
       objects.set(to, { ...value, modified: now });
+      return value.etag;
     },
   };
 }
@@ -1986,15 +2000,18 @@ export function createS3Store(config) {
      * the refusal S3 answers instead of the copy. `size` is the byte length
      * the caller's listing already carried, so the copy S3 needs for those
      * bytes is chosen without a second request per file.
+     * `options.ifAbsent` HEADs the destination first and throws
+     * `ChangedUnderUsError` when anything is there (drive issue #605).
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
+     * @param {{ifAbsent?: boolean}} [options]
      */
-    async copy(from, to, size) {
+    async copy(from, to, size, options = {}) {
+      if (options.ifAbsent) await assertDestinationEmpty(request, urlFor, to);
       const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
-        await multipartCopy(request, urlFor, source, to, size);
-        return;
+        return multipartCopy(request, urlFor, source, to, size, options);
       }
       // S3's CopyObject can answer 200 with an <Error> body for a refused copy
       // (a multi-part copy that is still running is the other 200), so the
@@ -2008,7 +2025,7 @@ export function createS3Store(config) {
       const body = await response.text();
       const code = tagValue(body, "Code");
       if (response.ok && code === "" && body.includes("<CopyObjectResult")) {
-        return;
+        return bareEtag(body);
       }
       // A refusal that is the size limit is the one worth a second try: the
       // caller did not know the size (no listing carried it), so it asked S3
@@ -2021,8 +2038,8 @@ export function createS3Store(config) {
         (code === "InvalidRequest" &&
           /larger than the maximum|too large/i.test(tagValue(body, "Message")));
       if (oversize) {
-        await multipartCopy(request, urlFor, source, to, await sourceSize(request, urlFor, from));
-        return;
+        const size = await sourceSize(request, urlFor, from);
+        return multipartCopy(request, urlFor, source, to, size, options);
       }
       if (!response.ok) {
         throw new Error(`storage copy failed with ${response.status}`);
@@ -2141,9 +2158,11 @@ const COPY_MAX_PARTS = 10000;
  * @param {string} source the `x-amz-copy-source` header value, `/<bucket>/<key>`
  * @param {string} to the destination storage key
  * @param {number} size the source's byte length, from the listing or a HEAD
- * @returns {Promise<void>}
+ * @param {{ifAbsent?: boolean}} [options] `copy`'s guard, read again before the
+ *   completion because a multipart copy is many requests wide (issue #605)
+ * @returns {Promise<string|undefined>} the new object's ETag
  */
-async function multipartCopy(fetchImpl, urlFor, source, to, size) {
+async function multipartCopy(fetchImpl, urlFor, source, to, size, options = {}) {
   const partSize = Math.max(COPY_PART_SIZE, Math.ceil(size / COPY_MAX_PARTS));
   const target = urlFor(to);
   const created = await fetchImpl(`${target}?uploads`, { method: "POST" });
@@ -2187,6 +2206,7 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size) {
       }
       parts.push(`<Part><PartNumber>${number}</PartNumber><ETag>${etag}</ETag></Part>`);
     }
+    if (options.ifAbsent) await assertDestinationEmpty(fetchImpl, urlFor, to);
     const completed = await fetchImpl(`${target}?${upload}`, {
       method: "POST",
       headers: { "content-type": "application/xml" },
@@ -2203,6 +2223,7 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size) {
         "storage multipart copy did not answer with a CompleteMultipartUploadResult; the object may not be whole",
       );
     }
+    return bareEtag(completedBody);
   } catch (error) {
     // The parts uploaded so far are still stored and billed until the upload is
     // aborted, so the abort is part of failing the copy. A failed abort is
@@ -2224,6 +2245,16 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size) {
     }
     throw error;
   }
+}
+
+/**
+ * The ETag in a copy answer, unquoted the way `parseListObjects` unquotes it,
+ * or `undefined` when the answer carries none.
+ * @param {string} body
+ * @returns {string|undefined}
+ */
+function bareEtag(body) {
+  return decodeEntities(tagValue(body, "ETag")).replace(/"/g, "") || undefined;
 }
 
 /**
@@ -2264,6 +2295,27 @@ async function sourceSize(fetchImpl, urlFor, from) {
     );
   }
   return length;
+}
+
+/**
+ * Throw `ChangedUnderUsError` when the copy's destination holds an object. One
+ * HEAD. A 404 is empty. Any other failure is thrown, not read as empty, so a
+ * permission error never turns into a copy over bytes the store could not read
+ * (drive issue #605).
+ * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl
+ * @param {(path: string) => string} urlFor
+ * @param {string} to
+ * @returns {Promise<void>}
+ */
+async function assertDestinationEmpty(fetchImpl, urlFor, to) {
+  const response = await fetchImpl(urlFor(to), { method: "HEAD" });
+  if (response.status === 404) return;
+  if (!response.ok) {
+    throw new Error(
+      `storage could not read ${to} before the copy (HEAD answered ${response.status})`,
+    );
+  }
+  throw new ChangedUnderUsError(to);
 }
 
 /**
@@ -3176,17 +3228,36 @@ async function restoreRequest(request, store, account, now) {
     const parkedAt = trashStorePath(
       found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
     );
-    // The mirror of the delete: the copy is the storage's own, so the bytes
-    // never come through the Worker, and the remove is conditional on the ETag
-    // the trash listing carried. The listing above is what found the row, so
-    // the parked file is there unless a second restore ran in the same tick.
-    await store.copy(parkedAt, checked.path, found.size);
-    const etag = typeof found.etag === "string" ? found.etag : null;
+    // A file at the live path is a save that landed after the delete. Stop and
+    // leave both copies where they are (drive issue #605).
+    if (await listingEntry(store, checked.path)) {
+      return json({ error: failureMessage("restore-file-changed") }, 409);
+    }
+    // The store re-reads the destination just before it writes and refuses if a
+    // save created the path meanwhile.
+    const copiedEtag = await store.copy(parkedAt, checked.path, found.size, { ifAbsent: true });
+    // Re-list: a save that lands after the copy wins the live path, and the
+    // parked copy stays in Recently deleted. The listing is compared with the
+    // ETag the copy made, not the parked one, because a copy of a multipart
+    // upload gets a new ETag. With no ETag on either side it cannot be compared
+    // and does not count as a change.
+    const after = await listingEntry(store, checked.path);
+    const parkedEtag = typeof found.etag === "string" ? found.etag : "";
+    const changed =
+      !after ||
+      (typeof after.etag === "string" &&
+        after.etag !== "" &&
+        typeof copiedEtag === "string" &&
+        copiedEtag !== "" &&
+        etagMismatch(after.etag, copiedEtag));
+    if (changed) {
+      return json({ error: failureMessage("restore-file-changed") }, 409);
+    }
     // A copy that lands while this one runs changes the parked key, and the
     // remove of it is refused: the file is back, the parked copy that changed is
     // still parked, and the person is asked to try the restore again, which
     // brings back the newer parked copy.
-    await store.remove(parkedAt, { ifMatch: etag });
+    await store.remove(parkedAt, { ifMatch: parkedEtag || null });
     return json({ ok: true, path: checked.path });
   } catch (cause) {
     if (cause instanceof ChangedUnderUsError) {

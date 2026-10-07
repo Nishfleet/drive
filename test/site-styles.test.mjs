@@ -104,8 +104,8 @@ const CHROME_OVERRIDES = new Map([
   // The home page (drive#152) lays its header over the orange hero in the
   // display face, so it restates these on purpose. The tagline takes the
   // dark ink because the shared --ink-soft is 2.4:1 on orange and fails the
-  // Lighthouse accessibility budget. Every other header property still comes
-  // from the shared file.
+  // accessibility budget (drive#546), and only the home page paints over it.
+  // Every other header property still comes from the shared file.
   [
     "public/index.html",
     new Map([

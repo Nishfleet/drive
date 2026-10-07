@@ -22,6 +22,7 @@ import {
   DODO_TEST_INGEST_URL,
   pushBillingHours,
   resolveIngestUrl,
+  unbillableAccounts,
   unpushedBillingHours,
 } from "../core/dodo.js";
 import {
@@ -282,6 +283,88 @@ test("a day of stored GB pushes the bill, with storage and downloads as dollar l
   );
   assert.equal(rows[0].dodo_event_id, billingEventId(ACCOUNT, day.from));
   assert.equal(rows[0].account_id, ACCOUNT);
+});
+
+test("the push records its rows conflict-safely (drive#503)", async () => {
+  // Two overlapping cron runs both read the same hours before either has
+  // written its rows, so both reach this insert. The plain INSERT threw on the
+  // table's own unique keys, which failed the whole batch — and with it every
+  // other hour that run was carrying, which had already been ingested and so
+  // would never be pushed again. `ON CONFLICT DO NOTHING` leaves the rows the
+  // first run wrote and lets the run finish. Dodo dedupes on event_id, so the
+  // overlap costs no money either way.
+  const day = await storedHours(400, 3);
+  const recorder = recordingFetch();
+  const opts = { apiKey: KEY, fetch: recorder.fetch, now: day.from + 3 * HOUR_MS };
+  await pushBillingHours(day.db, day.hours, opts);
+  const rows = day.sqlite
+    .prepare("SELECT hour, amount_units FROM billing_pushes ORDER BY hour")
+    .all();
+  assert.equal(rows.length, 3);
+
+  // Re-insert the same three hours as a racing second run would, through the
+  // same statement the push uses.
+  const again = await day.db.batch(
+    day.hours.map((hour) =>
+      day.db
+        .prepare(
+          `INSERT INTO billing_pushes (account_id, hour, dodo_event_id, amount_units, pushed_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT DO NOTHING`,
+        )
+        .bind(ACCOUNT, hour, billingEventId(ACCOUNT, hour), 999, day.from),
+    ),
+  );
+  assert.equal(
+    again.every((result) => result.success),
+    true,
+    "the racing run's batch succeeds instead of throwing on the unique keys",
+  );
+  const after = day.sqlite
+    .prepare("SELECT hour, amount_units FROM billing_pushes ORDER BY hour")
+    .all();
+  assert.deepEqual(after, rows, "the first run's rows stand, none overwritten");
+});
+
+test("an account storing files with no customer id is named by the gap detector (drive#503)", async () => {
+  const now = midnight() + 4 * HOUR_MS;
+  const { db, sqlite } = makeMeteredDB();
+  // Three accounts stored files: one with a customer, two without.
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  for (const id of ["new-a", "new-b"]) {
+    await db
+      .prepare(
+        `INSERT INTO accounts (id, email, created_at, dodo_customer_id)
+         VALUES (?1, ?2, ?3, NULL)`,
+      )
+      .bind(id, `${id}@example.com`, midnight())
+      .run();
+    await recordUsage(db, id, midnight() + 3 * HOUR_MS, 60, 1 * BYTES_PER_GB, now);
+  }
+  await recordUsage(db, ACCOUNT, midnight() + 3 * HOUR_MS, 60, 1 * BYTES_PER_GB, now);
+  const gap = await unbillableAccounts(db, { now });
+  assert.equal(gap.accounts, 2, "only the accounts with no customer id");
+  assert.equal(gap.since, midnight() + 3 * HOUR_MS, "the oldest metered hour among them");
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
+    0,
+    "the detector reads and writes nothing",
+  );
+  // A closed account holds files nobody will bill for and must stop the alarm.
+  sqlite.prepare("UPDATE accounts SET state = 'closed' WHERE id = ?").run("new-a");
+  assert.equal((await unbillableAccounts(db, { now })).accounts, 1);
+  // No metered hours in the window: nothing to report, not an error.
+  assert.deepEqual(await unbillableAccounts(db, { now: midnight() }), { accounts: 0, since: null });
+});
+
+test("the unbillable-account detector refuses a window it cannot read honestly", async () => {
+  const { db } = makeMeteredDB();
+  await assert.rejects(() => unbillableAccounts(db, { hours: 0 }), /positive whole number/);
+  await assert.rejects(() => unbillableAccounts(db, { hours: 1.5 }), /positive whole number/);
+  await assert.rejects(
+    () => unbillableAccounts(/** @type {never} */ (null), {}),
+    /METER_DB binding is not configured/,
+  );
 });
 
 test("a retried hour is ignored: one event id, one billing_pushes row", async () => {

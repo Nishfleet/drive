@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — status</title>
   <meta name="description" content="The current state of the Drive site, read from its own health check, and what stays up when the API does not.">
+  <!-- drive#546: the one served favicon, so no tab asks for /favicon.ico and
+       gets the 404 page. -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <!-- drive#584: a trust page. src/legal.js lists these pages, and
        test/legal.test.mjs and test/seo.test.mjs pin the tags below against
        src/seo.js. The page's rules live in public/site.css (body.policy). -->
