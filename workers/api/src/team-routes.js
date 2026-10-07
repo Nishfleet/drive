@@ -11,8 +11,9 @@
 // explicit scope (keyprovider.js `teamScopeFor`), so a member's key carries
 // the capabilities its role grants and the storage write route refuses the
 // read-only one. Nothing here keeps a second copy of the capability rule.
-import { errorResponse, json, readJsonObject } from "./http.js";
-import { checkedTeamRole, teamScopeFor } from "./keyprovider.js";
+import { errorResponse, json, readJsonObject } from "../../../core/http.js";
+import { checkedTeamRole, teamScopeFor } from "../../../core/keyprovider.js";
+import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
 
 /**
  * POST /v1/teams — create a team owned by the signed-in account.
@@ -46,7 +47,7 @@ export function listTeamsRoute(request, ctx) {
   }
   return ctx.store.teams
     .listTeams(ctx.account)
-    .then((/** @type {import("./teams.js").Team[]} */ teams) =>
+    .then((/** @type {import("../../../core/teams.js").Team[]} */ teams) =>
       json({ teams: teams.map(publicTeam) }),
     );
 }
@@ -80,7 +81,7 @@ export async function inviteMemberRoute(request, ctx) {
     );
   }
   const previous = (await ctx.store.teams.listMembers(ctx.account, ctx.params.teamId)).find(
-    (/** @type {import("./teams.js").TeamMember} */ row) =>
+    (/** @type {import("../../../core/teams.js").TeamMember} */ row) =>
       row.email.toLowerCase() === email.toLowerCase(),
   );
   const member = await ctx.store.teams.inviteMember(ctx.account, ctx.params.teamId, email, role);
@@ -117,7 +118,7 @@ export async function listMembersRoute(request, ctx) {
   const members = await ctx.store.teams.listMembers(ctx.account, team.id);
   const includeEmail = team.ownerAccountId === ctx.account.id;
   return json({
-    members: members.map((/** @type {import("./teams.js").TeamMember} */ member) =>
+    members: members.map((/** @type {import("../../../core/teams.js").TeamMember} */ member) =>
       publicMember(member, { includeEmail }),
     ),
   });
@@ -192,7 +193,7 @@ export function publicMember(member, options = {}) {
     // The prefix and capabilities the role would mint, so the owner can see
     // what a member's key can do without minting one.
     scope: teamScopeFor(
-      /** @type {import("./keyprovider.js").TeamRole} */ (member.role),
+      /** @type {import("../../../core/keyprovider.js").TeamRole} */ (member.role),
       member.teamId,
     ),
   };
@@ -209,7 +210,7 @@ export function publicMember(member, options = {}) {
  * the key's capabilities are the one table's and the storage write route
  * refuses a read-only one.
  * @param {Request} request
- * @param {{store: any, account: {id: string}, params: Record<string, string>}} ctx
+ * @param {{store: any, account: {id: string, name?: string, email?: string|null}, params: Record<string, string>, env?: unknown}} ctx
  */
 export async function mintTeamKeyRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -233,7 +234,7 @@ export async function mintTeamKeyRoute(request, ctx) {
   }
   const role = isOwner
     ? "read_write"
-    : /** @type {import("./keyprovider.js").TeamRole} */ (membership?.role);
+    : /** @type {import("../../../core/keyprovider.js").TeamRole} */ (membership?.role);
   const read = await readJsonObject(request);
   if ("error" in read) {
     return errorResponse(400, read.error);
@@ -241,5 +242,19 @@ export async function mintTeamKeyRoute(request, ctx) {
   const name =
     typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : role;
   const minted = await ctx.store.mintTeamKey(ctx.account, team.id, role, { name });
+  const mail = mailFromEnv(ctx.env);
+  await notifySecurityEvent({
+    email: mail.email,
+    mailFrom: mail.mailFrom,
+    to:
+      typeof ctx.account === "object" &&
+      ctx.account !== null &&
+      typeof ctx.account.email === "string"
+        ? ctx.account.email
+        : "",
+    event: "team-key-minted",
+    deviceName: name,
+    happenedAt: new Date().toISOString(),
+  });
   return json(minted, 201);
 }

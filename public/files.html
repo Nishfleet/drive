@@ -511,6 +511,7 @@ dialog.viewer::backdrop {
       <a href="/">Pricing</a>
       <a href="/get-started">Get started</a>
       <a href="/usage">Usage</a>
+      <a href="/devices">Devices</a>
       <a href="/signin" id="nav-signin">Sign in</a>
       <noscript>
         <!-- Not Django: POST /api/signin refuses a cross-site post
@@ -657,6 +658,42 @@ const DELETE_COPY = {
   done: "Moved to Recently deleted.",
 };
 const RESTORE_COPY = { done: "Put back." };
+
+// A date as a person reads it, in the time zone of the browser showing it
+// (drive#559). The Worker sends instants and never words for them: a date
+// rendered on a server in the UTC zone reads an hour off for a whole country,
+// and at the end of a month it reads the wrong day. `toLocaleString` with no
+// locale asked for writes the words and the order the browser's own reader has
+// chosen, and an omitted time zone means the one the clock it sits on shows.
+// Three shapes, the same three the list has always had: the clock for
+// something written today, the day and the month for this year, the year in
+// for anything older.
+function whenLabel(iso) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const now = new Date();
+  const today =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate();
+  if (today) {
+    return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  if (at.getFullYear() === now.getFullYear()) {
+    return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  }
+  return at.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+// The day a parked file leaves Recently deleted: always a day in the next 30,
+// so it reads as a day and a month in the reader's own calendar.
+function dayLabel(iso) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
 
 const list = document.getElementById("file-list");
 const empty = document.getElementById("empty");
@@ -854,7 +891,7 @@ function rowFor(row) {
   meta.append(name);
   const sub = document.createElement("p");
   sub.className = "sub";
-  sub.textContent = row.kind === "folder" ? "Folder" : [typeLabel(row.kind), row.sizeLabel, row.whenLabel].filter(Boolean).join(" · ");
+  sub.textContent = row.kind === "folder" ? "Folder" : [typeLabel(row.kind), row.sizeLabel, whenLabel(row.modifiedIso)].filter(Boolean).join(" · ");
   meta.append(sub);
   li.append(meta);
 
@@ -914,7 +951,7 @@ function trashRowFor(row) {
   meta.append(name);
   const sub = document.createElement("p");
   sub.className = "sub";
-  sub.textContent = [row.sizeLabel, row.deletedLabel].filter(Boolean).join(" · ");
+  sub.textContent = [row.sizeLabel, row.deletedIso ? `Deleted ${whenLabel(row.deletedIso)}` : ""].filter(Boolean).join(" · ");
   meta.append(sub);
   if (row.goneLabel) {
     const gone = document.createElement("p");
@@ -924,7 +961,7 @@ function trashRowFor(row) {
   } else {
     const until = document.createElement("p");
     until.className = "sub";
-    until.textContent = row.untilLabel;
+    until.textContent = row.untilIso ? `Restorable until ${dayLabel(row.untilIso)}.` : "";
     meta.append(until);
   }
   li.append(meta);

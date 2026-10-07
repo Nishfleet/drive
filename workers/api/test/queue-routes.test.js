@@ -11,17 +11,17 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
-import { failureMessage } from "../../../src/messages.js";
+import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";
+import { createMemoryStore } from "../../../core/keystore.js";
+import { failureMessage } from "../../../core/messages.js";
+import { createD1QueueStore, QUEUE_REPORT_INTERVAL_SECONDS } from "../../../core/queues.js";
 import { createTestD1 } from "../../../test/harness.mjs";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 import { parseQueueReport, reportUploadQueueRoute } from "../src/queue-routes.js";
-import { createD1QueueStore, QUEUE_REPORT_INTERVAL_SECONDS } from "../src/queues.js";
 
 const QUEUE = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
 
-// The session cookie Better Auth mints, named by src/auth.js
+// The session cookie Better Auth mints, named by core/auth.js
 // `AUTH_COOKIE_PREFIX`: the approval is an account route, so walking the flow
 // past the page needs one.
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
@@ -83,7 +83,7 @@ function accountsFor(token, account) {
  * the CLI keeps, the way cmd/drive/report.go reads it.
  * @param {ReturnType<typeof createMemoryStore>} store
  * @param {ReturnType<typeof fixedClock>} clock
- * @param {ReturnType<typeof import("../src/queues.js").createD1QueueStore>|null} queues
+ * @param {ReturnType<typeof import("../../../core/queues.js").createD1QueueStore>|null} queues
  * @param {{id: string, name: string}} account
  * @returns {Promise<{token: string, sessionToken: string}>}
  */
@@ -280,7 +280,7 @@ test("a report needs the queue fields, not a default", () => {
   assert.deepEqual(parseQueueReport(withoutPaused), { report: { ...QUEUE, paused: false } });
 });
 
-test("the route names the one method it serves", async () => {
+test("the route names the methods it serves", async () => {
   const clock = fixedClock();
   const { ctx, token } = await signedIn({ clock });
   const wrong = await dispatch(
@@ -288,7 +288,11 @@ test("the route names the one method it serves", async () => {
     ctx,
   );
   assert.equal(wrong.status, 405);
-  assert.equal(wrong.headers.get("allow"), "POST");
+  const allow = (wrong.headers.get("allow") ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .sort();
+  assert.deepEqual(allow, ["DELETE", "POST"]);
 });
 
 test("a deployment with no database refuses rather than answering as though it had", async () => {
@@ -332,4 +336,21 @@ test("one device's report is never read as another's", async () => {
     totalBytes: 4096,
     paused: true,
   });
+});
+
+test("DELETE /v1/queue drops this device's report", async () => {
+  const clock = fixedClock();
+  const { ctx, token, queues } = await signedIn({ clock });
+  assert.ok(queues, "the test needs the queue store");
+  assert.equal((await dispatch(postQueue(QUEUE, token), ctx)).status, 200);
+  assert.deepEqual(await queues.latest("acct_1"), QUEUE);
+  const cleared = await dispatch(
+    new Request("https://api.test/v1/queue", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    ctx,
+  );
+  assert.equal(cleared.status, 200);
+  assert.equal(await queues.latest("acct_1"), null);
 });

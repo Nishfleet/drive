@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -163,6 +164,14 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	}
 }
 
+// With no api Worker address anywhere -- no --api, no DRIVE_API_URL and no
+// sign-in that saved one -- logout cannot reach the server to turn the key off.
+// The next step it names is `drive login`, not `--api`: signing in is what
+// writes the address into the credentials file (drive#557), and every later
+// logout reads it from there, so it is the one instruction that leaves the
+// device able to sign itself out again. Before this, the sentence asked for
+// `--api` or DRIVE_API_URL, which is advice a person who signs in normally
+// does not have a way to act on.
 func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	home := configOnlyHome(t)
 
@@ -173,11 +182,55 @@ func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	if !strings.Contains(err.Error(), "signed out here; the key is still live, run drive logout again when online") {
 		t.Errorf("error %q must carry the plain sentence", err)
 	}
-	if !strings.Contains(err.Error(), "DRIVE_API_URL") {
-		t.Errorf("error %q must name what to configure", err)
+	if !strings.Contains(err.Error(), "drive login") {
+		t.Errorf("error %q must name the sign-in command that supplies the api address", err)
+	}
+	if strings.Contains(err.Error(), "drive init") {
+		t.Errorf("error %q must not send the person to a command that cannot sign in", err)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
 		t.Error("the local key must be deleted so nothing secret stays on disk")
+	}
+}
+
+func TestLogoutAfterExpiredSignInStillRevokesTheStorageKey(t *testing.T) {
+	t.Setenv("DRIVE_API_URL", "")
+	home := configOnlyHome(t)
+	var revokeCalls, tokenCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == deviceTokenPath:
+			tokenCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.Method == http.MethodPost && r.URL.Path == RevokePath:
+			revokeCalls++
+			id, pass, ok := r.BasicAuth()
+			if !ok || id != testStorage().AccessKey || pass != testStorage().SecretKey {
+				http.Error(w, "unknown key", http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok_expired"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runLogout([]string{"--home", home}); err != nil {
+		t.Fatalf("logout after an expired sign-in: %v", err)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("device-token revoke ran %d times, want 1", tokenCalls)
+	}
+	if revokeCalls != 1 {
+		t.Fatalf("storage-key revoke ran %d times, want 1 so the key is not left live", revokeCalls)
+	}
+	for _, gone := range []string{RcloneConfigPath(home), CredentialsPath(home)} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after logout", gone)
+		}
 	}
 }
 
@@ -205,12 +258,24 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
 	ks := testRevoker(t, home)
 
-	err := Logout("linux", home, false, nil, ks)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	err = Logout("linux", home, false, nil, ks)
+	os.Stderr = saved
+	_ = w.Close()
+	note, _ := io.ReadAll(r)
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
 	if !strings.Contains(err.Error(), "waiting to upload") {
 		t.Errorf("got %q, want the pending count named", err)
+	}
+	if !strings.Contains(string(note), "the drive is unmounted") {
+		t.Errorf("stderr = %q, want the unmount note on a refused logout", note)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); statErr != nil {
 		t.Errorf("the refusal must not delete the key: %v", statErr)
@@ -272,10 +337,14 @@ func TestLogoutBinaryExitsZeroWhenTheServerRevokesTheKey(t *testing.T) {
 // TestLogoutStopsALiveMount is the end-to-end proof: a real rclone mount, a
 // file written and uploaded, then `drive logout` — after which the mount is
 // down, the key is revoked on the stand-in key server and the config is gone.
-// It runs in the same namespace trick the mount proof uses, so it skips where
-// FUSE is refused rather than failing every PR.
+// Under CI=true a refused FUSE mount is a failure (drive#501). A local -short
+// run still skips it. The worker App cannot add a workflow step, so CI runs
+// this proof inside the go job's -short unit tests.
 func TestLogoutStopsALiveMount(t *testing.T) {
-	if testing.Short() {
+	// The worker App cannot add a workflow step (drive#392), so this proof
+	// runs in the go job's -short unit tests when CI is set, instead of as its
+	// own named step. A local -short run still skips it, and CI=false is not CI.
+	if testing.Short() && os.Getenv("CI") != "true" {
 		t.Skip("live-mount proof skipped in -short mode")
 	}
 
@@ -352,7 +421,7 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	}()
 
 	if !waitForMount(t, cmd, mountDir) {
-		t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+		skipNoMount(t, "this host does not permit an unprivileged FUSE mount on %s; "+
 			"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run TestLogoutStopsALiveMount", mountDir)
 	}
 

@@ -794,6 +794,58 @@ func TestFillReadChunkMatchesTheMountReadAhead(t *testing.T) {
 	}
 }
 
+// A cancelled pass stops before it reads the next file: the last thing the pass
+// checks before each file is the deadline, and a pass that is already cancelled
+// reads nothing at all. drive#742 keeps this between-files check while also
+// bounding a single file's read, so the two are separate tests.
+func TestFillTargetsHonoursCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reads := 0
+	targets := fillTargets{
+		offline: []string{"keep.bin"},
+		recent:  []string{"a.bin"},
+		readFile: func(context.Context, string) (int64, error) {
+			reads++
+			return 1, nil
+		},
+	}
+	if _, err := targets.read(ctx, true, 1<<20); err == nil {
+		t.Fatal("a cancelled fill read returned no error")
+	}
+	if reads != 0 {
+		t.Errorf("a cancelled fill still read %d files", reads)
+	}
+}
+
+// A file that is not kept offline and was not opened is not a target, so a
+// keep-warm pass reads nothing for it (drive#568).
+func TestFillTargetsSkipsUnpinnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("pin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var read []string
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"other.bin"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			return 4, nil
+		},
+	}
+	if _, err := targets.read(context.Background(), false, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 0 {
+		t.Errorf("an unpinned file was filled: %v", read)
+	}
+}
+
 // hasArg reports whether args contains flag at all.
 func hasArg(args []string, flag string) bool {
 	for _, a := range args {

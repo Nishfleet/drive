@@ -10,6 +10,23 @@ the live site.
 
 ## 2026-10-06
 
+- An upload link now says who it belongs to. The page a stranger opens shows
+  the owner's name above the folder, and once a day the owner gets one email
+  listing the files that arrived through that link since the last one, rather
+  than one email per file.
+- An account holds at most 20 live keys, and a mint past that is refused with
+  the words to fix it. The storage vendor sets no limit of its own, and a
+  nightly sweep removes the vendor keys of expired or revoked entries and
+  records how many keys the vendor holds.
+- A share link fixes on the file's version at the moment you make it. If that
+  file is replaced afterwards, the link refuses with a short page instead of
+  handing out the new bytes. A file on the stock known-bad hash list is
+  refused when you share it and when someone drops it on an upload page.
+- Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
+  that tool's own key, instead of sharing the folder you use.
+- The conflict guard hashes a save where it already lives instead of keeping a
+  second copy, works through a large drop a hundred files at a time, and
+  `drive status` names a backlog as "conflict guard behind by N saves".
 - A public status page that reads the Worker's own health route, an
   accessibility statement, and the site's own 5xx page (a browser that hits an
   error now sees the site instead of a JSON body). The security page states
@@ -17,6 +34,28 @@ the live site.
 
 ## 2026-10-05
 
+- Your account can carry a second factor: a rotating six-digit code from an
+  authentication app. Approving a new device asks for that code after the code
+  from the terminal, and ten one-time recovery codes are shown once when you
+  turn it on. You can also add a passkey, which is a way to sign in and is not
+  asked for when you approve a device. The security page has the recovery rule.
+- Your drive never works on an old copy: the app says which build it is when
+  it talks to the server, and the server tells an old build to run
+  `drive update` instead of failing in some other way.
+- `drive status` says when a newer drive is available, once a day, so you
+  learn about the update without running `drive update` to find out.
+- `drive update` now puts the drive back on the new build for you, and tells
+  you when the tool it uses to talk to the drive is too old for the new
+  mount.
+- The stored-bytes mark for one hour is what your drive held at the end of
+  that hour, so a file you replace several times inside an hour counts once, not
+  once per save. Each save is still billed for at least one hour, and the
+  pricing page, the how-it-works page, the FAQ and llms.txt now say so.
+- The free download allowance follows the average your GB-minutes work out to,
+  not the biggest single hour mark, so an hour where two versions were both
+  live no longer raises the allowance on its own.
+- A month whose files are all empty bills $0 through the usage and cap routes
+  instead of failing them.
 - The last-sync time on the Get started page is written in the time zone your
   own computer is in, with the day first and the month short, the order the
   site's other dates use.

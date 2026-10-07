@@ -119,3 +119,127 @@ test("ci.yml skips by job-level if, fails open, and pins paths-filter by SHA", (
   assert.ok(uses.length > 0, "the stock dorny/paths-filter does the classifying");
   for (const ref of uses) assert.match(ref, /^[0-9a-f]{40}$/, "pinned by commit SHA");
 });
+
+// drive#759: `npm run check` (tsc --noEmit through the generated Workers
+// types, then `biome check`) is a named step of its own in the verify job, so a
+// red run says which tool turned it red instead of burying it in pretest's
+// output above `npm test`.
+test("ci.yml runs npm run check as its own step, and never fixes the diff", () => {
+  // The whole verify job, steps included: the header-only slice the test above
+  // takes stops at `steps:`, which is before any step lives.
+  const start = CI.search(/^ {2}verify:\n/m);
+  assert.notEqual(start, -1, "ci.yml has a verify job");
+  const rest = CI.slice(start);
+  const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
+  const body = next ? rest.slice(0, 1 + next.index) : rest;
+  const step = /- name: Typecheck and Biome\n {8}run: npm run check\n/.exec(body)?.[0];
+  assert.ok(step, "the verify job runs npm run check as a named step");
+  // It must sit beside `npm test`, not be folded into it, and it must come
+  // first: the point of the step is that the cheap gate fails before the
+  // expensive suite runs.
+  assert.ok(
+    body.indexOf("- name: Typecheck and Biome") < body.indexOf("- run: npm test"),
+    "check runs before npm test",
+  );
+  // The step is a report, never a rewrite: a CI run that fixes the diff and
+  // passes would hide the error from the merge it was supposed to stop. Every
+  // non-comment line of the job is read, so a `run: |` block's continuation
+  // lines count too, while a comment may still name the rule.
+  const lines = body.split("\n").filter((line) => !/^\s*#/.test(line));
+  for (const line of lines) {
+    assert.doesNotMatch(line, /--(write|fix)\b/, `ci.yml verify never runs \`${line.trim()}\``);
+  }
+  // The step runs whatever `npm run check` means, so the scripts it reaches
+  // are held to the same rule.
+  const { scripts } = JSON.parse(read("package.json"));
+  for (const name of ["check", "precheck", "typecheck", "pretypecheck", "lint"]) {
+    assert.doesNotMatch(scripts[name] ?? "", /--(write|fix)\b/, `npm run ${name} never fixes`);
+  }
+  // Same gate as `npm test`: the step carries no `if:`, so it runs whenever
+  // the job runs, and the job-level `if:` is the paths filter above it.
+  assert.doesNotMatch(step, /if:/, "the check step has no gate of its own");
+});
+
+// drive#520: a migration is one-way (D1 has no down-migrations and the
+// databases sit outside the Worker version a rollback restores), so the
+// deploy records each database's Time Travel bookmark before the first
+// `cf d1 migrations apply` and prints it on the run. A restore to that
+// bookmark undoes a migration's writes; docs/runbook.md has the steps.
+test("the deploy records a D1 restore point before any migration runs", () => {
+  const record = DEPLOY.indexOf("- name: Record the D1 restore point");
+  const apply = DEPLOY.indexOf("- name: Apply D1 migrations");
+  assert.ok(record !== -1, "the restore-point step is missing");
+  assert.ok(record < apply, "the restore point must be recorded before migrations apply");
+  const step = DEPLOY.slice(record, apply);
+  // The ids the step bookmarks must be the ids the migrations apply to, so a
+  // database added to one list cannot silently miss the other.
+  const applyIds = [...DEPLOY.slice(apply).matchAll(/migrations apply ([0-9a-f-]{36})/g)].map(
+    (m) => m[1],
+  );
+  const pairLine = step.split("\n").find((line) => line.includes("for pair in"));
+  assert.ok(pairLine, "the step walks the databases in one list");
+  const bookmarkIds = [
+    ...pairLine.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
+  ].map((m) => m[0]);
+  assert.deepEqual(bookmarkIds.sort(), applyIds.sort());
+  assert.ok(applyIds.length >= 2, "both databases are bookmarked");
+  assert.match(step, /time_travel\/bookmark/);
+  // The bookmark must reach a human: the run log and the step summary.
+  assert.match(step, /restore point for .+\(bookmark\)/);
+  assert.match(step, /GITHUB_STEP_SUMMARY/);
+  // A capture that fails or comes back empty fails the deploy here, before
+  // any migration ran: no restore point, no migration.
+  assert.match(step, /::error::no restore point for/);
+  assert.match(step, /process\.exit\(1\)/);
+  // The token goes to curl in a private file, never in its arguments.
+  assert.match(step, /-H "@\$headers"/);
+  assert.doesNotMatch(step, /Authorization: Bearer \$/);
+});
+
+// drive#501: the two named mount proofs must actually run, on a hosted
+// runner that can mount. The unit-test step uses -short and would skip them;
+// these named steps do not. TestLogoutStopsALiveMount cannot get its own
+// step (the worker App cannot update workflows), so it runs inside the
+// -short unit tests when CI is set. A FUSE skip under CI=true is a failure,
+// so a runner that cannot mount turns the job red instead of green-with-skips.
+// ci.yml already carries the hosted runner and the two named steps (PR 757);
+// this test is the pin that keeps them, so a later edit cannot quietly take
+// the proofs off a mountable runner again.
+test("ci.yml runs the mount proofs on ubuntu-latest, without -short", () => {
+  const start = CI.search(/^ {2}go:\n/m);
+  assert.notEqual(start, -1, "ci.yml has a go job");
+  const rest = CI.slice(start);
+  const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
+  const body = next ? rest.slice(0, 1 + next.index) : rest;
+  assert.match(body, /^ {4}runs-on: ubuntu-latest$/m, "the go job is a hosted runner");
+  for (const name of ["TestStandinMountProof", "TestTwoDevicesKeepBothSaves"]) {
+    // The selector ends at a space or end-of-line, so a longer test name that
+    // merely starts with this one cannot satisfy the pin.
+    const idx = body.search(new RegExp(`-run ${name}( |$)`));
+    assert.notEqual(idx, -1, `the go job runs ${name} as its own command`);
+    const stepStart = body.lastIndexOf("- name:", idx);
+    assert.notEqual(stepStart, -1, `${name} sits inside a named step`);
+    const fromName = body.slice(stepStart);
+    const next = fromName.slice(1).search(/^\s+- name:|^ {2}[\w-]+:/m);
+    const step = next === -1 ? fromName : fromName.slice(0, 1 + next);
+    assert.doesNotMatch(step, /-short/, `${name} is not in -short mode`);
+  }
+  assert.match(
+    body,
+    /go test -race \.\/cmd\/drive\/ -short -v/,
+    "the go job still runs -short unit tests",
+  );
+});
+
+test("a FUSE skip is a failure under CI=true (drive#501)", () => {
+  const e2e = read("cmd/drive/e2e_test.go");
+  assert.match(e2e, /func skipNoMount\(/, "one helper owns the skip-or-fail choice");
+  assert.match(e2e, /os\.Getenv\("CI"\) == "true"/, "the helper fails only for CI=true");
+  assert.match(e2e, /a FUSE skip is a failure under CI=true/, "the failure names the rule");
+  const logout = read("cmd/drive/logout_test.go");
+  assert.match(
+    logout,
+    /if testing\.Short\(\) && os\.Getenv\("CI"\) != "true" \{/,
+    "TestLogoutStopsALiveMount still runs under CI=true in the -short unit tests",
+  );
+});

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SESSION_TTL_SECONDS } from "../../../src/auth.js";
-import { bucketForAccount, CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
+import { SESSION_TTL_SECONDS } from "../../../core/auth.js";
+import { readGrant } from "../../../core/grant.js";
+import {
+  bucketForAccount,
+  CAPABILITIES_BY_KIND,
+  KEY_COUNT_CAP,
+} from "../../../core/keyprovider.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   authorizePath,
@@ -9,9 +14,12 @@ import {
   createMemoryStore,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_REFRESH_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
+  KeyCountCapError,
+  renewDeviceTokenWindow,
   renewKeyWindow,
-} from "../src/keystore.js";
+} from "../../../core/keystore.js";
 
 // A clock the test owns, so a device code or token can be expired without sleeping.
 /**
@@ -139,11 +147,23 @@ test("an unknown key kind is refused before any key is made", async () => {
   await assert.rejects(
     () =>
       store.mintKey(account, {
-        kind: /** @type {import("../src/keyprovider.js").KeyKind} */ ("root"),
+        kind: /** @type {import("../../../core/keyprovider.js").KeyKind} */ ("root"),
       }),
     /Unknown key kind/,
   );
   assert.equal((await store.listKeys(account)).length, 0);
+});
+
+test("mintTeamKey is refused at the same live-key cap as mintKey", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { account } = await signedInAccount(store);
+  for (let i = 0; i < KEY_COUNT_CAP; i++) {
+    await store.mintKey(account, { kind: "agent", name: `k${i}` });
+  }
+  await assert.rejects(
+    () => store.mintTeamKey(account, "team_x", "read_write", { name: "member" }),
+    KeyCountCapError,
+  );
 });
 
 test("a revoked key is refused and does not come back", async () => {
@@ -179,7 +199,7 @@ test("an account can revoke its own key but never another account's", async () =
 test("the delete capability comes from the one kind table", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  for (const kind of /** @type {Array<import("../src/keyprovider.js").KeyKind>} */ ([
+  for (const kind of /** @type {Array<import("../../../core/keyprovider.js").KeyKind>} */ ([
     "device",
     "agent",
     "s3",
@@ -216,24 +236,99 @@ test("authorizePath keeps a key inside its own prefix", () => {
 // (accountForDeviceToken) enforces both, so a dead token is a 401 before any
 // handler runs.
 
-// The token TTL is the session TTL src/auth.js chose, pinned so the two
+// The token TTL is the session TTL core/auth.js chose, pinned so the two
 // numbers cannot drift into different lifetimes.
 test("the device token TTL is the session TTL", () => {
   assert.equal(DEVICE_TOKEN_TTL_SECONDS, SESSION_TTL_SECONDS);
 });
 
-test("a fresh token resolves and a token past its TTL does not", async () => {
+// A token nobody touches still dies at its own TTL: the sliding window starts
+// at a REQUEST, so a device that signs in once and never comes back is
+// exactly as revokable by time as it was before the window could slide
+// (drive#557). One second before the TTL the token resolves; one second after
+// it, with no request in between, it is gone.
+test("a fresh token resolves and an untouched token past its TTL does not", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
   const { deviceToken, account } = await signedInAccount(store, clock);
   // The token resolves to the account it was minted against.
   assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
-  // One second before the TTL the token still resolves; one second after it is
-  // gone, judged by the clock the store shares.
-  clock.advance(DEVICE_TOKEN_TTL_SECONDS - 1);
-  assert.ok(await store.accountForDeviceToken(deviceToken), "still good one second before expiry");
-  clock.advance(2);
+  // The clock is moved forward to just past the expiry in one go, with no
+  // lookup on the way: any renewal would have to come from the lookups below.
+  clock.advance(DEVICE_TOKEN_TTL_SECONDS + 1);
   assert.equal(await store.accountForDeviceToken(deviceToken), null, "expired token is null");
+});
+
+// The day 29 / day 45 case, on the real store and not on the rule: a drive
+// reached every day has to still be signed in a fortnight after its 30-day
+// window would have closed, because the window is restarted on each use
+// (drive#557). Before the rule, a daily user's token died on day 30 exactly
+// like a dormant machine's.
+test("a device used on day 29 is still signed in on day 45", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { deviceToken, account } = await signedInAccount(store, clock);
+  const day = 24 * 60 * 60;
+
+  // Day 29: still inside the fixed 30-day window, and close enough to its end
+  // that this is the request that restarts it.
+  clock.advance(29 * day);
+  assert.deepEqual(
+    await store.accountForDeviceToken(deviceToken),
+    account,
+    "the day-29 lookup resolves the account",
+  );
+
+  // Day 45 is past the original 30 days and past the 30 days the day-29 lookup
+  // pushed it to. Nothing in between touched the token, which is what makes
+  // this the answer to the day-29 case rather than a daily-use case.
+  clock.advance(16 * day);
+  assert.deepEqual(
+    await store.accountForDeviceToken(deviceToken),
+    account,
+    "day 45 is still signed in because day 29 restarted the window",
+  );
+
+  // And a device that then stops being used is still dropped on schedule: the
+  // day-45 lookup pushed it to day 75, so nothing has to be done about it
+  // before then.
+  clock.advance(30 * day);
+  assert.equal(
+    await store.accountForDeviceToken(deviceToken),
+    null,
+    "a device that stops coming back is dropped when its window runs out",
+  );
+});
+
+// The rule itself, so the two stores above cannot each slide by their own
+// amount (drive#557).
+test("the device token window slides a day before its end, and never shortens", () => {
+  const day = 24 * 60 * 60;
+  // Far from the end: nothing is written, so a loop of account calls is not a
+  // loop of writes.
+  assert.equal(renewDeviceTokenWindow(100 * day, 0), 100 * day);
+  // Exactly a day left: that is inside the window, so it renews. The boundary
+  // renews rather than waiting for the next second, because the cost of a
+  // token that expires one second before the request that would have renewed
+  // it is a browser opening; the cost of renewing a second early is nothing.
+  assert.equal(renewDeviceTokenWindow(DEVICE_TOKEN_REFRESH_SECONDS, 0), DEVICE_TOKEN_TTL_SECONDS);
+  // A second outside it: nothing to do.
+  assert.equal(
+    renewDeviceTokenWindow(DEVICE_TOKEN_REFRESH_SECONDS + 1, 0),
+    DEVICE_TOKEN_REFRESH_SECONDS + 1,
+  );
+  // A second inside the window: a whole new window, from now.
+  assert.equal(
+    renewDeviceTokenWindow(DEVICE_TOKEN_REFRESH_SECONDS - 1, 0),
+    DEVICE_TOKEN_TTL_SECONDS,
+  );
+  // Already past the end (a request that raced another request's renewal): the
+  // later of the two wins, so the write that lands second cannot pull the
+  // window backwards.
+  assert.equal(
+    renewDeviceTokenWindow(DEVICE_TOKEN_TTL_SECONDS + 5, 0),
+    DEVICE_TOKEN_TTL_SECONDS + 5,
+  );
 });
 
 test("a revoked device token does not resolve to an account", async () => {
@@ -292,7 +387,7 @@ test("the sweep drops expired and revoked device tokens and leaves the live ones
 
 // ---- the one-hour agent credential (drive issue #106) ----
 //
-// Space swaps a key for a one-hour scoped credential; ours lived until the
+// The competitor swaps a key for a one-hour scoped credential; ours lived until the
 // person revoked it, so a leaked agent key was a key that worked forever. The
 // three claims below are the issue's finish line, proved against the store the
 // api Worker runs: an expired credential is refused, a renewed one works, and
@@ -422,7 +517,7 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
   // The row the store holds, written out rather than minted, so the rule can
   // be handed a row in any state a migration or a race can leave it in. The
   // cast is the one place a literal stands in for a stored row.
-  const agent = /** @type {import("../src/keystore.js").Device} */ ({
+  const agent = /** @type {import("../../../core/keystore.js").Device} */ ({
     id: "key_agent",
     accountId: "a",
     name: "claude",
@@ -457,7 +552,7 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
 
 test("the renewal rule never shortens a window the row already carries", () => {
   const at = 1_000_000;
-  const agent = /** @type {import("../src/keystore.js").Device} */ ({
+  const agent = /** @type {import("../../../core/keystore.js").Device} */ ({
     id: "key_agent",
     accountId: "a",
     name: "claude",
@@ -483,4 +578,31 @@ test("the renewal rule never shortens a window the row already carries", () => {
     renewKeyWindow({ ...agent, expiresAt: null }, at).expiresAt,
     at + AGENT_KEY_TTL_SECONDS,
   );
+});
+
+test("a mint carries a download URL with a grant for that key when the dl host is set", async () => {
+  const store = createMemoryStore({
+    now: () => 0,
+    download: { baseUrl: "https://dl.example.test/", secret: "grant-secret" },
+  });
+  const { account } = await signedInAccount(store);
+  const minted = await store.mintKey(account, { kind: "device" });
+  const match = /^https:\/\/dl\.example\.test\/k\/([^/]+)\/$/.exec(String(minted.downloadUrl));
+  assert.ok(
+    match,
+    `the download URL is the dl host, a grant and a trailing slash: ${minted.downloadUrl}`,
+  );
+  assert.deepEqual(await readGrant("grant-secret", match[1]), {
+    accountId: account.id,
+    keyId: minted.keyId,
+  });
+  // The URL is not stored: the listing a person reads never carries it.
+  const [listed] = await store.listKeys(account);
+  assert.ok(!("downloadUrl" in listed));
+});
+test("a mint without a dl host carries no download URL", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { account } = await signedInAccount(store);
+  const minted = await store.mintKey(account, { kind: "device" });
+  assert.equal(minted.downloadUrl, null);
 });

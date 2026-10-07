@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { createD1DeviceStore } from "../core/devices.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_COPY,
@@ -35,7 +36,6 @@ import {
   handleCloseStatusRequest,
   purgeOnDate,
 } from "../src/account-close.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 // The shared banner script, served from the asset layer next to the pages that
@@ -59,6 +59,7 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 const SIGNED_IN_PAGES = [
   { name: "files.html", url: new URL("files.html", PUBLIC_DIR) },
   { name: "usage.html", url: new URL("usage.html", PUBLIC_DIR) },
+  { name: "devices.html", url: new URL("devices.html", PUBLIC_DIR) },
   { name: "starter.html", url: new URL("starter.html", PUBLIC_DIR) },
   { name: "get-started.html", url: new URL("../get-started.html", import.meta.url) },
 ];
@@ -338,8 +339,11 @@ test("the shared script is one served file, and the public tree carries it", () 
 test("the Lighthouse script-count budget is still one, so get-started cannot add a second src", () => {
   // CI runs lhci before npm test. A second <script src> on get-started.html is
   // what failed verify on this branch: the page already loads its renderer.
-  const budgets = JSON.parse(readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"))
-    .ci.assert.assertions;
+  const budgets = JSON.parse(
+    readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"),
+  ).ci.assert.assertMatrix.find(
+    (/** @type {{matchingUrlPattern: string}} */ entry) => entry.matchingUrlPattern === ".*",
+  ).assertions;
   assert.deepEqual(budgets["resource-summary.script:count"], ["error", { maxNumericValue: 1 }]);
   assert.match(
     JSON.stringify(

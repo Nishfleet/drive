@@ -12,18 +12,24 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
-import { BILLING_CONFIG } from "../src/billing.js";
-import { DEFAULT_CAP_USD } from "../src/cap-default.js";
+import {
+  AFTER_SIGNIN_COOKIE,
+  AUTH_COOKIE_PREFIX,
+  SESSION_TTL_SECONDS,
+  SIGNIN_LINK_TTL_SECONDS,
+} from "../core/auth.js";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { DEFAULT_CAP_USD } from "../core/cap-default.js";
 import {
   LEGAL_PAGES,
   LEGAL_PLACEHOLDERS,
   PLACEHOLDER_MARK,
   REPORT_PATH,
   SUPPORT_PATH,
-} from "../src/legal.js";
-import { PREPAID, PRICE } from "../src/pricing.js";
-import { absoluteUrl, PAGES } from "../src/seo.js";
+} from "../core/legal.js";
+import { PREPAID, PRICE } from "../core/pricing.js";
+import { absoluteUrl, PAGES } from "../core/seo.js";
+import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 /** @param {string} name */
@@ -107,6 +113,36 @@ test("the sign-in form links the terms and the privacy policy", () => {
   assert.match(form[0], /href="\/privacy"/);
 });
 
+test("each collection form names the purpose and links the privacy page (drive#547)", () => {
+  const signin = readPublic("signin.html").match(/<form id="signin-form"[\s\S]*?<\/form>/);
+  assert.ok(signin, "signin.html carries the sign-in form");
+  assert.match(signin[0], /We use this address to send that sign-in link/);
+  assert.match(signin[0], /href="\/privacy"/);
+
+  const waitlist = readPublic("index.html").match(/<form class="waitlist"[\s\S]*?<\/form>/);
+  assert.ok(waitlist, "index.html carries the waitlist form");
+  assert.match(waitlist[0], /We use this address to send one email when sign-in opens/);
+  assert.match(waitlist[0], /Send means you agree to that email/);
+  assert.match(waitlist[0], /href="\/privacy"/);
+});
+
+test("the privacy page lists the two cookies and the analytics beacon (drive#547)", () => {
+  const privacy = legalText("privacy.html");
+  const sessionCookie = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
+  assert.ok(privacy.includes(sessionCookie), `privacy must name ${sessionCookie}`);
+  assert.equal(SESSION_TTL_SECONDS / (24 * 60 * 60), 30, "the session cookie lives 30 days");
+  assert.match(privacy, /30 days/);
+  assert.ok(privacy.includes(AFTER_SIGNIN_COOKIE), "privacy must name the after-signin cookie");
+  assert.equal(SIGNIN_LINK_TTL_SECONDS / 60, 10, "the after-signin cookie lives ten minutes");
+  assert.match(privacy, /ten minutes/);
+  assert.match(privacy, /Cloudflare Web Analytics beacon/);
+  assert.match(privacy, /sets no cookie/);
+});
+
+test("the terms carry an age line (drive#547)", () => {
+  assert.match(legalText("terms.html"), /You must be 18 or older to open an account/);
+});
+
 test("the four owner facts are marked placeholders, each in one place only", () => {
   assert.deepEqual(
     LEGAL_PLACEHOLDERS.map((fact) => fact.id),
@@ -125,7 +161,7 @@ test("the four owner facts are marked placeholders, each in one place only", () 
   for (const id of seen.keys()) {
     assert.ok(
       LEGAL_PLACEHOLDERS.some((fact) => fact.id === id),
-      `${id} is not one of the four owner facts in src/legal.js`,
+      `${id} is not one of the four owner facts in core/legal.js`,
     );
   }
   // A fact may be filled (gone), never typed twice or moved off its page.
@@ -264,10 +300,10 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
-    ["restore.md", "src/files.js", "purgeExpiredTrash"],
-    ["restore.md", "src/files.js", "TRASH_PURGE_SCHEDULE"],
-    ["secrets-rotation.md", "src/meter.js", "METER_EVENT_TOKEN"],
-    ["secrets-rotation.md", "src/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
+    ["restore.md", "core/files.js", "purgeExpiredTrash"],
+    ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
+    ["secrets-rotation.md", "core/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
     ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];
   for (const [runbook, source, ...symbols] of claims) {
@@ -295,4 +331,33 @@ test("the site's own 5xx page ships as a noindex asset", () => {
   assert.match(html, /That did not work/);
   const sitemap = readPublic("sitemap.xml");
   assert.equal(sitemap.includes("/500.html"), false, "the 5xx page is not a destination");
+});
+
+// The status line is rewritten after first paint, and every rewrite is shorter
+// than the sentence the page paints with. A paragraph that shrank pulled the
+// sections below it up, and that layout shift failed the CLS budget
+// (lighthouserc.json) on main. The script pins the painted height before the
+// health answer can arrive.
+test("the status line keeps its painted height when the health answer lands", () => {
+  const page = readFileSync(new URL("../public/status.html", import.meta.url), "utf8");
+  const script = page.slice(page.lastIndexOf("<script>"));
+  const lock = script.indexOf("line.style.minHeight = `${line.offsetHeight}px`;");
+  assert.ok(lock !== -1, "the script pins the status line's painted height");
+  assert.ok(lock < script.indexOf('fetch("/api/health"'), "the height is pinned before the fetch");
+  const texts = [...script.matchAll(/line\.textContent =\s*"([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(texts.length >= 3, "the three answers are read from the script");
+  assert.equal(
+    script.split("line.textContent =").length - 1,
+    texts.length,
+    "every answer is a literal this test can measure",
+  );
+  const fallback = page.match(/<p id="status-line"[^>]*>([\s\S]*?)<\/p>/);
+  assert.ok(fallback, "the page paints a default status line");
+  const painted = fallback[1].replace(/<[^>]+>/g, "");
+  for (const text of texts) {
+    assert.ok(
+      text.length < painted.length,
+      `"${text}" is shorter than the painted line, so min-height holds it`,
+    );
+  }
 });

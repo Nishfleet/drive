@@ -15,7 +15,10 @@ write the same folder.
 - **An agent's delete is undoable for 1 day.** An agent gets its own key. The
   storage takes that key's delete but keeps the deleted copy for 1 day, and we
   can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
-  storage limits a key to the whole Drive.
+  storage limits a key to the whole Drive. `drive init` mounts `~/Drive-agents/<tool>`
+  for each tool on its own key, and the MCP server and the tool's allowed folders
+  point there, not at your Drive. Windows is not in version 1, and the tool there
+  still works inside your own Drive, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
@@ -49,13 +52,13 @@ agents.
   can see your files
 - [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —
   one line per shipped thing
-- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/llms.txt) and
-  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/llms-full.txt)
+- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms.txt) and
+  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
   — the same words, for an agent
 
 The docs pages are authored in [`docs-site/`](docs-site/) and built by VitePress
 into the site's static assets: `npm run docs:build`. Every number on a page
-comes from `src/billing.js` at build time, so a test fails the build if a page
+comes from `core/billing.js` at build time, so a test fails the build if a page
 and the invoice disagree.
 
 ## The repository
