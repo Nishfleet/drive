@@ -384,6 +384,32 @@ test("a short load fails the cron monitor and keeps the rows it had", async () =
   assert.equal(knownBadHashRows(db).length, 8, "the second refusal wrote nothing either");
 });
 
+test("an odd count's floor rounds down: 1 of 5 is refused, 2 of 5 is a load", async () => {
+  // The floor is Math.floor(hash_count * KNOWN_BAD_MIN_LOAD_SHARE), and every
+  // exact half used above answers the same to floor and ceil. An odd count is
+  // the one that separates them: the floor of 5 is 2, so a load carrying 2 is
+  // a load (ceil would have refused it) and a load carrying 1 is a shape
+  // change (ceil would have refused it too — the floor is what makes 2 of 5
+  // the bound, not 3 of 5).
+  const refused = createTestD1();
+  await loadKnownBadFeed(refused, { fetch: async () => feedResponse(feedBody(5)), now: NOW });
+  await assert.rejects(
+    () => loadKnownBadFeed(refused, { fetch: async () => feedResponse(feedBody(1)), now: LATER }),
+    /under the 2 floor of the 5 its last load carried/,
+  );
+  assert.equal(knownBadHashRows(refused).length, 5, "the refusal wrote nothing");
+  assert.equal((await lastKnownBadFeedLoad(refused))?.hashCount, 5, "and stamped no load");
+
+  const cleared = createTestD1();
+  await loadKnownBadFeed(cleared, { fetch: async () => feedResponse(feedBody(5)), now: NOW });
+  const atFloor = await loadKnownBadFeed(cleared, {
+    fetch: async () => feedResponse(feedBody(2)),
+    now: LATER,
+  });
+  assert.equal(atFloor.hashes, 2, "2 of 5 clears the floor of 2");
+  assert.equal((await lastKnownBadFeedLoad(cleared))?.hashCount, 2, "and it is the new baseline");
+});
+
 test("a first load has no previous count to lean on, so only the row ceiling bounds it", async () => {
   // The floor needs a previous count to be a floor: the first load this
   // deployment ever makes has nothing to compare against, and refusing a small

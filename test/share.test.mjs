@@ -1420,6 +1420,8 @@ test("a feed that changed shape into something huge fails its own cron monitor t
   const huge = Array.from({ length: KNOWN_BAD_MAX_LOAD_HASHES + 1 }, (_, at) =>
     at.toString(16).padStart(64, "0"),
   ).join("\r\n");
+  // The body is ~660 KB, well under KNOWN_BAD_MAX_FEED_BYTES, so the byte
+  // ceiling is not what stops this trip: the row ceiling under test is.
   const realFetch = globalThis.fetch;
   globalThis.fetch = /** @type {typeof fetch} */ (
     async (input, init) => {
