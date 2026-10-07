@@ -549,16 +549,22 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     const savedAt = new Date().toISOString();
     const saved = await client.send("PUT", { bucket, key, body: "notify me\n" });
     assert.equal(saved.status, 200, `the save must succeed: ${saved.text}`);
-    t.diagnostic(`save ${savedAt}: version ${saved.headers.get("x-amz-version-id")}`);
+    const savedVersion = saved.headers.get("x-amz-version-id");
+    assert.ok(savedVersion, "the bucket gives the save a version, so the event can be named by it");
+    t.diagnostic(`save ${savedAt}: version ${savedVersion}`);
 
     const deadline = Date.now() + 30_000;
     let line = null;
     for (;;) {
       const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
+      // The log line names the event and the version the bucket created, never
+      // the object's path (issue #583), so this save's own line is the one
+      // carrying the version this save was given.
       line =
         lines.find(
           (candidate) =>
-            candidate.includes("storage event s3:ObjectCreated:Put") && candidate.includes(key),
+            candidate.includes("storage event s3:ObjectCreated:Put") &&
+            candidate.includes(`version=${savedVersion}`),
         ) ?? null;
       if (line !== null) {
         break;
@@ -571,6 +577,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       await sleep(500);
     }
     t.diagnostic(`worker log: ${line}`);
+    assert.ok(!line.includes(key), `the log line must not name the object's path: ${line}`);
 
     const forThisSave = receiver.answers.find((answer) => answer.body.includes(key));
     assert.ok(forThisSave, `an answer naming ${key} must have reached the worker's route`);
@@ -587,7 +594,10 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     );
     assert.ok(event, `the event names ${key}`);
     assert.equal(event.bucket, bucket, "the event names the bucket");
-    assert.ok(event.versionId, "the event carries the saved version's id");
+    // The notification carries the version the bucket gave the save, which is
+    // what the log line is matched on above: the line names the version, so the
+    // version has to be the save's own and not some other object's.
+    assert.equal(event.versionId, savedVersion, "the event carries the saved version's id");
     t.diagnostic(
       `event at ${event.eventTime}: ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId}`,
     );

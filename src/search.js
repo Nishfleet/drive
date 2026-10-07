@@ -58,12 +58,10 @@ export const SEARCH_ENDPOINT = "/api/search";
  */
 export const REINDEX_SCHEDULE = "0 3 * * *";
 
-/** How long a query may be, and how many words it may hold. Far above a
- * person's pace, low enough that a query cannot become a table scan with
- * hundreds of LIKE clauses. */
-export const MAX_QUERY_LENGTH = 256;
+// Query length cap: high enough for a person, low enough to bound LIKE clauses.
+const MAX_QUERY_LENGTH = 256;
 export const MAX_WORDS = 8;
-export const MAX_WORD_LENGTH = 64;
+const MAX_WORD_LENGTH = 64;
 /** How many results one search returns, and the most a caller may ask for. */
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 200;
@@ -73,15 +71,8 @@ const ROWS_PER_STATEMENT = 14;
 /** Statements per db.batch call, so a 100,000-file drive does not build one
  * giant batch. */
 const STATEMENTS_PER_BATCH = 64;
-/**
- * The shortest word the FTS5 trigram index can find. The trigram tokenizer
- * indexes every three-character window of a name, so a word of one or two
- * characters matches no window at all and a search for it would come back
- * empty on a drive that holds the file. A query with such a word takes the
- * LIKE path instead, which reads every row of the account: correct, and the
- * price of a one- or two-character query is named in docs-site/limits.md.
- */
-export const MIN_FTS_WORD_LENGTH = 3;
+// Shortest word the FTS5 trigram index can find. Shorter words take the LIKE path.
+const MIN_FTS_WORD_LENGTH = 3;
 
 // ---------------------------------------------------------------- the query
 
@@ -136,7 +127,7 @@ export function parseQuery(input) {
 // every word appearing in the name is the same rule the search already ran.
 /** @param {string[]} words
  * @returns {string} */
-export function ftsQuery(words) {
+function ftsQuery(words) {
   return words.map((word) => `"${word.replace(/"/g, '""')}"`).join(" ");
 }
 
@@ -380,7 +371,7 @@ const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).jo
  * @param {D1Database} db
  * @param {FileRow[]} rows
  * @returns {D1PreparedStatement[]} */
-export function upsertStatements(db, rows) {
+function upsertStatements(db, rows) {
   /** @type {D1PreparedStatement[]} */
   const statements = [];
   for (let start = 0; start < rows.length; start += ROWS_PER_STATEMENT) {
@@ -418,7 +409,7 @@ export function upsertStatements(db, rows) {
 /** @param {D1Database} db
  * @param {{id: string}} account
  * @param {string} path */
-export function deleteStatement(db, account, path) {
+function deleteStatement(db, account, path) {
   return db
     .prepare("DELETE FROM file_index WHERE account_id = ?1 AND path = ?2")
     .bind(account.id, path);

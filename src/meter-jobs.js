@@ -36,10 +36,6 @@ import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { reindexObject } from "./search.js";
 
-export const METER_JOBS_QUEUE = "drive-meter-jobs";
-export const METER_JOBS_DEAD_LETTER_QUEUE = "drive-meter-jobs-dlq";
-export const METER_JOBS_MAX_RETRIES = 5;
-
 /** The kinds of message the meter sends, one account each. */
 export const METER_JOB_KINDS = Object.freeze({
   hourly: "meter.hourly",
@@ -116,7 +112,7 @@ export async function sendObjectJobs(queue, jobs) {
  * @param {unknown} body
  * @returns {MeterJob}
  */
-export function meterJob(body) {
+function meterJob(body) {
   if (body === null || typeof body !== "object") {
     throw new TypeError(`a meter job must be an object, got ${String(body)}`);
   }
@@ -203,7 +199,7 @@ export async function handleMeterJobs(batch, handlers) {
  * @param {MeterJobDeps} deps
  * @param {MeterJob} job
  */
-export async function runHourlyAccountJob(deps, job) {
+async function runHourlyAccountJob(deps, job) {
   if (deps.capStore) {
     await enforceAccountCap(
       { store: deps.capStore, now: job.at, email: deps.email, mailFrom: deps.mailFrom },

@@ -98,6 +98,37 @@ func SaveCacheMax(home, size string) error {
 	return WriteFileAtomic(CacheMaxPath(home), []byte(size+"\n"), 0o600)
 }
 
+// userHomeDir is the operating system's own answer to "whose home is this",
+// held in a variable so a test can stand in for the platform's answer: the
+// Windows branch cannot be run on a Linux runner, and the bug this replaced
+// was a Windows one (drive#544).
+var userHomeDir = os.UserHomeDir
+
+// DefaultHome is the home directory every default path hangs off. It is
+// os.UserHomeDir, never os.Getenv("HOME"): Windows exports no HOME, so the
+// environment read joined `.config/drive` and `.cache/drive/vfs` onto an
+// empty string, and `drive login` in PowerShell wrote
+// `\.config\drive\rclone.conf` under whatever folder the command ran from
+// (drive#544). os.UserHomeDir answers USERPROFILE on Windows and HOME on every
+// other platform, so one call is the answer on all of them, and the flag
+// default below cannot be dragged back to a relative path by a platform that
+// never sets HOME. An answer the OS cannot give stays empty, which is what
+// the environment read did when nothing was set: the path builders then
+// resolve relative to whatever folder the command ran from, the same as
+// before this change. That fallback is reached only on a platform where the
+// OS reports no home at all, not on the Windows case this fixes (there
+// USERPROFILE is set for every interactive login). Turning it into a hard
+// error would change every string-returning path builder and all of their
+// callers, which is wider than this fix; a caller on such a platform passes
+// --home to name an absolute root explicitly.
+func DefaultHome() string {
+	home, err := userHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 func LaunchdPlistPath(home string) string {
 	return filepath.Join(home, "Library", "LaunchAgents", LaunchdLabel+".plist")
 }
