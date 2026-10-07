@@ -1572,18 +1572,23 @@ const handler = {
     // Worker's cron trips that makes an outbound call — every request that
     // reads the list reads the rows this leaves behind (src/malware.js).
     if (event.cron === KNOWN_BAD_FEED_SCHEDULE) {
-      return withCronCheckIn(event, "known-bad-feed", async () => {
-        if (!env.DRIVE_DB) {
-          throw new Error("the known-bad feed needs DRIVE_DB");
-        }
-        const loaded = await loadKnownBadFeed(env.DRIVE_DB, {
-          now: toMillis(event.scheduledTime, "scheduledTime"),
-        });
-        console.log(
-          `known-bad feed: ${loaded.hashes} hash(es) from ${loaded.source}; ` +
-            `known_bad_hashes holds ${loaded.rows} row(s) as of ${loaded.loadedAt}`,
-        );
-      });
+      return withCronCheckIn(
+        event,
+        "known-bad-feed",
+        async () => {
+          if (!env.DRIVE_DB) {
+            throw new Error("the known-bad feed needs DRIVE_DB");
+          }
+          const loaded = await loadKnownBadFeed(env.DRIVE_DB, {
+            now: toMillis(event.scheduledTime, "scheduledTime"),
+          });
+          console.log(
+            `known-bad feed: ${loaded.hashes} hash(es) from ${loaded.source}; ` +
+              `known_bad_hashes holds ${loaded.rows} row(s) as of ${loaded.loadedAt}`,
+          );
+        },
+        sentryFor(env),
+      );
     }
     const files = store ?? storeFor(env);
     if (!files) {
