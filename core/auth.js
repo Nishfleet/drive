@@ -356,7 +356,7 @@ function signinLink(token, baseURL) {
  * The box is kept stable so `authFor` can update the mailer each time it is
  * called with a new env object sharing the same binding — the test pattern
  * where env is rebuilt per request while the database stays alive.
- * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth, passkeyAuth?: Auth}>}
+ * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth, passkeyAuth?: Promise<Auth>}>}
  */
 const AUTH_CACHE = new WeakMap();
 
@@ -432,16 +432,16 @@ export async function authForPasskey(env) {
     throw new Error("authForPasskey: authFor returned an instance without a cache entry");
   }
   cached.env.env = env;
-  if (cached.passkeyAuth !== undefined) {
-    return cached.passkeyAuth;
-  }
-  const { createAuthWithPasskey } = await import("./auth-passkey.js");
-  cached.passkeyAuth = createAuthWithPasskey({
-    database,
-    secret: cached.secret,
-    baseURL: cached.baseURL,
-    sendLink: (link) => sendSigninLink(cached.env.env, link),
-  });
+  // The promise is cached, not the instance, so two first passkey requests
+  // that arrive together share one build.
+  cached.passkeyAuth ??= import("./auth-passkey.js").then(({ createAuthWithPasskey }) =>
+    createAuthWithPasskey({
+      database,
+      secret: cached.secret,
+      baseURL: cached.baseURL,
+      sendLink: (link) => sendSigninLink(cached.env.env, link),
+    }),
+  );
   return cached.passkeyAuth;
 }
 
