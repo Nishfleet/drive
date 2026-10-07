@@ -620,7 +620,8 @@ test("a load the size of the real export writes in batches, and a 5xx is asked f
   // The export is about 1,500 hashes, which is 15 batches, so the chunk size is
   // the one thing a two-hash test would never reach. Each batch is one D1
   // transaction, so a load that dies halfway leaves the batches that landed
-  // and not a half-written one.
+  // and not a half-written one. This drives 250 of them, which is three
+  // batches: the ceil is the part under test, not the share.
   const many = Array.from({ length: 250 }, (_, at) => at.toString(16).padStart(64, "0"));
   const loaded = await loadKnownBadFeed(counted, {
     fetch: async () => new Response(many.join("\r\n")),
@@ -657,10 +658,12 @@ test("the two routes that can hit the list bind everything a refusal needs", () 
   // in the style test/monitoring.test.mjs already uses for its crons.
   const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   /**
-   * One `app.<verb>(...)` registration, from its line to the next one. The
-   * blocks are matched by their registration line rather than by a handler
-   * call, because three routes share handleShareRequest and the upload route
-   * spells its own path as a template.
+   * One `app.<verb>(...)` registration, from its line to the next one, with its
+   * comment lines stripped. The strip is the point: a route that dropped a
+   * binding and kept a comment naming it must fail here, so the pins below
+   * cannot be satisfied by prose. The blocks are matched by their registration
+   * line rather than by a handler call, because three routes share
+   * handleShareRequest and the upload route spells its own path as a template.
    * @param {RegExp} opens
    * @returns {string}
    */
@@ -668,8 +671,10 @@ test("the two routes that can hit the list bind everything a refusal needs", () 
     const line = src.split("\n").find((it) => opens.test(it));
     assert.ok(line !== undefined, `src/index.js registers ${opens.source}`);
     const start = src.indexOf(line);
-    const end = src.indexOf("\n  app.", start + line.length);
-    return src.slice(start, end === -1 ? src.length : end);
+    const rest = src.slice(start + line.length).split("\n");
+    const end = rest.findIndex((it) => /^\s*app\.\w+\(/.test(it));
+    const block = end === -1 ? rest : rest.slice(0, end);
+    return [line, ...block].filter((it) => !/^\s*\/\//.test(it)).join("\n");
   };
   const mint = block(/^\s*app\.post\(SHARE_ENDPOINT,/);
   assert.match(mint, /db: c\.env\.DRIVE_DB/, "the mint reads the feed half of the list");
@@ -903,8 +908,10 @@ test("a known-bad refusal mails the owner, and a mailer that is down still refus
   assert.match(down.sent[0].text, /\/s\/BBBBBBBBBBBBBBBBBBBBBB/);
   assert.match(down.sent[0].text, /device named the drive CLI/);
   // The clock the notice carries is the one the request was given, so an owner
-  // reading the mail can line it up against their own access log.
-  assert.match(down.sent[0].text, new RegExp(`It happened at ${new Date(now).toISOString()}`));
+  // reading the mail can line it up against their own access log. The dots are
+  // escaped, so a date that is one character off is not a match.
+  const happenedAt = new Date(now).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(down.sent[0].text, new RegExp(`It happened at ${happenedAt}`));
   assert.deepEqual(
     (await list()).map((row) => row.name),
     ["flagged.txt"],
