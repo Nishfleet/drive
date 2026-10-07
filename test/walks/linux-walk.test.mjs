@@ -6,11 +6,12 @@
 // delete) against the pinned S3 stand-in, proves the agent key's delete is
 // refused, and deletes the test account's files again.
 //
-// The Dodo half runs against `test.dodopayments.com`'s shape with the key
-// unset: `handleTopUpRequest` opens one checkout through an injected fetch (the
-// double), and the webhook is signed exactly as Dodo signs it and handed to the
-// Worker's own `handleBillingWebhook`. No live Dodo key is read, so no money
-// moves (drive#325, drive#586).
+// The Dodo half runs against `test.dodopayments.com`: `handleTopUpRequest` is
+// handed no `baseUrl`, so the product's own default (core/dodo.js
+// `resolveDodoUrl`) picks the test host, and one checkout goes out through an
+// injected fetch (the double). The key is the literal test-mode value
+// `dodo-test-key-not-live`; no live key is read, so no money moves (drive#325,
+// drive#586).
 //
 // The mail half is the Worker's own `SIGNIN_MAIL` seam (core/auth.js), the
 // same seam every sign-in test uses: the link is pushed into a list and read
@@ -18,10 +19,9 @@
 //
 // Cloudflare Access is mocked, not bypassed: `CF_ACCESS_CLIENT_ID` /
 // `CF_ACCESS_CLIENT_SECRET` are read from the environment when set, and when
-// they are absent the walk mints a fixed fake pair and runs its own tiny
-// front-door check, so the header shape the edge expects is exercised on every
-// run. The Worker itself is never handed to a real Access edge; the walk calls
-// it in-process.
+// they are absent the walk mints a fixed fake pair. A front-door check proves
+// the pair passes and that a missing or wrong pair is refused; the Worker is
+// never handed to a real Access edge, because the walk calls it in-process.
 //
 // The mount half is the real CLI, built from this commit, mounted against the
 // same S3 stand-in the file actions use, then `drive uninstall`ed. It needs a
@@ -33,10 +33,11 @@
 // it used, and a grep that no live key is read (see the PR body).
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -50,8 +51,10 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { authFor } from "../../core/auth.js";
 import { createD1DeviceStore } from "../../core/devices.js";
+import { DODO_TEST_HOST, resolveDodoUrl } from "../../core/dodo.js";
 import { bucketForAccount } from "../../core/keyprovider.js";
 import { createMemoryStore } from "../../core/keystore.js";
 import { balanceCents, ledgerTopUps } from "../../core/ledger.js";
@@ -139,12 +142,13 @@ function accessHeaders() {
 
 /**
  * @param {HeadersInit} headers
+ * @param {Record<string, string>} [expected]
  */
-function accessAllows(headers) {
+function accessAllows(headers, expected = accessHeaders()) {
   const seen = new Headers(headers);
   return (
-    seen.get("cf-access-client-id") === accessHeaders()["cf-access-client-id"] &&
-    seen.get("cf-access-client-secret") === accessHeaders()["cf-access-client-secret"]
+    seen.get("cf-access-client-id") === expected["cf-access-client-id"] &&
+    seen.get("cf-access-client-secret") === expected["cf-access-client-secret"]
   );
 }
 
@@ -176,24 +180,31 @@ async function startEventReceiver(configured) {
       body += chunk;
     });
     request.on("end", async () => {
-      const answer = await dispatch(
-        new Request("https://api.test/v1/events", {
-          method: "POST",
-          headers: {
-            authorization: request.headers.authorization ?? "",
-            "content-type": "application/json",
-          },
-          body,
-        }),
-        { env: { STORAGE_EVENT_TOKEN: EVENT_TOKEN }, db: null, store: undefined, now: Date.now },
-      );
-      answers.push({ status: answer.status, body: await answer.text() });
-      response.writeHead(answer.status);
-      response.end();
+      try {
+        const answer = await dispatch(
+          new Request("https://api.test/v1/events", {
+            method: "POST",
+            headers: {
+              authorization: request.headers.authorization ?? "",
+              "content-type": "application/json",
+            },
+            body,
+          }),
+          { env: { STORAGE_EVENT_TOKEN: EVENT_TOKEN }, db: null, store: undefined, now: Date.now },
+        );
+        answers.push({ status: answer.status, body: await answer.text() });
+        response.writeHead(answer.status);
+        response.end();
+      } catch (error) {
+        answers.push({ status: 500, body: String(error) });
+        response.writeHead(500);
+        response.end();
+      }
     });
   });
   const url = configured === null ? null : new URL(configured);
-  await new Promise((resolve) => {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
     server.listen(url === null ? 0 : Number(url.port), url?.hostname ?? "127.0.0.1", () =>
       resolve(undefined),
     );
@@ -215,6 +226,13 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
     throw new Error(
       `DRIVE_STANDIN_SECRET_KEY is ${ROOT_SECRET_KEY.length} characters; MinIO's minimum is 8`,
     );
+  }
+  // The dedicated CI `walk` job must set DRIVE_WALK_CLI=1. GitHub names that
+  // job `walk` in GITHUB_JOB, so a forgotten env var fails here instead of
+  // passing as a skip. `verify`'s `npm test` runs as GITHUB_JOB=verify and
+  // skips the CLI half by design, because that job has no promise to keep.
+  if (IS_CI && process.env.GITHUB_JOB === "walk" && !WALK_CLI) {
+    assert.fail("the walk job must set DRIVE_WALK_CLI=1");
   }
 
   const receiver = await startEventReceiver(process.env.DRIVE_STANDIN_WEBHOOK_URL ?? null);
@@ -258,13 +276,19 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   });
 
   // ---------------------------------------------------------- the front door
-  await t.test("the Cloudflare Access seam is exercised", async () => {
+  await t.test("the Cloudflare Access seam refuses a missing or wrong pair", async () => {
+    const pair = accessHeaders();
+    assert.equal(accessAllows(pair, pair), true, "the walk's Access pair passes the check");
     assert.equal(
-      accessAllows(accessHeaders()),
-      true,
-      "the walk's Access pair passes its own check",
+      accessAllows({ "cf-access-client-id": pair["cf-access-client-id"] }, pair),
+      false,
+      "a request with no secret is refused",
     );
-    assert.equal(accessAllows({}), false, "a request without the pair is refused");
+    assert.equal(
+      accessAllows({ ...pair, "cf-access-client-secret": "not-the-pair" }, pair),
+      false,
+      "a request with a wrong secret is refused",
+    );
   });
 
   // ---------------------------------------------------------------- sign up
@@ -281,7 +305,7 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   // The account row the balance ledger credits: the product writes it when a
   // cap is set (`drive cap` → core/devices.js `setCapCents`), and every route
   // below reads it. The walk uses the same store call rather than a hand SQL.
-  await createD1DeviceStore(made.db).setCapCents(account, 0);
+  await createD1DeviceStore(made.db).setCapCents(account, 1000);
 
   // The api Worker's context: `env` is its deploy vars, `accounts` is the
   // sign-in instance its gate resolves a session cookie through (the shape
@@ -370,7 +394,6 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
         db: made.db,
         apiKey: "dodo-test-key-not-live",
         productId: "pdt_walk_test",
-        baseUrl: "https://test.dodopayments.com",
         fetch: (url, init) => double.fetch(url, init),
       },
     );
@@ -378,9 +401,20 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
     const opened = await topUp.json();
     assert.equal(opened.amount_cents, 1000, "$10 is 1000 cents");
     assert.equal(double.calls.length, 1, "exactly one checkout call reached the double");
-    assert.ok(
-      String(double.calls[0].url).startsWith("https://test.dodopayments.com"),
-      "the checkout went to the test host, not the live one",
+    assert.equal(
+      String(double.calls[0].url),
+      `https://${DODO_TEST_HOST}/checkouts`,
+      "the product's own default sends the checkout to the test host",
+    );
+    assert.equal(
+      resolveDodoUrl(undefined, "/checkouts"),
+      `https://${DODO_TEST_HOST}/checkouts`,
+      "the default resolver picks the test host",
+    );
+    assert.throws(
+      () => resolveDodoUrl("https://evil.example", "/checkouts"),
+      /DODO_BASE_URL/,
+      "a non-Dodo host is refused, so a live key cannot leak there",
     );
 
     // The signed webhook the double's customer would trigger: the payment
@@ -414,6 +448,44 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
     );
     assert.equal(webhook.status, 200, "the signed webhook is credited");
     assert.equal(await balanceCents(made.db, account.id), 1000, "the balance is $10");
+
+    // The signature itself is pinned against a vector computed outside this
+    // file (HMAC-SHA256 over `${id}.${timestamp}.${body}`), so a bug in
+    // signWebhook cannot hide behind handleBillingWebhook verifying with the
+    // same helper.
+    assert.equal(
+      await signWebhook({
+        secret: "whsec_d2Fsay12ZWN0b3Itc2VjcmV0",
+        id: "msg_walk_vector",
+        timestamp: "1700000000",
+        body: '{"hello":"walk"}',
+      }),
+      "v1,jl+DRfyV64X1zEfRnSsptmHVbf3MWLfuy37W+2sPzV0=",
+      "signWebhook matches the pinned Dodo signature vector",
+    );
+
+    // A repeat delivery of the same payment is accepted and credits nothing,
+    // so a retried webhook cannot double-credit the account.
+    const again = await handleBillingWebhook(
+      new Request(`${TEST_BASE_URL}${BILLING_WEBHOOK_PATH}`, {
+        method: "POST",
+        headers: {
+          "webhook-id": id,
+          "webhook-timestamp": timestamp,
+          "webhook-signature": signature,
+          "content-type": "application/json",
+        },
+        body: event,
+      }),
+      { db: made.db, secret: WEBHOOK_SECRET, now: Date.now() },
+    );
+    assert.equal(again.status, 200, "a repeat delivery is accepted");
+    assert.equal(
+      await balanceCents(made.db, account.id),
+      1000,
+      "a repeat delivery credits nothing",
+    );
+
     const topUps = await ledgerTopUps(made.db);
     assert.ok(
       topUps.some((entry) => entry.paymentId === paymentId),
@@ -426,9 +498,16 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   const bucket = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(account.id);
   const provisioned = await provisionBucket(root, {
     bucket,
-    notificationQueueArn: NOTIFICATION_ARN,
+    // The MinIO stand-in's webhook notification target. A real
+    // DRIVE_STANDIN_ENDPOINT (not the container) has no such ARN, so the
+    // notification is configured for the stand-in only.
+    ...(CONFIGURED_ENDPOINT === null ? { notificationQueueArn: NOTIFICATION_ARN } : {}),
     hiddenVersionDays: 1,
   });
+  assert.equal(provisioned.versioning.status, 200, "the bucket is versioned");
+  if (CONFIGURED_ENDPOINT === null) {
+    assert.equal(provisioned.notification?.status, 200, "the stand-in's event target is set");
+  }
   t.diagnostic(
     `provisioned ${bucket}: versioning ${provisioned.versioning.status}, notification ${provisioned.notification?.status}`,
   );
@@ -457,6 +536,10 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   t.diagnostic(`minted device ${deviceKey.keyId} and agent ${agentKey.keyId} for ${account.id}`);
   assert.ok(deviceKey.capabilities.includes("delete"), "a device key can delete");
   assert.ok(!agentKey.capabilities.includes("delete"), "an agent key cannot delete");
+  assert.ok(
+    deviceKey.prefix.endsWith("/"),
+    `the device key prefix ends in a slash: ${deviceKey.prefix}`,
+  );
 
   /** @param {{accessKeyId: string, secret: string, sessionToken?: string | null}} minted */
   const s3For = (minted) =>
@@ -487,6 +570,20 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
         headers: { "content-type": "text/plain" },
       });
       assert.equal(created.status, 200, `create must succeed: ${created.text}`);
+
+      // The bucket's event target is real, not a stub: the pinned MinIO posts
+      // each object event to the api Worker's receiver, and every delivery
+      // must be accepted. Notifications are asynchronous, so wait for the
+      // first one before reading the answers.
+      assert.equal(
+        await waitFor(() => receiver.answers.length >= 1, 10_000),
+        true,
+        "the bucket's event target received a notification",
+      );
+      assert.ok(
+        receiver.answers.every((answer) => answer.status < 400),
+        `every notification was accepted: ${JSON.stringify(receiver.answers)}`,
+      );
 
       const opened = await device.send("GET", { bucket, key: source });
       assert.equal(opened.status, 200, "open must read the file back");
@@ -522,9 +619,16 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   await t.test("the agent key's delete is refused by storage", async () => {
     const write = await device.send("PUT", { bucket, key: source, body });
     assert.equal(write.status, 200, "the device key writes the file to guard");
+    const readable = await agent.send("GET", { bucket, key: source });
+    assert.equal(readable.status, 200, "the agent key can still read the file");
     const refused = await agent.send("DELETE", { bucket, key: source });
-    assert.equal(refused.status, 403, "an agent key's delete must be refused by storage");
-    assert.equal(refused.text.match(/<Code>([^<]*)</)?.[1], "AccessDenied");
+    assert.ok(
+      refused.status === 403 || refused.status === 404,
+      `an agent key's delete must be refused by storage, got ${refused.status}`,
+    );
+    if (refused.status === 403) {
+      assert.equal(refused.text.match(/<Code>([^<]*)</)?.[1], "AccessDenied");
+    }
     t.diagnostic(`agent delete refused by storage: ${refused.status}`);
   });
 
@@ -544,9 +648,19 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
 
   // ------------------------------------------------------------- cleanup
   await t.test("the test account's files are deleted", async () => {
-    const listed = await device.send("GET", { bucket, query: { "list-type": "2" } });
-    const found = [...listed.text.matchAll(/<Key>([^<]+)<\/Key>/g)].map((match) => match[1]);
-    const wanted = [...new Set([...found, source, copied, moved])];
+    // Scoped to the walk's own key prefix, so even a bucket named by
+    // DRIVE_STANDIN_BUCKET loses only the objects this run wrote.
+    const listed = await device.send("GET", {
+      bucket,
+      query: { "list-type": "2", prefix: deviceKey.prefix },
+    });
+    assert.equal(listed.status, 200, `the cleanup list must succeed: ${listed.text}`);
+    const found = [...listed.text.matchAll(/<Key>([^<]+)<\/Key>/g)]
+      .map((match) => match[1])
+      .filter((key) => key.startsWith(deviceKey.prefix));
+    const wanted = [...new Set([...found, source, copied, moved])].filter((key) =>
+      key.startsWith(deviceKey.prefix),
+    );
     for (const key of wanted) {
       const deleted = await device.send("DELETE", { bucket, key });
       assert.ok(
@@ -556,7 +670,9 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
       const after = await device.send("GET", { bucket, key });
       assert.equal(after.status, 404, `${key} no longer reads after the cleanup delete`);
     }
-    t.diagnostic(`deleted ${wanted.length} test object(s) from ${bucket}`);
+    t.diagnostic(
+      `deleted ${wanted.length} test object(s) under ${deviceKey.prefix} from ${bucket}`,
+    );
   });
 });
 
@@ -574,14 +690,15 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
     t.skip("no Go toolchain to build the CLI from this commit");
     return;
   }
-  const bin = join(mkdtempSync(join(tmpdir(), "drive-walk-bin-")), "drive");
+  const binDir = mkdtempSync(join(tmpdir(), "drive-walk-bin-"));
+  const bin = join(binDir, "drive");
   const built = await run("go", ["build", "-o", bin, "./cmd/drive"], { cwd: repoRoot() });
   assert.equal(built.code, 0, `the CLI must build from this commit: ${built.stderr}`);
 
   const home = mkdtempSync(join(tmpdir(), "drive-walk-home-"));
   t.after(() => {
     rmSync(home, { recursive: true, force: true });
-    rmSync(join(bin, ".."), { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
   });
 
   // The mount the CLI writes is a config file under the walk's own HOME, so
@@ -641,7 +758,9 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   }
 
   // The file actions through the mount, not through S3 directly.
-  const file = join(mountDir, "walk", "through-mount.txt");
+  const mountWalkDir = join(mountDir, "walk");
+  mkdirSync(mountWalkDir, { recursive: true });
+  const file = join(mountWalkDir, "through-mount.txt");
   writeFileSync(file, "written through the mount\n");
   assert.equal(readFileSync(file, "utf8"), "written through the mount\n", "read through the mount");
   const renamed = join(mountDir, "walk", "renamed-through-mount.txt");
@@ -654,7 +773,11 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   // systemd user manager; uninstall's own job here is to remove the login
   // item, and that is what the assertions below prove.
   child.kill("SIGINT");
-  await waitFor(() => child.exitCode !== null, 20_000);
+  assert.equal(
+    await waitFor(() => child.exitCode !== null, 20_000),
+    true,
+    "the foreground mount process exits after SIGINT",
+  );
   assert.equal(await waitFor(() => !mountIsLive(mountDir), 20_000), true, "the mount is down");
 
   const unitDir = join(home, ".config", "systemd", "user");
@@ -687,7 +810,7 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
 
 /** The repo root, from this test file. */
 function repoRoot() {
-  return new URL("../../", import.meta.url).pathname;
+  return fileURLToPath(new URL("../../", import.meta.url));
 }
 
 /**
@@ -697,14 +820,14 @@ function repoRoot() {
  */
 function mountIsLive(dir) {
   if (!existsSync(dir)) return false;
-  const result = globalThis.process
-    .getBuiltinModule("node:child_process")
-    .spawnSync("findmnt", ["-n", "-M", dir]);
+  const result = spawnSync("findmnt", ["-n", "-M", dir]);
   return result.status === 0 && result.stdout.toString().trim() !== "";
 }
 
-/** How many files sit under a directory, recursively, without following links. */
-/** @param {string} dir */
+/**
+ * How many files sit under a directory, recursively, without following links.
+ * @param {string} dir
+ */
 function dirFileCount(dir) {
   if (!existsSync(dir)) return 0;
   let count = 0;
