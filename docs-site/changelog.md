@@ -14,6 +14,10 @@ the live site.
   the words to fix it. The storage vendor sets no limit of its own, and a
   nightly sweep removes the vendor keys of expired or revoked entries and
   records how many keys the vendor holds.
+- A share link fixes on the file's version at the moment you make it. If that
+  file is replaced afterwards, the link refuses with a short page instead of
+  handing out the new bytes. A file on the stock known-bad hash list is
+  refused when you share it and when someone drops it on an upload page.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
 - The conflict guard hashes a save where it already lives instead of keeping a

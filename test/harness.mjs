@@ -97,6 +97,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Per-device upload-queue reports (drive#516). Additive table keyed by
   // account and device. Numbered 0027 because 0022–0026 are already taken.
   "drive/0027_device_queue_reports.sql",
+  // Share-link content pin (drive#554): shares.etag is the file's storage
+  // fingerprint at mint. Expand only, default empty so older rows keep
+  // serving by path.
+  "drive/0037_share_etag.sql",
   // The second factor's tables (drive#524): better-auth's `twoFactor` rows
   // (TOTP secret and encrypted recovery codes) and `passkey` credentials,
   // plus the `user.twoFactorEnabled` flag. Additive only; the pin in
