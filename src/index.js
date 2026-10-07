@@ -1801,7 +1801,11 @@ const handler = {
     // METER_JOBS queue is bound. Branch jobs share this same queue
     // (drive#563). A job that throws is retried by the platform, and after
     // its retries it lands in the dead-letter queue (src/meter-jobs.js).
-    if (batch.queue !== METER_JOBS_QUEUE) {
+    // A batch with no queue name is the meter/branch path: tests deliver
+    // branch jobs without setting `batch.queue`, and the platform names
+    // the bound queue on live traffic. A named queue that is neither the
+    // reindex nor the meter jobs is a misbind, not a silent fallthrough.
+    if (batch.queue != null && batch.queue !== METER_JOBS_QUEUE) {
       throw new Error(`unknown queue ${String(batch.queue)}`);
     }
     const branchMessages = [];

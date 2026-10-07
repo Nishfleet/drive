@@ -1254,7 +1254,7 @@ test("the cached app still reads each fetch's own env", async () => {
 
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  for (const name of ["0002_file_index.sql", "0032_file_index_staging.sql"]) {
+  for (const name of ["0002_file_index.sql", "0039_file_index_staging.sql"]) {
     const sql = readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8");
     const withoutComments = sql.replace(/--.*$/gm, "");
     assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), `${name}: no drops`);
@@ -1274,7 +1274,7 @@ test("the migration is additive: one new table, no drops, every column defaulted
   );
   assert.ok(
     readFileSync(
-      new URL("../migrations/drive/0032_file_index_staging.sql", import.meta.url),
+      new URL("../migrations/drive/0039_file_index_staging.sql", import.meta.url),
       "utf8",
     ).includes("CREATE TABLE IF NOT EXISTS file_index_staging"),
   );

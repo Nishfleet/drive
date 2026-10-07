@@ -16,7 +16,7 @@
 //     (REINDEX_SCHEDULE, src/index.js); no request can.
 //
 // A rebuild is staged rather than written in place. Its rows are written to
-// `file_index_staging` (migration 0032), each stamped with that attempt's
+// `file_index_staging` (migration 0039), each stamped with that attempt's
 // generation number, and one transaction deletes the account's old rows and
 // moves the finished set over. A rebuild that dies half-way therefore leaves
 // this account's rows as they were, and the next attempt clears the

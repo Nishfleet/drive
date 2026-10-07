@@ -111,8 +111,6 @@ export default defineConfig({
       // namespace below: a deploy cannot provision one, and `ensureQueuesExistByConfig`
       // fails the deploy with
       //   Queue "drive-reindex" does not exist. To create it, run:
-      //   wrangler queues create <queue-id>
-      // so:
       //   cf queues create drive-reindex
       triggers.queue({
         name: "drive-reindex",
