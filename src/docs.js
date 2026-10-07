@@ -23,7 +23,6 @@ import {
   meteredMonthlyBillUsd,
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
-  QUOTE_MONTH_MINUTES,
 } from "../core/billing.js";
 import { INSTALL_LINES } from "../core/install-lines.js";
 import { PRICE } from "../core/pricing.js";
@@ -38,15 +37,13 @@ import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
 
 /**
- * The metered cost of a month, in dollars, before the maximum: the rate on the
- * month's GB-months. This is the "meter" column of the worked example, and it
- * is the same function the usage page and `drive usage` read. The worked
- * examples are held for a 31-day month (QUOTE_MONTH_MINUTES), the month the
- * old fixed divisor over-billed (drive#531).
- * @param {number} gbMinutes
+ * The metered cost of a month, in dollars, before the maximum: the rate on
+ * size30. This is the "meter" column of the worked example, and it is the
+ * same function the usage page and `drive usage` read.
+ * @param {number} size30Bytes
  */
-function meteredUsdFor(gbMinutes) {
-  return meteredMonthlyBillUsd(gbMinutes, QUOTE_MONTH_MINUTES);
+function meteredUsdFor(size30Bytes) {
+  return meteredMonthlyBillUsd(size30Bytes);
 }
 
 /**
@@ -64,7 +61,7 @@ const BILL_EXAMPLES = Object.freeze(
     return Object.freeze({
       tb,
       stored: `${tb} TB`,
-      metered: dollars(meteredUsdFor(gb * QUOTE_MONTH_MINUTES)),
+      metered: dollars(meteredUsdFor(Math.round(gb * 1e9))),
       maximum: dollars(monthlyMaximumUsd(gb)),
       bill: dollars(bill.billUsd),
     });
@@ -204,10 +201,10 @@ export const RIVAL_1TB_LINE = `${RIVAL_1TB.name} charges $${RIVAL_1TB.monthToMon
 export const FAQ = Object.freeze([
   Object.freeze({
     question: "What does it cost?",
-    scoreboard: ["price at 1 TB"],
+    scoreboard: ["price at 500 GB"],
     answer: [
       "{{HEADLINE}}",
-      "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
+      "{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
       "{{VERSION_MINIMUM}} You add money first, and what you store is drawn from your balance as it is metered.",
       "Downloads are not in the published price, so nothing is charged for them today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}} (planned).",
@@ -304,6 +301,7 @@ export function markerValues(extra = {}) {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
+    SIZE_WINDOW: PRICE.size30Line,
     NO_PLANS: PRICE.noPlansLine,
     VERSION_MINIMUM: PRICE.versionMinimumLine,
     PRICE_RULE: PRICE.rule,

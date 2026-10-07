@@ -450,17 +450,31 @@ export function handleFirstRunStatusRequest(request, account, upload = null, dev
  * @param {unknown} bytes
  */
 export function formatBytes(bytes) {
-  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+  /** @type {bigint} */
+  let asBig;
+  if (typeof bytes === "bigint") {
+    if (bytes < 0n) {
+      throw new TypeError(`formatBytes needs 0 or more bytes, got ${bytes}`);
+    }
+    asBig = bytes;
+  } else if (typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 0) {
+    asBig = BigInt(Math.round(bytes));
+  } else {
     throw new TypeError(`formatBytes needs 0 or more bytes, got ${bytes}`);
   }
   const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
   let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
+  let divisor = 1n;
+  while (asBig >= divisor * 1000n && unit < units.length - 1) {
+    divisor *= 1000n;
     unit += 1;
   }
-  const shown =
-    unit === 0 ? String(value) : value < 10 ? value.toFixed(1) : String(Math.round(value));
-  return `${shown} ${units[unit]}`;
+  if (unit === 0) {
+    return `${asBig} B`;
+  }
+  const tenths = (asBig * 10n + divisor / 2n) / divisor;
+  if (tenths < 100n) {
+    return `${tenths / 10n}.${tenths % 10n} ${units[unit]}`;
+  }
+  return `${(asBig + divisor / 2n) / divisor} ${units[unit]}`;
 }
