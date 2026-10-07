@@ -68,7 +68,7 @@ func runCap(args []string) error {
 		return err
 	}
 	var answer CapAnswer
-	if err := client.post(CAP_PATH, map[string]string{"amount": amount}, &answer); err != nil {
+	if err := client.Post(CAP_PATH, map[string]string{"amount": amount}, &answer); err != nil {
 		return err
 	}
 	if strings.TrimSpace(answer.CapLine) != "" {

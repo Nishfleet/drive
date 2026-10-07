@@ -275,6 +275,22 @@ func TestParseAPIBaseRejectsAValueThatWouldBreakTheLine(t *testing.T) {
 	}
 }
 
+func TestNewAPIClientRefusesTheSameBrokenURLsAsParseAPIBase(t *testing.T) {
+	broken := []string{
+		"https://drive.example\nGET /elsewhere",
+		"https://drive.example\x00",
+		"https://user:pass@example.com",
+		"http://example.com",
+	}
+	for _, raw := range broken {
+		_, parseErr := parseAPIBase(raw)
+		_, newErr := NewAPIClient(raw, "")
+		if parseErr == nil || newErr == nil {
+			t.Errorf("%q: parseAPIBase=%v NewAPIClient=%v, want both refused", raw, parseErr, newErr)
+		}
+	}
+}
+
 func TestQueueWhySaysWhatIsWaitingAndWhy(t *testing.T) {
 	waiting := Pending{Files: 1, Bytes: 1024, Names: []string{"cut-off.bin"}}
 	got := queueWhy(false, false, false, waiting)
@@ -321,15 +337,15 @@ func TestQueueWhyWordsMatchTheSources(t *testing.T) {
 
 func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"diskCache":{"outOfSpace":true}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	}))
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if !cacheIsFull(home, true) {
 		t.Fatal("cacheIsFull = false, want true when rclone vfs/stats says outOfSpace")
 	}
@@ -341,15 +357,15 @@ func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 // telling the person to free disk space.
 func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"opt":{"CacheMaxSize":1073741824},"diskCache":{"bytesUsed":1610612736}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	}))
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	capBytes, usedBytes, ok := cacheState(home, true)
 	if !ok {
 		t.Fatal("cacheState did not read vfs/stats")

@@ -48,12 +48,7 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import {
-  attachPendingCardAccount,
-  claimCardFingerprint,
-  pendingCardAccountId,
-  signupCardFingerprint,
-} from "../core/abuse-guards.js";
+import { ensureBillingAccount, pendingCardAccountId } from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
@@ -142,20 +137,15 @@ export const SIGNIN_COPY = Object.freeze({
   // them.
   lede: "One link by email.",
   // drive#387: a card at sign-up, and why, in plain words. The page says it
-  // once (drive#420), and needCard is also the server's own refusal, so a
-  // person who ticks the box without a card gets the same sentence the page
-  // already showed them once.
+  // once (drive#420). A tick box on the start form made every returning
+  // customer consent again (drive#538). Verify claims a test stand-in;
+  // a real card waits on the Dodo key (drive#417, drive#325).
   needCard: PRICE.needCard,
-  // drive#420: what the tick box is labelled, in short. The box used to carry
-  // the whole needCard sentence, which put the same words on the page three
-  // times and read as a legal box; the reason lives once above the box and the
-  // label says only that the person understands it.
-  cardConsent: "I understand a card is required",
   // drive#781: the terms say an account holder must be 18 or older
   // (public/terms.html, drive#547), and this page is where the person agrees.
-  // The label is short the way cardConsent is; needAge is the sentence the
-  // page shows above the box, and it is also the route's own refusal, so a
-  // start with no age box gets the words the page already showed.
+  // The label is short; needAge is the sentence the page shows above the box,
+  // and it is also the route's own refusal, so a start with no age box gets
+  // the words the page already showed.
   needAge: "You must be 18 or older to open an account.",
   ageConsent: "I am 18 or older",
   noPlansLine: PRICE.noPlansLine,
@@ -234,7 +224,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, age?: unknown, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, age?: unknown, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -270,8 +260,8 @@ export function readSigninRequest(body) {
 
 /**
  * Whether a posted field is a tick. The page's checkbox posts "on"; JSON posts
- * true. The one four-value check every required sign-up box reads, so the card
- * (drive#387) and the age box (drive#781) cannot drift from each other.
+ * true. A missing, false, or unknown value is not a tick, so the age box
+ * (drive#781) fails closed.
  * @param {unknown} value
  * @returns {boolean}
  */
@@ -280,30 +270,11 @@ function isTick(value) {
 }
 
 /**
- * Whether a posted field is a card-at-sign-up yes. The page's checkbox posts
- * "on"; JSON posts true. Anything else is not a card.
- * @param {unknown} value
- * @returns {boolean}
- */
-export function hasSignupCard(value) {
-  return isTick(value);
-}
-
-/**
- * Sign-up without a card is refused (drive#387). Returning the need-card
- * sentence, or null when a card is present. No Dodo call: a missing key
- * still charges nobody (#325).
- * @param {unknown} card
- * @returns {string|null}
- */
-export function refuseSignupWithoutCard(card) {
-  return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
-}
-
-/**
- * Opening an account without the age box is refused (drive#781). Returning
- * the need-age sentence, or null when the box is ticked. The terms carry the
- * rule (public/terms.html, drive#547); this is the route's refusal.
+ * A start without the age box is refused (drive#781). Returning the need-age
+ * sentence, or null when the box is ticked. The terms carry the rule
+ * (public/terms.html, drive#547); this is the route's refusal. The check does
+ * not look the address up, so a missing tick is the same 400 for every
+ * address (drive#538).
  * @param {unknown} age
  * @returns {string|null}
  */
@@ -312,28 +283,12 @@ export function refuseSignupWithoutAge(age) {
 }
 
 /**
- * True when Better Auth already holds this address, so this start is sign-in
- * rather than sign-up.
- * @param {SigninEnv} env
- * @param {string} email
- * @returns {Promise<boolean>}
- */
-async function emailHasUser(env, email) {
-  const db = env.DRIVE_DB;
-  if (db === undefined || db === null || typeof db !== "object" || !("prepare" in db)) {
-    return false;
-  }
-  const row = await /** @type {D1Database} */ (db)
-    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
-    .bind(email)
-    .first();
-  return row !== null && row !== undefined;
-}
-
-/**
  * The start step: the method and, for the email method, the address.
+ * A fingerprint or card field posted on the body is ignored (drive#538):
+ * claiming a card from an unauthenticated start is how a stranger locked
+ * an address out.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown, age?: unknown, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, age?: unknown, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -354,8 +309,6 @@ function readStart(body) {
     step: "start",
     method,
     email,
-    card: body.card,
-    cardFingerprint: body.cardFingerprint,
     age: body.age,
     // The device-approval return path (drive#558): the approve page sent the
     // person here with ?next= its own URL. Validated here, at the read, so a
@@ -541,60 +494,29 @@ export async function handleSigninRequest(request, env) {
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
   }
-  // A first-time address is sign-up: refuse it without a card (drive#387). A
-  // returning address is sign-in and already has an account. No Dodo call
-  // here, so an unset key still charges nobody (#325). The fingerprint is the
-  // test double (drive#464): a posted provider id, or `test:<email>` from the
-  // checkbox, the same stand-in PR 445 used for the card step itself.
-  const isNew = !(await emailHasUser(env, email));
-  /** @type {string|null} */
-  let fingerprint = null;
-  if (isNew) {
-    const refused = refuseSignupWithoutCard(read.card);
-    if (refused !== null) {
-      return json({ error: refused }, 400);
-    }
-    // drive#781: the age box is the second required tick on a new account.
-    // It is checked after the card, the order the page shows the two boxes
-    // in, so a start that carries neither is answered with the card's words.
-    const ageRefused = refuseSignupWithoutAge(read.age);
-    if (ageRefused !== null) {
-      return json({ error: ageRefused }, 400);
-    }
-    fingerprint = signupCardFingerprint({
-      card: read.card,
-      cardFingerprint: read.cardFingerprint,
-      email,
-    });
-    const driveDb = env.DRIVE_DB;
-    if (
-      fingerprint !== null &&
-      driveDb !== undefined &&
-      driveDb !== null &&
-      typeof driveDb === "object" &&
-      "prepare" in driveDb
-    ) {
-      // The user row does not exist until the link is followed. The hold row
-      // (id `hold:<email>`) is the live account for the card-fingerprint
-      // check until verify remaps it.
-      const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
-        accountId: pendingCardAccountId(email),
-        email,
-        fingerprint,
-      });
-      if ("error" in claimed) {
-        return json({ error: claimed.error }, 400);
-      }
-    }
+  // drive#781: every start needs the age box. The check does not look the
+  // address up (drive#538): a missing tick is the same 400 for a new
+  // address and a returning one, so a stranger cannot tell which this is.
+  const ageRefused = refuseSignupWithoutAge(read.age);
+  if (ageRefused !== null) {
+    return json({ error: ageRefused }, 400);
   }
+  // drive#538: the start step does not look the address up, does not refuse
+  // a missing card, and does not write a hold. Those three were how a
+  // stranger learned whether an address already had an account, and how they
+  // locked a new one out with a fingerprint the body carried. The card is
+  // claimed after the magic link is followed, on the real account id. The
+  // answer below is 202 for every well-formed address the send actually
+  // takes, known or unknown.
+  //
   // drive#550: the per-IP and global limits above bound mail volume per IP,
   // so a script spread across hosts still fills one inbox. This guard is
   // keyed on the address instead: 5 links an hour and 20 a day per inbox,
   // however many IPs the asks come from. The key is the lowercased address
-  // because that is the account key the user row is looked up by (the
-  // lower(email) query in emailHasUser), so Alice@, alice@ and ALICE@ share
-  // one ceiling. The check runs after validation and before the library is
-  // handed the send, so a refused address costs no link and no mail.
+  // because that is the account key the user row is looked up by, so Alice@,
+  // alice@ and ALICE@ share one ceiling. The check runs after validation and
+  // before the library is handed the send, so a refused address costs no
+  // link and no mail.
   //
   // The two answers differ on purpose. Over the limit the page still says
   // "check your inbox": answering differently would tell a stranger that
@@ -723,17 +645,42 @@ export async function handleSigninLinkVerify(request, env) {
     const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
     const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
     if (account !== null) {
-      // The person is signed in by now: Better Auth set the cookie above. A
-      // hold that cannot move (a clash with a card already on the account)
-      // is logged loudly and the hold stays where it was, rather than
-      // turning a good sign-in into a 500.
+      // The person is signed in by now: Better Auth set the cookie above.
+      // Drop any leftover unauthenticated hold for this address so an old
+      // start cannot move a stranger's fingerprint onto the new account
+      // (drive#538). pendingCardAccountId lowercases, so a mixed-case
+      // mailbox still matches the hold id.
+      //
+      // Nothing here writes a card fingerprint (drive#503). The `test:<email>`
+      // stand-in this used to claim was a string the browser's checkbox
+      // produced, so every new address got a distinct one and the
+      // one-account-per-card guard never fired; the card is now recorded from
+      // the verified payment webhook (core/ledger.js creditTopUp). An account
+      // whose payment has not landed simply has no card yet, which reads as
+      // "no card" everywhere else too (core/devices.js cardAdded).
       try {
-        await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
-          email: account.email,
+        await /** @type {D1Database} */ (driveDb)
+          .prepare("DELETE FROM accounts WHERE id = ?1")
+          .bind(pendingCardAccountId(account.email))
+          .run();
+      } catch (cause) {
+        console.error(
+          `card-step leftover hold for account ${account.id} did not clear: ${String(cause)}`,
+        );
+      }
+      // The billing row this account needs, written without a card. It used to
+      // appear as a side effect of claiming the stand-in fingerprint above, so
+      // it is now its own call: no fingerprint, no card_added_at, and an
+      // existing row left untouched. A failure is logged loudly and the
+      // sign-in still lands, because the cap write and the key mint each make
+      // their own row.
+      try {
+        await ensureBillingAccount(/** @type {D1Database} */ (driveDb), {
           accountId: account.id,
+          email: account.email,
         });
       } catch (cause) {
-        console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
+        console.error(`billing row for account ${account.id} did not write: ${String(cause)}`);
       }
       // The account's own bucket exists from the first sign-in (drive#540):
       // the verify step provisions `drv-<id>` through the one provisionBucket
@@ -799,7 +746,7 @@ export async function handleSigninLinkVerify(request, env) {
       // A lookup that cannot finish must not turn a session that was already
       // minted into a 500: the cookie below still carries the same intent for
       // the browser that opened the approve page, the same posture as the
-      // card-step hold above.
+      // card-step claim above.
       console.error(`signin return lookup did not finish: ${String(cause)}`);
     }
   }

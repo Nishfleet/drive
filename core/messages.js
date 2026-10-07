@@ -31,6 +31,9 @@ export const INSTALL_COMMAND = "drive init";
 // The one top-up prompt (drive#586): the $0 pause, the low balance line, the
 // "$2 left" email and the CLI all say it in these words.
 export const TOP_UP_PROMPT = "Top up to keep adding files.";
+// Most branches one account may hold at once (drive#553). The cap counts every
+// state that still holds a copy. src/branches.js imports this same number.
+export const MAX_OPEN_BRANCHES = 10;
 
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
@@ -213,6 +216,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This link has handed out as much of the file as it can.",
     next: "Ask the person who shared it for a new link.",
   }),
+  // A share link whose file was replaced after mint (drive issue #554). The
+  // link stored the file's etag and the live object no longer matches, so
+  // the bytes are refused rather than labelled: serving the new file would
+  // let a swapped-in payload ride the old link's downloads and judgment.
+  "share-changed": Object.freeze({
+    what: "This file has changed since the link was made.",
+    next: "Ask the person who sent it for a new one.",
+  }),
+  // Bytes whose SHA-256 is on the stock known-bad list, refused on share
+  // mint and on an upload-request drop (drive issue #554). Nothing was
+  // stored or linked.
+  "malware-refused": Object.freeze({
+    what: "That file did not pass the safety check.",
+    next: "Try a different file.",
+  }),
   // An upload-request drop named a file longer than the 255-character cap
   // (drive issue #549). Nothing was stored; the next step is a shorter name.
   "upload-name-too-long": Object.freeze({
@@ -232,6 +250,12 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-exists": Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
+  }),
+  // Cap on branches one account may hold at once (drive#553). It says
+  // "branches", not "open branches", because a copy still held counts.
+  "branch-limit": Object.freeze({
+    what: `You have ${MAX_OPEN_BRANCHES} branches.`,
+    next: "Approve or discard one first.",
   }),
   // An upload-request drop named a file the owner already has. Overwriting
   // that file from a public link is the bug drive#518 closes.

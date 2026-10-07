@@ -14,6 +14,7 @@
 //      deployment with no auth at all all read as signed out.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
@@ -534,4 +535,14 @@ test("the link's own sentences do not change when the device does", () => {
   }
   assert.ok(known.includes("Firefox on macOS"), "a known device is named");
   assert.ok(unknown.includes("an unknown device"), "an unknown one is called unknown");
+});
+
+test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
+  const source = readFileSync(new URL("../core/auth.js", import.meta.url), "utf8");
+  assert.match(source, /from "better-auth\/minimal"/);
+  assert.match(source, /from "better-auth\/plugins\/magic-link"/);
+  assert.match(source, /from "better-auth\/plugins\/two-factor"/);
+  assert.match(source, /d1Adapter/);
+  assert.doesNotMatch(source, /from "better-auth";/);
+  assert.doesNotMatch(source, /from "better-auth\/plugins";/);
 });

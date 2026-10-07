@@ -3,19 +3,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/Nishfleet/drive/internal/api"
 )
 
 // The rest of `drive status`: the lines that say what the drive is doing, not
@@ -42,6 +41,25 @@ const USAGE_PATH = "/api/usage"
 // status line into a hung terminal.
 const usageTimeout = 10 * time.Second
 
+// troubleshootingDocsLine is the line `drive status` adds as it ends (drive issue
+// #562): where to read about trouble. `drive status` is the command a person
+// runs when the drive is broken, so it is also the cheapest place to put the
+// page that answers the question — every run's closing lines, not only the
+// broken ones, so the page is found before the drive breaks — and it stays
+// one line because the command answers in under ten.
+//
+// It prints after the cost line and before the once-a-day update notice
+// (drive#560), so it is not always the very last line: on the day that notice
+// fires, the notice is. The docs page says "near the end" for the same reason.
+//
+// It is a function, not a constant, because defaultAPIBase is the embedded
+// site address and only a call can read it: the address is decided at run
+// time, so a const initializer over it does not compile. The address itself
+// is docsTroubleshootingURL's, the one place this PR names the page, and
+// TestHelpNamesTheDocsPageTheStatusLineNames holds the usage text's own copy
+// of it to the same one.
+func troubleshootingDocsLine() string { return "what to try: " + docsTroubleshootingURL() }
+
 // runStatus is `drive status`: is it working, what is waiting, how much am I
 // spending (drive#117). Three questions, under ten lines. The rclone config
 // path, the login item path and the raw entry count are debug detail, not
@@ -56,20 +74,18 @@ func runStatus(args []string) error {
 	}
 	home := common.home
 	goos := CurrentGOOS()
-	on, err := Mounted(goos, home)
-	if err != nil {
-		return err
-	}
+	on, listErr := Mounted(goos, home)
 	mountDir := DefaultMountDir(home)
-	if goos == "windows" && on {
+	if goos == "windows" && on && listErr == nil {
 		if letter, err := windowsMountLetter(); err == nil {
 			mountDir = windowsVolumeRoot(letter)
 		}
 	}
 	var readErr error
-	if on {
+	if listErr == nil && on {
 		_, readErr = countEntries(mountDir, 2*time.Second)
 	}
+	on, readErr = mountView(on, listErr, readErr)
 	renderMountState(os.Stdout, on, readErr, mountDir, goos, home)
 	queue, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
@@ -131,25 +147,37 @@ func runStatus(args []string) error {
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
+	fmt.Println(troubleshootingDocsLine())
 	// The once-a-day update notice (drive#560): the last line `drive status`
 	// prints. It never fails the command, and it never prints more than once
 	// in 24 hours.
 	noticeUpdateOnceADay(updateNoticeOptions{home: home})
+
 	return nil
 }
 
+// mountView turns a mount-table result into what `drive status` should
+// show. A listing failure (findmnt or `mount` timed out) is a stale mount,
+// not a command error, so the next step stays `drive unmount`.
+func mountView(on bool, listErr, readErr error) (bool, error) {
+	if listErr != nil {
+		return true, listErr
+	}
+	return on, readErr
+}
+
 // renderMountState prints the mount's answer to "is it working": mounted and
-// answering, mounted but not answering, or not mounted with the exact start
-// command. It is a function so all three branches stay testable without a
-// real FUSE mount.
+// answering, a stale mount that is still listed but does not answer, or not
+// mounted with the exact start command. It is a function so all three
+// branches stay testable without a real FUSE mount.
 func renderMountState(w io.Writer, on bool, readErr error, mountDir, goos, home string) {
 	switch {
 	case on && readErr == nil:
 		fmt.Fprintf(w, "drive: mounted at %s\n", mountDir)
 	case on:
-		silence := failDetail("folder-silent", readErr, (2 * time.Second).String(), mountLogHint(goos, home))
-		fmt.Fprintf(w, "drive: not responding at %s (%s)\n", mountDir, silence.What)
-		fmt.Fprintf(w, "  next: %s\n", silence.Next)
+		stale := failDetail("stale-mount", readErr, mountDir)
+		fmt.Fprintf(w, "drive: stale mount at %s (%s)\n", mountDir, stale.What)
+		fmt.Fprintf(w, "  next: %s\n", stale.Next)
 	default:
 		fmt.Fprintf(w, "drive: not mounted\n")
 		fmt.Fprintf(w, "  next: run `drive mount` (see `drive mount --help` for its flags)\n")
@@ -640,7 +668,7 @@ func readCostLine(apiBase, token string) string {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
 	req.Header.Set("user-agent", userAgent())
-	client := &http.Client{Timeout: usageTimeout}
+	client := newHTTPClient(usageTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return failDetail("offline", err).Error()
@@ -667,77 +695,12 @@ func readCostLine(apiBase, token string) string {
 	return ""
 }
 
-// parseAPIBase checks the api Worker URL and drops its trailing slash, so the
-// endpoint path is appended the same way every time. A URL is operator
-// config, but it is printed and put in an error, so it is held to the same
-// rule as the secret itself (issue #75):
-//
-//   - user:password@ in a URL is a credential on the command line and in every
-//     line that prints the URL, so it is refused rather than carried;
-//   - no error here echoes the value back. Each failure names the fault and
-//     stops, because a URL that parses as scheme "user" and opaque
-//     "password@host" clears every parsed field a check could look at, so
-//     "check first, then print" is not a rule a new branch can rely on;
-//   - a secret goes over TLS, so plain http is only good enough on loopback.
-//
-// The same rejection config.go applies to a rclone config value applies here: a
-// newline would break the line it is printed on, and a NUL byte is never a URL.
+// parseAPIBase is the CLI name for api.ParseBase. Every construction path
+// (NewAPIClient, status, search, share, revoke, doctor) goes through that
+// one parser, so a newline, a credential-in-URL, or plain remote http is
+// refused the same way (issue #75).
 func parseAPIBase(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
-		return "", err
-	}
-	u, err := url.Parse(trimmed)
-	if err != nil {
-		// url.Error's message quotes the URL it was given, and that URL may
-		// carry a credential. The inner error names the actual fault (a bad
-		// port, a bad escape) without repeating the value, so that is what is
-		// reported.
-		if inner := errors.Unwrap(err); inner != nil {
-			return "", fmt.Errorf("api Worker URL does not parse: %v", inner)
-		}
-		return "", errors.New("api Worker URL does not parse")
-	}
-	if u.User != nil {
-		return "", errors.New("api Worker URL carries credentials; the key is sent in the Authorization header, not in the URL")
-	}
-	if u.Opaque != "" {
-		return "", errors.New("api Worker URL does not name a host")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", errors.New("api Worker URL must be http or https")
-	}
-	if u.Host == "" {
-		return "", errors.New("api Worker URL has no host")
-	}
-	// A secret travels only over TLS. Plain http is accepted for the loopback
-	// hosts the stand-in server and a local dev Worker use, and nowhere else:
-	// the storage secret is in every request this CLI makes to the Worker, and
-	// cleartext to a remote host is the same exposure as a flag in ps.
-	if u.Scheme == "http" && !loopbackHost(u.Hostname()) {
-		return "", fmt.Errorf("api Worker URL must be https://%s ...; plain http carries the storage secret in the clear", u.Host)
-	}
-	return strings.TrimSuffix(trimmed, "/"), nil
-}
-
-// loopbackHost reports whether host is this machine. The stand-in server, a
-// local dev Worker and the test server all talk over loopback, where cleartext
-// never leaves the machine.
-//
-// The whole 127.0.0.0/8 block and the IPv6 loopback are this machine, not just
-// 127.0.0.1, and `localhost` is matched without regard to case the way DNS
-// resolves it. A name that is an IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)
-// is loopback too: net.IP.IsLoopback knows all of them, so the check goes
-// through it rather than a hand-written list of spellings that would silently
-// fall out of date.
-func loopbackHost(host string) bool {
-	if strings.EqualFold(strings.Trim(host, "[]"), "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
+	return api.ParseBase(raw)
 }
 
 // cacheStatusLine prints the cache line and returns the reason it could not be

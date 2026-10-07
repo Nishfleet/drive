@@ -455,3 +455,32 @@ test("a size-capped upload is refused by a fresh store and writes no row bytes",
   assert.equal(stored.upload_bytes, 0);
   assert.equal(await scopeStore(d.files, account).read("/huge.bin"), null);
 });
+
+test("a minted share stores etag, and a replaced file is refused on a fresh store", async () => {
+  const d = drive();
+  assert.equal((await d.upload()).status, 201);
+  const minted = await d.share(d.fresh());
+  assert.equal(minted.status, 201);
+  const stored = rowIn(d.db.sqlite, "shares", TOKEN);
+  assert.equal(typeof stored.etag, "string");
+  assert.ok(String(stored.etag).length > 0, "the mint wrote the file's etag");
+
+  const opened = await d.open(d.fresh(), now);
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), d.text);
+
+  const replaced = await handleFilesRequest(
+    new Request(`${api(FILES_ENDPOINT)}/upload?path=%2F&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "other bytes",
+    }),
+    d.files,
+    account,
+    now,
+  );
+  assert.equal(replaced.status, 201);
+  const refused = await d.open(d.fresh(), now);
+  assert.equal(refused.status, 409);
+  assert.equal(await refused.text(), failureMessage("share-changed"));
+});

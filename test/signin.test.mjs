@@ -117,7 +117,7 @@ const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} }
       ? body
       : JSON.stringify(
           typeof body === "object" && body !== null && !Array.isArray(body)
-            ? { card: true, age: true, ...body }
+            ? { age: true, ...body }
             : body,
         );
   return new Request(url, {
@@ -257,54 +257,126 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
   assert.equal("url" in payload, false, "the link leaves by email, never in the reply");
 });
 
-test("sign-up without a card is refused and mails nothing", async () => {
+test("the start step answers the same for a known address and an unknown one (drive#538)", async () => {
   const made = dispatchEnv();
-  const response = await workerFetch(
-    post({ step: "start", method: "email", email: "new@example.com", card: false }),
+  await signIn(made, "known@example.com");
+  const unknown = await workerFetch(
+    post({ step: "start", method: "email", email: "unknown@example.com", card: false }),
     made.env,
   );
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
-  assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
+  const known = await workerFetch(
+    post({ step: "start", method: "email", email: "known@example.com", card: false }),
+    made.env,
+  );
+  assert.equal(unknown.status, 202);
+  assert.equal(known.status, unknown.status);
+  assert.deepEqual(await known.json(), await unknown.json());
 });
 
-test("every new-account path requires the card step (drive#417)", async () => {
-  // The one claim issue #417 makes about sign-up: no path opens a new account
-  // without the card step, and the answer comes from the server. Each path is
-  // driven the way the Worker's own dispatch (this file's workerFetch) takes
-  // it, against the real Better Auth database.
+test("a returning address signs in with no card field (drive#538)", async () => {
   const made = dispatchEnv();
-  // 1. The email path: a first-time address with no card on file is refused,
-  // and no link is mailed, because the request never reaches the mailer.
-  // A body that names no card field at all is the same refusal (fail closed),
-  // so a client that drops the checkbox cannot open the account either. The
-  // raw JSON body below is the one this file's post() helper would otherwise
-  // fill in for, so the field is absent exactly as a client that sends none
-  // would send it.
-  for (const body of [
-    { step: "start", method: "email", email: "new@example.com", card: false },
-    { step: "start", method: "email", email: "new@example.com", card: "off" },
-  ]) {
-    const response = await workerFetch(post(body), made.env);
-    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
-    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
-  }
-  const noCardField = await workerFetch(
-    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+  await signIn(made, "back@example.com");
+  const response = await workerFetch(
+    post(
+      JSON.stringify({
+        step: "start",
+        method: "email",
+        email: "back@example.com",
+        age: true,
+      }),
+    ),
     made.env,
   );
-  assert.equal(noCardField.status, 400, "a start with no card field is refused");
-  assert.deepEqual(await noCardField.json(), { error: SIGNIN_COPY.needCard });
-  assert.equal(made.sent.length, 0, "a refused sign-up path mails nothing");
-  // The refusal is server side, not a screen: after the refusals the database
-  // holds no user row for the address, so nothing about the account exists.
-  const row = await made.db
-    .prepare('select id from "user" where email = ?')
-    .bind("new@example.com")
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).ok, true);
+  assert.equal(made.sent.length, 2, "the returning start mailed a link");
+});
+
+test("an attacker start cannot lock the owner out (drive#538)", async () => {
+  const made = dispatchEnv();
+  const attacker = await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "owner@example.com",
+      card: true,
+      cardFingerprint: "attacker-card",
+    }),
+    made.env,
+  );
+  assert.equal(attacker.status, 202);
+  const hold = await made.db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind("hold:owner@example.com")
     .first();
-  assert.equal(row, null, "no user row was written for a refused sign-up");
-  // 2. The OAuth paths: Google and GitHub are the screen's buttons, and each
-  // is a closed door, so neither can open a new account behind the card step.
+  assert.equal(hold, null, "the start step writes no hold");
+  const owner = await workerFetch(
+    post({ step: "start", method: "email", email: "owner@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(owner.status, 202, "the owner's start is a normal answer, not card-in-use");
+  assert.equal((await owner.json()).ok, true);
+  assert.equal(made.sent.length, 2, "both starts mailed a link");
+  const followed = await workerFetch(new Request(made.sent[1].url), made.env);
+  assert.equal(followed.status, 302, "the owner follows their own link");
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind("owner@example.com")
+    .first();
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    null,
+    "the sign-in writes no card: the attacker's posted fingerprint is not read (drive#503)",
+  );
+});
+
+test("a leftover hold is dropped at verify and does not keep the attacker's card (drive#538)", async () => {
+  const made = dispatchEnv();
+  const now = Math.floor(Date.now() / 1000);
+  await made.db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, state, card_fingerprint, card_added_at)
+       VALUES (?1, ?2, ?3, 'active', ?4, ?3)`,
+    )
+    .bind("hold:owner@example.com", "Owner@example.com", now, "posted:attacker-card")
+    .run();
+  const start = await workerFetch(
+    post({ step: "start", method: "email", email: "Owner@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(start.status, 202);
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  const leftover = await made.db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind("hold:owner@example.com")
+    .first();
+  assert.equal(leftover, null, "the leftover hold is gone");
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind("Owner@example.com")
+    .first();
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    null,
+    "the leftover hold's fingerprint is not carried onto the new account (drive#503)",
+  );
+});
+
+test("every new-account path still cannot open an account through OAuth (drive#417)", async () => {
+  const made = dispatchEnv();
   for (const method of ["google", "github"]) {
     const response = await workerFetch(post({ step: "start", method }), made.env);
     assert.equal(response.status, 503, `${method} is a closed door, not a new account`);
@@ -312,86 +384,30 @@ test("every new-account path requires the card step (drive#417)", async () => {
     assert.equal(response.headers.get("set-cookie"), null, `${method} sets no session`);
   }
   assert.equal(made.sent.length, 0, "a closed sign-in mails nothing");
-  // 3. The email path WITH the card step is the one that opens the account, so
-  // the gate above is the card and not the address: the same first-time email
-  // now signs up, and the link leaves by email.
   const withCard = await workerFetch(
     post({ step: "start", method: "email", email: "new@example.com", card: true }),
     made.env,
   );
-  assert.equal(withCard.status, 202, "the card step is what opens the new account");
+  assert.equal(withCard.status, 202);
   assert.equal((await withCard.json()).ok, true);
   assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
-  // The no-JavaScript form is the page's own path, so it is held to the same
-  // gate: an unchecked checkbox posts no card field.
-  const form = await workerFetch(
-    new Request(`${TEST_BASE_URL}/api/signin`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        origin: TEST_BASE_URL,
-      },
-      body: new URLSearchParams({ step: "start", method: "email", email: "form@example.com" }),
-    }),
-    made.env,
-  );
-  assert.equal(form.status, 400, "the form path is refused with no card step");
-  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
-  assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
-});
-
-test("sign-up without the age box is refused and mails nothing (drive#781)", async () => {
-  const made = dispatchEnv();
-  const response = await workerFetch(
-    post({ step: "start", method: "email", email: "young@example.com", age: false }),
-    made.env,
-  );
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
-});
-
-test("every new-account path requires the age box (drive#781)", async () => {
-  // Owned by drive#781, the age gate's own proof, mirroring the card gate's
-  // (drive#417 above): no path opens a new account without the age box, and
-  // the answer comes from the server. The two boxes are separate — a start
-  // with the card but no age box is refused on the age box, in the page's
-  // own words — and a first-time address with both boxes still signs up.
-  const made = dispatchEnv();
-  for (const body of [
-    { step: "start", method: "email", email: "new@example.com", age: false },
-    { step: "start", method: "email", email: "new@example.com", age: "off" },
-  ]) {
-    const response = await workerFetch(post(body), made.env);
-    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
-    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  }
-  // A body that names no age field at all fails closed, the same way a body
-  // with no card field does above. The card is present here, so the refusal
-  // is the age's and the two gates are not the same check.
-  const noAgeField = await workerFetch(
-    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com", card: true })),
-    made.env,
-  );
-  assert.equal(noAgeField.status, 400, "a start with no age field is refused");
-  assert.deepEqual(await noAgeField.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 0, "a refused sign-up path mails nothing");
-  const row = await made.db
-    .prepare('select id from "user" where email = ?')
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE email = ?')
     .bind("new@example.com")
     .first();
-  assert.equal(row, null, "no user row was written for a refused sign-up");
-  // With both boxes the account opens: the same first-time address signs up
-  // and the link leaves by email.
-  const withBoth = await workerFetch(
-    post({ step: "start", method: "email", email: "new@example.com", card: true, age: true }),
-    made.env,
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    null,
+    "no card is written at sign-up: only the payment webhook writes one (drive#503)",
   );
-  assert.equal(withBoth.status, 202, "the two boxes are what open the new account");
-  assert.equal((await withBoth.json()).ok, true);
-  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
-  // The no-JavaScript form is the page's own path, so it is held to the same
-  // gate: an unchecked age box posts no age field.
   const form = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/signin`, {
       method: "POST",
@@ -403,63 +419,80 @@ test("every new-account path requires the age box (drive#781)", async () => {
         step: "start",
         method: "email",
         email: "form@example.com",
-        card: "on",
+        age: "on",
+      }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 202, "the form path mails a link with no card field");
+  assert.equal((await form.json()).ok, true);
+  assert.equal(made.sent.length, 2);
+});
+
+test("a start without the age box is refused and mails nothing (drive#781)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "young@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 0, "a refused start mails nothing");
+});
+
+test("every start requires the age box, known or unknown (drive#781)", async () => {
+  // Owned by drive#781: no path mails a link without the age box, and the
+  // answer comes from the server. The check does not look the address up
+  // (drive#538), so a missing tick is the same 400 for a new address and a
+  // returning one.
+  const made = dispatchEnv();
+  await signIn(made, "known@example.com");
+  for (const body of [
+    { step: "start", method: "email", email: "new@example.com", age: false },
+    { step: "start", method: "email", email: "new@example.com", age: "off" },
+    { step: "start", method: "email", email: "known@example.com", age: false },
+  ]) {
+    const response = await workerFetch(post(body), made.env);
+    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
+    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
+  }
+  const noAgeField = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+    made.env,
+  );
+  assert.equal(noAgeField.status, 400, "a start with no age field is refused");
+  assert.deepEqual(await noAgeField.json(), { error: SIGNIN_COPY.needAge });
+  assert.equal(made.sent.length, 1, "a refused start mails nothing more than the earlier sign-in");
+  const row = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.equal(row, null, "no user row was written for a refused start");
+  const withAge = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", age: true }),
+    made.env,
+  );
+  assert.equal(withAge.status, 202, "the age box is what mails the link");
+  assert.equal((await withAge.json()).ok, true);
+  assert.equal(made.sent.length, 2, "the sign-up link leaves by email");
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "form@example.com",
       }),
     }),
     made.env,
   );
   assert.equal(form.status, 400, "the form path is refused with no age box");
   assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
-});
-
-test("a returning address signs in with neither box (drive#781)", async () => {
-  // The age box gates opening an account, not an existing one — the same rule
-  // the card gate follows (drive#387). The person is keyed by the user row
-  // the first sign-in wrote, so a later start is a sign-in and the route
-  // never asks either box again.
-  const made = dispatchEnv();
-  await signIn(made, "returning@example.com");
-  const response = await workerFetch(
-    post({
-      step: "start",
-      method: "email",
-      email: "returning@example.com",
-      card: false,
-      age: false,
-    }),
-    made.env,
-  );
-  assert.equal(response.status, 202, "an existing account signs in without the two boxes");
-  assert.equal((await response.json()).ok, true);
-});
-
-test("a second sign-up with the same card fingerprint is refused in plain words", async () => {
-  const made = dispatchEnv();
-  const first = await workerFetch(
-    post({
-      step: "start",
-      method: "email",
-      email: "one@example.com",
-      card: true,
-      cardFingerprint: "fp_shared",
-    }),
-    made.env,
-  );
-  assert.equal(first.status, 202);
-  const second = await workerFetch(
-    post({
-      step: "start",
-      method: "email",
-      email: "two@example.com",
-      card: true,
-      cardFingerprint: "fp_shared",
-    }),
-    made.env,
-  );
-  assert.equal(second.status, 400);
-  assert.deepEqual(await second.json(), { error: failureMessage("card-in-use") });
-  assert.equal(made.sent.length, 1, "the refused second sign-up mails nothing");
+  assert.equal(made.sent.length, 2, "the refused form post mailed nothing more");
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -853,10 +886,10 @@ test("the twenty-first sign-in link in a day is answered like a sent link, and n
 });
 
 test("one address's ceiling is shared by every spelling of it", async () => {
-  // The address is the account key, and the account row is looked up by the
-  // lower(email) query (emailHasUser), so the counter is keyed the same way:
-  // Alice@, alice@ and ALICE@ share one ceiling. Without the lowercase key a
-  // script would mint five more links per spelling of the same inbox.
+  // The address is the account key, and the user row is looked up by
+  // lower(email), so the counter is keyed the same way: Alice@, alice@ and
+  // ALICE@ share one ceiling. Without the lowercase key a script would mint
+  // five more links per spelling of the same inbox.
   const made = dispatchEnv();
   for (let ask = 0; ask < 5; ask += 1) {
     const answer = await askForLink(made, "Same@b.co");
@@ -1864,25 +1897,21 @@ test("the page offers no provider the server cannot complete (drive#180)", async
 test("the page states the spec's two promises: a card at sign-up, and the membership", () => {
   assert.ok(page.includes(SIGNIN_COPY.needCard), "the page must say why a card is needed");
   // drive#420: once. The sentence used to sit in three places — the paragraph
-  // above the form, the tick box's own label and the footer — which read as a
-  // legal notice rather than a reason. The count is what holds it: a second
-  // copy anywhere on the page fails here, so a future edit cannot put one back
+  // above the form, a tick-box label and the footer — which read as a legal
+  // notice rather than a reason. The count is what holds it: a second copy
+  // anywhere on the page fails here, so a future edit cannot put one back
   // silently.
   assert.equal(
     page.split(SIGNIN_COPY.needCard).length - 1,
     1,
     "the card sentence appears exactly once on the page",
   );
-  // And the box is labelled in short, with the whole sentence nowhere inside
-  // its label. Read out of the shipped file, so a label that grew the sentence
-  // back fails here rather than reading as a long legal box.
-  const cardLabel = page.match(/<label[^>]*for="card"[^>]*>([\s\S]*?)<\/label>/)?.[1];
-  assert.ok(cardLabel, "the page carries a label for the card checkbox");
-  const labelText = cardLabel
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  assert.equal(labelText, SIGNIN_COPY.cardConsent, "the box is labelled in short");
+  // drive#538 finish line 3: this form has no card checkbox. The needCard
+  // sentence above is where the rule is stated. Verify claims a test
+  // stand-in; a real card waits on the Dodo key. A box here made every
+  // returning customer tick "I understand a card is required".
+  assert.doesNotMatch(page, /id="card"/);
+  assert.doesNotMatch(page, /I understand a card is required/);
   assert.ok(page.includes(SIGNIN_COPY.noPlansLine), "the page must quote the no-minimum line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
   // "Never do" row). This page is a step-9 surface, so the rule is pinned on

@@ -30,6 +30,7 @@ type fakeAPI struct {
 	keys         map[string]MintedKey // key id -> key
 	mintedKinds  []string
 	mintedNames  []string
+	deviceNames  []string
 	revokedIDs   []string
 	queueClears  []string // the authorization header of each DELETE /v1/queue
 	renewedIDs   []string
@@ -61,6 +62,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Name string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.deviceNames = append(f.deviceNames, body.Name)
 		code := DeviceCode{
 			DeviceCode:              "dev_secret",
 			UserCode:                "BCDF-GHJK",
