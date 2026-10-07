@@ -279,8 +279,7 @@ func fillPass(ctx context.Context, c fillBackend, targets fillTargets, load1, lo
 	if budget < 0 {
 		budget = 0
 	}
-	targets.ctx = ctx
-	recentBytes, err := targets.read(fillRecent, budget)
+	recentBytes, err := targets.read(ctx, fillRecent, budget)
 	if err != nil {
 		return res, fmt.Errorf("fill: read into cache: %w", err)
 	}
@@ -553,15 +552,12 @@ type fillTargets struct {
 	root    string
 	offline []string
 	recent  []string
-	// ctx is the pass deadline. A cancelled or timed-out pass stops between
-	// files rather than walking the rest of the set (drive#516).
-	ctx context.Context
 	// opens records a recently-opened file as filled; nil is a test that does
 	// not exercise the open registry.
 	opens *recentOpens
 	// readFile reads one file into the cache. It is a field so a test can
 	// count bytes without a mount; nil means fillReadFile.
-	readFile func(string) (int64, error)
+	readFile func(context.Context, string) (int64, error)
 }
 
 // read fills the kept-offline set on every pass and the recently-opened files
@@ -570,7 +566,11 @@ type fillTargets struct {
 // is what pushed the cache over the cap. A path that has been deleted from the
 // drive reads as nothing rather than failing the pass: the next pass sees the
 // new tree.
-func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
+//
+// ctx bounds the whole read, not just the gaps between files (drive#742): the
+// pass context carries the fill timeout, and a read that ignores it would let
+// one large file read on long after the pass deadline and hold the loop hostage.
+func (t fillTargets) read(ctx context.Context, includeRecent bool, budget int64) (int64, error) {
 	var spent int64
 	if includeRecent && budget > 0 {
 		read := t.readFile
@@ -578,14 +578,17 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 			read = fillReadFile
 		}
 		for _, rel := range t.recent {
-			if err := t.ctxErr(); err != nil {
+			// The deadline is checked before the budget so a pass that is
+			// already cancelled reports the cancellation even when the budget
+			// ran out on the previous file.
+			if err := ctx.Err(); err != nil {
 				return spent, err
 			}
 			if spent >= budget {
 				break
 			}
 			abs := filepath.Join(t.root, filepath.FromSlash(rel))
-			n, err := read(abs)
+			n, err := read(ctx, abs)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					if t.opens != nil {
@@ -593,6 +596,9 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 					}
 					continue
 				}
+				// The pass aborts on a read error, so the bytes the failed read
+				// got through are not part of this pass's result: the caller
+				// abandons the pass and the next pass measures the cache again.
 				return spent, err
 			}
 			spent += n
@@ -602,10 +608,10 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 		}
 	}
 	for _, rel := range t.offline {
-		if err := t.ctxErr(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return spent, err
 		}
-		if _, err := KeepOffline(t.root, rel); err != nil {
+		if _, err := KeepOffline(ctx, t.root, rel); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
@@ -615,18 +621,23 @@ func (t fillTargets) read(includeRecent bool, budget int64) (int64, error) {
 	return spent, nil
 }
 
-func (t fillTargets) ctxErr() error {
-	if t.ctx == nil {
-		return nil
-	}
-	return t.ctx.Err()
-}
+// fillReadChunk is the size of one read chunk the fill reads a mounted file
+// in, and therefore the most a read may overshoot its deadline: the fill
+// checks the deadline between two chunks, so a cancelled read stops at the
+// chunk it has already started rather than at the end of the file (drive#742).
+// It is the mount's own first chunk, --vfs-read-ahead (vfsReadAheadValue), so
+// the boundaries the fill stops on are the requests rclone already serves.
+// TestFillReadChunkMatchesTheMountReadAhead pins the two together, so tuning
+// the mount's read-ahead cannot silently widen the fill's deadline overshoot.
+const fillReadChunk = 128 << 10
 
 // fillReadFile reads one mounted file into io.Discard, which fills rclone's
 // cache for it, and reports how many bytes it read so `drive offline` (#115)
-// can say what it kept. The read is chunked, so a 10 GB file is a sequence of
-// reads rather than one allocation.
-func fillReadFile(path string) (int64, error) {
+// can say what it kept. The read is chunked under ctx, so a 10 GB file is a
+// sequence of reads rather than one allocation, and a cancelled or timed-out
+// read stops at the next chunk boundary after the deadline instead of reading
+// to the end of the file (drive#742).
+func fillReadFile(ctx context.Context, path string) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -635,11 +646,40 @@ func fillReadFile(path string) (int64, error) {
 		return 0, fmt.Errorf("open %s to fill: %w", path, err)
 	}
 	defer f.Close()
-	n, err := io.Copy(io.Discard, f)
+	n, err := readCtxChunked(ctx, f)
 	if err != nil {
 		return n, fmt.Errorf("read %s to fill: %w", path, err)
 	}
 	return n, nil
+}
+
+// readCtxChunked copies f to io.Discard chunk by chunk, checking ctx before
+// each chunk. A cancelled or timed-out read returns at the first chunk
+// boundary at or after the deadline: it stops within one chunk once the
+// in-flight Read returns. An os.File.Read that never returns cannot be
+// interrupted without closing the file, so the bound is on the bytes the fill
+// reads, not on a wedged read. The read stays on the main path: a chunk read at
+// the deadline is not dropped, because dropping bytes the disk already read
+// would under-report the cache the fill just filled.
+func readCtxChunked(ctx context.Context, f io.Reader) (int64, error) {
+	buf := make([]byte, fillReadChunk)
+	var n int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
+		got, err := f.Read(buf)
+		n += int64(got)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return n, nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return n, ctxErr
+			}
+			return n, err
+		}
+	}
 }
 
 // fillInterval is the loop's period. It is not a cache setting: rclone decides
