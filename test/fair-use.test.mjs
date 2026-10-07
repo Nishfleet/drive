@@ -27,6 +27,7 @@ import {
 } from "../core/meter.js";
 import {
   buildPrice,
+  FAIR_USE_REFUSE_ON,
   fairUseRefuseOn,
   PAYMENT_FEE_BPS,
   STORAGE,
@@ -64,8 +65,9 @@ test("the 2x floor and the costs are config numbers, never literals in the check
   assert.equal(STORAGE.backupCostCentsPerTbMonth, 230);
   assert.equal(storageCostCentsPerTbMonth(), 730);
   assert.equal(PAYMENT_FEE_BPS, 1000);
+  assert.equal(FAIR_USE_REFUSE_ON, "on");
   assert.equal(fairUseRefuseOn({}), false);
-  assert.equal(fairUseRefuseOn({ FAIR_USE_REFUSE: "on" }), true);
+  assert.equal(fairUseRefuseOn({ FAIR_USE_REFUSE: FAIR_USE_REFUSE_ON }), true);
   assert.equal(fairUseRefuseOn({ FAIR_USE_REFUSE: "ON" }), false);
   const source = readFileSync(new URL("../core/billing.js", import.meta.url), "utf8");
   assert.equal(source.includes("1.23"), false);

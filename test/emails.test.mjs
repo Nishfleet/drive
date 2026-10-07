@@ -23,6 +23,7 @@ import {
   DEFAULT_CAP_USD,
   EMAIL_KINDS,
   FROM_NAME,
+  fairUsePauseTemplate,
   filesDeletedTemplate,
   monthlyReceiptTemplate,
   paymentFailedTemplate,
@@ -1119,7 +1120,8 @@ test("the low-balance email says what happens at $0, or that auto top-up covers 
 test("the fair-use pause email uses the same sentence the usage page prints", () => {
   const copy =
     "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.";
-  const mail = renderEmail("fair-use-pause", { copy, replyTo: REPLY_TO });
+  const mail = fairUsePauseTemplate({ copy, replyTo: REPLY_TO });
+  assert.deepEqual(mail, renderEmail("fair-use-pause", { copy, replyTo: REPLY_TO }));
   assert.equal(mail.subject, "Uploads are paused because young deletes still count");
   assert.match(mail.text, /No upload room left/);
   assert.match(mail.text, /nothing extra is charged/);
