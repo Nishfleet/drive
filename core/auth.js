@@ -325,7 +325,10 @@ export function createAuth(options) {
       // touches a passkey. core/auth-passkey.js adds it; authForPasskey loads
       // that module only for `/api/auth/passkey/*`. Extra plugins stay an
       // option so that module can call this factory rather than copy it.
-      ...(options.plugins ?? []),
+      // Cast to `[]` so the Auth typedef still infers magic-link and
+      // two-factor on createAuth(); the passkey instance is only used for
+      // `.handler()` on `/api/auth/passkey/*`.
+      .../** @type {[]} */ (options.plugins ?? []),
     ],
   });
 }

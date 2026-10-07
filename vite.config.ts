@@ -27,6 +27,7 @@ export default defineConfig({
         { config: apiWorker },
       ],
     }),
+    keepPasskeyOnDemand(),
     staticFirstRunShell(),
     webAnalyticsBeacon(),
   ],
@@ -50,6 +51,45 @@ export default defineConfig({
     },
   },
 });
+
+/**
+ * Keep the passkey stack behind `await import()` (drive#846).
+ *
+ * `validator` is CJS and was inlined into the Worker entry. Rolldown then
+ * put its `__toESM` helpers inside the on-demand passkey chunk, and the
+ * entry statically imported that 620 KB file just to get the helpers — so
+ * every request still parsed the WebAuthn stack. A named group for
+ * validator is Rolldown's own code-splitting option: the helpers land on a
+ * tiny static chunk, and the passkey chunk is only loaded for a passkey
+ * route.
+ * @returns {Plugin}
+ */
+function keepPasskeyOnDemand(): Plugin {
+  const output = {
+    codeSplitting: {
+      groups: [
+        {
+          name: "validator",
+          test: /node_modules[\\/]validator[\\/]/,
+          priority: 80,
+        },
+      ],
+    },
+  };
+  return {
+    name: "drive-keep-passkey-on-demand",
+    enforce: "post",
+    configEnvironment(name) {
+      if (name === "client") return;
+      return {
+        build: {
+          rolldownOptions: { output },
+          rollupOptions: { output },
+        },
+      };
+    },
+  };
+}
 
 /**
  * The Cloudflare Web Analytics beacon, in the six pages drive#246 names, and

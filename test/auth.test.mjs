@@ -577,4 +577,9 @@ test("the built Worker entry no longer contains the passkey stack", (t) => {
     false,
     "the passkey stack must not sit in the Worker entry chunk",
   );
+  assert.doesNotMatch(
+    source,
+    /^import .+ from "\.\/assets\/auth-passkey-/m,
+    "the Worker entry must not statically import the passkey chunk; shared bundler helpers must not live in it",
+  );
 });
