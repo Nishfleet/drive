@@ -1,5 +1,5 @@
 // Search: find any file by name in under a second (drive issue #18,
-// build-spec.md "Against Space"). One D1 table (`file_index`, migration
+// build-spec.md "Against the competitor"). One D1 table (`file_index`, migration
 // 0002) holds one row per file the drive knows about, and the search reads
 // only that table — it never lists the bucket. The two feeds the spec names
 // are here too:

@@ -72,8 +72,10 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 
 /**
  * A poll's answer: `pending` until the page approves, then the device token
- * (shown once) and the account it names.
- * @typedef {{status: "unknown"|"expired"|"pending"}|{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}} PollResult
+ * (shown once), the epoch second its window ends at, and the account it names.
+ * `expiresAt` is here because the CLI keeps it: a device that knows when its
+ * own token dies can say so instead of finding out from a 401 (drive#557).
+ * @typedef {{status: "unknown"|"expired"|"pending"}|{status: "approved", deviceToken: string, expiresAt: number, account: {id: string, name: string, email: string|null}}} PollResult
  */
 
 /**
@@ -111,6 +113,47 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // tens of src/auth.js's own day, and keystore.test.js pins the two to each
 // other, so they cannot drift into two different months.
 export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
+
+/**
+ * How close to its expiry a device token has to be before a request restarts
+ * its window. This is the web session's own refresh age (src/auth.js `session
+ * updateAge`), and for the same reason: a person who uses the drive every day
+ * should never be signed out mid-month, while an abandoned machine's token
+ * still dies on its own (drive#557).
+ *
+ * It is a refresh age and not a per-request write, so a command that calls an
+ * account route in a loop writes the row once a day, not once a call. The
+ * bound it keeps is the same one the fixed TTL kept: a token nothing uses is
+ * dead at most TTL + REFRESH after it was minted.
+ */
+export const DEVICE_TOKEN_REFRESH_SECONDS = 24 * 60 * 60;
+
+/**
+ * The expiry a live device token carries after a request at `at`. One rule,
+ * written here rather than in each store's SQL, so the in-memory stand-in and
+ * the D1 store cannot renew by two different amounts and a test can name the
+ * rule itself (drive#557).
+ *
+ * A token that is nowhere near its expiry keeps the one it has, so nothing is
+ * written; a token inside the refresh age is handed a whole new window. The
+ * renewal never shortens: two requests can read the same row and renew in
+ * either order, and the write that lands second must not pull the window back
+ * to the earlier value.
+ *
+ * This says nothing about powers. It is called only after the bearer lookup
+ * has already refused a revoked row and a row past its expiry, so a dead token
+ * is never renewed into a live one.
+ *
+ * @param {number} expiresAt the expiry the row carries now
+ * @param {number} at epoch seconds, the injected clock's now
+ * @returns {number} the expiry the row should carry
+ */
+export function renewDeviceTokenWindow(expiresAt, at) {
+  if (expiresAt - at > DEVICE_TOKEN_REFRESH_SECONDS) {
+    return expiresAt;
+  }
+  return Math.max(expiresAt, at + DEVICE_TOKEN_TTL_SECONDS);
+}
 
 // The user code a person types on the approval page. The alphabet leaves out
 // vowels (so a code cannot spell a word) and the look-alike 0/O and 1/I/L
@@ -359,14 +402,15 @@ export function createMemoryDeviceSigninStore(options = {}) {
       // holding, and this stand-in would otherwise grow one per sign-in for
       // the life of the isolate.
       sweepTokens(minted);
+      const expiresAt = minted + DEVICE_TOKEN_TTL_SECONDS;
       tokens.set(await sha256Hex(token), {
         account,
         createdAt: minted,
-        expiresAt: minted + DEVICE_TOKEN_TTL_SECONDS,
+        expiresAt,
         revokedAt: null,
       });
       code.status = "used";
-      return { status: "approved", deviceToken: token, account };
+      return { status: "approved", deviceToken: token, expiresAt, account };
     },
 
     /**
@@ -377,6 +421,13 @@ export function createMemoryDeviceSigninStore(options = {}) {
      * a token past its expiry or one that has been revoked stops being one:
      * both answer `null`, the same answer a token that was never minted gets,
      * so the account gate cannot tell a dead credential from a made-up one.
+     *
+     * A token that gets here is live, so this is also where its window is
+     * renewed (drive#557): the drive is reached every day by the same command,
+     * and a device whose token dies on a fixed 30 days while it is in daily
+     * use is a device that gets signed out for no reason. The rule is the one
+     * above, and it runs after both refusals, so nothing here can revive a
+     * dead row.
      * @param {string} token
      */
     async accountForDeviceToken(token) {
@@ -387,9 +438,11 @@ export function createMemoryDeviceSigninStore(options = {}) {
       if (row === undefined || row.revokedAt !== null) {
         return null;
       }
-      if (nowSeconds(now()) >= row.expiresAt) {
+      const at = nowSeconds(now());
+      if (at >= row.expiresAt) {
         return null;
       }
+      row.expiresAt = renewDeviceTokenWindow(row.expiresAt, at);
       return row.account;
     },
 
@@ -713,6 +766,10 @@ export function createD1DeviceSigninStore(db, options = {}) {
       // row between them — the loser leaves no inert credential behind, which
       // is what a plain batch (whose statements run either way) would.
       const nonce = newId("claim");
+      // One clock read for the whole mint: the row's created_at and its
+      // expires_at are then exactly one TTL apart, which is the same claim the
+      // in-memory store makes (and the answer the CLI stores).
+      const minted = nowSeconds(now());
       await batch(db, [
         {
           // The numbered placeholders are written in ascending order (`?1`,
@@ -721,7 +778,7 @@ export function createD1DeviceSigninStore(db, options = {}) {
           // the test harness's SQLite adapter rewrites them positionally too,
           // so the two agree only while the written order is the bound order.
           sql: "UPDATE device_codes SET status = 'used', consumed_by = ?1 WHERE device_code_hash = ?2 AND status = 'approved' AND consumed_by = '' AND expires_at > ?3",
-          params: [nonce, hash, nowSeconds(now())],
+          params: [nonce, hash, minted],
         },
         {
           sql: `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at, expires_at)
@@ -732,8 +789,8 @@ export function createD1DeviceSigninStore(db, options = {}) {
             row.account.id,
             row.account.name,
             row.account.email,
-            nowSeconds(now()),
-            nowSeconds(now()) + DEVICE_TOKEN_TTL_SECONDS,
+            minted,
+            minted + DEVICE_TOKEN_TTL_SECONDS,
             hash,
             nonce,
           ],
@@ -752,7 +809,12 @@ export function createD1DeviceSigninStore(db, options = {}) {
       if (!winner) {
         return { status: "expired" };
       }
-      return { status: "approved", deviceToken: token, account: row.account };
+      return {
+        status: "approved",
+        deviceToken: token,
+        expiresAt: minted + DEVICE_TOKEN_TTL_SECONDS,
+        account: row.account,
+      };
     },
 
     /**
@@ -762,6 +824,8 @@ export function createD1DeviceSigninStore(db, options = {}) {
       if (typeof token !== "string" || token === "") {
         return null;
       }
+      const hash = await sha256Hex(token);
+      const at = nowSeconds(now());
       // The expiry and the revocation are the WHERE clause, not a check the
       // caller could forget: a dead row is the same answer as a row that was
       // never written, so there is one way for a token to fail and one place it
@@ -775,19 +839,43 @@ export function createD1DeviceSigninStore(db, options = {}) {
       // Auth user first — and that state is not closed.
       const row = await first(
         db,
-        `SELECT t.account_id, t.account_name, t.account_email, a.state AS account_state
+        `SELECT t.account_id, t.account_name, t.account_email, t.expires_at, a.state AS account_state
           FROM device_tokens t
           LEFT JOIN accounts a ON a.id = t.account_id
           WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND t.expires_at > ?2`,
-        await sha256Hex(token),
-        nowSeconds(now()),
+        hash,
+        at,
       );
       if (!row || typeof row !== "object") {
         return null;
       }
       const r = /** @type {Record<string, unknown>} */ (row);
+      // A closed account is refused before the renewal, so its token row is
+      // never given a longer window than the one it already had.
       if (r.account_state === "closed") {
         return null;
+      }
+      // A row that got here is live, so this is where its window is renewed
+      // (drive#557): the same drive reached every day should not be signed out
+      // on a fixed calendar. The rule is the one exported above, and it runs
+      // after the WHERE clause above has already refused the dead rows, so no
+      // write here can revive one. A row with room left on its window is not
+      // written at all, which is what keeps a loop of account calls to one
+      // write a day.
+      const held = Number(r.expires_at);
+      const renewed = renewDeviceTokenWindow(held, at);
+      if (renewed !== held) {
+        // `MAX` keeps the later of the two expiries, so two requests that read
+        // the same row and renew in either order cannot pull the window back to
+        // the earlier value. The `revoked_at IS NULL` guard repeats the read
+        // above: a row revoked between the two statements is not renewed by
+        // this one.
+        await run(
+          db,
+          "UPDATE device_tokens SET expires_at = MAX(expires_at, ?1) WHERE token_hash = ?2 AND revoked_at IS NULL",
+          renewed,
+          hash,
+        );
       }
       return {
         id: String(r.account_id ?? ""),

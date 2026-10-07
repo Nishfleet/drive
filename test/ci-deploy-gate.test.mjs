@@ -195,3 +195,51 @@ test("the deploy records a D1 restore point before any migration runs", () => {
   assert.match(step, /-H "@\$headers"/);
   assert.doesNotMatch(step, /Authorization: Bearer \$/);
 });
+
+// drive#501: the two named mount proofs must actually run, on a hosted
+// runner that can mount. The unit-test step uses -short and would skip them;
+// these named steps do not. TestLogoutStopsALiveMount cannot get its own
+// step (the worker App cannot update workflows), so it runs inside the
+// -short unit tests when CI is set. A FUSE skip under CI=true is a failure,
+// so a runner that cannot mount turns the job red instead of green-with-skips.
+// ci.yml already carries the hosted runner and the two named steps (PR 757);
+// this test is the pin that keeps them, so a later edit cannot quietly take
+// the proofs off a mountable runner again.
+test("ci.yml runs the mount proofs on ubuntu-latest, without -short", () => {
+  const start = CI.search(/^ {2}go:\n/m);
+  assert.notEqual(start, -1, "ci.yml has a go job");
+  const rest = CI.slice(start);
+  const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
+  const body = next ? rest.slice(0, 1 + next.index) : rest;
+  assert.match(body, /^ {4}runs-on: ubuntu-latest$/m, "the go job is a hosted runner");
+  for (const name of ["TestStandinMountProof", "TestTwoDevicesKeepBothSaves"]) {
+    // The selector ends at a space or end-of-line, so a longer test name that
+    // merely starts with this one cannot satisfy the pin.
+    const idx = body.search(new RegExp(`-run ${name}( |$)`));
+    assert.notEqual(idx, -1, `the go job runs ${name} as its own command`);
+    const stepStart = body.lastIndexOf("- name:", idx);
+    assert.notEqual(stepStart, -1, `${name} sits inside a named step`);
+    const fromName = body.slice(stepStart);
+    const next = fromName.slice(1).search(/^\s+- name:|^ {2}[\w-]+:/m);
+    const step = next === -1 ? fromName : fromName.slice(0, 1 + next);
+    assert.doesNotMatch(step, /-short/, `${name} is not in -short mode`);
+  }
+  assert.match(
+    body,
+    /go test -race \.\/cmd\/drive\/ -short -v/,
+    "the go job still runs -short unit tests",
+  );
+});
+
+test("a FUSE skip is a failure under CI=true (drive#501)", () => {
+  const e2e = read("cmd/drive/e2e_test.go");
+  assert.match(e2e, /func skipNoMount\(/, "one helper owns the skip-or-fail choice");
+  assert.match(e2e, /os\.Getenv\("CI"\) == "true"/, "the helper fails only for CI=true");
+  assert.match(e2e, /a FUSE skip is a failure under CI=true/, "the failure names the rule");
+  const logout = read("cmd/drive/logout_test.go");
+  assert.match(
+    logout,
+    /if testing\.Short\(\) && os\.Getenv\("CI"\) != "true" \{/,
+    "TestLogoutStopsALiveMount still runs under CI=true in the -short unit tests",
+  );
+});

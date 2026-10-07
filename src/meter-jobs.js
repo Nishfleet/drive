@@ -32,6 +32,7 @@
 import { enforceAccountCap } from "../core/cap.js";
 import { reconcileAccount, toMillis } from "../core/meter.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
+import { pauseAccountKeys } from "../core/prepaid-pause.js";
 
 /** The kinds of message the meter sends, one account each. */
 export const METER_JOB_KINDS = Object.freeze({
@@ -172,6 +173,12 @@ async function runHourlyAccountJob(deps, job) {
   });
   if (drawn.drawn > 0) {
     await settleBalances(deps.meterDb, [job.accountId], { ...deps.settle, now: job.at });
+  } else if (deps.settle?.devices) {
+    await pauseAccountKeys(job.accountId, {
+      db: deps.meterDb,
+      devices: deps.settle.devices,
+      pauseOn: deps.settle.pauseOn === true,
+    });
   }
   return drawn;
 }

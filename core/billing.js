@@ -799,7 +799,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null}|null} account the signed-in account, or null when signed out. `usage` is the
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null, openPublicLinks?: number}|null} account the signed-in account, or null when signed out. `usage` is the
  *   month's own metered numbers, read by the route from the account store's
  *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
@@ -889,7 +889,20 @@ export function handleUsageRequest(
   // The month rides on the answer finished: the instant, not a name, because
   // the page writes the month's name in the browser's own words and a date
   // rendered on the server is a UTC date (drive#559).
-  const body = { ...empty, monthIso, capLine: capLine(empty.cap), uploadLine, balanceLine };
+  const openPublicLinks =
+    typeof account.openPublicLinks === "number" &&
+    Number.isFinite(account.openPublicLinks) &&
+    account.openPublicLinks >= 0
+      ? Math.floor(account.openPublicLinks)
+      : 0;
+  const body = {
+    ...empty,
+    monthIso,
+    capLine: capLine(empty.cap),
+    uploadLine,
+    balanceLine,
+    openPublicLinks,
+  };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
 

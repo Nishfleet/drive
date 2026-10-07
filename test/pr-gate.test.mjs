@@ -239,13 +239,13 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   }
   assert.match(
     read("test/own-words.test.mjs"),
-    /term: "SpaceFS"/,
-    "the own-words gate must still list SpaceFS as a term, so the line cannot point at an empty file",
+    /source: "the competitor's public site"/,
+    "the own-words terms must cite the competitor's page they were read from",
   );
-  assert.match(
-    read("test/own-words.test.mjs"),
-    /source: "https:\/\/spacefs.com\/"/,
-    "the SpaceFS term must cite the page it was read from",
+  // The repo is public: the rival's name is barred from every tracked file.
+  assert.ok(
+    existsSync(new URL("../test/no-rival-terms.test.mjs", import.meta.url)),
+    "the no-rival-terms gate must exist, so the line cannot point at an empty file",
   );
 });
 

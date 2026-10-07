@@ -80,10 +80,20 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 			if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 				t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 			}
-			t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+			skipNoMount(t, "this host will not bring up the %s mount (%s)", device, mountSkipReason())
 		}
 		return func() { stopStandinProcess(cmd, filepath.Join(home, "Drive")) }
 	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, h := range []string{homeA, homeB} {
+			if log, err := os.ReadFile(filepath.Join(h, ".config", "drive", "mount.log")); err == nil {
+				t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
+			}
+		}
+	})
 	stopA := startDevice(homeA, deviceA, rcA)
 	defer stopA()
 	stopB := startDevice(homeB, "linux", rcB)
@@ -129,14 +139,13 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatalf("neither save survived: none of %v appeared on device A", candidates)
 	}
 
-	plain, err := os.ReadFile(filepath.Join(mountB, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	conflict, err := os.ReadFile(filepath.Join(mountA, kept))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// What storage holds is the truth. The device whose save lost keeps
+	// serving its own cached bytes at the plain path until rclone's cache
+	// cleaner next checks storage (every minute), so the plain file is read
+	// from storage and not through a mount. A new file, the conflict copy, has
+	// no cached version to go stale, so the mounts are waited on for that.
+	plain := readStored(t, cfg, root, name)
+	conflict := readStored(t, cfg, root, kept)
 	for _, want := range []string{bodyA, bodyB} {
 		if string(plain) != want && string(conflict) != want {
 			t.Errorf("the save %q survived nowhere: plain=%q conflict=%q", want, plain, conflict)
@@ -149,13 +158,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	// Both devices are notified: the device that lost the save and the other
 	// one both see both files through their own mount.
 	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
-		got, err := os.ReadFile(filepath.Join(m.dir, kept))
-		if err != nil {
-			t.Fatalf("device %s cannot read the conflict copy: %v", m.label, err)
-		}
-		if string(got) != string(conflict) {
-			t.Errorf("the conflict copy on device %s is %q, want %q", m.label, got, conflict)
-		}
+		waitMountShows(t, m.label, filepath.Join(m.dir, kept), conflict)
 	}
 
 	// And nothing was deleted: the losing device's file is a copy, not a
@@ -217,14 +220,8 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatalf("the offline save never uploaded under the conflict rule: neither %v "+
 			"appeared on device A after the storage came back", candidates)
 	}
-	plain, err = os.ReadFile(filepath.Join(mountA, offlineName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	conflict, err = os.ReadFile(filepath.Join(mountA, kept))
-	if err != nil {
-		t.Fatal(err)
-	}
+	plain = readStored(t, cfg, root, offlineName)
+	conflict = readStored(t, cfg, root, kept)
 	for _, want := range []string{offlineA, offlineB} {
 		if string(plain) != want && string(conflict) != want {
 			t.Errorf("the offline save %q survived nowhere: plain=%q conflict=%q",
@@ -233,6 +230,9 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	}
 	if string(plain) == string(conflict) {
 		t.Errorf("both saves are the same bytes (%q): the other device's save was overwritten", plain)
+	}
+	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
+		waitMountShows(t, m.label, filepath.Join(m.dir, kept), conflict)
 	}
 	t.Logf("after the reconnect: plain=%q, conflict=%q, both saves kept", plain, conflict)
 }
@@ -267,7 +267,7 @@ func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr s
 		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 			t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 		}
-		t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+		skipNoMount(t, "this host will not bring up the %s mount (%s)", device, mountSkipReason())
 	}
 	return func() { stopStandinProcess(cmd, mountDir) }
 }
@@ -378,6 +378,46 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	}
 	t.Logf("two saves seconds apart, one sync window: plain=%q, conflict=%q, A's listing=%v",
 		plain, kept, names)
+}
+
+// readStored is the bytes storage holds for one path of the stand-in, read
+// straight from the directory `rclone serve s3` keeps its objects in. It is
+// the ground truth the mounts are compared with: a mount's own read may still
+// be the bytes its device cached before another device's save landed.
+func readStored(t *testing.T, cfg StorageConfig, root, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "data", cfg.Bucket, filepath.FromSlash(cfg.Prefix), name))
+	if err != nil {
+		t.Fatalf("storage holds no %s: %v", name, err)
+	}
+	return string(b)
+}
+
+// waitMountShows waits until one device's mount serves want at path. A mount
+// learns of another device's save when its directory cache (5s) and its VFS
+// cache next check storage, so the proof is that the device does see the bytes
+// within a deadline, not that it sees them at the instant it is asked. It is
+// used for a file the mount has no cached version of, such as a conflict copy.
+func waitMountShows(t *testing.T, label, path, want string) {
+	t.Helper()
+	var got []byte
+	var err error
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		got, err = os.ReadFile(path)
+		if err == nil && string(got) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Errorf("device %s cannot read %s: %v", label, filepath.Base(path), err)
+		return
+	}
+	t.Errorf("device %s serves %q for %s, want %q", label, got, filepath.Base(path), want)
 }
 
 // tailLines is the last n lines of s, so a skip message can carry the mount's
