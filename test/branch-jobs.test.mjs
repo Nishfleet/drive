@@ -19,6 +19,7 @@ import {
   BRANCH_JOB_BATCH_FILES,
   createBranch,
   createKvSnapshotStore,
+  diffBranch,
   discardBranch,
   getBranch,
   handleBranchesRequest,
@@ -272,6 +273,15 @@ test("a folder that grows after the claim copies the claimed listing only", asyn
   // The source folder grows after the claim and before the queued copy runs.
   await scoped.write("/Photos/c.txt", new Blob(["c"]).stream(), "text/plain");
   await scoped.write("/Photos/sub/d.txt", new Blob(["d"]).stream(), "text/plain");
+  // And a file the claim measured grows. The listing froze its size, but the
+  // copy is handed the live one, so it writes the whole file rather than cutting
+  // it at the frozen length — and the snapshot keeps the frozen fingerprint, so
+  // the diff still reports the original changing under the branch.
+  await scoped.write(
+    "/Photos/sub/b.txt",
+    new Blob(["b grown under the branch"]).stream(),
+    "text/plain",
+  );
 
   // One batch at a time until the copy reports done. The accumulator is typed
   // as the job's own return type so it keeps that shape instead of narrowing
@@ -288,11 +298,24 @@ test("a folder that grows after the claim copies the claimed listing only", asyn
   // the claimed list, and nothing the claim never measured is there for free.
   assert.deepEqual(Object.keys(done?.snapshot ?? {}).sort(), ["a.txt", "sub/b.txt"]);
   assert.equal(await readText(scoped, "/.branches/work/a.txt"), "a");
-  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
+  assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b grown under the branch");
   assert.equal(await readText(scoped, "/.branches/work/c.txt"), null);
   assert.equal(await readText(scoped, "/.branches/work/sub/d.txt"), null);
   assert.equal(done?.jobDone, 2);
   assert.equal(done?.jobTotal, 2);
+
+  // The file that grew is whole in the branch, and the original still reads as
+  // changed under it: the diff names the grown file plus the two the source
+  // gained after the claim. Those two are in the original and not the branch,
+  // which is the whole point of the freeze — the next branch takes them.
+  const grown = await diffBranch(scoped, {
+    sourcePrefix: "/Photos",
+    branchPrefix: "/.branches/work",
+    snapshot: done?.snapshot ?? {},
+  });
+  assert.deepEqual(grown.sourceChanged, ["c.txt", "sub/b.txt", "sub/d.txt"]);
+  // Nothing the claim measured was lost or duplicated by the growth.
+  assert.deepEqual([...grown.current.keys()].sort(), ["a.txt", "sub/b.txt"]);
 
   // The growth is not lost: a branch of the same folder again takes it.
   const second = await createBranch(

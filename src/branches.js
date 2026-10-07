@@ -1944,6 +1944,21 @@ export async function createBranch(
     }
     return await attempt();
   };
+  // The frozen marker only means anything while a copy runs. Every path that
+  // gives the claim up — a listing that failed, an enqueue that failed, a run
+  // that threw or reported an error — takes it with, so a marker never outlives
+  // the claim it froze for: it would otherwise sit in KV pointing at a snapshot
+  // a later row of the same name now owns, and that row's copy would skip
+  // whatever the source gained before it ran.
+  const dropFrozenMarker = async () => {
+    try {
+      await clearScratch(snapshots, frozenSnapshotKey(snapKey));
+    } catch (error) {
+      console.error?.(
+        `branch marker cleanup failed for ${account.id}/${name}: ${errorText(error)}`,
+      );
+    }
+  };
   // Freeze what the copy will write, before the claim is handed out (drive#802).
   // The copy itself is queued and runs later (drive#563), and between these two
   // moments the source folder can grow: a copy that walks the source as it is
@@ -2004,6 +2019,7 @@ export async function createBranch(
   try {
     const ran = await runBranchJobToEnd(db, snapshots, store, account, claimId);
     if (ran.error) {
+      await dropFrozenMarker();
       if (!(await abandonClaim()) && ran.status !== 400) {
         console.error?.(
           `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
@@ -2024,6 +2040,7 @@ export async function createBranch(
     };
   } catch (error) {
     console.error?.(`branch copy failed for ${account.id}/${name}: ${errorText(error)}`);
+    await dropFrozenMarker();
     try {
       await removePrefixFiles(store, branchPrefix);
     } catch (cleanupError) {
