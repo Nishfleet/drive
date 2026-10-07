@@ -43,7 +43,7 @@ import { createS3Store, scopeStore } from "../core/files.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { reconcileAccount, runMeterCron } from "../core/meter.js";
 import { createS3Client, provisionBucket } from "../core/s3.js";
-import { METER_JOB_KINDS, meterJob, meterJobHandlers } from "../src/meter-jobs.js";
+import { METER_JOB_KINDS, meterJobHandlers, sendObjectJobs } from "../src/meter-jobs.js";
 import { handleSearchRequest, reconcileIndex, reindexObject, searchDrive } from "../src/search.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
@@ -233,28 +233,31 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   });
 
   await t.test("a `meter.object` message corrects that one row, and no other", async () => {
-    // The message shape the signed intake sends, checked by the same validator
-    // its consumer uses, so a malformed message is refused before a handler
-    // runs rather than retried five times for a body that can never be right.
-    const job = meterJob({
-      kind: METER_JOB_KINDS.object,
-      accountId: ACCOUNT_ID,
-      at: Date.parse("2026-10-07T09:00:00.000Z"),
-      path: "/report.txt",
-    });
-    assert.equal(job.kind, "meter.object");
+    // The message shape the signed intake sends, put through the same
+    // producer the route calls: `sendObjectJobs` runs every body through the
+    // validator the consumer uses, so a malformed message never reaches a
+    // queue and never gets retried five times for a shape that can never be
+    // right.
+    /** @type {Array<{body: {kind: string, accountId: string, at: number, path?: string}}>} */
+    const sent = [];
+    const queue = {
+      /** @param {Array<{body: {kind: string, accountId: string, at: number, path?: string}}>} messages */
+      sendBatch: async (messages) => sent.push(...messages),
+    };
+    // The same call the signed route makes: an account, a path and a time.
+    await sendObjectJobs(queue, [
+      { accountId: ACCOUNT_ID, at: Date.parse("2026-10-07T09:00:00.000Z"), path: "/report.txt" },
+    ]);
+    assert.equal(sent.length, 1, "one object names one message");
+    const job = sent[0]?.body;
+    assert.equal(job.kind, METER_JOB_KINDS.object);
     assert.equal(job.path, "/report.txt");
-    assert.throws(
-      () =>
-        meterJob({
-          kind: METER_JOB_KINDS.object,
-          accountId: ACCOUNT_ID,
-          at: 0,
-          path: "report.txt",
-        }),
+    await assert.rejects(
+      () => sendObjectJobs(queue, [{ accountId: ACCOUNT_ID, at: 0, path: "report.txt" }]),
       /a file path/,
-      "a message whose path is not a drive path is refused",
+      "a message whose path is not a drive path is refused before it is sent",
     );
+    assert.equal(sent.length, 1, "a refused message never reaches the queue");
     const handlers = meterJobHandlers({ meterDb: db, store: raw, searchDb: db });
     const result = await handlers[METER_JOB_KINDS.object](job);
     assert.equal(result.indexed, true, "the handler reads the store the message names");
