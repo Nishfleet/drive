@@ -166,14 +166,18 @@ function webAnalyticsBeacon(): Plugin {
  * fails at the call site with the fix in the message instead of failing a
  * cryptic assertion elsewhere.
  *
- * The detector is test/bundle-auth-crypto.test.mjs: it reads the built
- * manifest's reachable chunks and fails if jose or @noble/hashes reappears.
+ * The detector is test/bundle-auth-crypto.test.mjs: it walks the Worker
+ * build output's scripts and fails if a `//#region node_modules/...` marker for
+ * jose or @noble/hashes reappears, or if @noble/ciphers disappears.
  * @returns {Plugin}
  */
 function deadAuthCryptoShim(): Plugin {
   // The NUL prefix marks a virtual module: rolldown never looks for it on
   // disk, and the built chunks carry it as a region marker, not a path.
   const shimId = (name: string) => `\0drive-auth-shim/${name}`;
+  // The importers the `jose` alias is scoped to: Better Auth and its
+  // @better-auth/core package are the only jose importers in this repo.
+  const JOSE_IMPORTERS = ["node_modules/better-auth/", "node_modules/@better-auth/"];
 
   // Every shim's source below is one static string: no value from this file is
   // ever interpolated into generated code. CodeQL reads a value interpolated
@@ -189,6 +193,11 @@ function deadAuthCryptoShim(): Plugin {
   // `errors` keeps real classes because better-auth reads a member's `code` at
   // module level, and `base64url` keeps its object shape because jose exports
   // it as one.
+  //
+  // The jose names below are a hand-written union of what better-auth's dist
+  // files import from jose today. An upgrade that imports a new name fails the
+  // build with a missing-export error, which is the loud failure this plugin
+  // is built to produce.
 
   // jose/errors (a subpath import): the classes the stubs stand in for.
   const joseErrorShim = `
@@ -344,8 +353,16 @@ export function verifyPassword() { driveShimFail("better-auth crypto/password.mj
     resolveId(source, importer) {
       // `jose` and its subpaths: better-auth's api/routes/email-verification.mjs
       // imports its JWTExpired error class from "jose/errors", so the whole
-      // prefix goes to the shim, not just the bare package name.
+      // prefix goes to the shim, not just the bare package name. Better Auth
+      // and its @better-auth/core package are the only importers of jose in
+      // this repo, so the alias is scoped to their own files: a first-party
+      // `import ... from "jose"` must still build against the real package,
+      // and if one appears it builds green here and is caught by its own test,
+      // not by this shim.
       if (source === "jose" || source.startsWith("jose/")) {
+        if (importer === undefined) return null;
+        const from = importer.split(sep).join("/");
+        if (!JOSE_IMPORTERS.some((prefix) => from.includes(prefix))) return null;
         return source === "jose" ? shimId("jose") : shimId("jose-subpath");
       }
       if (importer === undefined || !source.startsWith(".")) return null;

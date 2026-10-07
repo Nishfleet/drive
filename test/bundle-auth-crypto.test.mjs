@@ -11,7 +11,7 @@
 //
 // This file is the detector. The shim is an alias at the bundler boundary, so
 // Node tests run the real library code and cannot see it; the shape the
-// Worker actually ships is only visible in the build output. Two things must
+// Worker actually ships is only visible in the build output. Three things must
 // hold, and each has its own probe:
 //
 //   1. The built bundle carries no jose and no @noble/hashes regions, and
@@ -77,7 +77,10 @@ test("the Worker bundle ships no jose and no @noble/hashes, and still ships @nob
     new URL("../.cloudflare/output/v0/workers/default/bundle/", import.meta.url),
   );
   if (!existsSync(dir)) {
-    t.skip("no Worker build output; CI runs npm run build before npm test");
+    t.skip(
+      "no Worker build output; run npm run build first (CI's verify job runs " +
+        "that step before npm test)",
+    );
     return;
   }
   const files = bundleScripts(dir);
@@ -128,28 +131,35 @@ test("the Worker bundle ships no jose and no @noble/hashes, and still ships @nob
 
 test("core/auth.js still says what makes the replaced crypto dead", () => {
   const auth = read("core/auth.js");
+  // The two positive anchors match on what the config does, not on how the
+  // object literal happens to be spaced, so an added key or a newline inside
+  // the braces does not read as a config change.
   assert.match(
     auth,
-    /emailAndPassword:\s*\{\s*enabled:\s*false\s*\}/,
+    /emailAndPassword\s*:\s*\{[^}]*enabled\s*:\s*false/,
     "email and password sign-in is on: better-auth's crypto/password.mjs now " +
       "runs for real, so remove it from the deadAuthCryptoShim plugin in " +
       "vite.config.ts and re-measure the bundle",
   );
   assert.match(
     auth,
-    /socialProviders:\s*\{\s*\}/,
+    /socialProviders\s*:\s*\{\s*\}/,
     "social sign-in is configured: better-auth's crypto/purpose.mjs (the state " +
       "cookie key) now runs for real, so remove it from the deadAuthCryptoShim " +
       "plugin in vite.config.ts and re-measure the bundle",
   );
-  for (const anchor of ["cookieCache\\s*:", "sessionStrategy\\s*:", "emailVerification\\s*:"]) {
+  // A key that turns a shimmed crypto path on is indented code, so the anchor
+  // starts at the line's own indentation: a comment that merely names
+  // `cookieCache:` or a sentence in a doc block must not read as a config
+  // change, and a false red here loses the probe's meaning.
+  for (const key of ["cookieCache", "sessionStrategy", "emailVerification"]) {
     assert.doesNotMatch(
       auth,
-      new RegExp(anchor),
-      `core/auth.js configures ${anchor.replace("\\s*:", "")}: better-auth's JWT ` +
-        "session crypto (crypto/jwt.mjs, cookies/jwt.mjs) now runs for real, so " +
-        "remove them from the deadAuthCryptoShim plugin in vite.config.ts and " +
-        "re-measure the bundle",
+      new RegExp(`^\\s*${key}\\s*:`, "m"),
+      `core/auth.js configures ${key}: better-auth's JWT session crypto ` +
+        "(crypto/jwt.mjs, cookies/jwt.mjs) now runs for real, so remove them " +
+        "from the deadAuthCryptoShim plugin in vite.config.ts and re-measure " +
+        "the bundle",
     );
   }
 });
