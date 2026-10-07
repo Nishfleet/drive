@@ -384,11 +384,12 @@ test("a short load fails the cron monitor and keeps the rows it had", async () =
   assert.equal(knownBadHashRows(db).length, 8, "the second refusal wrote nothing either");
 });
 
-test("a load that drops under half the last count with no last count is only row-capped", async () => {
+test("a first load has no previous count to lean on, so only the row ceiling bounds it", async () => {
   // The floor needs a previous count to be a floor: the first load this
-  // deployment ever makes has nothing to compare against, and refusing it
-  // would leave the list with no feed half at all. The row ceiling still
-  // applies to it.
+  // deployment ever makes has nothing to compare against, and refusing a small
+  // first load would leave the list with no feed half at all. The row ceiling
+  // still applies to it — that is what the next test pins — so what is proven
+  // here is only that a single-hash first load is a load, not a refusal.
   const db = createTestD1();
   const loaded = await loadKnownBadFeed(db, {
     fetch: async () => feedResponse(feedBody(1)),
@@ -412,7 +413,7 @@ test("one load may write no more than the ceiling, and the ceiling itself is a l
         fetch: async () => feedResponse(feedBody(KNOWN_BAD_MAX_LOAD_HASHES + 1)),
         now: NOW,
       }),
-    /over the 10000-hash ceiling one load may write/,
+    new RegExp(`over the ${KNOWN_BAD_MAX_LOAD_HASHES}-hash ceiling one load may write`),
   );
   assert.equal(knownBadHashRows(db).length, 0, "an over-ceiling load wrote nothing");
   assert.equal(await lastKnownBadFeedLoad(db), null, "and stamped no load");

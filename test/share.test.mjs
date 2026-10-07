@@ -36,6 +36,7 @@ import {
   KNOWN_BAD_FEED_SCHEDULE,
   KNOWN_BAD_FEED_URL,
   KNOWN_BAD_MAX_FEED_BYTES,
+  KNOWN_BAD_MAX_LOAD_HASHES,
   lastKnownBadFeedLoad,
   loadKnownBadFeed,
   malwareHashOf,
@@ -1407,6 +1408,44 @@ test("a short feed load fails its own cron monitor instead of writing a short li
     hashCount: 4,
   });
   assert.equal(knownBadHashRows(db).length, 4);
+});
+
+test("a feed that changed shape into something huge fails its own cron monitor too", async () => {
+  // The row ceiling's other half (drive issue #838), run the way the platform
+  // runs the load: through the scheduled trigger. A source that changed shape
+  // into something huge — a full-database export where the recent window used
+  // to be — must not fill `known_bad_hashes` in one trip, and it fails the
+  // same loud way a short load does.
+  const db = createTestD1();
+  const huge = Array.from({ length: KNOWN_BAD_MAX_LOAD_HASHES + 1 }, (_, at) =>
+    at.toString(16).padStart(64, "0"),
+  ).join("\r\n");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url !== KNOWN_BAD_FEED_URL) {
+        return realFetch(input, init);
+      }
+      return new Response(huge);
+    }
+  );
+  try {
+    await assert.rejects(
+      () =>
+        /** @type {function} */ (worker.scheduled)(
+          { cron: KNOWN_BAD_FEED_SCHEDULE, scheduledTime: now, noRetry: true },
+          { DRIVE_DB: db },
+          { waitUntil() {}, passThroughOnException() {} },
+        ),
+      new RegExp(`over the ${KNOWN_BAD_MAX_LOAD_HASHES}-hash ceiling one load may write`),
+      "the failed load reaches the cron monitor, which rethrows it",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(knownBadHashRows(db).length, 0, "an over-ceiling load wrote nothing");
+  assert.equal(await lastKnownBadFeedLoad(db), null, "and stamped no load");
 });
 
 test("a share minted before etag pinning still serves after a replace", async () => {
