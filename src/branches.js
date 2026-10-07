@@ -802,14 +802,29 @@ function fingerprintMapFromObject(raw) {
   return files;
 }
 
+/** @param {Iterable<Fingerprint>} files */
+function bytesOf(files) {
+  let n = 0;
+  for (const file of files) n += file.size;
+  return n;
+}
+
 // Bytes under `root` from the store listing. Branch copies skip the file index (drive#553).
 /** @param {FileStore} store @param {string} root */
 async function storedBytesUnder(store, root) {
-  let total = 0;
-  for (const file of (await listFiles(store, root)).values()) {
-    total += file.size;
-  }
-  return total;
+  return bytesOf((await listFiles(store, root)).values());
+}
+
+/** @param {D1Database} db @param {FileStore} store @param {{id: string}} account @param {number} incomingBytes */
+async function branchCopyBlocked(db, store, account, incomingBytes) {
+  const firstChargedAt = await accountFirstChargedAt(db, account.id);
+  if (firstChargedAt !== null) return null;
+  return preChargeUploadBlocked({
+    firstChargedAt,
+    storedBytes:
+      (await accountStoredBytes(db, account.id)) + (await storedBytesUnder(store, BRANCHES_ROOT)),
+    incomingBytes,
+  });
 }
 
 /** The fingerprint of one file, or null when it is not there. One listing of
@@ -1290,6 +1305,17 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   // open a branch missing everything after the first 80.
   const frozenMarker = await snapshots.get(frozenSnapshotKey(branch.snapshotKey));
   const only = frozenMarker !== null && frozenMarker !== undefined ? branch.snapshot : undefined;
+  if (doneSoFar === 0) {
+    const incomingBytes =
+      only !== undefined
+        ? bytesOf(Object.values(only))
+        : await storedBytesUnder(store, branch.sourcePrefix);
+    const blocked = await branchCopyBlocked(db, store, account, incomingBytes);
+    if (blocked !== null) {
+      await failJob(db, branch.id, "discarded", blocked);
+      return { error: blocked, status: 403, done: true };
+    }
+  }
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
@@ -1893,15 +1919,10 @@ export async function createBranch(
   // The 1 TB pre-charge check: branch copies skip the file index, so the store
   // listing is what counts (drive#553). A charged account is lifted (drive#464).
   // The open-branch cap is the claim INSERT's WHERE, so a race cannot land 11.
-  const firstChargedAt = await accountFirstChargedAt(db, account.id);
-  if (firstChargedAt === null) {
-    const incomingBytes = await storedBytesUnder(store, folderPath);
-    const storedBytes =
-      (await accountStoredBytes(db, account.id)) + (await storedBytesUnder(store, BRANCHES_ROOT));
-    const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes, incomingBytes });
-    if (blocked !== null) {
-      return { error: blocked, status: 403 };
-    }
+  const listed = await listFiles(store, folderPath);
+  const blocked = await branchCopyBlocked(db, store, account, bytesOf(listed.values()));
+  if (blocked !== null) {
+    return { error: blocked, status: 403 };
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
@@ -1915,7 +1936,7 @@ export async function createBranch(
   // copy, so a row that is claimed but interrupted is closed by the catch
   // below rather than left open on an empty prefix. The leftover `snapshot`
   // column is omitted (drive#329) and takes its own `DEFAULT '{}'`.
-  // The cap is the same INSERT's WHERE, so two racers at 9 cannot both land.
+  // The cap is the same INSERT's WHERE (branches_account_created_idx, migration 0015).
   let claimId;
   try {
     const claimed = await db
@@ -2017,7 +2038,7 @@ export async function createBranch(
     const saved = await saveSnapshot(
       db,
       claimId,
-      fingerprintMapToObject(await listFiles(store, folderPath)),
+      fingerprintMapToObject(listed),
       snapshots,
       snapKey,
     );

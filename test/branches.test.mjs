@@ -27,6 +27,7 @@ import {
   readSnapshotObject,
   relativePath,
   removePrefixFiles,
+  runBranchJobToEnd,
   sameFile,
   snapshotKey,
 } from "../src/branches.js";
@@ -1457,6 +1458,55 @@ test("branch bytes already held count toward the pre-charge limit", async () => 
     name: "work",
   });
   assert.equal(allowed.state, "open");
+});
+
+test("a queued create is refused before it copies if the account passed the limit while it waited", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  /** @type {Array<unknown>} */
+  const sent = [];
+  const queue = {
+    /** @param {unknown} body */
+    async send(body) {
+      sent.push(body);
+    },
+  };
+  const made = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "work" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(made.state, "creating");
+  assert.deepEqual(copies, []);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 1000 * GB, 1);
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+  const ran = await runBranchJobToEnd(db, snapshots, store, ACCOUNT, row.id);
+  assert.equal(ran.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(ran.status, 403);
+  assert.deepEqual(copies, [], "the job refused before it asked for a copy");
+  assert.equal((await getBranch(db, snapshots, ACCOUNT, "work"))?.state, "discarded");
 });
 
 // ---------------------------------------- the guards on a create (#553)
