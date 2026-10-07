@@ -13,6 +13,7 @@ import {
   reconcileTopUps,
   refundKey,
   topUpKey,
+  usageDayKey,
   usageKey,
 } from "../core/ledger.js";
 import { PREPAID } from "../core/pricing.js";
@@ -32,9 +33,11 @@ test("the prepaid numbers come from the one price source", () => {
 test("each key names one movement of money", () => {
   assert.equal(topUpKey("pay_1"), "topup:pay_1");
   assert.equal(usageKey("acct", 3_600_000), "usage:acct:3600000");
+  assert.equal(usageDayKey("acct", "2026-10-05"), "usage:acct:day:2026-10-05");
   assert.equal(refundKey("ref_1"), "refund:ref_1");
   assert.throws(() => topUpKey(""), /paymentId/);
   assert.throws(() => usageKey("acct", 1.5), /hour/);
+  assert.throws(() => usageDayKey("acct", "5 Oct"), /day/);
 });
 
 test("a ledger entry with the wrong sign or a missing field is refused before the database", async () => {

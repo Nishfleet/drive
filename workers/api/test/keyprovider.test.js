@@ -182,23 +182,35 @@ test("the kind's hour is the ceiling: a shorter provider session wins, a longer 
   // session of six hours is refused at the hour rather than honoured.
   assert.equal(mintTtlSeconds("agent", 43200), AGENT_KEY_TTL_SECONDS);
   assert.equal(mintTtlSeconds("branch", 86400), 3600);
-  // A device key never expires only on a provider that names no session.
-  // On a provider that names one, the vendor's session is the credential's
-  // real life (drive#544 mint answers carry expiresIn; drive#713 refuses the
-  // row that ignored it), so the row records the session whatever its
-  // length: stretching it is impossible, and shrinking it would be the
-  // drive#713 lie again (drive#749 renews by re-minting before it ends).
+  // A kind with no hour of its own takes the provider's session, which is the
+  // only lifetime such a credential has: the STS provider mints sessions that
+  // die (s3-keys.js), and a device row read "never expires" over one would be
+  // a claim the api cannot keep (drive#544). Renewal (drive#749) remints
+  // before that session ends, so a 15-minute session is recorded as 15
+  // minutes, not stretched and not shrunk.
   assert.equal(mintTtlSeconds("device", 43200), 43200);
   assert.equal(mintTtlSeconds("device", 900), 900);
+  // Nothing named a session, so the kind's own answer stands.
   assert.equal(mintTtlSeconds("device", null), null);
   assert.equal(mintTtlSeconds("device", undefined), null);
+  // A provider that named a lifetime which cannot be true is refused, not
+  // rounded up: for a device key the kind's own answer IS "never expires", so
+  // folding a broken number into the ceiling would put the one claim this row
+  // must never make straight onto it (drive#544).
+  for (const nonsense of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => mintTtlSeconds("device", nonsense),
+      /positive number or null/,
+      `mintTtlSeconds("device", ${String(nonsense)}) must be refused`,
+    );
+  }
   // No provider session named, or a nonsense one, falls back to the hour.
   assert.equal(mintTtlSeconds("agent", null), 3600);
   assert.equal(mintTtlSeconds("agent", undefined), 3600);
-  assert.equal(mintTtlSeconds("agent", 0), 3600);
-  assert.equal(mintTtlSeconds("agent", -1), 3600);
-  assert.equal(mintTtlSeconds("agent", Number.NaN), 3600);
-  assert.equal(mintTtlSeconds("agent", Number.POSITIVE_INFINITY), 3600);
+  assert.throws(() => mintTtlSeconds("agent", 0), /positive number or null/);
+  assert.throws(() => mintTtlSeconds("agent", -1), /positive number or null/);
+  assert.throws(() => mintTtlSeconds("agent", Number.NaN), /positive number or null/);
+  assert.throws(() => mintTtlSeconds("agent", Number.POSITIVE_INFINITY), /positive number or null/);
 });
 
 test("every machine kind is capped at the hour, so no config widens it", () => {

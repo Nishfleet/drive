@@ -41,6 +41,9 @@ the live site.
   the words to fix it. The storage vendor sets no limit of its own, and a
   nightly sweep removes the vendor keys of expired or revoked entries and
   records how many keys the vendor holds.
+- Opening an account now asks for a tick that you are 18 or older, and the
+  sign-in route refuses a start without it. The terms already carry the
+  rule.
 - A share link fixes on the file's version at the moment you make it. If that
   file is replaced afterwards, the link refuses with a short page instead of
   handing out the new bytes. A file on the stock known-bad hash list is

@@ -136,7 +136,7 @@ func rewindLines(preview RewindPreview) []string {
 func runUndo(args []string) error {
 	fs := flag.NewFlagSet("undo", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}

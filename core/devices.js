@@ -13,13 +13,13 @@
 // is the whole of the withdrawal there.
 
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
-import { BILLING_CONFIG, gbMonths, minutesInMonth, storedGb } from "./billing.js";
+import { BILLING_CONFIG, size30DropsOutDay, size30Window, storedGb } from "./billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "./cap.js";
 import { all, batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
-import { monthStart, monthUsageThrough } from "./meter.js";
+import { monthStart, monthUsageThrough, size30Through } from "./meter.js";
 
 const CLOSE_CRON_LIMIT = 100;
 
@@ -100,7 +100,8 @@ function deviceFromRow(row) {
     prefix: String(r.prefix ?? ""),
     capabilities: parseJsonList(r.capabilities),
     createdAt: Number(r.created_at ?? 0),
-    // Null is a key that never expires (a person's own device key); a column
+    // Null is a key that never expires, which a person's own device key is only
+    // when the provider named no session of its own (drive#544); a column
     // written before drive#106 is null too, so an existing row keeps the life
     // it had rather than being handed an expiry it was never minted with.
     expiresAt: r.expires_at === null || r.expires_at === undefined ? null : Number(r.expires_at),
@@ -1516,23 +1517,19 @@ export function createD1DeviceStore(db, options = {}) {
     async monthUsage(accountId, options) {
       const at = now();
       const month = await monthUsageThrough(db, accountId, at);
-      // The peak is the size the drive holds now (the page's "stored now"). The
-      // bill itself reads only the GB-minutes (drive#463), and the average the
-      // free download allowance follows is the month's own average, worked out
-      // from the GB-minutes over that month's minutes (`gbMonths`, billing.js)
-      // rather than read out of monthUsageThrough: averaging the hour's
-      // stored-bytes marks counted a file saved six times inside one hour six
-      // times (drive#535), and no two callers could be held to one figure.
-      const peakGb = storedGb(month.peakBytes);
-      const averageGb = gbMonths(month.gbMinutes, minutesInMonth(at));
+      const window = size30Window(at);
+      const size30 = await size30Through(db, accountId, window.from, at);
+      const reachedDay =
+        size30.reachedHour === null
+          ? null
+          : new Date(size30.reachedHour).toISOString().slice(0, 10);
       return {
-        gbMinutes: month.gbMinutes,
-        // The month this read's minutes fell in sets the divisor (drive#531).
-        monthMinutes: minutesInMonth(at),
-        storedGb: peakGb,
+        size30Bytes: size30.size30Bytes,
+        size30ReachedDay: reachedDay,
+        size30DropsOutDay: reachedDay === null ? null : size30DropsOutDay(reachedDay),
+        storedGb: storedGb(month.peakBytes),
         storedDaily: [],
-        downloadBytes: month.downloadBytes,
-        averageStoredGb: averageGb,
+        downloadBytes: size30.downloadBytes,
         capUsd: options.capUsd,
         cardAdded: true,
         // The display stamp only, forwarded from the same accounts row

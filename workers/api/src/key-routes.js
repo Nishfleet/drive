@@ -325,7 +325,7 @@ export async function revokePresentedKeyRoute(request, ctx) {
  * @param {Request} request
  * @returns {{accessKeyId: string, secret: string}|null}
  */
-export function basicCredentials(request) {
+function basicCredentials(request) {
   const header = request.headers.get("authorization") ?? "";
   const [scheme, encoded] = header.split(" ");
   if (scheme === undefined || encoded === undefined || scheme.toLowerCase() !== "basic") {
@@ -438,6 +438,9 @@ export async function storageWriteRoute(request, ctx) {
     return errorResponse(402, failureMessage("balance-empty"));
   }
   const body = new Uint8Array(await request.arrayBuffer());
+  if (await ctx.store.size30DayUnpaid(device, body.byteLength)) {
+    return errorResponse(402, failureMessage("size30-unpaid"));
+  }
   ctx.store.putObject(authorized.path, body);
   return json(
     { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },

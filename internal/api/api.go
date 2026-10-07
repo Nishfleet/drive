@@ -630,7 +630,10 @@ func LoadCredentials(home string) (Credentials, error) {
 	}
 	var creds Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return Credentials{}, wrapFail("unexpected", fmt.Errorf("%s is not valid JSON: %w", path, err))
+		// A half-written file is one this package wrote and fsyncs
+		// (drive#544), so the failure names the file and the command that
+		// writes it back rather than the JSON parser's words.
+		return Credentials{}, wrapFail("credentials-unreadable", err, path)
 	}
 	return creds, nil
 }

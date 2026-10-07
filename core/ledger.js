@@ -20,7 +20,7 @@
 import { claimCardFingerprint, paymentCardFingerprint } from "./abuse-guards.js";
 import { PREPAID } from "./pricing.js";
 
-export const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
+const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
 
 /** The smallest top-up, in cents. */
 export const MIN_TOP_UP_CENTS = PREPAID.minTopUpUsd * 100;
@@ -110,6 +110,21 @@ export function usageKey(accountId, hour) {
     throw new TypeError(`usageKey needs an epoch millisecond hour, got ${String(hour)}`);
   }
   return `usage:${accountId}:${hour}`;
+}
+
+/**
+ * The draw for one account and one UTC day (drive#642). The same day always
+ * maps to the same key, so a retried daily job cannot draw it twice, and a
+ * leftover hourly key (`usage:<id>:<hour ms>`) cannot collide with it.
+ * @param {string} accountId
+ * @param {string} day YYYY-MM-DD
+ */
+export function usageDayKey(accountId, day) {
+  nonEmpty(accountId, "accountId");
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    throw new TypeError(`usageDayKey needs a YYYY-MM-DD day, got ${String(day)}`);
+  }
+  return `usage:${accountId}:day:${day}`;
 }
 
 /** @param {string} refundId */

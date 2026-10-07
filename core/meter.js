@@ -16,6 +16,7 @@
 import { decodeNotificationKey } from "./event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
+import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
@@ -81,7 +82,8 @@ import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } fr
 //   - The hour's stored bytes land in usage_minutes.stored_bytes
 //     (migrations/drive/0006_usage_stored_bytes.sql): the month's PEAK is the
 //     largest of those marks (drive issue #163), which is what the bill's
-//     ceiling max($12, $8 x peak TB) is worked out from.
+//     ceiling was once worked out from (drive#642 now bills size30, the
+//     biggest size in the last 30 days, at 2 cents per GB, never more than $15 per TB).
 //
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
@@ -128,15 +130,7 @@ export function toMillis(value, field) {
 // stopped (drive issue #104).
 export const MINIMUM_MINUTES_PER_VERSION = 60;
 
-export const MINUTE_MS = 60_000;
-
-// One GB in bytes, decimal (1e9), because the GB in this repo's prices is the
-// decimal one: docs/build-spec.md prices at 2 cents per GB-month and reads
-// the $1 free credit as "about 50 GB", core/billing.js stores
-// BYTES_PER_GB = 1e9 and GB_PER_TB = 1000, and the provider-usage-report
-// comparison the done-when makes is GB-months too. `size_bytes` itself is
-// always bytes; this constant is only the divisor of the GB-minutes math.
-export const BYTES_PER_GB = 1e9;
+export { BYTES_PER_GB, MINUTE_MS };
 
 export const HOUR_MS = 60 * MINUTE_MS;
 
@@ -239,14 +233,6 @@ function versionOverlapMinutes(version, hour, now = Date.now()) {
  * @param {number|Date|string} now for a version still live, the instant its
  *   storage stops counting in this hour (the end of a closed hour)
  */
-export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
-  const size = wholeBytes(version.sizeBytes);
-  if (size === null) {
-    throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
-  }
-  return versionOverlapMinutes(version, hour, now) * (size / BYTES_PER_GB);
-}
-
 /**
  * The whole minutes one version books into one hour, minimum included. This
  * is the one function the rollup trusts: two calls with the same version and
@@ -269,7 +255,7 @@ export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
  *   version in isolation.
  * @returns {number} whole booked minutes
  */
-export function versionBookedMinutes(version, hour, now = Date.now(), continued = false) {
+function versionBookedMinutes(version, hour, now = Date.now(), continued = false) {
   const start = hourStart(hour);
   const overlap = versionOverlapMinutes(version, start, now);
   if (version.hiddenAt === null || version.hiddenAt === undefined) {
@@ -318,7 +304,7 @@ export function versionBookedMinutes(version, hour, now = Date.now(), continued 
  * @param {boolean} [continued] see versionBookedMinutes (drive issue #104)
  * @returns {number} byte-minutes
  */
-export function versionBookedByteMinutes(version, hour, now = Date.now(), continued = false) {
+function versionBookedByteMinutes(version, hour, now = Date.now(), continued = false) {
   const size = wholeBytes(version.sizeBytes);
   if (size === null) {
     throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
@@ -449,7 +435,7 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 //
 // The second number one closed hour answers with, and the one the monthly bill
 // cannot do without (drive issue #163): how BIG the account's drive was during
-// the hour. The ceiling is max($12, $8 x peak TB) - a peak, so the meter has
+// the hour. The old ceiling was max($12, $8 x peak TB), now replaced by $15 per TB on size30 (drive#642) - a peak, so the meter has
 // to record the size and not only for how long, which
 // usage_minutes.gb_minutes_live never could.
 //
@@ -565,13 +551,13 @@ function hourGbMinutesSql(scoped) {
     CAST(SUM(
       (
         (CASE
-          WHEN MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) < 60000
+          WHEN MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) < ${MINUTE_MS}
             THEN 0
-          ELSE CAST(MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) / 60000 AS INTEGER)
+          ELSE CAST(MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) / ${MINUTE_MS} AS INTEGER)
         END)
         + (CASE
           WHEN hidden_at IS NOT NULL AND hidden_at >= ?1 AND hidden_at < ?2 AND hidden_at >= created_at
-            AND CAST((hidden_at - created_at) / 60000 AS INTEGER) < 60
+            AND CAST((hidden_at - created_at) / ${MINUTE_MS} AS INTEGER) < 60
             AND NOT EXISTS (
               SELECT 1 FROM file_versions s
               WHERE s.account_id = v.account_id
@@ -579,18 +565,16 @@ function hourGbMinutesSql(scoped) {
                 AND s.created_at = v.hidden_at
                 AND s.b2_file_id <> v.b2_file_id
             )
-            THEN 60 - CAST((hidden_at - created_at) / 60000 AS INTEGER)
+            THEN 60 - CAST((hidden_at - created_at) / ${MINUTE_MS} AS INTEGER)
             ELSE 0
           END)
       ) * size_bytes
-    ) AS REAL) / 1e9 AS gb_minutes,
+    ) AS REAL) / ${BYTES_PER_GB} AS gb_minutes,
     COUNT(*) AS versions
   FROM ${hourRows(">= ?1", scoped)} AS v
   GROUP BY account_id
   ORDER BY account_id`;
 }
-
-export const HOUR_STORED_BYTES_SQL = hourStoredBytesSql(false);
 
 export const HOUR_GB_MINUTES_SQL = hourGbMinutesSql(false);
 
@@ -659,7 +643,7 @@ export const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
  * reference a differential test pins it against - so there is one rule, not
  * two, and no float drift between them.
  *
- * HOUR_STORED_BYTES_SQL is this statement's other half - the same window and
+ * hourStoredBytesSql is this statement's other half - the same window and
  * the same GROUP BY, bytes instead of minutes - and both halves are read
  * together as HOUR_USAGE_SQL, the minutes query LEFT JOINed to the bytes
  * query. One statement, so the hour's two figures are two columns of ONE
@@ -728,7 +712,7 @@ export async function rollupHour(db, hourStartMs, nowMs) {
  * @param {number} nowMs
  * @returns {Promise<{hour: number, gbMinutes: number}>}
  */
-export async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
+async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
   if (typeof accountId !== "string" || accountId === "") {
     throw new TypeError(`rollupAccountHour needs an account id, got ${String(accountId)}`);
   }
@@ -809,7 +793,7 @@ export async function recordUsage(db, accountId, hour, gbMinutes, storedBytes, n
 // re-rolled by the reconciler #59. A MAX is not lowered by a 0, so the only
 // shape in which no hour measured anything is the all-zero one, and that is
 // the shape the reader refuses.)
-export const MONTH_PEAK_BYTES_SQL = `SELECT
+const MONTH_PEAK_BYTES_SQL = `SELECT
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(CASE WHEN stored_bytes > 0 THEN 1 ELSE 0 END), 0) AS marked_hours,
     COUNT(*) AS hours
@@ -889,7 +873,7 @@ export function monthStart(at) {
 /**
  * The month's PEAK, read from the rollup the meter's own trigger wrote: the
  * largest stored_bytes mark in the month (drive issue #163), which is the
- * second half of the ceiling max($12, $8 x peak TB) and the only part of the
+ * the size the drive#642 bill is read from (size30, never more than $15 per TB) and the only part of the
  * month's storage figures this module owns.
  *
  * MAX over the hour rows IS the peak - it is one SQL read, not arithmetic done
@@ -992,7 +976,7 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
 // save counted again in that average (drive#535), and no two callers could be
 // held to the same figure. The caller divides, in the one place the price's
 // divisor lives (MINUTES_PER_MONTH); this read stays the meter's own numbers.
-export const MONTH_USAGE_THROUGH_SQL = `SELECT
+const MONTH_USAGE_THROUGH_SQL = `SELECT
     COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(download_bytes), 0) AS download_bytes
@@ -1039,6 +1023,79 @@ export async function monthUsageThrough(db, accountId, through) {
     gbMinutes,
     peakBytes,
     downloadBytes,
+  });
+}
+
+// size30 (drive#642): the largest stored_bytes mark in the trailing 30 UTC
+// days, and the earliest hour that mark was reached. One statement, so there
+// is no second peak to drift from. A window with no rows is an empty drive
+// (size30 0), not a guessed charge. A stored_bytes value that does not parse
+// is refused, never billed.
+export const SIZE30_SQL = `SELECT
+    COALESCE(MAX(stored_bytes), 0) AS size30_bytes,
+    CASE WHEN COALESCE(MAX(stored_bytes), 0) = 0 THEN NULL ELSE MIN(hour) END AS reached_hour,
+    COUNT(*) AS hours,
+    SUM(CASE WHEN typeof(stored_bytes) != 'integer' THEN 1 ELSE 0 END) AS bad_rows
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= ?2
+    AND hour <= ?3
+    AND stored_bytes = (
+      SELECT COALESCE(MAX(stored_bytes), 0) FROM usage_minutes
+      WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3
+    )`;
+
+const SIZE30_DOWNLOADS_SQL = `SELECT COALESCE(SUM(download_bytes), 0) AS download_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3`;
+
+/**
+ * size30 for one account as of `through`: the largest stored_bytes mark in
+ * `[from, through]`. `from` is the start of the trailing window the caller
+ * computed (billing.js size30Window). Missing or unparseable rows refuse
+ * rather than guess a charge.
+ * @param {D1Database} db
+ * @param {unknown} accountId
+ * @param {number} from
+ * @param {number} through
+ * @returns {Promise<{size30Bytes: number, reachedHour: number|null, downloadBytes: number, hours: number}>}
+ */
+export async function size30Through(db, accountId, from, through) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`size30Through needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(through) || from > through) {
+    throw new TypeError(
+      `size30Through needs a from..through window in epoch ms, got ${from}..${through}`,
+    );
+  }
+  const row = await db.prepare(SIZE30_SQL).bind(accountId, from, through).first();
+  if (Number(row?.bad_rows ?? 0) > 0) {
+    throw new TypeError(
+      `size30 for ${accountId} has a stored_bytes value that does not parse, so no draw is made`,
+    );
+  }
+  const size30Bytes = Number(row?.size30_bytes ?? 0);
+  const hours = Number(row?.hours ?? 0);
+  const reachedHour = row?.reached_hour == null ? null : Number(row.reached_hour);
+  if (!Number.isSafeInteger(size30Bytes) || size30Bytes < 0) {
+    throw new TypeError(`size30_bytes must be 0 or more whole bytes, got ${row?.size30_bytes}`);
+  }
+  if (reachedHour !== null && (!Number.isFinite(reachedHour) || reachedHour < 0)) {
+    throw new TypeError(`size30 reached_hour does not parse, got ${row?.reached_hour}`);
+  }
+  const downloads = await db.prepare(SIZE30_DOWNLOADS_SQL).bind(accountId, from, through).first();
+  const downloadBytes = Number(downloads?.download_bytes ?? 0);
+  if (!Number.isSafeInteger(downloadBytes) || downloadBytes < 0) {
+    throw new TypeError(
+      `download_bytes must be 0 or more whole bytes, got ${downloads?.download_bytes}`,
+    );
+  }
+  return Object.freeze({
+    size30Bytes,
+    reachedHour,
+    downloadBytes,
+    hours,
   });
 }
 
@@ -1672,7 +1729,7 @@ export const EVENTS_PER_BATCH = 50;
  * @param {ReturnType<typeof validateEvent>[]} events
  * @param {number|Date|string} now
  */
-export async function recordEvents(db, events, now = Date.now()) {
+async function recordEvents(db, events, now = Date.now()) {
   const receivedAt = toMillis(now, "now");
   let stored = 0;
   for (let start = 0; start < events.length; start += EVENTS_PER_BATCH) {
@@ -1835,7 +1892,7 @@ export const METER_CRON = "5 * * * *";
 // trigger. A stored version row is the only input, so re-rolling recomputes
 // the same total and adds no row - the grace costs a re-roll, never a bill.
 // An event later than this window is the nightly reconciler's job (#59).
-export const REROLL_GRACE_HOURS = 1;
+const REROLL_GRACE_HOURS = 1;
 
 // The most hours one run rolls. A backlog (a Cron Trigger that did not fire,
 // a run that failed) is drained oldest hour first, this many hours per run,
@@ -2052,7 +2109,7 @@ export async function runMeterCron(db, now = Date.now()) {
 // catch-up, so this keeps a run's work bounded however old the correction:
 // a 180-day correction is re-rolled over the following days, oldest hour
 // first, and every other account's hours are never touched by it.
-export const MAX_REROLL_HOURS_PER_RUN = 12;
+const MAX_REROLL_HOURS_PER_RUN = 12;
 
 const PENDING_REROLLS_SQL = `SELECT account_id, from_hour, through_hour
   FROM meter_account_rerolls ORDER BY from_hour, account_id LIMIT ?1`;
@@ -2075,7 +2132,7 @@ const REROLL_QUEUE_SQL = `INSERT INTO meter_account_rerolls (account_id, from_ho
  * @param {D1Database} db
  * @param {number} at the run instant, epoch ms
  */
-export async function drainAccountRerolls(db, at) {
+async function drainAccountRerolls(db, at) {
   const lastClosed = hourStart(at) - HOUR_MS;
   const pending = await db.prepare(PENDING_REROLLS_SQL).bind(MAX_REROLL_HOURS_PER_RUN).all();
   let budget = MAX_REROLL_HOURS_PER_RUN;

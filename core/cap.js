@@ -45,7 +45,7 @@
 // implements swapToReadOnly() is used for the cap swap rather than this module
 // re-doing revoke-then-mint by hand.
 
-import { capLine, minutesInMonth, usageSummary } from "./billing.js";
+import { capLine, usageSummary } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 import { failureMessage } from "./messages.js";
@@ -55,7 +55,7 @@ import { unauthorizedResponse } from "./status.js";
 // The capability that makes a key able to change storage. `delete` is a write
 // path too, so a key that has only delete is still a key the cap has to take
 // away.
-export const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
+const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
 
 // What a capped key keeps: the same prefix, list and read. A capped account
 // still reads every file it paid for; it just cannot change them.
@@ -449,7 +449,7 @@ export async function enforceCap(account, provider) {
 // used 80% of your spending cap", src/emails.js), so the walk below sends that
 // email at the share that email describes rather than at a second threshold
 // nobody can read off the page.
-export const CAP_WARNING_RATIO = 0.8;
+const CAP_WARNING_RATIO = 0.8;
 
 /**
  * One metered account's cap decision, for the report the walk returns and for
@@ -920,12 +920,10 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
     typeof capStore.monthUsage === "function"
       ? await capStore.monthUsage(account.id, { capUsd: usd })
       : {
-          gbMinutes: 0,
-          monthMinutes: minutesInMonth(Date.now()),
+          size30Bytes: 0,
           storedGb: 0,
           storedDaily: [],
           downloadBytes: 0,
-          averageStoredGb: 0,
           capUsd: usd,
           cardAdded: true,
         };

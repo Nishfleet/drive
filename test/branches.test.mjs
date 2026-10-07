@@ -60,11 +60,13 @@ function makeD1() {
     "drive/0015_branch_row_id.sql",
     // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
     // for the job columns and in-flight unique index it inserts through
-    // (drive#563). Not the whole folder: 0017_drop_branches_snapshot.sql
+    // (drive#563), and 0040 for the reservation the queued-create guard sums
+    // (drive#801). Not the whole folder: 0017_drop_branches_snapshot.sql
     // removes the leftover column some proofs below still select.
     "drive/0016_founding.sql",
     "drive/0019_abuse_guards.sql",
     "drive/0030_branch_jobs.sql",
+    "drive/0040_branch_reserved_bytes.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -1235,13 +1237,24 @@ test("a queued create counts against the cap before its copy has run", async () 
 });
 test("a concurrent create that loses the atomic claim copies nothing", async () => {
   const { scoped, db, snapshots } = await driven();
-  // Two creates start together below the cap: "held" is already open, and the
-  // loser wants a different name, so nothing about the name refuses it. The
-  // only thing that separates the winner from the loser is the claim INSERT's
-  // WHERE clause: the loser inserts no row, and must hear the cap answer here
-  // rather than copy into a prefix another create is walking. This test
-  // answers the claim insert with no changed row, exactly what D1 reports.
-  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "held" });
+  // Two creates start together AT the cap, and the loser wants a different
+  // name, so nothing about the name refuses it. The only thing that separates
+  // the winner from the loser is the claim INSERT's WHERE clause: the loser
+  // inserts no row, and must hear the cap answer here rather than copy into a
+  // prefix another create is walking. This test answers the claim insert with
+  // no changed row, exactly what D1 reports.
+  //
+  // The account is filled to the cap first, because the claim's WHERE refuses
+  // on the cap OR on the byte limit and a refusal of zero changed rows no
+  // longer says which (drive#801 in-run review). A refusal can only be
+  // reported honestly when the state supports it, so the refusal under test is
+  // the cap and the byte limit is nowhere near it.
+  for (let i = 0; i < MAX_OPEN_BRANCHES; i += 1) {
+    await createBranch(db, snapshots, scoped, ACCOUNT, {
+      folder: "/Photos",
+      name: `held-${i}`,
+    });
+  }
   /** @type {Array<unknown>} */
   const copies = [];
   const copying = scoped.copy.bind(scoped);
@@ -1299,7 +1312,12 @@ test("a concurrent create that loses the atomic claim copies nothing", async () 
   // files a later diff or a list would report.
   assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
   const names = (await listBranches(db, snapshots, store, ACCOUNT)).map((branch) => branch.name);
-  assert.deepEqual(names, ["held"]);
+  assert.deepEqual(
+    names,
+    // Newest first, the order listBranches reads in (created_at, id).
+    Array.from({ length: MAX_OPEN_BRANCHES }, (_, i) => `held-${MAX_OPEN_BRANCHES - 1 - i}`),
+    "the ten that hold the cap, and not the refused name",
+  );
 });
 test("the cap's claim is what refuses the eleventh create, not the earlier count", async () => {
   const { scoped, db, snapshots } = await driven();
@@ -1458,6 +1476,258 @@ test("branch bytes already held count toward the pre-charge limit", async () => 
     name: "work",
   });
   assert.equal(allowed.state, "open");
+});
+
+test("a queued create's reservation counts toward the pre-charge limit (#801)", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // A create claims its row and hands the copy to a queue (drive#563), so
+  // between the claim and the first batch its bytes are in neither the file
+  // index (branch copies skip it) nor the store walk the guard reads
+  // (`/.branches` is only walked once the copy lands). This is the second
+  // create of a 100 GB folder for an account already at 1 TB: the first one is
+  // allowed because it is exactly at the limit, and without the reservation
+  // this one is allowed too - 1.1 TB of planned copies. The queue here never
+  // runs the copies, so the first row stays 'creating' and /.branches holds
+  // nothing, which is the whole point: the bytes are invisible to every other
+  // read the guard makes.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 900 * GB, 1);
+  const listing = scoped.list.bind(scoped);
+  // Two files at 50 GB each is a 100 GB folder, and no such bytes exist here.
+  // The walk is breadth-first over the store's own listings, so both the file
+  // and the file under the subfolder report the size.
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.kind === "folder" ? entry : { ...entry, size: 50 * GB },
+      );
+    },
+  };
+  const queue = { async send() {} };
+  const first = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "reserved" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(first.state, "creating", "the first create is queued, not open");
+  // The claim stored what it measured, so the guard can read it back.
+  const queued = await getBranch(db, snapshots, ACCOUNT, "reserved");
+  assert.ok(queued);
+  assert.equal(queued.reservedBytes, 100 * GB, "the claim kept the byte total it measured");
+  // /.branches holds nothing: the copy has not run, which is why only the
+  // reservation can catch this create.
+  const second = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "behind" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(second.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(second.status, 403);
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "behind"), null, "no row was claimed");
+  // The reservation is released by the state, not by a cleanup write: a row
+  // that leaves 'creating' has copied bytes the store walk can see, so the sum
+  // stops counting it. This runs the real copy job rather than flipping the
+  // column, because an open row with no copy behind it is a state production
+  // never produces and would let a second create pass for the wrong reason.
+  const ran = await runBranchJobToEnd(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    (await getBranch(db, snapshots, ACCOUNT, "reserved"))?.id ?? 0,
+  );
+  assert.equal(ran.error, undefined, "the queued branch's own copy ran");
+  assert.equal((await getBranch(db, snapshots, ACCOUNT, "reserved"))?.state, "open");
+  assert.equal(
+    await getBranch(db, snapshots, ACCOUNT, "reserved")?.then((b) => b?.reservedBytes),
+    100 * GB,
+    "the row keeps the measurement it took, as history",
+  );
+  // With that branch open, the account is over the limit on what it actually
+  // holds, so the create behind it is still refused - by the store walk this
+  // time, not by a reservation. The reservation released itself; the bytes did
+  // not disappear.
+  const afterOpen = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "after-open" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(afterOpen.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(afterOpen.status, 403);
+});
+
+test("a queued create whose row predates the reservation column is read as zero bytes (#801)", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // A row written before migration 0040 has no recorded measurement, so the sum
+  // reads it as zero rather than as a number nobody measured. Nothing hides the
+  // case: the row's own create is stopped by the copy job's re-check before its
+  // first batch, which is the test below.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 900 * GB, 1);
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.kind === "folder" ? entry : { ...entry, size: 50 * GB },
+      );
+    },
+  };
+  const queue = { async send() {} };
+  const queued = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "legacy" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(queued.state, "creating");
+  // The row as it would be after the older code: claimed, still copying, and
+  // with no recorded measurement.
+  db.sqlite
+    .prepare("UPDATE branches SET reserved_bytes = NULL WHERE account_id = ?1 AND name = 'legacy'")
+    .run(ACCOUNT.id);
+  const read = await getBranch(db, snapshots, ACCOUNT, "legacy");
+  assert.equal(read?.reservedBytes, 0, "a NULL reservation reads as zero bytes, not as a guess");
+  // The unmeasured row contributes nothing, so the next create is judged on
+  // what the database can actually measure: the account holds 900 GB and this
+  // folder is 200 GB, which is over the 1 TB limit on its own. A NULL is read
+  // as the zero it is, not as a number nobody took.
+  /** @type {import("../core/files.js").FileStore} */
+  const bigger = {
+    ...store,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.kind === "folder" ? entry : { ...entry, size: 100 * GB },
+      );
+    },
+  };
+  const second = await createBranch(
+    db,
+    snapshots,
+    bigger,
+    ACCOUNT,
+    { folder: "/Photos", name: "after-legacy" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(second.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal(second.status, 403);
+  assert.equal(
+    await getBranch(db, snapshots, ACCOUNT, "after-legacy"),
+    null,
+    "the refused create claimed no row",
+  );
+  // The row that could not be measured is stopped where its own bytes can be
+  // measured: the job, before its first copy.
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "over-limit", "/over.bin", 500 * GB, 1);
+  const row = await getBranch(db, snapshots, ACCOUNT, "legacy");
+  assert.ok(row);
+  const ran = await runBranchJobToEnd(db, snapshots, store, ACCOUNT, row.id);
+  assert.equal(ran.error, failureMessage("pre-charge-storage-limit"));
+  assert.equal((await getBranch(db, snapshots, ACCOUNT, "legacy"))?.state, "discarded");
+});
+
+test("the copy job's own re-check does not count its reservation twice (#801)", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const GB = 1e9;
+  // The account holds 950 GB and the folder is 50 GB, so 1 TB exactly: the
+  // branch is legal when it is claimed and its copy must run. The copy job asks
+  // whether the account went over the limit while the branch waited, and its
+  // own row's reservation is the 50 GB it is about to write - so counting that
+  // row in the sum AND passing the same bytes as incoming measures 1.05 TB and
+  // discards a branch that was never over the limit. Its own row is excluded
+  // from the sum; every other queued row stays in it.
+  db.sqlite.prepare("INSERT INTO accounts (id) VALUES (?)").run(ACCOUNT.id);
+  db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) " +
+        "VALUES (?1,?2,?3,?4,?5)",
+    )
+    .run(ACCOUNT.id, "big-file", "/big.bin", 950 * GB, 1);
+  const listing = scoped.list.bind(scoped);
+  // Two files at 25 GB each is the 50 GB folder.
+  /** @type {import("../core/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.kind === "folder" ? entry : { ...entry, size: 25 * GB },
+      );
+    },
+  };
+  const queue = { async send() {} };
+  const made = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "at-the-limit" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(made.state, "creating");
+  const row = await getBranch(db, snapshots, ACCOUNT, "at-the-limit");
+  assert.ok(row);
+  assert.equal(row.reservedBytes, 50 * GB);
+  const ran = await runBranchJobToEnd(db, snapshots, store, ACCOUNT, row.id);
+  assert.equal(
+    ran.error,
+    undefined,
+    "a branch at exactly the limit is not discarded by its own job",
+  );
+  assert.equal((await getBranch(db, snapshots, ACCOUNT, "at-the-limit"))?.state, "open");
+  // The exclusion is this row's alone: a second queued row's bytes still count
+  // against the third create, which is the whole fix.
+  const other = await createBranch(
+    db,
+    snapshots,
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "second" },
+    () => Date.now(),
+    queue,
+  );
+  assert.equal(other.error, failureMessage("pre-charge-storage-limit"), "1000 + 50 > 1 TB");
+  assert.equal(other.status, 403);
 });
 
 test("a queued create is refused before it copies if the account passed the limit while it waited", async () => {

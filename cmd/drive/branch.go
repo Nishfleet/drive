@@ -193,7 +193,7 @@ func defaultBranchName(folder string) string {
 func runBranch(args []string) error {
 	fs := flag.NewFlagSet("branch", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	name := fs.String("name", "", "branch name (the folder's own name unless given)")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
@@ -358,7 +358,7 @@ func dropBranchKey(home, name string, client *APIClient) error {
 func runBranches(args []string) error {
 	fs := flag.NewFlagSet("branches", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -395,7 +395,7 @@ func runBranches(args []string) error {
 func runDiff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -440,7 +440,7 @@ func printBranchDiff(name string, diff BranchDiff) {
 func runApprove(args []string) error {
 	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -473,7 +473,7 @@ func runApprove(args []string) error {
 func runDiscard(args []string) error {
 	fs := flag.NewFlagSet("discard", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	home := fs.String("home", DefaultHome(), "home directory")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
