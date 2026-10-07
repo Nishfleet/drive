@@ -848,7 +848,7 @@ async function stuckRewinding() {
 }
 
 test("the rewind route resumes a rewind the queue's retries left running (drive#844)", async () => {
-  const { scoped, db, snapshots, queue } = await stuckRewinding();
+  const { raw, scoped, db, snapshots, queue } = await stuckRewinding();
   // Nothing ran after the message was lost, so the branch's copies are still
   // there and the name is still claimed.
   assert.equal(await readText(scoped, "/.branches/work/sub/b.txt"), "b");
@@ -858,7 +858,11 @@ test("the rewind route resumes a rewind the queue's retries left running (drive#
     new Request("https://drive.test/api/rewind/work", { method: "POST" }),
     db,
     snapshots,
-    scoped,
+    // The store as src/index.js hands it over: unscoped. handleRewindRequest
+    // scopes it after the account gate itself (drive#854), so handing it the
+    // fixture's already-scoped store scopes the path twice and the first
+    // branch-prefix listing throws.
+    raw,
     ACCOUNT,
     () => Date.now(),
     queue,
