@@ -279,9 +279,10 @@ const text = (store, path) =>
       found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
     );
 
-/** A drive with a folder an agent branched and then changed. `store` hands in
- * the store the Worker builds on a storage deployment (the S3 test below); the
- * default is the in-memory store the other tests drive.
+/** A drive with a folder an agent branched and then changed.
+ * @param {{changedBy?: string, store?: import("../core/files.js").FileStore | null}} [arg] `store` hands
+ * in the store the Worker builds on a storage deployment (the S3 test
+ * below); the default is the in-memory store the other tests drive.
  */
 async function agentBranch({ changedBy = "k-claude", store = null } = {}) {
   const raw = store ?? createMemoryStore();
