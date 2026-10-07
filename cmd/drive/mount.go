@@ -458,6 +458,15 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
 	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(label))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
+	// launchd has no ExecStartPre. A KeepAlive restart runs this argv
+	// directly, so the first step has to clear a dead NFS entry before rclone
+	// tries to mount again. $1 is the mount dir; shift leaves rclone's own
+	// argv for exec, so paths with spaces stay one argument.
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("/bin/sh"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("-c"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/mount -t nfs | grep -F " on $1 (" >/dev/null 2>&1 && /sbin/umount -f "$1"; shift; exec "$@"`))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("drive-mount"))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(p.MountDir))
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))
 	}
@@ -501,13 +510,37 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%s
+ExecStartPre=%s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(p.envFile()), systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), systemdClearStalePre(p.MountDir), systemdCommandLine(p))
+}
+
+// systemdClearStalePre lazy-unmounts only a FUSE entry at mountDir. A login
+// item has no shell PATH, so the binaries are resolved here the same way
+// ResolveRclone writes rclone into ExecStart. findmnt -t keeps an unrelated
+// filesystem at that folder (a bind mount, a disk) attached.
+func systemdClearStalePre(mountDir string) string {
+	script := `$2 -n -M "$1" -t fuse.rclone,fuse >/dev/null 2>&1 && { $3 -uz "$1" || $4 -uz "$1"; }`
+	return "-/bin/sh -c " + strings.Join([]string{
+		systemdEscapeArg(script),
+		systemdEscapeArg("drive-pre"),
+		systemdEscapeArg(mountDir),
+		systemdEscapeArg(lookBin("findmnt", "/usr/bin/findmnt")),
+		systemdEscapeArg(lookBin("fusermount3", "/usr/bin/fusermount3")),
+		systemdEscapeArg(lookBin("fusermount", "/usr/bin/fusermount")),
+	}, " ")
+}
+
+func lookBin(name, fallback string) string {
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	return fallback
 }
 
 func (p MountPlan) envFile() string {
@@ -653,8 +686,11 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	item := []byte(LoginItem(goos, p))
+	if err := clearStaleMountDir(goos, p.MountDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
-		return failDetail("drive-folder", err, p.MountDir)
+		return driveFolderCreateError(err, p.MountDir)
 	}
 	// A folder that is already a mount holds the drive itself, not stray
 	// local files, so nothing is moved out of it.
@@ -1077,26 +1113,102 @@ func Unmount(goos, home string) error {
 		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
+	var disableErr error
 	if _, err := os.Stat(itemPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+		if !errors.Is(err, fs.ErrNotExist) {
+			return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
 		}
-		return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
+	} else if goos == "darwin" {
+		disableErr = bootoutLaunchd(itemPath)
+	} else if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
+		disableErr = fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
 	}
-	if goos == "darwin" {
-		return bootoutLaunchd(itemPath)
-	}
-	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
-		if stopErr := stopMount(goos, home); stopErr != nil {
-			return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr))
+	if stopErr := stopMount(goos, home); stopErr != nil {
+		if disableErr != nil {
+			return failDetail("unexpected", fmt.Errorf("%v; unmount: %w", disableErr, stopErr))
 		}
-		// The mount is down but the login item could not be disabled, and only
-		// uninstall and logout delete its file afterwards: a bare `drive
-		// unmount` would otherwise report success while the unit starts again
-		// at the next login. The error names the disable that failed.
-		return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err))
+		return failDetail("unmount-failed", stopErr, DefaultMountDir(home))
+	}
+	if disableErr != nil {
+		return failDetail("unexpected", disableErr)
 	}
 	return nil
+}
+
+// clearStaleMountDir lazy-unmounts a dead FUSE or NFS entry at mountDir so
+// MkdirAll and rclone can use the folder again. A live answering mount is
+// left alone: `drive mount` over a working drive must not detach rclone's
+// cache. A listing timeout is treated as stale, because a wedged mount can
+// block findmnt the same way it blocks Lstat.
+func clearStaleMountDir(goos, mountDir string) error {
+	if !mountDirNotConnected(goos, mountDir) {
+		return nil
+	}
+	if uerr := lazyUnmount(goos, mountDir); uerr != nil {
+		return failDetail("stale-mount", uerr, mountDir)
+	}
+	return nil
+}
+
+func lazyUnmount(goos, mountDir string) error {
+	var err error
+	if goos == "darwin" {
+		// A hard NFS mount whose nfsd is gone hangs a plain umount, so the
+		// stale path uses -f and never tries the blocking form first.
+		err = runUmountFlag(mountDir, "-f")
+	} else {
+		err = runFusermountFlag(mountDir, "-uz")
+	}
+	if err == nil {
+		return nil
+	}
+	on, merr := MountedDir(goos, mountDir)
+	if merr == nil && !on {
+		return nil
+	}
+	return err
+}
+
+// mountDirNotConnected reports a listed mount that does not answer. The mount
+// listing is consulted first: os.Lstat on a hard NFS mount (macOS after
+// rclone dies) can hang forever, so it is never the first probe. A listing
+// timeout is stale without Lstat. A listed mount is probed with a bounded
+// Lstat so ENOTCONN is distinguished from a live answering mount.
+func mountDirNotConnected(goos, dir string) bool {
+	on, err := MountedDir(goos, dir)
+	if err != nil {
+		return true
+	}
+	if !on {
+		return false
+	}
+	return !mountDirAnswers(dir)
+}
+
+func mountDirAnswers(dir string) bool {
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		_, err := os.Lstat(dir)
+		done <- result{err}
+	}()
+	select {
+	case r := <-done:
+		return !isNotConnected(r.err)
+	case <-time.After(2 * time.Second):
+		return false
+	}
+}
+
+func isNotConnected(err error) bool {
+	return err != nil && (errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.ENXIO))
+}
+
+func driveFolderCreateError(err error, mountDir string) error {
+	if isNotConnected(err) {
+		return failDetail("stale-mount", err, mountDir)
+	}
+	return failDetail("drive-folder", err, mountDir)
 }
 
 // Mounted reports whether MountDir has a live mount. Linux asks the kernel
