@@ -12,7 +12,7 @@ open in the apps you already use. Nothing is packed into a database or a
 proprietary container, so if you ever leave, your files come with you in the
 shape you put them in.
 
-Under the folder, the bytes live in an object store we run. You never see that
+Under the folder, the bytes live in object storage. You never see that
 layer; you see files.
 
 ## Files on demand
@@ -89,5 +89,5 @@ counted separately. The numbers worked out for four sizes are on
 
 ## Next
 
-- [Quickstart](/quickstart) — five steps to a mounted drive.
+- [Quickstart](/quickstart) — six steps to a mounted drive.
 - [Pricing and your bill](/pricing) — the rate and the maximum.

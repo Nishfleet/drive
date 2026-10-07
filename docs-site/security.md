@@ -31,9 +31,8 @@ silently disagree with it.
 
 {{KEY_TABLE}}
 
-Read and write come from the capability table the server grants
-(workers/api/src/keyprovider.js). Delete and reach come from what the storage
-provider enforces on the key it mints (workers/api/src/idrive-keys.js), because
+Read and write come from the capability table the server grants. Delete and
+reach come from what the storage provider enforces on the key it mints, because
 a key talks to the storage directly. {{AGENT_DELETE}} {{BRANCH_REACH}}
 
 On Linux and macOS, `drive init` mounts `~/Drive-agents/<tool>` for each tool
@@ -102,8 +101,8 @@ useful:
 - **A key, and a session running as you, can read your files.** That is the
   product: the point is that your agents can read them.
 - **We cannot keep your secrets for you.** They do not live in the Drive
-  repository or on this site, and the CLI reads them from the environment
-  rather than from a file inside the Drive folder.
+  repository or on this site. The CLI keeps them on this machine as files
+  only your user can read, never inside the Drive folder.
 
 ## Not claimed
 
