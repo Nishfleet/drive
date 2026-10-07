@@ -301,16 +301,46 @@ func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
 	if got := envDeviceName(home); got != "studio" {
 		t.Fatalf("envDeviceName after login --device studio = %q, want studio", got)
 	}
-	// A later login without the flag keeps the chosen name.
+	// A later login without the flag keeps the chosen name at sign-in
+	// and on the minted key, not only in the credentials file.
 	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if got := envDeviceName(home); got != "studio" {
 		t.Fatalf("envDeviceName after a flagless login = %q, want studio kept", got)
 	}
+	if len(api.deviceNames) != 2 || api.deviceNames[1] != "studio" {
+		t.Fatalf("flagless login named the device %v, want [studio, studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 2 || api.mintedNames[1] != "studio" {
+		t.Fatalf("flagless login minted %v, want [studio, studio]", api.mintedNames)
+	}
 	// DRIVE_DEVICE still wins.
 	t.Setenv(deviceEnvName, "laptop")
 	if got := envDeviceName(home); got != "laptop" {
 		t.Fatalf("envDeviceName with DRIVE_DEVICE = %q, want laptop", got)
+	}
+}
+
+// DRIVE_DEVICE is the same name the mount carries, so a login with no
+// --device still registers that name instead of the hostname.
+func TestLoginHonorsDriveDeviceWithoutFlag(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	t.Setenv(deviceEnvName, "studio")
+
+	if err := Login(t.TempDir(), server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("login with DRIVE_DEVICE named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("login with DRIVE_DEVICE minted %v, want [studio]", api.mintedNames)
 	}
 }

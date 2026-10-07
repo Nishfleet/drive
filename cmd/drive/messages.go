@@ -183,6 +183,10 @@ var messageTable = map[string][2]string{
 		"The drive at {1} is still listed as mounted, but it does not answer.",
 		"Run `drive unmount`.",
 	},
+	"mount-probe": {
+		"Could not check whether the drive is mounted at {1}: {2}.",
+		"Run `drive status`, then `drive mount` again.",
+	},
 	"cache-tag": {
 		"The drive's cache folder {1} could not be marked as a cache.",
 		"Check that {1} is writable, then run the command again.",

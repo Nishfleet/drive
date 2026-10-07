@@ -784,7 +784,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			// mount is what makes the probe fail, and a restart would
 			// unmount a live mount under open files, so the run neither
 			// restarts nor reports success: it fails and names the cause.
-			return fmt.Errorf("could not check whether the drive is mounted at %s: %w; run `drive status`, then `drive mount` again", p.MountDir, probeErr)
+			return failDetail("mount-probe", probeErr, p.MountDir, probeErr.Error())
 		}
 		skipRestart := false
 		if up {
@@ -944,6 +944,9 @@ const cacheDirTag = "Signature: 8a477f597d28d172769f0698c07c4e93\n" +
 // mount writes the same bytes, and a backup tool that already read the
 // tag reads the same answer again.
 func writeCacheTag(cacheDir string) error {
+	if cacheDir == "" {
+		return nil
+	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return failDetail("cache-tag", err, cacheDir)
 	}

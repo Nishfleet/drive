@@ -1148,6 +1148,12 @@ func TestMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
 // on the first mount and on every one after it. The exclusion is a note when it
 // fails: the drive works without it, and the CACHEDIR.TAG marker still tells a
 // tool that reads it.
+func TestWriteCacheTagEmptyDirIsANoOp(t *testing.T) {
+	if err := writeCacheTag(""); err != nil {
+		t.Fatalf("writeCacheTag(\"\") = %v, want nil so an empty cache dir does not fail the mount", err)
+	}
+}
+
 func TestExcludeTransientFromBackupAsksTmutilForTheCache(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(bin, "calls")
