@@ -152,6 +152,7 @@ export const DOC_PAGES = Object.freeze([
   Object.freeze({ title: "Agents", path: "/docs/agents" }),
   Object.freeze({ title: "Pricing and your bill", path: "/docs/pricing" }),
   Object.freeze({ title: "FAQ", path: "/docs/faq" }),
+  Object.freeze({ title: "When something goes wrong", path: "/docs/troubleshooting" }),
   Object.freeze({ title: "Limits", path: "/docs/limits" }),
   Object.freeze({ title: "Benchmarks", path: "/docs/benchmarks" }),
   Object.freeze({ title: "Security", path: "/docs/security" }),
