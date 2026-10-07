@@ -717,8 +717,19 @@ func TestLoginItemPresentFindsTheItemFile(t *testing.T) {
 // Exec action, and the drive's own config folder is the one that exists before
 // the task is registered, because the rclone config and this XML are written
 // there.
+//
+// Since drive#515 the action is this CLI (`drive mount --foreground`), not bare
+// rclone, so the vector no longer carries rclone's own --config/--cache-dir/
+// --log-file: the product derives all three from the one --home it is handed,
+// and that derivation is what is asserted here. The invariant drive#544 found
+// is unchanged and still held — nothing the task's action reads may be
+// relative, because an action that starts in System32 cannot open a relative
+// path — so every value the vector carries is checked, and the plan's three
+// paths must be the same ones the product will derive from that home. A plan
+// that drifted from the derivation would give the mount a config, a cache or a
+// log the login task never reads.
 func TestWindowsTaskXMLCarriesAWorkingDirectory(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	body, err := windowsTaskXML(p, `DESKTOP\test`)
 	if err != nil {
@@ -733,24 +744,85 @@ func TestWindowsTaskXMLCarriesAWorkingDirectory(t *testing.T) {
 		t.Errorf("WorkingDirectory = %q, want the drive's config folder %q",
 			doc.Actions.Exec.WorkingDirectory, wantDir)
 	}
-	// Every path the command line hands rclone is absolute, because a task
-	// that starts in System32 cannot open a relative one.
+	// The plan's own paths are the ones the product derives from the home the
+	// task hands it, so the action reads the same config, cache and log the
+	// task was registered beside.
 	for name, path := range map[string]string{
 		"--config":    p.ConfigPath,
 		"--cache-dir": p.CacheDir,
 		"--log-file":  p.LogPath,
 	} {
+		derived := p.ConfigPath
+		switch name {
+		case "--cache-dir":
+			derived = DefaultCacheDir(p.Home)
+		case "--log-file":
+			derived = filepath.Join(DefaultConfigDir(p.Home), "mount.log")
+		}
+		if path != derived {
+			t.Errorf("%s = %q, want the path the product derives from --home %q: %q", name, path, p.Home, derived)
+		}
 		if !strings.HasPrefix(path, `C:\Users\test`) {
 			t.Errorf("%s = %q: an absolute path under the profile, not %q", name, path, strings.TrimPrefix(path, `C:\Users\test`))
 		}
 		if strings.HasPrefix(path, `\`) || strings.HasPrefix(path, ".") {
 			t.Errorf("%s = %q is relative: the login task starts from System32", name, path)
 		}
-		quoted := windowsQuoteArg(path)
-		if !strings.Contains(doc.Actions.Exec.Arguments, quoted) {
-			t.Errorf("Exec Arguments missing %s (%s):\n%s", name, quoted, doc.Actions.Exec.Arguments)
+	}
+	// Every value the task's action carries is absolute for the same reason: a
+	// task that starts in System32 cannot open a relative one. This is the
+	// drive#544 failure shape, kept as a whole-vector check so a new path flag
+	// cannot come back relative.
+	args := p.productArgs()
+	if len(args) == 0 || args[0] != "mount" {
+		t.Fatalf("the login task runs %v, want the product's mount command", args)
+	}
+	for i, a := range args {
+		if strings.HasPrefix(a, "--") {
+			continue
+		}
+		if strings.HasPrefix(a, `\`) || strings.HasPrefix(a, ".") {
+			t.Errorf("login task argument %d (%q, after %q) is relative: the action starts from System32", i, a, args[i-1])
 		}
 	}
+	// The two paths the vector still names are absolute and reach the action
+	// quoted, which is how Task Scheduler stores them.
+	for _, flag := range []string{"--home", "--rclone"} {
+		value := flagValue(args, flag)
+		if value == "" {
+			t.Fatalf("login task arguments carry no %s: %v", flag, args)
+		}
+		if !windowsAbs(value) {
+			t.Errorf("%s %q is not an absolute path the login task can open from System32", flag, value)
+		}
+		if !strings.Contains(doc.Actions.Exec.Arguments, windowsQuoteArg(value)) {
+			t.Errorf("Exec Arguments missing %s (%s):\n%s", flag, windowsQuoteArg(value), doc.Actions.Exec.Arguments)
+		}
+	}
+}
+
+// flagValue returns the value that follows flag in args, or "" when the flag
+// carries no value or is absent.
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// windowsAbs reports a path the Windows task action can open from any working
+// directory: a drive-letter path (C:\...) or a UNC path (\\server\share).
+// filepath.IsAbs answers for the host the test runs on, which is Linux here,
+// so it says "C:\Users\test" is relative and this name says what the task
+// actually needs.
+func windowsAbs(path string) bool {
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
+		c := path[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return strings.HasPrefix(path, `\\`)
 }
 
 // The re-run fix on Windows (drive issue #817): a second `drive init` or
