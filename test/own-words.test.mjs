@@ -123,11 +123,12 @@ const TEXT_EXT = new Set([
   ".txt",
   ".xml",
 ]);
-// Built docs a person or agent reads. VitePress also emits JS/CSS/JSON under
-// public/docs/assets (the theme, the search map). Those are not customer copy,
-// and scanning them for short rival words ("pin", "Space") fails the moment
-// the theme minifier happens to emit one.
-const BUILT_DOCS_EXT = new Set([".html", ".htm", ".md", ".txt"]);
+// Built docs a person or agent reads. VitePress emits HTML plus .md twins
+// and llms-full.txt. The .md/.txt copies are the customer words without the
+// theme's inline script and style, so this walk stays on those and never
+// tries to strip HTML with a regex (CodeQL flags that as incomplete
+// sanitization). Theme JS/CSS/JSON under assets/ is not customer copy.
+const BUILT_DOCS_EXT = new Set([".md", ".txt"]);
 const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
 // The two product-JS trees this gate walks: the shared core both Workers
 // import (drive#616) and the site Worker's own src/. Customer-facing copy
@@ -308,10 +309,10 @@ function walkFiles(dir, files = []) {
 /**
  * The built docs pages under public/docs (drive#545). The authored pages in
  * docs-site/*.md are the source, but what ships is the VitePress build: the
- * HTML, the .md twins the llms plugin emits, and llms-full.txt, which is one
- * file holding every page. A rival name that survives authoring reaches
- * customers through all three, so the built output is walked beside the
- * sources. Fails with the build command when the pages are not built.
+ * .md twins the llms plugin emits, and llms-full.txt, which is one file
+ * holding every page. A rival name that survives authoring reaches
+ * customers through both, so the built output is walked beside the sources.
+ * Fails with the build command when the pages are not built.
  * @returns {{rel: string, text: string}[]}
  */
 function builtDocsFiles() {
@@ -322,9 +323,8 @@ function builtDocsFiles() {
     throw new Error("public/docs was not built; run `npm run docs:build` first (npm test does)");
   }
   // Not walkFiles(): walkFiles skips the generated public/docs tree, which is
-  // exactly the tree this list needs. Recurse so a nested .md/.txt/.html
-  // (assets, subpages) is scanned too. Skip theme JS/CSS/JSON: those are not
-  // customer copy.
+  // exactly the tree this list needs. Recurse so a nested .md/.txt
+  // (subpages, llms-full.txt) is scanned too.
   /** @type {{rel: string, text: string}[]} */
   const files = [];
   /** @param {string} dir */
@@ -341,18 +341,7 @@ function builtDocsFiles() {
       if (!ent.isFile() || !BUILT_DOCS_EXT.has(extname(ent.name))) {
         continue;
       }
-      const raw = readFileSync(full, "utf8");
-      // The built HTML carries VitePress comments and inline theme script;
-      // the customer copy is what renders, so comments and script/style
-      // blocks are stripped the same way scanTree strips comments. A
-      // minified theme word is not authored copy.
-      const text =
-        extname(ent.name) === ".html"
-          ? stripMarkupComments(raw)
-              .replace(/<script\b[\s\S]*?<\/script>/gi, "")
-              .replace(/<style\b[\s\S]*?<\/style>/gi, "")
-          : raw;
-      files.push({ rel: relative(root, full), text });
+      files.push({ rel: relative(root, full), text: readFileSync(full, "utf8") });
     }
   };
   walk(docsDir);
@@ -431,6 +420,22 @@ test("an escaped backtick does not hide later copy", () => {
   const strings = quotedStrings("const a = `foo \\` bar`; const b = `Clipboard`;");
   assert.ok(strings.some((s) => s === "Clipboard"));
   assert.ok(hitsIn("src/x.js", strings.join("\n")).some((hit) => hit.term === "Clipboard"));
+});
+
+test("the built docs output is walked, not only the authored pages", () => {
+  const files = builtDocsFiles();
+  assert.ok(
+    files.some((file) => file.rel.endsWith("llms-full.txt")),
+    "the walk must include the built llms-full.txt",
+  );
+  assert.ok(
+    files.some((file) => file.rel.endsWith(".md")),
+    "the walk must include the built .md twins",
+  );
+  assert.ok(
+    !files.some((file) => file.rel.endsWith(".html")),
+    "HTML is the same pages plus theme chrome; the .md twins are the customer copy",
+  );
 });
 
 test("the customer-facing tree has none of the listed terms", () => {

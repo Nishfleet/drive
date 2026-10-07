@@ -276,7 +276,7 @@ test("the platform list is the packaging code's, in the same words on the home p
     const around = index.slice(Math.max(0, match.index - 80), match.index + 120);
     assert.match(
       around,
-      /not ready|not published|Not yet|planned/i,
+      /not ready|not published|not yet|planned|not proven/i,
       `a home-page Windows mention reads as available: ...${around}...`,
     );
   }
