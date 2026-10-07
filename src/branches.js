@@ -49,8 +49,6 @@
 import {
   accountFirstChargedAt,
   accountStoredBytes,
-  accountStoredBytesSql,
-  PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
@@ -580,39 +578,23 @@ const NAMED_FILES_LIMIT = 20;
 
 /**
  * The most branches one account may hold at once (drive#553). A branch is a
- * full server-side copy of a folder, so N branches hold N copies of the
- * folder's bytes at the operator's cost; without a cap a card-less account at
+ * full server-side copy of a folder, so without a cap a card-less account at
  * the 1 TB pre-charge limit could POST a branch per folder and multiply its
- * stored bytes past every guard (extending #536 and #496). Ten is far above the
- * handful of branches a person or an agent works in at once and bounds the
- * copies a single account can hold. The sentence the refusal uses is
- * `branch-limit` in core/messages.js, which names this same number.
+ * stored bytes past every guard. The refusal sentence is `branch-limit` in
+ * core/messages.js, which names this same number.
  *
- * The cap counts a branch from the claim until its bytes are gone, which is
- * every state the active-name index holds (`BRANCH_ACTIVE_STATES`):
- *
- * - 'creating': the copy job has not run yet, so the branch holds nothing on
- *   disk but is about to hold a whole folder. Counting only 'open' would bound
- *   nothing, because every create lands in 'creating' first (drive#563), so ten
- *   queued creates would each pass the cap and then each finish open.
- * - 'approving' / 'discarding' / 'rewinding': the branch is on its way out,
- *   but its bytes leave the store in queued batches, so it still holds a copy
- *   until its job finishes. A cap that dropped these would let an account hold
- *   more than ten physical copies whenever a close job is slow, which is the
- *   bound the cap exists for. Asking for the same action again resumes a stuck
- *   job (see `discardBranch`/`approveBranch`), so a slot always clears.
- *
- * A terminal state ('approved', 'discarded') is out of the list, so the two
- * cannot drift: the cap reads the same states the unique index occupies.
+ * The cap counts every state the active-name index holds
+ * (`BRANCH_ACTIVE_STATES`), which is every state a branch still holds its copy
+ * in: `creating` before its copy job runs, `open`, and the queued states whose
+ * bytes leave the store in batches. A terminal state is out of the list, so the
+ * cap and the index cannot drift.
  */
 export const MAX_OPEN_BRANCHES = 10;
 
 /**
- * The states the branch cap counts, as the SQL `IN (...)` list for it. Built
- * from `BRANCH_ACTIVE_STATES` so the cap and the unique index can never
- * disagree about what "a branch this account holds" means, and one list read
- * by both the count and the claim below so those two cannot drift either — the
- * same single-source rule `ACTIVE_STATE_LIST` follows for the list route.
+ * The states the cap counts, as the SQL `IN (...)` list. Built from
+ * `BRANCH_ACTIVE_STATES` so the cap and the unique index can never disagree
+ * about what "a branch this account holds" means.
  * @type {string}
  */
 const CAP_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join(", ");
@@ -844,8 +826,7 @@ function fingerprintMapFromObject(raw) {
  * The bytes every file under `root` holds, summed from the store's own
  * listings. Branch copies are written without `withIndex`, so they never land
  * in the search index a pre-charge check reads (drive#553); the storage
- * listing is the only source of truth for what a branch holds. A missing
- * `root` lists as nothing, so an account with no branches sums to 0.
+ * listing is the only source of truth for what a branch holds.
  * @param {FileStore} store a scoped store
  * @param {string} root
  * @returns {Promise<number>}
@@ -859,9 +840,9 @@ async function storedBytesUnder(store, root) {
 }
 
 /**
- * How many branches this account is holding. The states counted are the ones
- * its copy exists in (see `CAP_STATE_LIST`), so this is the number the cap
- * refuses on before any row is claimed.
+ * How many branches this account holds, in the states the cap counts (see
+ * `CAP_STATE_LIST`). The whole number the cap refuses on before a row is
+ * claimed.
  * @param {D1Database} db
  * @param {string} accountId
  * @returns {Promise<number>}
@@ -874,86 +855,7 @@ async function countOpenBranches(db, accountId) {
     )
     .bind(accountId)
     .first();
-  const open = Number(/** @type {{open?: unknown} | null | undefined} */ (row)?.open ?? 0);
-  if (!Number.isInteger(open) || open < 0) {
-    throw new TypeError(`branches open count must be a whole number, got ${String(open)}`);
-  }
-  return open;
-}
-
-/**
- * Which of the claim's two predicates refused it (drive#553). The claim writes
- * one row only while the account holds fewer than MAX_OPEN_BRANCHES branches
- * and its bytes fit under the pre-charge limit, so a claim that changed no rows
- * was refused by one of the two, and they answer different sentences. It is
- * read back from the same live state the claim read, in one statement, rather
- * than guessed from the count taken before the claim (which a racer has since
- * made stale). The cap is read first, because createBranch checks it before
- * the bytes, so the two paths answer the same way for the same account.
- * @param {D1Database} db
- * @param {{accountId: string, incomingBytes: number}} input
- * @returns {Promise<"cap"|"limit">}
- */
-async function claimRefusal(db, { accountId, incomingBytes }) {
-  const row = await db
-    .prepare(
-      `SELECT (SELECT COUNT(*) FROM branches
-                WHERE account_id = ?1 AND state IN (${CAP_STATE_LIST})) >= ?2 AS at_cap,
-              ${accountStoredBytesSql("?1")}
-                + (SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches
-                    WHERE account_id = ?1 AND state = 'creating')
-                + ?3 > ?4 AS over_limit`,
-    )
-    .bind(accountId, MAX_OPEN_BRANCHES, incomingBytes, PRE_CHARGE_STORAGE_LIMIT_BYTES)
-    .first();
-  const atCap = Number(/** @type {{at_cap?: unknown} | null | undefined} */ (row)?.at_cap ?? 0);
-  const overLimit = Number(
-    /** @type {{over_limit?: unknown} | null | undefined} */ (row)?.over_limit ?? 0,
-  );
-  if (overLimit === 1 && atCap !== 1) {
-    return "limit";
-  }
-  // At the cap, or neither predicate reads true now because a racer has moved
-  // the state on since the claim read it (a branch closed, bytes spent). Either
-  // way this create holds no row, so the cap's sentence is the one that stays
-  // true of it: it may not keep another branch, and the copy is not made.
-  return "cap";
-}
-
-/**
- * The bytes every branch this account has claimed but not yet copied reserves
- * against the pre-charge limit (drive#553). A create claims its row and hands
- * the copy to a queued job (drive#563), so between the claim and the first
- * batch the branch's bytes are in neither the file index nor the store: ten
- * queued creates of a 100 GB folder would each measure only its own folder and
- * each walk past a limit that would have refused the ninth. The claim writes
- * what it measured into `reserved_bytes` (migrations/drive/0039), and this
- * sums those rows.
- *
- * Only 'creating' rows are summed, and that is the whole of the release: a row
- * that leaves 'creating' has copied bytes the store walk above can see, so its
- * reservation stops being counted without any code having to clear it. A
- * 'creating' row also has whatever the first batches already wrote, so its
- * partial bytes are counted twice, in the direction that refuses.
- * @param {D1Database} db
- * @param {string} accountId
- * @returns {Promise<number>}
- */
-async function pendingReservedBytes(db, accountId) {
-  const row = await db
-    .prepare(
-      `SELECT COALESCE(SUM(reserved_bytes), 0) AS reserved FROM branches
-        WHERE account_id = ?1 AND state = 'creating'`,
-    )
-    .bind(accountId)
-    .first();
-  const reserved = Number(
-    /** @type {{reserved?: unknown} | null | undefined} */ (row)?.reserved ?? 0,
-  );
-  if (!Number.isFinite(reserved) || reserved < 0) {
-    throw new TypeError(`branches.reserved_bytes must sum to 0 or more, got ${reserved}`);
-  }
-  return reserved;
+  return Number(/** @type {{open?: unknown} | null | undefined} */ (row)?.open ?? 0);
 }
 
 /** The fingerprint of one file, or null when it is not there. One listing of
@@ -2036,39 +1938,25 @@ export async function createBranch(
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
     return { error: failureMessage("branch-exists"), status: 409 };
   }
-  // The open-branch cap (drive#553): a branch is a full copy, so an unbounded
-  // number of them multiplies the bytes this account holds at the operator's
-  // cost. Checked after the open-name check so a duplicate open name still
-  // answers with its own specific sentence, and before the name is claimed so
-  // a refused create writes nothing.
-  const heldBranches = await countOpenBranches(db, account.id);
-  if (heldBranches >= MAX_OPEN_BRANCHES) {
+  // The open-branch cap (drive#553): a branch is a full server-side copy of a
+  // folder, so an unbounded number of them multiplies the bytes this account
+  // holds at the operator's cost. Checked after the open-name check, so a
+  // duplicate open name still answers with its own sentence, and before the
+  // name is claimed, so a refused create writes nothing.
+  if ((await countOpenBranches(db, account.id)) >= MAX_OPEN_BRANCHES) {
     return { error: failureMessage("branch-limit"), status: 409 };
   }
   // The pre-charge storage guard (drive#553): a branch copies the folder's
-  // bytes, so those bytes count against the account's 1 TB limit the same way
-  // an upload's do. The index the guard reads does not see branch copies (they
-  // are written without withIndex), so the branch bytes are summed from the
-  // store itself; a charged account is lifted (drive#464). `reservedBytes` is
-  // what the claim below stores: the copy's own size, once this guard is the
-  // only thing that measured it, so the next queued create counts it too.
-  // `enforcePreCharge` is what the claim's own WHERE reads: false for a
-  // charged account, so its limit does not apply there either.
-  let reservedBytes = 0;
-  let enforcePreCharge = false;
+  // bytes, so those bytes count against the account's 1 TB limit the way an
+  // upload's do. The file index the guard reads does not hold branch copies
+  // (they are written without `withIndex`), so the branch bytes are summed
+  // from the store itself. A charged account is lifted (drive#464).
   const firstChargedAt = await accountFirstChargedAt(db, account.id);
   if (firstChargedAt === null) {
-    enforcePreCharge = true;
-    const stored = await accountStoredBytes(db, account.id);
-    const branchBytes = await storedBytesUnder(store, BRANCHES_ROOT);
-    const reserved = await pendingReservedBytes(db, account.id);
-    const folderBytes = await storedBytesUnder(store, folderPath);
-    reservedBytes = folderBytes;
-    const blocked = preChargeUploadBlocked({
-      firstChargedAt,
-      storedBytes: stored + branchBytes + reserved,
-      incomingBytes: folderBytes,
-    });
+    const incomingBytes = await storedBytesUnder(store, folderPath);
+    const storedBytes =
+      (await accountStoredBytes(db, account.id)) + (await storedBytesUnder(store, BRANCHES_ROOT));
+    const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes, incomingBytes });
     if (blocked !== null) {
       return { error: blocked, status: 403 };
     }
@@ -2092,37 +1980,20 @@ export async function createBranch(
   // count 9 and both insert. The one that inserts no rows is refused below,
   // still before the copy is made.
   //
-  // The claim carries `reserved_bytes` (migrations/drive/0039): the copy's own
-  // size as the guard measured it, so a create queued behind this one is
-  // refused for the bytes this one is about to write rather than allowed to
-  // queue behind a limit it will pass together. A charged account reserves 0,
-  // which sums as nothing, the same as the NULL an older row carries.
-  //
-  // The pre-charge limit rides on the same statement (drive#553), for the same
-  // reason the cap does: the reservation sum read a statement earlier is stale
-  // the moment a racer's row lands, so ten parallel creates of a 200 GB folder
-  // for an account holding 700 GB each saw 900 GB and all ten copies went on
-  // to write 2 TB. `?10 = 0` is the charged account, which the limit does not
-  // apply to; otherwise this account's live bytes, the bytes every 'creating'
-  // row has reserved (re-read inside the statement, so a racer's row counts)
-  // and this folder's own bytes must fit under the limit. The store walk above
-  // cannot ride here — D1 cannot sum object listings in a statement — so the
-  // bytes already copied stay in the check before it. Both agree, and the
-  // statement is the one that cannot be overtaken.
+  // The byte check does not ride here. D1 cannot sum object listings, so the
+  // branch bytes have to come from the store walk above, which D1 cannot do
+  // inside this statement; a queued create's bytes are therefore only counted
+  // once its copy job has written them. That is the same window every upload
+  // has between the guard and the bytes landing.
   let claimId;
   try {
     const claimed = await db
       .prepare(
         "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, " +
-          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind, " +
-          "reserved_bytes) " +
-          "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',?9 " +
+          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id, job_kind) " +
+          "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create' " +
           "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
-          `(${CAP_STATE_LIST})) < ?8` +
-          " AND (?10 = 0 OR (" +
-          `${accountStoredBytesSql("?1")} + ` +
-          "(SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches " +
-          "WHERE account_id = ?1 AND state = 'creating') + ?9) <= ?11)",
+          `(${CAP_STATE_LIST})) < ?8`,
       )
       .bind(
         account.id,
@@ -2133,25 +2004,17 @@ export async function createBranch(
         createdAt,
         changedBy,
         MAX_OPEN_BRANCHES,
-        reservedBytes,
-        enforcePreCharge ? 1 : 0,
-        PRE_CHARGE_STORAGE_LIMIT_BYTES,
       )
       .run();
     if (!claimed.success) {
       return { error: failureMessage("unexpected"), status: 500 };
     }
-    // Neither predicate matched, so this statement wrote no row. Which one is
-    // read back from the same live state, because the two answer different
-    // sentences: too many branches, or too many bytes.
+    // The cap is decided by this statement rather than by the count taken above
+    // it, because a racer's row can land between the two reads. The create whose
+    // claim writes no row is the one the cap refused, and it is refused before
+    // any copy is asked for.
     if (Number(claimed.meta?.changes ?? 0) === 0) {
-      const refused = await claimRefusal(db, {
-        accountId: account.id,
-        incomingBytes: reservedBytes,
-      });
-      return refused === "cap"
-        ? { error: failureMessage("branch-limit"), status: 409 }
-        : { error: failureMessage("pre-charge-storage-limit"), status: 403 };
+      return { error: failureMessage("branch-limit"), status: 409 };
     }
     claimId = Number(claimed.meta.last_row_id);
     if (!Number.isInteger(claimId) || claimId < 1) {
