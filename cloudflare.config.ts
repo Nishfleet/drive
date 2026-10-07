@@ -99,14 +99,13 @@ export default defineConfig({
       triggers.scheduled({ schedule: "0 6 * * *" }),
       // The nightly reindex's consumer (drive#566). The 03:00 cron enqueues
       // one message per account on this queue, and each message is consumed
-      // on its own: maxBatchSize 1 gives a 100,000-file walk a whole
-      // invocation instead of sharing one with every account behind it, and
-      // maxRetries 2 gives a failed walk its own retry budget instead of
-      // failing every account after it, which is what the serial loop this
-      // replaces did. There is no dead-letter queue yet: after the retries
-      // the message is dropped, the nightly cron enqueues the account again,
-      // and a message is lost for at most a day (#519 tracks the meter crons'
-      // dead-letter queues; the reindex can join them).
+      // on its own: maxBatchSize 1 is one account per invocation, so a
+      // broken account cannot spend a sibling's retry budget, which is what
+      // the serial loop this replaces did. maxRetries 2 gives a failed walk
+      // its own retry budget. There is no dead-letter queue yet: after the
+      // retries the message is dropped, the nightly cron enqueues the
+      // account again, and a message is lost for at most a day (#519 tracks
+      // the meter crons' dead-letter queues; the reindex can join them).
       // The queue is created once, out of band, like the branch-snapshot
       // namespace below: a deploy cannot provision one, and `ensureQueuesExistByConfig`
       // fails the deploy with

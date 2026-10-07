@@ -242,6 +242,10 @@ export function d1Over(sqlite, { onQuery } = {}) {
         // The search's rows. The metered intake writes these too (drive#566),
         // and the nightly reindex reads the accounts table above for its list.
         file_index: table("file_index", (row) => `${row.account_id}|${row.path}`),
+        file_index_staging: table(
+          "file_index_staging",
+          (row) => `${row.account_id}|${row.generation}|${row.path}`,
+        ),
       },
       // One version row written straight into the real schema, for the shapes an
       // event cannot express (a 0-byte version, an instant that is not a whole

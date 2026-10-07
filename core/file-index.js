@@ -26,6 +26,22 @@ export function locate(path) {
   };
 }
 
+/** Epoch milliseconds `Date#toISOString` can format. Outside this range the
+ * Date is Invalid and `toISOString` throws RangeError — a finite check is
+ * not enough (`1e300` is finite). */
+const MAX_DATE_MS = 8.64e15;
+
+/**
+ * @param {unknown} n
+ * @returns {string|null}
+ */
+function isoFromMillis(n) {
+  if (typeof n !== "number" || !Number.isFinite(n) || Math.abs(n) > MAX_DATE_MS) {
+    return null;
+  }
+  return new Date(n).toISOString();
+}
+
 /**
  * @param {{id: string}} account
  * @param {string} path
@@ -40,8 +56,8 @@ export function fileRow(account, path, entry, at) {
       ? Math.floor(entry.size)
       : 0;
   const modified =
-    typeof entry.modified === "number" && Number.isFinite(entry.modified)
-      ? new Date(entry.modified).toISOString()
+    typeof entry.modified === "number"
+      ? isoFromMillis(entry.modified)
       : typeof entry.modifiedAt === "string"
         ? entry.modifiedAt
         : null;
@@ -52,7 +68,7 @@ export function fileRow(account, path, entry, at) {
     parent,
     size_bytes: size,
     modified_at: modified,
-    indexed_at: new Date(at).toISOString(),
+    indexed_at: isoFromMillis(at) ?? new Date().toISOString(),
   };
 }
 
@@ -137,6 +153,10 @@ export function deleteStatement(db, account, path) {
  *   * a path `validatePath` refuses is a path the walk refuses too, so the
  *     index must not hold a row the rebuild could never reproduce;
  *   * trash is never listed, by the page or the search.
+ * A redelivered create after a delete can put the path back until the
+ * nightly rebuild walks the store. Search is allowed that day's staleness:
+ * the version row is already order-insensitive, and the rebuild is the
+ * correction.
  * @param {D1Database} db
  * @param {{accountId: string, path: string, sizeBytes: number, createdAt: number, effect: string}} event
  * @param {number} receivedAt

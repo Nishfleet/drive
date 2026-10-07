@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../core/billing.js";
+import { fileRow } from "../core/file-index.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
@@ -594,6 +595,26 @@ test("a storage event makes the file it names searchable, with no walk (drive#56
   // A redelivered event is the normal case, and it must not add a second row.
   assert.deepEqual(await recordEvent(db, event, midnight()), { stored: false });
   assert.equal(db.tables.file_index.size, 1, "the dedup ate the replay, so the row count held");
+});
+
+test("an out-of-range timestamp stores a null date instead of throwing (drive#566)", async () => {
+  const row = fileRow({ id: "acct-1" }, "/huge.txt", { size: 12, modified: 1e300 }, Date.now());
+  assert.equal(row.modified_at, null);
+  assert.equal(row.size_bytes, 12);
+  const { db } = makeMeteredDB();
+  const event = validateEvent(
+    createEvent("acct-1", {
+      path: "/u/acct-1/huge.txt",
+      b2FileId: "file-huge-date",
+      sizeBytes: 12,
+      createdAt: 1e300,
+    }),
+  );
+  assert.equal(event.error, undefined, event.error);
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: true });
+  const stored = db.tables.file_index.get("acct-1|/huge.txt");
+  assert.equal(stored.size_bytes, 12);
+  assert.equal(stored.modified_at, null);
 });
 
 test("the meter refuses to store an event that failed validation (drive#566)", async () => {

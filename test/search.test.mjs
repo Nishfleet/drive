@@ -16,7 +16,9 @@ import {
 } from "../core/files.js";
 import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
+import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";
+import { METER_JOBS_QUEUE } from "../src/meter-jobs.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -1056,6 +1058,31 @@ test("a message on an unknown queue is refused, not treated as a meter job", asy
       ),
     /unknown queue/,
   );
+});
+
+test("a named meter-queue batch is not refused as unknown", async () => {
+  const workerQueue =
+    /** @type {(batch: {queue: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}, env: unknown, ctx: {waitUntil(): void}) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.queue)
+    );
+  /** @type {{body: unknown, ack(): void, retry(): void, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body: {
+      kind: BRANCH_QUEUE_KINDS.create,
+      accountId: "acct-1",
+      branchId: 1,
+      name: "work",
+    },
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  await workerQueue({ queue: METER_JOBS_QUEUE, messages: [message] }, {}, { waitUntil() {} });
+  assert.equal(message.retried, true, "a missing DRIVE_DB still retries on the live queue name");
+  assert.equal(message.acked, undefined);
 });
 
 test("the published worker really declares the reindex queue halves", async () => {
