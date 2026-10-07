@@ -1228,9 +1228,11 @@ async function capStateFor(resolver, accountId) {
  * non-function or throwing resolver means: both get null.
  * @param {unknown} resolver
  * @param {string} accountId
+ * @param {string} [where] named in the throw log so a drop refusal and a
+ *   public-page name lookup cannot be mixed up in the same line
  * @returns {Promise<{name?: unknown, email?: unknown}|null>}
  */
-async function ownerRowFor(resolver, accountId) {
+async function ownerRowFor(resolver, accountId, where = "") {
   if (typeof resolver !== "function") {
     return null;
   }
@@ -1238,7 +1240,11 @@ async function ownerRowFor(resolver, accountId) {
   try {
     owner = await resolver(accountId);
   } catch (cause) {
-    console.error(`drive share: reading a link owner failed: ${String(cause)}`);
+    console.error(
+      where === ""
+        ? `drive share: reading a link owner failed: ${String(cause)}`
+        : `drive share: reading a link owner failed for ${where}: ${String(cause)}`,
+    );
     return null;
   }
   if (owner === null || owner === undefined) {
@@ -1285,10 +1291,11 @@ async function ownerNameFor(resolver, accountId) {
  * the same "nobody to tell" core/security-event.js skips over.
  * @param {unknown} resolver
  * @param {string} accountId
+ * @param {string} token the upload-request token, named in the throw log
  * @returns {Promise<string>}
  */
-async function ownerEmailFor(resolver, accountId) {
-  const owner = await ownerRowFor(resolver, accountId);
+async function ownerEmailFor(resolver, accountId, token) {
+  const owner = await ownerRowFor(resolver, accountId, `a refused upload through /s/${token}`);
   if (owner === null || typeof owner.email !== "string") {
     return "";
   }
@@ -1398,7 +1405,7 @@ export async function handleShareRequest(request, files, links, account, options
     // keeps its 429 even on a half-configured deployment.
     if (options.db === undefined) {
       throw new TypeError(
-        "handleShareRequest's mint needs options.db; pass null when a call has no database",
+        "handleShareRequest's mint is missing options.db (a wiring TypeError, not a runtime failure); pass null when a call has no database",
       );
     }
     const read = await readJsonObject(request);
@@ -1938,7 +1945,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // answered first, so a request the edge refuses keeps its answer even
     // on a half-configured deployment.
     throw new TypeError(
-      "handleRequestUploadRequest needs options.db; pass null when a call has no database",
+      "handleRequestUploadRequest is missing options.db (a wiring TypeError, not a runtime failure); pass null when a call has no database",
     );
   }
   const name = url.searchParams.get("name") || "";
@@ -2002,7 +2009,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
       record.malwareNoticeAt === null ||
       now - record.malwareNoticeAt >= MALWARE_NOTICE_QUIET_MS
     ) {
-      const ownerEmail = await ownerEmailFor(options.owner, record.accountId);
+      const ownerEmail = await ownerEmailFor(options.owner, record.accountId, record.token);
       if (ownerEmail === "") {
         // Loud, and named: without this line a misbound resolver or an account row
         // with no address turns off the notification half of this refusal with

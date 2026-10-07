@@ -583,6 +583,15 @@ test("a feed that is not a feed fails the load and keeps the rows it had", async
       label,
     );
   }
+  await assert.rejects(
+    () =>
+      loadKnownBadFeed(db, {
+        fetch: async () => new Response("", { status: 200 }),
+        now: now + 1000,
+      }),
+    /answered an empty body/,
+    "empty body is not a shape change",
+  );
   assert.deepEqual(await lastKnownBadFeedLoad(db), {
     source: KNOWN_BAD_FEED_URL,
     loadedAt: Math.floor(now / 1000),
@@ -1127,6 +1136,35 @@ test("a refused drop with no owner address to notify is loud, and still refuses"
     `the missing recipient is logged, got: ${JSON.stringify(logged)}`,
   );
   assert.ok(logged.some((line) => line.includes(`/s/${TOKEN}`)));
+  logged.length = 0;
+  console.error = (line) => logged.push(String(line));
+  try {
+    const droppedAgain = await handleRequestUploadRequest(
+      new Request(
+        `${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=${encodeURIComponent("eicar.txt")}`,
+        { method: "POST", headers: { "content-type": "text/plain" }, body: EICAR_BODY },
+      ),
+      files,
+      links,
+      () => "active",
+      withLimits({
+        db,
+        now,
+        owner: async () => {
+          throw new Error("resolver down");
+        },
+      }),
+    );
+    assert.equal(droppedAgain.status, 403);
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(
+    logged.some(
+      (line) => line.includes("reading a link owner failed") && line.includes(`/s/${TOKEN}`),
+    ),
+    `a throw names the link, got: ${JSON.stringify(logged)}`,
+  );
   assert.deepEqual(
     (await list()).map((row) => row.name),
     ["eicar.txt"],
