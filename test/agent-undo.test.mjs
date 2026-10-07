@@ -537,6 +537,21 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
   );
   assert.equal(unbound.status, 503);
   assert.match(await unbound.text(), /can't reach storage/);
+
+  // drive#854: the scope the handler applies now sits between the guards and
+  // the rewind, so a store the Worker could not build stays a 503 and never
+  // reaches it. scopeStore throws a TypeError on no store, which would turn
+  // the answer into a crash; the guard answering first is what the pin below
+  // proves.
+  const storeless = await handleRewindRequest(
+    new Request(`https://drive.test${REWIND_ENDPOINT}/fix`, { method: "POST" }),
+    db,
+    snapshots,
+    null,
+    ACCOUNT,
+    () => AT,
+  );
+  assert.equal(storeless.status, 503);
 });
 
 // The one branch row a test needs by name, through the same list the screen
@@ -600,9 +615,19 @@ function fakeS3() {
       const source = headers?.["x-amz-copy-source"];
       if (typeof source === "string") {
         // CopyObject: one key to another, bytes included, which is the part
-        // the branch copy hangs on.
-        const from = decodeURIComponent(source).split("/").slice(2).join("/");
-        objects.set(key, objects.get(from) ?? "");
+        // the branch copy hangs on. The source header carries its own bucket:
+        // there is one bucket per account here, so a copy that reaches across
+        // buckets is refused the way the provider refuses it.
+        const [, sourceBucket, ...sourceKey] = decodeURIComponent(source).split("/");
+        if (sourceBucket !== bucket) {
+          return new Response("<Error><Code>AccessDenied</Code></Error>", { status: 403 });
+        }
+        const from = sourceKey.join("/");
+        const bytes = objects.get(from);
+        if (bytes === undefined) {
+          return new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 });
+        }
+        objects.set(key, bytes);
         return new Response('<CopyObjectResult><ETag>"copied"</ETag></CopyObjectResult>');
       }
       objects.set(key, await new Response(init.body).text());
