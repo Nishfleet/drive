@@ -290,7 +290,7 @@ func rcloneEnvRedacted(p MountPlan) string {
 
 func rcClientForMount(p MountPlan) *rcClient {
 	c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
-	c.user, c.pass = p.RCUser, p.RCPass
+	c.SetAuth(p.RCUser, p.RCPass)
 	return c
 }
 
@@ -312,14 +312,6 @@ func DeviceName() string {
 	}
 	return DefaultDeviceName()
 }
-
-// rcAddrEnvName is the environment variable that carries the remote
-// control's loopback address. Two mounts on one host cannot both bind one
-// address (drive#807), so a person's mount picks a free loopback port and
-// stores it in rclone.env under this name. DRIVE_RC_ADDR and --rc-addr still
-// override, which is how the two-machine proof (issue #30) and the tests pin
-// a port.
-const rcAddrEnvName = "DRIVE_RC_ADDR"
 
 // RCAddr is the loopback address a command that has not yet prepared a mount
 // would bind. A real `drive mount` overwrites it in prepareMountAuth with a

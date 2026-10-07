@@ -568,8 +568,8 @@ func TestTransfersLineTrustsTheLiveRateWhenMounted(t *testing.T) {
 	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"rate":"off","bytesPerSecond":-1,"bytesPerSecondTx":-1,"bytesPerSecondRx":-1}`))
 	}))
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if got := transfersLine(home, true); got != transfersRunning {
 		t.Errorf("transfersLine(mounted, live off, marker present) = %q, want running", got)
 	}
@@ -580,8 +580,8 @@ func TestTransfersLineReadsPausedFromTheLiveRate(t *testing.T) {
 	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"rate":"1Ki:off","bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1}`))
 	}))
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
 		t.Errorf("transfersLine(mounted, live paused, no marker) = %q, want the Paused word", got)
 	}
