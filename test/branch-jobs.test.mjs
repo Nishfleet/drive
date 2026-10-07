@@ -566,11 +566,146 @@ test("approve plan lives in KV, not in the D1 job_cursor", async () => {
   assert.equal(cursor.added, undefined);
   assert.equal(cursor.branchFp, undefined);
   assert.equal(cursor.sourceFp, undefined);
+  assert.equal(cursor.changedN, 1);
+  assert.equal(cursor.addedN, 0);
+  assert.equal(cursor.planParts, true);
   assert.ok(JSON.stringify(cursor).length < 200, JSON.stringify(cursor));
-  const planJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
-  assert.ok(planJson);
-  const plan = JSON.parse(planJson);
-  assert.ok(Array.isArray(plan.changed) && plan.changed.includes("a.txt"));
+  const sliceJson = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan.changed.0`);
+  assert.ok(sliceJson);
+  const slice = JSON.parse(sliceJson);
+  assert.ok(Array.isArray(slice) && slice.includes("a.txt"));
+  const wholePlan = await snapshots.get(`${snapshotKey(ACCOUNT, "work")}/approve-plan`);
+  assert.equal(wholePlan, null, "the whole plan is never written as one value");
+});
+
+test("approve plan is written once per slice, not rewritten every batch", {
+  timeout: 240_000,
+}, async () => {
+  const raw = createMemoryStore();
+  const scoped = scopeStore(raw, ACCOUNT);
+  await scoped.write("/Photos/seed.txt", new Blob(["seed"]).stream(), "text/plain");
+  const db = createTestD1();
+  const planPrefix = `${snapshotKey(ACCOUNT, "work")}/approve-plan`;
+  const inner = createTestKv();
+  const counts = { planReads: 0, planPuts: 0, wholePlanPuts: 0 };
+  /** @param {string} key */
+  const isPlanKey = (key) => key === planPrefix || key.startsWith(`${planPrefix}.`);
+  const kv = /** @type {KVNamespace & {values: Map<string, string>}} */ (
+    /** @type {unknown} */ ({
+      values: inner.values,
+      /** @param {string} key */
+      async get(key) {
+        if (isPlanKey(key)) {
+          counts.planReads += 1;
+        }
+        return inner.get(key);
+      },
+      /**
+       * @param {string} key
+       * @param {string} value
+       */
+      async put(key, value) {
+        if (isPlanKey(key)) {
+          counts.planPuts += 1;
+        }
+        if (key === planPrefix) {
+          counts.wholePlanPuts += 1;
+        }
+        return inner.put(key, value);
+      },
+      /** @param {string} key */
+      async delete(key) {
+        return inner.delete(key);
+      },
+      /** @param {{prefix?: string}} [options] */
+      async list(options = {}) {
+        return inner.list(options);
+      },
+      reset() {
+        counts.planReads = 0;
+        counts.planPuts = 0;
+      },
+      get planReads() {
+        return counts.planReads;
+      },
+      get planPuts() {
+        return counts.planPuts;
+      },
+      get wholePlanPuts() {
+        return counts.wholePlanPuts;
+      },
+    })
+  );
+  const snapshots = createKvSnapshotStore(kv);
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const pending = [];
+  for (let index = 0; index < 20_000; index += 1) {
+    pending.push(
+      scoped.write(`/.branches/work/${index}.txt`, new Blob(["x"]).stream(), "text/plain"),
+    );
+    if (pending.length === 200) {
+      await Promise.all(pending);
+      pending.length = 0;
+    }
+  }
+  await Promise.all(pending);
+  const queue = fakeQueue();
+  const started = await approveBranch(db, snapshots, scoped, ACCOUNT, "work", queue);
+  assert.equal(started.state, "approving");
+  const row = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(row);
+  /** @param {unknown} raw */
+  const ready = (raw) => {
+    if (typeof raw !== "string" || raw === "") {
+      return false;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && parsed.ready === true;
+  };
+  const applyReads = [];
+  const applyPuts = [];
+  let applyBatches = 0;
+  let wholePlanPuts = 0;
+  for (;;) {
+    const before = await db
+      .prepare("SELECT job_cursor FROM branches WHERE id = ?1")
+      .bind(row.id)
+      .first();
+    const wasReady = ready(before?.job_cursor);
+    kv.reset();
+    const result = await processBranchJob(db, snapshots, scoped, ACCOUNT, row.id);
+    wholePlanPuts += kv.wholePlanPuts;
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    if (wasReady && result.done !== true) {
+      applyReads.push(kv.planReads);
+      applyPuts.push(kv.planPuts);
+      applyBatches += 1;
+    }
+    if (result.done) {
+      break;
+    }
+  }
+  assert.equal(wholePlanPuts, 0, "the whole-plan key is never written");
+  assert.ok(
+    applyBatches > 20_000 / BRANCH_JOB_BATCH_FILES - 2,
+    `the plan took ${applyBatches} apply batches`,
+  );
+  assert.ok(
+    applyPuts.every((writes) => writes === 0),
+    `a slice batch must not rewrite the plan, puts were ${applyPuts.slice(0, 5)}`,
+  );
+  const first = applyReads[0];
+  const last = applyReads[applyReads.length - 1];
+  assert.ok(
+    first !== undefined && last !== undefined && Math.abs(last - first) <= 2,
+    `a batch read ${first} plan keys on the first slice and ${last} on the last`,
+  );
+  assert.ok(
+    first !== undefined && first <= 4,
+    `each batch must read only its slice, first batch read ${first} plan keys`,
+  );
+  const done = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.equal(done?.state, "approved");
 });
 
 test("approve clash persists job_error on the row the poll reads", async () => {
