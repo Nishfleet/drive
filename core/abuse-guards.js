@@ -79,7 +79,7 @@ export function signupCardFingerprint(fields) {
   if (typeof posted === "string" && posted.trim() !== "") {
     return `posted:${posted.trim()}`;
   }
-  // Same four yes-values hasSignupCard reads (src/signin.js). Copied here so
+  // Same four yes-values the old start-step checkbox posted. Copied here so
   // this module does not import the route, which imports this file.
   const card = fields.card;
   if (card !== true && card !== "true" && card !== "on" && card !== "1") {

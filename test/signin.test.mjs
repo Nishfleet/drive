@@ -112,14 +112,7 @@ function dispatchEnv(options = {}) {
  * @param {{url?: string, headers?: Record<string, string>}} [options]
  */
 const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) => {
-  const payload =
-    typeof body === "string"
-      ? body
-      : JSON.stringify(
-          typeof body === "object" && body !== null && !Array.isArray(body)
-            ? { card: true, ...body }
-            : body,
-        );
+  const payload = typeof body === "string" ? body : JSON.stringify(body);
   return new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
@@ -1827,8 +1820,9 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     "the card sentence appears exactly once on the page",
   );
   // drive#538 finish line 3: this form has no card checkbox. The needCard
-  // sentence above is where the rule is stated; verify enforces it. A box
-  // here made every returning customer tick "I understand a card is required".
+  // sentence above is where the rule is stated. Verify claims a test
+  // stand-in; a real card waits on the Dodo key. A box here made every
+  // returning customer tick "I understand a card is required".
   assert.doesNotMatch(page, /id="card"/);
   assert.doesNotMatch(page, /type="checkbox"/);
   assert.doesNotMatch(page, /I understand a card is required/);

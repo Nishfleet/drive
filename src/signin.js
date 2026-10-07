@@ -141,9 +141,9 @@ export const SIGNIN_COPY = Object.freeze({
   // them.
   lede: "One link by email.",
   // drive#387: a card at sign-up, and why, in plain words. The page says it
-  // once (drive#420). The rule is enforced when the emailed link is
-  // followed (drive#538), not by a tick box on the start form: that box
-  // made every returning customer consent again.
+  // once (drive#420). A tick box on the start form made every returning
+  // customer consent again (drive#538). Verify claims a test stand-in;
+  // a real card waits on the Dodo key (drive#417, drive#325).
   needCard: PRICE.needCard,
   noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
@@ -221,7 +221,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, next?: string}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -256,32 +256,12 @@ export function readSigninRequest(body) {
 }
 
 /**
- * Whether a posted field is a card-at-sign-up yes. JSON posts true; a form
- * used to post "on". Anything else is not a card.
- * @param {unknown} value
- * @returns {boolean}
- */
-export function hasSignupCard(value) {
-  return value === true || value === "true" || value === "on" || value === "1";
-}
-
-/**
- * Sign-up without a card is refused (drive#387). Returning the need-card
- * sentence, or null when a card is present. No Dodo call: a missing key
- * still charges nobody (#325).
- * @param {unknown} card
- * @returns {string|null}
- */
-export function refuseSignupWithoutCard(card) {
-  return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
-}
-
-/**
  * The start step: the method and, for the email method, the address.
- * A fingerprint posted on the body is ignored (drive#538): claiming a card
- * from an unauthenticated start is how a stranger locked an address out.
+ * A fingerprint or card field posted on the body is ignored (drive#538):
+ * claiming a card from an unauthenticated start is how a stranger locked
+ * an address out.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, next?: string}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -302,7 +282,6 @@ function readStart(body) {
     step: "start",
     method,
     email,
-    card: body.card,
     // The device-approval return path (drive#558): the approve page sent the
     // person here with ?next= its own URL. Validated here, at the read, so a
     // hand-edited link is dropped rather than stored — the same drop
@@ -636,11 +615,11 @@ export async function handleSigninLinkVerify(request, env) {
       // start cannot move a stranger's fingerprint onto the new account
       // (drive#538). pendingCardAccountId lowercases, so a mixed-case
       // mailbox still matches the hold id. Then claim `test:<email>` on
-      // the real id when the account has no card yet. The start step no
-      // longer refuses a missing checkbox: that 400 was how a stranger
-      // learned whether the address already had an account. The stand-in
-      // is the proven address (Dodo is still unset, drive#417). A clash
-      // is logged, never a 500 for a session that already exists.
+      // the real id when the account has no card yet. That is the stand-in
+      // while Dodo is unset (drive#417, drive#325), not a real card: a
+      // clash is logged, and the person still signs in. The start-step
+      // 400 for a missing checkbox is gone: that answer is how a stranger
+      // learned whether the address already had an account.
       try {
         await /** @type {D1Database} */ (driveDb)
           .prepare("DELETE FROM accounts WHERE id = ?1")

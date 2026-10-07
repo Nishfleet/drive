@@ -192,12 +192,12 @@ button:disabled {
     <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
     <p class="free">No plans. Your balance never expires.</p>
     <!-- drive#420: the one place this page says why a card is needed
-         (SIGNIN_COPY.needCard, src/signin.js). The card rule is enforced
-         when the emailed link is followed, not on this form: a tick box
-         here made every returning customer consent again and was how a
+         (SIGNIN_COPY.needCard, src/signin.js). A tick box on this form
+         made every returning customer consent again and was how a
          stranger learned whether an address was new (drive#538).
-         test/signin.test.mjs fails CI when a second copy of the sentence
-         comes back. -->
+         The emailed link claims a test stand-in; a real card waits on
+         the Dodo key (drive#417, drive#325). test/signin.test.mjs fails
+         CI when a second copy of the sentence comes back. -->
     <p class="free">We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
 
     <div class="card">
