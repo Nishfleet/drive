@@ -19,7 +19,7 @@ write the same folder.
   for each tool on its own key, and the MCP server and the tool's allowed folders
   point there, not at your Drive. Windows is not in version 1, and the tool there
   still works inside your own Drive, because the agent mount is not proven there.
-- **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
+- **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
@@ -35,7 +35,7 @@ Markdown (add `.md` to the address), and the whole set is in one file for
 agents.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
-  five steps to a mounted drive
+  six steps to a mounted drive
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
   plain files, the cache, restore, the bill
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —

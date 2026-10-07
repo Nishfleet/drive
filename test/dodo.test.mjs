@@ -22,6 +22,7 @@ import {
   DODO_TEST_INGEST_URL,
   pushBillingHours,
   resolveIngestUrl,
+  unbillableAccounts,
   unpushedBillingHours,
 } from "../core/dodo.js";
 import {
@@ -232,10 +233,7 @@ test("the event id is the account and hour, so a retry is the same id", () => {
 test("a day of stored GB pushes the bill, with storage and downloads as dollar lines", async () => {
   const day = await storedHours(400, 24);
   const recorder = recordingFetch();
-  const bill = monthBillCents({
-    gbMinutes: 400 * 60 * 24,
-    monthMinutes: minutesInMonth(day.from),
-  });
+  const bill = monthBillCents({ size30Bytes: 400 * BYTES_PER_GB });
   const result = await pushBillingHours(day.db, day.hours, {
     apiKey: KEY,
     fetch: recorder.fetch,
@@ -287,6 +285,88 @@ test("a day of stored GB pushes the bill, with storage and downloads as dollar l
   assert.equal(rows[0].account_id, ACCOUNT);
 });
 
+test("the push records its rows conflict-safely (drive#503)", async () => {
+  // Two overlapping cron runs both read the same hours before either has
+  // written its rows, so both reach this insert. The plain INSERT threw on the
+  // table's own unique keys, which failed the whole batch — and with it every
+  // other hour that run was carrying, which had already been ingested and so
+  // would never be pushed again. `ON CONFLICT DO NOTHING` leaves the rows the
+  // first run wrote and lets the run finish. Dodo dedupes on event_id, so the
+  // overlap costs no money either way.
+  const day = await storedHours(400, 3);
+  const recorder = recordingFetch();
+  const opts = { apiKey: KEY, fetch: recorder.fetch, now: day.from + 3 * HOUR_MS };
+  await pushBillingHours(day.db, day.hours, opts);
+  const rows = day.sqlite
+    .prepare("SELECT hour, amount_units FROM billing_pushes ORDER BY hour")
+    .all();
+  assert.equal(rows.length, 3);
+
+  // Re-insert the same three hours as a racing second run would, through the
+  // same statement the push uses.
+  const again = await day.db.batch(
+    day.hours.map((hour) =>
+      day.db
+        .prepare(
+          `INSERT INTO billing_pushes (account_id, hour, dodo_event_id, amount_units, pushed_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT DO NOTHING`,
+        )
+        .bind(ACCOUNT, hour, billingEventId(ACCOUNT, hour), 999, day.from),
+    ),
+  );
+  assert.equal(
+    again.every((result) => result.success),
+    true,
+    "the racing run's batch succeeds instead of throwing on the unique keys",
+  );
+  const after = day.sqlite
+    .prepare("SELECT hour, amount_units FROM billing_pushes ORDER BY hour")
+    .all();
+  assert.deepEqual(after, rows, "the first run's rows stand, none overwritten");
+});
+
+test("an account storing files with no customer id is named by the gap detector (drive#503)", async () => {
+  const now = midnight() + 4 * HOUR_MS;
+  const { db, sqlite } = makeMeteredDB();
+  // Three accounts stored files: one with a customer, two without.
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  for (const id of ["new-a", "new-b"]) {
+    await db
+      .prepare(
+        `INSERT INTO accounts (id, email, created_at, dodo_customer_id)
+         VALUES (?1, ?2, ?3, NULL)`,
+      )
+      .bind(id, `${id}@example.com`, midnight())
+      .run();
+    await recordUsage(db, id, midnight() + 3 * HOUR_MS, 60, 1 * BYTES_PER_GB, now);
+  }
+  await recordUsage(db, ACCOUNT, midnight() + 3 * HOUR_MS, 60, 1 * BYTES_PER_GB, now);
+  const gap = await unbillableAccounts(db, { now });
+  assert.equal(gap.accounts, 2, "only the accounts with no customer id");
+  assert.equal(gap.since, midnight() + 3 * HOUR_MS, "the oldest metered hour among them");
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
+    0,
+    "the detector reads and writes nothing",
+  );
+  // A closed account holds files nobody will bill for and must stop the alarm.
+  sqlite.prepare("UPDATE accounts SET state = 'closed' WHERE id = ?").run("new-a");
+  assert.equal((await unbillableAccounts(db, { now })).accounts, 1);
+  // No metered hours in the window: nothing to report, not an error.
+  assert.deepEqual(await unbillableAccounts(db, { now: midnight() }), { accounts: 0, since: null });
+});
+
+test("the unbillable-account detector refuses a window it cannot read honestly", async () => {
+  const { db } = makeMeteredDB();
+  await assert.rejects(() => unbillableAccounts(db, { hours: 0 }), /positive whole number/);
+  await assert.rejects(() => unbillableAccounts(db, { hours: 1.5 }), /positive whole number/);
+  await assert.rejects(
+    () => unbillableAccounts(/** @type {never} */ (null), {}),
+    /METER_DB binding is not configured/,
+  );
+});
+
 test("a retried hour is ignored: one event id, one billing_pushes row", async () => {
   const day = await storedHours(400, 1);
   const recorder = recordingFetch();
@@ -317,11 +397,10 @@ test("an October hour does not count September's GB-minutes", async () => {
     now: october + HOUR_MS,
   });
   const metadata = recorder.calls[0].payload.events[0].metadata;
-  const octoberBill = monthBillCents({
-    gbMinutes: 10 * 60,
-    monthMinutes: minutesInMonth(october),
-  });
+  // size30 is trailing 30 days, so October still bills September's 800 GB peak.
+  const octoberBill = monthBillCents({ size30Bytes: 800 * BYTES_PER_GB });
   assert.equal(metadata.storage_cents, octoberBill.storageCents);
+  assert.equal(octoberBill.storageCents, 1500);
   assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
 });
 
@@ -343,16 +422,10 @@ test("a push that spans the month boundary bills each month on its own", async (
     2000 * BYTES_PER_GB,
     october + HOUR_MS,
   );
-  const septemberBill = monthBillCents({
-    gbMinutes: 2000 * 60 * 24,
-    monthMinutes: minutesInMonth(september),
-  });
-  const octoberBill = monthBillCents({
-    gbMinutes: 2000 * octoberMinutes,
-    monthMinutes: octoberMinutes,
-  });
-  assert.ok(septemberBill.totalCents > 0, "September needs a bill to subtract by mistake");
-  assert.ok(octoberBill.totalCents > septemberBill.totalCents, "October must exceed September");
+  const septemberBill = monthBillCents({ size30Bytes: 2000 * BYTES_PER_GB });
+  const octoberBill = monthBillCents({ size30Bytes: 2000 * BYTES_PER_GB });
+  assert.equal(septemberBill.totalCents, 3000);
+  assert.equal(octoberBill.totalCents, 3000, "both months still hold the 2 TB size30");
   const recorder = recordingFetch();
   // One call covers the rerolled September hour and the new October hour:
   // the two-hour shape runMeterCron returns across midnight on the 1st.
@@ -388,7 +461,7 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
     fetch: recorder.fetch,
     now: hour1,
   });
-  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 2000);
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 3000);
   await recordUsage(db, ACCOUNT, hour0, 60, BYTES_PER_GB, hour1);
   await recordUsage(db, ACCOUNT, hour1, 60, BYTES_PER_GB, hour1 + HOUR_MS);
   await pushBillingHours(db, [hour1], {
@@ -412,17 +485,17 @@ test("Dodo receives the bill held to the maximum, never the uncapped meter", asy
   const monthMinutes = minutesInMonth(hour);
   const gbMinutes = 2000 * monthMinutes;
   await recordUsage(db, ACCOUNT, hour, gbMinutes, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  const bill = monthBillCents({ gbMinutes, monthMinutes });
-  assert.equal(bill.storageCents, 2000);
-  assert.equal(bill.totalCents, 2000);
+  const bill = monthBillCents({ size30Bytes: 2000 * BYTES_PER_GB });
+  assert.equal(bill.storageCents, 3000);
+  assert.equal(bill.totalCents, 3000);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
   const metadata = recorder.calls[0].payload.events[0].metadata;
   assert.equal(metadata.amount_units, bill.totalCents);
-  assert.equal(metadata.storage_cents, 2000);
+  assert.equal(metadata.storage_cents, 3000);
   assert.equal(metadata.credit_usd, undefined);
   assert.ok(metadata.amount_units < 4000, "the raw $40 meter must not reach Dodo");
-  assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 2000);
+  assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 3000);
 });
 
 test("the Dodo push bills every account at the one rate, on the real schema", async () => {
@@ -451,14 +524,14 @@ test("the Dodo push bills every account at the one rate, on the real schema", as
   const first = events.find((event) => event.customer_id === CUSTOMER);
   assert.ok(other, "the second account's event reached Dodo");
   assert.ok(first, "the first account's event reached Dodo");
-  assert.equal(first.metadata.amount_units, 2000, "2 TB is $20");
-  assert.equal(other.metadata.amount_units, 2000, "the retired column halves nothing");
-  assert.equal(other.metadata.total_cents, 2000);
+  assert.equal(first.metadata.amount_units, 3000, "2 TB is $30");
+  assert.equal(other.metadata.amount_units, 3000, "the retired column halves nothing");
+  assert.equal(other.metadata.total_cents, 3000);
   assert.equal(
     sqlite
       .prepare("SELECT amount_units FROM billing_pushes WHERE account_id = ?1")
       .get(otherAccount).amount_units,
-    2000,
+    3000,
   );
 });
 

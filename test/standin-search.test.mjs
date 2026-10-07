@@ -47,7 +47,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store, scopeStore } from "../core/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
-import { sqlitePlaceholders } from "./harness.mjs";
+import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const FOLDERS = 20;
@@ -74,7 +74,8 @@ function makeD1() {
   for (const name of [
     "waitlist/0001_waitlist.sql",
     "drive/0002_file_index.sql",
-    "drive/0039_file_index_staging.sql",
+    "drive/0039_file_index_fts.sql",
+    "drive/0042_file_index_staging.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -96,9 +97,17 @@ function makeD1() {
    * @returns {{results: Record<string, unknown>[], changes: number}}
    */
   const runOne = (sql, params = []) => {
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    // D1 numbers its placeholders: the same ?1 can appear three times, so the
+    // bound values follow the placeholder appearances rather than the array
+    // order. That is what `searchSql` relies on now that the trigram query
+    // reuses ?1 for the account filter (drive#571).
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (
+      sqliteBoundValues(sql, params)
+    );
     const prepared = sqlitePlaceholders(sql);
-    if (/^\s*(SELECT|WITH)/i.test(sql)) {
+    // A DELETE/UPDATE with a RETURNING clause is a query as far as D1 is
+    // concerned, and the delete path reads the rowid back that way.
+    if (/^\s*(SELECT|WITH)/i.test(sql) || /\bRETURNING\b/i.test(sql)) {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,

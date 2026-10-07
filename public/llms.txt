@@ -1,8 +1,8 @@
 # Drive
 
 > A Finder drive for people and their agents: plain files in object storage,
-> mounted with stock rclone, and billed at 2¢ per GB-month by the minute.
-> Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
+> mounted with stock rclone, and billed at 2¢ per GB-month for the biggest size in the last 30 days.
+> Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
 > No plans. Your balance never expires.
 
 Drive is a mounted folder (macOS and Linux) where your files live in object
@@ -14,21 +14,21 @@ and gives that tool its own key.
 
 ## Pricing
 
-- Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
-- The rule: You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.
-- No plans. Your balance never expires. Storage is metered by the minute and averaged over the month.
-- Each save is billed for at least one hour, so a file saved again and again inside one hour bills more than that hour.
+- Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
+- The rule: You pay for the biggest size your drive reached in the last 30 days. 2 cents per GB a month, never more than $15 per TB.
+- No plans. Your balance never expires.
+- The bill follows the biggest size your drive reached in the last 30 days, not how often you save.
 - We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
-- Downloads: free up to 3× what you store each month, then 1¢ per GB.
+- Downloads: not in the published price, so they are free today. The plan is 3× your stored size free, then 1¢ per GB (planned).
 - Version history is not in version 1.
-- A 1 TB drive kept 60% full bills $10 a month.
+- A 1 TB drive kept 60% full bills $12 a month.
+- Pay only for what you use.
 
-Worked examples, each kept all month, with a usual 1 TB plan beside it:
+Worked examples, each the biggest size in the last 30 days, with a usual 1 TB plan beside it:
 
 - 50 GB = $1 (a usual 1 TB plan: $15, so you save $14)
 - 200 GB = $4 (a usual 1 TB plan: $15, so you save $11)
-- 500 GB to 1 TB = $10 (a usual 1 TB plan: $15, so you save $5)
-- 3 TB = $30 (a usual 1 TB plan: $39, so you save $9)
+- 1 TB = $15 (the same $15, and less in any month you store less)
 
 ## What it is
 
@@ -60,7 +60,7 @@ Every page below is one plain-words page about the drive, also served as
 Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
 holds all ten in one file.
 
-- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
+- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): six steps from nothing to a mounted drive.
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the maximum and four worked sizes.

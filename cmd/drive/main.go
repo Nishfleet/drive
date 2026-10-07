@@ -25,11 +25,13 @@ Usage:
   drive diff <branch> [flags]           files added, changed or removed in a branch
   drive approve <branch> [flags]        copy a branch's changes back into the original
   drive discard <branch> [flags]        throw a branch away; the original is untouched
+  drive undo [branch] [flags]           rewind the last branch an agent worked in
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
   drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
+  drive renew [flags]      renew this device's storage key before the vendor session ends
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive doctor [flags]     print the one block to paste into a support message
@@ -99,7 +101,7 @@ Mount flags:
   --rc-addr     loopback address the mount's remote control binds (env
                 DRIVE_RC_ADDR; default a free loopback port stored in rclone.env)
   --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
-                default the hostname)
+                default the hostname, with a suffix when it is a stock model name)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
@@ -109,6 +111,8 @@ mounted drive.
 
 Login flags:
   --api    drive api base URL (env DRIVE_API_URL, default the live site)
+  --device  name this device is called in the account (default the hostname,
+            with a suffix when it is a stock model name)
 
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
@@ -165,6 +169,7 @@ var commands = map[string]func([]string) error{
 	"diff":      runDiff,
 	"approve":   runApprove,
 	"discard":   runDiscard,
+	"undo":      runUndo,
 	"mount":     runMount,
 	"unmount":   runUnmount,
 	"offline":   runOffline,
@@ -183,6 +188,7 @@ var commands = map[string]func([]string) error{
 	"import":    runImport,
 	"update":    runUpdate,
 	"prefetch":  runPrefetch,
+	"renew":     runRenew,
 }
 
 // version is the fallback when the toolchain records no module version
@@ -238,7 +244,7 @@ type commonFlags struct {
 
 func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.StringVar(&c.home, "home", os.Getenv("HOME"), "home directory")
+	fs.StringVar(&c.home, "home", DefaultHome(), "home directory")
 	fs.StringVar(&c.rclone, "rclone", "", "path to the rclone binary (default rclone from PATH)")
 	return c
 }
@@ -389,7 +395,29 @@ func runUnmount(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	return Unmount(CurrentGOOS(), common.home)
+	goos := CurrentGOOS()
+	home := common.home
+	mountDir := DefaultMountDir(home)
+	before, listErr := Mounted(goos, home)
+	if listErr != nil {
+		before = true
+	}
+	if err := Unmount(goos, home); err != nil {
+		return err
+	}
+	after, err := Mounted(goos, home)
+	if err != nil {
+		return err
+	}
+	if after {
+		return failf("unmount-failed", mountDir)
+	}
+	if before {
+		fmt.Printf("drive: unmounted %s\n", mountDir)
+	} else {
+		fmt.Printf("drive: no mount at %s\n", mountDir)
+	}
+	return nil
 }
 
 // countEntries lists a mount dir with a deadline. A FUSE mount whose backing

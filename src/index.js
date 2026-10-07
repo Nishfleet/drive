@@ -21,6 +21,7 @@ import {
 } from "../core/cap.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
+import { unbillableAccounts } from "../core/dodo.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import {
@@ -55,10 +56,12 @@ import {
 } from "../core/meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
+  checkYesterdayDraws,
   drawPendingHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalances,
+  size30DayUnpaid,
 } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { createD1QueueStore } from "../core/queues.js";
@@ -109,6 +112,7 @@ import {
   captureError,
   reportBillingGap,
   reportPurgeFailures,
+  reportUnbillableAccounts,
   withCronCheckIn,
 } from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
@@ -684,6 +688,8 @@ const filesHandler = async (c) => {
       ? {
           db: c.env.DRIVE_DB,
           prepaidPause: prepaidPauseOn(c.env),
+          size30DayUnpaid: (accountId, extraBytes) =>
+            size30DayUnpaid(c.env.DRIVE_DB, accountId, extraBytes),
           accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
           recordDownload: downloadRecorder(c.env.DRIVE_DB),
         }
@@ -844,8 +850,11 @@ export function createApp() {
       snapshotsFor(c.env),
       storeFor(c.env),
       c.get("account"),
-      () => Date.now(),
-      branchJobsQueue(c.env),
+      {
+        now: () => Date.now(),
+        queue: branchJobsQueue(c.env),
+        ipLimiter: c.env.BRANCH_RATE_LIMITER,
+      },
     );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
@@ -853,8 +862,9 @@ export function createApp() {
   app.post(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
 
   // Agent undo (build step 11, issue #13): the one-click rewind of an agent's
-  // work, on the branch copy src/branches.js already keeps. Same store handling
-  // as the branches route above.
+  // work, on the branch copy src/branches.js already keeps. Same store
+  // handling as the branches route above: the store goes in unscoped and
+  // handleRewindRequest scopes it after the account gate (drive#854).
   /** @param {DriveContext} c */
   const rewindHandler = (c) =>
     handleRewindRequest(
@@ -1156,6 +1166,9 @@ export function createApp() {
         linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
         db: c.env.DRIVE_DB,
         prepaidPause: prepaidPauseOn(c.env),
+        size30DayUnpaid: c.env.DRIVE_DB
+          ? (accountId, extraBytes) => size30DayUnpaid(c.env.DRIVE_DB, accountId, extraBytes)
+          : undefined,
       }),
     ),
   );
@@ -1429,6 +1442,27 @@ const handler = {
           now,
           ...(pause ?? {}),
         });
+        // The billing gap that is an account rather than an hour (drive#503):
+        // the accounts storing files whose first payment never landed, so no
+        // customer id was written and nothing bills them. Reported beside the
+        // draw above, and wrapped because a detector that throws must not
+        // fail a trigger whose draws are already written — the next hour asks
+        // again.
+        try {
+          const unbillable = await unbillableAccounts(env.METER_DB, { now });
+          if (unbillable.accounts > 0) {
+            console.log(
+              "billing gap: accounts storing files with no customer id",
+              `accounts=${unbillable.accounts}`,
+            );
+          }
+          reportUnbillableAccounts(unbillable);
+        } catch (error) {
+          console.error(
+            "billing gap: the unbillable-account report failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
         // Accounts the hour did not draw still need the swap: a cap raise
         // with no usage this hour, or PREPAID_PAUSE flipped on against
         // accounts already at $0.
@@ -1612,6 +1646,27 @@ const handler = {
             `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
             `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
         );
+        // Daily draw check (drive#642): recompute yesterday's draw from the
+        // meter rows and page monitoring on any difference.
+        const drawCheck = await checkYesterdayDraws(
+          env.METER_DB,
+          toMillis(event.scheduledTime, "scheduledTime"),
+        );
+        if (drawCheck.mismatches.length > 0) {
+          for (const mismatch of drawCheck.mismatches) {
+            captureError(
+              new Error(
+                `draw check ${drawCheck.yesterday} ${mismatch.accountId}: ${mismatch.reason}`,
+              ),
+              "meter-daily-draw-check",
+            );
+          }
+          console.error(
+            `draw check: ${drawCheck.mismatches.length} mismatch(es) for ${drawCheck.yesterday}`,
+          );
+        } else {
+          console.log(`draw check: ${drawCheck.yesterday} matched`);
+        }
       });
     }
     // The account close cron, on its own trip and its own Sentry Crons

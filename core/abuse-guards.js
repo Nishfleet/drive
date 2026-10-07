@@ -9,22 +9,24 @@
 //
 // The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
 //
-// The real card capture still waits on the Dodo key (#417). The fingerprint
-// here is the test double: `test:<email>` claimed after the magic link is
-// followed, on the real account id (drive#538). A start request never writes
-// a hold and never takes a fingerprint from the body, so a stranger cannot
-// lock an address out. The `posted:` prefix still keeps a string a test
-// passes to signupCardFingerprint from ever equalling another person's
-// checkbox stand-in.
+// The fingerprint is the provider's own id for the card a payment was made
+// with, and only the verified webhook may write it (drive#503). The browser
+// never supplies one: signupCardFingerprint is gone, and with it the
+// `test:<email>` stand-in a start request or a ticked checkbox produced. That
+// stand-in made one-account-per-card unprovable, because every new address got
+// a distinct string, so the guard never fired. A sign-up whose payment has not
+// landed yet simply holds no fingerprint, and claimCardFingerprint writes it
+// when the webhook arrives.
 
-import { GB_PER_TB } from "./billing.js";
-import { applyCapSwap, capSwapPlan } from "./cap.js";
+import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
+import { applyCapSwap, capSwapPlan, PRE_CHARGE_LIMIT_REASON } from "./cap.js";
 import { failureMessage } from "./messages.js";
+import { DAY_MS } from "./units.js";
 
 /** @typedef {ReturnType<typeof import("./devices.js").createD1DeviceStore>} DeviceStore */
 
 /** 1 TB in decimal bytes, the same GB the bill uses. */
-export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * 1e9;
+export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * BYTES_PER_GB;
 
 /** Accounts row id used at the card step, before Better Auth mints a user. */
 const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
@@ -34,7 +36,7 @@ const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
  * is deleted at the next card step, so a sign-up nobody finished cannot keep a
  * card locked. A day is far past the sign-in link's own life.
  */
-export const HOLD_TTL_SECONDS = 24 * 60 * 60;
+export const HOLD_TTL_SECONDS = DAY_MS / 1000;
 
 // What the 1 TB pre-charge limit counts (drive#536), written once and built
 // into both statements that read it: the live versions, which of those rows
@@ -64,34 +66,23 @@ export function pendingCardAccountId(email) {
 }
 
 /**
- * The fingerprint the card step records. A posted provider fingerprint wins;
- * otherwise the checkbox stand-in is `test:<email>`, lowercased, so two
- * sign-ups with only the box ticked still have distinct cards unless a test
- * posts the same fingerprint on purpose.
- * @param {{card?: unknown, cardFingerprint?: unknown, email?: unknown}} fields
+ * The fingerprint the verified webhook records: the provider's own id for the
+ * card the payment was made with, namespaced so it can never equal another
+ * account's string (drive#503). It is built from the event body, never from a
+ * request field, so nothing a browser sends can choose it.
+ *
+ * Dodo's payment event carries `payment_method_id` on the payment; older
+ * events put the same value on `method`. Both are read, and anything else
+ * (a missing, empty or non-string value) yields null, which the caller treats
+ * as "no card on this event" rather than inventing a value.
+ * @param {unknown} paymentMethodId
  * @returns {string|null}
  */
-export function signupCardFingerprint(fields) {
-  if (typeof fields !== "object" || fields === null) {
-    throw new TypeError(`signupCardFingerprint needs a fields object, got ${String(fields)}`);
-  }
-  const posted = fields.cardFingerprint;
-  if (typeof posted === "string" && posted.trim() !== "") {
-    return `posted:${posted.trim()}`;
-  }
-  // Same four yes-values the old start-step checkbox posted. Copied here so
-  // this module does not import the route, which imports this file.
-  const card = fields.card;
-  if (card !== true && card !== "true" && card !== "on" && card !== "1") {
+export function paymentCardFingerprint(paymentMethodId) {
+  if (typeof paymentMethodId !== "string" || paymentMethodId.trim() === "") {
     return null;
   }
-  const email = fields.email;
-  if (typeof email !== "string" || email.trim() === "") {
-    throw new TypeError(
-      `signupCardFingerprint needs an email when the card step has no fingerprint, got ${String(email)}`,
-    );
-  }
-  return `test:${email.trim().toLowerCase()}`;
+  return `dodo:${paymentMethodId.trim()}`;
 }
 
 /**
@@ -121,8 +112,61 @@ export async function cardFingerprintTaken(db, fingerprint, exceptAccountId) {
 }
 
 /**
+ * Make sure the account row exists, with no card on it.
+ *
+ * The row is the billing account's own record (core/devices.js reads the cap,
+ * the card and the state off it), and the sign-in is where it first appears.
+ * This is what used to happen as a side effect of claiming the `test:<email>`
+ * stand-in fingerprint (drive#503): with the browser-supplied fingerprint
+ * gone, the row still has to be written, so it is written here, explicitly,
+ * with nothing else set.
+ *
+ * No fingerprint and no `card_added_at`: an account that has not paid has no
+ * card, which is what `cardAdded` and `monthUsage` read (both fail closed), so
+ * key minting stays shut until the payment webhook claims the real card. An
+ * existing row keeps its card, card_added_at, cap and closed state; only the
+ * email mirror is refreshed from the current session, which keeps a changed
+ * mailbox current for the card-holder notice (core/ledger.js reads it).
+ * @param {D1Database} db
+ * @param {{accountId: string, email: string, now?: number}} options
+ * @returns {Promise<void>}
+ */
+export async function ensureBillingAccount(db, options) {
+  if (typeof options !== "object" || options === null) {
+    throw new TypeError(`ensureBillingAccount needs options, got ${String(options)}`);
+  }
+  const { accountId, email } = options;
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`ensureBillingAccount needs an account id, got ${String(accountId)}`);
+  }
+  if (typeof email !== "string" || email.trim() === "") {
+    throw new TypeError(`ensureBillingAccount needs an email, got ${String(email)}`);
+  }
+  const nowMs = options.now === undefined ? Date.now() : options.now;
+  if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
+    throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
+  }
+  await db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, state)
+       VALUES (?1, ?2, ?3, 'active')
+       ON CONFLICT(id) DO UPDATE SET
+         email = excluded.email`,
+    )
+    .bind(accountId, email, Math.floor(nowMs / 1000))
+    .run();
+}
+
+/**
  * Record the card fingerprint on this account and stamp card_added_at. A
- * second live account with the same fingerprint is refused with the message table's words and writes nothing.
+ * second live account with the same fingerprint is refused with the message
+ * table's words and writes nothing.
+ *
+ * The fingerprint comes from the provider, through the verified webhook
+ * (paymentCardFingerprint), so this is the only path that writes one for a
+ * real card. A refusal here is not a dropped payment: the caller credits the
+ * money either way and reports why the account was not stamped, because a
+ * top-up is never held hostage by the one-account-per-card rule.
  * @param {D1Database} db
  * @param {{accountId: string, email: string, fingerprint: string, now?: number}} options
  * @returns {Promise<{error: string}|{fingerprint: string}>}
@@ -363,6 +407,47 @@ export async function accountStoredBytes(db, accountId) {
 }
 
 /**
+ * Live `file_versions` bytes, and the reconciled `.branches` slice, in one
+ * statement (drive#800). The prefix is escaped so `%`/`_`/`\` cannot widen it,
+ * and the only wildcard is the trailing `%`, so a person's `x.branches` is
+ * not a branch. One read cannot race a reconcile between two sums.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {string} branchKeyPrefix the account's `.branches` storage key prefix
+ * @returns {Promise<{stored: number, branch: number}>}
+ */
+export async function accountStoredAndBranchBytes(db, accountId, branchKeyPrefix) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`accountStoredBytes needs an account id, got ${String(accountId)}`);
+  }
+  if (typeof branchKeyPrefix !== "string" || branchKeyPrefix === "") {
+    throw new TypeError(
+      `accountStoredAndBranchBytes needs a branch key prefix, got ${String(branchKeyPrefix)}`,
+    );
+  }
+  const row = await db
+    .prepare(
+      `SELECT ${LIVE_STORED_BYTES} AS stored,
+              COALESCE(SUM(CASE WHEN v.path LIKE ?2 ESCAPE '\\' THEN v.size_bytes ELSE 0 END), 0) AS branch
+         FROM ${LIVE_VERSIONS}
+        WHERE ${LIVE_VERSION_ROWS}
+          AND v.account_id = ?1`,
+    )
+    // LIKE ESCAPE is `\`, so JS sends `\%` / `\_` / `\\` as one escaped char.
+    .bind(accountId, `${branchKeyPrefix.replace(/[\\%_]/g, "\\$&")}%`)
+    .first();
+  const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
+  const branch = Number(/** @type {{branch?: unknown} | null | undefined} */ (row)?.branch ?? 0);
+  if (!Number.isFinite(stored) || stored < 0) {
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${stored}`);
+  }
+  if (!Number.isFinite(branch) || branch < 0) {
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${branch}`);
+  }
+  return { stored, branch };
+}
+
+/**
  * The unpaid accounts whose live stored bytes pass the 1 TB pre-charge limit
  * (drive#536): one grouped read over `file_versions` joined to the `accounts`
  * rows, so however many accounts hold bytes this costs one statement and
@@ -419,12 +504,20 @@ export async function preChargeOverLimitAccounts(db) {
  * Only a key's powers change. The account row is not touched: `accounts.state`
  * is the spending cap's word (setAccountState, src/cap.js), and this guard's
  * answer is the key, so the api's write check - which reads the key's
- * capabilities, not the account state - refuses the write at once. Nothing
- * here gives a key back either: a first charge lifts the limit and the next
- * mint (`drive init`) hands out a fresh write key, while a restore from this
- * sweep could un-freeze an account the spending cap froze on purpose
- * (src/cap.js enforceCap) or that the prepaid $0 balance paused
- * (src/prepaid.js).
+ * capabilities, not the account state - refuses the write at once. The freeze
+ * is recorded as `capped_reason = 'pre-charge-limit'` (PRE_CHARGE_LIMIT_REASON).
+ *
+ * The give-back pass (drive#656) runs in the same trip, after the sweep: an
+ * open account holding a key with that reason, and fewer live bytes than the
+ * limit (counted by accountStoredBytes, the sweep's own fragments), gets those
+ * keys, and only those, back at the powers in `capped_from`. A key marked
+ * `spend-cap` (the owner's cap, or an agent cap), a key with no reason, a key
+ * with no `capped_from` record, and an account the spending cap holds
+ * (`accounts.state` read_only) are never widened here, and the prepaid $0
+ * pause caps no key, so it is not touched. An
+ * account that has since paid is given back too: the limit no longer holds it.
+ * Keys the sweep froze before this reason existed still carry `spend-cap` and
+ * stay frozen until `drive init` mints a fresh write key.
  *
  * One account's failure is logged and the sweep moves on, the shape
  * runAccountCloseCron uses: the next account is still capped and the next
@@ -435,7 +528,7 @@ export async function preChargeOverLimitAccounts(db) {
  *   db: D1Database,
  *   devices: Pick<DeviceStore, "listCapKeys" | "keyProviderFor">,
  * }} input
- * @returns {Promise<{overLimit: number, capped: number, failures: number}>}
+ * @returns {Promise<{overLimit: number, capped: number, failures: number, givenBack: number}>} `capped` and `givenBack` count accounts, not keys
  */
 export async function runPreChargeLimitCron(input) {
   if (typeof input !== "object" || input === null) {
@@ -456,7 +549,13 @@ export async function runPreChargeLimitCron(input) {
   let failures = 0;
   for (const row of overLimit) {
     try {
-      const plan = capSwapPlan(await devices.listCapKeys(row.accountId), { state: "read_only" });
+      const plan = capSwapPlan(
+        await devices.listCapKeys(row.accountId),
+        { state: "read_only" },
+        {
+          reason: PRE_CHARGE_LIMIT_REASON,
+        },
+      );
       if (plan.swaps.length === 0) {
         // Already where the sweep put it: a second hourly run plans no swap,
         // so an account capped once is not churned every hour.
@@ -479,7 +578,66 @@ export async function runPreChargeLimitCron(input) {
       );
     }
   }
-  return { overLimit: overLimit.length, capped, failures };
+  const back = await givePreChargeKeysBack(input.db, devices);
+  return {
+    overLimit: overLimit.length,
+    capped,
+    failures: failures + back.failures,
+    givenBack: back.givenBack,
+  };
+}
+
+/**
+ * The give-back half of the hourly trip (drive#656): widen the keys the sweep
+ * froze once their account is back under the limit. See runPreChargeLimitCron.
+ * @param {D1Database} db
+ * @param {Pick<DeviceStore, "listCapKeys" | "keyProviderFor">} devices
+ * @returns {Promise<{givenBack: number, failures: number}>}
+ */
+async function givePreChargeKeysBack(db, devices) {
+  // A failure of this query throws out of the trip after the sweep ran; the next hourly run retries.
+  const frozen = await db
+    .prepare(
+      `SELECT DISTINCT d.account_id AS account_id
+         FROM devices d
+         JOIN accounts a ON a.id = d.account_id AND a.state = 'active'
+        WHERE d.capped_reason = ?1
+          AND d.capped_from IS NOT NULL
+          AND d.revoked_at IS NULL`,
+    )
+    .bind(PRE_CHARGE_LIMIT_REASON)
+    .all();
+  let givenBack = 0;
+  let failures = 0;
+  for (const row of frozen.results ?? []) {
+    const accountId = String(row.account_id);
+    try {
+      if ((await accountStoredBytes(db, accountId)) >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
+        continue;
+      }
+      const keys = (await devices.listCapKeys(accountId)).filter(
+        (key) =>
+          key.cappedReason === PRE_CHARGE_LIMIT_REASON &&
+          Array.isArray(key.cappedFrom) &&
+          key.cappedFrom.length > 0,
+      );
+      const plan = capSwapPlan(keys, { state: "active" });
+      if (plan.swaps.length === 0) {
+        continue;
+      }
+      await applyCapSwap(plan, devices.keyProviderFor(accountId));
+      givenBack += 1;
+    } catch (error) {
+      failures += 1;
+      console.error(
+        "pre-charge limit: account %s is under the limit, but its keys could not be " +
+          "given their write powers back: %s",
+        accountId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return { givenBack, failures };
 }
 
 /**

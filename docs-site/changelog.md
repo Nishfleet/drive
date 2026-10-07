@@ -8,8 +8,27 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-07
+
+- When this computer's storage key is a short session, the drive renews it
+  before it ends and keeps uploads that were already waiting. `drive login`
+  accepts that kind of key because that loop is running.
+- A folder kept offline stays open even after the network has been down for
+  hours, not just seconds. Before, the drive's short directory cache turned
+  the kept-folder promise off after five seconds without a link, and every
+  open in the folder said Input/output error. Listings now stay fresh only
+  while the network answers, so during an outage you work from the copy you
+  have.
+
 ## 2026-10-06
 
+- A Rewind tab in the web app lists the branches an agent worked in, names the
+  files each one changed, and puts your files back in one tap. The new
+  `drive undo` command does the same thing from the command line: it rewinds
+  the last branch an agent worked in, prints what it removes first, and says
+  when it is done. Both read the same /api/rewind route, so the screen and the
+  command cannot disagree about what a rewind undoes, and a branch stays
+  rewindable for 30 days.
 - A branch copies the files your folder held when you made the branch, not the
   files it holds when the copy runs. A file added in between is not in the
   branch, and the next branch takes it. A file that grew in between is copied in
@@ -22,12 +41,17 @@ the live site.
   the words to fix it. The storage vendor sets no limit of its own, and a
   nightly sweep removes the vendor keys of expired or revoked entries and
   records how many keys the vendor holds.
+- Opening an account now asks for a tick that you are 18 or older, and the
+  sign-in route refuses a start without it. The terms already carry the
+  rule.
 - A share link fixes on the file's version at the moment you make it. If that
   file is replaced afterwards, the link refuses with a short page instead of
   handing out the new bytes. A file on the stock known-bad hash list is
   refused when you share it and when someone drops it on an upload page.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
+- A test now fails the build if a page names a command or links to a page that
+  does not exist, so a page that promises `drive restore` cannot come back.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".
@@ -45,6 +69,9 @@ the live site.
   commands to run, the log on each system, a new laptop, a lost laptop, your
   email, and taking your files out. Linked from the 404 page and from
   `drive status`.
+- Customer pages now say only what version 1 does: no $5 roll-over, no live
+  team bill, Get drive opens the waitlist while sign-up is invite-only,
+  get-started names Mac and Linux, and a download charge is marked planned.
 
 ## 2026-10-05
 

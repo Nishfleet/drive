@@ -10,20 +10,14 @@
 // the page sets and the CLI prints arrives finished in the summary's `labels`
 // (core/billing.js). This module holds only the words, so a dollar can never be
 // written down twice.
-import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
-
-/**
- * The usage page itself, served from public/usage.html by the asset layer.
- * Linked from the first-run page so the page is reachable.
- */
-export const USAGE_PATH = "/usage";
+import { BILLING_CONFIG, MINUTE_MS, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
 /**
  * How often the page re-reads the month while it is open and visible. The
  * month moves slowly, so a minute is fresh enough and quiet enough for a tab
  * left open; a hidden tab stops asking entirely.
  */
-export const USAGE_POLL_INTERVAL_MS = 60000;
+export const USAGE_POLL_INTERVAL_MS = MINUTE_MS;
 
 // The words both surfaces use, in one table. The 3x hint is built from
 // BILLING_CONFIG, so the page cannot quote a multiplier the bill does not use,
@@ -32,9 +26,12 @@ export const USAGE_POLL_INTERVAL_MS = 60000;
 export const USAGE_LABELS = Object.freeze({
   chartHeading: `Stored GB, last ${USAGE_HISTORY_DAYS} days`,
   storedNow: "Stored GB now",
-  gbMonths: "GB-months so far",
+  size30: "Biggest size in the last 30 days",
+  size30Reached: "Date that size was reached",
+  size30DropsOut: "Date that size drops out",
+  todayDraw: "Today's draw",
   downloads: "Downloads",
-  downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
+  downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the biggest size in the last 30 days`,
   openPublicLinks: "Open public links",
   cost: "Cost so far",
   cap: "Your cap",
@@ -109,15 +106,11 @@ export const USAGE_LABELS = Object.freeze({
 // own label names, so the check below indexes the labels with a key they
 // actually hold rather than with an arbitrary string.
 /** @type {ReadonlyArray<keyof ReturnType<typeof import("../core/billing.js").usageSummary>["labels"]>} */
-const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
+const LINE_LABEL_KEYS = Object.freeze(["storedNow", "size30", "todayDraw", "downloads", "cost"]);
 
 /**
- * The four lines `drive usage` prints (build-spec.md "Commands"): stored GB
- * now, GB-months so far, downloads against the free 3x, and the cost so far.
- * Every value is the summary's own label, so the CLI and the page cannot
- * disagree about a number. The Go CLI lands with build steps 2 and 4 (issues
- * #3, #5); these lines are its contract, pinned by test/usage.test.mjs so the
- * command can be wired without re-deciding the output.
+ * The lines `drive usage` prints (build-spec.md "Commands"): stored now,
+ * size30, today's draw, downloads, and the cost so far.
  * @param {unknown} summary
  * @returns {readonly string[]}
  */
@@ -139,7 +132,8 @@ export function usageLines(summary) {
   }
   return Object.freeze([
     `${USAGE_LABELS.storedNow}: ${labels.storedNow}`,
-    `${USAGE_LABELS.gbMonths}: ${labels.gbMonths}`,
+    `${USAGE_LABELS.size30}: ${labels.size30}`,
+    `${USAGE_LABELS.todayDraw}: ${labels.todayDraw}`,
     `${USAGE_LABELS.downloads}: ${labels.downloads}`,
     `${USAGE_LABELS.cost}: ${labels.cost}`,
   ]);

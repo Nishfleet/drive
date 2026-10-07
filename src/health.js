@@ -196,6 +196,7 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "SHARE_DOWNLOAD_RATE_LIMITER",
   "SHARE_MINT_RATE_LIMITER",
   "REQUEST_MINT_RATE_LIMITER",
+  "BRANCH_RATE_LIMITER",
   "BRANCH_SNAPSHOTS",
 ]);
 
@@ -547,6 +548,7 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     "SHARE_DOWNLOAD_RATE_LIMITER",
     "SHARE_MINT_RATE_LIMITER",
     "REQUEST_MINT_RATE_LIMITER",
+    "BRANCH_RATE_LIMITER",
   ]) {
     const bound = env[name];
     if (

@@ -29,10 +29,11 @@ import {
 // The listing parser itself now lives in core/s3-listing.js, which the api
 // Worker reads too (drive issue #504: one parser, decoded, for both Workers).
 // These re-exports keep the names every caller already imports from here.
-export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-listing.js";
+export { nextContinuationToken, parseListVersions } from "./s3-listing.js";
 
 import {
   accountFirstChargedAt,
+  accountStoredAndBranchBytes,
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   PreChargeLimitError,
@@ -46,6 +47,7 @@ import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { contentMd5, createS3Client, provisionBucket } from "./s3.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
+import { DAY_MS } from "./units.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";
@@ -83,7 +85,7 @@ export const UPLOAD_FILE_MAX_BYTES = 100_000_000;
  */
 export const FILES_EMBED_ENDPOINT = `${FILES_ENDPOINT}/embed`;
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
-export const TRASH_FOLDER = ".trash";
+const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
 export const TRASH_PATH = `/${TRASH_FOLDER}`;
 /**
@@ -145,17 +147,6 @@ const TEXT_EXTENSIONS = [
   "sql",
   "xml",
 ];
-
-/** The value neighbors read: what a file's extension or type says it is. */
-export const FILE_KINDS = Object.freeze([
-  "folder",
-  "image",
-  "video",
-  "audio",
-  "pdf",
-  "text",
-  "file",
-]);
 
 /**
  * The extension of a name, lowercased, without the dot; "" when there is none.
@@ -466,7 +457,7 @@ export function splitEntries(entries) {
 /** The folders the drive keeps for itself: hidden in the drive root, and
  * skipped by every walk that builds a copy of a person's files
  * (src/branches.js) or an index of them (src/search.js). */
-export const SYSTEM_FOLDERS = Object.freeze([TRASH_FOLDER, BRANCHES_FOLDER]);
+const SYSTEM_FOLDERS = Object.freeze([TRASH_FOLDER, BRANCHES_FOLDER]);
 
 /**
  * A drive listing without the folders the drive keeps for itself.
@@ -485,6 +476,46 @@ export function withoutTrash(entries, path) {
   return entries.filter(
     (entry) => !(entry.kind === "folder" && SYSTEM_FOLDERS.includes(entry.name)),
   );
+}
+
+/**
+ * Bytes the 1 TB pre-charge limit counts at an upload door (drive#800): live
+ * `file_versions` plus `.branches` copies the store holds (written without
+ * `withIndex`). A charged account skips the walk. Unpaid: subtract the
+ * reconciled branch slice and add the store walk, so one copy counts once.
+ * A failed listing refuses toward the limit, never as zero.
+ * @param {D1Database} db
+ * @param {FileStore} store a store already scoped to one account
+ * @param {string} accountId
+ * @param {number|null} firstChargedAt epoch milliseconds, or null unpaid
+ * @returns {Promise<number>}
+ */
+export async function preChargeStoredBytes(db, store, accountId, firstChargedAt) {
+  if (firstChargedAt !== null) {
+    return accountStoredBytes(db, accountId);
+  }
+  const { stored, branch } = await accountStoredAndBranchBytes(
+    db,
+    accountId,
+    `${accountPrefix({ id: accountId })}${BRANCHES_PATH}/`,
+  );
+  if (stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES) {
+    return stored;
+  }
+  try {
+    let walk = 0;
+    for (const entry of await store.listAll(BRANCHES_PATH)) {
+      if (entry.kind !== "folder") walk += entry.size || 0;
+    }
+    return stored - branch + walk;
+  } catch (error) {
+    console.error(
+      "preChargeStoredBytes: branch listing failed, refusing toward the limit:",
+      accountId,
+      error instanceof Error ? error.message : String(error),
+    );
+    return PRE_CHARGE_STORAGE_LIMIT_BYTES;
+  }
 }
 
 /**
@@ -615,7 +646,7 @@ export function findTrashName(entries, path) {
  */
 export function isRestorable(deletedAt, now = Date.now()) {
   const age = now - deletedAt;
-  return age >= 0 && age <= RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
+  return age >= 0 && age <= RECENTLY_DELETED_DAYS * DAY_MS;
 }
 
 /**
@@ -657,7 +688,7 @@ export const TRASH_PURGE_SCHEDULE = "0 5 * * *";
  * @param {number} now epoch milliseconds
  */
 export function isTrashExpired(deletedAt, now = Date.now()) {
-  return now - deletedAt > RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
+  return now - deletedAt > RECENTLY_DELETED_DAYS * DAY_MS;
 }
 
 /**
@@ -885,15 +916,9 @@ export class ChangedUnderUsError extends Error {
   }
 }
 
-/**
- * The longest storage key this drive can hold, and the key is counted as bytes
- * because every S3-shaped provider counts it that way and caps it at 1,024
- * (Amazon S3, "Object key naming guidelines"): a longer one is answered with
- * `400 KeyTooLong`, which is a storage error a person cannot act on. Bytes,
- * not characters, because the two counts agree for ASCII and diverge as soon as
- * a name is not ASCII.
- */
-export const MAX_STORAGE_KEY_BYTES = 1024;
+// Longest storage key, in bytes: S3 caps Object key naming at 1,024 bytes
+// (`400 KeyTooLong`). Bytes, not characters, because a non-ASCII name diverges.
+const MAX_STORAGE_KEY_BYTES = 1024;
 
 /**
  * The storage key one drive path lives at under an account's own prefix, and
@@ -2434,7 +2459,7 @@ export function trashRows(entries, now = Date.now()) {
         sizeLabel: formatBytes(entry.size || 0),
         deletedIso: isoStamp(parsed.deletedAt, `the file ${parsed.path}`),
         untilIso: isoStamp(
-          parsed.deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000,
+          parsed.deletedAt + RECENTLY_DELETED_DAYS * DAY_MS,
           `the file ${parsed.path}`,
         ),
         restorable,
@@ -2556,7 +2581,7 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">, recordDownload?: (accountId: string, bytes: number) => Promise<void>}} [options]
  *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
  *   can read stored bytes, whether the pause at a $0 balance is on
  *   (drive#586), and the account's own state, so a read-only drive refuses a
@@ -2631,16 +2656,8 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   return plain("Not found.", 404);
 }
 
-/**
- * A view of a store whose reads add the bytes they serve to the account's
- * download total (drive#517): the whole object on a 200, the slice on a 206,
- * nothing on a 304 or a 416. With no recorder it is the store itself.
- * @param {FileStore} store
- * @param {string} accountId
- * @param {((accountId: string, bytes: number) => Promise<void>)|undefined} recordDownload
- * @returns {FileStore}
- */
-export function meterReads(store, accountId, recordDownload) {
+/** @param {FileStore} store @param {string} accountId @param {((accountId: string, bytes: number) => Promise<void>)|undefined} recordDownload @returns {FileStore} */
+function meterReads(store, accountId, recordDownload) {
   if (!recordDownload) {
     return store;
   }
@@ -2685,36 +2702,9 @@ export function joinPath(folder, name) {
   return `${base}/${safeFileName(name)}`;
 }
 
-/**
- * Handles every method on /api/files and always answers. The gate is in front
- * of it (see handleFilesRequest): the account is required, the store it reads
- * is scoped to that account, and a state change also has to be same-origin.
- * The page reads it:
- *
- *   GET  /api/files?path=/            list a folder
- *   GET  /api/files?view=deleted      Recently deleted
- *   GET  /api/files/download?path=…   the bytes, as an attachment
- *   GET  /api/files/preview?path=…    the bytes, inline, for the viewer
- *   GET  /api/files/embed?path=…      the bytes, inline, for the page's media
- *   POST /api/files/upload?path=/&name=…   the request body is the file
- *   POST /api/files/delete  {path}    move a file to Recently deleted
- *   POST /api/files/restore {path}    put it back where it was
- *
- * @param {Request} request
- * @param {FileStore} store
- * @param {number} now
- */
-/**
- * @param {Request} request
- * @param {URL} url
- * @param {FileStore} store
- * @param {number} now
- * @returns {Promise<Response>}
- */
-/** Rows the Files page asks for in one load, before the More button takes
- * over (drive#570). 200 rows render in one paint; a folder ten times that
- * size used to cost a full recursive LIST walk and every key in it. */
-export const FILE_PAGE_SIZE = 200;
+// Rows the Files page asks for in one load (drive#570). 200 rows render in
+// one paint; a folder ten times that size used to cost a full recursive LIST.
+const FILE_PAGE_SIZE = 200;
 
 /**
  * @param {Request} request
@@ -2978,7 +2968,7 @@ async function listingEntry(store, path) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -3014,8 +3004,18 @@ async function uploadRequest(request, url, store, account, options = {}) {
     // 402, so a client can tell "add money" from every other refusal.
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
   }
+  if (
+    options.size30DayUnpaid &&
+    options.prepaidPause &&
+    incomingLength !== null &&
+    incomingLength > 0 &&
+    (await options.size30DayUnpaid(account.id, incomingLength))
+  ) {
+    return json({ error: failureMessage("size30-unpaid"), top_up: TOP_UP_PAGE }, 402);
+  }
   if (options.db) {
-    const stored = await accountStoredBytes(options.db, account.id);
+    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
+    const stored = await preChargeStoredBytes(options.db, store, account.id, firstChargedAt);
     // A missing length is 0 while under the limit. At or past 1 TB it is 1
     // byte so an upload with no length cannot sneak past the exact-limit
     // edge (stored + 0 is not greater than the limit).
@@ -3025,7 +3025,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
         : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
           ? 1
           : 0;
-    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
     const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
     if (blocked !== null) {
       return json({ error: blocked }, 403);

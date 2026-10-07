@@ -18,7 +18,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../core/billing.js";
+import {
+  BYTES_PER_GB as BILLING_BYTES_PER_GB,
+  BILLING_CONFIG,
+  MINUTE_MS as BILLING_MINUTE_MS,
+  meteredMonthlyBillUsd,
+} from "../core/billing.js";
 import { fileRow } from "../core/file-index.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
@@ -154,6 +159,8 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
   const freeGb = BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth;
   assert.equal(freeGb, 50, "$1 at 2c per GB-month is 50 GB - the spec's 'about 50 GB'");
   assert.equal(BYTES_PER_GB, 1_000_000_000, "decimal GB, the one the spec prices in");
+  assert.equal(BYTES_PER_GB, BILLING_BYTES_PER_GB, "the meter and the invoice share one GB");
+  assert.equal(MINUTE_MS, BILLING_MINUTE_MS, "the meter and the invoice share one minute");
 
   // A month of whole minutes at that size: ONE version of the credit's GB,
   // written at the month's first instant and live to the end of it, so its
@@ -172,9 +179,10 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
     total += versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, monthEnd);
   }
   assert.equal(total, freeGb * MONTH_MINUTES, "a whole month of whole minutes is exact");
-  // And that total, through the ONE function the invoice reads, is the $1
-  // free credit: the meter and the bill cannot disagree about the free month.
-  assert.equal(meteredMonthlyBillUsd(total, MONTH_MINUTES), BILLING_CONFIG.freeMonthlyUsd);
+  // And that size, through the ONE function the invoice reads, is the $1
+  // free credit: 50 GB of size30 at 2¢ is $1. The meter still books GB-minutes;
+  // the bill follows size30 (drive#642).
+  assert.equal(meteredMonthlyBillUsd(Math.round(freeGb * GB)), BILLING_CONFIG.freeMonthlyUsd);
   // The rolled-up total for the same month (the integer-unit sum the SQL
   // stores, one version at a time) agrees, so a month's billing is the same
   // whether the invoice reads the rollup or the per-version arithmetic.

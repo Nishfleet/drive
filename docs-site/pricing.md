@@ -9,14 +9,13 @@ description: The rate, the maximum, downloads, and the bill worked out for four 
 
 ## The rate
 
-{{RATE}}, kept a month, counted by the minute. You pay for what you store, and
-stop paying for what you delete. {{NO_PLANS}}
+{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB. {{NO_PLANS}}
 
 ## Deleted files
 
 {{TRASH_BILLING}} Deleting from the Files page moves the file to Recently
-deleted, where it stays 30 days and you can restore it yourself; the meter
-stops counting it the same hour. [See how deletes and restores work](/how-it-works).
+deleted, where it stays 30 days and you can restore it yourself.
+[See how deletes and restores work](/how-it-works).
 
 {{VERSION_MINIMUM}}
 
@@ -33,9 +32,9 @@ We need a card at sign-up because there is no free tier.
 
 ## Downloads
 
-Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
-{{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
-for.
+Downloads are not in the published price, so nothing is charged for them
+today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store,
+then {{DOWNLOAD_RATE}} (planned).
 
 ## Version history
 
@@ -44,10 +43,9 @@ version 1.
 
 ## The bill worked out
 
-Storage is counted for the part of the month you kept it, so a drive that grew
-pays only for the days each file was there. The meter is the rate on that; the
-maximum is {{MAX_PER_TB}} for each TB of that same average, and never less than
-one TB's worth; your bill is the smaller of the two.
+You pay for the biggest size your drive reached in the last 30 days. The meter
+is {{RATE}} on that size; the maximum is {{MAX_PER_TB}} for each TB of it, and
+never less than one TB's worth; your bill is the smaller of the two.
 
 {{BILL_TABLE}}
 
@@ -57,16 +55,13 @@ The last column is the whole month. An empty drive bills nothing.
 
 The pricing page has a public savings calculator: enter how many TB you keep
 all month, and it shows this month's bill beside our maximum and a usual 1 TB
-plan. The numbers come from the same function the invoice uses
-(`monthBillCents` via `GET /api/quote`).
+plan. The numbers come from the same function the invoice uses.
 
 ## Honest notes
 
 - There is no plan size. A drive is a drive: you are never moved to a bigger
   plan, and there is a cap you can set that stops spending before you think
   about it.
-- We do not advertise a per-minute price. The rate is monthly; the minute is
-  how the meter follows you when you delete something.
 - Every figure above is worked out by the same function the invoice is worked
   out from, and a test fails the build if the page and the invoice disagree.
 - What is not in version 1 is on the [Limits](/limits) page, and it is
@@ -74,15 +69,15 @@ plan. The numbers come from the same function the invoice uses
 
 ## A bill that looks wrong, checked in order
 
-A per-minute bill with a maximum can look wrong two different ways, and only
-the first one is the bill:
+A bill for the biggest size in 30 days, with a maximum, can look wrong two
+different ways, and only the first one is the bill:
 
-1. **The metered figure.** `drive status` shows this month's cost so far, and
-   the usage page shows the month's stored size worked out from the same
-   numbers as the invoice.
+1. **The metered figure.** `drive status` shows the biggest size in the last
+   30 days and today's draw, and the usage page shows those from the same
+   function as the charge.
 2. **The maximum.** Your bill is the smaller of the metered cost and the
-   maximum, so a drive that grew pays for the days each file was there, never
-   more than {{MAX_PER_TB}} for each TB.
+   maximum, so a drive never pays more than {{MAX_PER_TB}} for each TB of
+   that biggest size.
 
 When those two agree with the invoice, [tell us](/faq) the month and the
 figure; the docs do not promise a refund, so nobody will read one here.

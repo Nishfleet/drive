@@ -10,24 +10,40 @@ import {
   attachPendingCardAccount,
   cardFingerprintTaken,
   claimCardFingerprint,
+  ensureBillingAccount,
   HOLD_TTL_SECONDS,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   PreChargeLimitError,
+  paymentCardFingerprint,
   pendingCardAccountId,
   preChargeLimitStream,
   preChargeOverLimitAccounts,
   preChargeUploadBlocked,
   runPreChargeLimitCron,
-  signupCardFingerprint,
 } from "../core/abuse-guards.js";
 import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
+import { applyCapSwap, capSwapPlan, PRE_CHARGE_LIMIT_REASON } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
-import { failureMessage } from "../core/messages.js";
+import {
+  BRANCHES_PATH,
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  preChargeStoredBytes,
+  scopeStore,
+} from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
+import { writesPaused } from "../core/prepaid.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
+import {
+  createD1LinkStore,
+  handleRequestUploadRequest,
+  newRequestRecord,
+  REQUEST_ENDPOINT,
+} from "../src/share.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, createTestD1, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 
@@ -70,13 +86,53 @@ test("the pre-charge storage limit is 1 TB in decimal bytes", () => {
   assert.equal(PRE_CHARGE_STORAGE_LIMIT_BYTES, 1_000_000_000_000);
 });
 
-test("the card-step test double reads a posted fingerprint, else one from the email", () => {
+test("a card fingerprint comes from the provider's payment, never from a request", () => {
+  // drive#503: the browser's posted fingerprint and the `test:<email>` stand-in
+  // are gone, so the only string that can become a card is the provider's own
+  // payment-method id, namespaced so it cannot collide with another value.
+  assert.equal(paymentCardFingerprint("pm_123"), "dodo:pm_123");
+  assert.equal(paymentCardFingerprint(" pm_123 "), "dodo:pm_123");
+  assert.equal(paymentCardFingerprint(""), null);
+  assert.equal(paymentCardFingerprint("   "), null);
+  assert.equal(paymentCardFingerprint(undefined), null);
+  assert.equal(paymentCardFingerprint(null), null);
+  assert.equal(paymentCardFingerprint(42), null);
+});
+
+test("the billing row is written with no card, and a returning sign-in never clears one", async () => {
+  // drive#503: the row used to appear as a side effect of claiming the
+  // `test:<email>` stand-in, so removing the browser fingerprint would have
+  // left a new account with no row at all. It is written explicitly now, with
+  // no fingerprint and no card_added_at, and a returning sign-in leaves an
+  // account that already has a card exactly as it is.
+  const { db, sqlite } = makeMeteredDB();
+  await ensureBillingAccount(db, { accountId: "fresh", email: "fresh@example.com", now: NOW });
+  const fresh = sqlite.prepare("SELECT * FROM accounts WHERE id = ?").get("fresh");
+  assert.equal(fresh?.card_fingerprint, null, "no card from the sign-in");
+  assert.equal(fresh?.card_added_at, null, "so cardAdded still fails closed");
+  assert.equal(fresh?.state, "active");
+  await ensureBillingAccount(db, { accountId: "fresh", email: "fresh@example.com", now: NOW });
   assert.equal(
-    signupCardFingerprint({ card: true, cardFingerprint: "fp_visa", email: "a@b.co" }),
-    "posted:fp_visa",
+    sqlite.prepare("SELECT COUNT(*) AS n FROM accounts WHERE id = ?").get("fresh")?.n,
+    1,
+    "a returning sign-in does not add a second row",
   );
-  assert.equal(signupCardFingerprint({ card: "on", email: "A@B.co" }), "test:a@b.co");
-  assert.equal(signupCardFingerprint({ card: false, email: "a@b.co" }), null);
+
+  await ensureBillingAccount(db, { accountId: "paid", email: "paid@example.com", now: NOW });
+  await claimCardFingerprint(db, {
+    accountId: "paid",
+    email: "paid@example.com",
+    fingerprint: "dodo:pm_paid",
+    now: NOW,
+  });
+  await ensureBillingAccount(db, {
+    accountId: "paid",
+    email: "paid@example.com",
+    now: NOW + 3_600_000,
+  });
+  const paid = sqlite.prepare("SELECT * FROM accounts WHERE id = ?").get("paid");
+  assert.equal(paid?.card_fingerprint, "dodo:pm_paid", "the card survives a later sign-in");
+  assert.equal(paid?.card_added_at, Math.floor(NOW / 1000), "and its stamp is not moved");
 });
 
 test("a second active account with the same card fingerprint is refused in plain words", async () => {
@@ -374,31 +430,25 @@ test("claiming a card stamps card_added_at and nothing else about the price", as
   assert.equal(row.founding_reserved, null, "the retired founding columns are never written");
 });
 
-test("a posted fingerprint can never equal another address's checkbox stand-in", async () => {
-  // A stranger posting "test:victim@example.com" must not lock the victim out.
+test("a card one provider id names is one card, whoever holds the account", async () => {
+  // Two accounts paying with the same card: the second is refused, which is the
+  // guard's whole point, and the namespace means a stranger cannot reach a
+  // victim's card by posting its string (drive#503, the posted path is gone).
   const { db } = makeMeteredDB();
-  const posted = signupCardFingerprint({
-    card: true,
-    cardFingerprint: "test:victim@example.com",
-    email: "attacker@example.com",
-  });
-  assert.equal(posted, "posted:test:victim@example.com");
-  const attacker = await claimCardFingerprint(db, {
-    accountId: pendingCardAccountId("attacker@example.com"),
-    email: "attacker@example.com",
-    fingerprint: /** @type {string} */ (posted),
-    now: NOW,
-  });
-  assert.equal("error" in attacker, false);
   const victim = await claimCardFingerprint(db, {
     accountId: pendingCardAccountId("victim@example.com"),
     email: "victim@example.com",
-    fingerprint: /** @type {string} */ (
-      signupCardFingerprint({ card: true, email: "victim@example.com" })
-    ),
+    fingerprint: /** @type {string} */ (paymentCardFingerprint("pm_victim")),
     now: NOW,
   });
   assert.equal("error" in victim, false, JSON.stringify(victim));
+  const attacker = await claimCardFingerprint(db, {
+    accountId: pendingCardAccountId("attacker@example.com"),
+    email: "attacker@example.com",
+    fingerprint: /** @type {string} */ (paymentCardFingerprint("pm_victim")),
+    now: NOW,
+  });
+  assert.deepEqual(attacker, { error: failureMessage("card-in-use") });
 });
 
 test("a card-step hold nobody followed gives its card back after a day", async () => {
@@ -461,6 +511,314 @@ test("the counting stream lets the allowance through and fails one byte past it"
     assert.equal(error.message, failureMessage("pre-charge-storage-limit"));
     return true;
   });
+});
+
+/**
+ * A drive holding branch bytes against a live `file_versions` sum 100 bytes
+ * short of the limit, and the branch copy that takes it over. The live rows
+ * are the rows an account's own saves would have written, and the copy is a
+ * real object under `.branches`, written through scopeStore the way
+ * src/branches.js's copyFolder writes it. The account row and the version rows
+ * go in through the metered adapter, so the drive keeps its metering views
+ * while `made.sqlite` stays the raw handle a test stamps first_charged_at on.
+ * @param {{db: import("./d1-sqlite.mjs").MeteredD1, sqlite: import("./d1-sqlite.mjs").TestSqlite}} made
+ *   the makeMeteredDB() answer
+ * @param {string} accountId
+ * @returns {Promise<{store: import("../core/files.js").FileStore, scoped: import("../core/files.js").FileStore, copy: string, remove: () => Promise<void>, plant: () => Promise<void>}>}
+ */
+async function branchedDrive(made, accountId) {
+  const db = made.db;
+  await insertAccount(db, accountId);
+  db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const store = createMemoryStore();
+  const scoped = scopeStore(store, { id: accountId });
+  const copy = `${BRANCHES_PATH}/work/mirror.bin`;
+  const plant = async () =>
+    scoped.write(copy, new Blob([new Uint8Array(200)]).stream(), "application/octet-stream");
+  await plant();
+  return { store, scoped, copy, plant, remove: async () => void (await scoped.remove(copy)) };
+}
+
+/** An edge rate-limit binding that always lets the caller through. */
+function passLimiter() {
+  return { limit: () => Promise.resolve({ success: true }) };
+}
+
+/**
+ * The share link store the two share-path tests read. `createTestD1()` is the
+ * adapter the rest of the share tests use; the links table lives only on the
+ * request store, while the guard reads the drive's own db, so the two
+ * databases are free to be separate, the way a real request store and a real
+ * drive database would be.
+ * @returns {ReturnType<typeof createD1LinkStore>}
+ */
+function makeShareLinks() {
+  return createD1LinkStore(createTestD1());
+}
+
+test("branch copies hold an unpaid account at 1 TB on the upload path", async () => {
+  // drive#800: a branch copy is written with store.copy and never through
+  // withIndex, so it lands in neither `file_versions` nor the file index. An
+  // account that copied its drive into a branch has therefore spent zero
+  // recorded bytes, and both upload routes answered it with an empty drive's
+  // allowance. The bytes are the store's own, so the guard has to read them
+  // there: the live rows here are 100 bytes under the limit and the copy is
+  // what refuses the save.
+  const made = makeMeteredDB();
+  const drive = await branchedDrive(made, "branched");
+  const upload = (/** @type {string} */ name) =>
+    handleFilesRequest(
+      new Request(`https://drive.example/api/files/upload?path=%2F&name=${name}`, {
+        method: "POST",
+        body: new Uint8Array(8),
+      }),
+      drive.store,
+      { id: "branched", name: "branched" },
+      NOW,
+      { db: made.db },
+    );
+  const held = await upload("over.bin");
+  assert.equal(held.status, 403, "the upload route counted the branch copy as free bytes");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+  // The rows alone are under the limit, so the copy is what refused it: the
+  // same save lands once the copy is gone.
+  await drive.remove();
+  assert.equal((await upload("fits.bin")).status, 201);
+  // And a charged account is lifted even holding the copy, so the walk does
+  // not run for it.
+  await drive.plant();
+  stampFirstCharge(made.sqlite, "branched", NOW);
+  assert.equal((await upload("after.bin")).status, 201);
+});
+
+test("branch copies hold an unpaid account at 1 TB on the share upload path", async () => {
+  // The same refusal at the other upload door, driven as src/share.js reads
+  // it: the owner's account comes from the request row, so the branch walk
+  // has to be scoped to that owner and not to the link.
+  const made = makeMeteredDB();
+  const drive = await branchedDrive(made, "branched");
+  const links = makeShareLinks();
+  const token = "AAAAAAAAAAAAAAAAAAAAAA";
+  await links.requests.create(
+    newRequestRecord({ accountId: "branched", folder: "/", now: NOW, token }),
+  );
+  const drop = (/** @type {string} */ name) =>
+    handleRequestUploadRequest(
+      new Request(`https://drive.test${REQUEST_ENDPOINT}/upload?k=${token}&name=${name}`, {
+        method: "POST",
+        body: "the bytes a stranger drops",
+      }),
+      drive.store,
+      links,
+      () => "active",
+      { now: NOW, ipLimiter: passLimiter(), linkLimiter: passLimiter(), db: made.db },
+    );
+  const held = await drop("over.bin");
+  assert.equal(held.status, 403, "the share upload route counted the branch copy as free bytes");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+  await drive.remove();
+  assert.equal((await drop("fits.bin")).status, 201);
+  // One refusal did not take the name, so it is not a 403 that counted a
+  // drop that never happened (the same 201-vs-409 contract every share test
+  // above proves); nothing was written on the way.
+  const stat = await scopeStore(drive.store, { id: "branched" }).stat("/over.bin");
+  assert.equal(stat, null, "the refused drop left a file behind");
+});
+
+/**
+ * A memory store whose `.branches` listing is instrumented (drive#800, in-run
+ * review): every other operation runs untouched, the count of branch listings
+ * is recorded so a test can prove the guard did or did not walk, and `fail`
+ * refuses the listing the way a failing provider would. The store's methods
+ * hold their state in a closure, not through `this`, so the proxy delegate is
+ * safe and `this` is preserved by binding.
+ * @param {import("../core/files.js").FileStore} base
+ * @param {{fail?: boolean}} [options]
+ * @returns {{store: import("../core/files.js").FileStore, state: {branchListings: number}}}
+ */
+function instrumentBranchStore(base, options = {}) {
+  const state = { branchListings: 0 };
+  const store = new Proxy(base, {
+    get(target, prop, receiver) {
+      if (prop === "listAll") {
+        return async (/** @type {string} */ path) => {
+          if (path.includes(".branches")) {
+            state.branchListings += 1;
+            if (options.fail) {
+              throw new Error("the object store refused the branch listing");
+            }
+          }
+          return target.listAll(path);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { store, state };
+}
+
+test("preChargeStoredBytes refuses toward the limit when the branch store cannot be read", async () => {
+  // drive#800, in-run review (Critical): this guard answers for bytes no table
+  // knows, so a listing that cannot finish is a refusal, never an allowance.
+  // The bytes come back as the whole limit, which is the number that makes
+  // preChargeUploadBlocked refuse rather than under-count toward an allow.
+  const { db } = makeMeteredDB();
+  await insertAccount(db, "unpaid");
+  db.insertVersion({
+    accountId: "unpaid",
+    fileId: "file-unpaid",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(scopeStore(createMemoryStore(), { id: "unpaid" }), {
+    fail: true,
+  });
+  const stored = await preChargeStoredBytes(db, probe.store, "unpaid", null);
+  assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES);
+  assert.equal(
+    preChargeUploadBlocked({ firstChargedAt: null, storedBytes: stored, incomingBytes: 8 }),
+    failureMessage("pre-charge-storage-limit"),
+  );
+});
+
+test("a reconciled branch copy is counted once, not twice (drive#800, in-run review)", async () => {
+  // core/meter.js reconcileAccount folds the branch copy into file_versions
+  // AND the store still holds it, so without dedup the number would charge the
+  // copy twice and wrongly refuse an honest account. The rows are 300 under
+  // the limit, the reconciled branch is 200 in the rows and 200 in the store:
+  // the honest total is 100 under and is allowed, where a double count (100
+  // over) would have refused it.
+  const { db } = makeMeteredDB();
+  const accountId = "branched";
+  await insertAccount(db, accountId);
+  db.insertVersion({
+    accountId,
+    fileId: "file-reg",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 300,
+    createdAt: NOW,
+  });
+  const store = createMemoryStore();
+  const scoped = scopeStore(store, { id: accountId });
+  await scoped.write("/work/x.bin", "x".repeat(200), "text/plain");
+  await scoped.copy("/work/x.bin", `${BRANCHES_PATH}/b/x.bin`);
+  // The nightly reconcile's row for that same copy: the path shape is the
+  // account prefix with no leading slash, matching core/meter.js.
+  db.insertVersion({
+    accountId,
+    fileId: "br-x",
+    path: `u/${accountId}${BRANCHES_PATH}/b/x.bin`,
+    sizeBytes: 200,
+    createdAt: NOW,
+  });
+  const stored = await preChargeStoredBytes(db, scoped, accountId, null);
+  assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES - 100, "one copy counted once");
+  assert.equal(
+    preChargeUploadBlocked({ firstChargedAt: null, storedBytes: stored, incomingBytes: 8 }),
+    null,
+    "the honest account at the limit minus 100 is allowed",
+  );
+});
+
+test("a folder-only .branches and a size-less branch row add no branch bytes", async () => {
+  // drive#800, in-run review: the walk's own rules. A folder is a key prefix,
+  // not bytes; a file row without a size reads as zero. Both add 0, so the
+  // walk cannot inflate the number past what the store actually holds.
+  const { db } = makeMeteredDB();
+  const read = (/** @type {unknown[]} */ entries) =>
+    preChargeStoredBytes(db, /** @type {any} */ ({ listAll: async () => entries }), "unpaid", null);
+  assert.equal(await read([{ kind: "folder", size: 9999, name: "work" }]), 0);
+  assert.equal(await read([{ kind: "file", name: "x" }]), 0);
+  assert.equal(await read([]), 0);
+});
+
+test("the upload route refuses toward the limit when the branch store cannot be read", async () => {
+  // drive#800, in-run review (Critical + Warning 3): a provider failure reading
+  // .branches is a refusal, closed toward the limit and spoken from
+  // core/messages.js - not a raw 500 and not an allowance. A 500 is a
+  // refusal but the impolite one, and a client retries past it instead of
+  // being told the drive is full.
+  const made = makeMeteredDB();
+  const accountId = "unread";
+  await insertAccount(made.db, accountId);
+  made.db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
+  const held = await handleFilesRequest(
+    new Request(`https://drive.example/api/files/upload?path=%2F&name=over.bin`, {
+      method: "POST",
+      body: new Uint8Array(8),
+    }),
+    probe.store,
+    { id: accountId, name: accountId },
+    NOW,
+    { db: made.db },
+  );
+  assert.equal(held.status, 403, "a store that cannot be read still refuses the upload");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+});
+
+test("the share upload route refuses toward the limit when the branch store cannot be read", async () => {
+  // The same closed-toward-refusal refusal at the other upload door, driven
+  // as src/share.js reads it: the branch walk is scoped to the request row's
+  // owner, and a read that fails there is still the message-table sentence.
+  const made = makeMeteredDB();
+  const accountId = "unread";
+  await insertAccount(made.db, accountId);
+  made.db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES - 100,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(createMemoryStore(), { fail: true });
+  const links = makeShareLinks();
+  const token = "BBBBBBBBBBBBBBBBBBBBBB";
+  await links.requests.create(newRequestRecord({ accountId, folder: "/", now: NOW, token }));
+  const held = await handleRequestUploadRequest(
+    new Request(`https://drive.test${REQUEST_ENDPOINT}/upload?k=${token}&name=over.bin`, {
+      method: "POST",
+      body: "the bytes a stranger drops",
+    }),
+    probe.store,
+    links,
+    () => "active",
+    { now: NOW, ipLimiter: passLimiter(), linkLimiter: passLimiter(), db: made.db },
+  );
+  assert.equal(held.status, 403, "a store that cannot be read still refuses the share drop");
+  assert.deepEqual(await held.json(), { error: failureMessage("pre-charge-storage-limit") });
+  assert.equal(probe.state.branchListings, 1, "the share door did try to read the branch store");
+});
+
+test("the rows already over the limit refuse an upload without walking the store", async () => {
+  // drive#800, in-run review (Warning): the walk is one listing per unpaid
+  // upload, so an account already at the limit on the rows alone is refused
+  // without it. The probe records branch listings; with the fast path, none
+  // happened - and the store was armed to throw if it had been walked.
+  const made = makeMeteredDB();
+  const accountId = "over";
+  await insertAccount(made.db, accountId);
+  made.db.insertVersion({
+    accountId,
+    fileId: `file-${accountId}`,
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES,
+    createdAt: NOW,
+  });
+  const probe = instrumentBranchStore(scopeStore(createMemoryStore(), { id: accountId }), {
+    fail: true,
+  });
+  const stored = await preChargeStoredBytes(made.db, probe.store, accountId, null);
+  assert.equal(stored, PRE_CHARGE_STORAGE_LIMIT_BYTES);
+  assert.equal(probe.state.branchListings, 0, "no branch listing ran past the limit");
 });
 
 test("the upload route holds a pre-charge account at 1 TB even with no length header", async () => {
@@ -632,7 +990,7 @@ test("the hourly cron takes an over-limit unpaid account's key read-only", async
   const report = await runPreChargeLimitCron({ db, devices: store });
   // "paid" carries a first charge and "gone" is closed, so neither is over
   // the limit that applies to them; "under" is simply under.
-  assert.deepEqual(report, { overLimit: 1, capped: 1, failures: 0 });
+  assert.deepEqual(report, { overLimit: 1, capped: 1, failures: 0, givenBack: 0 });
 
   const swapped = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(overKey.keyId);
   assert.deepEqual(JSON.parse(String(swapped.capabilities)), ["list", "read"]);
@@ -669,11 +1027,11 @@ test("the cron's second hourly run plans no swap on an already capped account", 
     capabilities: ["list", "read", "write", "delete"],
   });
   const first = await runPreChargeLimitCron({ db, devices: store });
-  assert.deepEqual(first, { overLimit: 1, capped: 1, failures: 0 });
+  assert.deepEqual(first, { overLimit: 1, capped: 1, failures: 0, givenBack: 0 });
   const afterFirst = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(minted.keyId);
 
   const second = await runPreChargeLimitCron({ db, devices: store });
-  assert.deepEqual(second, { overLimit: 1, capped: 0, failures: 0 });
+  assert.deepEqual(second, { overLimit: 1, capped: 0, failures: 0, givenBack: 0 });
   const afterSecond = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(minted.keyId);
   assert.deepEqual(afterSecond, afterFirst, "the second run churned nothing");
 });
@@ -717,7 +1075,7 @@ test("the cron logs one account's failed swap and still caps the next", async (t
       },
     },
   });
-  assert.deepEqual(report, { overLimit: 2, capped: 1, failures: 1 });
+  assert.deepEqual(report, { overLimit: 2, capped: 1, failures: 1, givenBack: 0 });
   const capped = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(overKey.keyId);
   assert.deepEqual(JSON.parse(String(capped.capabilities)), ["list", "read"]);
   const untouched = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(brokeKey.keyId);
@@ -778,4 +1136,353 @@ test("the hourly trip fails when the binding the sweep needs is gone", async () 
       ),
     /DRIVE_DB/,
   );
+});
+
+const WRITE_CAPS = /** @type {const} */ (["list", "read", "write", "delete"]);
+
+/**
+ * @param {import("./d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} keyId
+ */
+function deviceRow(sqlite, keyId) {
+  return sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(keyId);
+}
+
+test("the sweep marks its freeze 'pre-charge-limit', and the give-back clears it when the account is under 1 TB", async () => {
+  // drive#656: the marker names who froze the key, so the give-back widens only
+  // this sweep's freeze. The bytes are the live versions the sweep counts.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "over");
+  db.insertVersion({
+    accountId: "over",
+    fileId: "file-over",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 8,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("over")
+    .mint({ prefix: "u/over/", capabilities: WRITE_CAPS });
+
+  assert.deepEqual(await runPreChargeLimitCron({ db, devices: store }), {
+    overLimit: 1,
+    capped: 1,
+    failures: 0,
+    givenBack: 0,
+  });
+  const frozen = deviceRow(sqlite, key.keyId);
+  assert.equal(frozen.capped_reason, "pre-charge-limit", "the sweep says it did this");
+  assert.deepEqual(JSON.parse(String(frozen.capabilities)), ["list", "read"]);
+
+  // Still over: the give-back leaves the key frozen.
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).givenBack, 0);
+  assert.deepEqual(deviceRow(sqlite, key.keyId), frozen);
+
+  // The account frees its space: the live version is hidden.
+  sqlite.prepare("UPDATE file_versions SET hidden_at = ?1 WHERE account_id = 'over'").run(NOW);
+  db.insertVersion({ accountId: "over", fileId: "file-small", sizeBytes: 100, createdAt: NOW });
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 1 });
+  const keys = await store.listCapKeys("over");
+  assert.equal(keys.length, 1);
+  // Back at the powers the record held, held to the key kind's own scope.
+  assert.ok(keys[0].capabilities.includes("write"), "the write power is back");
+  const back = sqlite
+    .prepare("SELECT * FROM devices WHERE account_id = 'over' AND revoked_at IS NULL")
+    .get();
+  assert.equal(back.capped_from, null, "the record is spent");
+  assert.equal(back.capped_reason, null, "the marker is cleared");
+
+  // And a further run changes nothing.
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).givenBack, 0);
+});
+
+test("the give-back leaves a spending-cap freeze, an agent-cap freeze and a customer's read-only key alone", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "spend", { state: "read_only" });
+  await insertAccount(db, "agent");
+  await insertAccount(db, "mixed");
+  for (const id of ["spend", "agent", "mixed"]) {
+    db.insertVersion({ accountId: id, fileId: `file-${id}`, sizeBytes: 100, createdAt: NOW });
+  }
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const freeze = async (
+    /** @type {string} */ id,
+    /** @type {{reason?: string}} */ options = {},
+  ) => {
+    const key = await store
+      .keyProviderFor(id)
+      .mint({ prefix: `u/${id}/`, capabilities: WRITE_CAPS });
+    const plan = capSwapPlan(await store.listCapKeys(id), { state: "read_only" }, options);
+    await applyCapSwap(plan, store.keyProviderFor(id));
+    return key.keyId;
+  };
+  // The owner's money cap, which also holds the account's state read_only.
+  await freeze("spend");
+  // An agent cap: the same plan, no sweep word, account still active.
+  await freeze("agent");
+  // A sweep freeze next to a key the customer made read-only and a key an
+  // agent cap froze: only the sweep's own key may widen.
+  await freeze("mixed", { reason: PRE_CHARGE_LIMIT_REASON });
+  const readOnly = await store
+    .keyProviderFor("mixed")
+    .mint({ prefix: "u/mixed/", capabilities: ["list", "read"] });
+
+  const rowsFor = (/** @type {string} */ id) =>
+    sqlite.prepare("SELECT * FROM devices WHERE account_id = ?1 ORDER BY id").all(id);
+  const spendBefore = rowsFor("spend");
+  const agentBefore = rowsFor("agent");
+  assert.equal(
+    spendBefore[0].capped_reason,
+    "spend-cap",
+    "the spending cap still writes spend-cap",
+  );
+  assert.equal(agentBefore[0].capped_reason, "spend-cap");
+
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 1 });
+  assert.deepEqual(rowsFor("spend"), spendBefore, "the spending cap's freeze stays");
+  assert.deepEqual(rowsFor("agent"), agentBefore, "an agent cap's freeze stays");
+  const mixed = await store.listCapKeys("mixed");
+  const widened = mixed.filter((key) => key.capabilities.includes("write"));
+  assert.equal(widened.length, 1, "the sweep's own key is given back");
+  const stillReadOnly = mixed.find((key) => key.keyId === readOnly.keyId);
+  assert.deepEqual([...(stillReadOnly?.capabilities ?? [])], ["list", "read"]);
+});
+
+test("a pre-charge-limit row with no capped_from is not widened", async () => {
+  // A partial swap, or a hand-built row, can mark the sweep's reason without a
+  // restore record. capSwapPlan already plans no raise from a null cappedFrom;
+  // the give-back filter must skip it too, so givenBack stays 0.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "partial");
+  db.insertVersion({ accountId: "partial", fileId: "f", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("partial")
+    .mint({ prefix: "u/partial/", capabilities: WRITE_CAPS });
+  sqlite
+    .prepare(
+      "UPDATE devices SET capabilities = ?1, capped_from = NULL, capped_reason = ?2 WHERE id = ?3",
+    )
+    .run(JSON.stringify(["list", "read"]), PRE_CHARGE_LIMIT_REASON, key.keyId);
+  const before = deviceRow(sqlite, key.keyId);
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  assert.deepEqual(deviceRow(sqlite, key.keyId), before);
+  assert.deepEqual(JSON.parse(String(before.capabilities)), ["list", "read"]);
+});
+
+test("the freeze reason is storage-only: the message table never names it", () => {
+  // Grep of the tree: capped_reason is written by the cap, stored by devices,
+  // and read by the give-back. No HTML page or messages.js entry shows it.
+  const blob = JSON.stringify(FAILURE_MESSAGES);
+  assert.equal(blob.includes("pre-charge-limit"), false);
+  assert.equal(blob.includes("spend-cap"), false);
+});
+
+test("an agent-capped key on an account the sweep never froze is not widened by the give-back", async () => {
+  // Same as above for a key whose reason is absent: a row from before the
+  // marker existed reads as no reason and is nobody's to give back.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "old");
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("old")
+    .mint({ prefix: "u/old/", capabilities: WRITE_CAPS });
+  sqlite
+    .prepare("UPDATE devices SET capabilities = ?1, capped_from = ?2 WHERE id = ?3")
+    .run(JSON.stringify(["list", "read"]), JSON.stringify(WRITE_CAPS), key.keyId);
+  const before = deviceRow(sqlite, key.keyId);
+  assert.equal(before.capped_reason, null);
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).givenBack, 0);
+  assert.deepEqual(deviceRow(sqlite, key.keyId), before);
+});
+
+test("the prepaid $0 pause caps no key, and the give-back neither reads nor changes it", async () => {
+  // writesPaused refuses writes on its own; no key is frozen, so no
+  // 'pre-charge-limit' row exists and the account's keys keep their powers.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "paused");
+  db.insertVersion({ accountId: "paused", fileId: "file-p", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("paused")
+    .mint({ prefix: "u/paused/", capabilities: WRITE_CAPS });
+  assert.equal(await writesPaused(db, "paused"), true, "no balance: writes are paused");
+  const before = deviceRow(sqlite, key.keyId);
+  assert.equal(before.capped_reason, null, "the pause marks nothing");
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  assert.deepEqual(deviceRow(sqlite, key.keyId), before);
+  assert.equal(await writesPaused(db, "paused"), true, "the give-back leaves the pause as it was");
+});
+
+test("an account still over 1 TB with no first charge never gets its key back", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "over");
+  db.insertVersion({
+    accountId: "over",
+    fileId: "file-over",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("over")
+    .mint({ prefix: "u/over/", capabilities: WRITE_CAPS });
+  for (let run = 0; run < 3; run += 1) {
+    const report = await runPreChargeLimitCron({ db, devices: store });
+    assert.equal(report.givenBack, 0, `run ${run} gives nothing back`);
+  }
+  const row = deviceRow(sqlite, key.keyId);
+  assert.deepEqual(JSON.parse(String(row.capabilities)), ["list", "read"]);
+  assert.equal(row.capped_reason, "pre-charge-limit");
+});
+
+test("a revoked key marked 'pre-charge-limit' on an under-limit account widens nothing", async () => {
+  // listCapKeys and the give-back's own read both leave revoked rows out, so a
+  // revoked key is never swapped and never minted again.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "gone-key");
+  db.insertVersion({ accountId: "gone-key", fileId: "f", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("gone-key")
+    .mint({ prefix: "u/gone-key/", capabilities: WRITE_CAPS });
+  sqlite
+    .prepare(
+      "UPDATE devices SET capabilities = ?1, capped_from = ?2, capped_reason = ?3, revoked_at = ?4 WHERE id = ?5",
+    )
+    .run(
+      JSON.stringify(["list", "read"]),
+      JSON.stringify(WRITE_CAPS),
+      PRE_CHARGE_LIMIT_REASON,
+      NOW,
+      key.keyId,
+    );
+  const before = sqlite.prepare("SELECT * FROM devices").all();
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  assert.deepEqual(sqlite.prepare("SELECT * FROM devices").all(), before);
+});
+
+test("a $0-balance paused account the sweep froze gets its key back under 1 TB, and writes stay paused", async () => {
+  // The pause and the key are separate: the give-back widens the key the sweep
+  // froze, and writesPaused still refuses writes because the balance is $0.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "both");
+  db.insertVersion({
+    accountId: "both",
+    fileId: "big",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("both")
+    .mint({ prefix: "u/both/", capabilities: WRITE_CAPS });
+  assert.equal(await writesPaused(db, "both"), true);
+  await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+  assert.equal(await writesPaused(db, "both"), true);
+
+  sqlite.prepare("UPDATE file_versions SET hidden_at = ?1 WHERE account_id = 'both'").run(NOW);
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(report.givenBack, 1);
+  const live = await store.listCapKeys("both");
+  assert.ok(live[0].capabilities.includes("write"), "the key is widened");
+  assert.equal(await writesPaused(db, "both"), true, "the pause still refuses writes");
+});
+
+test("givenBack counts accounts, not keys: two frozen keys on one account are both widened and count 1", async () => {
+  const { db } = makeMeteredDB();
+  await insertAccount(db, "two");
+  db.insertVersion({
+    accountId: "two",
+    fileId: "big",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  for (const prefix of ["u/two/", "u/two/sub/"]) {
+    await store.keyProviderFor("two").mint({ prefix, capabilities: WRITE_CAPS });
+  }
+  assert.equal((await runPreChargeLimitCron({ db, devices: store })).capped, 1);
+  await db.prepare("UPDATE file_versions SET hidden_at = ?1").bind(NOW).run();
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(report.givenBack, 1);
+  const keys = await store.listCapKeys("two");
+  assert.equal(keys.length, 2);
+  assert.ok(keys.every((key) => key.capabilities.includes("write")));
+});
+
+test("the give-back leaves a sweep-frozen key alone when the spending cap holds the account", async () => {
+  // The SQL joins accounts.state = 'active', so a pre-charge-limit marker on
+  // an account the money cap already holds is not the give-back's to widen.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "held", { state: "read_only" });
+  db.insertVersion({ accountId: "held", fileId: "file-held", sizeBytes: 100, createdAt: NOW });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("held")
+    .mint({ prefix: "u/held/", capabilities: WRITE_CAPS });
+  await applyCapSwap(
+    capSwapPlan(
+      await store.listCapKeys("held"),
+      { state: "read_only" },
+      {
+        reason: PRE_CHARGE_LIMIT_REASON,
+      },
+    ),
+    store.keyProviderFor("held"),
+  );
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+
+  const report = await runPreChargeLimitCron({ db, devices: store });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 0, givenBack: 0 });
+  const after = deviceRow(sqlite, key.keyId);
+  assert.deepEqual(JSON.parse(String(after.capabilities)), ["list", "read"]);
+  assert.equal(after.capped_reason, PRE_CHARGE_LIMIT_REASON);
+});
+
+test("the give-back logs one account's failed swap and still reports it", async (t) => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "broken-back");
+  db.insertVersion({
+    accountId: "broken-back",
+    fileId: "big",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 1,
+    createdAt: NOW,
+  });
+  const store = createD1DeviceStore(db, { now: () => NOW });
+  const key = await store
+    .keyProviderFor("broken-back")
+    .mint({ prefix: "u/broken-back/", capabilities: WRITE_CAPS });
+  await runPreChargeLimitCron({ db, devices: store });
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+
+  sqlite
+    .prepare("UPDATE file_versions SET hidden_at = ?1 WHERE account_id = 'broken-back'")
+    .run(NOW);
+  const errorMock = t.mock.method(console, "error", () => {});
+  const report = await runPreChargeLimitCron({
+    db,
+    devices: {
+      listCapKeys: (accountId) => store.listCapKeys(accountId),
+      keyProviderFor: (accountId) => {
+        if (accountId === "broken-back") {
+          throw new Error("provider down on give-back");
+        }
+        return store.keyProviderFor(accountId);
+      },
+    },
+  });
+  assert.deepEqual(report, { overLimit: 0, capped: 0, failures: 1, givenBack: 0 });
+  assert.equal(deviceRow(sqlite, key.keyId).capped_reason, PRE_CHARGE_LIMIT_REASON);
+  const logged = errorMock.mock.calls
+    .map((call) => call.arguments.map(String).join(" "))
+    .join("\n");
+  assert.match(logged, /broken-back/, "the failure names the account it could not restore");
+  assert.match(logged, /provider down on give-back/, "the failure names what went wrong");
 });

@@ -36,9 +36,9 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { gbMonths, minutesInMonth, monthBillCents } from "./billing.js";
+import { monthBillCents, size30Window } from "./billing.js";
 import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
-import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
 
 // The two hosts Dodo serves its API on, named once because the check that
 // guards the bearer key is an exact match against them and nothing else
@@ -48,7 +48,7 @@ import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 // a name. Naming the live host here does not select it — the default below is
 // still the test server and only DODO_BASE_URL can move the push.
 export const DODO_TEST_HOST = "test.dodopayments.com";
-export const DODO_LIVE_HOST = "live.dodopayments.com";
+const DODO_LIVE_HOST = "live.dodopayments.com";
 export const DODO_API_HOSTS = Object.freeze([DODO_TEST_HOST, DODO_LIVE_HOST]);
 
 // The test-mode host and ingest path are split so the host can be overridden
@@ -168,6 +168,71 @@ export async function billingPushGap(db, options = {}) {
     since: gap.length > 0 ? gap[0] : null,
     missingKey,
   };
+}
+
+/**
+ * The accounts that are using the drive and hold no Dodo customer id
+ * (drive#503).
+ *
+ * The push above deliberately skips such an account — there is no Dodo
+ * customer to bill — and its own gap detector counts only the accounts that
+ * do hold one, so the two together made the class invisible: an account whose
+ * first payment never landed (a webhook that failed, a checkout abandoned
+ * after the charge, an account imported before the column existed) stored
+ * usage forever and reached the provider never, with no report naming it.
+ * That is the shape the audit found on main: `dodo_customer_id` read in four
+ * places and written in none.
+ *
+ * The read is one grouped join, bounded to the same window the hour detector
+ * uses, and it names no email, no card and no id: a count and the oldest
+ * metered hour are what a person needs, and the report reaches a log.
+ *
+ * A `closed` account is left out: it holds files nobody will bill for, and an
+ * account that asked to be closed must not keep the alarm raised.
+ *
+ * @param {D1Database} db
+ * @param {{now?: number|Date|string, hours?: number}} [options]
+ * @returns {Promise<{accounts: number, since: number|null}>}
+ */
+export async function unbillableAccounts(db, options = {}) {
+  if (!db) {
+    throw new Error("billing gap: METER_DB binding is not configured");
+  }
+  const now = toMillis(options.now === undefined ? Date.now() : options.now, "now");
+  const hours = options.hours === undefined ? BILLING_PUSH_GAP_HOURS : options.hours;
+  if (!Number.isSafeInteger(hours) || hours <= 0) {
+    throw new TypeError(
+      `the gap window must be a positive whole number of hours, got ${String(hours)}`,
+    );
+  }
+  const lastClosed = hourStart(now) - HOUR_MS;
+  const from = lastClosed - (hours - 1) * HOUR_MS;
+  const row = /** @type {{accounts?: unknown, since?: unknown}|null} */ (
+    await db
+      .prepare(
+        `SELECT COUNT(DISTINCT u.account_id) AS accounts, MIN(u.hour) AS since
+           FROM usage_minutes u
+           INNER JOIN accounts a ON a.id = u.account_id
+          WHERE u.hour >= ?1 AND u.hour <= ?2
+            AND (a.dodo_customer_id IS NULL OR a.dodo_customer_id = '')
+            AND a.state != 'closed'`,
+      )
+      .bind(from, lastClosed)
+      .first()
+  );
+  const accounts = Number(row?.accounts ?? 0);
+  if (!Number.isSafeInteger(accounts) || accounts < 0) {
+    throw new TypeError(
+      `the unbillable account count is not a whole number, got ${String(row?.accounts)}`,
+    );
+  }
+  const since = row?.since === null || row?.since === undefined ? null : Number(row.since);
+  if (since !== null && !Number.isSafeInteger(since)) {
+    throw new TypeError(
+      `usage_minutes has a row whose hour is not a number: ${String(row?.since)}`,
+    );
+  }
+  return { accounts, since };
 }
 
 /**
@@ -333,18 +398,11 @@ export async function pushBillingHours(db, hours, options = {}) {
       if (already.has(`${accountId}|${hour}`)) {
         continue;
       }
-      const usage = await monthUsageThrough(db, accountId, hour);
+      const window = size30Window(hour);
+      const size30 = await size30Through(db, accountId, window.from, hour);
       const bill = monthBillCents({
-        gbMinutes: usage.gbMinutes,
-        monthMinutes: minutesInMonth(hour),
-        downloadBytes: usage.downloadBytes,
-        // The free download allowance follows the same average the storage
-        // price reads, derived here from the month's GB-minutes rather than
-        // from the hour's stored-bytes marks (drive#535): a file saved six
-        // times in one hour marks one size, and its average is one size too.
-        // gbMonths() is the one conversion, in billing.js, where the price's
-        // divisor lives, and it divides by that month's own minutes.
-        averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
+        size30Bytes: size30.size30Bytes,
+        downloadBytes: size30.downloadBytes,
       });
       const previously = running.get(accountId) ?? 0;
       // High-water: a reroll that lowered this month's bill (a late hide)
@@ -389,13 +447,20 @@ export async function pushBillingHours(db, hours, options = {}) {
       batch.map((item) => item.event),
     );
     // Record the batch we just ingested before the next POST, so a later
-    // batch's failure cannot leave those events without a local row.
+    // batch's failure cannot leave those events without a local row. The
+    // insert is conflict-safe on the table's own two keys (drive#503): two
+    // overlapping cron runs both POST the same hours — Dodo dedupes them on
+    // event_id, so no double charge — and the second run's plain INSERT threw
+    // on `billing_pushes_dodo_event_id_idx`, which failed the whole run and
+    // with it every later hour in that run's batch. `DO NOTHING` leaves the
+    // row the first run wrote and lets the run continue.
     await db.batch(
       batch.map((item) =>
         db
           .prepare(
             `INSERT INTO billing_pushes (account_id, hour, dodo_event_id, amount_units, pushed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)`,
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT DO NOTHING`,
           )
           .bind(item.accountId, item.hour, item.eventId, item.amountUnits, pushedAt),
       ),

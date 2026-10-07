@@ -119,6 +119,9 @@ test("create, approve, discard and rewind routes answer 202 with progress", asyn
     snapshots,
     raw,
     ACCOUNT,
+    // The create limiter runs before the body (drive#553), so this call needs
+    // an allowed limiter for the create under test to be the answer.
+    { ipLimiter: { limit: () => Promise.resolve({ success: true }) } },
   );
   assert.equal(created.status, 202);
   const createdBody = await created.json();
@@ -154,6 +157,7 @@ test("create, approve, discard and rewind routes answer 202 with progress", asyn
     snapshots,
     raw,
     ACCOUNT,
+    { ipLimiter: { limit: () => Promise.resolve({ success: true }) } },
   );
   assert.equal(second.status, 202);
   const discarded = await handleBranchesRequest(
@@ -180,6 +184,7 @@ test("create, approve, discard and rewind routes answer 202 with progress", asyn
     snapshots,
     raw,
     ACCOUNT,
+    { ipLimiter: { limit: () => Promise.resolve({ success: true }) } },
   );
   assert.equal(third.status, 202);
   const rewound = await handleRewindRequest(
