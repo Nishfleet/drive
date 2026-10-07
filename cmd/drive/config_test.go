@@ -303,13 +303,27 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 func TestSystemdUnitClearsADeadFuseEntryBeforeStart(t *testing.T) {
 	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
 	unit := SystemdUnit(p)
-	want := "ExecStartPre=-/usr/bin/fusermount3 -uz /home/test/Drive"
-	if !strings.Contains(unit, want) {
-		t.Errorf("systemd unit missing lazy-unmount pre-start %q:\n%s", want, unit)
+	pre := extractExecStartPre(unit)
+	if pre == "" {
+		t.Fatalf("systemd unit missing ExecStartPre:\n%s", unit)
 	}
-	if !strings.Contains(unit, "ExecStartPre=-/usr/bin/fusermount -uz /home/test/Drive") {
-		t.Errorf("systemd unit missing fusermount fallback pre-start:\n%s", unit)
+	for _, want := range []string{"findmnt", "fuse.rclone", "-uz", "/home/test/Drive", "fusermount3", "fusermount"} {
+		if !strings.Contains(pre, want) {
+			t.Errorf("ExecStartPre missing %q:\n%s", want, pre)
+		}
 	}
+	if !strings.Contains(pre, "-t fuse.rclone,fuse") {
+		t.Errorf("ExecStartPre unmounts without a FUSE type check:\n%s", pre)
+	}
+}
+
+func extractExecStartPre(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStartPre=") {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestLaunchdPlistClearsADeadMountBeforeStart(t *testing.T) {
@@ -320,6 +334,9 @@ func TestLaunchdPlistClearsADeadMountBeforeStart(t *testing.T) {
 	}
 	if !strings.Contains(args[2], "umount") || !strings.Contains(args[2], "-f") {
 		t.Errorf("launchd pre-start script = %q, want a forced umount of a dead NFS entry", args[2])
+	}
+	if !strings.Contains(args[2], "mount -t nfs") {
+		t.Errorf("launchd pre-start script = %q, want an NFS mount-table check before umount", args[2])
 	}
 	if args[4] != "/Users/test/Drive" {
 		t.Errorf("launchd umount target = %q, want the mount dir", args[4])

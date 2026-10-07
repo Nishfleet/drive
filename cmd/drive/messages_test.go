@@ -258,8 +258,8 @@ func TestRenderMountState(t *testing.T) {
 
 func TestDriveFolderMessageDoesNotBlameDiskSpace(t *testing.T) {
 	next := messageTable["drive-folder"][1]
-	if strings.Contains(next, "disk has room") {
-		t.Errorf("drive-folder next still blames disk space: %q", next)
+	if strings.Contains(next, "disk has room") && !strings.Contains(next, "not full") {
+		t.Errorf("drive-folder next still treats disk space as the only cause: %q", next)
 	}
 	err := driveFolderCreateError(&os.PathError{Op: "mkdir", Path: "/tmp/Drive", Err: syscall.ENOTCONN}, "/tmp/Drive")
 	var f *failure

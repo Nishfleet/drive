@@ -173,7 +173,7 @@ var messageTable = map[string][2]string{
 	},
 	"drive-folder": {
 		"The drive folder {1} could not be created.",
-		"Check that {1} is writable, then run the command again.",
+		"Check that {1} is writable and that the disk is not full, then run the command again.",
 	},
 	"stale-mount": {
 		"The drive at {1} is still listed as mounted, but it does not answer.",

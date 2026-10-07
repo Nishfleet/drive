@@ -438,7 +438,7 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 	// argv for exec, so paths with spaces stay one argument.
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("/bin/sh"))
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("-c"))
-	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/umount -f "$1" 2>/dev/null; shift; exec "$@"`))
+	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(`/sbin/mount -t nfs | grep -F " on $1 (" >/dev/null 2>&1 && { /sbin/umount "$1" 2>/dev/null || /sbin/umount -f "$1"; }; shift; exec "$@"`))
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString("drive-mount"))
 	fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(p.MountDir))
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
@@ -476,7 +476,6 @@ func LaunchdPlistFor(p MountPlan, label string) string {
 // SIGTERM is exactly what systemd sends a stopping unit by default, so an
 // rclone command that does not exist would only break the stop.
 func SystemdUnit(p MountPlan) string {
-	mountDir := systemdEscapeArg(p.MountDir)
 	return fmt.Sprintf(`[Unit]
 Description=drive: %s mounted with stock rclone
 After=network-online.target
@@ -485,15 +484,37 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%s
-ExecStartPre=-/usr/bin/fusermount3 -uz %s
-ExecStartPre=-/usr/bin/fusermount -uz %s
+ExecStartPre=%s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdEscapeArg(p.envFile()), mountDir, mountDir, systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(p.envFile()), systemdClearStalePre(p.MountDir), systemdCommandLine(p))
+}
+
+// systemdClearStalePre lazy-unmounts only a FUSE entry at mountDir. A login
+// item has no shell PATH, so the binaries are resolved here the same way
+// ResolveRclone writes rclone into ExecStart. findmnt -t keeps an unrelated
+// filesystem at that folder (a bind mount, a disk) attached.
+func systemdClearStalePre(mountDir string) string {
+	script := `$2 -n -M "$1" -t fuse.rclone,fuse >/dev/null 2>&1 && { $3 -uz "$1" || $4 -uz "$1"; }`
+	return "-/bin/sh -c " + strings.Join([]string{
+		systemdEscapeArg(script),
+		systemdEscapeArg("drive-pre"),
+		systemdEscapeArg(mountDir),
+		systemdEscapeArg(lookBin("findmnt", "/usr/bin/findmnt")),
+		systemdEscapeArg(lookBin("fusermount3", "/usr/bin/fusermount3")),
+		systemdEscapeArg(lookBin("fusermount", "/usr/bin/fusermount")),
+	}, " ")
+}
+
+func lookBin(name, fallback string) string {
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	return fallback
 }
 
 func (p MountPlan) envFile() string {
@@ -1078,7 +1099,7 @@ func Unmount(goos, home string) error {
 	}
 	if stopErr := stopMount(goos, home); stopErr != nil {
 		if disableErr != nil {
-			return failDetail("unexpected", fmt.Errorf("%v; fusermount: %w", disableErr, stopErr))
+			return failDetail("unexpected", fmt.Errorf("%v; unmount: %w", disableErr, stopErr))
 		}
 		return failDetail("unmount-failed", stopErr, DefaultMountDir(home))
 	}

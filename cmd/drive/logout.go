@@ -424,6 +424,10 @@ func stopMount(goos, home string) error {
 
 // runUmount unmounts with the stock macOS umount.
 func runUmount(mountDir string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("umount", mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount" and literal flag -f; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
 	out, err := exec.Command("umount", "-f", mountDir).CombinedOutput()
 	return unmountError("umount", err, out)
@@ -434,12 +438,19 @@ func runUmount(mountDir string) error {
 // comes down even when a plain -u would block. Each call is a literal binary
 // name and a literal flag; the only path argument is the mount dir.
 func runFusermount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3" and literal flag -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	if _, err := exec.Command("fusermount3", "-uz", mountDir).CombinedOutput(); err == nil {
+	if err := runFusermountFlag(mountDir, "-u"); err == nil {
 		return nil
 	}
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount" and literal flag -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("fusermount", "-uz", mountDir).CombinedOutput()
+	return runFusermountFlag(mountDir, "-uz")
+}
+
+func runFusermountFlag(mountDir, fuseFlag string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3" and literal flag -u or -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", fuseFlag, mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount" and literal flag -u or -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("fusermount", fuseFlag, mountDir).CombinedOutput()
 	return unmountError("fusermount", err, out)
 }
 
