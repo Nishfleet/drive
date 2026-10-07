@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-06
 
+- An upload link now says who it belongs to. The page a stranger opens shows
+  the owner's name above the folder, and once a day the owner gets one email
+  listing the files that arrived through that link since the last one, rather
+  than one email per file.
 - An account holds at most 20 live keys, and a mint past that is refused with
   the words to fix it. The storage vendor sets no limit of its own, and a
   nightly sweep removes the vendor keys of expired or revoked entries and
