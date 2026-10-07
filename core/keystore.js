@@ -195,9 +195,10 @@ export function createMemoryStore(options = {}) {
     }
     // The hour. The kind's own lifetime is the ceiling, and a provider session
     // that names a shorter one wins: a session that dies in 15 minutes must
-    // not be stretched by bookkeeping that outlives it. `null` is a key that
-    // never expires, and only a person's own device is one
-    // (keyprovider.js KEY_TTL_SECONDS).
+    // not be stretched by bookkeeping that outlives it. A kind with no ceiling
+    // of its own takes the provider's session instead, because the STS
+    // provider mints ones that die (s3-keys.js DurationSeconds) and a device
+    // row read "never expires" over one would be a lie (drive#544).
     const ttl = mintTtlSeconds(kind, credential.expiresIn);
     /** @type {Device} */
     const device = {
@@ -635,8 +636,9 @@ export function createMemoryStore(options = {}) {
           return null;
         }
         const at = nowSeconds(now());
-        // Absent and null both mean "this kind never expires" (a person's own
-        // device key), so both are checked rather than one being assumed.
+        // Absent and null both mean "this credential never expires" (a person's
+        // own device key, and only when the provider named no session,
+        // drive#544), so both are checked rather than one being assumed.
         if (device.expiresAt !== undefined && device.expiresAt !== null && at >= device.expiresAt) {
           return null;
         }

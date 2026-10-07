@@ -242,7 +242,7 @@ type commonFlags struct {
 
 func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.StringVar(&c.home, "home", os.Getenv("HOME"), "home directory")
+	fs.StringVar(&c.home, "home", DefaultHome(), "home directory")
 	fs.StringVar(&c.rclone, "rclone", "", "path to the rclone binary (default rclone from PATH)")
 	return c
 }

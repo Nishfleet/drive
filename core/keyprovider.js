@@ -169,8 +169,12 @@ export function keyTtlSeconds(kind) {
  * for a fresh credential. The api's enforcement is the bound, so the bound
  * cannot be widened from a config file.
  *
- * `null` still means the kind never expires, and still only a person's own
- * device earns it.
+ * A kind with no ceiling of its own takes the provider's answer: the STS
+ * provider mints sessions that die (s3-keys.js DurationSeconds), and a row
+ * that read "never expires" over a credential that stops signing requests
+ * would be a lie (drive#544). A provider answer that is neither null nor a
+ * positive finite number is refused, not folded into the ceiling: folding
+ * one in is how a broken answer becomes "never expires" on the row.
  * @param {KeyKind} kind
  * @param {number|null|undefined} providerExpiresIn the provider session's own
  *   seconds, when it names one
@@ -178,16 +182,23 @@ export function keyTtlSeconds(kind) {
  */
 export function mintTtlSeconds(kind, providerExpiresIn) {
   const ceiling = keyTtlSeconds(kind);
-  if (ceiling === null) {
-    return null;
+  if (providerExpiresIn !== null && providerExpiresIn !== undefined) {
+    if (
+      typeof providerExpiresIn !== "number" ||
+      !Number.isFinite(providerExpiresIn) ||
+      providerExpiresIn <= 0
+    ) {
+      throw new TypeError(
+        `Provider session lifetime must be a positive number or null, got ${JSON.stringify(providerExpiresIn)}.`,
+      );
+    }
+    // No ceiling of its own: the provider's session is the only lifetime there is.
+    if (ceiling === null) {
+      return providerExpiresIn;
+    }
+    return Math.min(providerExpiresIn, ceiling);
   }
-  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
-    return ceiling;
-  }
-  if (providerExpiresIn <= 0) {
-    return ceiling;
-  }
-  return Math.min(providerExpiresIn, ceiling);
+  return ceiling;
 }
 
 /**
