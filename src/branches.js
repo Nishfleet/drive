@@ -1596,12 +1596,12 @@ async function readApprovePlanList(snapshots, planKey, list, count) {
   for (let index = 0; index < slices; index += 1) {
     const raw = await snapshots.get(approvePlanSliceKey(planKey, list, index));
     if (raw === null) {
-      continue;
+      throw new Error(`approve plan slice ${list}.${index} is missing under ${planKey}`);
     }
     try {
       paths.push(...stringList(JSON.parse(raw)));
     } catch (error) {
-      console.error?.(`approve plan list is not JSON for ${planKey}: ${errorText(error)}`);
+      throw new Error(`approve plan slice ${list}.${index} is not JSON: ${errorText(error)}`);
     }
   }
   return paths;
