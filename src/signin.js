@@ -141,15 +141,10 @@ export const SIGNIN_COPY = Object.freeze({
   // them.
   lede: "One link by email.",
   // drive#387: a card at sign-up, and why, in plain words. The page says it
-  // once (drive#420), and needCard is also the server's own refusal, so a
-  // person who ticks the box without a card gets the same sentence the page
-  // already showed them once.
+  // once (drive#420). The rule is enforced when the emailed link is
+  // followed (drive#538), not by a tick box on the start form: that box
+  // made every returning customer consent again.
   needCard: PRICE.needCard,
-  // drive#420: what the tick box is labelled, in short. The box used to carry
-  // the whole needCard sentence, which put the same words on the page three
-  // times and read as a legal box; the reason lives once above the box and the
-  // label says only that the person understands it.
-  cardConsent: "I understand a card is required",
   noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
@@ -261,8 +256,8 @@ export function readSigninRequest(body) {
 }
 
 /**
- * Whether a posted field is a card-at-sign-up yes. The page's checkbox posts
- * "on"; JSON posts true. Anything else is not a card.
+ * Whether a posted field is a card-at-sign-up yes. JSON posts true; a form
+ * used to post "on". Anything else is not a card.
  * @param {unknown} value
  * @returns {boolean}
  */
