@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -808,6 +809,35 @@ func TestWindowsMountRestartsWhenThePlanChanged(t *testing.T) {
 	}
 	if !strings.Contains(string(body), rotated.SecretKey) {
 		t.Fatalf("the task XML does not carry the rotated secret after the restart:\n%s", body)
+	}
+}
+
+// A probe that cannot answer is not an answer (drive#817): with the files
+// unchanged but mountState failing — a wedged WinFsp volume is what makes the
+// probe fail — the run must neither restart the login task (a restart unmounts
+// a live drive letter under open files) nor report success. It fails and names
+// the cause, the same shape as the Mac and Linux path (mount.go's mount-probe).
+func TestWindowsMountFailsWhenTheProbeCannotAnswer(t *testing.T) {
+	home := t.TempDir()
+	actions, _ := windowsMountSeams(t, true)
+	windowsMountOnce(t, home, testStorage())
+
+	probeErr := errors.New("WinFsp volume is wedged")
+	origState := mountState
+	mountState = func(string, string) (bool, error) { return false, probeErr }
+	t.Cleanup(func() { mountState = origState })
+
+	t.Setenv("USERDOMAIN", "DRIVE")
+	t.Setenv("USERNAME", "test")
+	err := Mount("windows", home, "rclone.exe", testStorage(), false, false, "Z:")
+	if err == nil {
+		t.Fatal("Mount returned nil, want a mount-probe failure when the probe errors")
+	}
+	if !strings.Contains(err.Error(), "Could not check whether the drive is mounted") || !strings.Contains(err.Error(), probeErr.Error()) {
+		t.Fatalf("Mount error = %v, want the mount-probe sentence naming the probe's cause", err)
+	}
+	if len(*actions) != 2 {
+		t.Fatalf("a probe that cannot answer took %v, want no task action: a restart unmounts the drive letter under open files", *actions)
 	}
 }
 
