@@ -312,7 +312,7 @@ export function uploadProgress(upload) {
     throw new TypeError(`totalBytes must be 0 or more, got ${total}`);
   }
   if (total === 0) {
-    return { percent: 100, label: UPLOAD_LABEL.upToDate };
+    return { percent: 100, label: withHeldQueue(UPLOAD_LABEL.upToDate, fields) };
   }
   if (uploaded > total) {
     throw new RangeError(`uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`);
@@ -395,11 +395,13 @@ function withHeldQueue(uploading, fields) {
 
 /**
  * The paused half of a mixed queue as its own line, or null when the payload
- * carries none. It is a queue in its own right (drive issue #865): a count of
- * files and a byte pair that obeys the same rule `uploadProgress()` holds a
- * queue to, so a half that cannot be a queue is not named at all. A paused
- * device with zero-byte files (files > 0, totalBytes = 0) is still named,
- * because the person sees "X files waiting" even when bytes are zero.
+ * carries none. It is read by the same rules as the queue itself (drive issue
+ * #865): a count that is not a positive whole number is no count, so the half
+ * is named by its bytes alone the way a standalone queue is, and a byte pair
+ * that cannot be a queue drops the clause rather than naming an impossible
+ * half. A paused device with zero-byte files (files > 0, totalBytes = 0) is
+ * still named, because the person sees "X files waiting" even when bytes are
+ * zero.
  * @param {Record<string, unknown>} fields
  * @returns {string|null}
  */
@@ -408,12 +410,7 @@ function heldLabel(fields) {
   const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
   const uploadedBytes = byteCount(fields.pausedUploadedBytes);
   const totalBytes = byteCount(fields.pausedTotalBytes);
-  if (
-    files === null ||
-    uploadedBytes === null ||
-    totalBytes === null ||
-    uploadedBytes > totalBytes
-  ) {
+  if (uploadedBytes === null || totalBytes === null || uploadedBytes > totalBytes) {
     return null;
   }
   return pausedLabel(uploadedBytes, totalBytes, files);

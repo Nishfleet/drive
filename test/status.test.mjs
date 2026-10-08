@@ -381,12 +381,22 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
     ),
     "the paused half is not the paused line over its own numbers",
   );
-  // A half the payload cannot describe is no clause at all: the line stays the
-  // uploading device's own rather than one with a hole in it.
-  for (const broken of [
+  // A held half whose count the payload cannot describe is named by its bytes
+  // alone, the way a standalone queue with no count is.
+  for (const noCount of [
     { ...mixed, pausedFiles: 0 },
     { ...mixed, pausedFiles: 1.5 },
     { ...mixed, pausedFiles: -1 },
+  ]) {
+    assert.equal(
+      uploadProgress(noCount).label,
+      "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 4.1 KB left",
+      `a held half without a count was not named by its bytes: ${JSON.stringify(noCount)}`,
+    );
+  }
+  // A half the payload cannot describe as a queue is no clause at all: the line
+  // stays the uploading device's own rather than one with a hole in it.
+  for (const broken of [
     { ...mixed, pausedUploadedBytes: 4097 },
     { ...mixed, pausedTotalBytes: "4096" },
     { ...mixed, pausedUploadedBytes: null },
@@ -397,6 +407,21 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
       `a held half the payload cannot describe changed the line: ${JSON.stringify(broken)}`,
     );
   }
+  // A moving device with no bytes to move but files held elsewhere still names
+  // the held half: the "Up to date" line must not hide a paused queue.
+  assert.equal(
+    uploadProgress({
+      files: 3,
+      uploadedBytes: 0,
+      totalBytes: 0,
+      paused: false,
+      pausedFiles: 2,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 8192,
+    }).label,
+    "Up to date; Paused: 2 files waiting (8.2 KB left)",
+    "a held half was dropped when the moving half had no bytes",
+  );
   // A paused device holding zero-byte files is still a paused device: the
   // person has files waiting, so the line names them even with no bytes left.
   assert.equal(

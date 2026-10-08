@@ -149,12 +149,12 @@ function sumLiveQueues(live) {
     if (queue.paused === true) {
       anyPaused = true;
       held.files += queue.files ?? 0;
-      held.uploadedBytes += queue.uploadedBytes;
-      held.totalBytes += queue.totalBytes;
+      held.uploadedBytes += queue.uploadedBytes ?? 0;
+      held.totalBytes += queue.totalBytes ?? 0;
     } else {
       moving.files += queue.files ?? 0;
-      moving.uploadedBytes += queue.uploadedBytes;
-      moving.totalBytes += queue.totalBytes;
+      moving.uploadedBytes += queue.uploadedBytes ?? 0;
+      moving.totalBytes += queue.totalBytes ?? 0;
     }
   }
   // Nothing is leaving: the queue is what it is holding. `paused` is the
