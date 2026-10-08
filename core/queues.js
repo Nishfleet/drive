@@ -87,7 +87,10 @@ export function uploadQueueFromRow(row, at) {
   }
   const r = /** @type {Record<string, unknown>} */ (row);
   const reportedAt = Number(r.reported_at ?? 0);
-  if (!Number.isFinite(reportedAt) || at - reportedAt > QUEUE_FRESHNESS_SECONDS) {
+  if (
+    !Number.isFinite(reportedAt) ||
+    at - reportedAt > QUEUE_FRESHNESS_SECONDS
+  ) {
     return null;
   }
   const uploadedBytes = Number(r.uploaded_bytes ?? 0);
@@ -224,7 +227,8 @@ export function createD1QueueStore(db, options = {}) {
         at - QUEUE_REPORT_INTERVAL_SECONDS,
       );
       const changed = Number(
-        /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ?? 0,
+        /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ??
+          0,
       );
       if (changed > 0) {
         return { stored: true, reportedAt: at };
@@ -240,7 +244,10 @@ export function createD1QueueStore(db, options = {}) {
       const storedAt = Number(row?.reported_at ?? at);
       return {
         stored: false,
-        retryAfter: Math.max(1, QUEUE_REPORT_INTERVAL_SECONDS - (at - storedAt)),
+        retryAfter: Math.max(
+          1,
+          QUEUE_REPORT_INTERVAL_SECONDS - (at - storedAt),
+        ),
       };
     },
 
@@ -253,7 +260,11 @@ export function createD1QueueStore(db, options = {}) {
     async latest(accountId) {
       const at = nowSeconds(now());
       const rows = /** @type {unknown[]} */ (
-        await all(db, "SELECT * FROM device_queue_reports WHERE account_id = ?1", accountId)
+        await all(
+          db,
+          "SELECT * FROM device_queue_reports WHERE account_id = ?1",
+          accountId,
+        )
       );
       /** @type {UploadQueue[]} */
       const live = [];
@@ -276,8 +287,14 @@ export function createD1QueueStore(db, options = {}) {
      */
     async sweep(at = nowSeconds(now())) {
       const cutoff = at - QUEUE_FRESHNESS_SECONDS;
-      const gone = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
-      return Number(/** @type {{meta?: {changes?: number}}} */ (gone)?.meta?.changes ?? 0);
+      const gone = await run(
+        db,
+        "DELETE FROM device_queue_reports WHERE reported_at < ?1",
+        cutoff,
+      );
+      return Number(
+        /** @type {{meta?: {changes?: number}}} */ (gone)?.meta?.changes ?? 0,
+      );
     },
 
     /**

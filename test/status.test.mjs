@@ -82,8 +82,14 @@ const workerFetch =
 
 // The page's shell, read for the structure the module fills and the script tag
 // that loads it. Its copy is not read here: there is no copy in it to drift.
-const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
-const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const shell = readFileSync(
+  new URL("../get-started.html", import.meta.url),
+  "utf8",
+);
+const pricingPage = readFileSync(
+  new URL("../public/index.html", import.meta.url),
+  "utf8",
+);
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 // drive#689: one instant the Last-sync tests pin, chosen because 23:30 UTC is
 // already the next day in Tokyo and still the same evening in New York.
@@ -129,7 +135,11 @@ test("no first-run sentence promises a flip the status route cannot make", () =>
   const promises =
     /flips?\s+to\s+connected|updates\s+on\s+its\s+own|moment\s+your\s+Mac\s+signs\s+in|Nothing\s+to\s+refresh/;
   for (const [name, entry] of Object.entries(CONNECTION_COPY)) {
-    assert.doesNotMatch(entry.next, promises, `${name}'s next promises the page a flip`);
+    assert.doesNotMatch(
+      entry.next,
+      promises,
+      `${name}'s next promises the page a flip`,
+    );
   }
   // The two waiting states name the command that answers from the machine:
   // while nothing stamps last_seen_at they are the states a person sits in.
@@ -140,13 +150,23 @@ test("no first-run sentence promises a flip the status route cannot make", () =>
       `${name}'s next names the machine command`,
     );
   }
-  assert.doesNotMatch(FIRST_RUN_STEPS[2].body, promises, "step 3 promises the page a flip");
+  assert.doesNotMatch(
+    FIRST_RUN_STEPS[2].body,
+    promises,
+    "step 3 promises the page a flip",
+  );
   assert.match(FIRST_RUN_STEPS[2].body, /drive status/);
   // The shipped shell's own description is the same sentence, read from the
   // file a search engine reads rather than from the module.
-  const description = shell.match(/<meta name="description" content="([^"]*)"/i);
+  const description = shell.match(
+    /<meta name="description" content="([^"]*)"/i,
+  );
   assert.ok(description, "get-started.html needs a meta description");
-  assert.doesNotMatch(description[1], promises, "the meta description promises the page a flip");
+  assert.doesNotMatch(
+    description[1],
+    promises,
+    "the meta description promises the page a flip",
+  );
   assert.match(description[1], /drive status/);
 });
 
@@ -161,7 +181,10 @@ test("the page leads with one pasted install line per system", () => {
   );
   const systems = new Set();
   for (const row of INSTALL_LINES) {
-    assert.ok(row.os.length > 0, "every install row needs the system it is for");
+    assert.ok(
+      row.os.length > 0,
+      "every install row needs the system it is for",
+    );
     assert.ok(!systems.has(row.os), `two rows for ${row.os} would be noise`);
     systems.add(row.os);
     assert.doesNotMatch(
@@ -203,14 +226,20 @@ test("a row without a system name, or a line break in its line, cannot reach the
     () => installLines([{ os: "macOS", line: /** @type {any} */ (undefined) }]),
     /needs an os and a line/,
   );
-  assert.throws(() => installLines([{ os: "macOS", line: "   " }]), /must be one pasted line/);
+  assert.throws(
+    () => installLines([{ os: "macOS", line: "   " }]),
+    /must be one pasted line/,
+  );
 });
 
 test("a device that has not signed in reads as waiting, not connected", () => {
   assert.equal(connectionStatus({}, now).state, "waiting");
   assert.equal(connectionStatus({ lastSeenAt: null }, now).state, "waiting");
   // A sign-in from an hour ago is not the sign-in the page is waiting for.
-  assert.equal(connectionStatus({ lastSeenAt: iso(60 * 60 * 1000) }, now).state, "waiting");
+  assert.equal(
+    connectionStatus({ lastSeenAt: iso(60 * 60 * 1000) }, now).state,
+    "waiting",
+  );
 });
 
 test("a device inside the connected window flips the page to connected", () => {
@@ -219,7 +248,10 @@ test("a device inside the connected window flips the page to connected", () => {
   assert.equal(status.what, CONNECTION_COPY.connected.what);
   assert.equal(status.next, CONNECTION_COPY.connected.next);
   // The window's edge belongs to connected, one millisecond past it does not.
-  assert.equal(connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS) }, now).state, "connected");
+  assert.equal(
+    connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS) }, now).state,
+    "connected",
+  );
   assert.equal(
     connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS + 1) }, now).state,
     "waiting",
@@ -236,12 +268,19 @@ test("an unreachable service says so instead of blaming the person", () => {
 });
 
 test("a device date that cannot be read is a real error, not a silent wait", () => {
-  assert.throws(() => connectionStatus({ lastSeenAt: "not-a-date" }, now), TypeError);
+  assert.throws(
+    () => connectionStatus({ lastSeenAt: "not-a-date" }, now),
+    TypeError,
+  );
   assert.throws(() => connectionStatus(null, now), TypeError);
 });
 
 test("every connection state carries one what and one next", () => {
-  assert.deepEqual(Object.keys(CONNECTION_COPY), ["waiting", "connected", "unreachable"]);
+  assert.deepEqual(Object.keys(CONNECTION_COPY), [
+    "waiting",
+    "connected",
+    "unreachable",
+  ]);
   for (const [name, entry] of Object.entries(CONNECTION_COPY)) {
     assert.equal(typeof entry.what, "string", `${name} needs a what`);
     assert.equal(typeof entry.next, "string", `${name} needs a next`);
@@ -273,12 +312,19 @@ test("'Synced' only stays true inside the sync window", () => {
     "Quiet for a while",
   );
   // A pending upload outranks a recent sync: the drive is still working.
-  assert.equal(syncStatus({ lastSyncAt: iso(1000), pendingBytes: 4 }, now).state, "syncing");
+  assert.equal(
+    syncStatus({ lastSyncAt: iso(1000), pendingBytes: 4 }, now).state,
+    "syncing",
+  );
 });
 
 test("upload progress reads as a person reads it", () => {
   assert.equal(
-    uploadProgress({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }).label,
+    uploadProgress({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+    }).label,
     "Uploading 3 files: 300 MB of 1.2 GB (25%)",
   );
   assert.equal(
@@ -290,13 +336,25 @@ test("upload progress reads as a person reads it", () => {
     percent: 100,
     label: "Up to date",
   });
-  assert.equal(uploadProgress({ uploadedBytes: 10, totalBytes: 10 }).percent, 100);
+  assert.equal(
+    uploadProgress({ uploadedBytes: 10, totalBytes: 10 }).percent,
+    100,
+  );
 });
 
 test("upload progress rejects nonsense instead of reporting it as done", () => {
-  assert.throws(() => uploadProgress({ uploadedBytes: -1, totalBytes: 5 }), TypeError);
-  assert.throws(() => uploadProgress({ uploadedBytes: 1, totalBytes: -5 }), TypeError);
-  assert.throws(() => uploadProgress({ uploadedBytes: 6, totalBytes: 5 }), RangeError);
+  assert.throws(
+    () => uploadProgress({ uploadedBytes: -1, totalBytes: 5 }),
+    TypeError,
+  );
+  assert.throws(
+    () => uploadProgress({ uploadedBytes: 1, totalBytes: -5 }),
+    TypeError,
+  );
+  assert.throws(
+    () => uploadProgress({ uploadedBytes: 6, totalBytes: 5 }),
+    RangeError,
+  );
   assert.throws(() => uploadProgress(null), TypeError);
   assert.throws(() => formatBytes(-1), TypeError);
 });
@@ -315,7 +373,12 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
     "Paused: 3 files waiting (900 MB left)",
   );
   assert.equal(
-    uploadProgress({ uploadedBytes: 0, totalBytes: 60_000_000, files: 1, paused: true }).label,
+    uploadProgress({
+      uploadedBytes: 0,
+      totalBytes: 60_000_000,
+      files: 1,
+      paused: true,
+    }).label,
     "Paused: 1 file waiting (60 MB left)",
   );
   // A queue with no file count still says Paused and what is left.
@@ -325,10 +388,13 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
   );
   // Paused with nothing queued is complete, not a division by zero and not a
   // second word for the same state.
-  assert.deepEqual(uploadProgress({ uploadedBytes: 0, totalBytes: 0, paused: true }), {
-    percent: 100,
-    label: "Up to date",
-  });
+  assert.deepEqual(
+    uploadProgress({ uploadedBytes: 0, totalBytes: 0, paused: true }),
+    {
+      percent: 100,
+      label: "Up to date",
+    },
+  );
   // The page's line goes through the module's words, so the page shows the
   // pause word (src/get-started.js uploadLine).
   assert.match(
@@ -337,7 +403,8 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
   );
   // A caller that always sets paused: false does not pause its own queue.
   assert.equal(
-    uploadProgress({ uploadedBytes: 1, totalBytes: 2, files: 1, paused: false }).label,
+    uploadProgress({ uploadedBytes: 1, totalBytes: 2, files: 1, paused: false })
+      .label,
     "Uploading 1 file: 1 B of 2 B (50%)",
   );
   // One uploading device beside one paused device on one account is neither
@@ -358,12 +425,21 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
     uploadProgress(mixed).label,
     "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 1 file waiting (4.1 KB left)",
   );
-  assert.equal(uploadProgress(mixed).percent, 25, "the percent is the moving half's, not both");
+  assert.equal(
+    uploadProgress(mixed).percent,
+    25,
+    "the percent is the moving half's, not both",
+  );
   // The paused half is named with the same words a queue paused on its own
   // uses, so the two sentences cannot drift apart.
   assert.ok(
     uploadProgress(mixed).label.endsWith(
-      uploadProgress({ files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true }).label,
+      uploadProgress({
+        files: 1,
+        uploadedBytes: 0,
+        totalBytes: 4096,
+        paused: true,
+      }).label,
     ),
     "the paused half is not the paused line over its own numbers",
   );
@@ -421,7 +497,11 @@ test("every empty screen says what to do first", () => {
   for (const [name, entry] of Object.entries(EMPTY_STATES)) {
     assert.match(entry.what, /\.$/, `${name}'s what is one sentence`);
     assert.match(entry.next, /\.$/, `${name}'s next is one sentence`);
-    assert.match(entry.next, /drive login|shows up/, `${name}'s next has an action`);
+    assert.match(
+      entry.next,
+      /drive login|shows up/,
+      `${name}'s next has an action`,
+    );
   }
 });
 
@@ -446,7 +526,11 @@ test("the status endpoint answers a signed-out account honestly", () => {
   assert.equal(response.headers.get("www-authenticate"), "Cookie");
   return response.json().then((body) => {
     assert.deepEqual(body, { error: failureMessage("unauthorized") });
-    assert.equal("devices" in body, false, "a signed-out poll must not read devices");
+    assert.equal(
+      "devices" in body,
+      false,
+      "a signed-out poll must not read devices",
+    );
   });
 });
 
@@ -457,7 +541,11 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
     account,
   );
   assert.equal(signedIn.status, 200);
-  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [], upload: null });
+  assert.deepEqual(await signedIn.json(), {
+    state: "waiting",
+    devices: [],
+    upload: null,
+  });
 
   // The account is a required argument: a call that forgets it is the 401, not
   // an open endpoint, so a future route cannot accidentally serve anonymous.
@@ -477,34 +565,78 @@ test("the poll answers connected when one of the account's devices signed in", a
   const endpoint = "https://drive.test/api/first-run-status";
   /** @param {unknown[]} devices */
   const poll = async (devices) =>
-    await (await handleFirstRunStatusRequest(new Request(endpoint), account, null, devices)).json();
+    await (
+      await handleFirstRunStatusRequest(
+        new Request(endpoint),
+        account,
+        null,
+        devices,
+      )
+    ).json();
   const seenNow = Date.now() - 30_000;
   const seenHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
-  const fresh = { id: "key_1", name: "Nish's Mac", kind: "device", lastSeenAt: seenNow };
-  const stale = { id: "key_2", name: "Old Mac", kind: "device", lastSeenAt: seenHoursAgo };
+  const fresh = {
+    id: "key_1",
+    name: "Nish's Mac",
+    kind: "device",
+    lastSeenAt: seenNow,
+  };
+  const stale = {
+    id: "key_2",
+    name: "Old Mac",
+    kind: "device",
+    lastSeenAt: seenHoursAgo,
+  };
 
   // The issue's own case: a device seen 30 seconds ago, named, is connected.
-  assert.deepEqual(await poll([fresh]), { state: "connected", devices: [fresh], upload: null });
+  assert.deepEqual(await poll([fresh]), {
+    state: "connected",
+    devices: [fresh],
+    upload: null,
+  });
   // An account whose machine has not signed in yet, and one whose last sign-in
   // is hours old, both read as waiting rather than as connected.
-  assert.deepEqual(await poll([]), { state: "waiting", devices: [], upload: null });
+  assert.deepEqual(await poll([]), {
+    state: "waiting",
+    devices: [],
+    upload: null,
+  });
   assert.deepEqual(
-    await poll([{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }]),
+    await poll([
+      { id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null },
+    ]),
     {
       state: "waiting",
-      devices: [{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }],
+      devices: [
+        {
+          id: "key_3",
+          name: "Brand new Mac",
+          kind: "device",
+          lastSeenAt: null,
+        },
+      ],
       upload: null,
     },
   );
-  assert.deepEqual(await poll([stale]), { state: "waiting", devices: [stale], upload: null });
+  assert.deepEqual(await poll([stale]), {
+    state: "waiting",
+    devices: [stale],
+    upload: null,
+  });
   // One live device is enough, and an older one on the same account does not
   // pull the answer back to waiting.
   assert.equal(firstRunState([stale, fresh], Date.now()), "connected");
 
   // The window's edge: a device seen exactly CONNECTED_WINDOW_MS ago is still
   // connected, and one millisecond later is not.
-  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS }]), "connected");
-  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS - 1 }]), "waiting");
+  assert.equal(
+    firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS }]),
+    "connected",
+  );
+  assert.equal(
+    firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS - 1 }]),
+    "waiting",
+  );
   // A clock the route cannot read is a bug to see, not a wait to show somebody
   // who has already signed in.
   assert.throws(() => firstRunState([{ lastSeenAt: "not-a-date" }]), TypeError);
@@ -518,13 +650,22 @@ test("a request can only prove an account through a session Better Auth minted",
   // no auth a cookie proves nothing, and a made-up one proves nothing either:
   // the token is verified against the database that minted it, so a value the
   // browser chose is not a session (north star: Safe).
-  assert.equal(await signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
+  assert.equal(
+    await signedInAccount(
+      new Request("https://drive.test/api/first-run-status"),
+    ),
+    null,
+  );
   const madeUp = new Request("https://drive.test/api/first-run-status", {
     headers: { cookie: "__Secure-drive.session_token=made-up" },
   });
   const other = createTestAuth();
   assert.equal(await signedInAccount(madeUp, other.auth), null);
-  assert.equal(await signedInAccount(madeUp, null), null, "no auth, no account");
+  assert.equal(
+    await signedInAccount(madeUp, null),
+    null,
+    "no auth, no account",
+  );
 
   // The other half: a sign-in link mints a session and the auth holds it, so
   // the cookie the browser carries reads back as an account. The cookie is
@@ -533,15 +674,27 @@ test("a request can only prove an account through a session Better Auth minted",
   const made = createTestAuth();
   const { cookie, account } = await signIn(made, "someone@example.com");
   const proved = await signedInAccount(
-    new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+    new Request("https://drive.test/api/first-run-status", {
+      headers: { cookie },
+    }),
     made.auth,
   );
   assert.ok(proved);
-  assert.equal(proved.email, "someone@example.com", "a minted session is an account");
-  assert.equal(proved.id, account.id, "the session names the account that signed in");
+  assert.equal(
+    proved.email,
+    "someone@example.com",
+    "a minted session is an account",
+  );
+  assert.equal(
+    proved.id,
+    account.id,
+    "the session names the account that signed in",
+  );
   assert.equal(
     await signedInAccount(
-      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie },
+      }),
       other.auth,
     ),
     null,
@@ -566,7 +719,11 @@ test("the status payload carries the raw queue, the shape the page renders", asy
   assert.deepEqual(Object.keys(body), ["state", "devices", "upload"]);
   assert.equal(body.upload, null);
 
-  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const queue = {
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    files: 3,
+  };
   const carrying = await handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status"),
     { id: "1", name: "Your drive" },
@@ -575,7 +732,10 @@ test("the status payload carries the raw queue, the shape the page renders", asy
   assert.deepEqual(carrying.upload, queue);
   assert.equal(uploadLine(carrying.upload), uploadProgress(queue).label);
   // The page's renderer reads the field under that one name.
-  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  const source = readFileSync(
+    new URL("../src/get-started.js", import.meta.url),
+    "utf8",
+  );
   assert.match(source, /payload\.upload/);
 });
 
@@ -593,14 +753,24 @@ test("the Worker routes the page's poll to the status handler", async () => {
   // importing the module in a test: /api/* runs the Worker, so an unrouted
   // path would fall through to the assets and 404 on every poll. With no
   // sign-in flow yet the Worker's gate is closed, so the route answers 401.
-  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
-    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
+    const response = await workerFetch(
+      new Request(`https://drive.test${path}`),
+      env,
+    );
     assert.equal(response.status, 401, `${path} must reach the handler`);
-    assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
+    assert.deepEqual(await response.json(), {
+      error: failureMessage("unauthorized"),
+    });
   }
   // The waitlist route is untouched, and a stray path is still the asset 404.
-  const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
+  const asset = await workerFetch(
+    new Request("https://drive.test/get-started"),
+    env,
+  );
   assert.equal(asset.status, 200);
 });
 
@@ -610,11 +780,16 @@ test("a signed-out person cannot describe or create the starter", async () => {
   // layer never runs. This is the anonymous-401 proof this route needs, and
   // it walks Hono's real matcher rather than a factory per account-owning
   // route, so a new route that skips the gate fails here.
-  const describe = await workerFetch(new Request("https://drive.test/api/starter"), {
-    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
-  });
+  const describe = await workerFetch(
+    new Request("https://drive.test/api/starter"),
+    {
+      ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    },
+  );
   assert.equal(describe.status, 401, "a signed-out describe answers 401");
-  assert.deepEqual(await describe.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await describe.json(), {
+    error: failureMessage("unauthorized"),
+  });
 
   const create = await workerFetch(
     new Request("https://drive.test/api/starter", {
@@ -625,16 +800,25 @@ test("a signed-out person cannot describe or create the starter", async () => {
     { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } },
   );
   assert.equal(create.status, 401, "a signed-out create answers 401");
-  assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await create.json(), {
+    error: failureMessage("unauthorized"),
+  });
 });
 
 test("a signed-out person cannot read the balance or open a top-up", async () => {
   // drive#586: the balance and the top-up checkout are money on an account,
   // so the gate answers 401 before either handler runs, and no checkout opens.
-  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
-  const balance = await workerFetch(new Request("https://drive.test/api/balance"), env);
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  };
+  const balance = await workerFetch(
+    new Request("https://drive.test/api/balance"),
+    env,
+  );
   assert.equal(balance.status, 401, "a signed-out balance read answers 401");
-  assert.deepEqual(await balance.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await balance.json(), {
+    error: failureMessage("unauthorized"),
+  });
   const topUp = await workerFetch(
     new Request("https://drive.test/api/topup", {
       method: "POST",
@@ -644,7 +828,9 @@ test("a signed-out person cannot read the balance or open a top-up", async () =>
     env,
   );
   assert.equal(topUp.status, 401, "a signed-out top-up answers 401");
-  assert.deepEqual(await topUp.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await topUp.json(), {
+    error: failureMessage("unauthorized"),
+  });
 });
 
 test("the pricing page links to the first-run page", () => {
@@ -657,7 +843,10 @@ test("the pricing page links to the first-run page", () => {
   assert.ok(link > 0, "the pricing page must link to /get-started");
   const formStart = pricingPage.indexOf('id="waitlist"');
   const formEnd = pricingPage.indexOf("</form>", formStart);
-  assert.ok(formStart > 0 && formEnd > formStart, "the page has a waitlist form");
+  assert.ok(
+    formStart > 0 && formEnd > formStart,
+    "the page has a waitlist form",
+  );
   for (const match of pricingPage.matchAll(/href="\/get-started"/g)) {
     assert.ok(
       match.index < formStart || match.index > formEnd,
@@ -685,13 +874,20 @@ test("the page's state cell shows the module's own sync state and words", () => 
     label: "No syncs yet",
     detail: null,
   });
-  assert.deepEqual(deviceSyncState({ lastSyncAt: new Date(Date.now() - 30_000).toISOString() }), {
-    state: "synced",
-    label: "Synced",
-    detail: null,
-  });
+  assert.deepEqual(
+    deviceSyncState({
+      lastSyncAt: new Date(Date.now() - 30_000).toISOString(),
+    }),
+    {
+      state: "synced",
+      label: "Synced",
+      detail: null,
+    },
+  );
   assert.equal(
-    deviceSyncState({ lastSyncAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() }).detail,
+    deviceSyncState({
+      lastSyncAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    }).detail,
     "Quiet for a while",
   );
   // The cell text is the module's label, and only the join is the page's.
@@ -700,7 +896,11 @@ test("the page's state cell shows the module's own sync state and words", () => 
     "Sync error — storage down",
   );
   assert.equal(
-    stateCellText(deviceSyncState({ lastSyncAt: new Date(Date.now() - 30_000).toISOString() })),
+    stateCellText(
+      deviceSyncState({
+        lastSyncAt: new Date(Date.now() - 30_000).toISOString(),
+      }),
+    ),
     "Synced",
   );
   assert.throws(() => stateCellText({ detail: "x" }), TypeError);
@@ -739,10 +939,17 @@ test("the page's Devices table has a last-sync column and its empty states", () 
 // script runs push the steps below them down after first paint, and that
 // layout shift broke the CLS budget (lighthouserc.json) on main.
 test("the shell carries one wordless install row per system for the renderer to fill", () => {
-  const list = shell.match(/<ul class="install" id="install-lines">([\s\S]*?)<\/ul>/);
+  const list = shell.match(
+    /<ul class="install" id="install-lines">([\s\S]*?)<\/ul>/,
+  );
   assert.ok(list, "the shell must carry #install-lines");
-  const rows = list[1].replace(/<!--[\s\S]*?-->/g, "").match(/<li>[\s\S]*?<\/li>/g) ?? [];
-  assert.equal(rows.length, INSTALL_LINES.length, "one placeholder row per system");
+  const rows =
+    list[1].replace(/<!--[\s\S]*?-->/g, "").match(/<li>[\s\S]*?<\/li>/g) ?? [];
+  assert.equal(
+    rows.length,
+    INSTALL_LINES.length,
+    "one placeholder row per system",
+  );
   for (const row of rows) {
     assert.equal(
       row,
@@ -766,12 +973,24 @@ test("the shell is structure only: the module's copy is not re-declared in it", 
     "the shell must not carry the install command; the renderer writes it from the module",
   );
   for (const entry of Object.values(CONNECTION_COPY)) {
-    assert.ok(!shell.includes(entry.what), `the shell must not carry "${entry.what}"`);
-    assert.ok(!shell.includes(entry.next), `the shell must not carry "${entry.next}"`);
+    assert.ok(
+      !shell.includes(entry.what),
+      `the shell must not carry "${entry.what}"`,
+    );
+    assert.ok(
+      !shell.includes(entry.next),
+      `the shell must not carry "${entry.next}"`,
+    );
   }
   for (const entry of Object.values(EMPTY_STATES)) {
-    assert.ok(!shell.includes(entry.what), `the shell must not carry "${entry.what}"`);
-    assert.ok(!shell.includes(entry.next), `the shell must not carry "${entry.next}"`);
+    assert.ok(
+      !shell.includes(entry.what),
+      `the shell must not carry "${entry.what}"`,
+    );
+    assert.ok(
+      !shell.includes(entry.next),
+      `the shell must not carry "${entry.next}"`,
+    );
   }
   for (const step of FIRST_RUN_STEPS) {
     assert.ok(
@@ -804,7 +1023,10 @@ test("the shell is structure only: the module's copy is not re-declared in it", 
 });
 
 test("the shell loads the renderer as a module and carries the copy button", () => {
-  assert.match(shell, /<script type="module" src="\.\/src\/get-started\.js"><\/script>/);
+  assert.match(
+    shell,
+    /<script type="module" src="\.\/src\/get-started\.js"><\/script>/,
+  );
   assert.match(shell, /<button type="button" id="copy-command">Copy<\/button>/);
   assert.match(shell, /<code id="install-command"><\/code>/);
   assert.match(shell, /<ul class="install" id="install-lines">/);
@@ -813,7 +1035,10 @@ test("the shell loads the renderer as a module and carries the copy button", () 
 
 test("the renderer's wiring never lets a failed copy pass silently", () => {
   // Read from the module, not the page: this is the one copy of these words.
-  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  const source = readFileSync(
+    new URL("../src/get-started.js", import.meta.url),
+    "utf8",
+  );
   assert.match(source, /clipboard\.writeText/);
   assert.match(source, /Could not copy it for you/);
   assert.match(source, /Copied\. Paste it into your terminal\./);
@@ -842,14 +1067,25 @@ test("the renderer shows the module's words: command, steps, states, fragments",
 
 test("the renderer's upload line is the module's line", () => {
   assert.equal(
-    uploadLine({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }),
-    uploadProgress({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }).label,
+    uploadLine({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+    }),
+    uploadProgress({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+    }).label,
   );
   assert.equal(
     uploadLine({ uploadedBytes: 0, totalBytes: 1, files: 1 }),
     "Uploading 1 file: 0 B of 1 B (0%)",
   );
-  assert.equal(uploadLine({ uploadedBytes: 5, totalBytes: 10 }), "Uploading: 5 B of 10 B (50%)");
+  assert.equal(
+    uploadLine({ uploadedBytes: 5, totalBytes: 10 }),
+    "Uploading: 5 B of 10 B (50%)",
+  );
   assert.equal(uploadLine({ uploadedBytes: 0, totalBytes: 0 }), "Up to date");
 });
 
@@ -892,7 +1128,10 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
   assert.equal(instant, "2026-11-03T23:30:00.000Z");
   assert.equal(lastSyncText({ lastSyncAt: SYNCED_AT }), instant);
   // A minute earlier is a different instant, not a rounding of the same one.
-  assert.equal(lastSyncText({ lastSyncAt: SYNCED_AT - 600000 }), "2026-11-03T23:20:00.000Z");
+  assert.equal(
+    lastSyncText({ lastSyncAt: SYNCED_AT - 600000 }),
+    "2026-11-03T23:20:00.000Z",
+  );
 
   // A device synced at 23:30 UTC, read in a US zone: the day on screen is the
   // day that zone was in, not the day the Worker was in.
@@ -929,7 +1168,10 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
   );
   // The second the old toLocaleString() showed is gone: a last-sync minute
   // is as precise as the sentence needs, and the seconds were noise.
-  assert.doesNotMatch(syncInstantText(instant, { timeZone: "UTC" }), /:\d{2}:\d{2}/);
+  assert.doesNotMatch(
+    syncInstantText(instant, { timeZone: "UTC" }),
+    /:\d{2}:\d{2}/,
+  );
   assert.throws(() => syncInstantText("not-a-date"), /ISO-8601 instant/);
   assert.throws(() => syncInstantText(""), /ISO-8601 instant/);
   // A Date and a number are refused: `new Date` takes both, and the guard's
@@ -954,7 +1196,10 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
   // And the row really is the one place the instant is written, and the one
   // place the label is written: a second call site that still expects the old
   // always-string return would render a blank cell, and this fails first.
-  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  const source = readFileSync(
+    new URL("../src/get-started.js", import.meta.url),
+    "utf8",
+  );
   assert.equal(
     source.split("lastSyncText(").length - 1,
     2,
@@ -997,22 +1242,34 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
     // browser's own: the row's decision, taken where the reader is. The zone
     // is spelled out from the runtime so the expected words are the record's
     // rather than the host's, and the row's words are proof it passed none.
-    assert.equal(cell.textContent, syncInstantText(instant, { timeZone: runtimeZone() }));
+    assert.equal(
+      cell.textContent,
+      syncInstantText(instant, { timeZone: runtimeZone() }),
+    );
     // The other cells are untouched by the change: a row that wrote the
     // instant into the state column would be a different bug with the same
     // symptom.
-    assert.equal(/** @type {{textContent: string}} */ (row.children[0]).textContent, "Mac");
-    assert.equal(/** @type {{textContent: string}} */ (row.children[1]).textContent, "device");
+    assert.equal(
+      /** @type {{textContent: string}} */ (row.children[0]).textContent,
+      "Mac",
+    );
+    assert.equal(
+      /** @type {{textContent: string}} */ (row.children[1]).textContent,
+      "device",
+    );
 
     // A device that never synced writes the module's own words in that same
     // cell, and the state column says the same thing: the row's two halves
     // are what the single cell used to straddle.
     const unsynced = deviceRow({ id: "dev_2", name: "Other", kind: "device" });
-    const unsyncedCell = /** @type {{textContent: string}} */ (unsynced.children[2]);
+    const unsyncedCell = /** @type {{textContent: string}} */ (
+      unsynced.children[2]
+    );
     assert.equal(unsyncedCell.textContent, NO_SYNC_LABEL);
     assert.equal(
-      /** @type {{dataset: {state: string}}} */ (/** @type {unknown} */ (unsynced.children[3]))
-        .dataset.state,
+      /** @type {{dataset: {state: string}}} */ (
+        /** @type {unknown} */ (unsynced.children[3])
+      ).dataset.state,
       "never",
     );
   } finally {
@@ -1069,36 +1326,56 @@ test("a signed-in Mac inside the window is connected, and the page stops asking"
   // The window's edge belongs to connected, one millisecond past it does not.
   assert.equal(
     isConnected(
-      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS).toISOString() }] },
+      {
+        devices: [
+          { lastSeenAt: new Date(now - CONNECTED_WINDOW_MS).toISOString() },
+        ],
+      },
       now,
     ),
     true,
   );
   assert.equal(
     isConnected(
-      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS - 1).toISOString() }] },
+      {
+        devices: [
+          { lastSeenAt: new Date(now - CONNECTED_WINDOW_MS - 1).toISOString() },
+        ],
+      },
       now,
     ),
     false,
   );
   assert.throws(() => isConnected(null), TypeError);
 
-  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  const source = readFileSync(
+    new URL("../src/get-started.js", import.meta.url),
+    "utf8",
+  );
   assert.match(source, /clearInterval\(timer\)/);
   assert.match(source, /isConnected\(payload\)/);
 });
 
 test("the page raises one desktop notification per sync error", () => {
-  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  const source = readFileSync(
+    new URL("../src/get-started.js", import.meta.url),
+    "utf8",
+  );
   assert.match(source, /Notification\.permission !== "granted"/);
   assert.match(source, /notified\.has\(key\)/);
   // The permission is asked for only after an error is on the page, never on
   // load: every request sits inside the maybeAskToNotify function, none at
   // the module's top level.
   const functionStart = source.indexOf("function maybeAskToNotify");
-  assert.ok(functionStart > 0, "the renderer must gate its notification prompt");
+  assert.ok(
+    functionStart > 0,
+    "the renderer must gate its notification prompt",
+  );
   for (const match of source.matchAll(/Notification\.requestPermission\(\)/g)) {
-    assert.ok(match.index > functionStart, "the prompt is a function, not a load-time prompt");
+    assert.ok(
+      match.index > functionStart,
+      "the prompt is a function, not a load-time prompt",
+    );
   }
 });
 
@@ -1121,26 +1398,48 @@ test("the Worker reads a device's reported queue into the status payload", async
   const store = createD1QueueStore(made.db);
   const poll = () =>
     workerFetch(
-      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie },
+      }),
       env,
     );
 
   // No device has reported yet: the honest null #308 answers.
   const before = await (await poll()).json();
-  assert.equal(before.upload, null, "an account whose no device has reported has no queue");
+  assert.equal(
+    before.upload,
+    null,
+    "an account whose no device has reported has no queue",
+  );
 
   // One device reports its queue; the poll reads exactly that row.
-  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  const queue = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
   assert.equal((await store.record(account.id, queue)).stored, true);
   const after = await (await poll()).json();
-  assert.deepEqual(after.upload, queue, "the poll did not carry the device's own queue");
+  assert.deepEqual(
+    after.upload,
+    queue,
+    "the poll did not carry the device's own queue",
+  );
   assert.equal(uploadLine(after.upload), uploadProgress(queue).label);
   assert.equal(after.upload.paused, false);
 
   // A second account's report is never read as this one's.
-  assert.equal((await store.record("acct_other", { ...queue, files: 1 })).stored, true);
+  assert.equal(
+    (await store.record("acct_other", { ...queue, files: 1 })).stored,
+    true,
+  );
   const stillThis = await (await poll()).json();
-  assert.deepEqual(stillThis.upload, queue, "another account's report replaced this one");
+  assert.deepEqual(
+    stillThis.upload,
+    queue,
+    "another account's report replaced this one",
+  );
 
   // Two devices on one account are two rows (drive#516): the second device's
   // report lands on its own row rather than 429ing against the first, and the
@@ -1148,7 +1447,10 @@ test("the Worker reads a device's reported queue into the status payload", async
   // the bytes that are still leaving with the paused device's files named
   // beside them instead of under a pause the whole account is not in.
   const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
-  assert.equal((await store.record(account.id, second, "device-b")).stored, true);
+  assert.equal(
+    (await store.record(account.id, second, "device-b")).stored,
+    true,
+  );
   const both = await (await poll()).json();
   assert.deepEqual(
     both.upload,
@@ -1189,8 +1491,13 @@ test("the Worker reads a device's reported queue into the status payload", async
   // is aged directly, because a real mount going away is the only thing that
   // makes a report stale and there is no wall clock to wait out here.
   await made.db
-    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
+    .prepare(
+      "UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?",
+    )
+    .bind(
+      Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1,
+      account.id,
+    )
     .run();
   const stale = await (await poll()).json();
   assert.equal(
@@ -1218,7 +1525,9 @@ test("the Worker reads the account's device rows into the status payload", async
   const store = createD1DeviceStore(made.db);
   const poll = () =>
     workerFetch(
-      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie },
+      }),
       env,
     );
 
@@ -1238,19 +1547,38 @@ test("the Worker reads the account's device rows into the status payload", async
     revokedAt: null,
   });
   const minted = await (await poll()).json();
-  assert.equal(minted.state, "waiting", "a key that never made a request is not connected");
-  assert.equal(isConnected(minted), false, "the page does not read that payload as connected");
+  assert.equal(
+    minted.state,
+    "waiting",
+    "a key that never made a request is not connected",
+  );
+  assert.equal(
+    isConnected(minted),
+    false,
+    "the page does not read that payload as connected",
+  );
   assert.equal(minted.devices.length, 1);
-  assert.equal(minted.devices[0].name, "Nish's Mac", "the poll carries the device's name");
+  assert.equal(
+    minted.devices[0].name,
+    "Nish's Mac",
+    "the poll carries the device's name",
+  );
   assert.equal(minted.devices[0].lastSeenAt, null);
 
   // The api Worker's request path stamps the row, and the next poll says
   // connected with that name. The clock comes back in milliseconds, the unit
   // the page compares against Date.now().
   const renewed = await store.renewKey({ id: account.id }, "key_mac");
-  assert.ok(!("error" in renewed), `renewKey refused this key: ${JSON.stringify(renewed)}`);
+  assert.ok(
+    !("error" in renewed),
+    `renewKey refused this key: ${JSON.stringify(renewed)}`,
+  );
   const seen = await (await poll()).json();
-  assert.equal(seen.state, "connected", "a device seen 30 seconds ago reads as connected");
+  assert.equal(
+    seen.state,
+    "connected",
+    "a device seen 30 seconds ago reads as connected",
+  );
   assert.equal(isConnected(seen), true);
   assert.equal(seen.devices.length, 1);
   assert.equal(seen.devices[0].name, "Nish's Mac");
@@ -1261,7 +1589,10 @@ test("the Worker reads the account's device rows into the status payload", async
 
   // A device that signed out keeps its row and loses its answer: revoked, it is
   // not this account's live Mac any more.
-  assert.equal("error" in (await store.revokeKey({ id: account.id }, "key_mac")), false);
+  assert.equal(
+    "error" in (await store.revokeKey({ id: account.id }, "key_mac")),
+    false,
+  );
   const revoked = await (await poll()).json();
   assert.equal(revoked.state, "waiting", "a revoked device is not connected");
   assert.deepEqual(revoked.devices, []);
@@ -1281,7 +1612,11 @@ test("the Worker reads the account's device rows into the status payload", async
     revokedAt: null,
   });
   const other = await (await poll()).json();
-  assert.equal(other.state, "waiting", "another account's device is not this account's sign-in");
+  assert.equal(
+    other.state,
+    "waiting",
+    "another account's device is not this account's sign-in",
+  );
 
   // An agent key is a credential for a tool, not for this machine: every request
   // one authenticates stamps `last_seen_at` on its row, so a busy agent must not
@@ -1328,7 +1663,9 @@ test("the status route names the bytes still leaving when another device is paus
   const poll = async () =>
     (
       await workerFetch(
-        new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+        new Request("https://drive.test/api/first-run-status", {
+          headers: { cookie },
+        }),
         env,
       )
     ).json();
@@ -1340,12 +1677,26 @@ test("the status route names the bytes still leaving when another device is paus
     paused: false,
   };
   const paused = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
-  assert.equal((await store.record(account.id, uploading, "device-a")).stored, true);
-  assert.equal((await store.record(account.id, paused, "device-b")).stored, true);
+  assert.equal(
+    (await store.record(account.id, uploading, "device-a")).stored,
+    true,
+  );
+  assert.equal(
+    (await store.record(account.id, paused, "device-b")).stored,
+    true,
+  );
 
   const body = await poll();
-  assert.equal(body.upload.paused, false, "bytes are leaving this account, so it is not paused");
-  assert.equal(body.upload.files, uploading.files, "the paused device's files are not the count");
+  assert.equal(
+    body.upload.paused,
+    false,
+    "bytes are leaving this account, so it is not paused",
+  );
+  assert.equal(
+    body.upload.files,
+    uploading.files,
+    "the paused device's files are not the count",
+  );
   const line = uploadLine(body.upload);
   // The line names the bytes that are still leaving, and only then the paused
   // device's own queue. Both halves come from UPLOAD_LABEL, so the page and the

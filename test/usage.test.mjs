@@ -39,8 +39,17 @@ import { UPLOAD_LABEL, uploadProgress } from "../core/status.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
 import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
-import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
-import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
+import {
+  USAGE_LABELS,
+  USAGE_POLL_INTERVAL_MS,
+  usageLines,
+} from "../src/usage.js";
+import {
+  createTestAuth,
+  DRIVE_SCHEMA_MIGRATIONS,
+  signIn,
+  TEST_SECRET,
+} from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -54,17 +63,29 @@ const workerFetch =
     /** @type {unknown} */ (worker.fetch)
   );
 
-const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+const page = readFileSync(
+  new URL("../public/usage.html", import.meta.url),
+  "utf8",
+);
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The gate itself is pinned in test/account-gate.test.mjs.
 const account = Object.freeze({ id: "1", name: "Your drive" });
 // The first-run page is a Vite entry at the repo root (issue #70), not a
 // verbatim asset in public/, so its shell is read from there.
-const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
+const getStartedPage = readFileSync(
+  new URL("../get-started.html", import.meta.url),
+  "utf8",
+);
 // The Web Files page, which adopted the shared header and menu in drive#425 and
 // is now the third page under the one-navigation gate below.
-const filesPage = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
-const devicesPage = readFileSync(new URL("../public/devices.html", import.meta.url), "utf8");
+const filesPage = readFileSync(
+  new URL("../public/files.html", import.meta.url),
+  "utf8",
+);
+const devicesPage = readFileSync(
+  new URL("../public/devices.html", import.meta.url),
+  "utf8",
+);
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
@@ -82,7 +103,10 @@ const MONTH_MINUTES = 30 * 1440;
 function month(storedGb, overrides = {}) {
   const days = [];
   for (let index = USAGE_HISTORY_DAYS; index > 0; index -= 1) {
-    days.push({ day: `2026-09-${String(index).padStart(2, "0")}`, gb: storedGb });
+    days.push({
+      day: `2026-09-${String(index).padStart(2, "0")}`,
+      gb: storedGb,
+    });
   }
   return {
     ...usageSummary({
@@ -130,8 +154,16 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
     downloadBytes: 0,
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
-  assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
-  assert.equal(withoutCard.labels.accountCap, "$20.00", "the account's own cap is untouched");
+  assert.equal(
+    withoutCard.labels.cap,
+    "$1.00",
+    "no card means writes stop at the free $1",
+  );
+  assert.equal(
+    withoutCard.labels.accountCap,
+    "$20.00",
+    "the account's own cap is untouched",
+  );
 });
 
 test("until a card is really on file the cost label says no charge has been made", () => {
@@ -142,8 +174,16 @@ test("until a card is really on file the cost label says no charge has been made
   const withoutCard = month(400, { cardOnFile: false });
   assert.equal(withoutCard.cardOnFile, false);
   assert.equal(withoutCard.labels.cost, PRICE.noChargeYet);
-  assert.equal(withoutCard.billCents.totalCents, 800, "the bill arithmetic is unchanged");
-  assert.equal(month(400).cardOnFile, true, "the default every caller but the endpoint sends");
+  assert.equal(
+    withoutCard.billCents.totalCents,
+    800,
+    "the bill arithmetic is unchanged",
+  );
+  assert.equal(
+    month(400).cardOnFile,
+    true,
+    "the default every caller but the endpoint sends",
+  );
   assert.equal(month(400).labels.cost, "$8.00");
   // A truthy value that is not `true` is not a card on file, so the label
   // cannot drift between two callers that spell yes two ways.
@@ -156,8 +196,15 @@ test("the downloads label is bytes used against the free 3x, from the same confi
   assert.equal(summary.cap.capUsd, BILLING_CONFIG.defaultCapUsd);
   assert.equal(summary.labels.downloads, "500 GB of 300 GB free");
   assert.equal(summary.downloads.usedBytes, 500e9);
-  assert.equal(summary.downloads.freeBytes, BILLING_CONFIG.freeDownloadMultiplier * 100e9);
-  assert.equal(summary.downloads.usd, 2, "200 GB over the free 3x is $2 at 1¢ a GB");
+  assert.equal(
+    summary.downloads.freeBytes,
+    BILLING_CONFIG.freeDownloadMultiplier * 100e9,
+  );
+  assert.equal(
+    summary.downloads.usd,
+    2,
+    "200 GB over the free 3x is $2 at 1¢ a GB",
+  );
 });
 
 test("the stored series is the last 30 days, oldest first", () => {
@@ -169,7 +216,10 @@ test("the stored series is the last 30 days, oldest first", () => {
   for (let day = 1; day <= 40; day += 1) {
     const month = day <= 9 ? "09" : "08";
     const date = day <= 9 ? day : day - 9;
-    entries.push({ day: `2026-${month}-${String(date).padStart(2, "0")}`, gb: day });
+    entries.push({
+      day: `2026-${month}-${String(date).padStart(2, "0")}`,
+      gb: day,
+    });
   }
   entries.reverse();
   const summary = usageSummary({
@@ -180,9 +230,21 @@ test("the stored series is the last 30 days, oldest first", () => {
     averageStoredGb: 0,
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
-  assert.equal(summary.storedDaily.length, USAGE_HISTORY_DAYS, "at most 30 days");
-  assert.equal(summary.storedDaily[0].day, "2026-08-11", "the oldest of the window first");
-  assert.equal(summary.storedDaily[29].day, "2026-09-09", "the newest of the window last");
+  assert.equal(
+    summary.storedDaily.length,
+    USAGE_HISTORY_DAYS,
+    "at most 30 days",
+  );
+  assert.equal(
+    summary.storedDaily[0].day,
+    "2026-08-11",
+    "the oldest of the window first",
+  );
+  assert.equal(
+    summary.storedDaily[29].day,
+    "2026-09-09",
+    "the newest of the window last",
+  );
   const dayStrings = summary.storedDaily.map((entry) => entry.day);
   assert.deepEqual(dayStrings, [...dayStrings].sort(), "oldest first");
 });
@@ -197,7 +259,13 @@ test("a day the calendar does not have fails, not just a day that is not a date"
     averageStoredGb: 0,
     capUsd: BILLING_CONFIG.defaultCapUsd,
   };
-  for (const day of ["2026-09-40", "2026-02-30", "2026-13-01", "2026-09-40T00:00:00Z", 20260901]) {
+  for (const day of [
+    "2026-09-40",
+    "2026-02-30",
+    "2026-13-01",
+    "2026-09-40T00:00:00Z",
+    20260901,
+  ]) {
     assert.throws(
       () => usageSummary({ ...base, storedDaily: [{ day, gb: 1 }] }),
       /usage\.storedDaily\[0\]\.day/,
@@ -221,7 +289,10 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
     averageStoredGb: 0,
     capUsd: 12,
   };
-  assert.throws(() => usageSummary({ ...base, storedDaily: "yesterday" }), /usage\.storedDaily/);
+  assert.throws(
+    () => usageSummary({ ...base, storedDaily: "yesterday" }),
+    /usage\.storedDaily/,
+  );
   assert.throws(
     () =>
       usageSummary({
@@ -238,7 +309,10 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
       }),
     /usage\.storedDaily\[0\]\.gb/,
   );
-  assert.throws(() => usageSummary({ ...base, storedDaily: [null] }), TypeError);
+  assert.throws(
+    () => usageSummary({ ...base, storedDaily: [null] }),
+    TypeError,
+  );
   const missing = { ...base };
   delete (/** @type {{storedGb?: number}} */ (missing).storedGb);
   assert.throws(() => usageSummary(missing), /usage\.storedGb/);
@@ -246,7 +320,9 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
 
 test("both saved sentences come from the one table in core/billing.js", () => {
   const plan = (/** @type {string} */ amount) =>
-    SAVED_COPY.plan.replace("{amount}", amount).replace("{plan}", "a usual 1 TB plan");
+    SAVED_COPY.plan
+      .replace("{amount}", amount)
+      .replace("{plan}", "a usual 1 TB plan");
   // drive#642: 1 TB and above states no saving at all. A usual plan is $15 for
   // the first TB and $6 for each extra 500 GB, which is the same $15 a TB our
   // maximum charges from 1 TB up, so every cheaper-than claim is false there.
@@ -337,8 +413,16 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
 test("GB-months are the meter over the calendar month's own minutes (drive#531)", () => {
   assert.equal(gbMonths(MONTH_MINUTES, MONTH_MINUTES), 1);
   assert.equal(gbMonths(21600, MONTH_MINUTES), 0.5);
-  assert.equal(gbMonths(44640, 44640), 1, "a whole 31-day month is one GB-month");
-  assert.throws(() => gbMonths(43800, 43800), TypeError, "no month is 43,800 minutes long");
+  assert.equal(
+    gbMonths(44640, 44640),
+    1,
+    "a whole 31-day month is one GB-month",
+  );
+  assert.throws(
+    () => gbMonths(43800, 43800),
+    TypeError,
+    "no month is 43,800 minutes long",
+  );
   assert.throws(() => gbMonths(-1, MONTH_MINUTES), TypeError);
   assert.throws(() => gbMonths("many", MONTH_MINUTES), TypeError);
 });
@@ -400,7 +484,11 @@ test("an account with a card on file is shown the bill it is charged", async () 
   ).json();
   assert.equal(withCard.cardOnFile, true);
   assert.equal(withCard.labels.cost, "$0.00");
-  assert.equal(withCard.billCents.totalCents, 0, "the one bill function's own total");
+  assert.equal(
+    withCard.billCents.totalCents,
+    0,
+    "the one bill function's own total",
+  );
 });
 
 test("the usage page's four size30 numbers come from monthBillCents and the window alone", async () => {
@@ -443,8 +531,10 @@ test("the usage page's four size30 numbers come from monthBillCents and the wind
   assert.equal(body.labels.size30DropsOut, size30DropsOutDay(reachedDay));
   assert.equal(
     body.todayDrawMillicents,
-    dailyDrawMillicents(monthBillCents({ size30Bytes: body.size30Bytes }).totalMillicents, 0)
-      .drawMillicents,
+    dailyDrawMillicents(
+      monthBillCents({ size30Bytes: body.size30Bytes }).totalMillicents,
+      0,
+    ).drawMillicents,
   );
   assert.equal(
     body.billUsd,
@@ -466,13 +556,18 @@ test("the usage page's four size30 numbers come from monthBillCents and the wind
 
 test("the Worker routes the usage read and the page's endpoint is that route", async () => {
   assert.equal(USAGE_ENDPOINT, "/api/usage");
-  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  };
   for (const path of ["/api/usage", "/api/usage/"]) {
     // The route reaches the handler and the gate answers 401: with no sign-in
     // flow yet no request can prove an account, so the Worker's read shows
     // nobody's money (issue #73). The signed-in shape is pinned in
     // test/account-gate.test.mjs.
-    const anonymous = await workerFetch(new Request(`https://drive.test${path}`), env);
+    const anonymous = await workerFetch(
+      new Request(`https://drive.test${path}`),
+      env,
+    );
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
   const handler = handleUsageRequest(
@@ -525,13 +620,21 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "todayDrawMillicents",
     "uploadLine",
   ]);
-  assert.equal(body.uploadLine, null, "no device store means no queue to report");
+  assert.equal(
+    body.uploadLine,
+    null,
+    "no device store means no queue to report",
+  );
   assert.equal(typeof body.capLine, "string", "capLine still rides beside it");
 
   // A queue handed in is checked by uploadProgress(), which throws on a value
   // that is not a queue, so a broken report fails the read rather than printing
   // a plausible line about bytes nobody counted.
-  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const queue = {
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    files: 3,
+  };
   const reported = await handleUsageRequest(
     new Request("https://drive.test/api/usage"),
     account,
@@ -541,7 +644,11 @@ test("the upload line rides the usage answer beside capLine", async () => {
   ).json();
   assert.equal(reported.uploadLine, uploadProgress(queue).label);
   assert.equal(reported.uploadLine, uploadLine(queue));
-  assert.equal(body.balanceLine, null, "no balance store means no balance line");
+  assert.equal(
+    body.balanceLine,
+    null,
+    "no balance store means no balance line",
+  );
   // The prepaid balance line (drive#586) rides beside the cap line as given.
   const withBalance = await handleUsageRequest(
     new Request("https://drive.test/api/usage"),
@@ -550,7 +657,10 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "Balance $1.50. Top up to keep adding files.",
     MONTH_ISO,
   ).json();
-  assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
+  assert.equal(
+    withBalance.balanceLine,
+    "Balance $1.50. Top up to keep adding files.",
+  );
   assert.throws(
     () =>
       handleUsageRequest(
@@ -571,7 +681,10 @@ test("the shipped page carries every label from src/usage.js verbatim", () => {
   // module, its tests and the CLI.
   for (const [name, value] of Object.entries(USAGE_LABELS)) {
     if (typeof value === "string") {
-      assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
+      assert.ok(
+        page.includes(value),
+        `the page must carry ${name}: "${value}"`,
+      );
       continue;
     }
     for (const line of Object.values(value)) {
@@ -626,11 +739,17 @@ test("no money and no size is worked out on the page", () => {
   // The chart's width follows the series, so a five-day month is drawn across
   // the whole chart instead of squeezed into the left sixth of a fixed 30-unit
   // viewBox, and the last day lands on the right edge.
-  assert.match(page, /chartEl\.setAttribute\("viewBox", `0 0 \$\{Math\.max\(width, 1\)\} 100`\)/);
+  assert.match(
+    page,
+    /chartEl\.setAttribute\("viewBox", `0 0 \$\{Math\.max\(width, 1\)\} 100`\)/,
+  );
   // Every entry the chart draws is checked before it is drawn, so a day with no
   // number never reaches points="0,NaN" or the chart's own aria-label.
   assert.match(page, /!summary\.storedDaily\.every\(/);
-  assert.match(page, /typeof entry\.day === "string" &&\n\s*Number\.isFinite\(entry\.gb\)/);
+  assert.match(
+    page,
+    /typeof entry\.day === "string" &&\n\s*Number\.isFinite\(entry\.gb\)/,
+  );
 });
 
 test("the page obeys the pricing page's copy rules", () => {
@@ -782,7 +901,10 @@ function stubElement(id) {
     replaceChildren(/** @type {...StubElement} */ ...nodes) {
       el.appended = nodes;
     },
-    addEventListener(/** @type {string} */ type, /** @type {(event: unknown) => void} */ handler) {
+    addEventListener(
+      /** @type {string} */ type,
+      /** @type {(event: unknown) => void} */ handler,
+    ) {
       el.listeners.set(type, handler);
     },
     querySelector(/** @type {string} */ selector) {
@@ -818,7 +940,8 @@ function runPage(summary, { ok = true } = {}) {
     // read lands: these ship hidden so no month is painted early, and a stub
     // that started them visible would make every page-before-read assertion
     // here pass for the wrong reason.
-    const tag = page.match(new RegExp(`<[a-z]+[^>]*\\sid="${id}"[^>]*>`))?.[0] ?? "";
+    const tag =
+      page.match(new RegExp(`<[a-z]+[^>]*\\sid="${id}"[^>]*>`))?.[0] ?? "";
     el.hidden = /\shidden(\s|>|=)/.test(tag);
     elements.set(id, el);
   }
@@ -875,12 +998,30 @@ test("the page announces an empty month and takes the announcement back", async 
   const newAccount = runPage({ ...emptyMonth(), uploadLine: null });
   await settle();
   const status = elementOf(newAccount.elements, "usage-status");
-  assert.equal(elementOf(newAccount.elements, "usage-body").hidden, false, "the read landed");
-  assert.equal(status.hidden, false, "the reserved slot is filled, not left blank");
+  assert.equal(
+    elementOf(newAccount.elements, "usage-body").hidden,
+    false,
+    "the read landed",
+  );
+  assert.equal(
+    status.hidden,
+    false,
+    "the reserved slot is filled, not left blank",
+  );
   assert.equal(status.dataset.state, "empty");
-  assert.equal(status.querySelector(".what").textContent, USAGE_LABELS.monthEmpty.what);
-  assert.equal(status.querySelector(".next").textContent, USAGE_LABELS.monthEmpty.next);
-  assert.equal(elementOf(newAccount.elements, "chart-figure").hidden, true, "nothing to draw");
+  assert.equal(
+    status.querySelector(".what").textContent,
+    USAGE_LABELS.monthEmpty.what,
+  );
+  assert.equal(
+    status.querySelector(".next").textContent,
+    USAGE_LABELS.monthEmpty.next,
+  );
+  assert.equal(
+    elementOf(newAccount.elements, "chart-figure").hidden,
+    true,
+    "nothing to draw",
+  );
   assert.equal(elementOf(newAccount.elements, "storage-empty").hidden, false);
 
   // A month with history is the normal reachable read: no empty state, and the
@@ -890,7 +1031,8 @@ test("the page announces an empty month and takes the announcement back", async 
   assert.equal(elementOf(withHistory.elements, "usage-status").hidden, true);
   assert.equal(elementOf(withHistory.elements, "chart-figure").hidden, false);
   assert.ok(
-    (elementOf(withHistory.elements, "chart-line").getAttribute("points") ?? "").length > 0,
+    (elementOf(withHistory.elements, "chart-line").getAttribute("points") ?? "")
+      .length > 0,
   );
 
   // A read that could not reach the service still says so, and does not fall
@@ -899,7 +1041,10 @@ test("the page announces an empty month and takes the announcement back", async 
   await settle();
   const broken = elementOf(unreachable.elements, "usage-status");
   assert.equal(broken.dataset.state, "unreachable");
-  assert.equal(broken.querySelector(".what").textContent, USAGE_LABELS.unreachable.what);
+  assert.equal(
+    broken.querySelector(".what").textContent,
+    USAGE_LABELS.unreachable.what,
+  );
   assert.equal(elementOf(unreachable.elements, "usage-body").hidden, true);
 });
 
@@ -928,10 +1073,15 @@ test("the page names the month the numbers belong to, and says it is UTC", async
     year: "numeric",
     timeZone: "UTC",
   });
-  assert.equal(monthHeading.textContent, `${monthName}, ${USAGE_LABELS.monthZone}`);
+  assert.equal(
+    monthHeading.textContent,
+    `${monthName}, ${USAGE_LABELS.monthZone}`,
+  );
   assert.match(monthHeading.textContent, /2026/);
   assert.ok(
-    page.includes(`<p class="hint" id="month-note">${USAGE_LABELS.monthNote}</p>`),
+    page.includes(
+      `<p class="hint" id="month-note">${USAGE_LABELS.monthNote}</p>`,
+    ),
     "the UTC rule ships in the markup, so a reader with no script sees it too",
   );
   // The zone is spelled out rather than implied: "October 2026" on its own is
@@ -953,7 +1103,10 @@ test("a new account's month says it is empty instead of showing a blank area", (
   // module the way its other copy cannot.
   assert.equal(USAGE_LABELS.monthEmpty.what, "Nothing stored yet.");
   assert.match(page, /what: "Nothing stored yet\."/);
-  assert.match(page, new RegExp(`next: ${JSON.stringify(USAGE_LABELS.monthEmpty.next)}`));
+  assert.match(
+    page,
+    new RegExp(`next: ${JSON.stringify(USAGE_LABELS.monthEmpty.next)}`),
+  );
   // Both sentences are complete: what says the state, next says what to do, the
   // same shape every empty state in the product has (core/status.js, #32).
   assert.match(USAGE_LABELS.monthEmpty.what, /\.$/);
@@ -969,7 +1122,10 @@ test("a new account's month says it is empty instead of showing a blank area", (
   // The status it needs is the month's own: no stored day to draw. A month that
   // stored and then emptied itself still has history, and keeps the normal
   // reachable read.
-  assert.match(page, /if \(summary\.storedDaily\.length === 0\) \{\s*sayMonthEmpty\(\);/);
+  assert.match(
+    page,
+    /if \(summary\.storedDaily\.length === 0\) \{\s*sayMonthEmpty\(\);/,
+  );
   // The chart's own note stays where it is, under the chart it replaces, so the
   // page does not say the same thing twice in two boxes.
   assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
@@ -998,7 +1154,10 @@ test("no month is painted before a read has landed", () => {
   // A payload that is not the summary reveals nothing: every label has to be a
   // string, or the page would print "undefined" where a number belongs.
   assert.match(page, /const LABEL_KEYS = \[[^\]]*"accountCap"\]/);
-  assert.match(page, /LABEL_KEYS\.some\(\(key\) => typeof labels\[key\] !== "string"\)/);
+  assert.match(
+    page,
+    /LABEL_KEYS\.some\(\(key\) => typeof labels\[key\] !== "string"\)/,
+  );
   assert.match(page, /!Number\.isFinite\(cap\.capUsd\)/);
   assert.match(page, /typeof summary\.saved\.copy !== "string"/);
 });
@@ -1014,7 +1173,10 @@ test("no bill is shown as if charged while no card is on file", async () => {
     uploadLine: null,
   });
   await settle();
-  assert.equal(elementOf(cardless.elements, "cost").textContent, PRICE.noChargeYet);
+  assert.equal(
+    elementOf(cardless.elements, "cost").textContent,
+    PRICE.noChargeYet,
+  );
   assert.equal(elementOf(cardless.elements, "bill-lines").hidden, true);
 
   const charged = runPage({
@@ -1042,7 +1204,10 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
   // setting), not the card-less cap writes stop at, and the range tops out at
   // the month's maximum: a cap above that is not a real choice.
   assert.match(page, /capValueEl\.textContent = labels\.accountCap;/);
-  assert.match(page, /capCeiling\(Math\.max\(summary\.maximumUsd, cap\.capUsd\)\);/);
+  assert.match(
+    page,
+    /capCeiling\(Math\.max\(summary\.maximumUsd, cap\.capUsd\)\);/,
+  );
   // Nothing writes the slider's own value out of the page: the endpoint's
   // dollar values arrive finished, so a page-side "$12.34" would be a second
   // copy of the one formatter.
@@ -1063,16 +1228,34 @@ test("the cap has a labelled whole-dollar number input that the page reads", () 
     /id="cap-amount"[^>]*max=/,
     "the number field has no max, so a person can type above the month's maximum",
   );
-  assert.match(page, /const capAmount = document\.getElementById\("cap-amount"\);/);
-  assert.match(page, /function capCeiling\(usd\)[\s\S]*capSlider\.max = String\(whole\);/);
-  assert.doesNotMatch(page, /function capCeiling\(usd\)[\s\S]*?capAmount\.max = String\(whole\);/);
-  assert.match(page, /function capWhole\(usd\)[\s\S]*capAmount\.value = String\(whole\);/);
-  assert.match(page, /async function saveCap\(\) \{\s*if \(!capAmountIsWholeDollar\(\)\) return;/);
+  assert.match(
+    page,
+    /const capAmount = document\.getElementById\("cap-amount"\);/,
+  );
+  assert.match(
+    page,
+    /function capCeiling\(usd\)[\s\S]*capSlider\.max = String\(whole\);/,
+  );
+  assert.doesNotMatch(
+    page,
+    /function capCeiling\(usd\)[\s\S]*?capAmount\.max = String\(whole\);/,
+  );
+  assert.match(
+    page,
+    /function capWhole\(usd\)[\s\S]*capAmount\.value = String\(whole\);/,
+  );
+  assert.match(
+    page,
+    /async function saveCap\(\) \{\s*if \(!capAmountIsWholeDollar\(\)\) return;/,
+  );
   assert.match(
     page,
     /capAmount\.addEventListener[\s\S]*capCeiling\(typed\);\s*capSlider\.value = String\(typed\);/,
   );
-  assert.match(page, /capSlider\.addEventListener[\s\S]*capAmount\.value = capSlider\.value;/);
+  assert.match(
+    page,
+    /capSlider\.addEventListener[\s\S]*capAmount\.value = capSlider\.value;/,
+  );
   assert.match(
     page,
     /function setCapControlsDisabled\(disabled\) \{\s*capAmount\.disabled = disabled;\s*capSlider\.disabled = disabled;/,
@@ -1084,10 +1267,18 @@ test("a cap below the month's maximum does not shrink the slider", async () => {
   await settle();
   const slider = elementOf(made.elements, "cap-slider");
   const amount = elementOf(made.elements, "cap-amount");
-  assert.equal(slider.max, "15", "the slider's range is the month's $15 maximum");
+  assert.equal(
+    slider.max,
+    "15",
+    "the slider's range is the month's $15 maximum",
+  );
   assert.equal(slider.value, "2", "the thumb is the $2 cap in force");
   assert.equal(amount.value, "2");
-  assert.equal(amount.max, "", "the number field has no max, so 50 can be typed");
+  assert.equal(
+    amount.max,
+    "",
+    "the number field has no max, so 50 can be typed",
+  );
 });
 
 test("typing a whole dollar raises the slider and an empty field hides Save cap", async () => {
@@ -1108,7 +1299,11 @@ test("typing a whole dollar raises the slider and an empty field hides Save cap"
   amount.value = "";
   onAmount(new Event("input"));
   assert.equal(save.hidden, true, "an empty field hides Save cap");
-  assert.equal(slider.max, "50", "clearing the field does not snap the slider's range");
+  assert.equal(
+    slider.max,
+    "50",
+    "clearing the field does not snap the slider's range",
+  );
 
   amount.value = "-1";
   onAmount(new Event("input"));
@@ -1116,7 +1311,11 @@ test("typing a whole dollar raises the slider and an empty field hides Save cap"
 
   amount.value = "1.5";
   onAmount(new Event("input"));
-  assert.equal(save.hidden, true, "a fractional number is not a whole-dollar cap");
+  assert.equal(
+    save.hidden,
+    true,
+    "a fractional number is not a whole-dollar cap",
+  );
 });
 
 test("the cap is a control, not a readout, and it saves through the api", async () => {
@@ -1130,8 +1329,14 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   );
   // The slider ships usable: the signed-out state is what disables it, which
   // is the gate (drive#73) rather than a not-yet-implemented placeholder.
-  assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
-  assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
+  assert.doesNotMatch(
+    page.slice(page.indexOf("<body>")),
+    /id="cap-slider"[^>]*disabled/,
+  );
+  assert.match(
+    page,
+    /<button type="button" id="cap-save" hidden>Save cap<\/button>/,
+  );
   assert.match(page, /capAmount\.addEventListener\("input"/);
   assert.match(page, /capSaveEl\.addEventListener\("click"/);
   // The write: the same body `drive cap` sends, and the answer's own sentence
@@ -1140,10 +1345,16 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   assert.match(page, /capSavedEl\.textContent = payload/);
   // The signed-out state still disables it: an account on this browser is what a
   // write needs, so a page with none cannot move a cap.
-  assert.match(page, /setCapControlsDisabled\(true\);\s*capSaveEl\.hidden = true;/);
+  assert.match(
+    page,
+    /setCapControlsDisabled\(true\);\s*capSaveEl\.hidden = true;/,
+  );
   // A save in flight when the session ends has no answer left to wait for, so
   // its two hints sleep with the slider.
-  assert.match(page, /capSavingEl\.hidden = true;\s*capSavedEl\.hidden = true;/);
+  assert.match(
+    page,
+    /capSavingEl\.hidden = true;\s*capSavedEl\.hidden = true;/,
+  );
   // A worker's sentence left under the slider would answer a number the person
   // has since moved on from, so the input that shows the button returns the
   // note to its own words.
@@ -1153,10 +1364,16 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   );
   // A minute's read does not move the cap controls back out from under the
   // person moving them, and the saved line is the endpoint's own sentence.
-  assert.match(page, /if \(capSaveEl\.hidden\) \{\s*capWhole\(cap\.capUsd\);\s*\}/);
+  assert.match(
+    page,
+    /if \(capSaveEl\.hidden\) \{\s*capWhole\(cap\.capUsd\);\s*\}/,
+  );
   // Visual feedback while the POST is in flight, so the slider's
   // disabled state is not the only signal that the save is happening.
-  assert.match(page, /<p class="hint" id="cap-saving" role="status" hidden>Saving…<\/p>/);
+  assert.match(
+    page,
+    /<p class="hint" id="cap-saving" role="status" hidden>Saving…<\/p>/,
+  );
   // The note under the slider is the one pair src/usage.js pins
   // (USAGE_LABELS.capNote). The page is a static asset and cannot import it,
   // so the words are repeated, and this is what keeps the repeat honest: a
@@ -1198,7 +1415,10 @@ test("the pages' mastheads read as one navigation", () => {
   // The link each page marks as the one the reader is on.
   const CURRENT = new Map([
     ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
-    ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
+    [
+      "get-started.html",
+      /<a href="\/get-started" aria-current="page">Get started<\/a>/,
+    ],
     ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
     ["devices.html", /<a href="\/devices" aria-current="page">Devices<\/a>/],
   ]);
@@ -1213,19 +1433,33 @@ test("the pages' mastheads read as one navigation", () => {
     // between its open and close tags, the same slice test/pricing-copy.test.mjs
     // takes of the pricing page.
     const header = html.slice(0, html.indexOf("</header>"));
-    const links = [...header.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
+    const links = [...header.matchAll(/<a href="\/[^"]*"/g)].map(
+      (match) => match[0],
+    );
     assert.deepEqual(
       links,
       nav,
       `${name}'s header carries the site's six links, and nothing else, in the same order`,
     );
-    assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
-    assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
+    assert.match(
+      header,
+      /<header class="masthead">/,
+      `${name} carries the shared masthead header`,
+    );
+    assert.doesNotMatch(
+      header,
+      /<header class="topbar">/,
+      `${name} has no top bar of its own`,
+    );
     // Each page marks itself, or the header reads as one long list of links
     // with no indication of where the reader is.
     const here = CURRENT.get(name);
     assert.ok(here, `${name} has a current-page link of its own to check`);
-    assert.match(header, here, `${name} marks itself in the header with aria-current`);
+    assert.match(
+      header,
+      here,
+      `${name} marks itself in the header with aria-current`,
+    );
     assert.match(
       header,
       /id="nav-signin">Sign in<\/a>/,
@@ -1238,7 +1472,9 @@ test("the pages' mastheads read as one navigation", () => {
     );
     assert.match(
       header,
-      new RegExp(`id="nav-signout-all" hidden>${SIGNIN_COPY.signOutEverywhere}</button>`),
+      new RegExp(
+        `id="nav-signout-all" hidden>${SIGNIN_COPY.signOutEverywhere}</button>`,
+      ),
       `${name} carries Sign out everywhere, hidden until the session is there`,
     );
     assert.match(
@@ -1246,7 +1482,11 @@ test("the pages' mastheads read as one navigation", () => {
       /<noscript>/,
       `${name} keeps a Sign out form for a browser with no script`,
     );
-    assert.match(header, /name="step" value="signout"/, `${name}'s form posts the sign-out step`);
+    assert.match(
+      header,
+      /name="step" value="signout"/,
+      `${name}'s form posts the sign-out step`,
+    );
     assert.match(
       header,
       /name="step" value="signout-all"/,
@@ -1255,7 +1495,10 @@ test("the pages' mastheads read as one navigation", () => {
   }
   // The posts live in each page's own script. get-started.html is a Vite
   // entry, so its script is src/get-started.js rather than an inline block.
-  const getStartedJs = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  const getStartedJs = readFileSync(
+    new URL("../src/get-started.js", import.meta.url),
+    "utf8",
+  );
   for (const [name, source] of [
     ["usage.html", page],
     ["files.html", filesPage],
@@ -1267,8 +1510,16 @@ test("the pages' mastheads read as one navigation", () => {
       new RegExp(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}"`),
       `${name} posts sign-out to the sign-in route`,
     );
-    assert.match(source, /postSignout\("signout"\)/, `${name} posts the sign-out step`);
-    assert.match(source, /postSignout\("signout-all"\)/, `${name} posts sign-out everywhere`);
+    assert.match(
+      source,
+      /postSignout\("signout"\)/,
+      `${name} posts the sign-out step`,
+    );
+    assert.match(
+      source,
+      /postSignout\("signout-all"\)/,
+      `${name} posts sign-out everywhere`,
+    );
     assert.match(
       source,
       /\.disabled = true/,
@@ -1277,7 +1528,10 @@ test("the pages' mastheads read as one navigation", () => {
   }
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.
-  const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const pricingPage = readFileSync(
+    new URL("../public/index.html", import.meta.url),
+    "utf8",
+  );
   assert.match(pricingPage, /<a href="\/get-started">Get started<\/a>/);
 });
 
@@ -1319,12 +1573,21 @@ test("the upload-progress line is the endpoint's words, rendered and nothing els
     page,
     /<p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file\.<\/p>/,
   );
-  assert.ok(page.includes(USAGE_LABELS.uploads), "the heading is the module's word");
-  assert.ok(page.includes(USAGE_LABELS.uploadsHint), "the hint is the module's word");
+  assert.ok(
+    page.includes(USAGE_LABELS.uploads),
+    "the heading is the module's word",
+  );
+  assert.ok(
+    page.includes(USAGE_LABELS.uploadsHint),
+    "the hint is the module's word",
+  );
   // The payload check: a value that is neither null nor a string is a payload
   // this page cannot render, so it takes the unreachable state rather than
   // printing "null" where a line belongs.
-  assert.match(page, /summary\.uploadLine !== null && typeof summary\.uploadLine !== "string"/);
+  assert.match(
+    page,
+    /summary\.uploadLine !== null && typeof summary\.uploadLine !== "string"/,
+  );
   // The wiring: set the module's sentence, and hide the line when there is no
   // queue to report.
   assert.match(
@@ -1348,7 +1611,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // The full schema: /api/usage reads the account's metered month (drive#496),
   // and that month lives in 0005_meter's usage_minutes.
   const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
-  const { cookie, account: signedInAccount } = await signIn(made, "usage@example.com");
+  const { cookie, account: signedInAccount } = await signIn(
+    made,
+    "usage@example.com",
+  );
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
@@ -1357,16 +1623,28 @@ test("the usage page shows the queue a device reported, through the Worker's own
   };
   const store = createD1QueueStore(made.db);
   const read = () =>
-    workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env);
+    workerFetch(
+      new Request("https://drive.test/api/usage", { headers: { cookie } }),
+      env,
+    );
 
   // No device has reported: the line is null and the page hides it, the honest
   // answer for an account whose no device has signed in yet (drive issue #308).
   const before = await (await read()).json();
-  assert.equal(before.uploadLine, null, "an account with no report has no upload line");
+  assert.equal(
+    before.uploadLine,
+    null,
+    "an account with no report has no upload line",
+  );
 
   // One device reports its queue; the usage read carries the same finished
   // line the first-run page draws from the same numbers.
-  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  const queue = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
   assert.equal((await store.record(signedInAccount.id, queue)).stored, true);
   const after = await (await read()).json();
   assert.equal(
@@ -1374,7 +1652,11 @@ test("the usage page shows the queue a device reported, through the Worker's own
     uploadProgress(queue).label,
     "the line is not the word table's own",
   );
-  assert.equal(after.uploadLine, uploadLine(queue), "the two pages render the same sentence");
+  assert.equal(
+    after.uploadLine,
+    uploadLine(queue),
+    "the two pages render the same sentence",
+  );
   assert.ok(
     after.uploadLine.includes("Uploading 3 files"),
     `line ${after.uploadLine} is not the queue's own`,
@@ -1394,7 +1676,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
     paused.uploadLine.startsWith(UPLOAD_LABEL.paused),
     `paused line ${paused.uploadLine} does not lead with the paused word`,
   );
-  assert.equal(paused.uploadLine, uploadProgress({ ...queue, paused: true }).label);
+  assert.equal(
+    paused.uploadLine,
+    uploadProgress({ ...queue, paused: true }).label,
+  );
 
   // drive#417: the account the Worker signs in has no accounts row yet, so no
   // card is on file and the read says no charge has been made rather than
@@ -1411,7 +1696,10 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // rows read as paused: nothing is leaving, and the paused line is still the
   // count of both devices' rows summed (3 + 1).
   const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
-  assert.equal((await store.record(signedInAccount.id, second, "device-b")).stored, true);
+  assert.equal(
+    (await store.record(signedInAccount.id, second, "device-b")).stored,
+    true,
+  );
   const both = await (await read()).json();
   assert.equal(
     both.uploadLine,
@@ -1431,10 +1719,19 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.
   await made.db
-    .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
+    .prepare(
+      "UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?",
+    )
+    .bind(
+      Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1,
+      signedInAccount.id,
+    )
     .run();
-  assert.equal((await (await read()).json()).uploadLine, null, "a stale report still shows a line");
+  assert.equal(
+    (await (await read()).json()).uploadLine,
+    null,
+    "a stale report still shows a line",
+  );
 });
 
 test("the usage read ignores the retired founding column on the account's row", async () => {
@@ -1442,7 +1739,10 @@ test("the usage read ignores the retired founding column on the account's row", 
   // retired founding column (drive#586), and the read neither uses it nor
   // reports it: the bill is the same with the column null, 0 or 1.
   const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
-  const { cookie, account: signedInAccount } = await signIn(made, "one-price@example.com");
+  const { cookie, account: signedInAccount } = await signIn(
+    made,
+    "one-price@example.com",
+  );
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
@@ -1451,14 +1751,23 @@ test("the usage read ignores the retired founding column on the account's row", 
   };
   const read = async () =>
     (
-      await workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env)
+      await workerFetch(
+        new Request("https://drive.test/api/usage", { headers: { cookie } }),
+        env,
+      )
     ).json();
 
   const noRow = await read();
-  assert.equal("foundingMember" in noRow.billCents, false, "the bill carries no founding field");
+  assert.equal(
+    "foundingMember" in noRow.billCents,
+    false,
+    "the bill carries no founding field",
+  );
 
   await made.db
-    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 0)")
+    .prepare(
+      "INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 0)",
+    )
     .bind(signedInAccount.id, signedInAccount.email)
     .run();
   assert.deepEqual((await read()).billCents, noRow.billCents);
@@ -1467,13 +1776,23 @@ test("the usage read ignores the retired founding column on the account's row", 
     .prepare("UPDATE accounts SET founding = 1 WHERE id = ?1")
     .bind(signedInAccount.id)
     .run();
-  assert.deepEqual((await read()).billCents, noRow.billCents, "the column changes nothing");
+  assert.deepEqual(
+    (await read()).billCents,
+    noRow.billCents,
+    "the column changes nothing",
+  );
 });
 
 test("the usage page links the export route with the module's words (drive#547)", () => {
   assert.equal(EXPORT_ENDPOINT, "/api/export");
-  assert.ok(page.includes(USAGE_LABELS.exportHeading), "the heading is the module's word");
-  assert.ok(page.includes(USAGE_LABELS.exportWhat), "the purpose sentence is the module's word");
+  assert.ok(
+    page.includes(USAGE_LABELS.exportHeading),
+    "the heading is the module's word",
+  );
+  assert.ok(
+    page.includes(USAGE_LABELS.exportWhat),
+    "the purpose sentence is the module's word",
+  );
   assert.ok(
     page.includes(`href="${EXPORT_ENDPOINT}"`),
     "the page must download from the endpoint the Worker routes",
@@ -1482,7 +1801,10 @@ test("the usage page links the export route with the module's words (drive#547)"
     page.includes(`download="${EXPORT_FILENAME}"`),
     "the link names the JSON file the route serves",
   );
-  assert.ok(page.includes(`>${USAGE_LABELS.exportAction}</a>`), "the action is the module's word");
+  assert.ok(
+    page.includes(`>${USAGE_LABELS.exportAction}</a>`),
+    "the action is the module's word",
+  );
 });
 
 test("the export route answers 200 for a signed-in account with no api binding (drive#547)", async () => {
@@ -1520,10 +1842,16 @@ test("the export route answers 200 for a signed-in account with no api binding (
     .run();
 
   const response = await workerFetch(
-    new Request(`https://drive.test${EXPORT_ENDPOINT}`, { headers: { cookie } }),
+    new Request(`https://drive.test${EXPORT_ENDPOINT}`, {
+      headers: { cookie },
+    }),
     env,
   );
-  assert.equal(response.status, 200, "a signed-in export must answer 200 without the api binding");
+  assert.equal(
+    response.status,
+    200,
+    "a signed-in export must answer 200 without the api binding",
+  );
   assert.match(
     response.headers.get("content-disposition") ?? "",
     new RegExp(`filename="${EXPORT_FILENAME}"`),
@@ -1553,7 +1881,11 @@ test("the export route answers 200 for a signed-in account with no api binding (
   );
   assert.equal(nextPage.status, 200);
   const nextBody = await nextPage.json();
-  assert.equal(nextBody.files.length, 0, "a cursor past the last file repeats nothing");
+  assert.equal(
+    nextBody.files.length,
+    0,
+    "a cursor past the last file repeats nothing",
+  );
   assert.equal(nextBody.complete, true);
 });
 
@@ -1565,7 +1897,10 @@ test("the usage line names the bytes still leaving when another device is paused
   // the same sentence the first-run page draws names the bytes that are
   // leaving, then the pause beside them.
   const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
-  const { cookie, account: signedInAccount } = await signIn(made, "mixed-usage@example.com");
+  const { cookie, account: signedInAccount } = await signIn(
+    made,
+    "mixed-usage@example.com",
+  );
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
@@ -1574,7 +1909,10 @@ test("the usage line names the bytes still leaving when another device is paused
   };
   const store = createD1QueueStore(made.db);
   const read = () =>
-    workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env);
+    workerFetch(
+      new Request("https://drive.test/api/usage", { headers: { cookie } }),
+      env,
+    );
 
   const uploading = {
     files: 3,
@@ -1583,8 +1921,14 @@ test("the usage line names the bytes still leaving when another device is paused
     paused: false,
   };
   const paused = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
-  assert.equal((await store.record(signedInAccount.id, uploading, "device-a")).stored, true);
-  assert.equal((await store.record(signedInAccount.id, paused, "device-b")).stored, true);
+  assert.equal(
+    (await store.record(signedInAccount.id, uploading, "device-a")).stored,
+    true,
+  );
+  assert.equal(
+    (await store.record(signedInAccount.id, paused, "device-b")).stored,
+    true,
+  );
 
   const body = await (await read()).json();
   assert.ok(
@@ -1599,7 +1943,12 @@ test("the usage line names the bytes still leaving when another device is paused
   // two surfaces cannot disagree about an account with a device paused.
   assert.equal(
     body.uploadLine,
-    uploadLine({ ...uploading, pausedFiles: 1, pausedUploadedBytes: 0, pausedTotalBytes: 4096 }),
+    uploadLine({
+      ...uploading,
+      pausedFiles: 1,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 4096,
+    }),
     "the usage line is not the first-run page's line for the same account",
   );
   // With the uploading device gone, the line is the paused one it has always
