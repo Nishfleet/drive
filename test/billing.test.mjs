@@ -17,7 +17,10 @@
 // #53) are in test/usage.test.mjs.
 
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   BILLING_CONFIG,
   capStatus,
@@ -229,6 +232,34 @@ test("no 'you saved' line is shown at 1 TB and above", () => {
   assert.ok(quoteForStoredTb(0.2).savedUsd > 0, "200 GB still quotes its saving");
   // The bill itself is untouched by the copy floor: 1 TB still bills $15.
   assert.equal(quoteForStoredTb(1).billUsd, 15);
+});
+
+test("the mutate command names every test that calls quoteForStoredTb or billing savedLine", () => {
+  const conf = JSON.parse(readFileSync(new URL("../stryker.conf.json", import.meta.url), "utf8"));
+  const listed = new Set(conf.commandRunner.command.match(/test\/\S+\.mjs/g));
+  /** @type {string[]} */
+  const missing = [];
+  /**
+   * @param {string} abs
+   * @param {string} rel
+   */
+  const walk = (abs, rel) => {
+    for (const name of readdirSync(abs)) {
+      const child = join(abs, name);
+      const childRel = `${rel}${name}`;
+      if (statSync(child).isDirectory()) {
+        walk(child, `${childRel}/`);
+        continue;
+      }
+      if (!name.endsWith(".mjs")) continue;
+      const text = readFileSync(child, "utf8");
+      if (!/from ["'](?:\.\.\/)+core\/billing\.js["']/.test(text)) continue;
+      if (!/\b(?:quoteForStoredTb|savedLine)\b/.test(text)) continue;
+      if (!listed.has(childRel)) missing.push(childRel);
+    }
+  };
+  walk(fileURLToPath(new URL("./", import.meta.url)), "test/");
+  assert.deepEqual(missing, [], "a new quote or savedLine test belongs on the mutate command");
 });
 
 test("the cap counts min(metered, maximum), and bites only past the cap", () => {

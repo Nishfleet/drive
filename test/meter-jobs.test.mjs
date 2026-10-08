@@ -92,6 +92,36 @@ test("a meter row that does not parse is reported, and no draw is made", async (
   assert.deepEqual(usageRows(sqlite), []);
 });
 
+test("a report that throws still leaves the draw failure as the thrown error", async (t) => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acc-report-down";
+  const day = at("2026-03-10T00:00:00Z");
+  await meterOneHour(sqlite, accountId, day);
+  sqlite
+    .prepare(
+      `INSERT OR REPLACE INTO usage_minutes (account_id, hour, gb_minutes_live,
+         download_bytes, stored_bytes, rolled_up_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(accountId, at("2026-03-10T05:00:00Z"), 700 * 60, 0, 700.5, at("2026-03-10T06:00:00Z"));
+  t.mock.method(console, "error", () => {});
+  const { runHourlyAccountJob } = await import("../src/meter-jobs.js");
+  await assert.rejects(
+    () =>
+      runHourlyAccountJob(
+        {
+          meterDb: db,
+          reportError: async () => {
+            throw new Error("sentry down");
+          },
+        },
+        { kind: "meter.hourly", accountId, at: day, through: at("2026-03-10T11:00:00Z") },
+      ),
+    /stored_bytes value that does not parse/,
+    "the queue retries the draw, not the monitoring outage",
+  );
+  assert.deepEqual(drawRows(sqlite, accountId), []);
+});
+
 test("a day with no meter row between two metered days is drawn, not a $0 gap", async () => {
   // Size30 is a trailing 30-day peak, so a day the meter did not roll still
   // carries the peak. The middle day owes its draw; a $0 there would under-bill

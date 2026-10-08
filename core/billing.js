@@ -324,7 +324,7 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   // drive#642: no saving is quoted for 1 TB and above. The usual plan is $15
   // for 1 TB and $6 for each extra 500 GB, so at $15 a TB we are dearer than a
   // plan from 1.5 TB up; a saving there is a cheaper-than claim that is false.
-  const savedUsd = savingAllowed(size)
+  const savedUsd = savingAllowed(size30BytesFromTb(size))
     ? Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100)
     : 0;
   return Object.freeze({
@@ -659,9 +659,9 @@ export function monthBillCents(month) {
   });
 }
 
-/** @param {number} size30Tb */
-function savingAllowed(size30Tb) {
-  return size30Tb < USUAL_PLAN_TB;
+/** @param {number|bigint} size30Bytes */
+function savingAllowed(size30Bytes) {
+  return BigInt(size30Bytes) < size30BytesFromTb(USUAL_PLAN_TB);
 }
 
 /**
@@ -695,7 +695,7 @@ export function savedLine(bill, size30Bytes) {
   const storage = checked(fields.storageCents, "bill.storageCents");
   const bytes = checkedBytes(size30Bytes, "size30Bytes");
   const size30Tb = Number(bytes) / (GB_PER_TB * BYTES_PER_GB);
-  if (storage === 0 || !savingAllowed(size30Tb)) {
+  if (storage === 0 || !savingAllowed(bytes)) {
     return null;
   }
   const capped = metered > maximum;

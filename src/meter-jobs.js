@@ -185,9 +185,19 @@ export async function runHourlyAccountJob(deps, job) {
     });
   } catch (error) {
     // The monitoring seam is injectable like the email and the mail-from, so a
-    // test can stand a recorder in place of the stock Sentry call.
+    // test can stand a recorder in place of the stock Sentry call. A report
+    // that throws must not hide the draw failure: the queue retries the draw,
+    // and a silent swap of the error would retry a monitoring outage instead.
     const report = deps.reportError ?? captureError;
-    await report(error, `meter hourly draw ${job.accountId}`);
+    try {
+      await report(error, `meter hourly draw ${job.accountId}`);
+    } catch (reportFailed) {
+      console.error(
+        "meter hourly draw: the report failed",
+        `account=${job.accountId}`,
+        reportFailed instanceof Error ? reportFailed.message : String(reportFailed),
+      );
+    }
     throw error;
   }
   if (drawn.drawn > 0) {

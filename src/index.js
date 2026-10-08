@@ -1467,11 +1467,18 @@ const handler = {
             });
           } catch (error) {
             const failed = error instanceof AggregateError ? error.errors : [error];
-            await captureError(
-              failed.length === 1 ? failed[0] : error,
-              `meter hourly prepaid draw (${failed.length} account(s) failed)`,
-              sentryFor(env),
-            );
+            try {
+              await captureError(
+                failed.length === 1 ? failed[0] : error,
+                `meter hourly prepaid draw (${failed.length} account(s) failed)`,
+                sentryFor(env),
+              );
+            } catch (reportFailed) {
+              console.error(
+                "meter hourly prepaid draw: the report failed",
+                reportFailed instanceof Error ? reportFailed.message : String(reportFailed),
+              );
+            }
             throw error;
           }
           if (drawn.drawn > 0) {
