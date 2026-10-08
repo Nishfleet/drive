@@ -35,6 +35,9 @@ import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { captureError } from "./monitoring.js";
 
+/** The queue both meter crons produce on and this Worker consumes. */
+export const METER_JOBS_QUEUE_NAME = "drive-meter-jobs";
+
 /** The kinds of message the meter sends, one account each. */
 export const METER_JOB_KINDS = Object.freeze({
   hourly: "meter.hourly",

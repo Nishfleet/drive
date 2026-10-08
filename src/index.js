@@ -4,7 +4,7 @@ import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import { runPreChargeLimitCron } from "../core/abuse-guards.js";
-import { authFor, authForPasskey, SIGNIN_LINK_PATH } from "../core/auth.js";
+import { authFor, authForPasskey, SIGNIN_LINK_PATH, twoFactorAuthFor } from "../core/auth.js";
 import {
   BILLING_CONFIG,
   handleQuoteRequest,
@@ -106,6 +106,7 @@ import { KNOWN_BAD_FEED_SCHEDULE, loadKnownBadFeed } from "./malware.js";
 import {
   handleMeterJobs,
   METER_JOB_KINDS,
+  METER_JOBS_QUEUE_NAME,
   meterJobHandlers,
   meterJobsQueue,
   sendMeterJobs,
@@ -123,7 +124,9 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_QUEUE_NAME,
   REINDEX_SCHEDULE,
+  REINDEX_SEND_BATCH,
   reconcileIndex,
   SEARCH_ENDPOINT,
   withIndex,
@@ -662,11 +665,27 @@ const PASSKEY_AUTH_PATH = /^\/api\/auth\/passkey\/[a-z-]+\/?$/;
 const AUTH_FAMILY_ALLOWED =
   /^\/api\/auth\/(?:get-session|two-factor\/[a-z-]+|passkey\/[a-z-]+)\/?$/;
 
+// The second-factor half of that family, split out so the route below can pick
+// the instance that carries the factor without testing the whole path twice
+// (drive#848). Everything else on the mount — the session read and the passkey
+// endpoints — is answered by the factorless instance, so a request that is not
+// a second-factor one never loads the factor's code.
+const TWO_FACTOR_PATH = /^\/api\/auth\/two-factor\/[a-z-]+\/?$/;
+
 const authApiHandler = async (/** @type {DriveContext} */ c) => {
   if (!AUTH_FAMILY_ALLOWED.test(c.req.path)) {
     return c.json({ error: "Not found." }, 404);
   }
-  const auth = PASSKEY_AUTH_PATH.test(c.req.path) ? await authForPasskey(c.env) : authFor(c.env);
+  // A second-factor route needs the plugin that registers those endpoints, and a
+  // passkey route needs the library's WebAuthn stack; both are loaded on
+  // demand. Every other route on this mount reads a session and needs neither.
+  // The closed door is checked inside all three, so an unconfigured deployment
+  // answers 503 either way.
+  const auth = TWO_FACTOR_PATH.test(c.req.path)
+    ? await twoFactorAuthFor(c.env)
+    : PASSKEY_AUTH_PATH.test(c.req.path)
+      ? await authForPasskey(c.env)
+      : authFor(c.env);
   if (!auth) {
     return c.json(signinClosedBody(), 503);
   }
@@ -1330,19 +1349,12 @@ const handler = {
   //     run re-rolls it (the overwrite-not-add re-roll #6 built). Awaited, so a
   //     D1 failure is Cloudflare's to record and retry: a repair that silently
   //     did nothing would read as a healthy run.
-  //   - The nightly reconciler (build-spec.md piece 6, drive issue #18):
-  //     `reconcileIndex` walks one account's store once and rebuilds its rows,
-  //     so an event the write path missed is corrected within a day. The
-  //     schedule is the only way a rebuild starts: it is invoked by the
-  //     platform and cannot be started by a browser request, which a route on
-  //     /api/search/index would have allowed (issue #18 safety review). The
-  //     accounts to walk are the ones the index already holds rows for — a
-  //     scheduled run has no request and so no signed-in account, and this
-  //     repo has no accounts table until the device sign-in store lands (#5),
-  //     so the index's own rows are the only honest list: an account the
-  //     drive has never served has nothing to rebuild, and no invented
-  //     identity is indexed. Each account's rows are rebuilt from its own
-  //     prefix (scopeStore), the same scoping a request path gets.
+  //   - The nightly search reindex (drive issue #18 / #566): the cron
+  //     enqueues one queue message per account (`indexAccounts` reads the
+  //     `accounts` table, never the index's own rows). The queue consumer
+  //     walks that account's store, upserts the staged rows in bounded
+  //     batches, then deletes vanished paths. A crash mid-walk leaves the
+  //     previous rows intact.
   /**
    * @param {ScheduledController} event
    * @param {Env} env
@@ -1852,6 +1864,14 @@ const handler = {
       );
     }
 
+    // The nightly reindex trip (drive#566). The cron only enqueues, one
+    // message per account, and the `queue` handler below does the walk. The
+    // serial walk this replaced ran inside one cron invocation, so a drive
+    // with more accounts than the invocation could visit left every account
+    // after it unsearchable, and one account's D1 error ended the walk for
+    // every account behind it. The queue gives each account its own retry
+    // budget, and the account list comes from `accounts` (indexAccounts), so
+    // the run cannot be narrowed by whatever the index happens to hold.
     context.waitUntil(
       withCronCheckIn(
         event,
@@ -1860,8 +1880,17 @@ const handler = {
           if (!env.DRIVE_DB) {
             throw new Error("the nightly reindex needs the file index database");
           }
-          for (const account of await indexAccounts(env.DRIVE_DB)) {
-            await reconcileIndex(env.DRIVE_DB, scopeStore(files, account), account);
+          if (!env.REINDEX_QUEUE) {
+            throw new Error("the nightly reindex needs the reindex queue binding");
+          }
+          const messages = (await indexAccounts(env.DRIVE_DB)).map((account) => ({
+            body: { accountId: account.id },
+          }));
+          // Chunks of 100, because sendBatch takes at most that many per call
+          // (REINDEX_SEND_BATCH), and one rejected oversized call would be the
+          // whole night's reindex lost.
+          for (let start = 0; start < messages.length; start += REINDEX_SEND_BATCH) {
+            await env.REINDEX_QUEUE.sendBatch(messages.slice(start, start + REINDEX_SEND_BATCH));
           }
         },
         sentryFor(env),
@@ -1876,17 +1905,83 @@ const handler = {
     );
   },
 
-  // The meter's queue consumer (drive#519): one message is one account's
-  // hourly step or nightly reconcile, sent by the crons above when the
-  // METER_JOBS queue is bound. A job that throws is retried by the platform,
-  // and after its retries it lands in the dead-letter queue (src/meter-jobs.js).
   /**
-   * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+   * Consumes bound queues. `batch.queue` tells them apart:
+   *   - `drive-reindex` (drive#566): one account's nightly search rebuild.
+   *   - `drive-meter-jobs` (drive#519, drive#563): one account's hourly meter
+   *     step, nightly meter reconcile, or a branch job (`branch.*` kinds).
+   *
+   * @param {{queue?: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
    * @param {ExecutionContext} _context
-   * @param {import("../core/files.js").FileStore} [store] injectable like scheduled's
+   * @param {import("../core/files.js").FileStore} [store]
    */
   async queue(batch, env, _context, store = storeFor(env) ?? undefined) {
+    if (batch.queue === REINDEX_QUEUE_NAME) {
+      // One message per invocation (`maxBatchSize: 1`). The walk is the slow,
+      // fallible part, and one account per invocation is what keeps a
+      // 100,000-file drive inside the invocation's budget and a broken account
+      // from spending a sibling's retry budget.
+      //
+      // Awaited, not waitUntil: the platform holds the invocation until this
+      // handler returns, which is also how the meter and branch consumers
+      // work. A waitUntil would let the handler return before the walk acked.
+      //
+      // Every message is answered by name — `ack()` or `retry()` — rather than
+      // by a throw: with per-message acknowledgement a throw after the first
+      // message would claim a failure for messages already rebuilt. After the
+      // trigger's `maxRetries` the platform drops the message, and the next
+      // night's cron enqueues the account again.
+      //
+      // The swap inside `reconcileIndex` makes the retry safe to repeat: a walk
+      // that died before the swap left the account's rows as the last good
+      // rebuild left them, so retrying re-walks and swaps again, never
+      // re-deletes-then-dies (drive#566).
+      await Promise.all(
+        batch.messages.map(async (message) => {
+          const body = /** @type {{accountId?: unknown}} */ (message.body);
+          const accountId = typeof body?.accountId === "string" ? body.accountId : "";
+          if (accountId === "") {
+            console.error("search: a reindex message carried no account id");
+            message.ack();
+            return;
+          }
+          if (!env.DRIVE_DB) {
+            console.error("search: the reindex queue ran without the file index database");
+            message.retry();
+            return;
+          }
+          if (!store) {
+            console.error("search: the reindex queue ran without a storage store");
+            message.retry();
+            return;
+          }
+          const account = { id: accountId };
+          try {
+            await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+            message.ack();
+          } catch (error) {
+            const kind = error instanceof Error ? error.name : "Error";
+            console.error(`search: a reindex walk failed (${kind})`);
+            message.retry();
+          }
+        }),
+      );
+      return;
+    }
+
+    // The meter's queue consumer (drive#519): one message is one account's
+    // hourly step or nightly reconcile, sent by the crons above when the
+    // METER_JOBS queue is bound. Branch jobs share this same queue
+    // (drive#563). A job that throws is retried by the platform, and after
+    // its retries it lands in the dead-letter queue (src/meter-jobs.js).
+    // A batch with no queue name is the meter/branch path: tests deliver
+    // branch jobs without setting `batch.queue`, and the platform names
+    // the bound queue on live traffic. A named queue that is neither the
+    // reindex nor the meter jobs is a misbind, not a silent fallthrough.
+    if (batch.queue != null && batch.queue !== METER_JOBS_QUEUE_NAME) {
+      throw new Error(`unknown queue ${String(batch.queue)}`);
+    }
     const branchMessages = [];
     const meterMessages = [];
     for (const message of batch.messages) {
@@ -2001,7 +2096,7 @@ export default {
     return handler.scheduled(event, env, context, store);
   },
   /**
-   * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+   * @param {{queue?: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
    * @param {Env} env
    * @param {ExecutionContext} context
    * @param {import("../core/files.js").FileStore} [store]

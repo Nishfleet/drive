@@ -24,6 +24,7 @@ import {
   MINUTE_MS as BILLING_MINUTE_MS,
   meteredMonthlyBillUsd,
 } from "../core/billing.js";
+import { fileRow } from "../core/file-index.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
@@ -66,7 +67,7 @@ import {
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
-import { REINDEX_SCHEDULE } from "../src/search.js";
+import { REINDEX_SCHEDULE, searchDrive } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 // The Worker entrypoint as these tests drive it: `fetch` and `scheduled` are
@@ -572,6 +573,117 @@ test("a repeated event is dropped, and the version row survives the first one", 
   const stored = db.tables.file_versions.get(`abc123|file-1`);
   assert.equal(stored.size_bytes, GB);
   assert.equal(stored.hidden_at, null);
+});
+
+test("a storage event makes the file it names searchable, with no walk (drive#566)", async () => {
+  // The account the search is run for: search takes the same account shape
+  // the drive's own handlers pass, id and display name.
+  const ACCOUNT = { id: "acct-1", name: "Account one" };
+  const { db } = makeMeteredDB();
+  // A desktop mount or a write straight into the bucket never passes through
+  // the Worker's write path, so before drive#566 the index held it only after
+  // the nightly walk — the job a crash could leave broken for good. The intake
+  // now writes the index row in the same batch as the version row.
+  const created = createEvent("acct-1", {
+    path: "/u/acct-1/Desk Notes/report.pdf",
+    b2FileId: "file-desktop",
+    sizeBytes: 4096,
+  });
+  const event = validateEvent(created);
+  assert.equal(event.error, undefined, event.error);
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: true });
+
+  const row = db.tables.file_index.get("acct-1|/Desk Notes/report.pdf");
+  assert.equal(row.name, "report.pdf");
+  assert.equal(row.parent, "/Desk Notes", "the folder is in the row, so the result can name it");
+  assert.equal(row.size_bytes, 4096);
+  const found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 1, "the new file is searchable the minute its event lands");
+  assert.equal(found.results[0].path, "/Desk Notes/report.pdf");
+
+  // A redelivered event is the normal case, and it must not add a second row.
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: false });
+  assert.equal(db.tables.file_index.size, 1, "the dedup ate the replay, so the row count held");
+});
+
+test("an out-of-range timestamp stores a null date instead of throwing (drive#566)", async () => {
+  const row = fileRow({ id: "acct-1" }, "/huge.txt", { size: 12, modified: 1e300 }, Date.now());
+  assert.equal(row.modified_at, null);
+  assert.equal(row.size_bytes, 12);
+  const { db } = makeMeteredDB();
+  const event = validateEvent(
+    createEvent("acct-1", {
+      path: "/u/acct-1/huge.txt",
+      b2FileId: "file-huge-date",
+      sizeBytes: 12,
+      createdAt: 1e300,
+    }),
+  );
+  assert.equal(event.error, undefined, event.error);
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: true });
+  const stored = db.tables.file_index.get("acct-1|/huge.txt");
+  assert.equal(stored.size_bytes, 12);
+  assert.equal(stored.modified_at, null);
+});
+
+test("the meter refuses to store an event that failed validation (drive#566)", async () => {
+  const { db } = makeMeteredDB();
+  await assert.rejects(
+    () => recordEvent(db, { error: "The event is missing a path." }, midnight()),
+    /failed validation/,
+  );
+  assert.equal(db.tables.file_index.size, 0);
+  assert.equal(db.tables.file_versions.size, 0);
+});
+
+test("a hide never removes a live index row; the nightly rebuild owns the live set (drive#566)", async () => {
+  const ACCOUNT = { id: "acct-1", name: "Account one" };
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "acct-1", {
+    path: "/u/acct-1/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+  });
+  assert.equal(db.tables.file_index.size, 1, "the create indexed the path");
+  // A hide says a version stopped being visible. Search keeps one row per
+  // path, and a replacement version may take the path over, so the intake
+  // leaves the row alone: the walk that reads the live tree is what removes a
+  // path that is really gone.
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-hide",
+      keyName: "/u/acct-1/",
+      path: "/u/acct-1/notes.md",
+      b2FileId: "file-1",
+      action: "hidden",
+      hiddenAt: midnight() + MINUTE_MS,
+      sizeBytes: GB,
+      eventTimestamp: midnight() + MINUTE_MS,
+    }),
+    midnight() + MINUTE_MS,
+  );
+  assert.equal(db.tables.file_index.size, 1, "the hide left the row for the rebuild to settle");
+  assert.equal((await searchDrive(db, ACCOUNT, "notes")).count, 1);
+
+  // A hide for a path the index never saw writes no row at all: there is no
+  // row shape a hide could claim, so it is refused silently and the walk
+  // decides the live set.
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-hide-new",
+      keyName: "/u/acct-1/",
+      path: "/u/acct-1/never-indexed.md",
+      b2FileId: "file-2",
+      action: "hidden",
+      hiddenAt: midnight() + MINUTE_MS,
+      sizeBytes: GB,
+      eventTimestamp: midnight() + MINUTE_MS,
+    }),
+    midnight() + MINUTE_MS,
+  );
+  assert.equal(db.tables.file_index.size, 1, "a hide adds no row of its own");
 });
 
 test("the same version, hidden later, is one row that stops counting", async () => {
@@ -2578,7 +2690,11 @@ test("the nightly size row counts the tables once a day, and a retry rewrites th
   assert.equal(sizes.fileVersionRows, 1);
   assert.equal(sizes.fileVersionBytes, GB);
   assert.equal(sizes.usageMinuteRows, 1);
-  assert.equal(sizes.fileIndexRows, 0);
+  assert.equal(
+    sizes.fileIndexRows,
+    1,
+    "the create's event also upserted the search row (drive#566)",
+  );
 
   // A retried run in the same UTC day rewrites the day's row - the size row
   // is a reading of today, not an event that happened.
@@ -2596,7 +2712,7 @@ test("the nightly size row counts the tables once a day, and a retry rewrites th
       file_version_rows: 1,
       file_version_bytes: GB,
       usage_minute_rows: 1,
-      file_index_rows: 0,
+      file_index_rows: 1,
     },
   ]);
 
