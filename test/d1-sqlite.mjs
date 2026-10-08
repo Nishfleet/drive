@@ -42,6 +42,8 @@ export const orderMigrationFiles = (names) => [...names].sort();
 export const MIGRATION_FILES = Object.freeze(
   orderMigrationFiles(readdirSync(migrationsDir).filter((name) => name.endsWith(".sql"))),
 );
+// Directory-derived: `0045_file_index_staging.sql` is applied because it sits
+// in the folder, not because this list names it by hand (drive#566).
 
 /** @param {DatabaseSync} sqlite */
 export function applyMigrations(sqlite) {
@@ -174,7 +176,7 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  */
 /**
  * @typedef {D1Database & {
- *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state" | "billing_pushes" | "accounts", TableView>,
+ *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state" | "billing_pushes" | "accounts" | "file_index", TableView>,
  *   insertVersion(version: {accountId?: string, fileId: string, path?: string, sizeBytes: number, createdAt: number, hiddenAt?: number | null}): void,
  * }} MeteredD1
  */
@@ -302,6 +304,13 @@ export function d1Over(sqlite, { onQuery } = {}) {
         meter_rollup_state: table("meter_rollup_state", (row) => row.id),
         billing_pushes: table("billing_pushes", (row) => `${row.account_id}|${row.hour}`),
         accounts: table("accounts", (row) => row.id),
+        // The search's rows. The metered intake writes these too (drive#566),
+        // and the nightly reindex reads the accounts table above for its list.
+        file_index: table("file_index", (row) => `${row.account_id}|${row.path}`),
+        file_index_staging: table(
+          "file_index_staging",
+          (row) => `${row.account_id}|${row.generation}|${row.path}`,
+        ),
       },
       // One version row written straight into the real schema, for the shapes an
       // event cannot express (a 0-byte version, an instant that is not a whole

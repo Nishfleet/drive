@@ -1,13 +1,13 @@
 // Unit tests for file-name search (drive issue #18), run against a real
 // SQLite engine — D1 is SQLite, so the numbers the issue asks for are
 // measured on the same SQL the Worker runs, with the shipped migrations
-// applied. The adapter at the bottom is the only test-only code: it speaks
-// the subset of the D1 API the module uses (prepare/bind/all/first, batch).
+// applied (the whole drive schema, via test/d1-sqlite.mjs, so `accounts`,
+// `file_index` and the reindex's staging table all exist).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fileRow, upsertStatements } from "../core/file-index.js";
 import {
   createMemoryStore,
   FILES_ENDPOINT,
@@ -17,8 +17,10 @@ import {
 } from "../core/files.js";
 import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
+import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";
 import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
+import { METER_JOBS_QUEUE_NAME } from "../src/meter-jobs.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -26,6 +28,7 @@ import {
   MAX_LIMIT,
   MAX_WORDS,
   parseQuery,
+  REINDEX_QUEUE_NAME,
   REINDEX_SCHEDULE,
   reconcileIndex,
   SEARCH_ENDPOINT,
@@ -33,7 +36,7 @@ import {
   searchSql,
   withIndex,
 } from "../src/search.js";
-import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
+import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
 
@@ -67,185 +70,39 @@ const errorOf = (parsed) => ("error" in parsed ? parsed.error : undefined);
 
 // ------------------------------------------------------------------- the db
 
-// The D1 shape over a real SQLite database, with the shipped migrations
-// applied, so every test below runs the SQL the Worker will run.
-/**
- * D1's types are the runtime's `declare abstract class` — its `raw` carries two
- * generic overloads no JS object can express — so the adapter is typed here in
- * full, every method named and JSDoc'd, and handed to the interface the modules
- * import through one documented cast. Nothing inside hides an error: each
- * method below checks on its own, and a method the modules call that is missing
- * would fail at run time, not silently pass.
- * @typedef {D1Database & {sqlite: DatabaseSync}} SqliteD1
+// The shared D1-over-SQLite adapter (test/d1-sqlite.mjs), so every test below
+// runs the SQL the Worker will run against the whole real schema — including
+// `accounts`, which the nightly reindex's account list reads, and
+// `file_index_staging`, which a rebuild fills before it swaps. Its batch() is
+// one transaction like D1's, which is what the swap-atomicity test rests on.
+/** The raw-SQLite view the tests read rows back through. A statement with no
+ * parameters is all this needs: the adapter inside expands numbered ones.
+ * @typedef {{
+ *   prepare(sql: string): {
+ *     get(...params: unknown[]): Record<string, unknown> | undefined,
+ *     all(...params: unknown[]): Array<Record<string, unknown>>,
+ *     run(...params: unknown[]): {changes: number | bigint},
+ *   },
+ *   exec(sql: string): void,
+ * }} TestSql
+ * @typedef {D1Database & {sqlite: TestSql}} SqliteD1
  * @returns {SqliteD1}
  */
 function makeD1() {
-  const sqlite = new DatabaseSync(":memory:");
-  for (const name of [
-    "waitlist/0001_waitlist.sql",
-    "drive/0002_file_index.sql",
-    "drive/0010_accounts_devices.sql",
-    "drive/0039_file_index_fts.sql",
-  ]) {
-    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
-  }
-  /** The D1 meta a run answers with: every required field of the runtime's
-   * D1Meta, so a `D1Result` check is not fought.
-   * @returns {D1Meta & Record<string, unknown>} */
-  const meta = () => ({
-    duration: 0,
-    size_after: 0,
-    rows_read: 0,
-    rows_written: 0,
-    last_row_id: 0,
-    changed_db: false,
-    changes: 0,
-  });
-  /**
-   * @param {string} sql
-   * @param {unknown[]} [params]
-   * @returns {{results: Record<string, unknown>[], changes: number}}
-   */
-  const runOne = (sql, params = []) => {
-    // D1 numbers its placeholders: ?2 can appear before ?1, and the same ?1
-    // can appear three times, so the bound values follow the placeholder
-    // appearances rather than the array order. That is what `searchSql` now
-    // relies on (the trigram query reuses ?1 for the account filter).
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (
-      sqliteBoundValues(sql, params)
-    );
-    const prepared = sqlitePlaceholders(sql);
-    // A DELETE/UPDATE with a RETURNING clause is a query as far as D1 is
-    // concerned: `.all()` answers with the rows it returned. The delete path
-    // (drive#571) reads the rowid back that way so the trigram row can go
-    // with it.
-    if (/^\s*(SELECT|WITH)/i.test(sql) || /\bRETURNING\b/i.test(sql)) {
-      return {
-        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
-        changes: 0,
-      };
-    }
-    const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
-  };
-  /** The SQL and parameters each prepared statement carries, so batch() can
-   * run the statements the caller built and not re-derive them.
-   * @type {WeakMap<object, {sql: string, params: unknown[]}>} */
-  const bound = new WeakMap();
-  /**
-   * One prepared statement, the way D1 hands it back: bind() returns a
-   * statement carrying its own parameters, so the rest of the chain
-   * (all/first/run) runs the bound SQL.
-   * @param {string} sql
-   * @param {unknown[]} [params]
-   * @returns {D1PreparedStatement}
-   */
-  const statementFor = (sql, params = []) => {
-    const statement = /** @type {D1PreparedStatement} */ (
-      /** @type {unknown} */ ({
-        sql,
-        params,
-        /** @param {...unknown} values */
-        bind(...values) {
-          return statementFor(sql, values);
-        },
-        /**
-         * @template T
-         * @param {string} [colName]
-         * @returns {Promise<T|null>}
-         */
-        async first(colName) {
-          void colName;
-          const row = runOne(sql, params).results[0];
-          return row === undefined ? null : /** @type {T} */ (row);
-        },
-        /**
-         * @template T
-         * @returns {Promise<D1Result<T>>}
-         */
-        async all() {
-          return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
-            success: /** @type {true} */ (true),
-            meta: meta(),
-          });
-        },
-        /**
-         * @template T
-         * @returns {Promise<D1Result<T>>}
-         */
-        async run() {
-          return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
-            success: /** @type {true} */ (true),
-            meta: meta(),
-          });
-        },
-      })
-    );
-    bound.set(statement, { sql, params });
-    return statement;
-  };
-  return /** @type {SqliteD1} */ (
-    /** @type {unknown} */ ({
-      sqlite,
-      /**
-       * @param {string} sql
-       * @returns {D1PreparedStatement}
-       */
-      prepare(sql) {
-        return statementFor(sql, []);
-      },
-      /**
-       * @template T
-       * @param {D1PreparedStatement[]} statements
-       * @returns {Promise<D1Result<T>[]>}
-       */
-      async batch(statements) {
-        /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
-        const results = [];
-        sqlite.exec("BEGIN");
-        try {
-          for (const statement of statements) {
-            const state = bound.get(statement);
-            if (!state) {
-              throw new Error("a statement was batch-ran that this adapter did not prepare");
-            }
-            results.push(runOne(state.sql, state.params));
-          }
-        } finally {
-          sqlite.exec("COMMIT");
-        }
-        return /** @type {D1Result<T>[]} */ (
-          results.map((result) => ({
-            results: /** @type {T[]} */ (result.results),
-            success: /** @type {true} */ (true),
-            meta: meta(),
-          }))
-        );
-      },
-      /**
-       * D1's exec runs a multi-statement string; the tests never call it, but
-       * the adapter speaks the interface rather than being cast silent.
-       * @param {string} query
-       */
-      async exec(query) {
-        sqlite.exec(query);
-        return { count: 0, duration: 0 };
-      },
-      /**
-       * D1's session API is not part of what the modules under test use; a
-       * call would be a real bug, so it throws rather than standing in silently.
-       * @param {string} [constraintOrBookmark]
-       */
-      withSession(constraintOrBookmark) {
-        throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
-      },
-      async dump() {
-        throw new Error("a test adapter has no dump");
-      },
-    })
-  );
+  const { sqlite, db } = makeMeteredDB();
+  return /** @type {SqliteD1} */ (/** @type {unknown} */ ({ ...db, sqlite }));
+}
+
+/** One customer row, which is what the reindex's account list reads. A closed
+ * account is a state the list filters out, so the test can prove it.
+ * @param {SqliteD1} db
+ * @param {string} id
+ * @param {"active" | "read_only" | "closed"} [state]
+ */
+function seedAccount(db, id, state = "active") {
+  db.sqlite
+    .prepare("INSERT INTO accounts (id, email, created_at, state) VALUES (?, ?, 0, ?)")
+    .run(id, `${id}@example.test`, state);
 }
 
 /**
@@ -504,13 +361,17 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
 test("reconcileIndex is a rebuild: rows for files the store no longer has are dropped", async () => {
   const db = makeD1();
   const store = createMemoryStore();
+  const at = Date.now();
   await seed(store, [
     ["/keep.txt", "x"],
     ["/gone.txt", "x"],
   ]);
-  await reconcileIndex(db, store, ACCOUNT);
+  await reconcileIndex(db, store, ACCOUNT, { now: () => at });
   await store.remove("/gone.txt");
-  const second = await reconcileIndex(db, store, ACCOUNT);
+  // The same clock as the first walk: a retry in the same millisecond still
+  // has to drop the gone path, because Date.now() does not move between two
+  // sequential calls in a unit test.
+  const second = await reconcileIndex(db, store, ACCOUNT, { now: () => at });
   assert.equal(second.indexed, 1);
   const found = await searchDrive(db, ACCOUNT, "gone");
   assert.equal(found.count, 0);
@@ -777,11 +638,10 @@ test("1,000,000 files: a search returns in under one second and reads only its m
 
   // The plan must be the trigram index, and file_index may only be reached by
   // a primary-key seek (for the rows that survive the LIMIT), never scanned.
+  const planned = searchSql(["invoice"], { accountId: ACCOUNT.id, limit: DEFAULT_LIMIT });
   const plan = db.sqlite
-    .prepare(
-      `EXPLAIN QUERY PLAN ${searchSql(["invoice"], { accountId: ACCOUNT.id, limit: DEFAULT_LIMIT }).sql}`,
-    )
-    .all()
+    .prepare(`EXPLAIN QUERY PLAN ${planned.sql}`)
+    .all(...planned.params)
     .map((row) => row.detail)
     .join(" | ");
   assert.match(
@@ -959,9 +819,118 @@ test("account A never sees account B's file names", async () => {
 
 // --------------------------------------------------------- the reindex rule
 
+// The cron trigger's half, separated from the web-request half below so the
+// two rules read apart. `src/index.js` wires the reindex to the nightly cron
+// trigger through the queue halves it declares (`triggers.queue`, a
+// `bindings.queue`), so this block is where a month's drift about which of
+// the three mechanisms (cron, queue, HTTP) starts a walk would surface.
+/**
+ * Runs the scheduled trigger once and waits for the work it starts, the way
+ * the Worker does — the scheduled handler itself only enqueues, so its
+ * waitUntil must be flushed here for the run's effect to be observed.
+ * @param {unknown} env
+ * @param {FileStore} store
+ */
+async function triggerCron(env, store) {
+  /** @type {Promise<unknown>[]} */
+  const waits = [];
+  const workerScheduled =
+    /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: FileStore) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
+  const scheduledEvent = /** @type {ScheduledController} */ (
+    /** @type {unknown} */ ({ cron: REINDEX_SCHEDULE })
+  );
+  await workerScheduled(
+    scheduledEvent,
+    env,
+    {
+      /** @param {Promise<unknown>} promise */
+      waitUntil(promise) {
+        waits.push(promise);
+      },
+    },
+    store,
+  );
+  await Promise.all(waits);
+}
+
+/**
+ * A recording stand-in for the reindex queue: the producer's `sendBatch`
+ * stores each message, so a test asserts what the cron enqueued and feeds it
+ * back to the consumer. One envelope per call, which is what the platform
+ * sends and what the consumer consumes one message at a time from.
+ * @returns {{messages: Array<{body: {accountId: string}}>, sendBatch(messages: Array<{body: {accountId: string}}>): Promise<void>}}
+ */
+function queueEnvelope() {
+  /** @type {Array<{body: {accountId: string}}>} */
+  const messages = [];
+  return {
+    messages,
+    async sendBatch(batch) {
+      messages.push(...batch);
+    },
+  };
+}
+
+/**
+ * Delivers one message to the queue consumer the way the runtime does, and
+ * reports how the message was answered — `ack` on a finished walk, `retry` on
+ * a failed one, never both. A `retry` message is the one the runtime would
+ * send back, and an unanswered one is neither, so a consumer that walked a
+ * whole account and answered nothing is visible here.
+ * @param {{accountId: string}} message
+ * @param {unknown} env
+ * @param {FileStore} store
+ * @returns {Promise<{acked: boolean, retried: boolean}>}
+ */
+async function deliver(message, env, store) {
+  /** @type {Promise<unknown>[]} */
+  const waits = [];
+  const workerQueue =
+    /** @type {(batch: MessageBatch<{accountId: string}>, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: FileStore) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.queue)
+    );
+  const answered = { acked: false, retried: false };
+  /** @type {any} */
+  const envelope = {
+    id: "m1",
+    body: message,
+    timestamp: new Date(0),
+    attempts: 1,
+    ack() {
+      answered.acked = true;
+    },
+    retry() {
+      answered.retried = true;
+    },
+  };
+  const batch = {
+    queue: REINDEX_QUEUE_NAME,
+    messages: [envelope],
+  };
+  const delivered = /** @type {MessageBatch<{accountId: string}>} */ (
+    /** @type {unknown} */ (batch)
+  );
+  await workerQueue(
+    delivered,
+    env,
+    {
+      /** @param {Promise<unknown>} promise */
+      waitUntil(promise) {
+        waits.push(promise);
+      },
+    },
+    store,
+  );
+  await Promise.all(waits);
+  return answered;
+}
+
 // The safety review: a full reindex walks the whole bucket, which costs the
 // storage money the drive bills for, so it is not a web route at all. The
-// only way one starts is the scheduled trigger.
+// only way one starts is the scheduled trigger (drive#566: one queue message
+// per account, not one serial loop).
 test("no web request can start a reindex: /api/search/index is not a route", async () => {
   const db = makeD1();
   const assets = { fetch: () => new Response("asset", { status: 200 }) };
@@ -981,65 +950,389 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
       `${method} /api/search/index is gated, never reaches a search handler`,
     );
   }
-  // The only way a reindex starts is the scheduled trigger. The index knows
-  // an account from a write; the store then gains a file the write path never
-  // indexed, and the nightly walk must find it — per account, from its own
-  // prefix, with no other account's name in the answer.
+});
+
+test("the nightly cron enqueues one message per account and the consumer walks that account", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  seedAccount(db, ACCOUNT_B.id);
   const raw = createMemoryStore();
+  // Two files the write path never touched, one per account: the nightly walk
+  // must find them.
+  await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", new Blob(["x"]).stream(), "text/plain");
+  await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", new Blob(["x"]).stream(), "text/plain");
+  // An early-bird write, so ACCOUNT's index is not empty: the account list is
+  // taken from the accounts table, not from what the index happens to hold.
   await scopeStore(withIndex(raw, db, ACCOUNT), ACCOUNT).write(
     "/early-bird.txt",
     new Blob(["x"]).stream(),
     "text/plain",
   );
-  await scopeStore(withIndex(raw, db, ACCOUNT_B), ACCOUNT_B).write(
-    "/b-only.txt",
-    new Blob(["x"]).stream(),
-    "text/plain",
-  );
-  // Two files the write path never touched, one per account.
-  await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", new Blob(["x"]).stream(), "text/plain");
-  await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", new Blob(["x"]).stream(), "text/plain");
-  // The nightly walk lists the accounts table (drive issue #564), so the
-  // test signs both accounts up the way production does - the drive serves
-  // accounts that exist, and a walk before sign-up has nothing to walk.
-  for (const account of [ACCOUNT, ACCOUNT_B]) {
-    await db
-      .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
-      .bind(account.id, `${account.id}@drive.test`)
-      .run();
-  }
+  const queue = queueEnvelope();
+  const env = {
+    DRIVE_DB: db,
+    ASSETS: { fetch: () => new Response("asset") },
+    REINDEX_QUEUE: queue,
+  };
 
-  /** @type {Promise<unknown>[]} */
-  const waits = [];
-  const workerScheduled =
-    /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: FileStore) => Promise<void>} */ (
-      /** @type {unknown} */ (worker.scheduled)
-    );
-  const scheduledEvent = /** @type {ScheduledController} */ (
-    /** @type {unknown} */ ({ cron: REINDEX_SCHEDULE })
+  await triggerCron(env, raw);
+
+  // One message per account, in the accounts table's id order — each message
+  // becomes its own consumer invocation, so two accounts can never queue each
+  // other behind one slow bucket.
+  assert.deepEqual(
+    queue.messages.map((message) => message.body.accountId),
+    [ACCOUNT.id, ACCOUNT_B.id],
   );
-  await workerScheduled(
-    scheduledEvent,
-    env,
-    {
-      /** @param {Promise<unknown>} promise */
-      waitUntil(promise) {
-        waits.push(promise);
-      },
-    },
-    raw,
-  );
-  await Promise.all(waits);
+  for (const message of queue.messages) {
+    const answered = await deliver(message.body, env, raw);
+    assert.deepEqual(answered, { acked: true, retried: false }, "the walk finished and was acked");
+  }
 
   const forA = await searchDrive(db, ACCOUNT, "late");
   assert.equal(forA.count, 1, "A's own newly walked file");
   assert.equal(forA.results[0].path, "/late-arrival.txt");
-  const aSeesB = await searchDrive(db, ACCOUNT, "b-only");
+  const aSeesB = await searchDrive(db, ACCOUNT, "b-late");
   assert.equal(aSeesB.count, 0, "A never sees B's name");
-  const forB = await searchDrive(db, ACCOUNT_B, "b-late");
+  const forB = await searchDrive(db, ACCOUNT_B, "late");
   assert.equal(forB.count, 1, "B's own newly walked file");
-  const bSeesA = await searchDrive(db, ACCOUNT_B, "late-arrival");
+  assert.equal(forB.results[0].path, "/b-late.txt");
+  const bSeesA = await searchDrive(db, ACCOUNT_B, "early-bird");
   assert.equal(bSeesA.count, 0, "B never sees A's file");
+  // The staged rows are the generation's scratch: both walks finished, so
+  // nothing of them survives into the live table.
+  const left = db.sqlite.prepare("SELECT count(*) c FROM file_index_staging").get();
+  assert.equal(left?.c, 0, "no staging rows survive a finished walk");
+});
+
+test("a reindex reaches an account the index holds no rows for", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id, "active");
+  seedAccount(db, "acct-2", "read_only");
+  seedAccount(db, "acct-closed", "closed");
+  seedAccount(db, "acct-empty", "active");
+
+  // The account list is the accounts table read through its own exported
+  // reader, so the production reader is what decides, not the test: an
+  // account with no index rows is on the list (its drive is exactly the one
+  // the old index-derived list would have skipped), a read-only one is on
+  // it (the same COALESCE filter setAccountState uses), and a closed one is
+  // not (purgeAccountRecords already deleted its file_index rows).
+  const accountIds = (await indexAccounts(db)).map((account) => account.id);
+  assert.deepEqual(
+    accountIds,
+    [ACCOUNT.id, "acct-2", "acct-empty"],
+    "every open account, in id order, never a closed one",
+  );
+});
+
+test("a walk that fails mid-walk leaves the account's previous rows intact (drive#566)", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(raw, [
+    ["/late-arrival.txt", "x"],
+    ["/notes/report.pdf", "y"],
+  ]);
+  const built = await reconcileIndex(db, raw, ACCOUNT);
+  assert.equal(built.indexed, 2, "the first walk indexed both files");
+
+  // The crash: the walk dies after the first read, with the index in the
+  // state a customer could be searching at that moment.
+  let lists = 0;
+  const failing = {
+    ...raw,
+    /** @param {string} path */
+    async list(path) {
+      lists++;
+      if (lists === 2) {
+        throw new Error("the storage API was unavailable");
+      }
+      return raw.list(path);
+    },
+  };
+  await assert.rejects(() => reconcileIndex(db, failing, ACCOUNT), /storage API was unavailable/);
+
+  // The rows the previous index holds are exactly what they were, so the
+  // account stayed searchable through the failed run — the whole point of the
+  // staging table. Nothing was staged yet (the walk builds rows before it
+  // writes), so the scratch table is empty too.
+  const rows = db.sqlite
+    .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
+    .all(ACCOUNT.id)
+    .map((row) => row.path);
+  assert.deepEqual(rows, ["/late-arrival.txt", "/notes/report.pdf"], "previous rows intact");
+  const found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 1, "the account is still searchable");
+  const staged = db.sqlite.prepare("SELECT count(*) c FROM file_index_staging").get();
+  assert.equal(staged?.c, 0, "a walk that died before staging left no scratch rows");
+
+  // The next night's run is a full walk again, not a resume: it succeeds and
+  // leaves nothing scratch behind.
+  const again = await reconcileIndex(db, raw, ACCOUNT);
+  assert.equal(again.indexed, 2);
+  const left = db.sqlite.prepare("SELECT count(*) c FROM file_index_staging").get();
+  assert.equal(left?.c, 0);
+});
+
+test("a swap that fails half-committed rolls back to the previous rows (drive#566)", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(raw, [["/keep.txt", "x"]]);
+  await reconcileIndex(db, raw, ACCOUNT);
+  await seed(raw, [
+    ["/fresh.txt", "x"],
+    ["/doomed.txt", "x"],
+  ]);
+
+  // A failure at the database itself, inside the swap's upsert batch: the
+  // trigger aborts the INSERT after some of that statement's rows would have
+  // been written. The swap never deletes live rows first, and D1 runs a
+  // batch as one transaction, so the abort leaves the previous live set.
+  db.sqlite.exec(
+    "CREATE TRIGGER file_index_doomed BEFORE INSERT ON file_index " +
+      "WHEN new.name = 'doomed.txt' BEGIN SELECT RAISE(ABORT, 'the swap failed'); END",
+  );
+  await assert.rejects(() => reconcileIndex(db, raw, ACCOUNT), /the swap failed/);
+
+  const rows = db.sqlite
+    .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
+    .all(ACCOUNT.id)
+    .map((row) => row.path);
+  assert.deepEqual(rows, ["/keep.txt"], "the previous live row survived the aborted upsert");
+  assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1, "still searchable");
+
+  // The dead attempt's staged rows wait in the scratch table. The retry uses
+  // a new generation and does not sweep them (a sibling walk could still be
+  // writing), so they stay until they are two days old.
+  const staged = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index_staging WHERE account_id = ?")
+    .get(ACCOUNT.id);
+  assert.ok(Number(staged?.c) >= 2, "the failed attempt's scratch rows remain");
+  await raw.remove("/doomed.txt");
+  const again = await reconcileIndex(db, raw, ACCOUNT);
+  assert.equal(again.indexed, 2);
+  const live = db.sqlite
+    .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
+    .all(ACCOUNT.id)
+    .map((row) => row.path);
+  assert.deepEqual(live, ["/fresh.txt", "/keep.txt"], "the retry swapped its own generation");
+  assert.equal((await searchDrive(db, ACCOUNT, "fresh")).count, 1);
+  const left = db.sqlite.prepare("SELECT count(*) c FROM file_index_staging").get();
+  assert.ok(
+    Number(left?.c) >= 2,
+    "the failed generation is still scratch, not mixed into the live table",
+  );
+});
+
+test("an emptied store clears the live index (drive#566)", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  const at = Date.now();
+  await seed(raw, [["/keep.txt", "x"]]);
+  await reconcileIndex(db, raw, ACCOUNT, { now: () => at });
+  assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1);
+  await raw.remove("/keep.txt");
+  const again = await reconcileIndex(db, raw, ACCOUNT, { now: () => at });
+  assert.equal(again.indexed, 0, "the walk found nothing");
+  assert.equal(
+    (await searchDrive(db, ACCOUNT, "keep")).count,
+    0,
+    "the nightly rebuild is what drops a gone path",
+  );
+});
+
+test("a create that lands during the walk stays searchable after the swap (drive#566)", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(raw, [["/keep.txt", "x"]]);
+  await reconcileIndex(db, raw, ACCOUNT);
+  const at = Date.now();
+  const walking = {
+    ...raw,
+    /** @param {string} path */
+    async list(path) {
+      if (path === "/") {
+        await db.batch(
+          upsertStatements(db, [fileRow(ACCOUNT, "/fresh.txt", { size: 1 }, at + 5_000)]),
+        );
+      }
+      return raw.list(path);
+    },
+  };
+  await reconcileIndex(db, walking, ACCOUNT, { now: () => at });
+  const live = db.sqlite
+    .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
+    .all(ACCOUNT.id)
+    .map((row) => row.path);
+  assert.deepEqual(live, ["/fresh.txt", "/keep.txt"], "the concurrent create survived the swap");
+  assert.equal((await searchDrive(db, ACCOUNT, "fresh")).count, 1);
+});
+
+test("a walk of more files than one swap statement holds still leaves every file searchable", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(
+    raw,
+    Array.from({ length: 30 }, (_, i) => [`/file-${String(i).padStart(2, "0")}.txt`, "x"]),
+  );
+  const built = await reconcileIndex(db, raw, ACCOUNT, { batchSize: 1 });
+  assert.equal(built.indexed, 30);
+  const found = await searchDrive(db, ACCOUNT, "file");
+  assert.equal(found.count, 30, "every staged file moved into the live table");
+});
+
+test("an account with no files is still walked, and its empty index is a finished message", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  const env = { DRIVE_DB: db, ASSETS: { fetch: () => new Response("asset") } };
+  // An account with a store that holds nothing was invisible to the old
+  // index-derived list, so it was never visited at all (drive#566). The queue
+  // message exists for every account, and a walk that finds nothing is a
+  // finished one.
+  const answered = await deliver({ accountId: ACCOUNT.id }, env, raw);
+  assert.deepEqual(
+    answered,
+    { acked: true, retried: false },
+    "an empty walk is finished, not failed",
+  );
+  const changed = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index")
+    .all()
+    .map((r) => r.c)[0];
+  assert.equal(changed, 0, "nothing was written into the live rows");
+});
+
+test("a reindex message that fails is retried from the top, not resumed", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", new Blob(["x"]).stream(), "text/plain");
+  const env = { DRIVE_DB: db, ASSETS: { fetch: () => new Response("asset") } };
+  // A store whose walk throws mid-walk: the consumer must retry the message,
+  // because the next attempt runs the whole walk again from the previous
+  // rows' protection rather than continuing a half-finished swap.
+  let lists = 0;
+  const throwing = {
+    ...raw,
+    /** @param {string} path */
+    async list(path) {
+      void path;
+      lists++;
+      if (lists === 1) {
+        throw new Error("the storage API was unavailable");
+      }
+      return raw.list(path);
+    },
+  };
+  const answered = await deliver({ accountId: ACCOUNT.id }, env, throwing);
+  assert.deepEqual(answered, { acked: false, retried: true }, "a failed walk is retried by name");
+  // The old rows (none here) are untouched by the failure.
+  const rows = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index")
+    .all()
+    .map((r) => r.c)[0];
+  assert.equal(rows, 0);
+  // And the retry succeeds when the store recovers, proving the attempt left
+  // no half-swapped state behind.
+  await deliver({ accountId: ACCOUNT.id }, env, raw);
+  const found = await searchDrive(db, ACCOUNT, "late");
+  assert.equal(found.count, 1, "the retry's walk completed");
+});
+
+test("an empty account id in a message is refused without a walk", async () => {
+  const db = makeD1();
+  const raw = createMemoryStore();
+  /** @type {any} */
+  const listed = [];
+  const watched = {
+    ...raw,
+    /** @param {string} path */
+    async list(path) {
+      listed.push(path);
+      return raw.list(path);
+    },
+  };
+  const env = { DRIVE_DB: db, ASSETS: { fetch: () => new Response("asset") } };
+  const answered = await deliver({ accountId: "" }, env, watched);
+  assert.equal(listed.length, 0, "no prefix-less account was walked");
+  assert.equal(answered.acked, true, "a message with no account is finished, not retried");
+});
+
+test("the queue consumer without a database refuses the walk", async () => {
+  const raw = createMemoryStore();
+  await seed(raw, [["/late-arrival.txt", "x"]]);
+  const env = { ASSETS: { fetch: () => new Response("asset") } };
+  const answered = await deliver({ accountId: ACCOUNT.id }, env, raw);
+  assert.equal(answered.retried, true, "a missing index is a retry, not a crash");
+});
+
+test("a message on an unknown queue is refused, not treated as a meter job", async () => {
+  const workerQueue =
+    /** @type {(batch: {queue: string, messages: unknown[]}, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.queue)
+    );
+  await assert.rejects(
+    () =>
+      workerQueue(
+        { queue: "drive-not-a-real-queue", messages: [] },
+        { METER_DB: makeD1() },
+        { waitUntil() {} },
+      ),
+    /unknown queue/,
+  );
+});
+
+test("a named meter-queue batch is not refused as unknown", async () => {
+  const workerQueue =
+    /** @type {(batch: {queue: string, messages: readonly {body: unknown, ack(): void, retry(): void}[]}, env: unknown, ctx: {waitUntil(): void}) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.queue)
+    );
+  /** @type {{body: unknown, ack(): void, retry(): void, acked?: boolean, retried?: boolean}} */
+  const message = {
+    body: {
+      kind: BRANCH_QUEUE_KINDS.create,
+      accountId: "acct-1",
+      branchId: 1,
+      name: "work",
+    },
+    ack() {
+      message.acked = true;
+    },
+    retry() {
+      message.retried = true;
+    },
+  };
+  await workerQueue({ queue: "drive-meter-jobs", messages: [message] }, {}, { waitUntil() {} });
+  assert.equal(message.retried, true, "a missing DRIVE_DB still retries on the live queue name");
+  assert.equal(message.acked, undefined);
+});
+
+test("the published worker really declares the reindex queue halves", async () => {
+  const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
+  assert.ok(
+    config.includes("bindings.queue<{ accountId: string }>"),
+    "the consumer binding is typed with its message body",
+  );
+  assert.match(
+    config,
+    /triggers\.queue\(\{\s*name: "drive-reindex"/,
+    "the consumer trigger is published, not just the code",
+  );
+  assert.equal(METER_JOBS_QUEUE_NAME, "drive-meter-jobs");
+  assert.match(
+    config,
+    /triggers\.queue\(\{\s*name: "drive-meter-jobs"/,
+    "the meter consumer trigger is the same name the unknown-queue guard uses",
+  );
+  // Queue infrastructure is created out of band (`cf queues create`); the
+  // binding above names one that exists on the account, and this repo stays
+  // off that deploy concern (docs/build-spec.md runbook).
 });
 
 test("scheduled throws on an unknown cron and does not start the reindex", async () => {
@@ -1226,20 +1519,30 @@ test("the cached app still reads each fetch's own env", async () => {
 
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  const sql = readFileSync(
-    new URL("../migrations/drive/0002_file_index.sql", import.meta.url),
-    "utf8",
+  for (const name of ["0002_file_index.sql", "0045_file_index_staging.sql"]) {
+    const sql = readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8");
+    const withoutComments = sql.replace(/--.*$/gm, "");
+    assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), `${name}: no drops`);
+    assert.ok(!/ALTER TABLE/im.test(withoutComments), `${name}: no existing table touched`);
+    for (const match of sql.matchAll(/(\w+)\s+TEXT NOT NULL(?!\s+DEFAULT)/g)) {
+      assert.fail(`${name}: column ${match[1]} is NOT NULL without a DEFAULT`);
+    }
+    for (const match of sql.matchAll(/(\w+)\s+INTEGER NOT NULL(?!\s+DEFAULT)/g)) {
+      assert.fail(`${name}: column ${match[1]} is NOT NULL without a DEFAULT`);
+    }
+  }
+  assert.ok(
+    readFileSync(
+      new URL("../migrations/drive/0002_file_index.sql", import.meta.url),
+      "utf8",
+    ).includes("CREATE TABLE IF NOT EXISTS file_index"),
   );
-  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS file_index"));
-  const withoutComments = sql.replace(/--.*$/gm, "");
-  assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), "no drops");
-  assert.ok(!/ALTER TABLE/im.test(withoutComments), "no existing table touched");
-  for (const match of sql.matchAll(/(\w+)\s+TEXT NOT NULL(?!\s+DEFAULT)/g)) {
-    assert.fail(`column ${match[1]} is NOT NULL without a DEFAULT`);
-  }
-  for (const match of sql.matchAll(/(\w+)\s+INTEGER NOT NULL(?!\s+DEFAULT)/g)) {
-    assert.fail(`column ${match[1]} is NOT NULL without a DEFAULT`);
-  }
+  assert.ok(
+    readFileSync(
+      new URL("../migrations/drive/0045_file_index_staging.sql", import.meta.url),
+      "utf8",
+    ).includes("CREATE TABLE IF NOT EXISTS file_index_staging"),
+  );
 });
 
 test("MAX_LIMIT is the ceiling a caller can ask for", async () => {
