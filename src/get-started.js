@@ -157,9 +157,7 @@ export function emptyState(screen) {
  * line. Accepts the payload the queue store's read sums — a moving
  * half beside a paused half (drive issue #865) — and a literal
  * `paused: true` for the stopped state.
- * @param {{uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean,
- *   pausedFiles?: number, pausedUploadedBytes?: number,
- *   pausedTotalBytes?: number}} upload
+ * @param {import("../core/queues.js").UploadQueue} upload
  * @returns {string}
  */
 export function uploadLine(upload) {

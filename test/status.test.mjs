@@ -372,9 +372,10 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
   for (const broken of [
     { ...mixed, pausedFiles: 0 },
     { ...mixed, pausedFiles: 1.5 },
-    { ...mixed, pausedTotalBytes: 0 },
+    { ...mixed, pausedFiles: -1 },
     { ...mixed, pausedUploadedBytes: 4097 },
     { ...mixed, pausedTotalBytes: "4096" },
+    { ...mixed, pausedUploadedBytes: null },
   ]) {
     assert.equal(
       uploadProgress(broken).label,
@@ -382,6 +383,21 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
       `a held half the payload cannot describe changed the line: ${JSON.stringify(broken)}`,
     );
   }
+  // A paused device holding zero-byte files is still a paused device: the
+  // person has files waiting, so the line names them even with no bytes left.
+  assert.equal(
+    uploadProgress({
+      files: 3,
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      paused: false,
+      pausedFiles: 5,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 0,
+    }).label,
+    "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 5 files waiting (0 B left)",
+    "a paused device holding zero-byte files must still be named",
+  );
   // The paused and resumed words live in the one table the CLI also mirrors.
   assert.equal(UPLOAD_LABEL.paused, "Paused");
   assert.equal(UPLOAD_LABEL.resumed, "Resumed");

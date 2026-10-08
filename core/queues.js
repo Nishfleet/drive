@@ -65,8 +65,9 @@ export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_HEARTBEAT_SECONDS;
  * with their own `pausedUploadedBytes` and `pausedTotalBytes`, so one read
  * can name both halves. `paused` is true only when nothing is leaving at
  * all, so a mixed account reads as `paused: false` with the held half named
- * beside the moving one.
- * @typedef {{uploadedBytes: number, totalBytes: number, files: number, paused: boolean,
+ * beside the moving one. `paused` and `files` are optional; only a literal
+ * `true` pauses, and a missing or non-positive `files` acts like no count.
+ * @typedef {{uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean,
  *   pausedFiles?: number, pausedUploadedBytes?: number, pausedTotalBytes?: number}} UploadQueue
  */
 
@@ -143,7 +144,7 @@ function sumLiveQueues(live) {
   const held = { files: 0, uploadedBytes: 0, totalBytes: 0 };
   for (const queue of live) {
     const side = queue.paused === true ? held : moving;
-    side.files += queue.files;
+    side.files += queue.files ?? 0;
     side.uploadedBytes += queue.uploadedBytes;
     side.totalBytes += queue.totalBytes;
   }

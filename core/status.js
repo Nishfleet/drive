@@ -393,7 +393,9 @@ function withHeldQueue(uploading, fields) {
  * The paused half of a mixed queue as its own line, or null when the payload
  * carries none. It is a queue in its own right (drive issue #865): a count of
  * files and a byte pair that obeys the same rule `uploadProgress()` holds a
- * queue to, so a half that cannot be a queue is not named at all.
+ * queue to, so a half that cannot be a queue is not named at all. A paused
+ * device with zero-byte files (files > 0, totalBytes = 0) is still named,
+ * because the person sees "X files waiting" even when bytes are zero.
  * @param {Record<string, unknown>} fields
  * @returns {string|null}
  */
@@ -406,7 +408,6 @@ function heldLabel(fields) {
     files === null ||
     uploadedBytes === null ||
     totalBytes === null ||
-    totalBytes === 0 ||
     uploadedBytes > totalBytes
   ) {
     return null;
