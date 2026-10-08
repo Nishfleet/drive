@@ -33,6 +33,7 @@ import { enforceAccountCap } from "../core/cap.js";
 import { reconcileAccount, toMillis } from "../core/meter.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { captureError } from "./monitoring.js";
 
 /** The queue both meter crons produce on and this Worker consumes. */
 export const METER_JOBS_QUEUE_NAME = "drive-meter-jobs";
@@ -48,7 +49,7 @@ const SEND_BATCH_LIMIT = 100;
 
 /**
  * @typedef {{sendBatch(messages: Array<{body: unknown}>): Promise<unknown>}} MeterJobsQueue
- * @typedef {{kind: string, accountId: string, at: number, through?: number}} MeterJob
+ * @typedef {{kind: string, accountId: string, at: number, through?: number, attempts?: number}} MeterJob
  */
 
 /**
@@ -113,7 +114,7 @@ function meterJob(body) {
  * The consumer: runs each message's job, acks it when it finished and asks
  * for a retry when it threw. A malformed message is retried too, so after
  * its retries it lands in the dead-letter queue where it can be read.
- * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+ * @param {{messages: readonly {body: unknown, attempts?: number, ack(): void, retry(): void}[]}} batch
  * @param {Record<string, (job: MeterJob) => Promise<unknown>>} handlers
  * @returns {Promise<{acked: number, retried: number}>}
  */
@@ -127,7 +128,11 @@ export async function handleMeterJobs(batch, handlers) {
       if (typeof handler !== "function") {
         throw new TypeError(`no handler for meter job kind ${job.kind}`);
       }
-      await handler(job);
+      const attempts = Number(message.attempts);
+      await handler({
+        ...job,
+        attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 1,
+      });
       message.ack();
       acked += 1;
     } catch (error) {
@@ -153,6 +158,7 @@ export async function handleMeterJobs(batch, handlers) {
  *   mailFrom?: string,
  *   settle?: import("../core/prepaid.js").SettleDeps,
  *   store?: import("../core/files.js").FileStore,
+ *   reportError?: (error: unknown, where: string) => unknown,
  * }} MeterJobDeps
  */
 
@@ -163,17 +169,55 @@ export async function handleMeterJobs(batch, handlers) {
  * @param {MeterJobDeps} deps
  * @param {MeterJob} job
  */
-async function runHourlyAccountJob(deps, job) {
+export async function runHourlyAccountJob(deps, job) {
   if (deps.capStore) {
     await enforceAccountCap(
       { store: deps.capStore, now: job.at, email: deps.email, mailFrom: deps.mailFrom },
       job.accountId,
     );
   }
-  const drawn = await drawAccountPending(deps.meterDb, job.accountId, {
-    through: /** @type {number} */ (job.through),
-    now: job.at,
-  });
+  // drive#642 no-bugs bar 5: a day whose meter rows are missing or do not parse
+  // makes NO draw. The draw is the one step here that turns a meter row into
+  // money, so its failure is reported to the monitoring the repo already uses
+  // (src/monitoring.js) instead of being read as a quiet $0 day - a silent
+  // zero and a guessed charge are both failures. The rethrow keeps the queue's
+  // own retry-and-dead-letter path: the next run reads the same rows and
+  // charges the day, and a job that keeps failing lands in
+  // drive-meter-jobs-dlq for an operator rather than charging a guess.
+  let drawn;
+  try {
+    drawn = await drawAccountPending(deps.meterDb, job.accountId, {
+      through: /** @type {number} */ (job.through),
+      now: job.at,
+    });
+  } catch (error) {
+    // The monitoring seam is injectable like the email and the mail-from, so a
+    // test can stand a recorder in place of the stock Sentry call. A report
+    // that throws must not hide the draw failure: the queue retries the draw,
+    // and a silent swap of the error would retry a monitoring outage instead.
+    const report = deps.reportError ?? captureError;
+    try {
+      // The account id stays on the console line handleMeterJobs already
+      // writes. Sentry's `where` is the job name only, the exception text
+      // drops the id, and retries of the same failure do not POST again.
+      if ((job.attempts ?? 1) <= 1) {
+        const reported =
+          error instanceof Error
+            ? Object.assign(new Error(error.message.replaceAll(job.accountId, "account")), {
+                name: error.name,
+              })
+            : error;
+        await report(reported, "meter hourly draw");
+      }
+    } catch (reportFailed) {
+      console.error(
+        "meter hourly draw: the report failed",
+        `account=${job.accountId}`,
+        reportFailed instanceof Error ? reportFailed.message : String(reportFailed),
+      );
+    }
+    throw error;
+  }
   if (drawn.drawn > 0) {
     await settleBalances(deps.meterDb, [job.accountId], { ...deps.settle, now: job.at });
   } else if (deps.settle?.devices) {

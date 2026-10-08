@@ -514,7 +514,7 @@ test("every monitoring call in the entry passes the deployment's own sender", ()
   }
   assert.equal(
     sites,
-    12,
-    "the entry has the 12 monitoring call sites this guard walks: 6 cron check-ins, 3 errors, 3 reports",
+    14,
+    "the entry has the 14 monitoring call sites this guard walks: 6 cron check-ins, 5 errors, 3 reports",
   );
 });

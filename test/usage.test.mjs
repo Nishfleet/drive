@@ -19,9 +19,13 @@ import { test } from "node:test";
 import vm from "node:vm";
 import {
   BILLING_CONFIG,
+  dailyDrawMillicents,
   gbMonths,
   handleUsageRequest,
+  monthBillCents,
+  monthlyBillForStoredTb,
   SAVED_COPY,
+  size30DropsOutDay,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
   usageSummary,
@@ -243,11 +247,33 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
 test("both saved sentences come from the one table in core/billing.js", () => {
   const plan = (/** @type {string} */ amount) =>
     SAVED_COPY.plan.replace("{amount}", amount).replace("{plan}", "a usual 1 TB plan");
-  const capped = month(2000);
+  // drive#642: 1 TB and above states no saving at all. A usual plan is $15 for
+  // the first TB and $6 for each extra 500 GB, which is the same $15 a TB our
+  // maximum charges from 1 TB up, so every cheaper-than claim is false there.
+  assert.equal(month(2000).saved, null);
+  assert.equal(month(1000).saved, null);
+  assert.equal(month(1500).saved, null);
+  // Under the floor, when the month is capped: the metered month sat over our
+  // maximum, so the maximum sentence names what it saved. The floor is the
+  // usual plan comparison, so this is under 1 TB with a plan that costs more.
+  const capped = usageSummary(
+    {
+      size30Bytes: 300 * 1e9,
+      storedGb: 300,
+      storedDaily: [],
+      downloadBytes: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+    },
+    { ...BILLING_CONFIG, maxUsdPerTb: 5 },
+  );
   assert.ok(capped.saved);
-  assert.equal(capped.saved.usd, 10);
-  assert.equal(capped.saved.planUsd, 0);
-  assert.equal(capped.saved.copy, SAVED_COPY.capped.replace("{amount}", "$10.00"));
+  assert.equal(capped.saved.usd, 1);
+  assert.equal(capped.saved.planUsd, 10);
+  assert.equal(
+    capped.saved.copy,
+    `${SAVED_COPY.capped.replace("{amount}", "$1.00")} ${plan("$10.00")}`,
+  );
   const uncapped = month(300);
   assert.ok(uncapped.saved);
   assert.equal(uncapped.saved.usd, 9);
@@ -375,6 +401,67 @@ test("an account with a card on file is shown the bill it is charged", async () 
   assert.equal(withCard.cardOnFile, true);
   assert.equal(withCard.labels.cost, "$0.00");
   assert.equal(withCard.billCents.totalCents, 0, "the one bill function's own total");
+});
+
+test("the usage page's four size30 numbers come from monthBillCents and the window alone", async () => {
+  // drive#642: the page, `drive usage` and `drive status` print the size, the
+  // day it was reached, the day it drops out and today's draw. Each is the one
+  // bill function's own number, so no surface has an arithmetic of its own:
+  // the drop-out day is size30DropsOutDay() of the reached day, and today's
+  // draw is dailyDrawMillicents() over monthBillCents()'s total, the same
+  // total core/prepaid.js draws from.
+  const size30Tb = 1.5;
+  const reachedDay = "2026-10-04";
+  const body = await (
+    await handleUsageRequest(
+      new Request("https://drive.test/api/usage"),
+      {
+        ...account,
+        capUsd: BILLING_CONFIG.defaultCapUsd,
+        usage: {
+          size30Bytes: size30Tb * 1000 * 1e9,
+          storedGb: size30Tb * 1000,
+          storedDaily: [],
+          downloadBytes: 0,
+          capUsd: BILLING_CONFIG.defaultCapUsd,
+          cardAdded: true,
+          size30ReachedDay: reachedDay,
+          // The store's own field, the same value core/devices.js monthUsage()
+          // writes for the route: size30DropsOutDay() of the reached day, so the
+          // page and the CLI cannot each work a drop-out date out for themselves.
+          size30DropsOutDay: size30DropsOutDay(reachedDay),
+        },
+      },
+      null,
+      null,
+      MONTH_ISO,
+    )
+  ).json();
+  assert.equal(body.size30Gb, 1500);
+  assert.equal(body.size30ReachedDay, reachedDay);
+  assert.equal(body.size30DropsOutDay, size30DropsOutDay(reachedDay));
+  assert.equal(body.labels.size30DropsOut, size30DropsOutDay(reachedDay));
+  assert.equal(
+    body.todayDrawMillicents,
+    dailyDrawMillicents(monthBillCents({ size30Bytes: body.size30Bytes }).totalMillicents, 0)
+      .drawMillicents,
+  );
+  assert.equal(
+    body.billUsd,
+    monthlyBillForStoredTb(size30Tb).billUsd,
+    "the bill is the quote's own",
+  );
+  assert.equal(body.maximumUsd, monthlyBillForStoredTb(size30Tb).maximumUsd);
+  // The page renders these strings, so none of them may be NaN or undefined.
+  for (const value of [
+    body.labels.size30,
+    body.labels.size30Reached,
+    body.labels.size30DropsOut,
+    body.labels.todayDraw,
+  ]) {
+    assert.equal(typeof value, "string");
+    assert.doesNotMatch(value, /NaN|undefined/);
+  }
 });
 
 test("the Worker routes the usage read and the page's endpoint is that route", async () => {
@@ -1299,10 +1386,6 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // A paused queue renders the paused line, so the page never shows bytes that
   // are not leaving as "Uploading".
   await made.db
-    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
-    .bind(signedInAccount.id)
-    .run();
-  await made.db
     .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
     .bind(signedInAccount.id)
     .run();
@@ -1320,12 +1403,33 @@ test("the usage page shows the queue a device reported, through the Worker's own
   assert.equal(cardless.cardOnFile, false);
   assert.equal(cardless.labels.cost, PRICE.noChargeYet);
 
+  // Two devices on one account are two rows (drive#516): the second device's
+  // report lands on its own row rather than 429ing against the first, and the
+  // read sums the account's rows, so the line carries the whole queue.
+  const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(signedInAccount.id, second, "device-b")).stored, true);
+  const summed = {
+    files: queue.files + second.files,
+    uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
+    totalBytes: queue.totalBytes + second.totalBytes,
+    paused: queue.paused || second.paused,
+  };
+  const both = await (await read()).json();
+  assert.equal(
+    both.uploadLine,
+    uploadProgress(summed).label,
+    "two devices on one account did not read as two rows summed",
+  );
+  // The account's own row is paused at this point in the test (the UPDATE
+  // above), so the summed line is the paused one: the count is still both
+  // devices' rows summed (3 + 1).
+  assert.ok(
+    both.uploadLine.includes("4 files waiting"),
+    `line ${both.uploadLine} is not both devices' queue`,
+  );
+
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.
-  await made.db
-    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
-    .run();
   await made.db
     .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
