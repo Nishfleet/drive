@@ -146,8 +146,8 @@ const (
 	// LaunchdLabel is the launchd login-item label on macOS.
 	LaunchdLabel = "com.nishfleet.drive"
 	// PrefetchLaunchdLabel is the second login item that warms the next folder
-	// after a listing (issue #227). The mount item stays rclone: a login item
-	// has no DRIVE_S3_* environment, and the storage secret lives in rclone.env.
+	// after a listing (issue #227). The mount item runs `drive mount
+	// --foreground` (drive#515); this sidecar runs `drive prefetch`.
 	PrefetchLaunchdLabel = "com.nishfleet.drive.prefetch"
 	// SystemdUnitName is the systemd user unit on Linux (step 3).
 	SystemdUnitName = "drive-mount.service"

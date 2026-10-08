@@ -82,7 +82,8 @@ import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //   - The hour's stored bytes land in usage_minutes.stored_bytes
 //     (migrations/drive/0006_usage_stored_bytes.sql): the month's PEAK is the
 //     largest of those marks (drive issue #163), which is what the bill's
-//     ceiling max($12, $8 x peak TB) is worked out from.
+//     ceiling was once worked out from (drive#642 now bills size30, the
+//     biggest size in the last 30 days, at 2 cents per GB, never more than $15 per TB).
 //
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
@@ -434,7 +435,7 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 //
 // The second number one closed hour answers with, and the one the monthly bill
 // cannot do without (drive issue #163): how BIG the account's drive was during
-// the hour. The ceiling is max($12, $8 x peak TB) - a peak, so the meter has
+// the hour. The old ceiling was max($12, $8 x peak TB), now replaced by $15 per TB on size30 (drive#642) - a peak, so the meter has
 // to record the size and not only for how long, which
 // usage_minutes.gb_minutes_live never could.
 //
@@ -872,7 +873,7 @@ export function monthStart(at) {
 /**
  * The month's PEAK, read from the rollup the meter's own trigger wrote: the
  * largest stored_bytes mark in the month (drive issue #163), which is the
- * second half of the ceiling max($12, $8 x peak TB) and the only part of the
+ * the size the drive#642 bill is read from (size30, never more than $15 per TB) and the only part of the
  * month's storage figures this module owns.
  *
  * MAX over the hour rows IS the peak - it is one SQL read, not arithmetic done
@@ -1022,6 +1023,79 @@ export async function monthUsageThrough(db, accountId, through) {
     gbMinutes,
     peakBytes,
     downloadBytes,
+  });
+}
+
+// size30 (drive#642): the largest stored_bytes mark in the trailing 30 UTC
+// days, and the earliest hour that mark was reached. One statement, so there
+// is no second peak to drift from. A window with no rows is an empty drive
+// (size30 0), not a guessed charge. A stored_bytes value that does not parse
+// is refused, never billed.
+export const SIZE30_SQL = `SELECT
+    COALESCE(MAX(stored_bytes), 0) AS size30_bytes,
+    CASE WHEN COALESCE(MAX(stored_bytes), 0) = 0 THEN NULL ELSE MIN(hour) END AS reached_hour,
+    COUNT(*) AS hours,
+    SUM(CASE WHEN typeof(stored_bytes) != 'integer' THEN 1 ELSE 0 END) AS bad_rows
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= ?2
+    AND hour <= ?3
+    AND stored_bytes = (
+      SELECT COALESCE(MAX(stored_bytes), 0) FROM usage_minutes
+      WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3
+    )`;
+
+const SIZE30_DOWNLOADS_SQL = `SELECT COALESCE(SUM(download_bytes), 0) AS download_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3`;
+
+/**
+ * size30 for one account as of `through`: the largest stored_bytes mark in
+ * `[from, through]`. `from` is the start of the trailing window the caller
+ * computed (billing.js size30Window). Missing or unparseable rows refuse
+ * rather than guess a charge.
+ * @param {D1Database} db
+ * @param {unknown} accountId
+ * @param {number} from
+ * @param {number} through
+ * @returns {Promise<{size30Bytes: number, reachedHour: number|null, downloadBytes: number, hours: number}>}
+ */
+export async function size30Through(db, accountId, from, through) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`size30Through needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(through) || from > through) {
+    throw new TypeError(
+      `size30Through needs a from..through window in epoch ms, got ${from}..${through}`,
+    );
+  }
+  const row = await db.prepare(SIZE30_SQL).bind(accountId, from, through).first();
+  if (Number(row?.bad_rows ?? 0) > 0) {
+    throw new TypeError(
+      `size30 for ${accountId} has a stored_bytes value that does not parse, so no draw is made`,
+    );
+  }
+  const size30Bytes = Number(row?.size30_bytes ?? 0);
+  const hours = Number(row?.hours ?? 0);
+  const reachedHour = row?.reached_hour == null ? null : Number(row.reached_hour);
+  if (!Number.isSafeInteger(size30Bytes) || size30Bytes < 0) {
+    throw new TypeError(`size30_bytes must be 0 or more whole bytes, got ${row?.size30_bytes}`);
+  }
+  if (reachedHour !== null && (!Number.isFinite(reachedHour) || reachedHour < 0)) {
+    throw new TypeError(`size30 reached_hour does not parse, got ${row?.reached_hour}`);
+  }
+  const downloads = await db.prepare(SIZE30_DOWNLOADS_SQL).bind(accountId, from, through).first();
+  const downloadBytes = Number(downloads?.download_bytes ?? 0);
+  if (!Number.isSafeInteger(downloadBytes) || downloadBytes < 0) {
+    throw new TypeError(
+      `download_bytes must be 0 or more whole bytes, got ${downloads?.download_bytes}`,
+    );
+  }
+  return Object.freeze({
+    size30Bytes,
+    reachedHour,
+    downloadBytes,
+    hours,
   });
 }
 

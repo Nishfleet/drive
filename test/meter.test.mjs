@@ -65,6 +65,7 @@ import {
 } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
+import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -178,9 +179,10 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
     total += versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, monthEnd);
   }
   assert.equal(total, freeGb * MONTH_MINUTES, "a whole month of whole minutes is exact");
-  // And that total, through the ONE function the invoice reads, is the $1
-  // free credit: the meter and the bill cannot disagree about the free month.
-  assert.equal(meteredMonthlyBillUsd(total, MONTH_MINUTES), BILLING_CONFIG.freeMonthlyUsd);
+  // And that size, through the ONE function the invoice reads, is the $1
+  // free credit: 50 GB of size30 at 2¢ is $1. The meter still books GB-minutes;
+  // the bill follows size30 (drive#642).
+  assert.equal(meteredMonthlyBillUsd(Math.round(freeGb * GB)), BILLING_CONFIG.freeMonthlyUsd);
   // The rolled-up total for the same month (the integer-unit sum the SQL
   // stores, one version at a time) agrees, so a month's billing is the same
   // whether the invoice reads the rollup or the per-version arithmetic.
@@ -2621,12 +2623,18 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   // took 05:00 in the same nightly window, so the close cron runs at 06:00,
   // after the purge.
   assert.equal(CLOSE_SCHEDULE, "0 6 * * *");
+  // The known-bad feed's own trip (drive#826). It runs at 07:00, after the
+  // close cron: it is the only trip that talks to an outside host, so it goes
+  // last of the nightly jobs and nothing that touches customer files waits on
+  // it.
+  assert.equal(KNOWN_BAD_FEED_SCHEDULE, "0 7 * * *");
   const schedules = [
     METER_CRON,
     METER_RECONCILE_SCHEDULE,
     REINDEX_SCHEDULE,
     TRASH_PURGE_SCHEDULE,
     CLOSE_SCHEDULE,
+    KNOWN_BAD_FEED_SCHEDULE,
   ];
   assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
@@ -2647,9 +2655,15 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.notEqual(CLOSE_SCHEDULE, TRASH_PURGE_SCHEDULE, "the close cron is not the trash purge");
   assert.notEqual(CLOSE_SCHEDULE, REINDEX_SCHEDULE, "the close cron is not the reindex");
   assert.notEqual(CLOSE_SCHEDULE, METER_CRON, "the close cron is not the hourly rollup");
-  // The config spells the same five strings the modules export, so a changed
+  assert.notEqual(CLOSE_SCHEDULE, KNOWN_BAD_FEED_SCHEDULE, "the close cron is not the feed load");
+  assert.notEqual(
+    KNOWN_BAD_FEED_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    "the feed load is not the trash purge",
+  );
+  // The config spells the same strings the modules export, so a changed
   // schedule cannot drift from the trigger that runs it: src/index.js tells
-  // the five trips apart by the cron string the platform hands it.
+  // the six trips apart by the cron string the platform hands it.
   //
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
@@ -2663,8 +2677,15 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.deepEqual(
     declared,
-    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE, CLOSE_SCHEDULE],
-    "cloudflare.config.ts declares the schedules the meter, the index, the purge and the close cron export",
+    [
+      METER_CRON,
+      METER_RECONCILE_SCHEDULE,
+      REINDEX_SCHEDULE,
+      TRASH_PURGE_SCHEDULE,
+      CLOSE_SCHEDULE,
+      KNOWN_BAD_FEED_SCHEDULE,
+    ],
+    "cloudflare.config.ts declares the schedules the meter, the index, the purge, the close cron and the feed load export",
   );
 
   // The gate that stops drive#432 coming back: an import of the Worker's own

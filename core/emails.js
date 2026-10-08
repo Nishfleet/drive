@@ -598,12 +598,12 @@ function topUpReceiptTemplate(data = {}) {
     "",
     `Your balance is now ${usd(balance)}. It never expires.`,
     "",
-    "Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.",
+    "Storage is drawn from it at 2 cents per GB a month, and never more than $15 per TB.",
   ];
   const html_lines = [
     `<p>${first}</p>`,
     `<p>Your balance is now ${usd(balance)}. It never expires.</p>`,
-    "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.</p>",
+    "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $15 per TB.</p>",
   ];
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
@@ -727,6 +727,10 @@ export const SECURITY_EVENT_COPY = Object.freeze({
   "signed-out-everywhere": "Every device was signed out",
   "device-logged-out": "A device was signed out",
   "cap-changed": "The spending cap was changed",
+  // A refusal, not a change: the mint or drop of a file whose SHA-256 is on
+  // the stock known-bad list (drive issue #826). The mail says what happened
+  // and where, which is all the recipient needs to decide to look at it.
+  "malware-refused": "A known-bad file was refused",
 });
 
 // USAGE_URL is the same absolute /usage.html the close-lane templates pass
