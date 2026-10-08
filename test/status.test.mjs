@@ -351,6 +351,9 @@ test("bytes stay one short line at both ends of the scale", () => {
   assert.equal(formatBytes(1_000), "1.0 KB");
   assert.equal(formatBytes(1_234_567_890), "1.2 GB");
   assert.equal(formatBytes(12_345_678_901), "12 GB");
+  const huge = 2n ** 53n + 1n;
+  assert.equal(formatBytes(huge), "9007 TB");
+  assert.notEqual(String(Number(huge)), huge.toString());
 });
 
 test("every empty screen says what to do first", () => {
@@ -1081,14 +1084,27 @@ test("the Worker reads a device's reported queue into the status payload", async
   const stillThis = await (await poll()).json();
   assert.deepEqual(stillThis.upload, queue, "another account's report replaced this one");
 
+  // Two devices on one account are two rows (drive#516): the second device's
+  // report lands on its own row rather than 429ing against the first, and the
+  // read sums the account's rows, so the poll carries the whole queue.
+  const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(account.id, second, "device-b")).stored, true);
+  const both = await (await poll()).json();
+  assert.deepEqual(
+    both.upload,
+    {
+      files: queue.files + second.files,
+      uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
+      totalBytes: queue.totalBytes + second.totalBytes,
+      paused: queue.paused || second.paused,
+    },
+    "two devices on one account did not read as two rows summed",
+  );
+
   // A paused queue reads as paused, so the page says the bytes are not leaving
   // rather than showing a stalled "Uploading" count. The line is the word
   // table's own paused line (UPLOAD_LABEL.pausedLine) over the same arithmetic
   // uploadProgress() does, so the page and the CLI cannot spell it two ways.
-  await made.db
-    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
-    .bind(account.id)
-    .run();
   await made.db
     .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
     .bind(account.id)
@@ -1105,10 +1121,6 @@ test("the Worker reads a device's reported queue into the status payload", async
   // rather than as a stale one (the issue's staleness bullet). The row's clock
   // is aged directly, because a real mount going away is the only thing that
   // makes a report stale and there is no wall clock to wait out here.
-  await made.db
-    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
-    .run();
   await made.db
     .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)

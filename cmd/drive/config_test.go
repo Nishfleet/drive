@@ -228,30 +228,102 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	}
 }
 
-func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
-	p := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage())
+func TestEnvWithoutDriveS3DropsStorageKeys(t *testing.T) {
+	got := envWithoutDriveS3([]string{
+		"PATH=/usr/bin",
+		"DRIVE_S3_SECRET_ACCESS_KEY=secret",
+		"DRIVE_S3_ACCESS_KEY_ID=ak",
+		"HOME=/home/test",
+	})
+	joined := strings.Join(got, ",")
+	if strings.Contains(joined, "DRIVE_S3_") {
+		t.Errorf("env still carries storage keys: %v", got)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") || !strings.Contains(joined, "HOME=/home/test") {
+		t.Errorf("env dropped unrelated keys: %v", got)
+	}
+}
+
+func TestDevicePlanIsNotAnAgent(t *testing.T) {
+	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+	if p.isAgent() || p.EnvPath != "" {
+		t.Fatalf("device plan isAgent=%v EnvPath=%q, want a product login item", p.isAgent(), p.EnvPath)
+	}
+	agent := BuildAgentMountPlan("linux", "/home/test", "/usr/bin/rclone", "claude", testStorage())
+	if !agent.isAgent() || agent.EnvPath == "" {
+		t.Fatalf("agent plan isAgent=%v EnvPath=%q, want stock rclone", agent.isAgent(), agent.EnvPath)
+	}
+	if agent.RCAddr != "" || agent.RCUser != "" || agent.RCPass != "" {
+		t.Fatalf("agent plan has remote control %q / %q, want none", agent.RCAddr, agent.RCUser)
+	}
+	argv := agent.productArgv()
+	if len(argv) == 0 || argv[0] != "/usr/bin/rclone" {
+		t.Fatalf("agent productArgv = %v, want stock rclone first", argv)
+	}
+}
+
+func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		p := withProductBin(BuildMountPlan(goos, "/home/test", "rclone", testStorage()))
+		if goos == "windows" {
+			p.MountDir = "Z:"
+		}
+		args := p.productArgs()
+		if !hasArg(args, "--foreground") {
+			t.Errorf("%s: productArgs missing --foreground: %v", goos, args)
+		}
+		if args[0] != "mount" {
+			t.Errorf("%s: productArgs[0] = %q, want mount", goos, args[0])
+		}
+		if !hasArgPair(args, "--rclone", p.RcloneBin) {
+			t.Errorf("%s: productArgs missing --rclone %s: %v", goos, p.RcloneBin, args)
+		}
+	}
+}
+
+// withProductBin fills DriveBin with a path shaped like the one the platform's
+// installer writes (the same paths the prefetch units are tested with), so a
+// renderer test asserts the vector a real login item carries.
+func withProductBin(p MountPlan) MountPlan {
+	switch p.GOOS {
+	case "windows":
+		p.DriveBin = `C:\Program Files\Drive\drive.exe`
+	case "darwin":
+		p.DriveBin = "/opt/homebrew/bin/drive"
+	default:
+		p.DriveBin = "/usr/local/bin/drive"
+	}
+	return p
+}
+
+func TestLaunchdPlistRunsTheProduct(t *testing.T) {
+	p := withProductBin(BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage()))
 	plist := LaunchdPlist(p)
 	for _, want := range []string{
 		"<string>" + LaunchdLabel + "</string>",
-		"<string>/opt/homebrew/bin/rclone</string>",
-		"<string>nfsmount</string>",
-		"<string>drive:drive-standin/u/1234</string>",
-		"<string>--vfs-cache-mode</string>",
+		"<string>/opt/homebrew/bin/drive</string>",
+		"<string>mount</string>",
+		"<string>--foreground</string>",
+		"<string>--home</string>",
+		"<string>/Users/test</string>",
 		"<true/>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("launchd plist missing %q:\n%s", want, plist)
 		}
 	}
-	// ProgramArguments is an argv array: the flag and its value are two
-	// adjacent elements, and rclone would read the next element as the
-	// duration if the value were dropped.
 	args := plistProgramArguments(t, plist)
-	if !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
-		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time %s:\n%v", vfsDirCacheTimeValue, args)
+	if len(args) < 6 || args[5] != "/opt/homebrew/bin/drive" {
+		t.Errorf("launchd exec target = %v, want this CLI after the umount wrapper", args)
 	}
-	if !hasArgPair(args, "--vfs-read-ahead", "128k") {
-		t.Errorf("launchd ProgramArguments missing adjacent --vfs-read-ahead 128k:\n%v", args)
+	if hasArg(args, "nfsmount") {
+		t.Errorf("launchd plist still execs nfsmount:\n%s", plist)
+	}
+	if !hasArgPair(args, "--rclone", "/opt/homebrew/bin/rclone") {
+		t.Errorf("launchd ProgramArguments missing --rclone of the resolved binary:\n%v", args)
+	}
+	if !hasArgPair(args, "--home", "/Users/test") || !hasArg(args, "--foreground") {
+		t.Errorf("launchd ProgramArguments missing the product command:\n%v", args)
 	}
 	if p := LaunchdPlistPath("/Users/test"); p != "/Users/test/Library/LaunchAgents/com.nishfleet.drive.plist" {
 		t.Errorf("LaunchdPlistPath = %q", p)
@@ -279,35 +351,33 @@ func plistProgramArguments(t *testing.T, plist string) []string {
 	return args
 }
 
-func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
-	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+func TestSystemdUnitRunsTheProduct(t *testing.T) {
+	p := withProductBin(BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage()))
 	unit := SystemdUnit(p)
 	for _, want := range []string{
-		"ExecStart=/usr/bin/rclone mount drive:drive-standin/u/1234",
-		"--vfs-cache-mode full",
-		"--dir-cache-time " + vfsDirCacheTimeValue,
-		"--vfs-read-ahead 128k",
-		"--buffer-size 32M",
-		"--transfers 4",
+		"ExecStart=/usr/local/bin/drive mount --foreground --home /home/test --rclone /usr/bin/rclone",
 		"WantedBy=default.target",
-		"EnvironmentFile=/home/test/.config/drive/rclone.env",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
 		}
 	}
-	// rclone has no `umount` subcommand; stopping is rclone's own SIGTERM
-	// handling, which is what systemd sends by default.
-	if strings.Contains(unit, "Environment=") {
-		t.Errorf("systemd unit has an Environment= line; the secret belongs in EnvironmentFile=:\n%s", unit)
+	if strings.HasPrefix(strings.TrimPrefix(extractExecStart(unit), "ExecStart="), "/usr/bin/rclone") {
+		t.Errorf("systemd unit still execs rclone:\n%s", unit)
+	}
+	if strings.Contains(unit, "Environment=") || strings.Contains(unit, "EnvironmentFile=") {
+		t.Errorf("systemd unit must not carry secrets in the unit file:\n%s", unit)
 	}
 	if strings.Contains(unit, "ExecStop") {
-		t.Errorf("systemd unit has an ExecStop line rclone cannot run:\n%s", unit)
+		t.Errorf("systemd unit has an ExecStop line:\n%s", unit)
 	}
-	// The flag and value must be adjacent on the ExecStart line (not in a comment).
 	execStart := extractExecStart(unit)
-	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", vfsDirCacheTimeValue) {
-		t.Errorf("ExecStart line missing adjacent --dir-cache-time %s:\n%s", vfsDirCacheTimeValue, execStart)
+	startArgs := strings.Fields(strings.TrimPrefix(execStart, "ExecStart="))
+	if !hasArgPair(startArgs, "--home", "/home/test") {
+		t.Errorf("ExecStart line missing adjacent --home /home/test:\n%s", execStart)
+	}
+	if !hasArgPair(startArgs, "--rclone", "/usr/bin/rclone") {
+		t.Errorf("ExecStart line missing adjacent --rclone of the resolved binary:\n%s", execStart)
 	}
 	if p := SystemdUnitPath("/home/test"); p != "/home/test/.config/systemd/user/drive-mount.service" {
 		t.Errorf("SystemdUnitPath = %q", p)
@@ -624,6 +694,13 @@ func TestMountDryRunNeverPrintsAKey(t *testing.T) {
 	}
 	if strings.Contains(string(out), access) {
 		t.Errorf("dry-run output carries the access key:\n%s", out)
+	}
+	printed := string(out)
+	if !strings.Contains(printed, "mount --foreground") {
+		t.Errorf("dry-run login item does not run the product:\n%s", printed)
+	}
+	if strings.Contains(printed, "ExecStart="+rclone) {
+		t.Errorf("dry-run login item still execs the rclone stand-in:\n%s", printed)
 	}
 }
 

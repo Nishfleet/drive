@@ -14,8 +14,10 @@
 //      deployment with no auth at all all read as signed out.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
 import { getAuthTables } from "better-auth/db";
@@ -23,6 +25,7 @@ import { getMigrations } from "better-auth/db/migration";
 import { magicLink, twoFactor } from "better-auth/plugins";
 import {
   authFor,
+  authForPasskey,
   createAuth,
   IGNORING_SENTENCE,
   SIGNIN_LINK_PATH,
@@ -81,9 +84,10 @@ function schemaPinInstance() {
     // Mirrors the option in core/auth.js: the rate-limit counters are stored
     // in D1, so the planner expects the rateLimit table too.
     rateLimit: { storage: "database" },
-    // The whole plugin set core/auth.js mounts, in the same order: a drift in
-    // this list makes the planner expect a schema the migration files do not
-    // carry, which is exactly what these tests exist to catch.
+    // The whole plugin set the Worker mounts, in the same order: magic-link
+    // and two-factor from core/auth.js, passkey from core/auth-passkey.js. A
+    // drift in this list makes the planner expect a schema the migration
+    // files do not carry, which is exactly what these tests exist to catch.
     plugins: [
       magicLink({ sendMagicLink: async () => {} }),
       twoFactor({ allowPasswordless: true }),
@@ -544,6 +548,83 @@ test("the Worker auth entry does not pull Kysely or the plugins barrel", () => {
   assert.match(source, /d1Adapter/);
   assert.doesNotMatch(source, /from "better-auth";/);
   assert.doesNotMatch(source, /from "better-auth\/plugins";/);
+  assert.doesNotMatch(
+    source,
+    /from "@better-auth\/passkey"/,
+    "the passkey plugin must load on demand from core/auth-passkey.js, not the Worker entry",
+  );
+  assert.match(
+    source,
+    /await import\("\.\/auth-passkey\.js"\)/,
+    "passkey auth must load through a dynamic import so the bundler can split it",
+  );
+});
+
+test("the built Worker entry no longer contains the passkey stack", (t) => {
+  // drive#846: @simplewebauthn/server (and the asn1/x509 stack it pulls) must
+  // sit in a chunk loaded only for /api/auth/passkey/*, not in the isolate
+  // script every request parses. `.github/workflows/ci.yml` runs `npm run
+  // build` (the "Build the site" step) before `npm test`; a local run
+  // without a build has nothing to pin, same as test/speed-ratchet.test.mjs.
+  const entry = fileURLToPath(
+    new URL("../.cloudflare/output/v0/workers/default/bundle/index.js", import.meta.url),
+  );
+  if (!existsSync(entry)) {
+    t.skip("no Worker build output; CI runs npm run build before npm test");
+    return;
+  }
+  const source = readFileSync(entry, "utf8");
+  assert.equal(
+    source.includes("//#region node_modules/@simplewebauthn/server"),
+    false,
+    "the passkey stack must not sit in the Worker entry chunk",
+  );
+  assert.doesNotMatch(
+    source,
+    /^import .+ from "\.\/assets\/auth-passkey-/m,
+    "the Worker entry must not statically import the passkey chunk; shared bundler helpers must not live in it",
+  );
+  const assets = join(dirname(entry), "assets");
+  assert.equal(
+    existsSync(assets),
+    true,
+    "the Worker build has an entry but no assets directory for the passkey chunk",
+  );
+  const passkeyChunks = readdirSync(assets).filter(
+    (name) => name.startsWith("auth-passkey-") && name.endsWith(".js"),
+  );
+  assert.ok(
+    passkeyChunks.length > 0,
+    "the passkey stack must sit in its own chunk under bundle/assets",
+  );
+  const firstChunk = passkeyChunks[0];
+  assert.ok(firstChunk, "the passkey stack must sit in its own chunk under bundle/assets");
+  const passkeySource = readFileSync(join(assets, firstChunk), "utf8");
+  assert.equal(
+    passkeySource.includes("//#region node_modules/@simplewebauthn/server"),
+    true,
+    "the passkey chunk is where @simplewebauthn/server must live",
+  );
+});
+
+test("authForPasskey is the same closed door as authFor, and follows a secret change", async () => {
+  const made = createTestD1();
+  assert.equal(await authForPasskey({ DRIVE_DB: made }), null, "no secret, no passkey auth");
+  const env = {
+    DRIVE_DB: made,
+    BETTER_AUTH_SECRET: SECRET,
+    BETTER_AUTH_URL: TEST_BASE_URL,
+  };
+  const first = await authForPasskey(env);
+  const again = await authForPasskey(env);
+  assert.ok(first, "all three set: the passkey auth instance exists");
+  assert.equal(first, again, "the same env twice is the same passkey auth instance");
+  const rotated = await authForPasskey({
+    ...env,
+    BETTER_AUTH_SECRET: `${SECRET}-rotated`,
+  });
+  assert.ok(rotated, "a new secret still builds passkey auth");
+  assert.notEqual(rotated, first, "a new secret is a new passkey instance");
 });
 
 // The second factor is the one plugin that left the main entry (drive#848).

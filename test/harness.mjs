@@ -286,6 +286,24 @@ export function createTestD1(options = {}) {
 }
 
 /**
+ * Every row the known-bad hash table holds, read off the database itself.
+ *
+ * The check that proves a load landed as real data rather than as a value a
+ * helper handed back (drive issue #826). It lives here, on the harness every
+ * D1 test already imports, because the two files that load the stock feed
+ * each had a copy of it and a second copy of a read is a second thing to drift
+ * from the query it stands for.
+ * @param {import("./harness.mjs").TestD1} db
+ * @returns {Array<{sha256: string, seenAt: number}>}
+ */
+export function knownBadHashRows(db) {
+  return db.sqlite
+    .prepare("SELECT sha256, seen_at AS seenAt FROM known_bad_hashes ORDER BY sha256")
+    .all()
+    .map((row) => ({ sha256: String(row.sha256), seenAt: Number(row.seenAt) }));
+}
+
+/**
  * A Better Auth instance over a fresh customer database, and the list its
  * sign-in links land in.
  *

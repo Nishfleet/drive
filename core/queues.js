@@ -93,7 +93,9 @@ export function uploadQueueFromRow(row, at) {
   ) {
     // A row that cannot be a queue is refused rather than rendered: the same
     // rule `uploadProgress()` holds a live payload to.
-    throw new TypeError(`device_queues row ${r.account_id} is not a queue: ${JSON.stringify(row)}`);
+    throw new TypeError(
+      `device_queue_reports row ${r.account_id} is not a queue: ${JSON.stringify(row)}`,
+    );
   }
   return {
     uploadedBytes,
@@ -104,9 +106,10 @@ export function uploadQueueFromRow(row, at) {
 }
 
 /**
- * The D1-backed queue store. Writes go to `device_queue_reports` (account +
- * device) and dual-write the 0014 `device_queues` table so a previous reader
- * still sees a row. Reads prefer the per-device table and fall back.
+ * The D1-backed queue store. Reads and writes use only `device_queue_reports`
+ * (account + device): the contract step (drive#743) removed the dual-write
+ * to the account-only 0014 `device_queues` table and migration 0044 dropped
+ * that table, so the per-device rows are the one store.
  * @param {D1Database} db
  * @param {{now?: () => number}} [options]
  */
@@ -151,26 +154,6 @@ export function createD1QueueStore(db, options = {}) {
         /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ?? 0,
       );
       if (changed > 0) {
-        await run(
-          db,
-          `INSERT INTO device_queues
-             (account_id, file_count, total_bytes, uploaded_bytes, paused, reported_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-           ON CONFLICT(account_id) DO UPDATE SET
-             file_count = excluded.file_count,
-             total_bytes = excluded.total_bytes,
-             uploaded_bytes = excluded.uploaded_bytes,
-             paused = excluded.paused,
-             reported_at = excluded.reported_at
-           WHERE device_queues.reported_at <= ?7`,
-          accountId,
-          queue.files,
-          queue.totalBytes,
-          queue.uploadedBytes,
-          queue.paused ? 1 : 0,
-          at,
-          at - QUEUE_REPORT_INTERVAL_SECONDS,
-        );
         return { stored: true, reportedAt: at };
       }
       const row = /** @type {Record<string, unknown>|null} */ (
@@ -207,19 +190,18 @@ export function createD1QueueStore(db, options = {}) {
           live.push(queue);
         }
       }
-      if (live.length > 0) {
-        return live.reduce(
-          (sum, q) => ({
-            files: sum.files + q.files,
-            uploadedBytes: sum.uploadedBytes + q.uploadedBytes,
-            totalBytes: sum.totalBytes + q.totalBytes,
-            paused: sum.paused || q.paused,
-          }),
-          { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false },
-        );
+      if (live.length === 0) {
+        return null;
       }
-      const row = await first(db, "SELECT * FROM device_queues WHERE account_id = ?1", accountId);
-      return uploadQueueFromRow(row, at);
+      return live.reduce(
+        (sum, q) => ({
+          files: sum.files + q.files,
+          uploadedBytes: sum.uploadedBytes + q.uploadedBytes,
+          totalBytes: sum.totalBytes + q.totalBytes,
+          paused: sum.paused || q.paused,
+        }),
+        { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false },
+      );
     },
 
     /**
@@ -229,12 +211,8 @@ export function createD1QueueStore(db, options = {}) {
      */
     async sweep(at = nowSeconds(now())) {
       const cutoff = at - QUEUE_FRESHNESS_SECONDS;
-      const next = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
-      const prev = await run(db, "DELETE FROM device_queues WHERE reported_at < ?1", cutoff);
-      return (
-        Number(/** @type {{meta?: {changes?: number}}} */ (next)?.meta?.changes ?? 0) +
-        Number(/** @type {{meta?: {changes?: number}}} */ (prev)?.meta?.changes ?? 0)
-      );
+      const gone = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
+      return Number(/** @type {{meta?: {changes?: number}}} */ (gone)?.meta?.changes ?? 0);
     },
 
     /**
@@ -251,14 +229,6 @@ export function createD1QueueStore(db, options = {}) {
         accountId,
         deviceId,
       );
-      const leftover = await first(
-        db,
-        "SELECT account_id FROM device_queue_reports WHERE account_id = ?1 LIMIT 1",
-        accountId,
-      );
-      if (leftover === null || leftover === undefined) {
-        await run(db, "DELETE FROM device_queues WHERE account_id = ?1", accountId);
-      }
     },
   };
 }

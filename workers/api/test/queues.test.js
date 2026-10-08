@@ -35,10 +35,12 @@ function fixedClock(startSeconds = 1_000_000) {
 
 const QUEUE = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
 
-test("the queue table ships in the drive migrations the tests apply", () => {
-  // A test harness that applied a list missing this file would answer a store
-  // question against a schema the deployed database does not have, so the
-  // migration is named here the way every other table's is.
+test("the queue tables ship in the drive migrations the tests apply", () => {
+  // A test harness that applied a list missing one of these files would answer
+  // a store question against a schema the deployed database does not have, so
+  // each migration is named here the way every other table's is: 0014 creates
+  // the account-only table, 0027 expands to per-device rows, and 0044 is the
+  // contract step that drops the account-only table again (drive#743).
   assert.ok(
     DRIVE_MIGRATIONS.includes("drive/0014_device_queues.sql"),
     "the queue table's migration is not in the list the tests apply",
@@ -46,6 +48,10 @@ test("the queue table ships in the drive migrations the tests apply", () => {
   assert.ok(
     DRIVE_MIGRATIONS.includes("drive/0027_device_queue_reports.sql"),
     "the per-device queue table's migration is not in the list the tests apply",
+  );
+  assert.ok(
+    DRIVE_MIGRATIONS.includes("drive/0044_drop_device_queues.sql"),
+    "the contract migration that drops the account-only table is not in the list the tests apply",
   );
 });
 
@@ -64,13 +70,21 @@ test("a report is written and read back as the queue the pages render", async ()
   assert.equal(stored.reportedAt, 1_000_000);
 
   assert.deepEqual(await store.latest("acct_1"), { ...QUEUE, paused: true });
+  // The contract step (drive#743): after the migrations replay, the
+  // account-only table is gone, so a statement still aimed at it fails here
+  // rather than in production.
+  assert.equal(
+    db.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'device_queues'").get(),
+    undefined,
+    "the account-only device_queues table still exists after the migrations",
+  );
   // The row is on disk, not in a Map: this reads the table through the engine
   // itself, the way a second Worker isolate's statement would find it. SQLite
   // keeps a boolean column as the integer the Go client sent, which is why the
   // read above is what the pages consume and not this.
   const row = db.sqlite
     .prepare(
-      "SELECT file_count, total_bytes, uploaded_bytes, paused, reported_at FROM device_queues WHERE account_id = ?",
+      "SELECT file_count, total_bytes, uploaded_bytes, paused, reported_at FROM device_queue_reports WHERE account_id = ?",
     )
     .get("acct_1");
   assert.deepEqual(
@@ -171,7 +185,7 @@ test("the sweep drops the rows no read can answer from", async () => {
   await store.record("acct_1", QUEUE);
   assert.equal(await store.sweep(), 0, "a live row is not swept");
   clock.advance(QUEUE_FRESHNESS_SECONDS + 1);
-  assert.equal(await store.sweep(), 2, "the live row and its dual-write both go");
+  assert.equal(await store.sweep(), 1, "the stale row goes");
   assert.equal(await store.latest("acct_1"), null);
 });
 

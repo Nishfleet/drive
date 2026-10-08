@@ -24,7 +24,6 @@
 // builds every link it mails from `baseURL`, so a deployment with neither set
 // is a deployment that is not signed in — not one with a weak session or a
 // link that points at the wrong host.
-import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth/minimal";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { d1Adapter } from "./auth-d1-adapter.js";
@@ -201,7 +200,13 @@ export async function consumeSigninReturn(db, token) {
  * core/auth-two-factor.js and it does. Which one a request gets is the
  * caller's choice — `authFor` never passes it, `twoFactorAuthFor` always does.
  *
- * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>, twoFactorPlugin?: (options: {allowPasswordless: boolean}) => ReturnType<TwoFactor>}} options
+ * `plugins` is the same seam for the passkey stack, which is not typed
+ * because nothing reads an endpoint off it: only `.handler()` is called, on
+ * /api/auth/passkey/* (drive#846). The typed parameter stays typed because the
+ * factor's endpoints are read off the instance by the device-approval route
+ * and the tests.
+ *
+ * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>, twoFactorPlugin?: (options: {allowPasswordless: boolean}) => ReturnType<TwoFactor>, plugins?: unknown[]}} options
  */
 export function createAuth(options) {
   return betterAuth({
@@ -344,18 +349,15 @@ export function createAuth(options) {
               allowPasswordless: true,
             }),
           ]),
-      // Passkeys on the same account, over the library's stock WebAuthn
-      // plugin: registration and authentication options, the credential rows
-      // (table `passkey`, same migration) and the verify endpoints. The
-      // relying-party id is the deployment's own host, derived from the same
-      // configured base URL the sign-in links are built on, so a passkey is
-      // bound to the one address the deployment is served on — never to a
-      // Host header a caller chose.
-      passkey({
-        rpID: new URL(options.baseURL).hostname,
-        rpName: "drive",
-        origin: new URL(options.baseURL).origin,
-      }),
+      // Passkeys are not in this list either. The plugin pulls ~590 KB of
+      // WebAuthn code into the Worker entry (drive#846), and nearly every
+      // request never touches a passkey. core/auth-passkey.js adds it;
+      // authForPasskey loads that module only for `/api/auth/passkey/*`. Extra
+      // plugins stay an option so that module can call this factory rather than
+      // copy it. Cast to `[]` so the Auth typedef still infers magic-link and
+      // two-factor on createAuth(); the passkey instance is only used for
+      // `.handler()` on `/api/auth/passkey/*`.
+      .../** @type {[]} */ (options.plugins ?? []),
     ],
   });
 }
@@ -383,7 +385,7 @@ function signinLink(token, baseURL) {
  * The box is kept stable so `authFor` can update the mailer each time it is
  * called with a new env object sharing the same binding — the test pattern
  * where env is rebuilt per request while the database stays alive.
- * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>}
+ * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth, passkeyAuth?: Auth}>}
  */
 const AUTH_CACHE = new WeakMap();
 
@@ -503,6 +505,47 @@ function cachedAuth(cache, env, twoFactorPlugin) {
   });
   cache.set(database, { secret, baseURL, env: box, auth });
   return auth;
+}
+
+/**
+ * The auth instance that can answer `/api/auth/passkey/*`, or null when the
+ * deployment cannot have a session at all. Same closed door as authFor: no
+ * database, no signing secret or no public address.
+ *
+ * The passkey plugin is loaded here, on this path only, so the Worker entry
+ * does not parse @simplewebauthn/server (and the asn1/x509 stack it pulls)
+ * until a passkey request arrives (drive#846). The instance is cached on the
+ * same database key as authFor, with the same mailer box, so a later passkey
+ * call does not rebuild the plugin chain.
+ *
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @returns {Promise<Auth|null>}
+ */
+export async function authForPasskey(env) {
+  const auth = authFor(env);
+  if (!auth) {
+    return null;
+  }
+  const database = env.DRIVE_DB;
+  if (database === undefined || database === null || typeof database !== "object") {
+    throw new Error("authForPasskey: authFor returned an instance without a database key");
+  }
+  const cached = AUTH_CACHE.get(database);
+  if (cached === undefined) {
+    throw new Error("authForPasskey: authFor returned an instance without a cache entry");
+  }
+  cached.env.env = env;
+  if (cached.passkeyAuth !== undefined) {
+    return cached.passkeyAuth;
+  }
+  const { createAuthWithPasskey } = await import("./auth-passkey.js");
+  cached.passkeyAuth = createAuthWithPasskey({
+    database,
+    secret: cached.secret,
+    baseURL: cached.baseURL,
+    sendLink: (link) => sendSigninLink(cached.env.env, link),
+  });
+  return cached.passkeyAuth;
 }
 
 /**

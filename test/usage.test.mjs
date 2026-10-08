@@ -19,9 +19,13 @@ import { test } from "node:test";
 import vm from "node:vm";
 import {
   BILLING_CONFIG,
+  dailyDrawMillicents,
   gbMonths,
   handleUsageRequest,
+  monthBillCents,
+  monthlyBillForStoredTb,
   SAVED_COPY,
+  size30DropsOutDay,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
   usageSummary,
@@ -82,12 +86,10 @@ function month(storedGb, overrides = {}) {
   }
   return {
     ...usageSummary({
-      monthMinutes: MONTH_MINUTES,
-      gbMinutes: storedGb * MONTH_MINUTES,
+      size30Bytes: Math.round(storedGb * 1e9),
       storedGb,
       storedDaily: days,
       downloadBytes: 0,
-      averageStoredGb: storedGb,
       capUsd: BILLING_CONFIG.defaultCapUsd,
       cardAdded: true,
       ...overrides,
@@ -104,15 +106,15 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // the cost the page and the CLI show is $8 (drive#463).
   assert.equal(summary.billUsd, 8);
   assert.equal(summary.billCents.storageCents, 800);
-  assert.equal(summary.maximumUsd, 10);
+  assert.equal(summary.maximumUsd, 15);
   assert.equal(summary.billCents.totalCents, 800);
   assert.equal(summary.storedGb, 400);
-  assert.equal(summary.gbMonths, 400, "400 GB for a whole month is 400 GB-months");
+  assert.equal(summary.size30Gb, 400);
   assert.equal(summary.storedDaily.length, USAGE_HISTORY_DAYS);
   // Every number a surface prints is already a string: the page and the CLI
   // render, they do not format.
   assert.equal(summary.labels.storedNow, "400 GB");
-  assert.equal(summary.labels.gbMonths, "400.00");
+  assert.equal(summary.labels.size30, "400 GB");
   assert.equal(summary.labels.cost, "$8.00");
   assert.equal(summary.labels.cap, "$20.00");
   assert.equal(summary.labels.accountCap, "$20.00");
@@ -122,12 +124,10 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // card-less account's writes stop at the free $1 while the account's own cap
   // is still the sign-up default.
   const withoutCard = usageSummary({
-    monthMinutes: MONTH_MINUTES,
-    gbMinutes: 400 * MONTH_MINUTES,
+    size30Bytes: 400 * 1e9,
     storedGb: 400,
     storedDaily: [],
     downloadBytes: 0,
-    averageStoredGb: 400,
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
   assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
@@ -173,8 +173,7 @@ test("the stored series is the last 30 days, oldest first", () => {
   }
   entries.reverse();
   const summary = usageSummary({
-    monthMinutes: MONTH_MINUTES,
-    gbMinutes: 0,
+    size30Bytes: 0,
     storedGb: 40,
     storedDaily: entries,
     downloadBytes: 0,
@@ -192,8 +191,7 @@ test("a day the calendar does not have fails, not just a day that is not a date"
   // The pattern alone would accept 2026-09-40; the parse-and-round-trip is what
   // makes "a real date" true, and the rollup cannot have produced the other.
   const base = {
-    monthMinutes: MONTH_MINUTES,
-    gbMinutes: 0,
+    size30Bytes: 0,
     storedGb: 0,
     downloadBytes: 0,
     averageStoredGb: 0,
@@ -216,8 +214,7 @@ test("a day the calendar does not have fails, not just a day that is not a date"
 
 test("a day that is not a day, or a size that is not a size, fails at the entry point", () => {
   const base = {
-    monthMinutes: MONTH_MINUTES,
-    gbMinutes: 0,
+    size30Bytes: 0,
     storedGb: 0,
     storedDaily: [],
     downloadBytes: 0,
@@ -248,43 +245,54 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
 });
 
 test("both saved sentences come from the one table in core/billing.js", () => {
-  // The capped month: 2 TB held all month meters $40 against a $20 maximum, so
-  // the maximum saved $20, and the usual 1 TB plan ($27 at 2 TB) $7 more.
   const plan = (/** @type {string} */ amount) =>
     SAVED_COPY.plan.replace("{amount}", amount).replace("{plan}", "a usual 1 TB plan");
-  const capped = month(2000);
+  // drive#642: 1 TB and above states no saving at all. A usual plan is $15 for
+  // the first TB and $6 for each extra 500 GB, which is the same $15 a TB our
+  // maximum charges from 1 TB up, so every cheaper-than claim is false there.
+  assert.equal(month(2000).saved, null);
+  assert.equal(month(1000).saved, null);
+  assert.equal(month(1500).saved, null);
+  // Under the floor, when the month is capped: the metered month sat over our
+  // maximum, so the maximum sentence names what it saved. The floor is the
+  // usual plan comparison, so this is under 1 TB with a plan that costs more.
+  const capped = usageSummary(
+    {
+      size30Bytes: 300 * 1e9,
+      storedGb: 300,
+      storedDaily: [],
+      downloadBytes: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+    },
+    { ...BILLING_CONFIG, maxUsdPerTb: 5 },
+  );
   assert.ok(capped.saved);
-  assert.equal(capped.saved.usd, 20);
-  assert.equal(capped.saved.planUsd, 7);
+  assert.equal(capped.saved.usd, 1);
+  assert.equal(capped.saved.planUsd, 10);
   assert.equal(
     capped.saved.copy,
-    `${SAVED_COPY.capped.replace("{amount}", "$20.00")} ${plan("$7.00")}`,
+    `${SAVED_COPY.capped.replace("{amount}", "$1.00")} ${plan("$10.00")}`,
   );
-  // The uncapped month: $6 under the $10 maximum and the $15 plan.
   const uncapped = month(300);
   assert.ok(uncapped.saved);
-  assert.equal(uncapped.saved.usd, 4);
+  assert.equal(uncapped.saved.usd, 9);
   assert.equal(
     uncapped.saved.copy,
-    `${SAVED_COPY.uncapped.replace("{amount}", "$4.00")} ${plan("$9.00")}`,
+    `${SAVED_COPY.uncapped.replace("{amount}", "$9.00")} ${plan("$9.00")}`,
   );
-  // An empty month has no line at all: the page hides it and the CLI prints
-  // the four lines without it.
   assert.equal(month(0).saved, null);
 });
 
-test("`drive usage` prints the four lines the spec names", () => {
-  const lines = usageLines(month(400, { downloadBytes: 500e9, averageStoredGb: 400 }));
-  assert.deepEqual(
-    lines,
-    [
-      "Stored GB now: 400 GB",
-      "GB-months so far: 400.00",
-      "Downloads: 500 GB of 1.2 TB free",
-      "Cost so far: $8.00",
-    ],
-    "stored GB now, GB-months so far, downloads out of the free 3x, cost so far",
-  );
+test("`drive usage` prints the size30 lines the spec names", () => {
+  const lines = usageLines(month(400, { downloadBytes: 500e9 }));
+  assert.deepEqual(lines, [
+    "Stored GB now: 400 GB",
+    "Biggest size in the last 30 days: 400 GB",
+    "Today's draw: $0.27",
+    "Downloads: 500 GB of 1.2 TB free",
+    "Cost so far: $8.00",
+  ]);
   assert.equal(Object.isFrozen(lines), true);
   // A line the CLI prints is a label plus the summary's own value, so a change
   // to a number moves both surfaces together.
@@ -298,7 +306,7 @@ test("`drive usage` prints the no-charge line for a card-less month", () => {
   // drive#417: the CLI is the page's second surface, so it prints the same
   // honest word rather than the $10 a card-less account cannot be charged.
   const lines = usageLines(month(400, { cardOnFile: false }));
-  assert.equal(lines[3], `${USAGE_LABELS.cost}: ${PRICE.noChargeYet}`);
+  assert.equal(lines[4], `${USAGE_LABELS.cost}: ${PRICE.noChargeYet}`);
 });
 
 test("the usage lines refuse anything but a summary, never printing NaN", () => {
@@ -308,9 +316,15 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   // A summary object that is missing one of the four labels it prints is not a
   // summary: it used to print "Stored GB now: undefined", which the test name
   // above promises can never happen. Each key is named when it is missing.
-  for (const key of ["storedNow", "gbMonths", "downloads", "cost"]) {
+  for (const key of ["storedNow", "size30", "todayDraw", "downloads", "cost"]) {
     /** @type {Record<string, string>} */
-    const labels = { storedNow: "400 GB", gbMonths: "400.00", downloads: "0 B", cost: "$8.00" };
+    const labels = {
+      storedNow: "400 GB",
+      size30: "400 GB",
+      todayDraw: "$0.27",
+      downloads: "0 B",
+      cost: "$8.00",
+    };
     delete labels[key];
     assert.throws(
       () => usageLines({ labels }),
@@ -343,7 +357,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   // Empty until issues #6 and #2 land: no history, and no minimum, so $0.
   assert.equal(body.billUsd, 0);
   assert.equal(body.storedGb, 0);
-  assert.equal(body.gbMonths, 0);
+  assert.equal(body.size30Bytes, 0);
   assert.deepEqual(body.storedDaily, []);
   assert.equal(body.saved, null);
   assert.deepEqual(Object.keys(body.labels).sort(), [
@@ -351,8 +365,11 @@ test("the usage endpoint answers the empty month with the page's shape", async (
     "cap",
     "cost",
     "downloads",
-    "gbMonths",
+    "size30",
+    "size30DropsOut",
+    "size30Reached",
     "storedNow",
+    "todayDraw",
   ]);
   assert.equal(body.labels.storedNow, "0 B");
   assert.equal(body.cardOnFile, false);
@@ -384,6 +401,67 @@ test("an account with a card on file is shown the bill it is charged", async () 
   assert.equal(withCard.cardOnFile, true);
   assert.equal(withCard.labels.cost, "$0.00");
   assert.equal(withCard.billCents.totalCents, 0, "the one bill function's own total");
+});
+
+test("the usage page's four size30 numbers come from monthBillCents and the window alone", async () => {
+  // drive#642: the page, `drive usage` and `drive status` print the size, the
+  // day it was reached, the day it drops out and today's draw. Each is the one
+  // bill function's own number, so no surface has an arithmetic of its own:
+  // the drop-out day is size30DropsOutDay() of the reached day, and today's
+  // draw is dailyDrawMillicents() over monthBillCents()'s total, the same
+  // total core/prepaid.js draws from.
+  const size30Tb = 1.5;
+  const reachedDay = "2026-10-04";
+  const body = await (
+    await handleUsageRequest(
+      new Request("https://drive.test/api/usage"),
+      {
+        ...account,
+        capUsd: BILLING_CONFIG.defaultCapUsd,
+        usage: {
+          size30Bytes: size30Tb * 1000 * 1e9,
+          storedGb: size30Tb * 1000,
+          storedDaily: [],
+          downloadBytes: 0,
+          capUsd: BILLING_CONFIG.defaultCapUsd,
+          cardAdded: true,
+          size30ReachedDay: reachedDay,
+          // The store's own field, the same value core/devices.js monthUsage()
+          // writes for the route: size30DropsOutDay() of the reached day, so the
+          // page and the CLI cannot each work a drop-out date out for themselves.
+          size30DropsOutDay: size30DropsOutDay(reachedDay),
+        },
+      },
+      null,
+      null,
+      MONTH_ISO,
+    )
+  ).json();
+  assert.equal(body.size30Gb, 1500);
+  assert.equal(body.size30ReachedDay, reachedDay);
+  assert.equal(body.size30DropsOutDay, size30DropsOutDay(reachedDay));
+  assert.equal(body.labels.size30DropsOut, size30DropsOutDay(reachedDay));
+  assert.equal(
+    body.todayDrawMillicents,
+    dailyDrawMillicents(monthBillCents({ size30Bytes: body.size30Bytes }).totalMillicents, 0)
+      .drawMillicents,
+  );
+  assert.equal(
+    body.billUsd,
+    monthlyBillForStoredTb(size30Tb).billUsd,
+    "the bill is the quote's own",
+  );
+  assert.equal(body.maximumUsd, monthlyBillForStoredTb(size30Tb).maximumUsd);
+  // The page renders these strings, so none of them may be NaN or undefined.
+  for (const value of [
+    body.labels.size30,
+    body.labels.size30Reached,
+    body.labels.size30DropsOut,
+    body.labels.todayDraw,
+  ]) {
+    assert.equal(typeof value, "string");
+    assert.doesNotMatch(value, /NaN|undefined/);
+  }
 });
 
 test("the Worker routes the usage read and the page's endpoint is that route", async () => {
@@ -432,15 +510,19 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "capLine",
     "cardOnFile",
     "downloads",
-    "gbMonths",
     "labels",
     "maximumUsd",
     "meteredUsd",
     "monthIso",
     "openPublicLinks",
     "saved",
+    "size30Bytes",
+    "size30DropsOutDay",
+    "size30Gb",
+    "size30ReachedDay",
     "storedDaily",
     "storedGb",
+    "todayDrawMillicents",
     "uploadLine",
   ]);
   assert.equal(body.uploadLine, null, "no device store means no queue to report");
@@ -569,7 +651,7 @@ test("the page states the free allowance from the config, not a literal", () => 
   // BILLING_CONFIG in src/usage.js and carried verbatim by the page, so a
   // change to the multiplier fails here instead of shipping a stale 3x.
   assert.ok(page.includes(USAGE_LABELS.downloadsHint));
-  assert.match(page, /3× the month's average stored size/);
+  assert.match(page, /3× the biggest size in the last 30 days/);
   assert.equal(BILLING_CONFIG.freeDownloadMultiplier, 3);
   assert.match(USAGE_LABELS.downloadsHint, /Free up to 3×/);
 });
@@ -581,8 +663,7 @@ test("the page states the free allowance from the config, not a literal", () => 
 function emptyMonth(overrides = {}) {
   return {
     ...usageSummary({
-      monthMinutes: MONTH_MINUTES,
-      gbMinutes: 0,
+      size30Bytes: 0,
       storedGb: 0,
       storedDaily: [],
       downloadBytes: 0,
@@ -610,7 +691,10 @@ const PAGE_IDS = Object.freeze([
   "chart-figure",
   "storage-empty",
   "stored-now",
-  "gb-months",
+  "size30",
+  "size30-reached",
+  "size30-drops-out",
+  "today-draw",
   "cost",
   "bill-lines",
   "downloads-line",
@@ -901,7 +985,7 @@ test("no month is painted before a read has landed", () => {
   // same hidden wrapper.
   assert.match(page, /<div id="usage-body" hidden>/);
   assert.match(page, /<dd id="stored-now"><\/dd>/);
-  assert.match(page, /<dd id="gb-months"><\/dd>/);
+  assert.match(page, /<dd id="size30"><\/dd>/);
   assert.match(page, /<dd id="cost"><\/dd>/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
   assert.match(page, /<dd id="open-public-links"><\/dd>/);
@@ -1000,7 +1084,7 @@ test("a cap below the month's maximum does not shrink the slider", async () => {
   await settle();
   const slider = elementOf(made.elements, "cap-slider");
   const amount = elementOf(made.elements, "cap-amount");
-  assert.equal(slider.max, "10", "the slider's range is the month's $10 maximum");
+  assert.equal(slider.max, "15", "the slider's range is the month's $15 maximum");
   assert.equal(slider.value, "2", "the thumb is the $2 cap in force");
   assert.equal(amount.value, "2");
   assert.equal(amount.max, "", "the number field has no max, so 50 can be typed");
@@ -1302,10 +1386,6 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // A paused queue renders the paused line, so the page never shows bytes that
   // are not leaving as "Uploading".
   await made.db
-    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
-    .bind(signedInAccount.id)
-    .run();
-  await made.db
     .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
     .bind(signedInAccount.id)
     .run();
@@ -1323,12 +1403,33 @@ test("the usage page shows the queue a device reported, through the Worker's own
   assert.equal(cardless.cardOnFile, false);
   assert.equal(cardless.labels.cost, PRICE.noChargeYet);
 
+  // Two devices on one account are two rows (drive#516): the second device's
+  // report lands on its own row rather than 429ing against the first, and the
+  // read sums the account's rows, so the line carries the whole queue.
+  const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(signedInAccount.id, second, "device-b")).stored, true);
+  const summed = {
+    files: queue.files + second.files,
+    uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
+    totalBytes: queue.totalBytes + second.totalBytes,
+    paused: queue.paused || second.paused,
+  };
+  const both = await (await read()).json();
+  assert.equal(
+    both.uploadLine,
+    uploadProgress(summed).label,
+    "two devices on one account did not read as two rows summed",
+  );
+  // The account's own row is paused at this point in the test (the UPDATE
+  // above), so the summed line is the paused one: the count is still both
+  // devices' rows summed (3 + 1).
+  assert.ok(
+    both.uploadLine.includes("4 files waiting"),
+    `line ${both.uploadLine} is not both devices' queue`,
+  );
+
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.
-  await made.db
-    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
-    .run();
   await made.db
     .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)

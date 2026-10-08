@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { gbMonths, minutesInMonth, monthBillCents } from "../core/billing.js";
+import { dailyDrawMillicents, MILLICENTS_PER_CENT, monthBillCents } from "../core/billing.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
@@ -16,7 +16,6 @@ import {
   METER_RECONCILE_SCHEDULE,
   MINUTE_MS,
   monthStart,
-  monthUsageThrough,
   pruneHiddenVersions,
   reconcileMeter,
   recordEvent,
@@ -329,22 +328,6 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   down.on = false;
   await hourly("2026-10-01T01:05:00.000Z");
 
-  /** @param {number} hour */
-  const bill = async (hour) => {
-    const usage = await monthUsageThrough(db, "acc1", hour);
-    const monthMinutes = minutesInMonth(hour);
-    // The same shape the draw itself bills with (src/prepaid.js drawFor):
-    // each month divides by its own minutes (drive#531), so a September
-    // figure and an October figure are never divided alike.
-    return monthBillCents({
-      gbMinutes: usage.gbMinutes,
-      monthMinutes,
-      downloadBytes: usage.downloadBytes,
-      // The same average the draw passes (drive#535): derived from the
-      // GB-minutes, not read off the hours.
-      averageStoredGb: gbMonths(usage.gbMinutes, monthMinutes),
-    }).totalCents;
-  };
   /** @param {number} from @param {number} to */
   const drawn = (from, to) =>
     -sqlite
@@ -354,20 +337,23 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
       )
       .get(from, to).s;
 
-  const september = await bill(at("2026-09-30T23:00:00.000Z"));
-  assert.ok(
-    september > (await bill(at("2026-09-30T20:00:00.000Z"))),
-    "the outage hours carry money of their own",
-  );
+  const monthly = monthBillCents({ size30Bytes: 5000 * GB }).totalMillicents;
+  const september = dailyDrawMillicents(monthly, 0);
+  const october = dailyDrawMillicents(monthly, september.remainderMillicents);
   assert.equal(
     drawn(monthStart(midnight()), Date.UTC(2026, 9, 1)),
-    september,
-    "September is drawn in full",
+    Math.trunc(september.drawMillicents / MILLICENTS_PER_CENT),
+    "September 30 is drawn once, as one day, after the outage",
   );
   assert.equal(
     drawn(Date.UTC(2026, 9, 1), Date.UTC(2026, 10, 1)),
-    await bill(at("2026-10-01T00:00:00.000Z")),
-    "and October's first hour is drawn too",
+    Math.trunc(october.drawMillicents / MILLICENTS_PER_CENT),
+    "October 1 is drawn on the catch-up run",
+  );
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM daily_draws WHERE account_id = 'acc1'").get().n,
+    2,
+    "each UTC day has one daily_draws row",
   );
 });
 
@@ -485,6 +471,57 @@ test("the consumer acks a finished job and retries a failed or malformed one", a
   );
   assert.deepEqual([reconcile.acked, reconcile.retried], [0, 1], "a failed job is retried");
   assert.deepEqual([malformed.acked, malformed.retried], [0, 1], "a malformed one too");
+});
+
+test("a meter row that does not parse is reported through the queue's production sender", async (t) => {
+  // The recorder in test/meter-jobs.test.mjs proves the job reports and
+  // rethrows. This test drives the same failure through worker.queue, so the
+  // reportError the entry injects - captureError(..., sentryFor(env)) - is
+  // the one that runs, and a real DSN posts the envelope.
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acc-bad-bytes";
+  const day = at("2026-03-10T00:00:00Z");
+  sqlite
+    .prepare(
+      `INSERT OR REPLACE INTO usage_minutes (account_id, hour, gb_minutes_live,
+         download_bytes, stored_bytes, rolled_up_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(accountId, day, 700 * 60, 0, 700.5, day);
+  t.mock.method(console, "error", () => {});
+
+  const originalFetch = globalThis.fetch;
+  /** @type {string[]} */
+  const envelopes = [];
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    (_url, init) => {
+      envelopes.push(String(init?.body ?? ""));
+      return Promise.resolve(new Response(null, { status: 200 }));
+    }
+  );
+  try {
+    const hourly = fakeMessage({
+      kind: METER_JOB_KINDS.hourly,
+      accountId,
+      through: at("2026-03-10T11:00:00Z"),
+      at: day,
+    });
+    await trigger.queue(
+      { queue: "drive-meter-jobs", messages: [hourly] },
+      { METER_DB: db, SENTRY_DSN: "https://abc123@o42.ingest.sentry.io/7" },
+      context,
+    );
+    assert.deepEqual(
+      [hourly.acked, hourly.retried],
+      [0, 1],
+      "the job still throws, so the queue retries",
+    );
+    assert.equal(envelopes.length, 1, "the production reportError posted one envelope");
+    assert.match(envelopes[0], /stored_bytes value that does not parse/);
+    assert.match(envelopes[0], /meter hourly draw/);
+    assert.doesNotMatch(envelopes[0], /acc-bad-bytes/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("the retention prune waits while a re-roll still reaches back past its cutoff", async () => {

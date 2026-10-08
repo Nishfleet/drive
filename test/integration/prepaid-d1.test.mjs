@@ -6,7 +6,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { gbMonths, minutesInMonth, monthBillCents } from "../../core/billing.js";
+import {
+  DRAW_DAYS,
+  dailyDrawMillicents,
+  MILLICENTS_PER_CENT,
+  monthBillCents,
+  size30DropsOutDay,
+  size30Window,
+} from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
@@ -15,17 +22,22 @@ import {
   balanceCents,
   creditTopUp,
   LOW_BALANCE_CENTS,
+  usageDayKey,
   usageKey,
 } from "../../core/ledger.js";
 import { failureMessage } from "../../core/messages.js";
-import { BYTES_PER_GB, MINUTE_MS, monthUsageThrough, recordUsage } from "../../core/meter.js";
+import { BYTES_PER_GB, MINUTE_MS, recordUsage, size30Through } from "../../core/meter.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
+  checkYesterdayDraws,
+  drawAccountPending,
+  drawPendingHours,
   drawUsageHours,
   handleAutoTopUpRequest,
   prepaidPauseOn,
   settleBalance,
+  size30DayUnpaid,
   writesPaused,
 } from "../../core/prepaid.js";
 import {
@@ -81,20 +93,38 @@ async function storeHours(db, sizeGb, count, from = midnight()) {
 }
 
 /**
- * The month's bill through `hour`, the number the draws must add up to.
+ * Stores `sizeGb` for `count` hours from `from` for one account, the rows the
+ * meter rolls. The same walk storeHours does, for the second account of a
+ * same-day test.
+ * @param {import("../d1-sqlite.mjs").MeteredD1} db
+ * @param {string} accountId
+ * @param {number} sizeGb
+ * @param {number} count
+ * @param {number} [from]
+ */
+async function storeHoursFor(db, accountId, sizeGb, count, from = midnight()) {
+  const hours = [];
+  for (let h = 0; h < count; h++) {
+    const hour = from + h * HOUR_MS;
+    await recordUsage(db, accountId, hour, sizeGb * 60, sizeGb * BYTES_PER_GB, hour + HOUR_MS);
+    hours.push(hour);
+  }
+  return hours;
+}
+
+/**
+ * The day's draw in cents, the number the daily job must write.
  * @param {import("../d1-sqlite.mjs").MeteredD1} db
  * @param {number} hour
  */
-async function billThrough(db, hour) {
-  const usage = await monthUsageThrough(db, ACCOUNT, hour);
-  return monthBillCents({
-    gbMinutes: usage.gbMinutes,
-    monthMinutes: minutesInMonth(hour),
-    downloadBytes: usage.downloadBytes,
-    // The same average the draw itself passes (drive#535): derived from the
-    // GB-minutes, not read off the hours.
-    averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
-  }).totalCents;
+async function dayDrawCents(db, hour) {
+  const window = size30Window(hour);
+  const size30 = await size30Through(db, ACCOUNT, window.from, hour);
+  const monthly = monthBillCents({
+    size30Bytes: size30.size30Bytes,
+    downloadBytes: size30.downloadBytes,
+  }).totalMillicents;
+  return Math.trunc(dailyDrawMillicents(monthly, 0).drawMillicents / 1000);
 }
 
 /** @param {import("node:sqlite").DatabaseSync|import("../d1-sqlite.mjs").TestSqlite} sqlite */
@@ -144,14 +174,15 @@ function dodoRecorder(opts = {}) {
   return { calls, fetchImpl };
 }
 
-test("a day of draws adds up to the month's bill, and a rerun draws nothing", async () => {
+test("a day of draws adds up to one daily slice, and a rerun draws nothing", async () => {
   const { sqlite, db } = makeMeteredDB();
   await putAccount(db, ACCOUNT);
   const hours = await storeHours(db, 1000, 24);
   const first = await drawUsageHours(db, hours, { now: hours[23] + HOUR_MS });
-  const bill = await billThrough(db, hours[23]);
+  const bill = await dayDrawCents(db, hours[23]);
   assert.ok(bill > 0, "the fixture must cost something");
   assert.equal(first.cents, bill);
+  assert.equal(first.drawn, 1, "24 hours of one UTC day are one draw");
   assert.equal(await balanceCents(db, ACCOUNT), -bill);
   const rows = usageRows(sqlite).length;
   const again = await drawUsageHours(db, hours, { now: hours[23] + 2 * HOUR_MS });
@@ -163,27 +194,29 @@ test("a run that failed halfway and is retried never draws twice", async () => {
   const { db } = makeMeteredDB();
   await putAccount(db, ACCOUNT);
   const hours = await storeHours(db, 1000, 12);
-  // The first run wrote the first half and then died (a D1 error).
   await drawUsageHours(db, hours.slice(0, 6), { now: hours[6] });
-  // The platform retries the whole range.
   await drawUsageHours(db, hours, { now: hours[11] + HOUR_MS });
-  assert.equal(await balanceCents(db, ACCOUNT), -(await billThrough(db, hours[11])));
+  assert.equal(await balanceCents(db, ACCOUNT), -(await dayDrawCents(db, hours[11])));
 });
 
-test("an hour rerolled higher is caught by the next hour, not drawn twice", async () => {
+test("an hour rerolled higher is not drawn twice the same day", async () => {
   const { sqlite, db } = makeMeteredDB();
   await putAccount(db, ACCOUNT);
   const [h0, h1] = await storeHours(db, 1000, 2);
   await drawUsageHours(db, [h0], { now: h1 });
-  // A late event raises hour 0's usage; the meter rerolls it.
   await recordUsage(db, ACCOUNT, h0, 5000 * 60, 5000 * BYTES_PER_GB, h1 + HOUR_MS);
   await drawUsageHours(db, [h0, h1], { now: h1 + HOUR_MS });
   const keys = usageRows(sqlite).map((row) => row.idempotency_key);
-  assert.deepEqual(keys, [usageKey(ACCOUNT, h0), usageKey(ACCOUNT, h1)]);
-  assert.equal(await balanceCents(db, ACCOUNT), -(await billThrough(db, h1)));
+  const day = size30Window(h0).today;
+  assert.deepEqual(keys, [usageDayKey(ACCOUNT, day)]);
+  assert.equal(
+    await balanceCents(db, ACCOUNT),
+    -50,
+    "the first draw of the day stands; a higher reroll does not charge again",
+  );
 });
 
-test("a new month starts its own high-water mark", async () => {
+test("a new day starts its own draw", async () => {
   const { db } = makeMeteredDB();
   await putAccount(db, ACCOUNT);
   const lastOfSeptember = Date.parse("2026-09-30T23:00:00Z");
@@ -191,9 +224,83 @@ test("a new month starts its own high-water mark", async () => {
   await storeHours(db, 1000, 1, lastOfSeptember);
   await storeHours(db, 1000, 1, firstOfOctober);
   await drawUsageHours(db, [lastOfSeptember, firstOfOctober], { now: firstOfOctober + HOUR_MS });
-  const september = await billThrough(db, lastOfSeptember);
-  const october = await billThrough(db, firstOfOctober);
+  const september = await dayDrawCents(db, lastOfSeptember);
+  const october = await dayDrawCents(db, firstOfOctober);
   assert.equal(await balanceCents(db, ACCOUNT), -(september + october));
+});
+
+test("a leftover hourly draw on the changeover day is not charged again", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const hours = await storeHours(db, 1000, 24);
+  const dayStart = hours[0];
+  const oldAmount = 12;
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "usage",
+    amountCents: -oldAmount,
+    idempotencyKey: usageKey(ACCOUNT, dayStart),
+    windowStart: dayStart,
+    now: dayStart + HOUR_MS,
+  });
+  const result = await drawUsageHours(db, hours, { now: hours[23] + HOUR_MS });
+  assert.equal(result.cents, 0, "the changeover day keeps the hourly charge only");
+  assert.equal(await balanceCents(db, ACCOUNT), -oldAmount);
+  const keys = usageRows(sqlite).map((row) => row.idempotency_key);
+  assert.equal(keys.includes(usageKey(ACCOUNT, dayStart)), true);
+  assert.equal(keys.includes(usageDayKey(ACCOUNT, size30Window(dayStart).today)), false);
+});
+
+test("two draws at the same time charge the day once", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const hours = await storeHours(db, 1000, 24);
+  const now = hours[23] + HOUR_MS;
+  const [a, b] = await Promise.all([
+    drawUsageHours(db, hours, { now }),
+    drawUsageHours(db, hours, { now: now + 1 }),
+  ]);
+  const bill = await dayDrawCents(db, hours[23]);
+  assert.equal(a.cents + b.cents, bill, "the two runners together take one day's cents");
+  assert.equal(usageRows(sqlite).length, 1);
+  assert.equal(await balanceCents(db, ACCOUNT), -bill);
+});
+
+test("a missed day is charged once on the next run", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const day1 = Date.parse("2026-10-01T00:00:00Z");
+  const day2 = day1 + 24 * HOUR_MS;
+  const day3 = day2 + 24 * HOUR_MS;
+  await storeHours(db, 1000, 24, day1);
+  await drawAccountPending(db, ACCOUNT, { through: day1 + 23 * HOUR_MS, now: day2 });
+  const afterFirst = await balanceCents(db, ACCOUNT);
+  await storeHours(db, 1000, 24, day2);
+  await storeHours(db, 1000, 24, day3);
+  await drawAccountPending(db, ACCOUNT, {
+    through: day3 + 23 * HOUR_MS,
+    now: day3 + 24 * HOUR_MS,
+  });
+  const day1cents = await dayDrawCents(db, day1);
+  const day2cents = await dayDrawCents(db, day2);
+  const day3cents = await dayDrawCents(db, day3);
+  assert.equal(afterFirst, -day1cents);
+  assert.equal(await balanceCents(db, ACCOUNT), -(day1cents + day2cents + day3cents));
+});
+
+test("unparseable stored_bytes makes no draw", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const hour = midnight();
+  sqlite
+    .prepare(
+      `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
+       VALUES (?, ?, 0, 'nope', 0, ?)`,
+    )
+    .run(ACCOUNT, hour, hour + HOUR_MS);
+  await assert.rejects(drawUsageHours(db, [hour], { now: hour + HOUR_MS }), /does not parse/);
+  assert.equal(await balanceCents(db, ACCOUNT), 0);
+  assert.equal(usageRows(sqlite).length, 0);
 });
 
 test("uploads pause at $0 and start again once a signed top-up lands", async () => {
@@ -605,6 +712,109 @@ test("an agent key at $0 cannot write, keeps its powers, and writes again after 
   assert.equal((await write(store, `/u/${ACCOUNT}/c.md`)).status, 201, "the same key, no new mint");
 });
 
+test("size30DayUnpaid is false when the upload does not raise size30", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await storeHours(db, 400, 1);
+  assert.equal(await size30DayUnpaid(db, ACCOUNT, 1), false);
+});
+
+test("size30DayUnpaid is true when a raise cannot cover one daily draw", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "adjustment",
+    amountCents: 1,
+    idempotencyKey: "adj-cent",
+    reason: "test: one cent",
+    now: midnight(),
+  });
+  assert.equal(await size30DayUnpaid(db, ACCOUNT, 400 * BYTES_PER_GB), true);
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_enough",
+    amountCents: 1000,
+    now: midnight(),
+  });
+  assert.equal(await size30DayUnpaid(db, ACCOUNT, 400 * BYTES_PER_GB), false);
+});
+
+test("an upload that would raise size30 with too little balance is 402", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "adjustment",
+    amountCents: 1,
+    idempotencyKey: "adj-cent-upload",
+    reason: "test: one cent",
+    now: midnight(),
+  });
+  const store = createMemoryStore();
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  const allowed = await handleFilesRequest(
+    new Request("https://drive.example/api/files/upload?path=%2F&name=tiny.bin", {
+      method: "POST",
+      headers: { "content-length": "5" },
+      body: "hello",
+    }),
+    store,
+    { id: ACCOUNT, name: ACCOUNT },
+    now,
+    {
+      db,
+      prepaidPause: true,
+      size30DayUnpaid: (accountId, extraBytes) => size30DayUnpaid(db, accountId, extraBytes),
+    },
+  );
+  assert.equal(allowed.status, 201, "5 bytes at empty size30 does not raise a billable day");
+  const refused = await handleFilesRequest(
+    new Request("https://drive.example/api/files/upload?path=%2F&name=raise.bin", {
+      method: "POST",
+      headers: { "content-length": "5" },
+      body: "hello",
+    }),
+    store,
+    { id: ACCOUNT, name: ACCOUNT },
+    now,
+    { db, prepaidPause: true, size30DayUnpaid: async () => true },
+  );
+  assert.equal(refused.status, 402);
+  assert.deepEqual(await refused.json(), {
+    error: failureMessage("size30-unpaid"),
+    top_up: "/usage",
+  });
+});
+
+test("checkYesterdayDraws is empty when yesterday's draw matches", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const yesterday = Date.parse("2026-10-05T00:00:00Z");
+  const hours = await storeHours(db, 400, 24, yesterday);
+  await drawUsageHours(db, hours, { now: yesterday + 24 * HOUR_MS });
+  const check = await checkYesterdayDraws(db, yesterday + 36 * HOUR_MS);
+  assert.equal(check.yesterday, "2026-10-05");
+  assert.deepEqual(check.mismatches, []);
+});
+
+test("checkYesterdayDraws names a missing draw and a millicent mismatch", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const yesterday = Date.parse("2026-10-05T00:00:00Z");
+  const hours = await storeHours(db, 400, 24, yesterday);
+  await drawUsageHours(db, hours, { now: yesterday + 24 * HOUR_MS });
+  sqlite.prepare("UPDATE daily_draws SET draw_millicents = 1 WHERE account_id = ?").run(ACCOUNT);
+  const wrong = await checkYesterdayDraws(db, yesterday + 36 * HOUR_MS);
+  assert.equal(wrong.mismatches.length, 1);
+  assert.equal(wrong.mismatches[0].accountId, ACCOUNT);
+  assert.match(wrong.mismatches[0].reason, /stored 1 millicents/);
+  sqlite.prepare("DELETE FROM daily_draws WHERE account_id = ?").run(ACCOUNT);
+  const missing = await checkYesterdayDraws(db, yesterday + 36 * HOUR_MS);
+  assert.equal(missing.mismatches.length, 1);
+  assert.equal(missing.mismatches[0].reason, "missing draw");
+});
+
 test("the verified webhook records the card, the customer and the first charge (drive#503)", async () => {
   // One signed event carries all three of the identities the audit found read
   // and written nowhere: which card paid, which Dodo customer it belongs to,
@@ -799,5 +1009,314 @@ test("a payment with no customer id credits and claims the card, and the alarm f
       ?.dodo_customer_id,
     null,
     "no customer on the event means none is written, and the gap alarm will name it",
+  );
+});
+
+// drive#642's day-key law, on the real draw path: the key is (account, day),
+// so two accounts drawing on the same day each get their own row and each is
+// charged once, and the day key is never shared between them.
+test("two accounts drawing the same day each get their own draw", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const second = "acc-draw-2";
+  await putAccount(db, ACCOUNT);
+  await putAccount(db, second);
+  const day = Date.parse("2028-02-28T00:00:00Z");
+  await storeHours(db, 1000, 24, day);
+  await storeHoursFor(db, second, 700, 24, day);
+  const through = day + 23 * HOUR_MS;
+  await Promise.all([
+    drawAccountPending(db, ACCOUNT, { through, now: day + 24 * HOUR_MS }),
+    drawAccountPending(db, second, { through, now: day + 24 * HOUR_MS }),
+  ]);
+  // Each account's own row for that day, at its own size: 1 TB bills $15 a
+  // month, 700 GB bills $14 a month, and a day draws its own daily slice.
+  const rows = sqlite
+    .prepare(
+      "SELECT account_id, day, size30_bytes, draw_millicents FROM daily_draws ORDER BY account_id",
+    )
+    .all();
+  assert.deepEqual(
+    rows.map((row) => [row.account_id, row.day]),
+    [
+      [ACCOUNT, "2028-02-28"],
+      [second, "2028-02-28"],
+    ],
+    "the draw key is (account, day), not the day alone",
+  );
+  assert.equal(Number(rows[0].size30_bytes), 1000 * BYTES_PER_GB);
+  assert.equal(Number(rows[1].size30_bytes), 700 * BYTES_PER_GB);
+  // And the ledger: one usage row per account, each keyed by its own day.
+  const keys = usageRows(sqlite).map((row) => row.idempotency_key);
+  assert.deepEqual(keys, [usageDayKey(ACCOUNT, "2028-02-28"), usageDayKey(second, "2028-02-28")]);
+  assert.equal(await balanceCents(db, ACCOUNT), -50, "1 TB draws 50 cents a day");
+  assert.equal(await balanceCents(db, second), -46, "700 GB draws its own, smaller daily slice");
+});
+
+// drive#642's window law on the real draw path: a peak draws until the 30th
+// UTC day after it, at the hour it drops out, whether the span crosses a month
+// end, a leap day (2028-02-29) or UTC midnight. The peak is stored on a month
+// end in a leap year, then the drive is emptied to 700 GB, and the day's draw
+// follows the peak in the window rather than the size stored today.
+test("a peak draws until it drops out of the 30-day window, across a month end and a leap day", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakDay = Date.parse("2028-01-31T00:00:00Z");
+  await storeHours(db, 1000, 24, peakDay);
+  let at = peakDay + 24 * HOUR_MS;
+  // 29 UTC days of a smaller drive, then the 30th: the leap day 2028-02-29 and
+  // a month end sit inside the span.
+  const smaller = [];
+  for (let d = 0; d < 30; d += 1) {
+    await storeHours(db, 700, 24, at);
+    smaller.push(at);
+    at += 24 * HOUR_MS;
+  }
+  const lastSmall = /** @type {number} */ (smaller.at(-1));
+  assert.equal(new Date(lastSmall).toISOString().slice(0, 10), "2028-03-01");
+  const leapDay = smaller[28] ?? 0;
+  assert.equal(new Date(leapDay).toISOString().slice(0, 10), "2028-02-29");
+  await drawAccountPending(db, ACCOUNT, { through: lastSmall + 23 * HOUR_MS, now: at });
+  const drawn = sqlite
+    .prepare("SELECT day, size30_bytes, draw_millicents FROM daily_draws ORDER BY day")
+    .all();
+  // Day 29 of the smaller drive (2028-02-29, the leap day): the 1 TB peak is
+  // still in the window, so the day draws 1 TB's daily slice.
+  const leap = drawn.find((row) => row.day === "2028-02-29");
+  assert.ok(leap, "the leap day is drawn");
+  assert.equal(
+    Number(leap.size30_bytes),
+    1000 * BYTES_PER_GB,
+    "the peak is still the window's size",
+  );
+  assert.equal(
+    new Date(size30Window(leapDay + 23 * HOUR_MS).from).toISOString().slice(0, 10),
+    "2028-01-31",
+    "on the 29th day the window's first day is still the peak's own day",
+  );
+  // The next day (2028-03-01, day 30): the peak has dropped out, so the draw
+  // falls to 700 GB's slice, and never rises when the drive stores less.
+  const after = drawn.find((row) => row.day === "2028-03-01");
+  assert.ok(after, "the day after the leap day is drawn");
+  assert.equal(
+    Number(after.size30_bytes),
+    700 * BYTES_PER_GB,
+    "the peak drops out on the 30th day",
+  );
+  assert.ok(
+    Number(after.draw_millicents) < Number(leap.draw_millicents),
+    "the draw falls with the window's size, never the other way",
+  );
+  // size30DropsOutDay says the same day, so the usage page's own drop-out date
+  // and the draw agree.
+  assert.equal(size30DropsOutDay("2028-01-31"), "2028-03-01");
+});
+
+// drive#642's window law at the three instants the issue names, on the real
+// size read the draw uses: the window is aligned to the UTC day, so a peak
+// reached at 2028-01-31T00:00Z is billed for the last time at 29d23h and is
+// gone by 30d - the boundary is UTC midnight, not a rolling 30*24 hours.
+test("the window edges: billed at 29d23h, gone at 30d and at 30d+1min", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakHour = Date.parse("2028-01-31T00:00:00Z");
+  await storeHours(db, 1000, 1, peakHour);
+  /** The size30 the draw would bill at `through`, read by the draw's own read. */
+  const sizeAt = async (/** @type {number} */ through) => {
+    const window = size30Window(through);
+    const read = await size30Through(db, ACCOUNT, window.from, window.through);
+    return read.size30Bytes;
+  };
+  const day = 24 * HOUR_MS;
+  const oneTb = 1000 * BYTES_PER_GB;
+  // 29d23h: 2028-02-29T23:00Z, the leap day's last hour.
+  assert.equal(
+    new Date(peakHour + 29 * day + 23 * HOUR_MS).toISOString().slice(0, 10),
+    "2028-02-29",
+  );
+  assert.equal(
+    await sizeAt(peakHour + 29 * day + 23 * HOUR_MS),
+    oneTb,
+    "29d23h still bills the peak",
+  );
+  // 30d: 2028-03-01T00:00Z, the drop-out day.
+  assert.equal(await sizeAt(peakHour + 30 * day), 0, "30d is past the window");
+  assert.equal(await sizeAt(peakHour + 30 * day + 60_000), 0, "30d+1min is past the window too");
+  // And the draw itself: the 30 days the peak is in the window are drawn, then
+  // the next day with no rows and no peak is a $0 day, not a charge.
+  const through = peakHour + 30 * 24 * HOUR_MS + 60_000;
+  const first = await drawAccountPending(db, ACCOUNT, {
+    through: peakHour,
+    now: peakHour + HOUR_MS,
+  });
+  assert.equal(first.drawn, 1, "the peak's own day is drawn as soon as it is stored");
+  const drawn = await drawAccountPending(db, ACCOUNT, { through, now: through });
+  assert.equal(drawn.drawn, 29, "the 29 days the peak stays in the window");
+  assert.equal(drawn.cents, 1450);
+  assert.equal(await balanceCents(db, ACCOUNT), -1500, "that is the 1 TB month exactly");
+  const again = await drawAccountPending(db, ACCOUNT, {
+    through: through + 24 * HOUR_MS,
+    now: through + 24 * HOUR_MS,
+  });
+  assert.deepEqual(again, { drawn: 0, cents: 0 }, "the day after the window is a $0 day");
+});
+
+// drive#642's UTC-midnight law: a peak reached late in its own day is billed
+// for the whole of the 29 days after it, and the boundary is the UTC midnight
+// that starts the 30th day, not a rolling 30*24 hours.
+test("a peak reached at 23:00 stops being billed at UTC midnight", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakHour = Date.parse("2028-01-31T23:00:00Z");
+  await storeHours(db, 1000, 1, peakHour);
+  const sizeAt = async (/** @type {number} */ through) => {
+    const window = size30Window(through);
+    return (await size30Through(db, ACCOUNT, window.from, window.through)).size30Bytes;
+  };
+  const oneTb = 1000 * BYTES_PER_GB;
+  const day = 24 * HOUR_MS;
+  // 29d later is 2028-02-29T23:00Z, the leap day's last hour: still billed.
+  assert.equal(await sizeAt(peakHour + 29 * day), oneTb);
+  // One hour later is 2028-03-01T00:00Z: the UTC midnight the peak drops out at.
+  assert.equal(
+    new Date(peakHour + 29 * day + 1 * HOUR_MS).toISOString(),
+    "2028-03-01T00:00:00.000Z",
+  );
+  assert.equal(await sizeAt(peakHour + 29 * day + 1 * HOUR_MS), 0, "UTC midnight is the boundary");
+});
+
+// drive#642's carry law, on the real draw path: the remainder the previous
+// day's row holds is the remainder the next day is handed, so thirty days of
+// a size the month does not divide into thirty equal parts still draw the
+// month's millicents exactly - and a day past the 30-day window is not drawn
+// at all, not drawn at $0.
+test("thirty real days draw the month's millicents exactly and carry the remainder", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const firstDay = Date.parse("2026-10-01T00:00:00Z");
+  const monthly = monthBillCents({ size30Bytes: 200 * BYTES_PER_GB }).totalMillicents;
+  assert.equal(monthly % DRAW_DAYS, 10, "200 GB a month is not a whole number of days");
+  for (let day = 0; day < DRAW_DAYS; day += 1) {
+    await storeHours(db, 200, 1, firstDay + day * 24 * HOUR_MS);
+  }
+  const through = firstDay + (DRAW_DAYS - 1) * 24 * HOUR_MS + 23 * HOUR_MS;
+  const drawn = await drawAccountPending(db, ACCOUNT, { through, now: through + HOUR_MS });
+  assert.equal(drawn.drawn, DRAW_DAYS, "every one of the thirty days is drawn");
+  const rows = sqlite
+    .prepare("SELECT day, draw_millicents, remainder_millicents FROM daily_draws ORDER BY day")
+    .all();
+  assert.equal(rows.length, DRAW_DAYS);
+  const totalDrawn = rows.reduce((sum, row) => sum + Number(row.draw_millicents), 0);
+  assert.equal(
+    totalDrawn,
+    monthly,
+    "the thirty days draw the month's millicents exactly: nothing dropped, nothing doubled",
+  );
+  // The carry, day by day: 200 GB is 400,000 millicents, 13,333 drawn and 10
+  // left over most days, and each day hands the next the row it wrote.
+  assert.equal(Number(rows[0].draw_millicents), 13333);
+  assert.equal(Number(rows[0].remainder_millicents), 333 * DRAW_DAYS + 10);
+  assert.equal(Number(rows[1].draw_millicents), 13333);
+  assert.equal(Number(rows[1].remainder_millicents), 666 * DRAW_DAYS + 20);
+  assert.equal(Number(rows.at(-1).remainder_millicents) % DRAW_DAYS, 0, "the carry is flushed");
+  // The cents posted are the month's cents, never more.
+  assert.equal(await balanceCents(db, ACCOUNT), -Math.trunc(monthly / MILLICENTS_PER_CENT));
+  assert.equal(usageRows(sqlite).length, 30, "every one of the thirty days posts its cents");
+});
+
+// The day past the window (drive#642): a single peak's 30 days are drawn, and
+// the next day, where the window is empty and the meter has no rows, writes no
+// row and charges nothing. A skipped day is not a $0 row.
+test("a day past the window writes no row and charges nothing", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const peakDay = Date.parse("2026-12-10T00:00:00Z");
+  await storeHours(db, 200, 1, peakDay);
+  const monthly = monthBillCents({ size30Bytes: 200 * BYTES_PER_GB }).totalMillicents;
+  const throughPeak = peakDay + 23 * HOUR_MS;
+  const peak = await drawAccountPending(db, ACCOUNT, {
+    through: throughPeak,
+    now: throughPeak + HOUR_MS,
+  });
+  assert.equal(peak.drawn, 1, "the peak's own day is drawn");
+  // The 29 days the peak stays in the window are drawn even though the meter
+  // wrote no rows for them, then the 30th day's window is empty.
+  const emptyDay = peakDay + DRAW_DAYS * 24 * HOUR_MS;
+  const span = await drawAccountPending(db, ACCOUNT, {
+    through: emptyDay + 23 * HOUR_MS,
+    now: emptyDay + 24 * HOUR_MS,
+  });
+  assert.equal(span.drawn, 29, "the 29 days the peak stays in the window");
+  assert.equal(
+    await balanceCents(db, ACCOUNT),
+    -Math.trunc(monthly / MILLICENTS_PER_CENT),
+    "the peak's month is drawn once, exactly",
+  );
+  const pastWindow = sqlite
+    .prepare("SELECT MAX(day) AS last FROM daily_draws WHERE account_id = ?")
+    .get(ACCOUNT);
+  assert.equal(
+    pastWindow.last,
+    new Date(emptyDay - 24 * HOUR_MS).toISOString().slice(0, 10),
+    "the empty day writes no row at all, not a $0 one",
+  );
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM daily_draws WHERE account_id = ?").get(ACCOUNT).n,
+    30,
+  );
+});
+
+// The batch walk the hourly cron runs (drive#642): each account's draw is its
+// own, the totals add each account's share, and a walk with no failure answers
+// its totals instead of an error.
+test("a batch walk adds each account's own draw and never mixes them", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const second = "acc-batch-2";
+  await putAccount(db, ACCOUNT);
+  await putAccount(db, second);
+  const day = Date.parse("2026-11-04T00:00:00Z");
+  await storeHours(db, 1000, 24, day);
+  await storeHoursFor(db, second, 700, 24, day);
+  const through = day + 23 * HOUR_MS;
+  const batch = await drawPendingHours(db, [ACCOUNT, second], { through, now: through + HOUR_MS });
+  // 1 TB is $15 a month, so its day is 50c. 700 GB is $14 a month, 46,666
+  // millicents, so its day is 46c. The batch is the sum of the two.
+  assert.equal(batch.drawn, 2, "both accounts drew their own day");
+  assert.equal(batch.cents, 96, "the batch total is 50c plus 46c, not one account twice");
+  assert.deepEqual([...batch.accounts].sort(), [ACCOUNT, second].sort(), "both are named");
+  assert.equal(await balanceCents(db, ACCOUNT), -50, "the bigger account's own ledger row");
+  assert.equal(await balanceCents(db, second), -46, "the smaller account's own ledger row");
+  assert.equal(usageRows(sqlite).length, 2, "one usage row per account per day");
+  // A rerun of the same batch is a no-op: the rows and the ledger keys hold.
+  const again = await drawPendingHours(db, [ACCOUNT, second], { through, now: through + HOUR_MS });
+  assert.deepEqual(again, { drawn: 0, cents: 0, accounts: [] });
+  assert.equal(usageRows(sqlite).length, 2);
+  // One account failing leaves the other's draw alone and is raised at the end,
+  // so the trigger fails and the next run retries from each mark.
+  const broken = "acc-batch-broken";
+  await putAccount(db, broken);
+  await storeHoursFor(db, broken, 1000, 1, day);
+  sqlite
+    .prepare(
+      `INSERT INTO daily_draws (account_id, day, size30_bytes, size30_reached, monthly_millicents, draw_millicents, remainder_millicents, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+    )
+    .run(
+      broken,
+      "2026-11-04",
+      1000 * BYTES_PER_GB,
+      "2026-11-04",
+      1_500_000,
+      "not-a-number",
+      0,
+      day,
+    );
+  await assert.rejects(
+    () => drawPendingHours(db, [ACCOUNT, broken], { through, now: through + HOUR_MS }),
+    /prepaid draw: 1 of 2 account\(s\) failed/,
+  );
+  assert.equal(
+    await balanceCents(db, ACCOUNT),
+    -50,
+    "the healthy account's draw is not rolled back by the other's failure",
   );
 });
