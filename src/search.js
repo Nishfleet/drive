@@ -359,7 +359,10 @@ function stagingStatements(db, generation, rows) {
  * clock, and a retry that follows a crash in the same tick) still drop the
  * gone path. A create that landed after the walk started has a later
  * `indexed_at` and is kept, even when the listing had already passed its
- * folder (drive#566).
+ * folder. A create in the same millisecond as the walk start, in a folder
+ * the listing already passed, looks like a leftover of the previous walk
+ * and is dropped; the next storage event or the next night puts it back
+ * (drive#566).
  * @param {D1Database} db
  * @param {string} accountId
  * @param {number} generation
@@ -676,7 +679,9 @@ export function withIndex(store, db, account, now = () => Date.now()) {
  * already revoked, so no new file can arrive. The filter is the same
  * `COALESCE(state, 'active') <> 'closed'` `setAccountState` uses
  * (core/devices.js), so a new open state the accounts CHECK later allows is
- * still walked, and a closed one never is.
+ * still walked, and a closed one never is. `id <> ''` skips a blank id,
+ * which is not a customer and would enqueue a walk the consumer would
+ * refuse (empty `accountId` is acked without a walk).
  * @param {D1Database} db
  * @returns {Promise<Array<{id: string}>>}
  */

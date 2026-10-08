@@ -882,6 +882,10 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
     "METER_JOBS",
     "BRANCH_JOBS",
   ]);
+  assert.ok(
+    !REQUIRED_BINDINGS.includes("REINDEX_QUEUE"),
+    "REINDEX_QUEUE is a documented exception, not a required binding",
+  );
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,

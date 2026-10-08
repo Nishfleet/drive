@@ -20,6 +20,7 @@ import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";
 import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
+import { METER_JOBS_QUEUE_NAME } from "../src/meter-jobs.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -1322,6 +1323,12 @@ test("the published worker really declares the reindex queue halves", async () =
     config,
     /triggers\.queue\(\{\s*name: "drive-reindex"/,
     "the consumer trigger is published, not just the code",
+  );
+  assert.equal(METER_JOBS_QUEUE_NAME, "drive-meter-jobs");
+  assert.match(
+    config,
+    /triggers\.queue\(\{\s*name: "drive-meter-jobs"/,
+    "the meter consumer trigger is the same name the unknown-queue guard uses",
   );
   // Queue infrastructure is created out of band (`cf queues create`); the
   // binding above names one that exists on the account, and this repo stays

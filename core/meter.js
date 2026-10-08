@@ -1736,9 +1736,9 @@ export async function recordEvent(db, event, now = Date.now()) {
 // mid-request failure costs a re-read and never a second version row. The
 // batch is chunked because a very large batch (thousands of statements) can
 // hit D1's 30-second invocation timeout and per-statement execution limits.
-// 50 events = 100 statements is a safe, tested bound that reduces a
-// thousand-event request from ~1000 transactions to ~20.
-export const EVENTS_PER_BATCH = 50;
+// 32 events = 96 statements at three per create, under the 100-statement
+// bound the two-statement events used to sit on.
+export const EVENTS_PER_BATCH = 32;
 
 /**
  * Stores a whole request's valid events, one batch per EVENTS_PER_BATCH

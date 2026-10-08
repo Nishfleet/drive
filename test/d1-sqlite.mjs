@@ -42,6 +42,8 @@ export const orderMigrationFiles = (names) => [...names].sort();
 export const MIGRATION_FILES = Object.freeze(
   orderMigrationFiles(readdirSync(migrationsDir).filter((name) => name.endsWith(".sql"))),
 );
+// Directory-derived: `0045_file_index_staging.sql` is applied because it sits
+// in the folder, not because this list names it by hand (drive#566).
 
 /** @param {DatabaseSync} sqlite */
 export function applyMigrations(sqlite) {

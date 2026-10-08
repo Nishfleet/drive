@@ -14,10 +14,12 @@
 -- vanished paths in bounded batches. It never deletes the live rows first.
 --
 -- `generation` is what keeps two attempts apart: every row one rebuild writes
--- carries that attempt's number, the swap reads only its own, and the next
--- rebuild clears the leftovers of the one that crashed. It is part of the
--- primary key rather than a plain column, so the same path can be staged twice
--- in one attempt without a collision.
+-- carries that attempt's number, and the swap reads only its own. Leftovers
+-- of a crashed attempt stay until they are two days old, so a walk still
+-- running for this account (a retry overlapping the next night) is never
+-- swept out from under its own swap. It is part of the primary key rather
+-- than a plain column, so the same path can be staged twice in one attempt
+-- without a collision.
 
 CREATE TABLE IF NOT EXISTS file_index_staging (
   account_id TEXT NOT NULL DEFAULT '',
