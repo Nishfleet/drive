@@ -41,3 +41,8 @@ public/docs/
 logs/
 docsbuild.done
 docsbuild.log
+
+# Stryker's run output (npm run mutate): the score and the survivors are read
+# from reports/mutation/mutation.json. The run's output is a report, like the
+# Lighthouse reports above, so it is never committed.
+reports/

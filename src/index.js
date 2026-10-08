@@ -1451,14 +1451,37 @@ const handler = {
           // here - for an hour or for days, across a month end or not - is caught
           // up by the next one. A failed D1 write fails the trigger, and the
           // idempotency key makes the retry draw nothing twice.
-          const drawn = await drawPendingHours(
-            env.METER_DB,
-            await listMeteredAccounts(env.METER_DB),
-            {
+          //
+          // drive#642 no-bugs bar 5: a day whose meter rows are missing or do
+          // not parse makes NO draw, and the failure is reported to the
+          // monitoring the repo already uses (src/monitoring.js) rather than
+          // read as a quiet $0 day. The rethrow keeps the failed-trigger
+          // contract above, so the next hourly run reads the same rows and
+          // charges the day - a silent zero and a guessed charge are both
+          // failures. runHourlyAccountJob reports the same failure on the
+          // queue's per-account path (src/meter-jobs.js).
+          let drawn;
+          try {
+            drawn = await drawPendingHours(env.METER_DB, await listMeteredAccounts(env.METER_DB), {
               through: rolled.through,
               now,
-            },
-          );
+            });
+          } catch (error) {
+            const failed = error instanceof AggregateError ? error.errors : [error];
+            try {
+              await captureError(
+                failed.length === 1 ? failed[0] : error,
+                `meter hourly prepaid draw (${failed.length} account(s) failed)`,
+                sentryFor(env),
+              );
+            } catch (reportFailed) {
+              console.error(
+                "meter hourly prepaid draw: the report failed",
+                reportFailed instanceof Error ? reportFailed.message : String(reportFailed),
+              );
+            }
+            throw error;
+          }
           if (drawn.drawn > 0) {
             console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
           }
@@ -1929,6 +1952,9 @@ const handler = {
           : undefined,
         email: env.EMAIL,
         mailFrom: secrets.MAIL_FROM ?? "",
+        reportError: async (error, where) => {
+          await captureError(error, where, sentryFor(env));
+        },
         settle: {
           email: env.EMAIL,
           mailFrom: dodo.MAIL_FROM ?? "",

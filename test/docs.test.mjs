@@ -365,11 +365,11 @@ test("every FAQ answer rests on a scoreboard row that is a measured win", () => 
 });
 
 test("the render refuses an FAQ answer whose row is not yet measured", () => {
-  // The same gate, turned around: take a row the FAQ answers rest on
-  // and read it the way the scoreboard reads it before a measurement
-  // lands. faqMarkdown() must refuse, naming the answer and the row,
-  // so the answer leaves the page at the next build rather than
-  // staying up unmeasured.
+  // drive#642: the cost answer rests on the "price at 500 GB" row, so that is
+  // the row whose measurement it loses. The "price at 1 TB" row is a "lose"
+  // now that the maximum is $15 a TB, and no answer rests on it - so the gate
+  // must key on the row the answer DECLARES, and a lose row that nothing rests
+  // on must neither remove an answer nor let one through.
   /** @param {string} metric @param {string} verdict */
   const flip = (metric, verdict) =>
     scoreboard
@@ -388,6 +388,29 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
     /no-delete keys/,
     "the agents answer must come out when one of its rows is not yet measured",
   );
+});
+
+test("a lose row no answer rests on leaves the FAQ exactly as it is", () => {
+  // The same gate, the other way round: "price at 1 TB" reads "lose" on the
+  // shipped scoreboard, because $15 for 1 TB is the same price as the
+  // competitor's yearly line. The cost answer rests on the 500 GB row, so a row
+  // going lose must not take a true answer off the page - a gate that keyed on
+  // every row would silently delete the cost answer, and a gate that ignored
+  // rows would ship an unmeasured one. This is the half that catches the
+  // former.
+  assert.equal(faqMarkdown(scoreboard), faqMarkdown(scoreboard), "the page is stable");
+  const shippedFaq = faqMarkdown(scoreboard);
+  for (const verdict of ["lose", "not yet measured"]) {
+    const flipped = scoreboard
+      .split("\n")
+      .map((line) =>
+        line.startsWith("| price at 1 TB |")
+          ? line.replace(/(\| (?:win|lose) \|)/, `| ${verdict} |`)
+          : line,
+      )
+      .join("\n");
+    assert.equal(faqMarkdown(flipped), shippedFaq);
+  }
 });
 
 test("the FAQ states the one-hour minimum on a saved version", () => {
