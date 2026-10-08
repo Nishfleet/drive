@@ -106,6 +106,7 @@ import { KNOWN_BAD_FEED_SCHEDULE, loadKnownBadFeed } from "./malware.js";
 import {
   handleMeterJobs,
   METER_JOB_KINDS,
+  METER_JOBS_QUEUE_NAME,
   meterJobHandlers,
   meterJobsQueue,
   sendMeterJobs,
@@ -1334,8 +1335,9 @@ const handler = {
   //   - The nightly search reindex (drive issue #18 / #566): the cron
   //     enqueues one queue message per account (`indexAccounts` reads the
   //     `accounts` table, never the index's own rows). The queue consumer
-  //     walks that account's store and swaps the staged rows in one
-  //     transaction. A crash mid-walk leaves the previous rows intact.
+  //     walks that account's store, upserts the staged rows in bounded
+  //     batches, then deletes vanished paths. A crash mid-walk leaves the
+  //     previous rows intact.
   /**
    * @param {ScheduledController} event
    * @param {Env} env
@@ -1937,7 +1939,7 @@ const handler = {
     // branch jobs without setting `batch.queue`, and the platform names
     // the bound queue on live traffic. A named queue that is neither the
     // reindex nor the meter jobs is a misbind, not a silent fallthrough.
-    if (batch.queue != null && batch.queue !== "drive-meter-jobs") {
+    if (batch.queue != null && batch.queue !== METER_JOBS_QUEUE_NAME) {
       throw new Error(`unknown queue ${String(batch.queue)}`);
     }
     const branchMessages = [];

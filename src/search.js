@@ -457,21 +457,6 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  // A listing that comes back empty instead of throwing would otherwise
-  // swap an empty set over a full index. An account that really has no
-  // files still walks (folders >= 1) and is allowed to finish empty when
-  // the live table is already empty.
-  if (rows.length === 0 && folders === 1) {
-    const liveCount = Number(
-      (await db
-        .prepare("SELECT COUNT(*) AS n FROM file_index WHERE account_id = ?1")
-        .bind(account.id)
-        .first("n")) ?? 0,
-    );
-    if (liveCount > 0) {
-      throw new Error("the store listed no files while the index still holds rows");
-    }
-  }
   // Staged first, so a crash during the walk or the staging writes leaves
   // the live rows as they were. The swap then upserts those rows in the
   // same bounded batches the write feed uses, and only then deletes paths

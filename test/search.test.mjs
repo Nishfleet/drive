@@ -1121,25 +1121,21 @@ test("a swap that fails half-committed rolls back to the previous rows (drive#56
   );
 });
 
-test("a silent empty listing does not wipe a live index (drive#566)", async () => {
+test("an emptied store clears the live index (drive#566)", async () => {
   const db = makeD1();
   seedAccount(db, ACCOUNT.id);
   const raw = createMemoryStore();
   await seed(raw, [["/keep.txt", "x"]]);
   await reconcileIndex(db, raw, ACCOUNT);
-  const empty = {
-    ...raw,
-    /** @param {string} path */
-    async list(path) {
-      void path;
-      return [];
-    },
-  };
-  await assert.rejects(
-    () => reconcileIndex(db, empty, ACCOUNT),
-    /listed no files while the index still holds rows/,
+  assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1);
+  await raw.remove("/keep.txt");
+  const again = await reconcileIndex(db, raw, ACCOUNT);
+  assert.equal(again.indexed, 0, "the walk found nothing");
+  assert.equal(
+    (await searchDrive(db, ACCOUNT, "keep")).count,
+    0,
+    "the nightly rebuild is what drops a gone path",
   );
-  assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1, "previous rows intact");
 });
 
 test("a create that lands during the walk stays searchable after the swap (drive#566)", async () => {
