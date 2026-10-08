@@ -127,6 +127,23 @@ const ACTIVE_STATE_LIST = BRANCH_ACTIVE_STATES.map((state) => `'${state}'`).join
  *   JSON back, or null when the key holds nothing.
  * @property {(key: string) => Promise<void>} [delete] Removes the value and
  *   any parts it was split into, so a job's scratch keys do not outlive it.
+ * @property {(key: string, index: number, json: string) => Promise<number>} [putPart]
+ *   Writes one part of a value that is still being built, on a key only this
+ *   build owns, and answers its byte length. `index` is the build's own count of
+ *   what it has written, and the write also leaves that count on the build's own
+ *   key, so nothing is listed to find the next part and a sweep that no longer
+ *   has the row can still name every part. A create batch writes the files it
+ *   copied here (drive#842); it never reads the value being built.
+ * @property {(key: string, index: number) => Promise<string|null>} [getPart]
+ *   Reads part `index` of a value that is still being built, or null when there
+ *   is none, so the last batch can read each part back exactly once.
+ * @property {(key: string) => Promise<number>} [partCount] How many parts the
+ *   build has written, read off the build's own key. Zero when it has written
+ *   none, which is the one count a give-up sweep can still trust.
+ * @property {(key: string, partCount: number) => Promise<void>} [deleteParts]
+ *   Drops parts `0..partCount-1` of a value that is still being built, so an
+ *   abandoned, refused or failed create does not leave its deltas behind, and
+ *   drops the count with them.
  */
 
 /** The prefix every snapshot key carries, so one account's snapshot is never
@@ -290,6 +307,175 @@ function tokenOf(key, name) {
  *   move the clock so a lease does not make them wait.
  * @returns {SnapshotStore}
  */
+/**
+ * The key one part of a value that is still being built lives on
+ * (drive#842). A create job appends a part per batch, so the parts are named by
+ * the batch that wrote them and the batch index is all a batch needs to find
+ * its own key without reading a count out of the namespace. The part keys are
+ * `.v`, and the chunked write that owns the same snapshot key names its own
+ * `.p<token>`, so the two families cannot land on each other's keys.
+ * @param {string} key the build's own key, which is its row's parts leaf
+ * @param {number} index
+ * @returns {string}
+ */
+function valuePartKey(key, index) {
+  return `${key}.v${index}`;
+}
+
+/**
+ * The key one create row's parts live under (drive#842). The row's own id is
+ * in it, because the snapshot key it hangs from is the branch's name: two
+ * creates of the same name in the same account, one after the other, reuse that
+ * key, and the later job's parts must not be a shorter set over the earlier
+ * job's leftovers. One leaf per row also keeps a give-up sweep to the parts that
+ * row wrote, so a part a build still running is writing is never taken from
+ * under it.
+ * @param {string} key the snapshot key this row writes
+ * @param {number} branchId the row's own id
+ * @returns {string}
+ */
+function createPartsKey(key, branchId) {
+  return `${key}/create-parts/${branchId}`;
+}
+
+/**
+ * The snapshot key a create row writes its parts under: the row's own pointer
+ * when it has one, the copy-time key when it does not (drive#842). The writer,
+ * the joiner and the sweep all resolve it here, so a row with no pointer cannot
+ * have its parts written somewhere the join never looks.
+ * @param {{snapshotKey: string}} branch
+ * @param {string} key the key the caller already holds
+ * @returns {string}
+ */
+function resolvedSnapshotKey(branch, key) {
+  return branch.snapshotKey !== "" ? branch.snapshotKey : key;
+}
+
+/**
+ * A KV namespace that can build a value a part at a time (drive#842). A create
+ * job writes 80 files a batch and used to read the whole snapshot back and
+ * write it again with its own files added: at the 100,000-file cap that is
+ * ~1,250 reads and writes of a value up to ~11 MiB. Writing only the batch's own
+ * delta and joining the parts once, when the last batch finishes, keeps a
+ * batch's cost the same whatever the branch holds.
+ *
+ * The count of parts written lives on the build's own key beside its parts,
+ * because it has to outlive the row's `job_cursor`: `discardBranch` clears that
+ * cursor while the parts are still in the namespace, and the sweep on that path
+ * has to learn the count from the namespace rather than from the row. The count
+ * is written after the part it counts, so a batch that dies between the two
+ * leaves one part uncounted - and one part is one batch's own work.
+ *
+ * `createKvSnapshotStore` adds these to its own store, and the join commits
+ * through `saveSnapshot`, so the finished value is written by the same chunked
+ * write every other value is and a value over the KV cap still lands.
+ * @param {{get(key: string): Promise<unknown>, put(key: string, value: string): Promise<unknown>, delete(key: string): Promise<unknown>}} namespace
+ */
+function snapshotPartStore(namespace) {
+  if (
+    !namespace ||
+    typeof namespace.put !== "function" ||
+    typeof namespace.get !== "function" ||
+    typeof namespace.delete !== "function"
+  ) {
+    throw new TypeError("a snapshot part store needs a KV namespace");
+  }
+  const encoder = new TextEncoder();
+  return {
+    /**
+     * @param {string} key
+     * @param {number} index
+     * @param {string} json
+     * @returns {Promise<number>}
+     */
+    async putPart(key, index, json) {
+      await namespace.put(valuePartKey(key, index), json);
+      // The count rides the leaf itself, so a sweep that no longer has the row's
+      // cursor can still name every part this build wrote (drive#842).
+      await namespace.put(key, JSON.stringify({ parts: index + 1 }));
+      return encoder.encode(json).length;
+    },
+    /**
+     * @param {string} key
+     * @param {number} index
+     * @returns {Promise<string|null>}
+     */
+    async getPart(key, index) {
+      const value = await namespace.get(valuePartKey(key, index));
+      return typeof value === "string" ? value : null;
+    },
+    /**
+     * How many parts this build has written, by its own leaf (drive#842). Zero
+     * when the leaf holds nothing, which is what a build that wrote no part
+     * answers.
+     * @param {string} key
+     * @returns {Promise<number>}
+     */
+    async partCount(key) {
+      const raw = await namespace.get(key);
+      if (typeof raw !== "string" || raw === "") {
+        return 0;
+      }
+      try {
+        const count = Number(JSON.parse(raw)?.parts);
+        return Number.isSafeInteger(count) && count >= 0 ? count : 0;
+      } catch {
+        return 0;
+      }
+    },
+    /**
+     * @param {string} key
+     * @param {number} partCount
+     * @returns {Promise<void>}
+     */
+    async deleteParts(key, partCount) {
+      await deleteValueParts(namespace, key, partCount);
+      await namespace.delete(key);
+    },
+  };
+}
+
+/**
+ * The parts of a build that is finished, or that gave up, gone. Only the parts
+ * this build wrote are deleted, so a part a concurrent build is still writing is
+ * never taken from under it (drive#842).
+ * @param {{delete(key: string): Promise<unknown>}} namespace
+ * @param {string} key
+ * @param {number} partCount
+ */
+async function deleteValueParts(namespace, key, partCount) {
+  for (let index = 0; index < partCount; index += 1) {
+    await namespace.delete(valuePartKey(key, index));
+  }
+}
+
+/**
+ * The KV-backed snapshot store. `kv` is the BRANCH_SNAPSHOTS namespace
+ * (cloudflare.config.ts); it is a thin object over the binding, so there is
+ * nothing to cache on the isolate and no stale copy to serve — the same shape
+ * `linksFor` has for share links (src/index.js).
+ *
+ * Values at or over KV's 25 MiB cap are split (drive issue #564): the data
+ * lands in write-scoped part keys next to the snapshot key, and the key
+ * itself holds a small manifest - format marker, write token, part count,
+ * byte length. The manifest is written last, after every part is in, so the
+ * one atomic write is the commit point: a run that dies mid-write leaves the
+ * previous manifest live and readable, and its parts untouched - part keys
+ * carry the write's own token, so a retry never overwrites the token a
+ * reader might be reading, and two writes in flight at once land on
+ * different part keys whatever read they started from. The previous token's
+ * parts are deleted only after the new manifest has landed, and part sets
+ * from older interrupted writes are swept once they outlast the orphan
+ * lease. A plain pre-chunking value is read unchanged, and the first
+ * chunked write over it starts a new token beside it.
+ * @param {KVNamespace} kv
+ * @param {{chunkBytes?: number, orphanLeaseMs?: number, now?: () => number}} [options]
+ *   `chunkBytes` overrides the split size; the tests pass a few dozen bytes
+ *   so a store call exercises many parts without fixture megabytes.
+ *   `orphanLeaseMs` and `now` bound and clock the orphan sweep: the tests
+ *   move the clock so a lease does not make them wait.
+ * @returns {SnapshotStore}
+ */
 export function createKvSnapshotStore(kv, options = {}) {
   if (!kv || typeof kv.get !== "function" || typeof kv.put !== "function") {
     throw new TypeError(`createKvSnapshotStore needs a KV namespace, got ${String(kv)}`);
@@ -356,7 +542,8 @@ export function createKvSnapshotStore(kv, options = {}) {
       await kv.delete(name);
     }
   };
-  return {
+  const store = {
+    /** @param {string} key @param {string} json */
     async put(key, json) {
       // The split is over UTF-8 bytes, not code units: the cap KV applies is
       // a byte cap, and JSON paths can hold characters that take three or
@@ -452,6 +639,7 @@ export function createKvSnapshotStore(kv, options = {}) {
       // snapshot size without reading the value back.
       return bytes.length;
     },
+    /** @param {string} key */
     async get(key) {
       const raw = await kv.get(key);
       if (raw === null) {
@@ -500,6 +688,7 @@ export function createKvSnapshotStore(kv, options = {}) {
       }
       return json;
     },
+    /** @param {string} key */
     async delete(key) {
       const raw = await kv.get(key);
       await kv.delete(key);
@@ -522,7 +711,9 @@ export function createKvSnapshotStore(kv, options = {}) {
         // A plain value has no parts to delete.
       }
     },
+    ...snapshotPartStore(kv),
   };
+  return store;
 }
 
 /**
@@ -534,22 +725,28 @@ export function createKvSnapshotStore(kv, options = {}) {
  * @returns {SnapshotStore & {values: Map<string, string>}}
  */
 export function createMemorySnapshotStore(values = new Map()) {
-  return {
-    values,
-    /** @param {string} key @param {string} json */
-    async put(key, json) {
-      values.set(key, json);
-      return new TextEncoder().encode(json).length;
-    },
-    /** @param {string} key */
-    async get(key) {
-      return values.has(key) ? /** @type {string} */ (values.get(key)) : null;
-    },
-    /** @param {string} key */
-    async delete(key) {
-      values.delete(key);
-    },
+  const encoder = new TextEncoder();
+  /** @param {string} key @param {string} json */
+  const put = async (key, json) => {
+    values.set(key, json);
+    return encoder.encode(json).length;
   };
+  /** @param {string} key */
+  const get = async (key) => (values.has(key) ? /** @type {string} */ (values.get(key)) : null);
+  /** @param {string} key */
+  const remove = async (key) => {
+    values.delete(key);
+  };
+  const parts = snapshotPartStore({ get, put, delete: remove });
+  return /** @type {SnapshotStore & {values: Map<string, string>}} */ (
+    /** @type {unknown} */ ({
+      values,
+      put,
+      get,
+      delete: remove,
+      ...parts,
+    })
+  );
 }
 
 /** The one place an unknown thrown value becomes a message: a caught value is
@@ -937,10 +1134,12 @@ async function fileFingerprint(store, path, listings) {
 }
 
 /**
- * Copies every file under `source` into `dest` with one server-side copy each,
- * returning the snapshot of the original: the files' `{size, etag, modified}`
- * at the moment the branch was taken. This is what `drive branch` does and
- * what `approve` diffs against.
+ * Copies up to `limit` files under `source` into `dest` with one server-side
+ * copy each, answering only the files this batch copied. The snapshot of the
+ * original is what `approve` diffs against, and a batch that carried the whole
+ * of it through every batch made each one read it back and write it again with
+ * its own files added (drive#842). What a batch copies is its own 80 files'
+ * worth of fingerprints, which is the delta it appends and nothing more.
  *
  * The size comes from the listing that found the file, and is handed to the
  * copy: over S3's 5 GiB single-copy limit a copy has to be a multipart copy,
@@ -949,28 +1148,54 @@ async function fileFingerprint(store, path, listings) {
  * @param {FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
- * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, snapshot?: Record<string, Fingerprint>, only?: Record<string, Fingerprint>}} [options]
- *   `only` is the listing frozen when the branch was claimed (drive#802). With
- *   it the copy writes exactly those paths, no matter what the source holds
- *   now; without it the copy walks the source as it is, which is how a folder
- *   that grew between the claim and the queued copy was written for free.
- * @returns {Promise<{snapshot: Record<string, Fingerprint>, cursor: {current: string, skip: number, pending: string[]}, done: boolean, copied: number}>}
+ * @param {{limit?: number, cursor?: {current: string, skip: number, pending: string[]}, only?: Record<string, Fingerprint>}} [options]
+ *   `only` is one window of the listing frozen when the branch was claimed
+ * (drive#802): the paths this batch's own files came from, and not the whole
+ * frozen listing, which is why reading it costs the same at 100,000 files as
+ * at 2,000 (drive#842). With it the copy writes exactly those paths, no
+ * matter what the source holds now; without it the copy walks the source as it
+ * is, which is how a folder that grew between the claim and the queued copy
+ * was written for free.
+ *
+ * `done` and `exhausted` answer different questions, and a windowed caller
+ * needs both (drive#842, in-run review). `done` is what the caller wanted: the
+ * window filled, or an unwindowed walk ended. `exhausted` is what the source
+ * held: the walk found nothing left to queue. A source that shrank after the
+ * claim has a window the walk cannot fill, and `exhausted` is the only signal
+ * that says the job is finished rather than that it should start over.
+ * @returns {Promise<{copiedFiles: Array<{rel: string, fp: Fingerprint}>, cursor: {current: string, skip: number, pending: string[]}, done: boolean, exhausted: boolean, copied: number}>}
  */
 async function copyFolder(store, source, dest, options = {}) {
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
-  /** @type {Record<string, Fingerprint>} */
-  const snapshot = { ...(options.snapshot ?? {}) };
+  /** @type {Array<{rel: string, fp: Fingerprint}>} */
+  const copiedFiles = [];
   const only = options.only;
+  // How many paths this copy has to write, when it was told: that is the end of
+  // the walk (drive#842). A windowed copy knows its own 80 files and stops the
+  // moment it has them, so the 1,250th batch of a 100,000-file branch lists the
+  // same 80 files the first one did — without this it would re-read the listing
+  // from the top on every batch and pay the whole branch 1,250 times over.
+  const wanted = only === undefined ? null : Object.keys(only).length;
+  let written = 0;
   let current = options.cursor?.current ?? source;
   let skip = options.cursor?.skip ?? 0;
   let pending = [...(options.cursor?.pending ?? [])];
   let copied = 0;
-  while (current && copied < limit) {
+  while (current && copied < limit && (wanted === null || written < wanted)) {
     const entries = await store.list(current);
-    /** @type {Array<{rel: string, path: string, size: number, fp: Fingerprint}>} */
+    /**
+     * One file this folder listing holds, and where. `at` is its position in
+     * the folder's own listing, which is the space the walk's cursor measures:
+     * a windowed batch asks for a different set of the same listing every time,
+     * so a position counted in the matched files would skip the next window's
+     * own files and leave the copy copying nothing forever (drive#842).
+     * @typedef {{rel: string, path: string, size: number, fp: Fingerprint, at: number}} WalkFile
+     */
+    /** @type {WalkFile[]} */
     const files = [];
     /** @type {string[]} */
     const children = [];
+    let at = 0;
     for (const entry of entries) {
       if (entry.kind === "folder") {
         children.push(entry.path);
@@ -990,30 +1215,46 @@ async function copyFolder(store, source, dest, options = {}) {
       // while the size handed to the copy is the live one so a file that grew
       // is still copied whole rather than cut at the frozen length.
       const frozen = only === undefined ? undefined : only[rel];
-      if (frozen !== undefined && typeof frozen.size === "number") {
-        files.push({ rel, path: entry.path, size: entry.size ?? 0, fp: frozen });
+      if (frozen === undefined && only !== undefined) {
+        at += 1;
         continue;
       }
-      if (only !== undefined) {
-        continue;
-      }
-      files.push({ rel, path: entry.path, size: entry.size ?? 0, fp: fingerprint(entry) });
+      files.push({
+        rel,
+        path: entry.path,
+        size: entry.size ?? 0,
+        fp: frozen ?? fingerprint(entry),
+        at,
+      });
+      at += 1;
     }
     if (skip === 0) {
       pending = pending.concat(children);
     }
-    const rest = files.slice(skip);
+    const rest = files.filter((file) => file.at >= skip);
     const take = Number.isFinite(limit) ? rest.slice(0, limit - copied) : rest;
     for (const file of take) {
       await store.copy(file.path, `${dest}/${file.rel}`, file.size);
-      snapshot[file.rel] = file.fp;
+      copiedFiles.push({ rel: file.rel, fp: file.fp });
       copied += 1;
+      written += 1;
     }
-    if (take.length < rest.length) {
+    // Where this batch has read to in the folder's own listing: past the last
+    // file it took, and unchanged when it took none so the walk moves on to the
+    // next folder rather than re-reading the same tail forever.
+    const reached = take.length === 0 ? skip : take[take.length - 1].at + 1;
+    // A windowed copy stops as soon as it has its own files, which can be
+    // before the folder it is walking has given up the rest of its entries. The
+    // folders found so far are kept, so a batch that gave up mid-folder can
+    // still finish it on the next run and nothing under it is skipped
+    // (drive#842). This is a stop, not an end: the walk has more of the source
+    // left, so `exhausted` is false however much of the window it filled.
+    if (take.length < rest.length || (wanted !== null && written >= wanted)) {
       return {
-        snapshot,
-        cursor: { current, skip: skip + take.length, pending },
-        done: false,
+        copiedFiles,
+        cursor: { current, skip: reached, pending },
+        done: take.length < rest.length ? false : wanted !== null && written >= wanted,
+        exhausted: false,
         copied,
       };
     }
@@ -1021,10 +1262,17 @@ async function copyFolder(store, source, dest, options = {}) {
     pending = pending.slice(1);
     skip = 0;
   }
+  // The walk ran out: there is no folder left to queue, whether because the
+  // window it was filling is full or because the source ended. `exhausted` is
+  // what says the source ended — the two answers a caller needs are separate,
+  // and on a source that shrank after the claim the file count it was promised
+  // never arrives, so a copy that waits for that count starts over forever
+  // (drive#842, in-run review).
   return {
-    snapshot,
+    copiedFiles,
     cursor: { current: current || "", skip: 0, pending },
-    done: !current,
+    done: !current || (wanted !== null && written >= wanted),
+    exhausted: !current,
     copied,
   };
 }
@@ -1318,6 +1566,528 @@ async function enqueueJob(queue, job) {
 }
 
 /**
+ * Where a create job's parts are: the value at the row's own pointer, the key
+ * the batch writes, and the batch index it must write next. The index is in the
+ * row's own `job_cursor` as well as on the build's own leaf in the namespace,
+ * because it belongs to the row's progress exactly as the walk cursor does and
+ * D1 writes it with the progress it goes with — but a give-up that clears the
+ * cursor can still read the count off the leaf (drive#842). A zero is the answer
+ * both when the cursor holds no part and when the build has written none, so
+ * `saveCreateBatch` reads the count off the row's own leaf before it trusts a
+ * zero (drive#842, coordinator review).
+ * @param {Record<string, unknown>} cursor the row's parsed `job_cursor`
+ * @returns {number} the part index this batch writes, zero when none is written
+ * yet
+ */
+function createPartIndex(cursor) {
+  const index = Number(cursor.part);
+  return Number.isSafeInteger(index) && index >= 0 ? index : 0;
+}
+
+/**
+ * Writes one create batch's snapshot, the way a batch should: its own delta,
+ * never the whole value (drive#842).
+ *
+ * A batch copies 80 files. It appends exactly those 80 fingerprints as one part
+ * under its own leaf and answers the part index the next batch writes, which it
+ * records in the row's own `job_cursor` beside the walk position — so nothing
+ * has to be listed or counted to find the next part. The complete snapshot is
+ * assembled once, by the batch that finishes the copy, in `joinCreateParts`.
+ *
+ * This holds whether or not the claim froze a listing. A frozen branch's copy
+ * already has the frozen fingerprints (its window carries them), so the delta it
+ * appends is the same entries the claim wrote — and the join overwrites the
+ * claim's value with the identical one, which is what keeps one value for every
+ * reader no matter how the branch was claimed.
+ * @param {D1Database} db
+ * @param {Branch} branch
+ * @param {Array<{rel: string, fp: Fingerprint}>} copiedFiles this batch's delta
+ * @param {SnapshotStore} snapshots the KV snapshot store
+ * @param {string} key the key the batch writes
+ * @param {Record<string, unknown>} cursor the row's parsed `job_cursor`
+ * @returns {Promise<{success: boolean, part: number}>} `part` is the index the
+ *   next batch writes, so the caller can record it with this batch's progress
+ */
+async function saveCreateBatch(db, branch, copiedFiles, snapshots, key, cursor) {
+  const resolved = resolvedSnapshotKey(branch, key);
+  /** @type {Record<string, Fingerprint>} */
+  const delta = {};
+  for (const file of copiedFiles) {
+    delta[file.rel] = file.fp;
+  }
+  const parts = snapshotPartWriter(snapshots);
+  if (parts === null) {
+    // A store that cannot build a value a part at a time keeps the whole-value
+    // path this issue replaced, so a namespace without the seam still works.
+    // It is only a stand-in: the KV store has the seam and production uses it.
+    const merged = await readSnapshot(snapshots, resolved);
+    const saved = await saveSnapshot(db, branch.id, { ...merged, ...delta }, snapshots, key);
+    return { success: saved.success, part: 0 };
+  }
+  const leaf = createPartsKey(resolved, branch.id);
+  // The cursor carries each batch's next part beside its walk position, and a
+  // batch that finished keeps it. But a give-up clears the cursor while its
+  // parts are still in the namespace, which is why the discard path reads the
+  // count off the leaf: a batch that lands with no part in the cursor takes the
+  // next index from the count the build stored on its own leaf, so a redelivery
+  // never overwrites part 0 and resets the count over parts 1..N (drive#842,
+  // coordinator review).
+  let index = createPartIndex(cursor);
+  if (index === 0) {
+    index = (await parts.partCount(leaf)) ?? 0;
+  }
+  const put = await parts.putPart(leaf, index, JSON.stringify(delta));
+  if (put === null) {
+    const merged = await readSnapshot(snapshots, resolved);
+    const saved = await saveSnapshot(db, branch.id, { ...merged, ...delta }, snapshots, key);
+    return { success: saved.success, part: 0 };
+  }
+  return { success: true, part: index + 1 };
+}
+
+/**
+ * The parts seam, or null when the store cannot do it. Every write is checked
+ * for the method itself rather than for the store's kind, because a stand-in is
+ * a stand-in (drive#842).
+ * @param {SnapshotStore} snapshots
+ * @returns {{
+ *   putPart(key: string, index: number, json: string): Promise<number|null>,
+ *   partCount(key: string): Promise<number|null>,
+ *   deleteParts(key: string, partCount: number): Promise<void>,
+ * }|null}
+ */
+function snapshotPartWriter(snapshots) {
+  if (typeof snapshots.putPart !== "function" || typeof snapshots.deleteParts !== "function") {
+    return null;
+  }
+  const put = /** @type {(key: string, index: number, json: string) => Promise<unknown>} */ (
+    /** @type {unknown} */ (snapshots.putPart)
+  );
+  const drop = /** @type {(key: string, partCount: number) => Promise<void>} */ (
+    /** @type {unknown} */ (snapshots.deleteParts)
+  );
+  const count = snapshots.partCount;
+  return /** @type {NonNullable<ReturnType<typeof snapshotPartWriter>>} */ (
+    /** @type {unknown} */ ({
+      /** @param {string} key @param {number} index @param {string} json */
+      async putPart(key, index, json) {
+        const bytes = Number(await put.call(snapshots, key, index, json));
+        return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+      },
+      /**
+       * The count this build left on its own leaf, or null on a store that keeps
+       * none (drive#842).
+       * @param {string} key
+       */
+      async partCount(key) {
+        if (typeof count !== "function") {
+          return null;
+        }
+        const written = Number(await count.call(snapshots, key));
+        return Number.isSafeInteger(written) && written >= 0 ? written : null;
+      },
+      /** @param {string} key @param {number} partCount */
+      async deleteParts(key, partCount) {
+        await drop.call(snapshots, key, partCount);
+      },
+    })
+  );
+}
+
+/**
+ * Joins a create job's parts into the branch's one complete snapshot, once,
+ * when the last batch finishes (drive#842).
+ *
+ * The parts are this job's own deltas, one per batch, each a small JSON of the
+ * files that batch copied. The last batch reads them all, merges them over the
+ * frozen base the claim wrote (drive#802), and writes the complete snapshot as
+ * the one value every reader resolves — then the parts are swept, because
+ * `saveSnapshot` does not keep append-only part keys.
+ *
+ * A frozen branch's base is the listing the claim froze; an unfrozen row's base
+ * is empty. So the finished snapshot is the same either way: every file the copy
+ * walked, each with the fingerprint its batch recorded.
+ * @param {D1Database} db
+ * @param {Branch} branch
+ * @param {SnapshotStore} snapshots the KV snapshot store
+ * @param {Record<string, Fingerprint>} base the frozen listing the claim wrote,
+ *   or an empty object for a row claimed before the freeze shipped
+ * @param {Record<string, unknown>} cursor the row's parsed `job_cursor`
+ * @param {{part: number}} written what this batch's write returned
+ * @param {string} key the key the row already holds, for a row with no pointer
+ * @returns {Promise<{success: boolean}>} whether the one complete value was
+ *   written; a false is a job that did not finish and must not open
+ */
+async function joinCreateParts(db, branch, snapshots, base, cursor, written, key) {
+  const resolved = resolvedSnapshotKey(branch, key);
+  const parts = snapshotPartWriter(snapshots);
+  if (parts === null || resolved === "" || written.part === 0) {
+    return { success: true };
+  }
+  const leaf = createPartsKey(resolved, branch.id);
+  try {
+    const reads = snapshotPartReader(snapshots);
+    if (reads === null) {
+      // Parts were written to a store that cannot read them back, so the one
+      // value a finished branch resolves can never be assembled (drive#842,
+      // coordinator review).
+      return { success: false };
+    }
+    /** @type {Record<string, Fingerprint>} */
+    const snapshot = { ...base };
+    for (let index = 0; index < written.part; index += 1) {
+      const raw = await reads.getPart(leaf, index);
+      if (raw === null) {
+        // A part the namespace does not hold is a join that cannot be honest:
+        // returning a shorter snapshot would call every missing file removed.
+        throw new Error(
+          `the create parts under ${leaf} name part ${index}, and the namespace does not have it`,
+        );
+      }
+      const parsed = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`a create part under ${leaf} is not a file map`);
+      }
+      // Each part's own entries are copied in one at a time, and only the ones
+      // that name a file, so a key like `__proto__` in a part cannot reach the
+      // snapshot's prototype and a malformed part cannot smuggle a non-file in.
+      for (const [rel, fp] of Object.entries(/** @type {Record<string, unknown>} */ (parsed))) {
+        if (fp !== null && typeof fp === "object" && !Array.isArray(fp) && rel !== "__proto__") {
+          snapshot[rel] = /** @type {Fingerprint} */ (fp);
+        }
+      }
+    }
+    const saved = await saveSnapshot(db, branch.id, snapshot, snapshots, resolved);
+    if (!saved.success) {
+      // The row refused the one complete snapshot, so a branch opened here
+      // would hand later readers a value the join never wrote (drive#842,
+      // coordinator review).
+      return { success: false };
+    }
+    // The deltas are folded into the one value `saveSnapshot` wrote, so they are
+    // swept here. Leaving them would keep every file of the branch in the
+    // namespace twice, and the next create of the same key would read them back.
+    await dropCreateParts(snapshots, branch, cursor, written.part, key);
+  } catch (error) {
+    // A part the namespace does not hold, or a value that does not parse: the
+    // join cannot be honest because returning a shorter snapshot would call
+    // every missing file removed, so the failure reaches the batch and fails
+    // the job (drive#842, coordinator review). The detail is logged; the row's
+    // job error is the one table's words.
+    console.error?.(`create parts join failed for ${branch.id}: ${errorText(error)}`);
+    return { success: false };
+  }
+  return { success: true };
+}
+
+/**
+ * Drops the parts a create job wrote, so an abandoned, refused or failed row
+ * leaves no delta behind for a later branch of the same name to join into its
+ * own snapshot (drive#842). Only the parts this row wrote are named, and they
+ * live under this row's own leaf, so a part a concurrent build is still writing
+ * is never taken from under it.
+ *
+ * The count comes from the caller when it has it, from the row's `job_cursor`
+ * when it does not, and from the build's own leaf when neither does: a discard
+ * clears the cursor while the parts are still there, and that path reads the
+ * count back out of the namespace.
+ * @param {SnapshotStore} snapshots
+ * @param {Branch} branch
+ * @param {Record<string, unknown>} cursor the row's parsed `job_cursor`
+ * @param {number} [partCount] how many parts the join folded in, when it is
+ *   sweeping a build that finished rather than one that gave up
+ * @param {string} [key] the key the parts hang from, when the caller has it
+ * @returns {Promise<boolean>} whether the parts are gone (a store without the
+ *   seam has written none, which is the same answer)
+ */
+async function dropCreateParts(snapshots, branch, cursor, partCount, key) {
+  const parts = snapshotPartWriter(snapshots);
+  if (parts === null) {
+    return true;
+  }
+  const resolved = resolvedSnapshotKey(branch, key ?? "");
+  if (resolved === "") {
+    return true;
+  }
+  const leaf = createPartsKey(resolved, branch.id);
+  let count = partCount ?? createPartIndex(cursor);
+  if (count === 0) {
+    count = (await parts.partCount(leaf)) ?? 0;
+  }
+  if (count === 0) {
+    return true;
+  }
+  try {
+    await parts.deleteParts(leaf, count);
+    return true;
+  } catch (error) {
+    console.error?.(`create parts cleanup failed for ${branch.id}: ${errorText(error)}`);
+    return false;
+  }
+}
+
+/**
+ * The parts reader seam, or null when the store cannot read a part back. A
+ * batch never reads a part, but the one batch that joins the whole snapshot
+ * does, and it reads them in order (drive#842).
+ * @param {SnapshotStore} snapshots
+ * @returns {{getPart(key: string, index: number): Promise<string|null>}|null}
+ */
+function snapshotPartReader(snapshots) {
+  if (typeof snapshots.getPart !== "function") {
+    return null;
+  }
+  const get = /** @type {(key: string, index: number) => Promise<unknown>} */ (
+    /** @type {unknown} */ (snapshots.getPart)
+  );
+  return {
+    /** @param {string} key @param {number} index */
+    async getPart(key, index) {
+      const value = await get.call(snapshots, key, index);
+      return typeof value === "string" ? value : null;
+    },
+  };
+}
+
+/**
+ * The window index a batch copies from, which is its own file offset over the
+ * batch size (drive#842). A batch that copied a partial window because the
+ * source ended still lands in the right window for every batch after it, because
+ * the windows are cut on file count and a batch's `job_done` is its file count.
+ * @param {number} doneSoFar the files this job has copied
+ * @returns {number}
+ */
+function batchNumber(doneSoFar) {
+  return Math.floor(Math.max(0, doneSoFar) / BRANCH_JOB_BATCH_FILES);
+}
+
+/**
+ * The base a finished create job merges its parts over: the listing the claim
+ * froze, or nothing for a row claimed before the freeze shipped (drive#842).
+ *
+ * This is the one read of the whole snapshot the issue allows, because it
+ * happens once — in the batch that finishes the copy, which is the batch that
+ * has to hand a reader a complete value anyway. Every earlier batch read only
+ * its own window.
+ * @param {SnapshotStore} snapshots
+ * @param {Branch} branch
+ * @param {string} [key] the key the row already holds, for a row with no pointer
+ *   of its own and no reservation to read
+ * @returns {Promise<Record<string, Fingerprint>>}
+ */
+async function createSnapshotBase(snapshots, branch, key) {
+  return await readSnapshot(snapshots, resolvedSnapshotKey(branch, key ?? branch.snapshotKey));
+}
+
+/**
+ * What the claim reserved, for the account-limit check on the first batch
+ * (drive#801, drive#842). A claimed branch's reservation is the whole frozen
+ * listing, so the row already recorded its byte length at claim time and the
+ * check reads that column rather than the listing again.
+ *
+ * The value comes back off the one column, so the check costs the same whatever
+ * the branch holds. Only a row whose reservation is zero — one written before
+ * that column was filled, or a row whose claim never got a size — falls back to
+ * the whole snapshot, which is one read on one batch (drive#842, in-run
+ * review).
+ * @param {D1Database} db
+ * @param {Branch} branch
+ * @param {SnapshotStore} snapshots
+ * @param {string} [key] the key the row already holds, for a row with no pointer
+ *   of its own and no reservation to read
+ * @returns {Promise<number>}
+ */
+async function frozenListingBytes(db, branch, snapshots, key) {
+  const row = await db
+    .prepare("SELECT reserved_bytes FROM branches WHERE id = ?1")
+    .bind(branch.id)
+    .first();
+  const reserved = Number(row?.reserved_bytes ?? 0);
+  if (Number.isFinite(reserved) && reserved > 0) {
+    return reserved;
+  }
+  return bytesOf(Object.values(await createSnapshotBase(snapshots, branch, key)));
+}
+
+/**
+ * The KV key for a claim's frozen listing, kept apart from the snapshot it
+ * becomes (drive#842).
+ *
+ * The claim freezes the listing the copy walks (drive#802), and the copy reads
+ * it to know which paths are in the branch and what fingerprint each one keeps.
+ * If that listing sat only in the branch's snapshot, every batch would read the
+ * whole of it — at the 100,000-file cap, an ~11 MiB read per batch, which is the
+ * cost this issue removes. So it is written under its own key and split into
+ * ordered windows of `BRANCH_JOB_BATCH_FILES` entries, one window per copy
+ * batch, and a batch reads only its own window.
+ * @param {string} key the snapshot key the claim already knows
+ * @returns {string}
+ */
+function frozenListingKey(key) {
+  return `${key}/frozen-listing`;
+}
+
+/**
+ * The prefix one window of a frozen listing is written under (drive#842). The
+ * windows are named by their index so a batch reads the window its own files
+ * came from and never lists the rest.
+ * @param {string} key the snapshot key the claim already knows
+ * @returns {string}
+ */
+function frozenWindowPrefix(key) {
+  return `${key}/frozen-window`;
+}
+
+/**
+ * The window key for one batch of the frozen listing (drive#842).
+ * @param {string} key the snapshot key the claim already knows
+ * @param {number} index the batch that will read this window
+ * @returns {string}
+ */
+function frozenWindowKey(key, index) {
+  return `${frozenWindowPrefix(key)}.${index}`;
+}
+
+/**
+ * Splits a claim's frozen listing into the windows a copy batch reads one at a
+ * time, in the same order the listing was walked, so batch N reads the Nth
+ * window whatever the source has done since (drive#842).
+ *
+ * The windows are written against the claim's own key and never against the
+ * snapshot, so a write here is not a write to the value a reader resolves, and
+ * a claim that dies here takes its windows with it.
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the snapshot key the claim already knows
+ * @param {Record<string, Fingerprint>} listed the claim's frozen listing
+ * @returns {Promise<number>} how many windows the listing was split into
+ */
+async function writeFrozenWindows(snapshots, key, listed) {
+  const window = BRANCH_JOB_BATCH_FILES;
+  const rels = Object.keys(listed);
+  /** @type {number} */
+  let windows = 0;
+  for (let start = 0; start < rels.length; start += window) {
+    /** @type {Record<string, Fingerprint>} */
+    const slice = {};
+    for (const rel of rels.slice(start, start + window)) {
+      slice[rel] = listed[rel];
+    }
+    await snapshots.put(frozenWindowKey(key, windows), JSON.stringify(slice));
+    windows += 1;
+  }
+  // The count names how many windows and how many files the whole listing has,
+  // and a batch reads it once per batch to learn which window is its own and
+  // whether it is the last one — a batch's view of the branch is a window, so
+  // "my window ran out" is not "the branch is copied" (drive#842). An empty
+  // listing still has a window count of zero, and the count is what a batch
+  // reads to know there is nothing frozen to read.
+  await snapshots.put(frozenListingKey(key), JSON.stringify({ windows, files: rels.length }));
+  return windows;
+}
+
+/**
+ * How many windows, and how many files, the claim's frozen listing has — the one
+ * value every batch reads to learn which window is its own and whether it is the
+ * last (drive#842). It is two numbers, not the listing, so it costs the same at
+ * 100,000 files as at 2,000. Null when the claim wrote no count, which is a row
+ * claimed before the freeze shipped.
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the snapshot key the claim already knows
+ * @returns {Promise<{windows: number, files: number}|null>}
+ */
+async function readFrozenListingCount(snapshots, key) {
+  const raw = await snapshots.get(frozenListingKey(key));
+  if (typeof raw !== "string" || raw === "") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const windows = Number(parsed?.windows);
+    const files = Number(parsed?.files);
+    if (
+      !Number.isSafeInteger(windows) ||
+      windows < 0 ||
+      !Number.isSafeInteger(files) ||
+      files < 0
+    ) {
+      return null;
+    }
+    return { windows, files };
+  } catch (error) {
+    console.error?.(`a frozen listing count is not JSON for ${key}: ${errorText(error)}`);
+    return null;
+  }
+}
+
+/**
+ * One window of a claim's frozen listing, or null when the claim froze nothing
+ * this batch has a window for (drive#842).
+ *
+ * A batch asks for the window its own `job_done` offset names, so the read is
+ * the size of one batch's files whatever the branch holds. A window the
+ * namespace does not hold is a claim that lost it, and the copy then walks the
+ * source as it is — the same answer a row claimed before the freeze shipped
+ * gets, and the batch's own delta is written either way. That fallback walks
+ * and lists the whole branch, which is a row claimed while the marker was
+ * already in the namespace but whose count was not: the copy after the claim is
+ * bounded again by that path (drive#802), and no file is left unclaimed — it is
+ * the one path that costs the branch instead of the batch (drive#842, in-run
+ * review).
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the snapshot key the claim already knows
+ * @param {number} index the window this batch is copying
+ * @returns {Promise<Record<string, Fingerprint>|null>}
+ */
+async function readFrozenWindow(snapshots, key, index) {
+  const raw = await snapshots.get(frozenWindowKey(key, index));
+  if (typeof raw !== "string" || raw === "") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return /** @type {Record<string, Fingerprint>} */ (/** @type {unknown} */ (parsed));
+  } catch (error) {
+    console.error?.(`a frozen listing window is not JSON for ${key}: ${errorText(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Drops a claim's frozen listing windows, once the copy that read them is done
+ * or has given the claim up (drive#842).
+ *
+ * The windows are the size of the whole listing, so a branch that outlived its
+ * copy would keep a second copy of every fingerprint it has in the namespace
+ * forever. They are swept when the copy finishes and on every path that gives
+ * the claim up, with the claim's own marker.
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the snapshot key the claim already knows
+ * @returns {Promise<void>}
+ */
+async function clearFrozenListing(snapshots, key) {
+  if (key === "" || typeof snapshots.delete !== "function") {
+    return;
+  }
+  const remove = snapshots.delete;
+  const count = await snapshots.get(frozenListingKey(key));
+  try {
+    const windows = JSON.parse(typeof count === "string" && count !== "" ? count : "null");
+    const total = Number(windows?.windows);
+    if (Number.isSafeInteger(total) && total >= 0) {
+      for (let index = 0; index < total; index += 1) {
+        await remove.call(snapshots, frozenWindowKey(key, index));
+      }
+    }
+  } catch (error) {
+    console.error?.(`a frozen listing count is not JSON for ${key}: ${errorText(error)}`);
+  }
+  await remove.call(snapshots, frozenListingKey(key));
+}
+
+/**
  * @param {D1Database} db
  * @param {SnapshotStore} snapshots
  * @param {{id: string}} account
@@ -1331,7 +2101,20 @@ async function loadJobRow(db, snapshots, account, id) {
   if (row === undefined || row === null) {
     return null;
   }
-  return toBranch(row, await readSnapshot(snapshots, String(row.snapshot_key ?? "")));
+  // A create batch must not read the whole snapshot (drive#842). The snapshot it
+  // would read is the one its own batches are building, so the read is the size
+  // of the whole branch on every one of its 1,250 batches. A create batch copies
+  // from its own delta and writes its own delta, and the value the branch is
+  // left with is assembled once, in the batch that finishes the copy — so the
+  // row goes to the batch with an empty snapshot and the copy never asks for
+  // one. Every other job kind still gets the snapshot: approve and rewind diff
+  // against it, and a row whose job has ended is read for its result.
+  const creating =
+    String(row.job_kind ?? "") === "create" && String(row.state ?? "") === "creating";
+  return toBranch(
+    row,
+    creating ? {} : await readSnapshot(snapshots, String(row.snapshot_key ?? "")),
+  );
 }
 
 /**
@@ -1352,9 +2135,12 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   const stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
   const doneSoFar = Number(raw?.job_done ?? 0) || 0;
   const phase = typeof stored.phase === "string" ? stored.phase : "clear";
-  const walkKey = createWalkKey(
-    branch.snapshotKey !== "" ? branch.snapshotKey : snapshotKey(account, branch.name),
-  );
+  // The key this row writes under, named once: the row's own pointer when it has
+  // one, the key the account and name say, when it does not. Every part this job
+  // writes, joins and sweeps resolves it here, so no path can write a delta
+  // somewhere the join never looks (drive#842, in-run review).
+  const key = resolvedSnapshotKey(branch, snapshotKey(account, branch.name));
+  const walkKey = createWalkKey(key);
   if (phase === "clear") {
     const startAfter = typeof stored.startAfter === "string" ? stored.startAfter : undefined;
     const paths = await store.listKeys(branch.branchPrefix, {
@@ -1395,13 +2181,33 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   // source as it is, which is what its bytes already on the row must not turn
   // off. Its own snapshot is written a batch at a time, so reading `only` off
   // `snapshot_bytes` would have made batch two copy batch one's files again and
-  // open a branch missing everything after the first 80.
-  const frozenMarker = await snapshots.get(frozenSnapshotKey(branch.snapshotKey));
-  const only = frozenMarker !== null && frozenMarker !== undefined ? branch.snapshot : undefined;
+  // open a branch missing everything after the first 80. Every frozen key the
+  // batch reads resolves `key` the way the parts do, so a row with no pointer
+  // of its own looks in one place and not in the empty one (drive#842, in-run
+  // review).
+  const frozenMarker = await snapshots.get(frozenSnapshotKey(key));
+  // The listing this branch is filling in, and where this batch reads it from
+  // (drive#802, drive#842).
+  //
+  // A claimed branch copies exactly the list the claim froze, and each file keeps
+  // the fingerprint the claim measured for it. That list is the size of the whole
+  // branch, so reading it out of the snapshot once per batch is an ~11 MiB read
+  // on each of 1,250 batches at the 100,000-file cap — the cost this issue
+  // removes. The claim therefore splits it into ordered windows of one batch's
+  // files and this batch reads only the window its own `job_done` offset names,
+  // so a batch's read is 80 files whatever the branch holds.
+  const frozen = frozenMarker !== null && frozenMarker !== undefined;
+  const windowIndex = batchNumber(doneSoFar);
+  const listing = frozen ? await readFrozenListingCount(snapshots, key) : null;
+  const window = listing === null ? null : await readFrozenWindow(snapshots, key, windowIndex);
+  // A window the claim did not write is a row claimed before the freeze shipped,
+  // or a claim that lost its windows. Either way the copy walks the source as it
+  // is, which is what its bytes already on the row were measured for.
+  const only = window ?? undefined;
   if (doneSoFar === 0) {
     const incomingBytes =
       only !== undefined
-        ? bytesOf(Object.values(only))
+        ? await frozenListingBytes(db, branch, snapshots, key)
         : await storedBytesUnder(store, branch.sourcePrefix);
     // This check asks one question: has the account gone over the limit while
     // this branch waited? Its own reservation is left out of the sum because
@@ -1410,17 +2216,29 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
     const blocked = await branchCopyBlocked(db, store, account, incomingBytes, branch.id);
     if (blocked !== null) {
       await failJob(db, branch.id, "discarded", blocked);
+      // Nothing was copied yet, but a batch that got this far on a retry has
+      // parts from the batches before it, and those are this row's work and
+      // nobody else's (drive#842).
+      await dropCreateParts(snapshots, branch, stored, undefined, key);
       return { error: blocked, status: 403, done: true };
     }
   }
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
-      current: typeof stored.current === "string" ? stored.current : branch.sourcePrefix,
+      // Both paths carry the walk position across batches, because the frozen
+      // windows are cut in the same order the walk visits them: batch N reads
+      // window N and resumes the walk where batch N-1 stopped. Restarting each
+      // batch at the top would re-list the whole branch on every one of the
+      // 1,250 batches a 100,000-file branch takes (drive#842). A row with no
+      // frozen windows walks the source as it is, and carries `skip` too.
+      current:
+        typeof stored.current === "string" && stored.current !== ""
+          ? stored.current
+          : branch.sourcePrefix,
       skip: Number(stored.skip ?? 0) || 0,
       pending,
     },
-    snapshot: branch.snapshot,
     only,
   });
   // Progress is the files this job has copied, not the size of the snapshot it
@@ -1429,33 +2247,77 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
   //
   // Which of the two real counts applies depends on the walk. While there is
   // more source to walk it is this job's own count plus what this batch moved.
-  // On the batch that finishes the walk the saved snapshot already holds every
-  // file the branch will ever hold, so its size is the frozen listing and not
-  // the copy's size; the count is the files under the branch prefix instead.
-  // Adding the count to that size was the trap drive#844's review found: a
-  // resumed copy counted its own past batches again on the finishing batch, so
-  // a 1003 file branch passed BRANCH_FILE_LIMIT and the caller got a
-  // `branch-too-large` for a branch that fits.
-  const files = copied.done ? await copiedFileCount(store, branch) : doneSoFar + copied.copied;
+  // A windowed batch copies a disjoint window, so that sum is the whole job's
+  // count and can never repeat a past batch's (drive#842). An unwindowed walk,
+  // on the batch that finishes it, has found them again: the saved snapshot
+  // already holds every file the branch will ever hold, so its size is the
+  // frozen listing and not the copy's size, and the count is the files under
+  // the branch prefix instead. Adding the count to that size was the trap
+  // drive#844's review found: a resumed copy counted its own past batches
+  // again on the finishing batch, so a 1003 file branch passed
+  // BRANCH_FILE_LIMIT and the caller got a `branch-too-large` for a branch
+  // that fits.
+  const files =
+    copied.done && listing === null
+      ? await copiedFileCount(store, branch)
+      : doneSoFar + copied.copied;
   if (files > BRANCH_FILE_LIMIT) {
     await removePrefixFiles(store, branch.branchPrefix);
     const error = failureMessage("branch-too-large");
     await failJob(db, branch.id, "discarded", error);
+    await dropCreateParts(snapshots, branch, stored, undefined, key);
     return { error, status: 400, done: true };
   }
-  const key = snapshotKey(account, branch.name);
-  const saved = await saveSnapshot(db, branch.id, copied.snapshot, snapshots, key);
-  if (!saved.success) {
+  const written = await saveCreateBatch(db, branch, copied.copiedFiles, snapshots, key, stored);
+  if (!written.success) {
     return { error: failureMessage("unexpected"), status: 500, done: true };
   }
-  if (copied.done) {
+  // When the copy is bounded by the claim's frozen windows, this batch has only
+  // seen its own window, so "my window ran out" is not "the branch is copied"
+  // (drive#842). The branch is copied when the files it has copied reach the
+  // files the claim froze — or when the walk has nothing left to queue, because
+  // the frozen count is a promise about a source that could have shrunk since
+  // the claim, and a count that never arrives would restart the walk from the
+  // top on every batch and copy forever (drive#842, in-run review). The
+  // live-walk path has no windows and its own exhausted walk is the whole
+  // answer, exactly as before.
+  const finished = listing === null ? copied.done : copied.exhausted || files >= listing.files;
+  if (finished) {
+    // The last batch is the one that reads the whole snapshot back, because it
+    // is the one that has to hand a reader a whole snapshot (drive#842). Every
+    // earlier batch wrote only its own 80 files and left the value alone.
+    const joined = await joinCreateParts(
+      db,
+      branch,
+      snapshots,
+      await createSnapshotBase(snapshots, branch, key),
+      stored,
+      written,
+      key,
+    );
+    if (!joined.success) {
+      // A join that did not fold every part into the one value is a copy that
+      // did not finish: an incomplete snapshot is exactly what a later rewind or
+      // approve reads as removed files, so the job fails instead of opening. The
+      // frozen listing is left standing, because clearing it is what would make
+      // the incomplete branch look finished (drive#842, coordinator review).
+      const error = failureMessage("unexpected");
+      console.error?.(`create parts join failed for ${branch.id}: opening refused`);
+      await removePrefixFiles(store, branch.branchPrefix);
+      await failJob(db, branch.id, "discarded", error);
+      await dropCreateParts(snapshots, branch, stored, written.part, key);
+      return { error, status: 500, done: true };
+    }
     try {
       await clearScratch(snapshots, walkKey);
       // The frozen listing is the branch's snapshot from here on, so the marker
       // has done its job and goes with the walk's scratch (drive#802). It is
       // only read while the copy runs, and a finished branch's copy never
       // resumes, so leaving it would be a key that outlives its job.
-      await clearScratch(snapshots, frozenSnapshotKey(branch.snapshotKey));
+      await clearScratch(snapshots, frozenSnapshotKey(key));
+      // The windows are the size of the whole listing, so the finished branch
+      // keeps no second copy of it (drive#842).
+      await clearFrozenListing(snapshots, key);
     } catch (error) {
       console.error?.(`create walk cleanup failed for ${branch.id}: ${errorText(error)}`);
     }
@@ -1486,6 +2348,7 @@ async function processCreateBatch(db, snapshots, store, account, branch) {
       phase: "copy",
       current: copied.cursor.current,
       skip: copied.cursor.skip,
+      part: written.part,
     },
     done: files,
     total: Math.max(files, doneSoFar),
@@ -2068,6 +2931,13 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
     (branch.jobKind === "discard" || branch.jobKind === "rewind") &&
     (branch.state === "discarding" || branch.state === "rewinding")
   ) {
+    // A branch discarded while its create job was still copying leaves this
+    // row's own parts in the namespace, and `discardBranch` has cleared the
+    // cursor that says which (drive#842). The count is read back off the build's
+    // own leaf, so the row that gave up takes its deltas with it and a later
+    // branch of the same name never folds them in. The sweep runs once the
+    // first batch, and the other batches find an empty leaf.
+    await dropCreateParts(snapshots, branch, {}, undefined, snapshotKey(account, branch.name));
     return processDiscardBatch(db, store, branch);
   }
   return {
@@ -2375,6 +3245,10 @@ export async function createBranch(
   const dropFrozenMarker = async () => {
     try {
       await clearScratch(snapshots, frozenSnapshotKey(snapKey));
+      // The windows are the size of the whole listing, so a claim that gave up
+      // takes them with it rather than leaving a second copy of every
+      // fingerprint it measured in the namespace (drive#842).
+      await clearFrozenListing(snapshots, snapKey);
     } catch (error) {
       console.error?.(
         `branch marker cleanup failed for ${account.id}/${name}: ${errorText(error)}`,
@@ -2391,19 +3265,20 @@ export async function createBranch(
   // column. The create job copies exactly this list, so a folder that grows
   // after the claim is simply not in the branch until the next one.
   try {
-    const saved = await saveSnapshot(
-      db,
-      claimId,
-      fingerprintMapToObject(listed),
-      snapshots,
-      snapKey,
-    );
+    const frozen = fingerprintMapToObject(listed);
+    const saved = await saveSnapshot(db, claimId, frozen, snapshots, snapKey);
     if (!saved.success) {
       if (!(await abandonClaim())) {
         console.error?.(`branch freeze for ${account.id}/${name} left row ${claimId} claimed`);
       }
       return { error: failureMessage("unexpected"), status: 500 };
     }
+    // The same listing, split into one window per copy batch (drive#842). A
+    // batch reads only its own window, so copying a branch never reads the whole
+    // listing twice: without the windows every one of the 1,250 batches of a
+    // 100,000-file branch would read the ~11 MiB snapshot the claim just wrote.
+    // They are written under the claim's own key and swept when the copy ends.
+    await writeFrozenWindows(snapshots, snapKey, frozen);
     // Marked after the snapshot lands, never before: a marker whose listing
     // failed to write would send the copy after bytes the claim never measured,
     // which is the leak this issue closes. A claim that fails here abandons, so
