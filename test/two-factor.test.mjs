@@ -60,7 +60,7 @@ const DEVICE_MIGRATIONS = [
  * the pair the approval route joins.
  */
 function apiMade() {
-  return createTestAuth({ migrations: DEVICE_MIGRATIONS });
+  return createTestAuth({ migrations: DEVICE_MIGRATIONS, twoFactor: true });
 }
 
 /**
@@ -110,10 +110,27 @@ function approveBody(fields) {
   return body.toString();
 }
 
+/**
+ * The account's "is the second factor armed" flag, which the factor plugin adds
+ * to the user at runtime.
+ *
+ * The cast is the same one `enableTwoFactor` above already needs, and for the
+ * same reason: `createAuth` takes the plugin as a parameter (drive#848), so
+ * TypeScript cannot see a second factor in the chain and drops the field the
+ * plugin adds to the user. It is on the session the plugin itself returns, so
+ * reading it is real and the value is asserted below.
+ * @param {{user?: unknown}|null|undefined} session
+ * @returns {unknown}
+ */
+function twoFactorEnabled(session) {
+  const user = /** @type {{twoFactorEnabled?: unknown}|null|undefined} */ (session?.user);
+  return user?.twoFactorEnabled;
+}
+
 // ---------------------------------------------------------------- enrollment
 
 test("enabling two-factor shows the recovery codes once and stores them encrypted", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const signed = await signIn(made, "armed@example.com");
   // `body: {}` is the library's default method, the reader: the codes come
   // back on the enrollment answer, and the cast is the union's totp branch.
@@ -137,20 +154,20 @@ test("enabling two-factor shows the recovery codes once and stores them encrypte
   const stored = String(row.backupCodes);
   assert.ok(!stored.includes(enabled.backupCodes[0]), "stored codes are not plaintext");
   const session = await made.auth.api.getSession({ headers: sessionHeaders(signed.cookie) });
-  assert.equal(session?.user.twoFactorEnabled, false, "flag is off until a code confirms");
+  assert.equal(twoFactorEnabled(session), false, "flag is off until a code confirms");
 });
 
 test("the first correct code arms the account and rotates the session", async () => {
   const made = apiMade();
   const armed = await armTwoFactor(made, "armed@example.com");
   const session = await made.auth.api.getSession({ headers: sessionHeaders(armed.cookie) });
-  assert.equal(session?.user.twoFactorEnabled, true);
+  assert.equal(twoFactorEnabled(session), true);
 });
 
 // ---------------------------------------------------------------- passkeys
 
 test("the stock passkey endpoints answer the mounted api", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const env = siteEnv(made);
   const signed = await signIn(made, "pw@example.com");
   const options = await workerFetch(
@@ -365,7 +382,7 @@ test("the correct code approves; a recovery code approves once and reuse is refu
 // ------------------------------------------------------------ site worker
 
 test("the site worker mounts the auth family and keeps cross-site posts out", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const env = siteEnv(made);
   const signed = await signIn(made, "site@example.com");
   // GET returns the session JSON — the mount is live and the account gate
@@ -395,11 +412,50 @@ test("the site worker mounts the auth family and keeps cross-site posts out", as
   assert.equal(cross.status, 403);
 });
 
+// A same-origin POST to the enable endpoint is the one request the split is
+// for: it is the path the base instance has no handler for, so it is 404
+// unless TWO_FACTOR_PATH routed it to the instance that carries the plugin.
+// Drive it through the site Worker's real dispatch so the routing itself, not
+// just the import shape, is what fails when it regresses.
+test("a real second-factor request is routed to the instance that has the factor", async () => {
+  const made = createTestAuth({ twoFactor: true });
+  const env = siteEnv(made);
+  const signed = await signIn(made, "routed@example.com");
+  const answer = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/auth/two-factor/enable`, {
+      method: "POST",
+      headers: {
+        origin: TEST_BASE_URL,
+        cookie: signed.cookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    env,
+  );
+  // 404 is the base instance's answer on this path, so the status alone says
+  // which instance was asked.
+  assert.equal(answer.status, 200, "the two-factor path reached the plugin instance");
+  const enabled = /** @type {{totpURI?: string, backupCodes?: string[]}} */ (await answer.json());
+  assert.equal(enabled.totpURI !== undefined, true, "the factor armed and returned its URI");
+  assert.equal(enabled.backupCodes?.length, 10, "ten recovery codes came back once");
+  // The factorless instance still answers the session read beside it: the
+  // split is per path, not a second store, so a browser's cookie works on
+  // both.
+  const session = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/auth/get-session`, {
+      headers: { cookie: signed.cookie },
+    }),
+    env,
+  );
+  assert.equal(session.status, 200);
+});
+
 // Review C: the public /api/auth/* mount serves only the second-factor and
 // passkey routes. The magic-link send (and verify) stay on /api/signin, which
 // carries the site's own limits, so an anonymous POST here mails nothing.
 test("the public auth mount refuses the magic-link send and verify", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   /** @type {string[]} */
   const sent = [];
   const env = {
@@ -421,7 +477,7 @@ test("the public auth mount refuses the magic-link send and verify", async () =>
 });
 
 test("arming two-factor does not change the email sign-in", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   await armTwoFactor(made, "armed@example.com");
   const second = await signIn(made, "armed@example.com");
   const session = await made.auth.api.getSession({
@@ -438,7 +494,7 @@ test("arming two-factor does not change the email sign-in", async () => {
 // there is a session at all. The anonymous answer is "no session" (a null
 // body), never a 401 from the account gate.
 test("an anonymous caller reaches the mounted auth family", async () => {
-  const made = createTestAuth();
+  const made = createTestAuth({ twoFactor: true });
   const response = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/auth/get-session`, {
       // No cookie: a signed-out browser.
