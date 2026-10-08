@@ -349,14 +349,21 @@ export function createAuth(options) {
               allowPasswordless: true,
             }),
           ]),
-      // Passkeys are not in this list either. The plugin pulls ~590 KB of
-      // WebAuthn code into the Worker entry (drive#846), and nearly every
-      // request never touches a passkey. core/auth-passkey.js adds it;
-      // authForPasskey loads that module only for `/api/auth/passkey/*`. Extra
-      // plugins stay an option so that module can call this factory rather than
-      // copy it. Cast to `[]` so the Auth typedef still infers magic-link and
-      // two-factor on createAuth(); the passkey instance is only used for
-      // `.handler()` on `/api/auth/passkey/*`.
+      // Passkeys are not in this list either, for the same reason as the
+      // factor above (drive#846): the plugin pulls ~590 KB of WebAuthn code
+      // into the Worker entry, and nearly every request never touches a
+      // passkey. core/auth-passkey.js adds it; authForPasskey loads that
+      // module only for `/api/auth/passkey/*`. Extra plugins stay an option
+      // so that module can call this factory rather than copy it.
+      //
+      // The cast to `[]` is what keeps `Auth` a usable type: TypeScript cannot
+      // see through a spread of an untyped array, so without it the inferred
+      // instance type is an error rather than a shape. With it, `Auth` names
+      // the magic-link endpoints off the chain above and carries nothing off
+      // these two options — which is the honest story this file now tells. The
+      // base instance has no second factor and no passkey on its type; the
+      // two instances that do carry them name those by hand, in
+      // core/auth-two-factor.js and in test/two-factor.test.mjs.
       .../** @type {[]} */ (options.plugins ?? []),
     ],
   });
