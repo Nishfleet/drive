@@ -473,6 +473,56 @@ test("the consumer acks a finished job and retries a failed or malformed one", a
   assert.deepEqual([malformed.acked, malformed.retried], [0, 1], "a malformed one too");
 });
 
+test("a meter row that does not parse is reported through the queue's production sender", async (t) => {
+  // The recorder in test/meter-jobs.test.mjs proves the job reports and
+  // rethrows. This test drives the same failure through worker.queue, so the
+  // reportError the entry injects - captureError(..., sentryFor(env)) - is
+  // the one that runs, and a real DSN posts the envelope.
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acc-bad-bytes";
+  const day = at("2026-03-10T00:00:00Z");
+  sqlite
+    .prepare(
+      `INSERT OR REPLACE INTO usage_minutes (account_id, hour, gb_minutes_live,
+         download_bytes, stored_bytes, rolled_up_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(accountId, day, 700 * 60, 0, 700.5, day);
+  t.mock.method(console, "error", () => {});
+
+  const originalFetch = globalThis.fetch;
+  /** @type {string[]} */
+  const envelopes = [];
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    (_url, init) => {
+      envelopes.push(String(init?.body ?? ""));
+      return Promise.resolve(new Response(null, { status: 200 }));
+    }
+  );
+  try {
+    const hourly = fakeMessage({
+      kind: METER_JOB_KINDS.hourly,
+      accountId,
+      through: at("2026-03-10T11:00:00Z"),
+      at: day,
+    });
+    await trigger.queue(
+      { queue: "drive-meter-jobs", messages: [hourly] },
+      { METER_DB: db, SENTRY_DSN: "https://abc123@o42.ingest.sentry.io/7" },
+      context,
+    );
+    assert.deepEqual(
+      [hourly.acked, hourly.retried],
+      [0, 1],
+      "the job still throws, so the queue retries",
+    );
+    assert.equal(envelopes.length, 1, "the production reportError posted one envelope");
+    assert.match(envelopes[0], /stored_bytes value that does not parse/);
+    assert.match(envelopes[0], /meter hourly draw acc-bad-bytes/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("the retention prune waits while a re-roll still reaches back past its cutoff", async () => {
   const { db, sqlite } = makeMeteredDB();
   const now = midnight() + 40 * 24 * HOUR_MS;
