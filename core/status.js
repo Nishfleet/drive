@@ -374,10 +374,10 @@ function pausedLabel(uploaded, total, files) {
 
 /**
  * The pause a mixed account carries beside its moving bytes, in the one table's
- * own words (drive issue #865). Both counts are read defensively the way the
- * queue's own are: a held half the payload cannot describe is no clause at
- * all, so the line is the uploading half's own rather than one with a hole in
- * it. A held half with nothing in it is no clause either.
+ * own words (drive issue #865). The held half is read defensively the way the
+ * queue's own numbers are: a half the payload cannot describe as a queue is no
+ * clause at all, so the line is the uploading half's own rather than one with
+ * a hole in it. A half that is holding nothing is no clause either.
  * @param {string} uploading the moving half's own line
  * @param {Record<string, unknown>} fields the queue payload, already checked
  * @returns {string}
