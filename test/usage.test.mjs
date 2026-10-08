@@ -1299,10 +1299,6 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // A paused queue renders the paused line, so the page never shows bytes that
   // are not leaving as "Uploading".
   await made.db
-    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
-    .bind(signedInAccount.id)
-    .run();
-  await made.db
     .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
     .bind(signedInAccount.id)
     .run();
@@ -1320,12 +1316,33 @@ test("the usage page shows the queue a device reported, through the Worker's own
   assert.equal(cardless.cardOnFile, false);
   assert.equal(cardless.labels.cost, PRICE.noChargeYet);
 
+  // Two devices on one account are two rows (drive#516): the second device's
+  // report lands on its own row rather than 429ing against the first, and the
+  // read sums the account's rows, so the line carries the whole queue.
+  const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(signedInAccount.id, second, "device-b")).stored, true);
+  const summed = {
+    files: queue.files + second.files,
+    uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
+    totalBytes: queue.totalBytes + second.totalBytes,
+    paused: queue.paused || second.paused,
+  };
+  const both = await (await read()).json();
+  assert.equal(
+    both.uploadLine,
+    uploadProgress(summed).label,
+    "two devices on one account did not read as two rows summed",
+  );
+  // The account's own row is paused at this point in the test (the UPDATE
+  // above), so the summed line is the paused one: the count is still both
+  // devices' rows summed (3 + 1).
+  assert.ok(
+    both.uploadLine.includes("4 files waiting"),
+    `line ${both.uploadLine} is not both devices' queue`,
+  );
+
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.
-  await made.db
-    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
-    .run();
   await made.db
     .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
