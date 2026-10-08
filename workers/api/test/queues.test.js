@@ -71,11 +71,7 @@ test("a report is written and read back as the queue the pages render", async ()
   );
 
   const stored = await store.record("acct_1", { ...QUEUE, paused: true });
-  assert.equal(
-    stored.stored,
-    true,
-    `the first report was refused: ${JSON.stringify(stored)}`,
-  );
+  assert.equal(stored.stored, true, `the first report was refused: ${JSON.stringify(stored)}`);
   assert.equal(stored.reportedAt, 1_000_000);
 
   assert.deepEqual(await store.latest("acct_1"), { ...QUEUE, paused: true });
@@ -83,9 +79,7 @@ test("a report is written and read back as the queue the pages render", async ()
   // account-only table is gone, so a statement still aimed at it fails here
   // rather than in production.
   assert.equal(
-    db.sqlite
-      .prepare("SELECT name FROM sqlite_master WHERE name = 'device_queues'")
-      .get(),
+    db.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'device_queues'").get(),
     undefined,
     "the account-only device_queues table still exists after the migrations",
   );
@@ -124,23 +118,14 @@ test("a report is refused inside the interval and accepted one tick later", asyn
     ...QUEUE,
     uploadedBytes: 600_000_000,
   });
-  assert.equal(
-    tooSoon.stored,
-    false,
-    "a report inside the interval was stored",
-  );
-  assert.equal(
-    tooSoon.retryAfter,
-    1,
-    "the refusal says how long is left of the interval",
-  );
+  assert.equal(tooSoon.stored, false, "a report inside the interval was stored");
+  assert.equal(tooSoon.retryAfter, 1, "the refusal says how long is left of the interval");
   // The refused report changed nothing: the row still carries the first one.
   assert.equal((await store.latest("acct_1"))?.uploadedBytes, 300_000_000);
 
   clock.advance(1);
   assert.equal(
-    (await store.record("acct_1", { ...QUEUE, uploadedBytes: 600_000_000 }))
-      .stored,
+    (await store.record("acct_1", { ...QUEUE, uploadedBytes: 600_000_000 })).stored,
     true,
   );
   assert.equal((await store.latest("acct_1"))?.uploadedBytes, 600_000_000);
@@ -168,17 +153,9 @@ test("a device that has not reported for a while reads as no queue", async () =>
   await store.record("acct_1", QUEUE);
 
   clock.advance(QUEUE_FRESHNESS_SECONDS);
-  assert.deepEqual(
-    await store.latest("acct_1"),
-    QUEUE,
-    "the edge of the window is still live",
-  );
+  assert.deepEqual(await store.latest("acct_1"), QUEUE, "the edge of the window is still live");
   clock.advance(1);
-  assert.equal(
-    await store.latest("acct_1"),
-    null,
-    "a report past the window reads as no queue",
-  );
+  assert.equal(await store.latest("acct_1"), null, "a report past the window reads as no queue");
 });
 
 test("one account's report is never another's", async () => {
@@ -199,11 +176,7 @@ test("one account's report is never another's", async () => {
     totalBytes: 4096,
     paused: true,
   });
-  assert.equal(
-    await store.latest("acct_3"),
-    null,
-    "an account with no report has no queue",
-  );
+  assert.equal(await store.latest("acct_3"), null, "an account with no report has no queue");
 });
 
 test("a paused queue round-trips as paused", async () => {
@@ -304,6 +277,21 @@ test("two devices on one account each store a report", async () => {
     },
     "one uploading device and one paused device did not keep their two sides",
   );
+});
+
+test("an account whose devices report an empty, unpaused queue is not paused", async () => {
+  // `paused` follows the reports' own flags only when nothing is leaving, so
+  // an account whose devices report an empty queue reads as up to date rather
+  // than paused (drive issue #865).
+  const clock = fixedClock();
+  const store = createD1QueueStore(createTestD1(), { now: clock.now });
+  await store.record("acct_1", { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false });
+  assert.deepEqual(await store.latest("acct_1"), {
+    files: 0,
+    uploadedBytes: 0,
+    totalBytes: 0,
+    paused: false,
+  });
 });
 
 test("remove drops one device's report and leaves the other", async () => {

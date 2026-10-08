@@ -12,11 +12,7 @@
 
 import { sessionAccount } from "./auth.js";
 import { INSTALL_LINES } from "./install-lines.js";
-import {
-  failureMessage,
-  INSTALL_COMMAND,
-  SIGN_IN_COMMAND,
-} from "./messages.js";
+import { failureMessage, INSTALL_COMMAND, SIGN_IN_COMMAND } from "./messages.js";
 
 // INSTALL_COMMAND is re-exported from the message table so the first-run page
 // and the tests keep importing it from here. It mounts the drive and connects
@@ -151,9 +147,7 @@ function millis(value, field) {
           ? Date.parse(value)
           : Number.NaN;
   if (!Number.isFinite(time)) {
-    throw new TypeError(
-      `status needs ${field} as a date or ISO string, got ${String(value)}`,
-    );
+    throw new TypeError(`status needs ${field} as a date or ISO string, got ${String(value)}`);
   }
   return time;
 }
@@ -167,9 +161,7 @@ function millis(value, field) {
  */
 export function connectionStatus(device, now = Date.now()) {
   if (typeof device !== "object" || device === null) {
-    throw new TypeError(
-      `connectionStatus needs a device object, got ${String(device)}`,
-    );
+    throw new TypeError(`connectionStatus needs a device object, got ${String(device)}`);
   }
   const row = /** @type {{error?: unknown, lastSeenAt?: unknown}} */ (device);
   if (row.error) {
@@ -206,9 +198,7 @@ export function firstRunState(devices, now = Date.now()) {
     return "waiting";
   }
   if (!Array.isArray(devices)) {
-    throw new TypeError(
-      `firstRunState needs a list of device rows, got ${typeof devices}`,
-    );
+    throw new TypeError(`firstRunState needs a list of device rows, got ${typeof devices}`);
   }
   for (const device of devices) {
     if (connectionStatus(device, now).state === "connected") {
@@ -226,9 +216,7 @@ export function firstRunState(devices, now = Date.now()) {
  */
 export function syncStatus(device, now = Date.now()) {
   if (typeof device !== "object" || device === null) {
-    throw new TypeError(
-      `syncStatus needs a device object, got ${String(device)}`,
-    );
+    throw new TypeError(`syncStatus needs a device object, got ${String(device)}`);
   }
   if (typeof device.syncError === "string" && device.syncError !== "") {
     return {
@@ -309,9 +297,7 @@ export const UPLOAD_LABEL = Object.freeze({
  */
 export function uploadProgress(upload) {
   if (typeof upload !== "object" || upload === null) {
-    throw new TypeError(
-      `uploadProgress needs an upload object, got ${String(upload)}`,
-    );
+    throw new TypeError(`uploadProgress needs an upload object, got ${String(upload)}`);
   }
   const fields =
     /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown, paused?: unknown}} */ (
@@ -319,11 +305,7 @@ export function uploadProgress(upload) {
     );
   const uploaded = fields.uploadedBytes;
   const total = fields.totalBytes;
-  if (
-    typeof uploaded !== "number" ||
-    !Number.isFinite(uploaded) ||
-    uploaded < 0
-  ) {
+  if (typeof uploaded !== "number" || !Number.isFinite(uploaded) || uploaded < 0) {
     throw new TypeError(`uploadedBytes must be 0 or more, got ${uploaded}`);
   }
   if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
@@ -333,19 +315,14 @@ export function uploadProgress(upload) {
     return { percent: 100, label: UPLOAD_LABEL.upToDate };
   }
   if (uploaded > total) {
-    throw new RangeError(
-      `uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`,
-    );
+    throw new RangeError(`uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`);
   }
   const percent = Math.round((uploaded / total) * 100);
   // `files` is optional on the payload, so it is read into a local: the count
   // is null unless it is a positive integer, and the label below switches on
   // that null rather than on a missing field.
   const count = fields.files;
-  const files =
-    typeof count === "number" && Number.isInteger(count) && count > 0
-      ? count
-      : null;
+  const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
   // The pause is the same arithmetic in a stopped state, read off the payload
   // the same defensive way: only a literal true pauses, so `paused: false` and
   // an absent flag both leave the uploading line alone.
@@ -396,9 +373,7 @@ function pausedLabel(uploaded, total, files) {
         : UPLOAD_LABEL.pausedMany.replace("{files}", String(files));
   return waiting === null
     ? `${UPLOAD_LABEL.paused}: ${left} left`
-    : UPLOAD_LABEL.pausedLine
-        .replace("{waiting}", waiting)
-        .replace("{left}", left);
+    : UPLOAD_LABEL.pausedLine.replace("{waiting}", waiting).replace("{left}", left);
 }
 
 /**
@@ -415,9 +390,7 @@ function withHeldQueue(uploading, fields) {
   const held = heldLabel(fields);
   return held === null
     ? uploading
-    : UPLOAD_LABEL.mixedLine
-        .replace("{uploading}", uploading)
-        .replace("{paused}", held);
+    : UPLOAD_LABEL.mixedLine.replace("{uploading}", uploading).replace("{paused}", held);
 }
 
 /**
@@ -432,10 +405,7 @@ function withHeldQueue(uploading, fields) {
  */
 function heldLabel(fields) {
   const count = fields.pausedFiles;
-  const files =
-    typeof count === "number" && Number.isInteger(count) && count > 0
-      ? count
-      : null;
+  const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
   const uploadedBytes = byteCount(fields.pausedUploadedBytes);
   const totalBytes = byteCount(fields.pausedTotalBytes);
   if (
@@ -458,9 +428,7 @@ function heldLabel(fields) {
  * @returns {number|null}
  */
 function byteCount(value) {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0
-    ? value
-    : null;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 const STATUS_HEADERS = Object.freeze({
@@ -500,15 +468,12 @@ export async function signedInAccount(request, store) {
  * @returns {Response}
  */
 export function unauthorizedResponse() {
-  return new Response(
-    JSON.stringify({ error: failureMessage("unauthorized") }),
-    {
-      status: 401,
-      // A cookie session, so the challenge names the scheme the sign-in flow
-      // mints rather than a bearer token it does not use.
-      headers: { ...STATUS_HEADERS, "www-authenticate": "Cookie" },
-    },
-  );
+  return new Response(JSON.stringify({ error: failureMessage("unauthorized") }), {
+    status: 401,
+    // A cookie session, so the challenge names the scheme the sign-in flow
+    // mints rather than a bearer token it does not use.
+    headers: { ...STATUS_HEADERS, "www-authenticate": "Cookie" },
+  });
 }
 
 /**
@@ -542,25 +507,17 @@ export function unauthorizedResponse() {
  * @param {unknown[]} [devices] the account's live device rows, or the empty list
  *   when none has signed in
  */
-export function handleFirstRunStatusRequest(
-  request,
-  account,
-  upload = null,
-  devices = [],
-) {
+export function handleFirstRunStatusRequest(request, account, upload = null, devices = []) {
   // The gate comes before the method check, so an anonymous request is told
   // only that it is not signed in and never which methods this route has.
   if (!account) {
     return unauthorizedResponse();
   }
   if (request.method !== "GET") {
-    return new Response(
-      "Method not allowed. GET this endpoint for drive status.",
-      {
-        status: 405,
-        headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
-      },
-    );
+    return new Response("Method not allowed. GET this endpoint for drive status.", {
+      status: 405,
+      headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
+    });
   }
   // `upload` is the raw queue, not a finished line: this endpoint feeds the
   // first-run page's renderer, which calls uploadLine() on it (drive issue
@@ -597,11 +554,7 @@ export function formatBytes(bytes) {
       throw new TypeError(`formatBytes needs 0 or more bytes, got ${bytes}`);
     }
     asBig = bytes;
-  } else if (
-    typeof bytes === "number" &&
-    Number.isFinite(bytes) &&
-    bytes >= 0
-  ) {
+  } else if (typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 0) {
     asBig = BigInt(Math.round(bytes));
   } else {
     throw new TypeError(`formatBytes needs 0 or more bytes, got ${bytes}`);

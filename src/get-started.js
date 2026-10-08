@@ -116,9 +116,7 @@ export function connectionStates() {
   // The keys are the module's own three states; the annotation is the union
   // the rest of the page switches on, which the page and this list must agree
   // on or a rendered line would have no arm to show.
-  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (
-    Object.keys(CONNECTION_COPY)
-  );
+  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (Object.keys(CONNECTION_COPY));
 }
 
 /**
@@ -129,9 +127,7 @@ export function connectionStates() {
 export function stepLines() {
   return FIRST_RUN_STEPS.map((step, index) => {
     if (typeof step.title !== "string" || typeof step.body !== "string") {
-      throw new TypeError(
-        `step ${index} needs a title and a body, got ${JSON.stringify(step)}`,
-      );
+      throw new TypeError(`step ${index} needs a title and a body, got ${JSON.stringify(step)}`);
     }
     return { title: step.title, body: step.body };
   });
@@ -217,15 +213,11 @@ export function deviceSyncState(device) {
  */
 export function stateCellText(status) {
   if (typeof status !== "object" || status === null) {
-    throw new TypeError(
-      `stateCellText needs { label, detail }, got ${JSON.stringify(status)}`,
-    );
+    throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
   const cell = /** @type {{label?: unknown, detail?: unknown}} */ (status);
   if (typeof cell.label !== "string") {
-    throw new TypeError(
-      `stateCellText needs { label, detail }, got ${JSON.stringify(status)}`,
-    );
+    throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
   if (cell.detail === null || cell.detail === undefined) {
     return cell.label;
@@ -317,15 +309,11 @@ export function syncInstantText(instant, options = {}) {
   // and accepting them here would leave the guard and the words describing
   // two different doors.
   if (typeof instant !== "string") {
-    throw new TypeError(
-      `syncInstantText needs an ISO-8601 instant, got ${String(instant)}`,
-    );
+    throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
   }
   const time = new Date(instant);
   if (Number.isNaN(time.getTime())) {
-    throw new TypeError(
-      `syncInstantText needs an ISO-8601 instant, got ${String(instant)}`,
-    );
+    throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
   }
   return time.toLocaleString(options.locale, {
     day: "numeric",
@@ -348,9 +336,7 @@ export function syncInstantText(instant, options = {}) {
  */
 export function connectionStateForStatus(status) {
   if (!Number.isInteger(status)) {
-    throw new TypeError(
-      `connectionStateForStatus needs a status code, got ${String(status)}`,
-    );
+    throw new TypeError(`connectionStateForStatus needs a status code, got ${String(status)}`);
   }
   return status === 401 ? "waiting" : "unreachable";
 }
@@ -365,9 +351,7 @@ export function connectionStateForStatus(status) {
  */
 export function isConnected(payload, now = Date.now()) {
   if (typeof payload !== "object" || payload === null) {
-    throw new TypeError(
-      `isConnected needs a payload object, got ${String(payload)}`,
-    );
+    throw new TypeError(`isConnected needs a payload object, got ${String(payload)}`);
   }
   const body = /** @type {{state?: unknown, devices?: unknown}} */ (payload);
   if (body.state === "connected") {
@@ -433,18 +417,12 @@ function renderSteps() {
 }
 
 function renderEmptyStates() {
-  for (const [
-    id,
-    screen,
-  ] of /** @type {Array<[string, "devices"|"activity"]>} */ ([
+  for (const [id, screen] of /** @type {Array<[string, "devices"|"activity"]>} */ ([
     ["devices-empty", "devices"],
     ["activity-empty", "activity"],
   ])) {
     const { what, next } = emptyState(screen);
-    required(id).replaceChildren(
-      element("p", "what", what),
-      element("p", "next", next),
-    );
+    required(id).replaceChildren(element("p", "what", what), element("p", "next", next));
   }
 }
 
@@ -520,11 +498,7 @@ export function deviceRow(device) {
   const cells = [
     element("td", null, device.name || "This Mac"),
     element("td", null, device.kind || "device"),
-    element(
-      "td",
-      null,
-      instant === null ? NO_SYNC_LABEL : syncInstantText(instant),
-    ),
+    element("td", null, instant === null ? NO_SYNC_LABEL : syncInstantText(instant)),
   ];
   const stateCell = element("td", "state", stateCellText(sync));
   stateCell.dataset.state = sync.state;
@@ -542,10 +516,7 @@ const notified = new Set();
  * @returns {void}
  */
 function notifySyncError(device) {
-  if (
-    typeof Notification === "undefined" ||
-    Notification.permission !== "granted"
-  ) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
     return;
   }
   const key = String(device.id || device.name);
@@ -696,8 +667,7 @@ function wireCopyButton() {
       note.textContent = "Copied. Paste it into your terminal.";
       button.textContent = "Copied";
     } catch (_error) {
-      note.textContent =
-        "Could not copy it for you. Select the command and copy it by hand.";
+      note.textContent = "Could not copy it for you. Select the command and copy it by hand.";
       button.textContent = "Copy";
     }
     window.setTimeout(() => {

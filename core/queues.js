@@ -87,10 +87,7 @@ export function uploadQueueFromRow(row, at) {
   }
   const r = /** @type {Record<string, unknown>} */ (row);
   const reportedAt = Number(r.reported_at ?? 0);
-  if (
-    !Number.isFinite(reportedAt) ||
-    at - reportedAt > QUEUE_FRESHNESS_SECONDS
-  ) {
+  if (!Number.isFinite(reportedAt) || at - reportedAt > QUEUE_FRESHNESS_SECONDS) {
     return null;
   }
   const uploadedBytes = Number(r.uploaded_bytes ?? 0);
@@ -138,28 +135,38 @@ export function uploadQueueFromRow(row, at) {
  *
  * A row with no bytes and no files is neither side: it adds nothing to either
  * sum, so an empty report beside a paused one reads as paused, and an empty
- * report beside an uploading one reads as that one's queue.
+ * report beside an uploading one reads as that one's queue. When no side has
+ * anything, `paused` still follows the reports' own flags, so an account whose
+ * devices report an empty, unpaused queue reads as up to date and not paused.
  * @param {UploadQueue[]} live
  * @returns {UploadQueue}
  */
 function sumLiveQueues(live) {
   const moving = { files: 0, uploadedBytes: 0, totalBytes: 0 };
   const held = { files: 0, uploadedBytes: 0, totalBytes: 0 };
+  let anyPaused = false;
   for (const queue of live) {
-    const side = queue.paused === true ? held : moving;
-    side.files += queue.files ?? 0;
-    side.uploadedBytes += queue.uploadedBytes;
-    side.totalBytes += queue.totalBytes;
+    if (queue.paused === true) {
+      anyPaused = true;
+      held.files += queue.files ?? 0;
+      held.uploadedBytes += queue.uploadedBytes;
+      held.totalBytes += queue.totalBytes;
+    } else {
+      moving.files += queue.files ?? 0;
+      moving.uploadedBytes += queue.uploadedBytes;
+      moving.totalBytes += queue.totalBytes;
+    }
   }
-  // Nothing is leaving: the queue is what it is holding. `paused` is true only
-  // on this branch, and the paused-side fields stay off, so an account whose
-  // one device is paused is the exact shape it has always been.
+  // Nothing is leaving: the queue is what it is holding. `paused` is the
+  // reports' own flag only here, and it stays false for an empty, unpaused
+  // account, so an account whose devices report nothing left to move reads as
+  // up to date rather than paused.
   if (moving.totalBytes === 0 && moving.files === 0) {
     return {
-      files: moving.files + held.files,
-      uploadedBytes: moving.uploadedBytes + held.uploadedBytes,
-      totalBytes: moving.totalBytes + held.totalBytes,
-      paused: true,
+      files: held.files,
+      uploadedBytes: held.uploadedBytes,
+      totalBytes: held.totalBytes,
+      paused: anyPaused,
     };
   }
   const queue = {
@@ -227,8 +234,7 @@ export function createD1QueueStore(db, options = {}) {
         at - QUEUE_REPORT_INTERVAL_SECONDS,
       );
       const changed = Number(
-        /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ??
-          0,
+        /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ?? 0,
       );
       if (changed > 0) {
         return { stored: true, reportedAt: at };
@@ -244,10 +250,7 @@ export function createD1QueueStore(db, options = {}) {
       const storedAt = Number(row?.reported_at ?? at);
       return {
         stored: false,
-        retryAfter: Math.max(
-          1,
-          QUEUE_REPORT_INTERVAL_SECONDS - (at - storedAt),
-        ),
+        retryAfter: Math.max(1, QUEUE_REPORT_INTERVAL_SECONDS - (at - storedAt)),
       };
     },
 
@@ -260,11 +263,7 @@ export function createD1QueueStore(db, options = {}) {
     async latest(accountId) {
       const at = nowSeconds(now());
       const rows = /** @type {unknown[]} */ (
-        await all(
-          db,
-          "SELECT * FROM device_queue_reports WHERE account_id = ?1",
-          accountId,
-        )
+        await all(db, "SELECT * FROM device_queue_reports WHERE account_id = ?1", accountId)
       );
       /** @type {UploadQueue[]} */
       const live = [];
@@ -287,14 +286,8 @@ export function createD1QueueStore(db, options = {}) {
      */
     async sweep(at = nowSeconds(now())) {
       const cutoff = at - QUEUE_FRESHNESS_SECONDS;
-      const gone = await run(
-        db,
-        "DELETE FROM device_queue_reports WHERE reported_at < ?1",
-        cutoff,
-      );
-      return Number(
-        /** @type {{meta?: {changes?: number}}} */ (gone)?.meta?.changes ?? 0,
-      );
+      const gone = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
+      return Number(/** @type {{meta?: {changes?: number}}} */ (gone)?.meta?.changes ?? 0);
     },
 
     /**
