@@ -219,7 +219,11 @@ export function syncStatus(device, now = Date.now()) {
     throw new TypeError(`syncStatus needs a device object, got ${String(device)}`);
   }
   if (typeof device.syncError === "string" && device.syncError !== "") {
-    return { state: "error", label: "Sync error", detail: String(device.syncError) };
+    return {
+      state: "error",
+      label: "Sync error",
+      detail: String(device.syncError),
+    };
   }
   // `typeof … === "number"` rather than Number.isFinite: the field is
   // `number|null|undefined` and the question is whether a save is waiting, so
@@ -260,6 +264,10 @@ export const UPLOAD_LABEL = Object.freeze({
   pausedOne: "1 file waiting",
   pausedMany: "{files} files waiting",
   pausedLine: "Paused: {waiting} ({left} left)",
+  // The other half of a mixed account (drive issue #865): one device uploading
+  // while another is paused. {uploading} is the moving half's own line and
+  // {paused} the held half's, both spelled from the fragments above.
+  mixedLine: "{uploading}; {paused}",
   // Why a queued file has not gone up yet (drive issue #107). `drive status`
   // prints these; the page carries the same fragments so the two copies cannot
   // drift. Disk-full uses FAILURE_MESSAGES["disk-cache-full"] instead.
@@ -278,6 +286,13 @@ export const UPLOAD_LABEL = Object.freeze({
  * paused drive never reads as an uploading one. An explicit `paused: false`
  * behaves like an absent flag, so a caller that always sets the field does not
  * pause its own queue.
+ *
+ * A queue that carries a paused half beside the moving one (drive issue #865,
+ * `pausedFiles` on the payload) is neither stopped nor fully moving: the line
+ * leads with the uploading half's own words, then names the paused half with
+ * its own count. One uploading device beside one paused device on one account
+ * is the case this exists for, and the queue store (core/queues.js
+ * `sumLiveQueues`) is what keeps the two halves apart.
  * @param {unknown} upload
  */
 export function uploadProgress(upload) {
@@ -297,7 +312,7 @@ export function uploadProgress(upload) {
     throw new TypeError(`totalBytes must be 0 or more, got ${total}`);
   }
   if (total === 0) {
-    return { percent: 100, label: UPLOAD_LABEL.upToDate };
+    return { percent: 100, label: withHeldQueue(UPLOAD_LABEL.upToDate, fields) };
   }
   if (uploaded > total) {
     throw new RangeError(`uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`);
@@ -312,30 +327,105 @@ export function uploadProgress(upload) {
   // the same defensive way: only a literal true pauses, so `paused: false` and
   // an absent flag both leave the uploading line alone.
   if (fields.paused === true) {
-    const left = formatBytes(total - uploaded);
-    const waiting =
-      files === null
-        ? null
-        : files === 1
-          ? UPLOAD_LABEL.pausedOne
-          : UPLOAD_LABEL.pausedMany.replace("{files}", String(files));
-    const label =
-      waiting === null
-        ? `${UPLOAD_LABEL.paused}: ${left} left`
-        : UPLOAD_LABEL.pausedLine.replace("{waiting}", waiting).replace("{left}", left);
-    return { percent, label };
+    return { percent, label: pausedLabel(uploaded, total, files) };
   }
-  const head =
-    files === null
-      ? UPLOAD_LABEL.noCount
-      : files === 1
-        ? UPLOAD_LABEL.oneFile
-        : UPLOAD_LABEL.manyFiles.replace("{files}", String(files));
+  const head = uploadHead(files);
   const detail = UPLOAD_LABEL.progress
     .replace("{uploaded}", formatBytes(uploaded))
     .replace("{total}", formatBytes(total))
     .replace("{percent}", String(percent));
-  return { percent, label: `${head}: ${detail}` };
+  const uploading = `${head}: ${detail}`;
+  return { percent, label: withHeldQueue(uploading, fields) };
+}
+
+/**
+ * The head a queue leads with: its file count in the one table's own words.
+ * The count is null unless it is a positive integer, so a payload with no
+ * count leads with the bare "Uploading".
+ * @param {number|null} files
+ * @returns {string}
+ */
+function uploadHead(files) {
+  if (files === null) {
+    return UPLOAD_LABEL.noCount;
+  }
+  return files === 1
+    ? UPLOAD_LABEL.oneFile
+    : UPLOAD_LABEL.manyFiles.replace("{files}", String(files));
+}
+
+/**
+ * The line for a queue nothing is leaving from: the pause word first, then
+ * what is still waiting, so a person reads "Paused" and not "Uploading" for
+ * bytes that are not moving.
+ * @param {number} uploaded
+ * @param {number} total
+ * @param {number|null} files
+ * @returns {string}
+ */
+function pausedLabel(uploaded, total, files) {
+  const left = formatBytes(total - uploaded);
+  const waiting =
+    files === null
+      ? null
+      : files === 1
+        ? UPLOAD_LABEL.pausedOne
+        : UPLOAD_LABEL.pausedMany.replace("{files}", String(files));
+  return waiting === null
+    ? `${UPLOAD_LABEL.paused}: ${left} left`
+    : UPLOAD_LABEL.pausedLine.replace("{waiting}", waiting).replace("{left}", left);
+}
+
+/**
+ * The pause a mixed account carries beside its moving bytes, in the one table's
+ * own words (drive issue #865). The held half is read defensively the way the
+ * queue's own numbers are: a half the payload cannot describe as a queue is no
+ * clause at all, so the line is the uploading half's own rather than one with
+ * a hole in it. A half that is holding nothing is no clause either.
+ * @param {string} uploading the moving half's own line
+ * @param {Record<string, unknown>} fields the queue payload, already checked
+ * @returns {string}
+ */
+function withHeldQueue(uploading, fields) {
+  const held = heldLabel(fields);
+  return held === null
+    ? uploading
+    : UPLOAD_LABEL.mixedLine.replace("{uploading}", uploading).replace("{paused}", held);
+}
+
+/**
+ * The paused half of a mixed queue as its own line, or null when the payload
+ * carries none. It is read by the same rules as the queue itself (drive issue
+ * #865): a count that is not a positive whole number is no count, so the half
+ * is named by its bytes alone the way a standalone queue is, and a byte pair
+ * that cannot be a queue drops the clause rather than naming an impossible
+ * half. A paused device with zero-byte files (files > 0, totalBytes = 0) is
+ * still named, because the person sees "X files waiting" even when bytes are
+ * zero.
+ * @param {Record<string, unknown>} fields
+ * @returns {string|null}
+ */
+function heldLabel(fields) {
+  const count = fields.pausedFiles;
+  const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
+  const uploadedBytes = byteCount(fields.pausedUploadedBytes);
+  const totalBytes = byteCount(fields.pausedTotalBytes);
+  if (uploadedBytes === null || totalBytes === null || uploadedBytes > totalBytes) {
+    return null;
+  }
+  return pausedLabel(uploadedBytes, totalBytes, files);
+}
+
+/**
+ * A byte count read off a payload, or null when the payload carries none that
+ * is one: a whole number, 0 or more. A line is never built from a value that
+ * is not a count, so a queue whose numbers are not numbers keeps its words to
+ * what is known.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function byteCount(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 const STATUS_HEADERS = Object.freeze({
@@ -436,7 +526,11 @@ export function handleFirstRunStatusRequest(request, account, upload = null, dev
   // not a device row fails the request instead of answering "waiting" to an
   // account whose machine has signed in.
   return new Response(
-    JSON.stringify({ state: firstRunState(devices), devices: [...devices], upload }),
+    JSON.stringify({
+      state: firstRunState(devices),
+      devices: [...devices],
+      upload,
+    }),
     {
       status: 200,
       headers: STATUS_HEADERS,

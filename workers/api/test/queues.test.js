@@ -33,7 +33,12 @@ function fixedClock(startSeconds = 1_000_000) {
   };
 }
 
-const QUEUE = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+const QUEUE = {
+  files: 3,
+  uploadedBytes: 300_000_000,
+  totalBytes: 1_200_000_000,
+  paused: false,
+};
 
 test("the queue tables ship in the drive migrations the tests apply", () => {
   // A test harness that applied a list missing one of these files would answer
@@ -109,7 +114,10 @@ test("a report is refused inside the interval and accepted one tick later", asyn
 
   assert.equal((await store.record("acct_1", QUEUE)).stored, true);
   clock.advance(QUEUE_REPORT_INTERVAL_SECONDS - 1);
-  const tooSoon = await store.record("acct_1", { ...QUEUE, uploadedBytes: 600_000_000 });
+  const tooSoon = await store.record("acct_1", {
+    ...QUEUE,
+    uploadedBytes: 600_000_000,
+  });
   assert.equal(tooSoon.stored, false, "a report inside the interval was stored");
   assert.equal(tooSoon.retryAfter, 1, "the refusal says how long is left of the interval");
   // The refused report changed nothing: the row still carries the first one.
@@ -155,7 +163,12 @@ test("one account's report is never another's", async () => {
   const store = createD1QueueStore(createTestD1(), { now: clock.now });
   await store.record("acct_1", QUEUE);
   clock.advance(QUEUE_REPORT_INTERVAL_SECONDS);
-  await store.record("acct_2", { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true });
+  await store.record("acct_2", {
+    files: 1,
+    uploadedBytes: 0,
+    totalBytes: 4096,
+    paused: true,
+  });
   assert.deepEqual(await store.latest("acct_1"), QUEUE);
   assert.deepEqual(await store.latest("acct_2"), {
     files: 1,
@@ -171,7 +184,12 @@ test("a paused queue round-trips as paused", async () => {
   // state rather than as a stalled number (core/status.js UPLOAD_LABEL.paused).
   const clock = fixedClock();
   const store = createD1QueueStore(createTestD1(), { now: clock.now });
-  await store.record("acct_1", { files: 2, uploadedBytes: 100, totalBytes: 200, paused: true });
+  await store.record("acct_1", {
+    files: 2,
+    uploadedBytes: 100,
+    totalBytes: 200,
+    paused: true,
+  });
   assert.equal((await store.latest("acct_1"))?.paused, true);
 });
 
@@ -242,8 +260,38 @@ test("two devices on one account each store a report", async () => {
     "the second device stores its own row rather than 429 against the first",
   );
   const latest = await store.latest("acct_1");
-  assert.equal(latest?.files, 4);
-  assert.equal(latest?.paused, true);
+  // One uploading device beside one paused device on one account is two rows
+  // summed, and the sum keeps the two sides (drive issue #865): the moving
+  // side's own bytes on the four fields, the paused device's files held beside
+  // them, and `paused` false because bytes are still leaving.
+  assert.deepEqual(
+    latest,
+    {
+      files: 3,
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      paused: false,
+      pausedFiles: 1,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 4096,
+    },
+    "one uploading device and one paused device did not keep their two sides",
+  );
+});
+
+test("an account whose devices report an empty, unpaused queue is not paused", async () => {
+  // `paused` follows the reports' own flags only when nothing is leaving, so
+  // an account whose devices report an empty queue reads as up to date rather
+  // than paused (drive issue #865).
+  const clock = fixedClock();
+  const store = createD1QueueStore(createTestD1(), { now: clock.now });
+  await store.record("acct_1", { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false });
+  assert.deepEqual(await store.latest("acct_1"), {
+    files: 0,
+    uploadedBytes: 0,
+    totalBytes: 0,
+    paused: false,
+  });
 });
 
 test("remove drops one device's report and leaves the other", async () => {

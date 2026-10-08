@@ -278,7 +278,11 @@ test("'Synced' only stays true inside the sync window", () => {
 
 test("upload progress reads as a person reads it", () => {
   assert.equal(
-    uploadProgress({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }).label,
+    uploadProgress({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+    }).label,
     "Uploading 3 files: 300 MB of 1.2 GB (25%)",
   );
   assert.equal(
@@ -315,7 +319,12 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
     "Paused: 3 files waiting (900 MB left)",
   );
   assert.equal(
-    uploadProgress({ uploadedBytes: 0, totalBytes: 60_000_000, files: 1, paused: true }).label,
+    uploadProgress({
+      uploadedBytes: 0,
+      totalBytes: 60_000_000,
+      files: 1,
+      paused: true,
+    }).label,
     "Paused: 1 file waiting (60 MB left)",
   );
   // A queue with no file count still says Paused and what is left.
@@ -339,6 +348,94 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
   assert.equal(
     uploadProgress({ uploadedBytes: 1, totalBytes: 2, files: 1, paused: false }).label,
     "Uploading 1 file: 1 B of 2 B (50%)",
+  );
+  // One uploading device beside one paused device on one account is neither
+  // state: the queue store keeps the two halves apart (core/queues.js
+  // `sumLiveQueues`), and the line names the bytes that are still leaving
+  // first, then the paused device's own queue (drive issue #865). Leading with
+  // the pause word would say nothing is leaving while bytes are still going up.
+  const mixed = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+    pausedFiles: 1,
+    pausedUploadedBytes: 0,
+    pausedTotalBytes: 4096,
+  };
+  assert.equal(
+    uploadProgress(mixed).label,
+    "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 1 file waiting (4.1 KB left)",
+  );
+  assert.equal(uploadProgress(mixed).percent, 25, "the percent is the moving half's, not both");
+  // The paused half is named with the same words a queue paused on its own
+  // uses, so the two sentences cannot drift apart.
+  assert.ok(
+    uploadProgress(mixed).label.endsWith(
+      uploadProgress({
+        files: 1,
+        uploadedBytes: 0,
+        totalBytes: 4096,
+        paused: true,
+      }).label,
+    ),
+    "the paused half is not the paused line over its own numbers",
+  );
+  // A held half whose count the payload cannot describe is named by its bytes
+  // alone, the way a standalone queue with no count is.
+  for (const noCount of [
+    { ...mixed, pausedFiles: 0 },
+    { ...mixed, pausedFiles: 1.5 },
+    { ...mixed, pausedFiles: -1 },
+  ]) {
+    assert.equal(
+      uploadProgress(noCount).label,
+      "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 4.1 KB left",
+      `a held half without a count was not named by its bytes: ${JSON.stringify(noCount)}`,
+    );
+  }
+  // A half the payload cannot describe as a queue is no clause at all: the line
+  // stays the uploading device's own rather than one with a hole in it.
+  for (const broken of [
+    { ...mixed, pausedUploadedBytes: 4097 },
+    { ...mixed, pausedTotalBytes: "4096" },
+    { ...mixed, pausedUploadedBytes: null },
+  ]) {
+    assert.equal(
+      uploadProgress(broken).label,
+      "Uploading 3 files: 300 MB of 1.2 GB (25%)",
+      `a held half the payload cannot describe changed the line: ${JSON.stringify(broken)}`,
+    );
+  }
+  // A moving device with no bytes to move but files held elsewhere still names
+  // the held half: the "Up to date" line must not hide a paused queue.
+  assert.equal(
+    uploadProgress({
+      files: 3,
+      uploadedBytes: 0,
+      totalBytes: 0,
+      paused: false,
+      pausedFiles: 2,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 8192,
+    }).label,
+    "Up to date; Paused: 2 files waiting (8.2 KB left)",
+    "a held half was dropped when the moving half had no bytes",
+  );
+  // A paused device holding zero-byte files is still a paused device: the
+  // person has files waiting, so the line names them even with no bytes left.
+  assert.equal(
+    uploadProgress({
+      files: 3,
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      paused: false,
+      pausedFiles: 5,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 0,
+    }).label,
+    "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 5 files waiting (0 B left)",
+    "a paused device holding zero-byte files must still be named",
   );
   // The paused and resumed words live in the one table the CLI also mirrors.
   assert.equal(UPLOAD_LABEL.paused, "Paused");
@@ -399,7 +496,11 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
     account,
   );
   assert.equal(signedIn.status, 200);
-  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [], upload: null });
+  assert.deepEqual(await signedIn.json(), {
+    state: "waiting",
+    devices: [],
+    upload: null,
+  });
 
   // The account is a required argument: a call that forgets it is the 401, not
   // an open endpoint, so a future route cannot accidentally serve anonymous.
@@ -422,23 +523,52 @@ test("the poll answers connected when one of the account's devices signed in", a
     await (await handleFirstRunStatusRequest(new Request(endpoint), account, null, devices)).json();
   const seenNow = Date.now() - 30_000;
   const seenHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
-  const fresh = { id: "key_1", name: "Nish's Mac", kind: "device", lastSeenAt: seenNow };
-  const stale = { id: "key_2", name: "Old Mac", kind: "device", lastSeenAt: seenHoursAgo };
+  const fresh = {
+    id: "key_1",
+    name: "Nish's Mac",
+    kind: "device",
+    lastSeenAt: seenNow,
+  };
+  const stale = {
+    id: "key_2",
+    name: "Old Mac",
+    kind: "device",
+    lastSeenAt: seenHoursAgo,
+  };
 
   // The issue's own case: a device seen 30 seconds ago, named, is connected.
-  assert.deepEqual(await poll([fresh]), { state: "connected", devices: [fresh], upload: null });
+  assert.deepEqual(await poll([fresh]), {
+    state: "connected",
+    devices: [fresh],
+    upload: null,
+  });
   // An account whose machine has not signed in yet, and one whose last sign-in
   // is hours old, both read as waiting rather than as connected.
-  assert.deepEqual(await poll([]), { state: "waiting", devices: [], upload: null });
+  assert.deepEqual(await poll([]), {
+    state: "waiting",
+    devices: [],
+    upload: null,
+  });
   assert.deepEqual(
     await poll([{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }]),
     {
       state: "waiting",
-      devices: [{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }],
+      devices: [
+        {
+          id: "key_3",
+          name: "Brand new Mac",
+          kind: "device",
+          lastSeenAt: null,
+        },
+      ],
       upload: null,
     },
   );
-  assert.deepEqual(await poll([stale]), { state: "waiting", devices: [stale], upload: null });
+  assert.deepEqual(await poll([stale]), {
+    state: "waiting",
+    devices: [stale],
+    upload: null,
+  });
   // One live device is enough, and an older one on the same account does not
   // pull the answer back to waiting.
   assert.equal(firstRunState([stale, fresh], Date.now()), "connected");
@@ -475,7 +605,9 @@ test("a request can only prove an account through a session Better Auth minted",
   const made = createTestAuth();
   const { cookie, account } = await signIn(made, "someone@example.com");
   const proved = await signedInAccount(
-    new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+    new Request("https://drive.test/api/first-run-status", {
+      headers: { cookie },
+    }),
     made.auth,
   );
   assert.ok(proved);
@@ -483,7 +615,9 @@ test("a request can only prove an account through a session Better Auth minted",
   assert.equal(proved.id, account.id, "the session names the account that signed in");
   assert.equal(
     await signedInAccount(
-      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie },
+      }),
       other.auth,
     ),
     null,
@@ -508,7 +642,11 @@ test("the status payload carries the raw queue, the shape the page renders", asy
   assert.deepEqual(Object.keys(body), ["state", "devices", "upload"]);
   assert.equal(body.upload, null);
 
-  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const queue = {
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    files: 3,
+  };
   const carrying = await handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status"),
     { id: "1", name: "Your drive" },
@@ -535,11 +673,15 @@ test("the Worker routes the page's poll to the status handler", async () => {
   // importing the module in a test: /api/* runs the Worker, so an unrouted
   // path would fall through to the assets and 404 on every poll. With no
   // sign-in flow yet the Worker's gate is closed, so the route answers 401.
-  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
     const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 401, `${path} must reach the handler`);
-    assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
+    assert.deepEqual(await response.json(), {
+      error: failureMessage("unauthorized"),
+    });
   }
   // The waitlist route is untouched, and a stray path is still the asset 404.
   const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
@@ -556,7 +698,9 @@ test("a signed-out person cannot describe or create the starter", async () => {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
   });
   assert.equal(describe.status, 401, "a signed-out describe answers 401");
-  assert.deepEqual(await describe.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await describe.json(), {
+    error: failureMessage("unauthorized"),
+  });
 
   const create = await workerFetch(
     new Request("https://drive.test/api/starter", {
@@ -567,16 +711,22 @@ test("a signed-out person cannot describe or create the starter", async () => {
     { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } },
   );
   assert.equal(create.status, 401, "a signed-out create answers 401");
-  assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await create.json(), {
+    error: failureMessage("unauthorized"),
+  });
 });
 
 test("a signed-out person cannot read the balance or open a top-up", async () => {
   // drive#586: the balance and the top-up checkout are money on an account,
   // so the gate answers 401 before either handler runs, and no checkout opens.
-  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  };
   const balance = await workerFetch(new Request("https://drive.test/api/balance"), env);
   assert.equal(balance.status, 401, "a signed-out balance read answers 401");
-  assert.deepEqual(await balance.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await balance.json(), {
+    error: failureMessage("unauthorized"),
+  });
   const topUp = await workerFetch(
     new Request("https://drive.test/api/topup", {
       method: "POST",
@@ -586,7 +736,9 @@ test("a signed-out person cannot read the balance or open a top-up", async () =>
     env,
   );
   assert.equal(topUp.status, 401, "a signed-out top-up answers 401");
-  assert.deepEqual(await topUp.json(), { error: failureMessage("unauthorized") });
+  assert.deepEqual(await topUp.json(), {
+    error: failureMessage("unauthorized"),
+  });
 });
 
 test("the pricing page links to the first-run page", () => {
@@ -627,13 +779,20 @@ test("the page's state cell shows the module's own sync state and words", () => 
     label: "No syncs yet",
     detail: null,
   });
-  assert.deepEqual(deviceSyncState({ lastSyncAt: new Date(Date.now() - 30_000).toISOString() }), {
-    state: "synced",
-    label: "Synced",
-    detail: null,
-  });
+  assert.deepEqual(
+    deviceSyncState({
+      lastSyncAt: new Date(Date.now() - 30_000).toISOString(),
+    }),
+    {
+      state: "synced",
+      label: "Synced",
+      detail: null,
+    },
+  );
   assert.equal(
-    deviceSyncState({ lastSyncAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() }).detail,
+    deviceSyncState({
+      lastSyncAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    }).detail,
     "Quiet for a while",
   );
   // The cell text is the module's label, and only the join is the page's.
@@ -642,7 +801,11 @@ test("the page's state cell shows the module's own sync state and words", () => 
     "Sync error — storage down",
   );
   assert.equal(
-    stateCellText(deviceSyncState({ lastSyncAt: new Date(Date.now() - 30_000).toISOString() })),
+    stateCellText(
+      deviceSyncState({
+        lastSyncAt: new Date(Date.now() - 30_000).toISOString(),
+      }),
+    ),
     "Synced",
   );
   assert.throws(() => stateCellText({ detail: "x" }), TypeError);
@@ -784,8 +947,16 @@ test("the renderer shows the module's words: command, steps, states, fragments",
 
 test("the renderer's upload line is the module's line", () => {
   assert.equal(
-    uploadLine({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }),
-    uploadProgress({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }).label,
+    uploadLine({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+    }),
+    uploadProgress({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+    }).label,
   );
   assert.equal(
     uploadLine({ uploadedBytes: 0, totalBytes: 1, files: 1 }),
@@ -1011,14 +1182,18 @@ test("a signed-in Mac inside the window is connected, and the page stops asking"
   // The window's edge belongs to connected, one millisecond past it does not.
   assert.equal(
     isConnected(
-      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS).toISOString() }] },
+      {
+        devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS).toISOString() }],
+      },
       now,
     ),
     true,
   );
   assert.equal(
     isConnected(
-      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS - 1).toISOString() }] },
+      {
+        devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS - 1).toISOString() }],
+      },
       now,
     ),
     false,
@@ -1063,7 +1238,9 @@ test("the Worker reads a device's reported queue into the status payload", async
   const store = createD1QueueStore(made.db);
   const poll = () =>
     workerFetch(
-      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie },
+      }),
       env,
     );
 
@@ -1072,7 +1249,12 @@ test("the Worker reads a device's reported queue into the status payload", async
   assert.equal(before.upload, null, "an account whose no device has reported has no queue");
 
   // One device reports its queue; the poll reads exactly that row.
-  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  const queue = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
   assert.equal((await store.record(account.id, queue)).stored, true);
   const after = await (await poll()).json();
   assert.deepEqual(after.upload, queue, "the poll did not carry the device's own queue");
@@ -1086,19 +1268,28 @@ test("the Worker reads a device's reported queue into the status payload", async
 
   // Two devices on one account are two rows (drive#516): the second device's
   // report lands on its own row rather than 429ing against the first, and the
-  // read sums the account's rows, so the poll carries the whole queue.
+  // read keeps each device's own truth apart (drive#865), so the poll carries
+  // the bytes that are still leaving with the paused device's files named
+  // beside them instead of under a pause the whole account is not in.
   const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
   assert.equal((await store.record(account.id, second, "device-b")).stored, true);
   const both = await (await poll()).json();
   assert.deepEqual(
     both.upload,
     {
-      files: queue.files + second.files,
-      uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
-      totalBytes: queue.totalBytes + second.totalBytes,
-      paused: queue.paused || second.paused,
+      files: queue.files,
+      uploadedBytes: queue.uploadedBytes,
+      totalBytes: queue.totalBytes,
+      paused: false,
+      pausedFiles: second.files,
+      pausedUploadedBytes: second.uploadedBytes,
+      pausedTotalBytes: second.totalBytes,
     },
-    "two devices on one account did not read as two rows summed",
+    "two devices on one account did not keep their two sides",
+  );
+  assert.ok(
+    uploadLine(both.upload).startsWith("Uploading"),
+    `line ${uploadLine(both.upload)} reads as paused while bytes are leaving`,
   );
 
   // A paused queue reads as paused, so the page says the bytes are not leaving
@@ -1151,7 +1342,9 @@ test("the Worker reads the account's device rows into the status payload", async
   const store = createD1DeviceStore(made.db);
   const poll = () =>
     workerFetch(
-      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie },
+      }),
       env,
     );
 
@@ -1240,4 +1433,68 @@ test("the Worker reads the account's device rows into the status payload", async
     "an agent key's requests are not this machine signing in",
   );
   assert.equal(isConnected(agentBusy), false);
+});
+
+test("the status route names the bytes still leaving when another device is paused", async () => {
+  // Drive issue #865 through the status route itself: one account, two
+  // devices, one uploading and one paused. Summing per-device rows with
+  // `paused: sum.paused || q.paused` gave the account a pause that belonged to
+  // one device alone, so the page said "Paused" over bytes the other device
+  // was still sending. The read keeps each device's truth apart, and the line
+  // names both halves, so nothing is hidden and nothing is wrong.
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "mixed@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1QueueStore(made.db);
+  const poll = async () =>
+    (
+      await workerFetch(
+        new Request("https://drive.test/api/first-run-status", {
+          headers: { cookie },
+        }),
+        env,
+      )
+    ).json();
+
+  const uploading = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
+  const paused = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(account.id, uploading, "device-a")).stored, true);
+  assert.equal((await store.record(account.id, paused, "device-b")).stored, true);
+
+  const body = await poll();
+  assert.equal(body.upload.paused, false, "bytes are leaving this account, so it is not paused");
+  assert.equal(body.upload.files, uploading.files, "the paused device's files are not the count");
+  const line = uploadLine(body.upload);
+  // The line names the bytes that are still leaving, and only then the paused
+  // device's own queue. Both halves come from UPLOAD_LABEL, so the page and the
+  // CLI cannot spell this two ways.
+  assert.ok(
+    line.startsWith("Uploading 3 files: 300 MB of 1.2 GB (25%)"),
+    `line ${line} hides the moving bytes`,
+  );
+  assert.ok(
+    line.includes("Paused: 1 file waiting (4.1 KB left)"),
+    `line ${line} hides the paused device`,
+  );
+  assert.equal(line, uploadProgress(body.upload).label);
+  assert.ok(
+    line.indexOf("Uploading") < line.indexOf("Paused"),
+    `the pause reads as the whole state: ${line}`,
+  );
+  // The paused device alone, with the uploading one gone, is the paused line it
+  // has always been: the two halves are additive, not a new third state.
+  await store.remove(account.id, "device-a");
+  const oneLeft = await poll();
+  assert.equal(oneLeft.upload.paused, true);
+  assert.equal(uploadLine(oneLeft.upload), uploadProgress(paused).label);
 });
