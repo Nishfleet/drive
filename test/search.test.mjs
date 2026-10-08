@@ -360,13 +360,17 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
 test("reconcileIndex is a rebuild: rows for files the store no longer has are dropped", async () => {
   const db = makeD1();
   const store = createMemoryStore();
+  const at = Date.now();
   await seed(store, [
     ["/keep.txt", "x"],
     ["/gone.txt", "x"],
   ]);
-  await reconcileIndex(db, store, ACCOUNT);
+  await reconcileIndex(db, store, ACCOUNT, { now: () => at });
   await store.remove("/gone.txt");
-  const second = await reconcileIndex(db, store, ACCOUNT);
+  // The same clock as the first walk: a retry in the same millisecond still
+  // has to drop the gone path, because Date.now() does not move between two
+  // sequential calls in a unit test.
+  const second = await reconcileIndex(db, store, ACCOUNT, { now: () => at });
   assert.equal(second.indexed, 1);
   const found = await searchDrive(db, ACCOUNT, "gone");
   assert.equal(found.count, 0);
@@ -1125,11 +1129,12 @@ test("an emptied store clears the live index (drive#566)", async () => {
   const db = makeD1();
   seedAccount(db, ACCOUNT.id);
   const raw = createMemoryStore();
+  const at = Date.now();
   await seed(raw, [["/keep.txt", "x"]]);
-  await reconcileIndex(db, raw, ACCOUNT);
+  await reconcileIndex(db, raw, ACCOUNT, { now: () => at });
   assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1);
   await raw.remove("/keep.txt");
-  const again = await reconcileIndex(db, raw, ACCOUNT);
+  const again = await reconcileIndex(db, raw, ACCOUNT, { now: () => at });
   assert.equal(again.indexed, 0, "the walk found nothing");
   assert.equal(
     (await searchDrive(db, ACCOUNT, "keep")).count,
@@ -1507,7 +1512,7 @@ test("the cached app still reads each fetch's own env", async () => {
 
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  for (const name of ["0002_file_index.sql", "0044_file_index_staging.sql"]) {
+  for (const name of ["0002_file_index.sql", "0045_file_index_staging.sql"]) {
     const sql = readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8");
     const withoutComments = sql.replace(/--.*$/gm, "");
     assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), `${name}: no drops`);
@@ -1527,7 +1532,7 @@ test("the migration is additive: one new table, no drops, every column defaulted
   );
   assert.ok(
     readFileSync(
-      new URL("../migrations/drive/0044_file_index_staging.sql", import.meta.url),
+      new URL("../migrations/drive/0045_file_index_staging.sql", import.meta.url),
       "utf8",
     ).includes("CREATE TABLE IF NOT EXISTS file_index_staging"),
   );

@@ -17,7 +17,7 @@
 //     (REINDEX_SCHEDULE, src/index.js); no request can.
 //
 // A rebuild is staged rather than written in place. Its rows are written to
-// `file_index_staging` (migration 0044), each stamped with that attempt's
+// `file_index_staging` (migration 0045), each stamped with that attempt's
 // generation number, then upserts the finished set and deletes vanished
 // paths in bounded batches. It never deletes the live rows first. A rebuild that dies half-way therefore leaves
 // this account's rows as they were, and the next attempt clears the
@@ -354,10 +354,12 @@ function stagingStatements(db, generation, rows) {
  * Drops live rows this walk did not see, in pages, so a 100,000-file delete
  * never runs as one statement.
  *
- * A path is vanished when it is live, older than this walk, and missing from
- * this attempt's staging. A create that landed after the walk started has a
- * later `indexed_at` and is kept, even when the listing had already passed
- * its folder (drive#566).
+ * A path is vanished when it is live, not newer than this walk, and missing
+ * from this attempt's staging. Two walks in the same millisecond (the test
+ * clock, and a retry that follows a crash in the same tick) still drop the
+ * gone path. A create that landed after the walk started has a later
+ * `indexed_at` and is kept, even when the listing had already passed its
+ * folder (drive#566).
  * @param {D1Database} db
  * @param {string} accountId
  * @param {number} generation
@@ -370,7 +372,7 @@ async function deleteVanishedPaths(db, accountId, generation, walkIso, pageSize)
     const found = await db
       .prepare(
         `SELECT path FROM file_index ` +
-          `WHERE account_id = ?1 AND indexed_at < ?2 ` +
+          `WHERE account_id = ?1 AND indexed_at <= ?2 ` +
           `AND NOT EXISTS (` +
           `SELECT 1 FROM file_index_staging ` +
           `WHERE account_id = file_index.account_id ` +
