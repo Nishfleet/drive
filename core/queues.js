@@ -58,7 +58,16 @@ export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_HEARTBEAT_SECONDS;
  * One report as the store holds it: the queue shape `uploadProgress()` and
  * the first-run page's `uploadLine()` read (core/status.js), plus the row's
  * own clock. `null` is "no queue to report", never a zero-byte queue.
- * @typedef {{uploadedBytes: number, totalBytes: number, files: number, paused: boolean}} UploadQueue
+ *
+ * The fields are the side of the account's queue that is still leaving. On
+ * an account with a paused device beside an uploading one (drive issue
+ * #865), the files that device is holding ride beside them as `pausedFiles`
+ * with their own `pausedUploadedBytes` and `pausedTotalBytes`, so one read
+ * can name both halves. `paused` is true only when nothing is leaving at
+ * all, so a mixed account reads as `paused: false` with the held half named
+ * beside the moving one.
+ * @typedef {{uploadedBytes: number, totalBytes: number, files: number, paused: boolean,
+ *   pausedFiles?: number, pausedUploadedBytes?: number, pausedTotalBytes?: number}} UploadQueue
  */
 
 /**
@@ -103,6 +112,69 @@ export function uploadQueueFromRow(row, at) {
     files,
     paused: r.paused === 1 || r.paused === true,
   };
+}
+
+/**
+ * One account's live reports as the one queue its pages render, with each
+ * device's own truth kept apart (drive issue #865).
+ *
+ * The fields are the side that is still leaving. A paused device's own count
+ * and bytes are summed back beside them (`pausedFiles`, `pausedUploadedBytes`,
+ * `pausedTotalBytes`), so a line can name both halves: the bytes still leaving
+ * and the files the pause is holding. A paused device alone is the whole queue
+ * again, as it has always been, and the extra fields stay off it.
+ *
+ * The one field that matters most is `paused`, and it is no longer any paused
+ * row's flag: it is true only when nothing on the account is leaving at all.
+ * One paused device beside one uploading one summed its `true` over the
+ * uploading device's live bytes, so both the status and the usage page told
+ * the person their uploads were paused while bytes from the other device were
+ * still going up. Now that account reads as moving, with the pause named
+ * beside the progress instead of over it.
+ *
+ * A row with no bytes and no files is neither side: it adds nothing to either
+ * sum, so an empty report beside a paused one reads as paused, and an empty
+ * report beside an uploading one reads as that one's queue.
+ * @param {UploadQueue[]} live
+ * @returns {UploadQueue}
+ */
+function sumLiveQueues(live) {
+  const moving = { files: 0, uploadedBytes: 0, totalBytes: 0 };
+  const held = { files: 0, uploadedBytes: 0, totalBytes: 0 };
+  for (const queue of live) {
+    const side = queue.paused === true ? held : moving;
+    side.files += queue.files;
+    side.uploadedBytes += queue.uploadedBytes;
+    side.totalBytes += queue.totalBytes;
+  }
+  // Nothing is leaving: the queue is what it is holding. `paused` is true only
+  // on this branch, and the paused-side fields stay off, so an account whose
+  // one device is paused is the exact shape it has always been.
+  if (moving.totalBytes === 0 && moving.files === 0) {
+    return {
+      files: moving.files + held.files,
+      uploadedBytes: moving.uploadedBytes + held.uploadedBytes,
+      totalBytes: moving.totalBytes + held.totalBytes,
+      paused: true,
+    };
+  }
+  const queue = {
+    files: moving.files,
+    uploadedBytes: moving.uploadedBytes,
+    totalBytes: moving.totalBytes,
+    paused: false,
+  };
+  // Bytes are leaving and files are held: both halves stay on the queue, and
+  // `uploadProgress()` names them in that order.
+  if (held.files > 0 || held.totalBytes > 0) {
+    return {
+      ...queue,
+      pausedFiles: held.files,
+      pausedUploadedBytes: held.uploadedBytes,
+      pausedTotalBytes: held.totalBytes,
+    };
+  }
+  return queue;
 }
 
 /**
@@ -193,15 +265,7 @@ export function createD1QueueStore(db, options = {}) {
       if (live.length === 0) {
         return null;
       }
-      return live.reduce(
-        (sum, q) => ({
-          files: sum.files + q.files,
-          uploadedBytes: sum.uploadedBytes + q.uploadedBytes,
-          totalBytes: sum.totalBytes + q.totalBytes,
-          paused: sum.paused || q.paused,
-        }),
-        { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false },
-      );
+      return sumLiveQueues(live);
     },
 
     /**

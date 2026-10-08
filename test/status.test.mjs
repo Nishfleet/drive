@@ -340,6 +340,48 @@ test("a paused queue says Paused and what is left, not Uploading", () => {
     uploadProgress({ uploadedBytes: 1, totalBytes: 2, files: 1, paused: false }).label,
     "Uploading 1 file: 1 B of 2 B (50%)",
   );
+  // One uploading device beside one paused device on one account is neither
+  // state: the queue store keeps the two halves apart (core/queues.js
+  // `sumLiveQueues`), and the line names the bytes that are still leaving
+  // first, then the paused device's own queue (drive issue #865). Leading with
+  // the pause word would say nothing is leaving while bytes are still going up.
+  const mixed = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+    pausedFiles: 1,
+    pausedUploadedBytes: 0,
+    pausedTotalBytes: 4096,
+  };
+  assert.equal(
+    uploadProgress(mixed).label,
+    "Uploading 3 files: 300 MB of 1.2 GB (25%); Paused: 1 file waiting (4.1 KB left)",
+  );
+  assert.equal(uploadProgress(mixed).percent, 25, "the percent is the moving half's, not both");
+  // The paused half is named with the same words a queue paused on its own
+  // uses, so the two sentences cannot drift apart.
+  assert.ok(
+    uploadProgress(mixed).label.endsWith(
+      uploadProgress({ files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true }).label,
+    ),
+    "the paused half is not the paused line over its own numbers",
+  );
+  // A half the payload cannot describe is no clause at all: the line stays the
+  // uploading device's own rather than one with a hole in it.
+  for (const broken of [
+    { ...mixed, pausedFiles: 0 },
+    { ...mixed, pausedFiles: 1.5 },
+    { ...mixed, pausedTotalBytes: 0 },
+    { ...mixed, pausedUploadedBytes: 4097 },
+    { ...mixed, pausedTotalBytes: "4096" },
+  ]) {
+    assert.equal(
+      uploadProgress(broken).label,
+      "Uploading 3 files: 300 MB of 1.2 GB (25%)",
+      `a held half the payload cannot describe changed the line: ${JSON.stringify(broken)}`,
+    );
+  }
   // The paused and resumed words live in the one table the CLI also mirrors.
   assert.equal(UPLOAD_LABEL.paused, "Paused");
   assert.equal(UPLOAD_LABEL.resumed, "Resumed");
@@ -1086,19 +1128,28 @@ test("the Worker reads a device's reported queue into the status payload", async
 
   // Two devices on one account are two rows (drive#516): the second device's
   // report lands on its own row rather than 429ing against the first, and the
-  // read sums the account's rows, so the poll carries the whole queue.
+  // read keeps each device's own truth apart (drive#865), so the poll carries
+  // the bytes that are still leaving with the paused device's files named
+  // beside them instead of under a pause the whole account is not in.
   const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
   assert.equal((await store.record(account.id, second, "device-b")).stored, true);
   const both = await (await poll()).json();
   assert.deepEqual(
     both.upload,
     {
-      files: queue.files + second.files,
-      uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
-      totalBytes: queue.totalBytes + second.totalBytes,
-      paused: queue.paused || second.paused,
+      files: queue.files,
+      uploadedBytes: queue.uploadedBytes,
+      totalBytes: queue.totalBytes,
+      paused: false,
+      pausedFiles: second.files,
+      pausedUploadedBytes: second.uploadedBytes,
+      pausedTotalBytes: second.totalBytes,
     },
-    "two devices on one account did not read as two rows summed",
+    "two devices on one account did not keep their two sides",
+  );
+  assert.ok(
+    uploadLine(both.upload).startsWith("Uploading"),
+    `line ${uploadLine(both.upload)} reads as paused while bytes are leaving`,
   );
 
   // A paused queue reads as paused, so the page says the bytes are not leaving
@@ -1240,4 +1291,66 @@ test("the Worker reads the account's device rows into the status payload", async
     "an agent key's requests are not this machine signing in",
   );
   assert.equal(isConnected(agentBusy), false);
+});
+
+test("the status route names the bytes still leaving when another device is paused", async () => {
+  // Drive issue #865 through the status route itself: one account, two
+  // devices, one uploading and one paused. Summing per-device rows with
+  // `paused: sum.paused || q.paused` gave the account a pause that belonged to
+  // one device alone, so the page said "Paused" over bytes the other device
+  // was still sending. The read keeps each device's truth apart, and the line
+  // names both halves, so nothing is hidden and nothing is wrong.
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "mixed@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1QueueStore(made.db);
+  const poll = async () =>
+    (
+      await workerFetch(
+        new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+        env,
+      )
+    ).json();
+
+  const uploading = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
+  const paused = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(account.id, uploading, "device-a")).stored, true);
+  assert.equal((await store.record(account.id, paused, "device-b")).stored, true);
+
+  const body = await poll();
+  assert.equal(body.upload.paused, false, "bytes are leaving this account, so it is not paused");
+  assert.equal(body.upload.files, uploading.files, "the paused device's files are not the count");
+  const line = uploadLine(body.upload);
+  // The line names the bytes that are still leaving, and only then the paused
+  // device's own queue. Both halves come from UPLOAD_LABEL, so the page and the
+  // CLI cannot spell this two ways.
+  assert.ok(
+    line.startsWith("Uploading 3 files: 300 MB of 1.2 GB (25%)"),
+    `line ${line} hides the moving bytes`,
+  );
+  assert.ok(
+    line.includes("Paused: 1 file waiting (4.1 KB left)"),
+    `line ${line} hides the paused device`,
+  );
+  assert.equal(line, uploadProgress(body.upload).label);
+  assert.ok(
+    line.indexOf("Uploading") < line.indexOf("Paused"),
+    `the pause reads as the whole state: ${line}`,
+  );
+  // The paused device alone, with the uploading one gone, is the paused line it
+  // has always been: the two halves are additive, not a new third state.
+  await store.remove(account.id, "device-a");
+  const oneLeft = await poll();
+  assert.equal(oneLeft.upload.paused, true);
+  assert.equal(uploadLine(oneLeft.upload), uploadProgress(paused).label);
 });

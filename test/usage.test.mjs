@@ -1405,24 +1405,24 @@ test("the usage page shows the queue a device reported, through the Worker's own
 
   // Two devices on one account are two rows (drive#516): the second device's
   // report lands on its own row rather than 429ing against the first, and the
-  // read sums the account's rows, so the line carries the whole queue.
+  // read keeps each device's own truth apart (drive#865), so the paused
+  // device's queue is held beside the moving one, never over it. The account's
+  // own row is paused at this point in the test (the UPDATE above), so both
+  // rows read as paused: nothing is leaving, and the paused line is still the
+  // count of both devices' rows summed (3 + 1).
   const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
   assert.equal((await store.record(signedInAccount.id, second, "device-b")).stored, true);
-  const summed = {
-    files: queue.files + second.files,
-    uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
-    totalBytes: queue.totalBytes + second.totalBytes,
-    paused: queue.paused || second.paused,
-  };
   const both = await (await read()).json();
   assert.equal(
     both.uploadLine,
-    uploadProgress(summed).label,
-    "two devices on one account did not read as two rows summed",
+    uploadProgress({
+      files: queue.files + second.files,
+      uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
+      totalBytes: queue.totalBytes + second.totalBytes,
+      paused: true,
+    }).label,
+    "two paused devices on one account did not read as one paused queue",
   );
-  // The account's own row is paused at this point in the test (the UPDATE
-  // above), so the summed line is the paused one: the count is still both
-  // devices' rows summed (3 + 1).
   assert.ok(
     both.uploadLine.includes("4 files waiting"),
     `line ${both.uploadLine} is not both devices' queue`,
@@ -1555,4 +1555,56 @@ test("the export route answers 200 for a signed-in account with no api binding (
   const nextBody = await nextPage.json();
   assert.equal(nextBody.files.length, 0, "a cursor past the last file repeats nothing");
   assert.equal(nextBody.complete, true);
+});
+
+test("the usage line names the bytes still leaving when another device is paused", async () => {
+  // Drive issue #865 on the second surface: one account, one device uploading,
+  // one paused. The account summed to `paused: true`, so this page told the
+  // person their uploads had stopped while the other device was still sending.
+  // The read keeps the two halves apart (core/queues.js `sumLiveQueues`), so
+  // the same sentence the first-run page draws names the bytes that are
+  // leaving, then the pause beside them.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account: signedInAccount } = await signIn(made, "mixed-usage@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1QueueStore(made.db);
+  const read = () =>
+    workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env);
+
+  const uploading = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
+  const paused = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(signedInAccount.id, uploading, "device-a")).stored, true);
+  assert.equal((await store.record(signedInAccount.id, paused, "device-b")).stored, true);
+
+  const body = await (await read()).json();
+  assert.ok(
+    body.uploadLine.startsWith("Uploading 3 files: 300 MB of 1.2 GB (25%)"),
+    `line ${body.uploadLine} reads as paused while bytes are leaving`,
+  );
+  assert.ok(
+    body.uploadLine.includes("Paused: 1 file waiting (4.1 KB left)"),
+    `line ${body.uploadLine} does not name the paused device`,
+  );
+  // The same sentence the first-run page draws from the same payload, so the
+  // two surfaces cannot disagree about an account with a device paused.
+  assert.equal(
+    body.uploadLine,
+    uploadLine({ ...uploading, pausedFiles: 1, pausedUploadedBytes: 0, pausedTotalBytes: 4096 }),
+    "the usage line is not the first-run page's line for the same account",
+  );
+  // With the uploading device gone, the line is the paused one it has always
+  // been: the halves are additive, not a new third state.
+  await store.remove(signedInAccount.id, "device-a");
+  const oneLeft = await (await read()).json();
+  assert.equal(oneLeft.uploadLine, uploadProgress(paused).label);
 });

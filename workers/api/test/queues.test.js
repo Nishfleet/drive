@@ -242,8 +242,23 @@ test("two devices on one account each store a report", async () => {
     "the second device stores its own row rather than 429 against the first",
   );
   const latest = await store.latest("acct_1");
-  assert.equal(latest?.files, 4);
-  assert.equal(latest?.paused, true);
+  // One uploading device beside one paused device on one account is two rows
+  // summed, and the sum keeps the two sides (drive issue #865): the moving
+  // side's own bytes on the four fields, the paused device's files held beside
+  // them, and `paused` false because bytes are still leaving.
+  assert.deepEqual(
+    latest,
+    {
+      files: 3,
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      paused: false,
+      pausedFiles: 1,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 4096,
+    },
+    "one uploading device and one paused device did not keep their two sides",
+  );
 });
 
 test("remove drops one device's report and leaves the other", async () => {
