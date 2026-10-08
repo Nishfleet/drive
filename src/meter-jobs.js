@@ -151,7 +151,7 @@ export async function handleMeterJobs(batch, handlers) {
  *   mailFrom?: string,
  *   settle?: import("../core/prepaid.js").SettleDeps,
  *   store?: import("../core/files.js").FileStore,
- *   reportError?: (error: unknown, where: string) => void | Promise<void>,
+ *   reportError?: (error: unknown, where: string) => unknown,
  * }} MeterJobDeps
  */
 
@@ -162,7 +162,7 @@ export async function handleMeterJobs(batch, handlers) {
  * @param {MeterJobDeps} deps
  * @param {MeterJob} job
  */
-async function runHourlyAccountJob(deps, job) {
+export async function runHourlyAccountJob(deps, job) {
   if (deps.capStore) {
     await enforceAccountCap(
       { store: deps.capStore, now: job.at, email: deps.email, mailFrom: deps.mailFrom },

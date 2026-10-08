@@ -267,6 +267,7 @@ test("both saved sentences come from the one table in core/billing.js", () => {
     },
     { ...BILLING_CONFIG, maxUsdPerTb: 5 },
   );
+  assert.ok(capped.saved);
   assert.equal(capped.saved.usd, 1);
   assert.equal(capped.saved.planUsd, 10);
   assert.equal(

@@ -659,6 +659,7 @@ export function monthBillCents(month) {
   });
 }
 
+/** @param {number} size30Tb */
 function savingAllowed(size30Tb) {
   return size30Tb < USUAL_PLAN_TB;
 }

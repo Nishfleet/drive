@@ -1944,7 +1944,9 @@ const handler = {
           : undefined,
         email: env.EMAIL,
         mailFrom: secrets.MAIL_FROM ?? "",
-        reportError: (error, where) => captureError(error, where, sentryFor(env)),
+        reportError: async (error, where) => {
+          await captureError(error, where, sentryFor(env));
+        },
         settle: {
           email: env.EMAIL,
           mailFrom: dodo.MAIL_FROM ?? "",

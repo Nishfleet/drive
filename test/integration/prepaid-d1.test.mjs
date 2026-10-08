@@ -1012,7 +1012,6 @@ test("a payment with no customer id credits and claims the card, and the alarm f
   );
 });
 
-
 // drive#642's day-key law, on the real draw path: the key is (account, day),
 // so two accounts drawing on the same day each get their own row and each is
 // charged once, and the day key is never shared between them.
@@ -1158,11 +1157,7 @@ test("the window edges: billed at 29d23h, gone at 30d and at 30d+1min", async ()
     through: through + 24 * HOUR_MS,
     now: through + 24 * HOUR_MS,
   });
-  assert.deepEqual(
-    again.draws ?? again,
-    { drawn: 0, cents: 0 },
-    "the day after the window is a $0 day",
-  );
+  assert.deepEqual(again, { drawn: 0, cents: 0 }, "the day after the window is a $0 day");
 });
 
 // drive#642's UTC-midnight law: a peak reached late in its own day is billed

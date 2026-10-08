@@ -13,7 +13,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
 
-/** One rolled hour on `at` for `accountId`, written raw, with the size mark. */
+/**
+ * One rolled hour on `at` for `accountId`, written raw, with the size mark.
+ * @param {import("./d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} accountId
+ * @param {number} at
+ * @param {number} [storedBytes]
+ */
 function meterOneHour(sqlite, accountId, at, storedBytes = 700) {
   sqlite
     .prepare(
@@ -23,13 +29,20 @@ function meterOneHour(sqlite, accountId, at, storedBytes = 700) {
     .run(accountId, at, 700 * 60, 0, storedBytes, at);
 }
 
-/** The day a draw row covers, as the draw wrote it. null when there is none. */
+/**
+ * The day a draw row covers, as the draw wrote it. null when there is none.
+ * @param {import("./d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} accountId
+ * @returns {Array<{day: string, draw_millicents: number}>}
+ */
 function drawRows(sqlite, accountId) {
   return sqlite
     .prepare("SELECT day, draw_millicents FROM daily_draws WHERE account_id = ? ORDER BY day")
-    .all(accountId);
+    .all(accountId)
+    .map((row) => ({ day: String(row.day), draw_millicents: Number(row.draw_millicents) }));
 }
 
+/** @param {import("./d1-sqlite.mjs").TestSqlite} sqlite */
 function usageRows(sqlite) {
   return sqlite
     .prepare(
