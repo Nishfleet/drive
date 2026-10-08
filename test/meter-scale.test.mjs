@@ -517,7 +517,8 @@ test("a meter row that does not parse is reported through the queue's production
     );
     assert.equal(envelopes.length, 1, "the production reportError posted one envelope");
     assert.match(envelopes[0], /stored_bytes value that does not parse/);
-    assert.match(envelopes[0], /meter hourly draw acc-bad-bytes/);
+    assert.match(envelopes[0], /meter hourly draw/);
+    assert.doesNotMatch(envelopes[0], /acc-bad-bytes/);
   } finally {
     globalThis.fetch = originalFetch;
   }

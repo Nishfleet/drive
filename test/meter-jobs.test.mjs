@@ -86,10 +86,45 @@ test("a meter row that does not parse is reported, and no draw is made", async (
   // find the account that failed, and not only left to the queue's retry.
   assert.deepEqual(reported.length, 1);
   assert.match(String(reported[0].error), /stored_bytes value that does not parse/);
-  assert.equal(reported[0].where, `meter hourly draw ${accountId}`);
+  assert.doesNotMatch(String(reported[0].error), new RegExp(accountId));
+  assert.equal(reported[0].where, "meter hourly draw");
   // And the day is not charged: no draw row, no usage ledger row.
   assert.deepEqual(drawRows(sqlite, accountId), []);
   assert.deepEqual(usageRows(sqlite), []);
+});
+
+test("a retried draw failure does not report again", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const accountId = "acc-retry";
+  const day = at("2026-03-10T00:00:00Z");
+  await meterOneHour(sqlite, accountId, day);
+  sqlite
+    .prepare(
+      `INSERT OR REPLACE INTO usage_minutes (account_id, hour, gb_minutes_live,
+         download_bytes, stored_bytes, rolled_up_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(accountId, at("2026-03-10T05:00:00Z"), 700 * 60, 0, 700.5, at("2026-03-10T06:00:00Z"));
+  /** @type {unknown[]} */
+  const reported = [];
+  const { runHourlyAccountJob } = await import("../src/meter-jobs.js");
+  await assert.rejects(
+    () =>
+      runHourlyAccountJob(
+        {
+          meterDb: db,
+          reportError: (/** @type {unknown} */ error) => reported.push(error),
+        },
+        {
+          kind: "meter.hourly",
+          accountId,
+          at: day,
+          through: at("2026-03-10T11:00:00Z"),
+          attempts: 2,
+        },
+      ),
+    /stored_bytes value that does not parse/,
+  );
+  assert.deepEqual(reported, []);
 });
 
 test("a report that throws still leaves the draw failure as the thrown error", async (t) => {

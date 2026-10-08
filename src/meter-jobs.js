@@ -46,7 +46,7 @@ const SEND_BATCH_LIMIT = 100;
 
 /**
  * @typedef {{sendBatch(messages: Array<{body: unknown}>): Promise<unknown>}} MeterJobsQueue
- * @typedef {{kind: string, accountId: string, at: number, through?: number}} MeterJob
+ * @typedef {{kind: string, accountId: string, at: number, through?: number, attempts?: number}} MeterJob
  */
 
 /**
@@ -111,7 +111,7 @@ function meterJob(body) {
  * The consumer: runs each message's job, acks it when it finished and asks
  * for a retry when it threw. A malformed message is retried too, so after
  * its retries it lands in the dead-letter queue where it can be read.
- * @param {{messages: readonly {body: unknown, ack(): void, retry(): void}[]}} batch
+ * @param {{messages: readonly {body: unknown, attempts?: number, ack(): void, retry(): void}[]}} batch
  * @param {Record<string, (job: MeterJob) => Promise<unknown>>} handlers
  * @returns {Promise<{acked: number, retried: number}>}
  */
@@ -125,7 +125,11 @@ export async function handleMeterJobs(batch, handlers) {
       if (typeof handler !== "function") {
         throw new TypeError(`no handler for meter job kind ${job.kind}`);
       }
-      await handler(job);
+      const attempts = Number(message.attempts);
+      await handler({
+        ...job,
+        attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 1,
+      });
       message.ack();
       acked += 1;
     } catch (error) {
@@ -190,7 +194,18 @@ export async function runHourlyAccountJob(deps, job) {
     // and a silent swap of the error would retry a monitoring outage instead.
     const report = deps.reportError ?? captureError;
     try {
-      await report(error, `meter hourly draw ${job.accountId}`);
+      // The account id stays on the console line handleMeterJobs already
+      // writes. Sentry's `where` is the job name only, the exception text
+      // drops the id, and retries of the same failure do not POST again.
+      if ((job.attempts ?? 1) <= 1) {
+        const reported =
+          error instanceof Error
+            ? Object.assign(new Error(error.message.replaceAll(job.accountId, "account")), {
+                name: error.name,
+              })
+            : error;
+        await report(reported, "meter hourly draw");
+      }
     } catch (reportFailed) {
       console.error(
         "meter hourly draw: the report failed",
