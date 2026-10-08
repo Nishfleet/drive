@@ -75,7 +75,7 @@ function makeD1() {
     "waitlist/0001_waitlist.sql",
     "drive/0002_file_index.sql",
     "drive/0039_file_index_fts.sql",
-    "drive/0042_file_index_staging.sql",
+    "drive/0044_file_index_staging.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }

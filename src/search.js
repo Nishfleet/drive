@@ -17,9 +17,9 @@
 //     (REINDEX_SCHEDULE, src/index.js); no request can.
 //
 // A rebuild is staged rather than written in place. Its rows are written to
-// `file_index_staging` (migration 0042), each stamped with that attempt's
-// generation number, and one transaction deletes the account's old rows and
-// moves the finished set over. A rebuild that dies half-way therefore leaves
+// `file_index_staging` (migration 0044), each stamped with that attempt's
+// generation number, then upserts the finished set and deletes vanished
+// paths in bounded batches. It never deletes the live rows first. A rebuild that dies half-way therefore leaves
 // this account's rows as they were, and the next attempt clears the
 // generation that died: before drive#566 the rebuild deleted the live rows
 // first, so one crash left an account with no rows and the index no longer
@@ -351,41 +351,40 @@ function stagingStatements(db, generation, rows) {
 }
 
 /**
- * The three statements that finish a rebuild, in one `db.batch` call.
+ * Drops live rows this walk did not see, in pages, so a 100,000-file delete
+ * never runs as one statement.
  *
- * A D1 batch is one transaction, so these run together or not at all: the
- * account's live rows are the account's rows from the last rebuild that
- * finished, never a half-written mix of two walks. That is the whole point of
- * staging (drive#566) — the walk is the slow, fallible part, and it happens
- * before any live row can be affected.
- *
- * The first statement is a delete, not a truncate of everything: one account's
- * rows only, so a sibling account rebuilding in parallel is never caught by
- * this swap. Two overlapping rebuilds of the *same* account each carry their
- * own generation, so one cannot move the other's rows; last finished walk
- * wins, and neither writes an empty live set. The DELETE fires the trigram
- * trigger on `file_index` (migration 0039), and the INSERT fires the insert
- * trigger, so the search table stays in step without this module naming it.
+ * A path is vanished when it is live, older than this walk, and missing from
+ * this attempt's staging. A create that landed after the walk started has a
+ * later `indexed_at` and is kept, even when the listing had already passed
+ * its folder (drive#566).
  * @param {D1Database} db
  * @param {string} accountId
  * @param {number} generation
- * @returns {D1PreparedStatement[]} */
-function swapStatements(db, accountId, generation) {
-  return [
-    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(accountId),
-    db
+ * @param {string} walkIso
+ * @param {number} pageSize
+ */
+async function deleteVanishedPaths(db, accountId, generation, walkIso, pageSize) {
+  const page = Math.max(1, Math.min(Math.floor(pageSize), STATEMENTS_PER_BATCH));
+  for (;;) {
+    const found = await db
       .prepare(
-        `INSERT INTO file_index ` +
-          `(account_id, path, name, parent, size_bytes, modified_at, indexed_at) ` +
-          `SELECT account_id, path, name, parent, size_bytes, modified_at, indexed_at ` +
-          `FROM file_index_staging ` +
-          `WHERE account_id = ?1 AND generation = ?2`,
+        `SELECT path FROM file_index ` +
+          `WHERE account_id = ?1 AND indexed_at < ?2 ` +
+          `AND NOT EXISTS (` +
+          `SELECT 1 FROM file_index_staging ` +
+          `WHERE account_id = file_index.account_id ` +
+          `AND path = file_index.path AND generation = ?3` +
+          `) LIMIT ${page}`,
       )
-      .bind(accountId, generation),
-    db
-      .prepare("DELETE FROM file_index_staging WHERE account_id = ?1 AND generation = ?2")
-      .bind(accountId, generation),
-  ];
+      .bind(accountId, walkIso, generation)
+      .all();
+    const paths = /** @type {Array<{path: string}>} */ (found?.results ?? []);
+    if (paths.length === 0) {
+      return;
+    }
+    await db.batch(paths.map((row) => deleteStatement(db, { id: accountId }, row.path)));
+  }
 }
 
 /** This attempt's generation number.
@@ -409,10 +408,10 @@ function openStagingGeneration() {
  * a no-op and a row an event feed missed is gone by morning.
  *
  * The walk happens before anything live is touched: rows are staged under a
- * fresh generation number and moved over by one transaction at the end
- * (`swapStatements`), so a failure here — a throw mid-walk, a D1 error, the
- * isolate dying — leaves the account's rows as the last good rebuild left
- * them, and the queue retries the message from the top (drive#566).
+ * fresh generation number, then upserted in bounded batches, then vanished
+ * paths are deleted. A throw mid-walk, a D1 error, or the isolate dying
+ * therefore leaves the account searchable, and the queue retries the message
+ * from the top (drive#566).
  * @param {D1Database} db
  * @param {FileStore} store
  * @param {{id: string}} account
@@ -458,17 +457,42 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  // Staged: every row the walk collected lands under a fresh
-  // generation number, and one transaction moves it over. The chunked
-  // batches keep a 100,000-file walk from building one giant batch, as
-  // the feed's writes do; a chunk that fails leaves nothing live, so
-  // the message is retried from the top (drive#566).
+  // A listing that comes back empty instead of throwing would otherwise
+  // swap an empty set over a full index. An account that really has no
+  // files still walks (folders >= 1) and is allowed to finish empty when
+  // the live table is already empty.
+  if (rows.length === 0 && folders === 1) {
+    const liveCount = Number(
+      (await db
+        .prepare("SELECT COUNT(*) AS n FROM file_index WHERE account_id = ?1")
+        .bind(account.id)
+        .first("n")) ?? 0,
+    );
+    if (liveCount > 0) {
+      throw new Error("the store listed no files while the index still holds rows");
+    }
+  }
+  // Staged first, so a crash during the walk or the staging writes leaves
+  // the live rows as they were. The swap then upserts those rows in the
+  // same bounded batches the write feed uses, and only then deletes paths
+  // the walk did not see. A 100,000-file drive never runs one DELETE of
+  // every live row (drive#566).
   const generation = openStagingGeneration();
   for (let start = 0; start < rows.length; start += batchSize * STAGING_ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * STAGING_ROWS_PER_STATEMENT);
     await db.batch(stagingStatements(db, generation, slice));
   }
-  await db.batch(swapStatements(db, account.id, generation));
+  const liveWrites = upsertStatements(db, rows);
+  for (let start = 0; start < liveWrites.length; start += batchSize) {
+    await db.batch(liveWrites.slice(start, start + batchSize));
+  }
+  const walkIso = new Date(at).toISOString();
+  await deleteVanishedPaths(db, account.id, generation, walkIso, batchSize);
+  await db.batch([
+    db
+      .prepare("DELETE FROM file_index_staging WHERE account_id = ?1 AND generation = ?2")
+      .bind(account.id, generation),
+  ]);
   // Leftover rows from a crashed attempt stay until they are two days old,
   // so a walk still running for this account (a retry overlapping the next
   // night) is never swept out from under its own swap.

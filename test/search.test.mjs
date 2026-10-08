@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileRow, upsertStatements } from "../core/file-index.js";
 import {
   createMemoryStore,
   FILES_ENDPOINT,
@@ -18,6 +19,7 @@ import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";
+import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
 import {
   DEFAULT_LIMIT,
   handleSearchRequest,
@@ -1079,11 +1081,10 @@ test("a swap that fails half-committed rolls back to the previous rows (drive#56
     ["/doomed.txt", "x"],
   ]);
 
-  // A failure at the database itself, inside the swap's one batch: the
-  // trigger aborts the INSERT..SELECT after the batch's DELETE has already
-  // run, which is the exact instant the old code lost an account's rows. D1
-  // runs a batch as one transaction, and so does the adapter here, so the
-  // abort must undo the delete with it.
+  // A failure at the database itself, inside the swap's upsert batch: the
+  // trigger aborts the INSERT after some of that statement's rows would have
+  // been written. The swap never deletes live rows first, and D1 runs a
+  // batch as one transaction, so the abort leaves the previous live set.
   db.sqlite.exec(
     "CREATE TRIGGER file_index_doomed BEFORE INSERT ON file_index " +
       "WHEN new.name = 'doomed.txt' BEGIN SELECT RAISE(ABORT, 'the swap failed'); END",
@@ -1094,7 +1095,7 @@ test("a swap that fails half-committed rolls back to the previous rows (drive#56
     .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
     .all(ACCOUNT.id)
     .map((row) => row.path);
-  assert.deepEqual(rows, ["/keep.txt"], "the delete was rolled back with the batch");
+  assert.deepEqual(rows, ["/keep.txt"], "the previous live row survived the aborted upsert");
   assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1, "still searchable");
 
   // The dead attempt's staged rows wait in the scratch table. The retry uses
@@ -1118,6 +1119,69 @@ test("a swap that fails half-committed rolls back to the previous rows (drive#56
     Number(left?.c) >= 2,
     "the failed generation is still scratch, not mixed into the live table",
   );
+});
+
+test("a silent empty listing does not wipe a live index (drive#566)", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(raw, [["/keep.txt", "x"]]);
+  await reconcileIndex(db, raw, ACCOUNT);
+  const empty = {
+    ...raw,
+    /** @param {string} path */
+    async list(path) {
+      void path;
+      return [];
+    },
+  };
+  await assert.rejects(
+    () => reconcileIndex(db, empty, ACCOUNT),
+    /listed no files while the index still holds rows/,
+  );
+  assert.equal((await searchDrive(db, ACCOUNT, "keep")).count, 1, "previous rows intact");
+});
+
+test("a create that lands during the walk stays searchable after the swap (drive#566)", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(raw, [["/keep.txt", "x"]]);
+  await reconcileIndex(db, raw, ACCOUNT);
+  const at = Date.now();
+  const walking = {
+    ...raw,
+    /** @param {string} path */
+    async list(path) {
+      if (path === "/") {
+        await db.batch(
+          upsertStatements(db, [fileRow(ACCOUNT, "/fresh.txt", { size: 1 }, at + 5_000)]),
+        );
+      }
+      return raw.list(path);
+    },
+  };
+  await reconcileIndex(db, walking, ACCOUNT, { now: () => at });
+  const live = db.sqlite
+    .prepare("SELECT path FROM file_index WHERE account_id = ? ORDER BY path")
+    .all(ACCOUNT.id)
+    .map((row) => row.path);
+  assert.deepEqual(live, ["/fresh.txt", "/keep.txt"], "the concurrent create survived the swap");
+  assert.equal((await searchDrive(db, ACCOUNT, "fresh")).count, 1);
+});
+
+test("a walk of more files than one swap statement holds still leaves every file searchable", async () => {
+  const db = makeD1();
+  seedAccount(db, ACCOUNT.id);
+  const raw = createMemoryStore();
+  await seed(
+    raw,
+    Array.from({ length: 30 }, (_, i) => [`/file-${String(i).padStart(2, "0")}.txt`, "x"]),
+  );
+  const built = await reconcileIndex(db, raw, ACCOUNT, { batchSize: 1 });
+  assert.equal(built.indexed, 30);
+  const found = await searchDrive(db, ACCOUNT, "file");
+  assert.equal(found.count, 30, "every staged file moved into the live table");
 });
 
 test("an account with no files is still walked, and its empty index is a finished message", async () => {
@@ -1370,6 +1434,10 @@ test("the deployed cron schedule is the one the module names", () => {
     TRASH_PURGE_SCHEDULE,
     REINDEX_SCHEDULE,
     CLOSE_SCHEDULE,
+    // The known-bad feed's own trip (drive#826), which the same handler
+    // answers above the others: it needs no storage, so it runs before
+    // `storeFor` throws for a deployment with none.
+    KNOWN_BAD_FEED_SCHEDULE,
   ];
   assert.deepEqual(
     [...declared].sort(),
@@ -1443,7 +1511,7 @@ test("the cached app still reads each fetch's own env", async () => {
 
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  for (const name of ["0002_file_index.sql", "0042_file_index_staging.sql"]) {
+  for (const name of ["0002_file_index.sql", "0044_file_index_staging.sql"]) {
     const sql = readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8");
     const withoutComments = sql.replace(/--.*$/gm, "");
     assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), `${name}: no drops`);
@@ -1463,7 +1531,7 @@ test("the migration is additive: one new table, no drops, every column defaulted
   );
   assert.ok(
     readFileSync(
-      new URL("../migrations/drive/0042_file_index_staging.sql", import.meta.url),
+      new URL("../migrations/drive/0044_file_index_staging.sql", import.meta.url),
       "utf8",
     ).includes("CREATE TABLE IF NOT EXISTS file_index_staging"),
   );

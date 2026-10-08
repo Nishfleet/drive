@@ -10,7 +10,8 @@
 -- D1 failure between those batches left the account with no rows at all, and
 -- the account list came from the index itself, so the next night never visited
 -- it again: a customer unsearchable for ever, from one bad night. A rebuild now
--- writes this table instead, and one transaction moves the finished set over.
+-- writes this table instead, then upserts the finished set and deletes
+-- vanished paths in bounded batches. It never deletes the live rows first.
 --
 -- `generation` is what keeps two attempts apart: every row one rebuild writes
 -- carries that attempt's number, the swap reads only its own, and the next
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS file_index_staging (
   parent TEXT NOT NULL DEFAULT '',
   size_bytes INTEGER NOT NULL DEFAULT 0,
   modified_at TEXT,
-  indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (account_id, generation, path)
 );
 

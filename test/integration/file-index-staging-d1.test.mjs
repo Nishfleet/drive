@@ -17,7 +17,7 @@ import { reconcileIndex, searchDrive } from "../../src/search.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 
 const ACCOUNT = { id: "acct-stage", name: "Staging" };
-const MIGRATION = "0042_file_index_staging.sql";
+const MIGRATION = "0044_file_index_staging.sql";
 
 test("the real migration creates the staging table, expand only", () => {
   assert.ok(MIGRATION_FILES.includes(MIGRATION), `${MIGRATION} is in the apply list`);

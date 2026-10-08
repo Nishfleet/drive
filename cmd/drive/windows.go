@@ -179,13 +179,13 @@ func windowsVolumeRoot(letter string) string {
 }
 
 // WindowsTaskCommandLine is the login task's command as one command-line
-// string: the same rclone argument vector the launchd plist and the systemd
-// unit carry, quoted the way CreateProcess splits it. The task itself stores
-// the plan as an Exec action's Command and Arguments (the XML, drive#368),
-// and `schtasks /Query` renders that pair back as one command line, so this
-// is the display form and the string the letter-finding reads.
+// string: this CLI in the foreground, quoted the way CreateProcess splits it
+// (drive#515). The task itself stores the plan as an Exec action's Command
+// and Arguments (the XML, drive#368), and `schtasks /Query` renders that pair
+// back as one command line, so this is the display form and the string the
+// letter-finding reads.
 func WindowsTaskCommandLine(p MountPlan) string {
-	parts := append([]string{p.RcloneBin}, windowsMountArgs(p)...)
+	parts := p.productArgv()
 	for i, a := range parts {
 		parts[i] = windowsQuoteArg(a)
 	}
@@ -313,14 +313,18 @@ func windowsTaskXMLPath(p MountPlan) string {
 
 // windowsTaskXML is the login task as Task Scheduler XML. The Exec action
 // carries the plan split the way Task Scheduler stores it: Command is the
-// rclone path, Arguments is the same quoted argument vector the /TR string
-// used to carry, so `schtasks /Query`'s "Task To Run" still reads as one
-// command line and every reader of it (the drive letter, the stop path) is
-// unchanged. userName is the login user the trigger fires for, in the
-// DOMAIN\user form Task Scheduler requires.
+// first element of productArgv (this CLI for the device mount, rclone for
+// an agent path), Arguments is the rest, so `schtasks /Query`'s "Task To
+// Run" still reads as one command line and every reader of it (the drive
+// letter, the stop path) is unchanged. userName is the login user the
+// trigger fires for, in the DOMAIN\user form Task Scheduler requires.
 func windowsTaskXML(p MountPlan, userName string) (string, error) {
-	quoted := make([]string, 0, len(p.Args())+2)
-	for _, a := range windowsMountArgs(p) {
+	argv := p.productArgv()
+	if len(argv) == 0 {
+		return "", fmt.Errorf("login task has no command")
+	}
+	quoted := make([]string, 0, len(argv)-1)
+	for _, a := range argv[1:] {
 		quoted = append(quoted, windowsQuoteArg(a))
 	}
 	doc := taskXML{
@@ -368,7 +372,7 @@ func windowsTaskXML(p MountPlan, userName string) (string, error) {
 		Actions: taskActionsXML{
 			Context: "Author",
 			Exec: taskExecXML{
-				Command:   p.RcloneBin,
+				Command:   argv[0],
 				Arguments: strings.Join(quoted, " "),
 				// The drive's own config folder: it exists
 				// before the task is registered (the rclone
@@ -547,18 +551,6 @@ var winFspCheck = CheckWinFsp
 // task with /F and running it again would unmount a live drive letter under
 // open files. The same unchanged check skips the permission bits on Windows,
 // where a file's mode carries no meaning (drive#817).
-func windowsMountArgs(p MountPlan) []string {
-	args := p.Args()
-	// The task XML is mode 0600 (windows.go WriteFileAtomic). Task Scheduler
-	// has no EnvironmentFile, so the storage secret is rclone's own
-	// --s3-secret-access-key on that 0600 file rather than an Environment=
-	// line in a world-readable unit (drive#498).
-	if p.SecretKey != "" {
-		args = append(args, "--s3-secret-access-key", p.SecretKey)
-	}
-	return args
-}
-
 func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun bool) error {
 	if err := winFspCheck(p.GOOS, fileExists); err != nil {
 		return err
