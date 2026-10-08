@@ -586,6 +586,11 @@ test("the built Worker entry no longer contains the passkey stack", (t) => {
     "the Worker entry must not statically import the passkey chunk; shared bundler helpers must not live in it",
   );
   const assets = join(dirname(entry), "assets");
+  assert.equal(
+    existsSync(assets),
+    true,
+    "the Worker build has an entry but no assets directory for the passkey chunk",
+  );
   const passkeyChunks = readdirSync(assets).filter(
     (name) => name.startsWith("auth-passkey-") && name.endsWith(".js"),
   );
