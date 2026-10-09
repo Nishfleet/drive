@@ -32,14 +32,14 @@ const windowsDefaultLetter = "D:"
 
 // winFspReinstall is what `drive mount` prints when WinFsp is missing. WinFsp
 // is the driver that turns an rclone mount into a Windows drive letter; the
-// Drive installer (drive#154) brings it in, so the fix is to reinstall Drive.
+// Drive installer (drive#154) brings it in, so the fix is to reinstall Storagebun.
 // The driver is never installed silently, and a hand-installed driver is not
 // the product's instruction to give.
 // winFspReinstall is what `drive mount` prints when WinFsp is missing. The
 // sentence keeps its semicolon: the no-semicolon rule is for replies and PR
 // text a person reads in a review, not for a failure string a user reads at a
 // terminal, where one sentence with a semicolon is the clearer instruction.
-const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter; reinstall Drive, which installs WinFsp for you"
+const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter; reinstall Storagebun, which installs WinFsp for you"
 
 // winFspDLLs are the driver files WinFsp's own installer writes. The official
 // installer puts them in <ProgramFiles(x86)>\WinFsp\bin and adds that
@@ -62,7 +62,7 @@ func winFspDLLs() []string {
 	}
 }
 
-// CheckWinFsp returns the reinstall-Drive sentence when goos is Windows and
+// CheckWinFsp returns the reinstall-Storagebun sentence when goos is Windows and
 // none of WinFsp's driver files is present, and nil on every other platform.
 // exists is the file probe, injected so a test can answer without a Windows
 // machine.
@@ -138,8 +138,8 @@ func windowsVolumeMounted(letter string) bool {
 
 // windowsRcloneMountLetters is the set of letters that an rclone process on
 // this machine mounts at, as reported by the running rclone processes. This is
-// the only identification of "a Drive mount" that the platform itself offers:
-// an every-volume stat cannot tell a WinFsp volume that Drive attached from a
+// the only identification of "a Storagebun mount" that the platform itself offers:
+// an every-volume stat cannot tell a WinFsp volume that Storagebun attached from a
 // USB stick, an optical drive or another FUSE/FAT volume that happened to land
 // on a letter between D: and Z:, and `tasklist`'s command line is where rclone
 // carries the mount point it was started with.
@@ -331,7 +331,7 @@ func windowsTaskXML(p MountPlan, userName string) (string, error) {
 		Version: "1.2",
 		XMLNS:   "http://schemas.microsoft.com/windows/2004/02/mit/task",
 		RegistrationInfo: taskRegInfoXML{
-			Description: "Mounts the Drive at logon (created by drive).",
+			Description: "Mounts the Storagebun folder at logon (created by drive).",
 		},
 		Triggers: taskTriggersXML{
 			// The trigger /SC ONLOGON used to set: start at this user's logon.

@@ -9,13 +9,13 @@ description: Who can see the files in your Drive, what each key can do, and what
 
 Your files live at iDrive e2, in its Paris region (eu-west-3), in a storage
 account we hold, and a folder on your machine shows them to you. The
-[privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) lists every company that handles your data. Every device and every agent tool gets its own key, and a key can
+[privacy policy](https://storagebun.com/privacy) lists every company that handles your data. Every device and every agent tool gets its own key, and a key can
 only do what its kind of key is allowed to do. Keys are yours to revoke.
 
 ## Sub-processors
 
 The
-[privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) is the
+[privacy policy](https://storagebun.com/privacy) is the
 full record, with what each one stores and where. The page below is the
 same list; it is read from the privacy page so the count can never
 silently disagree with it.

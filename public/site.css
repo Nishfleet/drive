@@ -229,11 +229,18 @@ body {
   outline-offset: 2px;
 }
 
+/* drive#870: the brand word is five characters longer than "drive" (Nish,
+   2026-10-09), and the 940px masthead row had no slack left for it. The last
+   nav item wrapped to a second line, and because the self-hosted faces land
+   after the first paint the rewrap counted as a layout shift: Lighthouse
+   measured 0.27 on /usage.html and 0.42 on /get-started.html against a 0.01
+   budget. One gap, 18px to 8px, buys back the room the word needs with room
+   to spare, so the row no longer depends on the brand fitting to the pixel. */
 .masthead {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px 18px;
+  gap: 8px;
   margin: 0 auto;
   padding: 28px 0 20px;
   border-bottom: 1px solid var(--rule);

@@ -82,7 +82,7 @@ export async function handlePortalRequest(request, account, deps) {
   }
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   // `return_url` is Dodo's own optional query parameter: it is the portal's
-  // "Return to Drive" button, and it points at this deployment's usage page
+  // "Return to Storagebun" button, and it points at this deployment's usage page
   // rather than a hard-coded origin, so a preview deploy returns to itself.
   const returnUrl = `${new URL(request.url).origin}/usage`;
   const sessionUrl = `${resolveDodoUrl(deps.baseUrl, customerPortalPath(savedCustomer))}?return_url=${encodeURIComponent(returnUrl)}`;

@@ -9,7 +9,7 @@ Most trouble is one of a few things: the mount is not running, a piece of the
 install is too old, this device's key no longer works, or the network is down.
 Every failure the command prints names what happened and the next step; this
 page is the map for the rest. What it does not fix, it hands you as a block to
-send: [Support](https://drive-pricing.nishant345.workers.dev/support) says how
+send: [Support](https://storagebun.com/support) says how
 to reach a person.
 
 ## What to run first
@@ -92,7 +92,7 @@ could reach up to the moment you revoked it.
 
 There is no page for this yet. Write to us from the address the account uses,
 so we can find the account, and name the new address:
-[Support](https://drive-pricing.nishant345.workers.dev/support). Never send a
+[Support](https://storagebun.com/support). Never send a
 key, a password or a sign-in link.
 
 ## Take your files out
@@ -109,6 +109,6 @@ folder, so the folder is the way to take your files anywhere.
 ## Still stuck
 
 Run `drive doctor`, copy its block, and write to
-[Support](https://drive-pricing.nishant345.workers.dev/support). Say what you
+[Support](https://storagebun.com/support). Say what you
 did, what you saw, and when. What version 1 does not do at all is on the
 [Limits](/limits) page, so it is worth a look before you write.

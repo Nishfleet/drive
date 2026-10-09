@@ -134,7 +134,7 @@ var messageTable = map[string][2]string{
 	// mount may still be the old binary, or it may be down after an unmount
 	// that did not remount, so the words name the one fact both share.
 	"update-restart": {
-		"Drive updated, but its mount did not restart, so this machine is not yet serving the new drive.",
+		"Storagebun updated, but its mount did not restart, so this machine is not yet serving the new drive.",
 		"Run `drive status` to see the mount, then `drive mount` to start it.",
 	},
 	"api-down": {

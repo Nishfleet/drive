@@ -424,7 +424,7 @@ test("the $2 email goes out once per crossing, and a top-up re-arms it", async (
   );
   assert.equal(email.sent.length, 1);
   assert.equal(email.sent[0].to, `${ACCOUNT}@example.com`);
-  assert.equal(email.sent[0].subject, "Your Drive balance is $1.50");
+  assert.equal(email.sent[0].subject, "Your Storagebun balance is $1.50");
 
   await creditTopUp(db, {
     accountId: ACCOUNT,

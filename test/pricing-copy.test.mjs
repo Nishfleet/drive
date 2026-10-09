@@ -434,7 +434,7 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
   assert.equal(BILLING.rule, PRICE.rule);
   assert.equal(BILLING.noPlansLine, PRICE.noPlansLine);
   assert.equal(SITE.description.endsWith(PRICE.headline), true);
-  assert.ok(page.includes(`<title>Drive — ${PRICE.titleLine}</title>`));
+  assert.ok(page.includes(`<title>Storagebun — ${PRICE.titleLine}</title>`));
   const descriptionMetas = new Set([
     "name=description",
     "property=og:description",

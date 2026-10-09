@@ -101,7 +101,7 @@ nfpms:
     package_name: drive
     ids: [drive]
     vendor: Nishfleet
-    homepage: https://drive-pricing.nishant345.workers.dev
+    homepage: https://storagebun.com
     maintainer: Nishfleet <support@nishant345.workers.dev>
     description: A Finder drive for people and their agents, mounted with stock rclone.
     license: Proprietary
@@ -131,7 +131,7 @@ homebrew_casks:
     # a v0.0.0-* tag does not need the tap repository to exist yet.
     skip_upload: auto
     directory: Casks
-    homepage: https://drive-pricing.nishant345.workers.dev
+    homepage: https://storagebun.com
     description: A Finder drive for people and their agents, mounted with stock rclone.
     license: Proprietary
     dependencies:

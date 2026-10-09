@@ -83,6 +83,13 @@ test("the deploy ships only a commit that is main's head and passed CI", () => {
   assert.match(DEPLOY, /^ {2}actions: read/m);
 });
 
+test("the site Worker names storagebun.com and keeps the workers.dev address on", () => {
+  const config = read("cloudflare.config.ts");
+  assert.match(config, /domains:\s*\[\s*"storagebun.com"\s*\]/);
+  assert.match(config, /workersDev:\s*true/);
+  assert.match(config, /previewUrls:\s*false/);
+});
+
 test("the deploy checks the live version and health, and rolls back on failure", () => {
   assert.ok(DEPLOY.includes(`https://drive-pricing.nishant345.workers.dev${HEALTH_PATH}`));
   assert.match(DEPLOY, /id: live\n/);
