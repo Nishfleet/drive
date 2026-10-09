@@ -41,7 +41,8 @@ deletes afterwards.
 2. Set it on the Worker (or on the Actions environment for a CI credential).
 3. Deploy `main`.
 4. Check `https://storagebun.com/api/health` for
-   `{"ok":true}`.
+   `{"ok":true}`. Until nameservers point at Cloudflare, the live URL is
+   still `https://drive-pricing.nishant345.workers.dev/api/health`.
 5. Revoke the old value in the provider's dashboard.
 6. Write one line in a new issue: the secret's name, the date, and the health
    result after the rotation. Never the value.

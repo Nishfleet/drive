@@ -16,6 +16,9 @@ and the point where the decision is Nish's.
    curl -sS https://storagebun.com/api/health
    ```
 
+   Until nameservers point at Cloudflare, the live URL is still
+   `https://drive-pricing.nishant345.workers.dev/api/health` (behind Access).
+
    A response other than 200, or `ok:false`, is the start of an incident. The
    `failing` name is the first stopped dependency, never a secret, a query or a
    stack.

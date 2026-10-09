@@ -29,9 +29,11 @@ test("storagebun.com does not serve the site to a stranger", async () => {
   const res = await probe(CUSTOM);
   assert.notEqual(res.status, 200, "storagebun.com must not answer the site");
   assert.notEqual(res.status, 203, "storagebun.com must not answer the site");
-  if (res.status === 302) {
-    const location = res.headers.get("location");
-    assert.ok(location, "a 302 must name where it sends the stranger");
-    if (ACCESS_LOGIN.test(location)) return;
-  }
+  // A 302 to Access is the wall. A 302 elsewhere is the registrar still
+  // answering, which is not the Worker. Requiring Access here would fail
+  // every CI run until nameservers move (drive#870 / drive#872).
+  if (res.status !== 302) return;
+  const location = res.headers.get("location");
+  assert.ok(location, "a 302 must name where it sends the stranger");
+  assert.match(location, /^https:\/\//);
 });

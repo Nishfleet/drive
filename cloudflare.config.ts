@@ -40,11 +40,15 @@ export default defineConfig({
     // public pages, the sitemap, robots.txt and llms.txt all carry it.
     // `domains` is the Worker custom domain: one line here is what puts the
     // Worker on the zone, the same way wrangler's `routes` with
-    // `custom_domain: true` does it. Behind the same Cloudflare Access
-    // application as the workers.dev address below, so the new domain is
-    // private too while drive is pre-launch. The workers.dev address stays
-    // on until the custom domain answers for real (issue #870: removing it
-    // is a separate, verified step), and the noindex below holds both.
+    // `custom_domain: true` does it. The workers.dev address stays on until
+    // the custom domain answers for real (issue #870: removing it is a
+    // separate, verified step). Nameservers are still at the registrar, so
+    // this line attaches the hostname inside the Cloudflare zone and does
+    // not publish it. Access must cover storagebun.com before nameservers
+    // move, or the pre-launch site would answer a stranger (drive#159).
+    // test/access-wall.test.mjs fails a 200 from the hostname. The deploy
+    // workflow's matching check is drive#872 (this token cannot push
+    // workflow files).
     domains: ["storagebun.com"],
     workersDev: true,
     previewUrls: false,
