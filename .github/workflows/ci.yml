@@ -18,10 +18,23 @@ permissions:
 env:
   PINNED_RCLONE_VERSION: v1.75.1
   PINNED_RCLONE_LINUX_AMD64_SHA256: 982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab
+  # hyperfine is the CLI the speed ratchet proves a slowdown against
+  # (test/speed-ratchet.test.mjs). Pinned like rclone: an upgrade is a visible
+  # diff of both lines. drive#582: without this install the ratchet proof
+  # skipped silently, because a runner service's PATH does not carry
+  # ~/.local/bin where a login shell finds hyperfine.
+  PINNED_HYPERFINE_VERSION: v1.21.0
+  PINNED_HYPERFINE_LINUX_AMD64_SHA256: 60b70eb01e1a4dce1bf56a38393e1e2c2e79ed95a4ba711feb5c993f382604ab
 
+# drive#582: a push to main is keyed per sha and never cancelled. The old
+# group keyed every main push alike and cancelled in progress, so two merges
+# inside one CI duration left the earlier commit with no verdict at all. A
+# pull request's superseded run still cancels: only its own branch is waiting
+# on it. A merge queue entry is keyed by the group's head sha for the same
+# per-commit-verdict reason.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # drive#660: which jobs a pull request's files can affect, read by the
@@ -164,6 +177,27 @@ jobs:
           install -D -m 0755 "rclone-$PINNED_RCLONE_VERSION-linux-amd64/rclone" "$RUNNER_TEMP/bin/rclone"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/rclone" version
+      # drive#582: speed-ratchet's proof against the real CLI skipped silently
+      # wherever `which hyperfine` failed — and a runner service's PATH is not
+      # a login shell's, so the install on this host was invisible to the job.
+      # Same pattern as rclone: cached zip, digest checked before anything runs.
+      - name: Cache the hyperfine release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/hyperfine-dl
+          key: hyperfine-${{ env.PINNED_HYPERFINE_VERSION }}-linux-amd64-${{ env.PINNED_HYPERFINE_LINUX_AMD64_SHA256 }}
+      - name: Install hyperfine (the CLI the speed ratchet proves against)
+        run: |
+          tarball="hyperfine-$PINNED_HYPERFINE_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$RUNNER_TEMP/hyperfine-dl"
+          cd "$RUNNER_TEMP/hyperfine-dl"
+          test -f "$tarball" || curl -fsSO "https://github.com/sharkdp/hyperfine/releases/download/$PINNED_HYPERFINE_VERSION/$tarball"
+          echo "$PINNED_HYPERFINE_LINUX_AMD64_SHA256  $tarball" | sha256sum -c -
+          tar xzf "$tarball"
+          # No sudo on the self-hosted runners, so install per job.
+          install -D -m 0755 "hyperfine-$PINNED_HYPERFINE_VERSION-x86_64-unknown-linux-gnu/hyperfine" "$RUNNER_TEMP/bin/hyperfine"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/hyperfine" --version
       # web-speed (drive#225): the budgets in lighthouserc.json, on the pages
       # as they actually ship. `npm run build` writes the same static-asset
       # bundle the deploy uploads, so the numbers are the site's and not a
@@ -219,6 +253,35 @@ jobs:
       - name: Typecheck and Biome
         run: npm run check
       - run: npm test
+        env:
+          # drive#582: the named proofs write one line per skip here, so the
+          # step after the suite can count them and fail on a proof this
+          # runner had every tool to run. Unset locally, so a developer's
+          # machine still skips honestly and silently.
+          DRIVE_PROOF_REPORT: ${{ runner.temp }}/proof-skips.txt
+      - name: Named proofs that skipped
+        # drive#582: a skip used to be silent, so a proof the runner should be
+        # able to run (its tool installed right here) could vanish from a green
+        # run. The count is printed per named proof, and a proof whose tool is
+        # on this runner — Chrome, a container engine, hyperfine — fails the
+        # job instead of skipping.
+        run: |
+          report="$RUNNER_TEMP/proof-skips.txt"
+          if [ ! -f "$report" ]; then
+            echo "skips: 0 — no named proof skipped"
+            exit 0
+          fi
+          echo "skips by named proof:"
+          awk -F': ' '{ count[$1]++ } END { for (name in count) print "  " name ": " count[name] }' "$report"
+          cat "$report"
+          fail=0
+          for proof in chrome-file-click s3-standin hyperfine-ratchet; do
+            if grep -q "^$proof:" "$report"; then
+              echo "::error::$proof skipped, but its tool (Chrome, a container engine, hyperfine) is installed on this runner above — a proof this runner should run must not skip (drive#582)"
+              fail=1
+            fi
+          done
+          exit "$fail"
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
         with:
@@ -301,11 +364,38 @@ jobs:
           go vet ./cmd/...
           go test -c -o /dev/null ./cmd/drive/
       - name: Unit tests, with the race detector
-        run: go test -race ./cmd/drive/ -short -v
+        run: |
+          set -o pipefail
+          go test -race ./cmd/drive/ -short -v 2>&1 | tee "$RUNNER_TEMP/go-unit.log"
+          # drive#582: -short skips the slow proofs by design, and the two
+          # named proofs run unshorted below. The count is printed so a run
+          # never hides how much of the suite answered "skipped".
+          skips=$(grep -c -- '--- SKIP:' "$RUNNER_TEMP/go-unit.log" || true)
+          echo "unit -short skips: $skips (the named mount proofs run unshorted below)"
       # The step-2 done-when proof: a 64 MiB file's first bytes stream back
       # before the whole object downloads, and a save survives stop/start with
       # the same checksum, against a local `rclone serve s3` stand-in.
+      # drive#582: these runners refuse every unprivileged FUSE mount
+      # (fusermount3 "Operation not permitted", and AppArmor blocks
+      # `unshare -Urm`), so the two mount proofs cannot run here yet; making
+      # them run is drive#501. Until then a skip is printed as a count and a
+      # ::warning::, never a silent green. pipefail keeps a failed `go test`
+      # from hiding behind `tee`.
       - name: Stand-in mount proof
-        run: go test ./cmd/drive/ -run TestStandinMountProof -v -timeout 300s
+        run: |
+          set -o pipefail
+          go test ./cmd/drive/ -run TestStandinMountProof -v -count=1 -timeout 300s 2>&1 | tee "$RUNNER_TEMP/mount-proof.log"
+          skips=$(grep -c -- '--- SKIP:' "$RUNNER_TEMP/mount-proof.log" || true)
+          echo "TestStandinMountProof skips: $skips"
+          if [ "$skips" -gt 0 ]; then
+            echo "::warning::TestStandinMountProof skipped: this runner refuses an unprivileged FUSE mount (drive#501)"
+          fi
       - name: Two-device conflict proof
-        run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s
+        run: |
+          set -o pipefail
+          go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -count=1 -timeout 300s 2>&1 | tee "$RUNNER_TEMP/conflict-proof.log"
+          skips=$(grep -c -- '--- SKIP:' "$RUNNER_TEMP/conflict-proof.log" || true)
+          echo "TestTwoDevicesKeepBothSaves skips: $skips"
+          if [ "$skips" -gt 0 ]; then
+            echo "::warning::TestTwoDevicesKeepBothSaves skipped: this runner refuses an unprivileged FUSE mount (drive#501)"
+          fi

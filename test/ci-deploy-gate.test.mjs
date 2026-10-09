@@ -17,6 +17,9 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const CI = read(".github/workflows/ci.yml");
 const DEPLOY = read(".github/workflows/deploy-production.yml");
+// drive#582: the deploy's health smoke is this repo's own module, so this
+// gate reads the workflow and what it runs.
+const SMOKE = read("src/deploy-smoke.js");
 
 /** The top-level `on:` block of a workflow. @param {string} text */
 const onBlock = (text) => {
@@ -91,16 +94,37 @@ test("the site Worker names storagebun.com and keeps the workers.dev address on"
 });
 
 test("the deploy checks the live version and health, and rolls back on failure", () => {
-  assert.ok(DEPLOY.includes(`https://drive-pricing.nishant345.workers.dev${HEALTH_PATH}`));
+  // The smoke is a repo module (drive#582): the workflow runs it, and the
+  // module owns the URL, the Access headers and the ok:true check — so this
+  // gate reads both files. The workflow half:
+  assert.match(DEPLOY, /node src\/deploy-smoke\.js/);
   assert.match(DEPLOY, /id: live\n/);
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
-  assert.match(DEPLOY, /CF-Access-Client-Id: %s/);
-  assert.match(DEPLOY, /-H "@\$headers"/);
+  // The token reaches the smoke through the environment only
+  // (secrets mapped at step level), never argv and never a written file.
+  assert.match(DEPLOY, /CF_ACCESS_CLIENT_ID: \$\{\{ secrets\.CF_ACCESS_CLIENT_ID \}\}/);
+  assert.match(DEPLOY, /CF_ACCESS_CLIENT_SECRET: \$\{\{ secrets\.CF_ACCESS_CLIENT_SECRET \}\}/);
   assert.doesNotMatch(
     DEPLOY,
-    /-H "CF-Access-Client-Secret: \$/,
-    "the token never sits in curl's arguments",
+    /run:[^\n]*CF_ACCESS_CLIENT_SECRET/,
+    "the token never sits in a command's arguments",
   );
+  // The module half: the production URL and route, the Access headers from
+  // the environment only, and a non-zero exit unless the route says ok.
+  assert.match(
+    SMOKE,
+    new RegExp(`drive-pricing\\.nishant345\\.workers\\.dev${HEALTH_PATH}"`),
+    "the smoke calls the production health route",
+  );
+  assert.match(SMOKE, /CF-Access-Client-Id/, "the smoke sends the Access service token headers");
+  assert.match(SMOKE, /process\.env\.CF_ACCESS_CLIENT_ID/);
+  assert.match(SMOKE, /process\.env\.CF_ACCESS_CLIENT_SECRET/);
+  assert.doesNotMatch(
+    SMOKE,
+    /console\.(log|error)\([^)]*(SECRET|CLIENT_ID)/,
+    "the token is never printed",
+  );
+  assert.match(SMOKE, /process\.exitCode = /, "the smoke's exit code is the deploy's verdict");
   assert.match(DEPLOY, /if: failure\(\) && steps\.live\.outcome == 'success'/);
   assert.match(
     DEPLOY,
