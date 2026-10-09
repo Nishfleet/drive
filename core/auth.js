@@ -214,8 +214,11 @@ export async function readSigninReturn(db, token) {
  * safeAfterSigninPath — the writer validated it, and this side validates
  * again so a row nothing wrote can still not bounce the session elsewhere.
  * An empty return path means "no stored path", and the caller falls back to
- * the after-signin cookie. The age fields ride back for symmetry with
- * readSigninReturn; by the time this runs the gate has already looked.
+ * the after-signin cookie. The email and age fields come back always empty:
+ * this SELECT fetches the path only, and by the time the consume runs the
+ * gate has already decided from readSigninReturn — the fields are here so
+ * the answer keeps one shape at every call site, not to carry the attestation
+ * itself (readSigninReturn is the reader a future caller must use).
  * @param {D1Database} db
  * @param {string} token the raw magic-link token the link carried
  * @returns {Promise<{returnPath: string, email: string, ageAttested: boolean}>}
