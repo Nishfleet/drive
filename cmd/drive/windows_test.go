@@ -117,14 +117,14 @@ func TestCheckWinFsp(t *testing.T) {
 	}); err != nil {
 		t.Errorf("CheckWinFsp with the driver present = %v, want nil", err)
 	}
-	// The driver is missing: the error says reinstall Drive, and never a winget
+	// The driver is missing: the error says reinstall Storagebun, and never a winget
 	// command (Nish, 2026-10-01: users never install WinFsp by hand).
 	err := CheckWinFsp("windows", func(string) bool { return false })
 	if err == nil {
 		t.Fatal("CheckWinFsp with no driver must fail")
 	}
-	if !strings.Contains(err.Error(), "reinstall Drive") {
-		t.Errorf("the WinFsp error must point at reinstalling Drive: %v", err)
+	if !strings.Contains(err.Error(), "reinstall Storagebun") {
+		t.Errorf("the WinFsp error must point at reinstalling Storagebun: %v", err)
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "winget") {
 		t.Errorf("the WinFsp error must not tell the user to install WinFsp by hand: %v", err)

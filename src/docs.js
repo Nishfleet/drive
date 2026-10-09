@@ -123,7 +123,7 @@ export function branchReachSentence() {
   if (!STORAGE_POWERS.branch.reachesWholeDrive) {
     return "A branch key cannot reach your other files or other branches.";
   }
-  return "The storage limits a key to your whole Drive, not to one folder, so a branch key can also read, change and delete your other files and other branches. Work in the branch is a convention the agent follows, not a wall.";
+  return "The storage limits a key to your whole Storagebun, not to one folder, so a branch key can also read, change and delete your other files and other branches. Work in the branch is a convention the agent follows, not a wall.";
 }
 
 /**
@@ -138,7 +138,7 @@ export function branchReachSentence() {
 function keyRow(kind, owner) {
   const powers = KEY_POWERS[kind];
   const storage = STORAGE_POWERS[kind];
-  return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${deleteCell(storage)} | ${storage.reachesWholeDrive ? "your whole Drive" : "its own folder"} |`;
+  return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${deleteCell(storage)} | ${storage.reachesWholeDrive ? "your whole Storagebun" : "its own folder"} |`;
 }
 
 /** @param {boolean|undefined} value */

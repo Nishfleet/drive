@@ -23,7 +23,7 @@ export const NOT_OPEN = "The drive is not open yet. Sign-ups on the pricing page
 // verbatim; the docs pages use V1_PLATFORMS and must say Windows is
 // outside version 1. The docs-truth test holds the home page to this
 // constant.
-export const PLATFORMS = "Drive runs on macOS and Linux today. Windows is not ready yet.";
+export const PLATFORMS = "Storagebun runs on macOS and Linux today. Windows is not ready yet.";
 
 // The phrase a surface must never use to claim a feature the product
 // does not have. A surface matching any of these fails the build. Keep

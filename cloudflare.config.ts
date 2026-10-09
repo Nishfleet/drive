@@ -31,10 +31,21 @@ export default defineConfig({
   worker: {
     name: "drive-pricing",
     compatibilityDate: "2026-09-29",
-    // Private until drive has its own domain (Nish, 2026-10-01). The
-    // workers.dev address is on only behind Cloudflare Access ("All
-    // traffic", Cloudflare account members); the deploy fails if a
-    // stranger ever reaches the site without the sign-in. No preview URLs.
+    // Private until launch (Nish, 2026-10-01). The workers.dev address is
+    // on only behind Cloudflare Access ("All traffic", Cloudflare account
+    // members); the deploy fails if a stranger ever reaches the site without
+    // the sign-in. No preview URLs.
+    //
+    // storagebun.com (drive issue #870) is the site's own domain, so the
+    // public pages, the sitemap, robots.txt and llms.txt all carry it.
+    // `domains` is the Worker custom domain: one line here is what puts the
+    // Worker on the zone, the same way wrangler's `routes` with
+    // `custom_domain: true` does it. Behind the same Cloudflare Access
+    // application as the workers.dev address below, so the new domain is
+    // private too while drive is pre-launch. The workers.dev address stays
+    // on until the custom domain answers for real (issue #870: removing it
+    // is a separate, verified step), and the noindex below holds both.
+    domains: ["storagebun.com"],
     workersDev: true,
     previewUrls: false,
     entrypoint,

@@ -1,4 +1,4 @@
-# Drive launch video — script
+# Storagebun launch video — script
 
 Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-over.
 
@@ -25,7 +25,7 @@ Silent, 75 seconds, 1920x1080, 30 fps. All copy is on screen. There is no voice-
 | "2¢ per GB a month. Never more than $15 per TB." | `public/index.html` calculator subhead ("2 cents per GB until the bill reaches $15, at 750 GB") and its metered note; `README.md` pricing line; the rule is min(2¢ × size30 GB, $15 × max(1, size30 TB)) in `core/billing.js` (drive#642) |
 | "At the cap, writes stop. Every file stays." | `public/index.html` cap section ("A cap that stops writes, not files.") |
 | "The drive is not open yet. Sign-ups go to the waitlist." | `public/index.html` waitlist copy |
-| "Join the waitlist on the drive site." | no host is printed, on purpose. `drive-pricing.nishant345.workers.dev` answers `302` to a Cloudflare Access login for anyone logged out, so a printed URL is a dead end. Verified 2026-10-06. |
+| "Join the waitlist on the drive site." | no host is printed, on purpose. `storagebun.com` answers `302` to a Cloudflare Access login for anyone logged out, so a printed URL is a dead end. Verified 2026-10-06. |
 
 ## Music
 
@@ -33,7 +33,7 @@ No music. The video ships silent, so there is no track licence to clear.
 
 ## Screens
 
-The five product frames are real screenshots of the Drive web pages, captured from
+The five product frames are real screenshots of the Storagebun web pages, captured from
 `public/index.html` served locally (the production site is behind Cloudflare
 Access). Captures are 1920x1080 with the page ticker hidden so no frozen
 animation appears in the stills.

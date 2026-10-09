@@ -78,7 +78,7 @@ DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
 the mount's own log.
 
 When something goes wrong, the docs have a page for it:
-  https://drive-pricing.nishant345.workers.dev/docs/troubleshooting
+  https://storagebun.com/docs/troubleshooting
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)

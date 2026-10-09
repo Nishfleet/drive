@@ -987,7 +987,7 @@ test("one account's purge failure leaves the next account's purge and mail intac
   assert.equal(reminders.length, 2, "both accounts got their reminder before the purge");
   const deletions = world.email.sent.filter(
     (mail) =>
-      /** @type {{subject: string}} */ (mail).subject === "Your Drive files have been deleted",
+      /** @type {{subject: string}} */ (mail).subject === "Your Storagebun files have been deleted",
   );
   assert.equal(deletions.length, 1, "only the account that purged got a deletion notice");
 });
@@ -1183,11 +1183,11 @@ test("the purge waits for the close receipt, and a skipped purge is named", asyn
   assert.equal(await scoped.read("/gated.txt"), null, "the notice landed, so the bytes go");
   const subjects = world.email.sent.map((mail) => /** @type {{subject: string}} */ (mail).subject);
   assert.deepEqual(subjects, [
-    "Your Drive account is closed",
+    "Your Storagebun account is closed",
     // The reminder retries on day 30, so the window has passed and the copy
     // says due, not a false "in 5 days" on a date that already went by.
-    "Your Drive files are due to be deleted",
-    "Your Drive files have been deleted",
+    "Your Storagebun files are due to be deleted",
+    "Your Storagebun files have been deleted",
   ]);
 
   // Night three: nothing is left to do. The purge is stamped, so the account
@@ -1259,7 +1259,7 @@ test("the deletion notice is only sent for a purge that actually happened", asyn
   assert.ok(
     !world.email.sent.some(
       (mail) =>
-        /** @type {{subject: string}} */ (mail).subject === "Your Drive files have been deleted",
+        /** @type {{subject: string}} */ (mail).subject === "Your Storagebun files have been deleted",
     ),
     "a purge that failed sends no deletion notice",
   );
@@ -1279,7 +1279,7 @@ test("the deletion notice is only sent for a purge that actually happened", asyn
   assert.equal(second.purged, 1);
   const deletions = world.email.sent.filter(
     (mail) =>
-      /** @type {{subject: string}} */ (mail).subject === "Your Drive files have been deleted",
+      /** @type {{subject: string}} */ (mail).subject === "Your Storagebun files have been deleted",
   );
   assert.equal(deletions.length, 1, "one notice for the purge that finally happened");
 });

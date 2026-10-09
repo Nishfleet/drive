@@ -128,7 +128,7 @@ export const EMPTY_STATES = Object.freeze({
 // says nothing when they have not: the error is already on the page, so a
 // denied permission is not a failure to report.
 export const SYNC_ERROR_NOTIFICATION = Object.freeze({
-  title: "Drive could not sync a file",
+  title: "Storagebun could not sync a file",
   body: "Open the drive page to see which file and what to do next.",
 });
 

@@ -59,7 +59,7 @@ test("each security event renders one mail with the device name and a revoke lin
     assert.match(rendered.text, /https:\/\/[^ ]*usage\.html/, event);
     assert.match(rendered.html, /office laptop/, event);
     assert.match(rendered.html, /href="https:\/\/[^"]*usage\.html"/, event);
-    assert.equal(rendered.text.split("-- Drive").length - 1, 1, event);
+    assert.equal(rendered.text.split("-- Storagebun").length - 1, 1, event);
   }
 });
 

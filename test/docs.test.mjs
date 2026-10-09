@@ -844,7 +844,7 @@ test("the README describes the drive and points at the docs", () => {
     /node-repo-template/,
     "the README must not still be the template stub",
   );
-  assert.match(readme, /^# Drive$/m, "the README must name the product");
+  assert.match(readme, /^# Storagebun$/m, "the README must name the product");
   assert.ok(readme.includes(PRICE.headline), "the README must state the price");
   for (const page of DOC_PAGES) {
     assert.ok(readme.includes(`${SITE.origin}${page.url}`), `the README must point at ${page.url}`);

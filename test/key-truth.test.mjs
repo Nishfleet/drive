@@ -98,7 +98,7 @@ test("the key table shows the real delete and reach for each key", () => {
   const rows = KEY_TABLE.split("\n");
   const row = (/** @type {string} */ kind) => rows.find((line) => line.startsWith(`| ${kind} |`));
   assert.match(String(row("agent")), new RegExp(`yes, undoable for ${HIDDEN_VERSION_DAYS} day`));
-  assert.match(String(row("branch")), /your whole Drive \|$/);
+  assert.match(String(row("branch")), /your whole Storagebun \|$/);
   for (const name of ["agents.md", "security.md"]) {
     assert.ok(shipped(name).includes(String(row("agent"))), `${name} carries the key table`);
   }

@@ -45,7 +45,7 @@ const USAGE_LINK = Object.freeze({
 // its own yet: a placeholder domain in this file would make every send fail
 // while looking configured, and the domain is a deployment decision, not a
 // code one.
-export const FROM_NAME = "Drive";
+export const FROM_NAME = "Storagebun";
 
 // The local part of the reply address every drive email carries
 // (drive#522). The full address is support@<the sending domain>, so a reply
@@ -125,7 +125,7 @@ function usd(value) {
 }
 
 // Every email ends the same way, so the footer is written once.
-const SIGN_OFF = "-- Drive";
+const SIGN_OFF = "-- Storagebun";
 
 // Money that must be present: a missing amount is a bug in the caller, not a
 // $0 that hides it (issue rule: never swallow an error).
@@ -160,7 +160,7 @@ export function welcomeTemplate(data = {}) {
   const steps = `  ${SIGN_IN_COMMAND}\n  ${INSTALL_COMMAND}`;
   const explanation = `Signing in opens the browser and mints this machine's key; the setup that follows makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Both are safe to run again.`;
   const lines = [
-    "Welcome to Drive.",
+    "Welcome to Storagebun.",
     "",
     "Your drive is a plain folder that streams from object storage, so big files open without downloading first.",
     "",
@@ -173,7 +173,7 @@ export function welcomeTemplate(data = {}) {
     "Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.",
   ];
   const html_lines = [
-    "<p>Welcome to Drive.</p>",
+    "<p>Welcome to Storagebun.</p>",
     "<p>Your drive is a plain folder that streams from object storage, so big files open without downloading first.</p>",
     "<p>Sign in, then set it up:</p>",
     `<ul><li>${SIGN_IN_COMMAND}</li><li>${INSTALL_COMMAND}</li></ul>`,
@@ -334,14 +334,14 @@ export function monthlyReceiptTemplate(data = {}) {
     ceilingUsd: ceiling,
     capped,
   });
-  const subject = `Your Drive receipt: ${month}`;
+  const subject = `Your Storagebun receipt: ${month}`;
   const lines = [
-    `Your Drive bill for ${month} is ${usd(bill)}.`,
+    `Your Storagebun bill for ${month} is ${usd(bill)}.`,
     "",
     // The same sentence the usage page states (src/usage.js USAGE_LABELS.monthNote):
     // a month read in two zones is two different months, so one surface says
     // the rule once and in the same words.
-    "Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
+    "Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
     "",
     // drive#545: "min(metered, ceiling)" is code jargon on a customer mail.
     // The two numbers already on the receipt say the same fact in the
@@ -349,8 +349,8 @@ export function monthlyReceiptTemplate(data = {}) {
     `Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.`,
   ];
   const html_lines = [
-    `<p>Your Drive bill for ${month} is ${usd(bill)}.</p>`,
-    "<p>Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>",
+    `<p>Your Storagebun bill for ${month} is ${usd(bill)}.</p>`,
+    "<p>Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>",
     `<p>Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.</p>`,
   ];
   if (saved) {
@@ -407,9 +407,9 @@ function accountClosedTemplate(data = {}) {
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
   const left = graceDays - reminderDays;
-  const subject = "Your Drive account is closed";
+  const subject = "Your Storagebun account is closed";
   const lines = [
-    "Your Drive account is closed.",
+    "Your Storagebun account is closed.",
     "",
     "Every key was revoked at once. Your files stay for now.",
     "",
@@ -418,7 +418,7 @@ function accountClosedTemplate(data = {}) {
     "You can cancel until then: open the usage page, type your email, and choose Cancel closing.",
   ];
   const html_lines = [
-    "<p>Your Drive account is closed.</p>",
+    "<p>Your Storagebun account is closed.</p>",
     "<p>Every key was revoked at once. Your files stay for now.</p>",
     `<p>They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.</p>`,
     "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing.</p>",
@@ -443,11 +443,11 @@ export function accountCloseReminderTemplate(data = {}) {
   const due = data.due === true;
   const left = graceDays - reminderDays;
   const subject = due
-    ? "Your Drive files are due to be deleted"
-    : `Your Drive files will be deleted in ${left} days`;
+    ? "Your Storagebun files are due to be deleted"
+    : `Your Storagebun files will be deleted in ${left} days`;
   const first = due
-    ? `Your Drive files are due to be deleted: the ${graceDays}-day window has passed.`
-    : `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`;
+    ? `Your Storagebun files are due to be deleted: the ${graceDays}-day window has passed.`
+    : `Your Storagebun files will be deleted in ${left} days, on ${purgeOn}.`;
   const lines = [
     first,
     "",
@@ -482,16 +482,16 @@ export function accountCloseReminderTemplate(data = {}) {
 export function filesDeletedTemplate(data = {}) {
   const purgedOn = requireDay(data.purgedOn, "purgedOn");
   const graceDays = requireDays(data.graceDays, "graceDays");
-  const subject = "Your Drive files have been deleted";
+  const subject = "Your Storagebun files have been deleted";
   const lines = [
-    "Your Drive files have been deleted.",
+    "Your Storagebun files have been deleted.",
     "",
     `We deleted them on ${purgedOn}, ${graceDays} days after you closed the account. This account stays closed.`,
     "",
     "Nothing else was deleted. This deletion cannot be undone.",
   ];
   const html_lines = [
-    "<p>Your Drive files have been deleted.</p>",
+    "<p>Your Storagebun files have been deleted.</p>",
     `<p>We deleted them on ${purgedOn}, ${graceDays} days after you closed the account. This account stays closed.</p>`,
     "<p>Nothing else was deleted. This deletion cannot be undone.</p>",
   ];
@@ -500,7 +500,7 @@ export function filesDeletedTemplate(data = {}) {
     lines,
     html_lines,
     replyTo: data.replyTo,
-    link: { label: "Visit Drive", url: HOME_URL },
+    link: { label: "Visit Storagebun", url: HOME_URL },
   });
 }
 
@@ -589,10 +589,10 @@ function topUpReceiptTemplate(data = {}) {
   if (typeof data.auto !== "boolean") {
     throw new TypeError(`auto must be true or false, got ${String(data.auto)}`);
   }
-  const subject = `Your Drive receipt: ${usd(amount)} added`;
+  const subject = `Your Storagebun receipt: ${usd(amount)} added`;
   const first = data.auto
-    ? `Auto top-up added ${usd(amount)} to your Drive balance.`
-    : `You added ${usd(amount)} to your Drive balance.`;
+    ? `Auto top-up added ${usd(amount)} to your Storagebun balance.`
+    : `You added ${usd(amount)} to your Storagebun balance.`;
   const lines = [
     first,
     "",
@@ -621,13 +621,13 @@ function lowBalanceTemplate(data = {}) {
     data.autoTopUpUsd === null || data.autoTopUpUsd === undefined
       ? null
       : requireMoney(data.autoTopUpUsd, "autoTopUpUsd");
-  const subject = `Your Drive balance is ${usd(balance)}`;
+  const subject = `Your Storagebun balance is ${usd(balance)}`;
   const next =
     auto === null
       ? `${TOP_UP_PROMPT} At $0 uploads pause. Downloads keep working, and nothing is deleted.`
       : `Auto top-up is on, so ${usd(auto)} will be added from your saved card.`;
-  const lines = [`Your Drive balance is ${usd(balance)}.`, "", next];
-  const html_lines = [`<p>Your Drive balance is ${usd(balance)}.</p>`, `<p>${next}</p>`];
+  const lines = [`Your Storagebun balance is ${usd(balance)}.`, "", next];
+  const html_lines = [`<p>Your Storagebun balance is ${usd(balance)}.</p>`, `<p>${next}</p>`];
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 

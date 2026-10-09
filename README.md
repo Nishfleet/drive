@@ -1,4 +1,4 @@
-# Drive
+# Storagebun
 
 A Finder drive for people and their agents: a folder on macOS or Linux that
 holds more than the laptop does. Your files live in object storage and open on
@@ -11,14 +11,14 @@ write the same folder.
   delete from the Files page is restorable for 30 days in Recently deleted, and
   a delete made any other way is recoverable for one day, by asking us. The
   full list of what version 1 does not do is on the
-  [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
+  [Limits page](https://storagebun.com/docs/limits).
 - **An agent's delete is undoable for 1 day.** An agent gets its own key. The
   storage takes that key's delete but keeps the deleted copy for 1 day, and we
-  can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Drive, not only its branch, because the
-  storage limits a key to the whole Drive. `drive init` mounts `~/Drive-agents/<tool>`
+  can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Storagebun, not only its branch, because the
+  storage limits a key to the whole Storagebun. `drive init` mounts `~/Drive-agents/<tool>`
   for each tool on its own key, and the MCP server and the tool's allowed folders
-  point there, not at your Drive. Windows is not in version 1, and the tool there
-  still works inside your own Drive, because the agent mount is not proven there.
+  point there, not at your Storagebun. Windows is not in version 1, and the tool there
+  still works inside your own Storagebun, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
   No plans. Your balance never expires.
 - **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
@@ -34,28 +34,28 @@ and the numbers on the invoice cannot drift apart. Each page is also served as
 Markdown (add `.md` to the address), and the whole set is in one file for
 agents.
 
-- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
+- [Quickstart](https://storagebun.com/docs/quickstart) —
   six steps to a mounted drive
-- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
+- [How it works](https://storagebun.com/docs/how-it-works) —
   plain files, the cache, restore, the bill
-- [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
+- [Agents](https://storagebun.com/docs/agents) —
   `drive init` per tool, and what an agent key cannot do
-- [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing) —
+- [Pricing and your bill](https://storagebun.com/docs/pricing) —
   the rate, the maximum and four worked sizes
-- [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq) — the questions
+- [FAQ](https://storagebun.com/docs/faq) — the questions
   we can answer with a measured number
-- [When something goes wrong](https://drive-pricing.nishant345.workers.dev/docs/troubleshooting) —
+- [When something goes wrong](https://storagebun.com/docs/troubleshooting) —
   the three commands, the log on each system, a lost laptop, your files out
-- [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
+- [Limits](https://storagebun.com/docs/limits) — what
   version 1 does not do
-- [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks) —
+- [Benchmarks](https://storagebun.com/docs/benchmarks) —
   measured speed, including where we lose
-- [Security](https://drive-pricing.nishant345.workers.dev/docs/security) — who
+- [Security](https://storagebun.com/docs/security) — who
   can see your files
-- [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —
+- [Changelog](https://storagebun.com/docs/changelog) —
   one line per shipped thing
-- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms.txt) and
-  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
+- [`llms.txt`](https://storagebun.com/docs/llms.txt) and
+  [`llms-full.txt`](https://storagebun.com/docs/llms-full.txt)
   — the same words, for an agent
 
 The docs pages are authored in [`docs-site/`](docs-site/) and built by VitePress

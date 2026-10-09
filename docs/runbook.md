@@ -140,7 +140,7 @@ service token before any monitor can reach it:
 
 1. Zero Trust → Access → Service Auth → Service Tokens: create one token.
 2. Give it an Access policy on the self-hosted app for the
-   `drive-pricing.nishant345.workers.dev` hostname, scoped to the
+   `storagebun.com` hostname, scoped to the
    `/api/health` path only, so the token cannot open the drive itself.
 3. Set the token's id and secret as `CF_ACCESS_CLIENT_ID` /
    `CF_ACCESS_CLIENT_SECRET` on the `production` environment — the deploy

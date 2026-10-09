@@ -1,6 +1,6 @@
 ---
 title: Limits
-description: What version 1 of Drive does not do, and where it is slower than the alternatives.
+description: What version 1 of Storagebun does not do, and where it is slower than the alternatives.
 ---
 
 # Limits
@@ -111,7 +111,7 @@ would rather you read it here than find out in week three.
 - Every figure on the [pricing page](/pricing) is worked out from the
   same config the invoice is worked out from, and a test fails the build if
   the two disagree.
-- Where Drive is slower than a rival, we say so here rather than on the
+- Where Storagebun is slower than a rival, we say so here rather than on the
   pricing page, and we would rather add a line to this page than remove one.
 
 ## Next

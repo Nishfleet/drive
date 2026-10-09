@@ -216,7 +216,7 @@ the live site.
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),
   with `drive unmount`/`logout`/`status`/`uninstall` and unit tests for every
-  branch. A missing WinFsp is an error that points at reinstalling Drive.
+  branch. A missing WinFsp is an error that points at reinstalling Storagebun.
 - `drive unmount`, `logout` and `uninstall` on Windows now wait for WinFsp to
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported

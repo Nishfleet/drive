@@ -13,7 +13,7 @@ and the point where the decision is Nish's.
    `cloudflare.config.ts`:
 
    ```
-   curl -sS https://drive-pricing.nishant345.workers.dev/api/health
+   curl -sS https://storagebun.com/api/health
    ```
 
    A response other than 200, or `ok:false`, is the start of an incident. The

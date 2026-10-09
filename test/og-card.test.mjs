@@ -44,7 +44,7 @@ test("the card's body is exactly the current price, from the one price source", 
   // right lines and a fifth wrong one, and no other currency or figure can
   // ride along under a subset check.
   assert.deepEqual(cardLines, [
-    "Drive",
+    "Storagebun",
     PRICE.leadLine,
     PRICE.headlineAmount,
     PRICE.rateUnit,

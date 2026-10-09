@@ -464,7 +464,7 @@ test("the reply is byte-identical for a new and an already-listed address", asyn
 
 test("handleWaitlistRequest returns 403 for a cross-site request", async () => {
   const db = makeFakeDB();
-  const req = new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist", {
+  const req = new Request("https://storagebun.com/api/waitlist", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "https://evil.example" },
     body: JSON.stringify({ email: "injected@example.com" }),
@@ -479,20 +479,20 @@ test("handleWaitlistRequest returns 403 for a cross-site request", async () => {
 test("isSameOriginRequest accepts our own origin and a request without Origin", () => {
   assert.equal(
     isSameOriginRequest(
-      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist", {
-        headers: { origin: "https://drive-pricing.nishant345.workers.dev" },
+      new Request("https://storagebun.com/api/waitlist", {
+        headers: { origin: "https://storagebun.com" },
       }),
     ),
     true,
   );
   assert.equal(
-    isSameOriginRequest(new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist")),
+    isSameOriginRequest(new Request("https://storagebun.com/api/waitlist")),
     true,
   );
   assert.equal(
     isSameOriginRequest(
-      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist", {
-        headers: { origin: "https://drive-pricing.nishant345.workers.dev.evil.example" },
+      new Request("https://storagebun.com/api/waitlist", {
+        headers: { origin: "https://storagebun.com.evil.example" },
       }),
     ),
     false,
