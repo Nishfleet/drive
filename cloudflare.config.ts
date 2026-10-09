@@ -257,36 +257,66 @@ export default defineConfig({
       // closed-door posture the sign-in route ships with (src/signin.js).
       // POST /api/signin mails a real email, so a script walking many
       // addresses is a mailbomb and a send-cost vector once the route is
-      // open in production. Per IP it is far above the retries a person
-      // makes from their own connection (10 a minute against a couple of
-      // sign-in posts) and far below what a script needs to walk
-      // addresses; the global one bounds the whole service. Both configs
-      // are one minute, the waitlist's period, and both are turned on
+      // open in production. The global one bounds the whole service. Both
+      // configs are one minute, the waitlist's period, and both are turned on
       // before sign-in opens in production.
       //
-      // The numbers are a pre-production guard, not a capacity answer, and
-      // the honest caveat is shared egress: an office or CGNAT downlink
-      // concentrates people onto one client IP, so `limit: 10` shapes the
-      // whole office to 10 sign-ins a minute, not one person. Acceptable
-      // while the site is behind Cloudflare Access; on the day sign-in
-      // opens, measure the real sign-in rate and raise the per-IP (and the
-      // global above it) first, before a customer shares their login
-      // morning with a landline's worth of neighbours (#147's follow-up).
+      // THE MEASURED NUMBERS (drive issue #202, the tuning pass this comment
+      // used to ask for). The route was not reachable when the tuning was due:
+      // every path on the live Worker answered 302 to Cloudflare Access and
+      // the tables the route writes were empty (session 0, user 0, rateLimit
+      // 0), so the real sign-in rate was 0. The ceilings below are therefore
+      // measured on stand-in traffic through the real route
+      // (test/signin-rate-traffic.test.mjs), which drives the Worker's own
+      // dispatch with the shipped numbers parsed out of this file, so this
+      // comment and the test cannot drift. Measured peak on ONE client IP in
+      // one minute, each person pressing once because the page sends one link
+      // per press:
       //
-      // The global ceiling is a spend bound, not a traffic shaper: it sits
-      // far above the per-IP world it caps, and it caps the worst case at
-      // 100 sends a minute however many addresses a distributed walk
-      // touches.
+      //   25 people behind one office router, arriving together   25/min
+      //   the same office, each pressing 3 times (a mistyped     75/min
+      //     link) — 3 is Better Auth's own per-IP rule (src/auth.js)
+      //   200 people behind one campus NAT, over 5 minutes     200/min
+      //
+      // Worst realistic NAT case = 200/min. The per-IP ceiling is 500/min: it
+      // clears the measured worst case by 2.5x, so an office twice the lab's
+      // size or a campus twice as large is still served, and sitting exactly on
+      // the measured number would refuse the next office one person larger.
+      // The old figure was 10/min, which refused 15 of 25 people in an office
+      // arriving together and 190 of 200 in the lab.
+      //
+      // The global ceiling is a spend bound, not a traffic shaper, and it must
+      // sit ABOVE the per-IP world it caps. Cloudflare counts a key separately
+      // in each location ("rate limits ... are local to the Cloudflare
+      // location"), so the world one ceiling caps is the per-IP figure times
+      // the locations the service is reachable from. 5000/min is the per-IP
+      // figure across 10 locations, so one address, or one distributed walk,
+      // still cannot spend past it however many people stand behind it.
+      //
+      // MEASURED, NOT YET FIXED, and it is the finding of issue #202: raising
+      // these two numbers does not by itself free a shared office. Better Auth
+      // keys its own `/sign-in/magic-link` rule on the same client IP
+      // (src/auth.js, max 3 per 60s, D1-backed), and it runs after these two,
+      // so an office behind one NAT still gets 3 links out of 25 at any edge
+      // ceiling: measured at 10/min and at 400/min alike, 3 of 25 served both
+      // times. These bindings are the coarse edge guard and the spend
+      // backstop; the per-IP send bound that a customer actually meets is the
+      // library's, and widening it trades mail cost for shared-egress access,
+      // which is a decision #202's scope explicitly excludes. It is filed as a
+      // follow-up rather than changed here.
+      //
       // Each binding needs its own namespace: Cloudflare wants a positive
       // integer string, and a namespace another binding already uses fails
-      // the deploy. These are distinct from the waitlist's 1001.
+      // the deploy. Two bindings on one namespace would share their counters
+      // and the global would stop being a backstop. These are distinct from
+      // the waitlist's 1001.
       SIGNIN_RATE_LIMITER: bindings.rateLimit({
         namespace: "1002",
-        simple: { limit: 10, period: 60 },
+        simple: { limit: 500, period: 60 },
       }),
       SIGNIN_GLOBAL_RATE_LIMITER: bindings.rateLimit({
         namespace: "1003",
-        simple: { limit: 100, period: 60 },
+        simple: { limit: 5000, period: 60 },
       }),
       // drive issue #208: bound POST /api/request/upload at the edge, beside
       // the spending cap the route already applies (src/share.js). A stranger
