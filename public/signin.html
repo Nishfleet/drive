@@ -211,10 +211,14 @@ button:disabled {
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
-        <!-- Required age box. The route refuses a start without it. -->
+        <!-- The 18+ sentence and its box (drive#781). The page is shown to
+             new and returning sign-ins alike (drive#538), so the box is
+             optional here and the route holds the tick against the link when
+             the account opens (drive#785): an older account signs in without
+             attesting again. -->
         <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
         <label class="hint" for="age">
-          <input id="age" name="age" type="checkbox" value="on" required aria-describedby="age-sentence">
+          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence">
           I am 18 or older
         </label>
         <label for="email">Email</label>
@@ -292,6 +296,11 @@ if (errorParam === "invalid-link" || errorParam === "no-token") {
   say(LINK_FAILED_MESSAGE, "error");
 } else if (errorParam === "sign-in-closed") {
   say(CLOSED_MESSAGE, "error");
+} else if (errorParam === "need-age") {
+  // drive#785: a link whose start posted no tick cannot open an account. The
+  // words are the age sentence the form already shows — taken from there so
+  // the rule is stated once and stays one string the copy gate pins.
+  say(document.getElementById("age-sentence")?.textContent ?? UNEXPECTED_MESSAGE, "error");
 } else if (errorParam !== null) {
   say(UNEXPECTED_MESSAGE, "error");
 }
@@ -331,7 +340,7 @@ async function start(method, email) {
           : {
               method,
               email,
-              age: ageInput !== null && ageInput.checked,
+              age: ageInput?.checked ?? false,
               // next is only set for the device-approve return path.
               // The age box is always sent.
               next: nextParam === "" ? undefined : nextParam,

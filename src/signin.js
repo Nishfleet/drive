@@ -54,6 +54,7 @@ import {
   AFTER_SIGNIN_PATH,
   authFor,
   consumeSigninReturn,
+  readSigninReturn,
   SIGNIN_LINK_TTL_SECONDS,
   safeAfterSigninPath,
   sessionAccount,
@@ -141,11 +142,11 @@ export const SIGNIN_COPY = Object.freeze({
   // customer consent again (drive#538). Verify claims a test stand-in;
   // a real card waits on the Dodo key (drive#417, drive#325).
   needCard: PRICE.needCard,
-  // drive#781: the terms say an account holder must be 18 or older
-  // (public/terms.html, drive#547), and this page is where the person agrees.
-  // The label is short; needAge is the sentence the page shows above the box,
-  // and it is also the route's own refusal, so a start with no age box gets
-  // the words the page already showed.
+  // drive#781, and its scope as decided on drive#785: the terms say an
+  // account holder must be 18 or older (public/terms.html, drive#547), and
+  // this page is where a first-time account attests. The label is short;
+  // needAge is the sentence above the box, and the words the link page
+  // uses again when a link without the tick cannot open its account.
   needAge: "You must be 18 or older to open an account.",
   ageConsent: "I am 18 or older",
   noPlansLine: PRICE.noPlansLine,
@@ -260,26 +261,13 @@ export function readSigninRequest(body) {
 
 /**
  * Whether a posted field is a tick. The page's checkbox posts "on"; JSON posts
- * true. A missing, false, or unknown value is not a tick, so the age box
+ * true. A missing, false, or unknown value is not a tick, so the age gate
  * (drive#781) fails closed.
  * @param {unknown} value
  * @returns {boolean}
  */
 function isTick(value) {
   return value === true || value === "true" || value === "on" || value === "1";
-}
-
-/**
- * A start without the age box is refused (drive#781). Returning the need-age
- * sentence, or null when the box is ticked. The terms carry the rule
- * (public/terms.html, drive#547); this is the route's refusal. The check does
- * not look the address up, so a missing tick is the same 400 for every
- * address (drive#538).
- * @param {unknown} age
- * @returns {string|null}
- */
-function refuseSignupWithoutAge(age) {
-  return isTick(age) ? null : SIGNIN_COPY.needAge;
 }
 
 /**
@@ -494,20 +482,13 @@ export async function handleSigninRequest(request, env) {
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
   }
-  // drive#781: every start needs the age box. The check does not look the
-  // address up (drive#538): a missing tick is the same 400 for a new
-  // address and a returning one, so a stranger cannot tell which this is.
-  const ageRefused = refuseSignupWithoutAge(read.age);
-  if (ageRefused !== null) {
-    return json({ error: ageRefused }, 400);
-  }
-  // drive#538: the start step does not look the address up, does not refuse
-  // a missing card, and does not write a hold. Those three were how a
-  // stranger learned whether an address already had an account, and how they
-  // locked a new one out with a fingerprint the body carried. The card is
-  // claimed after the magic link is followed, on the real account id. The
-  // answer below is 202 for every well-formed address the send actually
-  // takes, known or unknown.
+  // drive#781, decided for drive#785: the age gate sits at account opening —
+  // the moment an emailed link is followed — and never at this start step,
+  // because an older account must not attest again and the page cannot tell
+  // a first-time address from a returning one without looking the address up
+  // (drive#538). The tick travels with the link it mails and the verify step
+  // reads it there. The answer below is 202 for every well-formed address
+  // the send actually takes, known or unknown, ticked or not.
   //
   // drive#550: the per-IP and global limits above bound mail volume per IP,
   // so a script spread across hosts still fills one inbox. This guard is
@@ -544,7 +525,9 @@ export async function handleSigninRequest(request, env) {
     // path) from this request's headers. The route's own origin check, body
     // parse and closed-door guard have already run above; this only needs the
     // email the start step validated and the headers the limiter reads IP from.
-    const authResponse = await auth.handler(signinLinkRequest(auth, email, request, read.next));
+    const authResponse = await auth.handler(
+      signinLinkRequest(auth, email, request, read.next, read.age),
+    );
     // Better Auth answers 429 from its rate limiter; translate that into the
     // message table's words rather than passing its body through, and carry the
     // library's own retry-after through as the `retry-after` header the edge
@@ -621,6 +604,48 @@ export async function handleSigninLinkVerify(request, env) {
   if (token === null || token === "") {
     return redirect(`${SIGNIN_PATH}?error=no-token`);
   }
+  // The 18+ gate, before the library's verify runs (drive#781, drive#785).
+  // The start step stored this link's address and whether the tick travelled
+  // with it; once magicLinkVerify runs it opens the account, so a first-time
+  // address whose start posted no tick has to be turned back here. An address
+  // that already has an account signs in whatever the tick said — that is
+  // the decided behaviour, no re-attestation for older accounts. Only
+  // someone holding the token reaches this lookup, so the answer never
+  // leaves the mailbox the link was delivered to: no new enumeration risk
+  // (drive#538).
+  //
+  // The gate fails closed on a storage fault (turned back with the same
+  // words a broken or spent link gets, which never name which of the three
+  // it was) and fails open for a link whose row carries no address, written
+  // by the code before the 0046 column existed: it cannot look the address
+  // up, and a start posted it the same way every other link was posted.
+  const driveDb = env.DRIVE_DB;
+  if (
+    driveDb !== undefined &&
+    driveDb !== null &&
+    typeof driveDb === "object" &&
+    "prepare" in driveDb
+  ) {
+    try {
+      const row = await readSigninReturn(/** @type {D1Database} */ (driveDb), token);
+      if (row !== null && row.email !== "" && row.ageAttested === false) {
+        const held = await /** @type {D1Database} */ (driveDb)
+          .prepare('SELECT id FROM "user" WHERE LOWER(email) = LOWER(?1)')
+          .bind(row.email)
+          .all();
+        if ((held.results?.length ?? 0) === 0) {
+          // Not attested and no account behind the address: the link is
+          // refused here rather than the account opened under it. The
+          // person starts again and ticks the box; the page explains the
+          // rule again.
+          return redirect(`${SIGNIN_PATH}?error=need-age`);
+        }
+      }
+    } catch (cause) {
+      console.error(`signin age gate lookup did not finish: ${String(cause)}`);
+      return redirect(`${SIGNIN_PATH}?error=invalid-link`);
+    }
+  }
   let verified;
   try {
     verified = await auth.api.magicLinkVerify({
@@ -634,7 +659,6 @@ export async function handleSigninLinkVerify(request, env) {
   if (verified.status !== 200) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);
   }
-  const driveDb = env.DRIVE_DB;
   if (
     driveDb !== undefined &&
     driveDb !== null &&
@@ -741,7 +765,8 @@ export async function handleSigninLinkVerify(request, env) {
     "prepare" in driveDb
   ) {
     try {
-      mailedReturn = await consumeSigninReturn(/** @type {D1Database} */ (driveDb), token);
+      mailedReturn = (await consumeSigninReturn(/** @type {D1Database} */ (driveDb), token))
+        .returnPath;
     } catch (cause) {
       // A lookup that cannot finish must not turn a session that was already
       // minted into a 500: the cookie below still carries the same intent for
@@ -775,9 +800,10 @@ export async function handleSigninLinkVerify(request, env) {
  * @param {string} email the address the start step validated
  * @param {Request} request the caller's request, whose origin and client-IP headers are forwarded
  * @param {string} [returnPath] a device-approve path safeAfterSigninPath accepted, or ""
+ * @param {boolean} [ageAttested] whether the start posted the age tick (drive#785)
  * @returns {Request}
  */
-function signinLinkRequest(auth, email, request, returnPath = "") {
+function signinLinkRequest(auth, email, request, returnPath = "", ageAttested = false) {
   const basePath = auth.options.basePath;
   const base = /** @type {string} */ (auth.options.baseURL);
   // Forward only what the callee reads, not the caller's whole header set. The
@@ -808,13 +834,14 @@ function signinLinkRequest(auth, email, request, returnPath = "") {
     headers.set("user-agent", userAgent);
   }
   // The body is the library's own shape, not the route's `step` wrapper. The
-  // metadata carries the return path only when there is one, so a plain
-  // sign-in's mail looks exactly as it did before drive#558.
+  // metadata carries the return path (drive#558) and the 18+ tick (drive#785)
+  // for every send: the row this write becomes at core/auth.js is what the
+  // verify step's gate reads, so a plain sign-in stores its row too.
   headers.set("content-type", "application/json");
   return new Request(`${base}${basePath}/sign-in/magic-link`, {
     method: "POST",
     headers,
-    body: JSON.stringify(returnPath === "" ? { email } : { email, metadata: { returnPath } }),
+    body: JSON.stringify({ email, metadata: { returnPath, age: ageAttested === true } }),
   });
 }
 

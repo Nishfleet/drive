@@ -8,6 +8,14 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-09
+
+- "I am 18 or older" is now asked once, when an account opens — the moment
+  its emailed link is followed — not on every sign-in. A link that asks for
+  an account without the tick opens no account and the sign-in page explains
+  the rule again; an address that already has an account signs in as before,
+  ticked or not.
+
 ## 2026-10-07
 
 - When this computer's storage key is a short session, the drive renews it

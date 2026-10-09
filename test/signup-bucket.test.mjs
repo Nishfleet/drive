@@ -74,9 +74,10 @@ const post = (body, url = `${TEST_BASE_URL}/api/signin`) =>
   new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", origin: TEST_BASE_URL },
-    // The age box the page posts (drive#781). A start without it is refused
-    // before any link is mailed. The helper does not strip a card field; the
-    // route ignores one (drive#538).
+    // The age box the page posts (drive#781), held at the link now (drive#785):
+    // a start without it mails the link and the gate refuses to open an
+    // account behind it, so an attested start is what this helper sends. The
+    // helper does not strip a card field; the route ignores one (drive#538).
     body: JSON.stringify({ age: true, ...body }),
   });
 
