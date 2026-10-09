@@ -1628,7 +1628,27 @@ const handler = {
     }
     const files = store ?? storeFor(env);
     if (!files) {
-      throw new Error("the nightly jobs need a storage endpoint");
+      // No storage endpoint, no nightly jobs (issue #879). `storeFor` has
+      // already logged the missing endpoint (drive#505), and every trip below
+      // needs that store: the reconciler repairs rows from the provider's
+      // own listing, the close cron and the trash purge delete through it,
+      // and the reindex's queue consumer refuses a message it has no store
+      // for, so with none they skip with the line below instead of throwing.
+      //
+      // A deployment that was never given the storage vars serves no files at
+      // all — the request path answers 503 by name and /api/health reports
+      // `failing: "storage"` — so the throw named no operator action. It only
+      // failed the trigger, on every one of the three nightly crons: 14 of
+      // 280 invocations over seven days (issue #879), each one an exception
+      // in the same monitor a real nightly failure would have to share. The
+      // skip keeps the missing endpoint visible in the log and costs the
+      // monitor nothing, because there are no files for any of it to repair,
+      // purge or index.
+      console.log(
+        "nightly jobs: no storage endpoint is set, so the meter reconcile, account close, " +
+          "trash purge and reindex are skipped",
+      );
+      return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
     // failed must be a failed trigger, not a run that reported success having
