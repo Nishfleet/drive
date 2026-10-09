@@ -1,14 +1,20 @@
 // Production Workers refuse an in-memory files store (drive#505). The
 // handler-level 503 is pinned in test/files.test.mjs; these tests drive the
 // Worker the platform drives, so a missing storage endpoint is a 503 on the
-// request path and a failed nightly trigger, not a quiet empty Map.
+// request path and a skipped nightly trigger, not a quiet empty Map.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  TRASH_PURGE_SCHEDULE,
+} from "../core/files.js";
 import { failureMessage } from "../core/messages.js";
 import { METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
@@ -86,19 +92,30 @@ test("a signed-in starter request without a storage endpoint is 503", async () =
   assert.deepEqual(await response.json(), { error: failureMessage("drive-not-configured") });
 });
 
-test("nightly jobs without a storage endpoint fail the trigger", async (t) => {
+test("nightly jobs without a storage endpoint skip and log", async (t) => {
+  const logMock = t.mock.method(console, "log");
   const errorMock = t.mock.method(console, "error");
-  for (const cron of [METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE]) {
-    await assert.rejects(
-      () => workerScheduled({ cron, scheduledTime: 0 }, {}, ctx),
-      /nightly jobs need a storage endpoint/,
-      `${cron} must fail closed, not walk an empty memory store`,
-    );
+  // The three crons the issue names (04:00 reconcile, 05:00 trash purge,
+  // 06:00 account close) plus the 03:00 reindex, whose queue consumer refuses
+  // a message it has no store for, all share the one guard. A resolution for
+  // each is the acceptance: the trigger no longer ends in an exception.
+  for (const cron of [
+    METER_RECONCILE_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    CLOSE_SCHEDULE,
+    REINDEX_SCHEDULE,
+  ]) {
+    await workerScheduled({ cron, scheduledTime: 0 }, {}, ctx);
   }
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  const logged = logMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
   assert.ok(
-    logged.some((line) => line.includes("no storage endpoint")),
-    `the nightly refusal must log, got ${JSON.stringify(logged)}`,
+    logged.some((line) => line.includes("nightly jobs: no storage endpoint is set")),
+    `the nightly skip must log, got ${JSON.stringify(logged)}`,
+  );
+  const errors = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.ok(
+    errors.some((line) => line.includes("no storage endpoint")),
+    `the missing endpoint must still be logged, got ${JSON.stringify(errors)}`,
   );
 });
 
