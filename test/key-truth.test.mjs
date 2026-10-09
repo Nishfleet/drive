@@ -110,5 +110,7 @@ test("the README says the same as the docs", () => {
     README.includes(`undoable for ${HIDDEN_VERSION_DAYS} day`),
     "the README states the undo window",
   );
-  assert.match(README, /branch key\s+reaches your whole Drive/);
+  // drive#870: the sentence reads "your whole Storagebun" in the shipped
+  // README now, beside the key table's own "your whole Storagebun" row.
+  assert.match(README, /branch key\s+reaches your whole Storagebun/);
 });
