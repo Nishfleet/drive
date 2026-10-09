@@ -257,9 +257,10 @@ export default defineConfig({
       // closed-door posture the sign-in route ships with (src/signin.js).
       // POST /api/signin mails a real email, so a script walking many
       // addresses is a mailbomb and a send-cost vector once the route is
-      // open in production. The global one bounds the whole service. Both
-      // configs are one minute, the waitlist's period, and both are turned on
-      // before sign-in opens in production.
+      // open in production. The second binding, keyed on a constant, bounds one
+      // Cloudflare location's total, not the account (the locality note below).
+      // Both configs are one minute, the waitlist's period, and both are turned
+      // on before sign-in opens in production.
       //
       // THE MEASURED NUMBERS (drive issue #202, the tuning pass this comment
       // used to ask for). The route was not reachable when the tuning was due:
@@ -275,41 +276,45 @@ export default defineConfig({
       //
       //   25 people behind one office router, arriving together   25/min
       //   the same office, each pressing 3 times (a mistyped     75/min
-      //     link) — 3 is Better Auth's own per-IP rule (src/auth.js)
-      //   200 people behind one campus NAT, over 5 minutes     200/min
+      //     link) — 3 is Better Auth's own per-IP rule (core/auth.js)
+      //   200 people behind one campus NAT, arriving together   200/min
       //
-      // Worst realistic NAT case = 200/min. The per-IP ceiling is 500/min: it
-      // clears the measured worst case by 2.5x, so an office twice the lab's
-      // size or a campus twice as large is still served, and sitting exactly on
-      // the measured number would refuse the next office one person larger.
-      // The old figure was 10/min, which refused 15 of 25 people in an office
-      // arriving together and 190 of 200 in the lab.
+      // Worst realistic NAT case = 200/min. The SIGNIN_RATE_LIMITER ceiling is
+      // 500/min: it clears the measured worst case by 2.5x, so an office twice
+      // the lab's size or a campus twice as large is still served, and sitting
+      // exactly on the measured number would refuse the next office one person
+      // larger. The old figure was 10/min, which refused 15 of 25 people in an
+      // office arriving together and 190 of 200 in the lab.
       //
-      // The global ceiling is a spend bound, not a traffic shaper, and it must
-      // sit ABOVE the per-IP world it caps. Cloudflare counts a key separately
-      // in each location ("rate limits ... are local to the Cloudflare
-      // location"), so the world one ceiling caps is the per-IP figure times
-      // the locations the service is reachable from. 5000/min is the per-IP
-      // figure across 10 locations, so one address, or one distributed walk,
-      // still cannot spend past it however many people stand behind it.
+      // SIGNIN_GLOBAL_RATE_LIMITER's key is a constant, so inside one
+      // Cloudflare location it bounds that location to 5000 starts a minute. It
+      // is NOT an account-wide spend cap. Cloudflare counts a rate-limit key
+      // separately in each location ("rate limits ... are local to the
+      // Cloudflare location"), so a walk spread over N locations can start
+      // 5000 in each one and this binding never sees the sum. A true
+      // account-wide cap needs a counter shared across locations, which is a
+      // mechanism change rather than the tuning #202 scopes (the edge mechanism
+      // shipped with #147), and is tracked as issue #878. 5000/min is 10x the
+      // per-IP ceiling: inside one location ten shared addresses can each run
+      // at their own 500/min before this bucket moves, so it caps a
+      // single-location flood from many addresses and nothing wider.
       //
       // MEASURED, NOT YET FIXED, and it is the finding of issue #202: raising
       // these two numbers does not by itself free a shared office. Better Auth
       // keys its own `/sign-in/magic-link` rule on the same client IP
-      // (src/auth.js, max 3 per 60s, D1-backed), and it runs after these two,
+      // (core/auth.js, max 3 per 60s, D1-backed), and it runs after these two,
       // so an office behind one NAT still gets 3 links out of 25 at any edge
       // ceiling: measured at 10/min and at 400/min alike, 3 of 25 served both
-      // times. These bindings are the coarse edge guard and the spend
-      // backstop; the per-IP send bound that a customer actually meets is the
+      // times. The per-IP send bound a customer actually meets is the
       // library's, and widening it trades mail cost for shared-egress access,
-      // which is a decision #202's scope explicitly excludes. It is filed as a
-      // follow-up rather than changed here.
+      // which is a decision #202's scope explicitly excludes. It is tracked as
+      // issue #876 rather than changed here.
       //
       // Each binding needs its own namespace: Cloudflare wants a positive
       // integer string, and a namespace another binding already uses fails
       // the deploy. Two bindings on one namespace would share their counters
-      // and the global would stop being a backstop. These are distinct from
-      // the waitlist's 1001.
+      // and the constant-key binding would stop being a separate backstop.
+      // These are distinct from the waitlist's 1001.
       SIGNIN_RATE_LIMITER: bindings.rateLimit({
         namespace: "1002",
         simple: { limit: 500, period: 60 },
