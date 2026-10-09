@@ -24,8 +24,10 @@
 //   the traffic is a described population, not a captured one.
 //
 // What this proves that a unit test does not: that the ceiling a real shared
-// egress meets is a number with margin above it, and that the global ceiling
-// sits above the per-IP world it caps. Those two facts are what the numbers in
+// egress meets is a number with margin above it, and that the constant-key
+// ceiling is sized above the per-IP world inside one location. The second is a
+// per-location bound, not an account-wide one, because Cloudflare counts a key
+// separately in each location (issue #878). Those facts are what the numbers in
 // cloudflare.config.ts are for, and they were true of the old ones only by
 // assertion.
 //
@@ -145,9 +147,9 @@ function sharedEgressTraffic(shape) {
   /** @type {Array<{ip: string, minute: number}>} */
   const requests = [];
   for (let person = 0; person < shape.people; person += 1) {
-    // People do not all arrive on the same second of the same minute: one
-    // wave lands together on a release morning, the rest drift through the
-    // hour, so presses are spread over the population's own minutes.
+    // People do not all arrive on the same second of the same minute: a shape
+    // with more than one minute spreads them over that many windows, while a
+    // one-minute shape is a burst that all lands in the same window.
     for (let press = 0; press < shape.pressesPerPerson; press += 1) {
       requests.push({ ip: shape.ip, minute: person % shape.minutes });
     }
@@ -158,7 +160,7 @@ function sharedEgressTraffic(shape) {
 /**
  * One request a person makes, carrying the client IP Cloudflare sets on every
  * request it serves. The address is the person's own, so a stand-in never
- * measures Better Auth's per-address rule (src/auth.js) instead of the edge
+ * measures Better Auth's per-address rule (core/auth.js) instead of the edge
  * ceiling this file is about.
  * @param {{ip: string}} traffic
  * @param {number} person
@@ -187,12 +189,13 @@ function signinRequest(traffic, person) {
  *     through.
  *   The route's own 202/429 answers what the person actually experienced, and
  *     it also carries the library's per-IP rule that runs after the edge
- *     (src/auth.js). The test below uses it to show that verdict is not the
+ *     (core/auth.js). The test below uses it to show that verdict is not the
  *     edge's to give.
  *
- * The clock advances with the traffic, so the stand-in bindings open each next
- * window the way a real one does, and the two are driven as two independent
- * bindings, as they are deployed.
+ * The clock advances one 60-second window with each minute of traffic (the
+ * clock is in seconds, like the periods), so the stand-in bindings open each
+ * next window the way a real one does, and the two are driven as two
+ * independent bindings, as they are deployed.
  *
  * @param {{perIp: {limit: number, period: number}, global: {limit: number, period: number}}} limits
  * @param {Array<{ip: string, minute: number}>} requests
@@ -201,8 +204,12 @@ function signinRequest(traffic, person) {
 async function measure(limits, requests) {
   const made = createTestAuth();
   let minute = 0;
-  const perIpLimiter = makeWindowLimiter(limits.perIp, () => minute);
-  const globalLimiter = makeWindowLimiter(limits.global, () => minute);
+  // The clock is in seconds, so `minute * 60` opens a fresh 60-second window per
+  // traffic minute. The earlier `() => minute` fed minutes into a seconds clock
+  // and counted the whole population into window 0, which is the units bug the
+  // review caught.
+  const perIpLimiter = makeWindowLimiter(limits.perIp, () => minute * 60);
+  const globalLimiter = makeWindowLimiter(limits.global, () => minute * 60);
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
@@ -260,25 +267,28 @@ const GLOBAL = shippedLimit("SIGNIN_GLOBAL_RATE_LIMITER");
  *
  *   A small office          25 people behind one router, each signing in once
  *                           on a morning everyone arrived at once.
- *   A university lab        200 people behind one campus NAT, over five
- *                           minutes. This is the worst realistic case: it is
- *                           the largest population one institution puts behind
- *                           a single address while still being one workplace.
+ *   A university lab        200 people behind one campus NAT, all arriving in
+ *                           the busiest minute. This is the worst realistic
+ *                           case: the largest population one institution puts
+ *                           behind a single address while still being one
+ *                           workplace, and the burst assumes they arrive
+ *                           together, the conservative reading.
  *   An office in a login    25 people behind one router, each pressing three
  *   morning                 times because they mistyped. Three is Better
  *                           Auth's own per-IP rule on the magic-link route
- *                           (src/auth.js), so this is the largest an ordinary
+ *                           (core/auth.js), so this is the largest an ordinary
  *                           person reaches without meeting a rule written for
  *                           one person.
- *   A carrier CGNAT pool    2,000 subscribers behind one address. Deliberately
- *                           past the point where any per-IP ceiling can fit
- *                           everyone: measured for what it shows about the
- *                           global backstop, and the test below says so.
+ *   A carrier CGNAT pool    2,000 subscribers behind one address, arriving in
+ *                           one minute: deliberately past the point where any
+ *                           per-IP ceiling can fit everyone, measured for what
+ *                           it shows about a ceiling's refusal, and the test
+ *                           below says so.
  */
 const OFFICE = { ip: "203.0.113.10", people: 25, minutes: 1, pressesPerPerson: 1 };
-const LAB = { ip: "203.0.113.20", people: 200, minutes: 5, pressesPerPerson: 1 };
+const LAB = { ip: "203.0.113.20", people: 200, minutes: 1, pressesPerPerson: 1 };
 const OFFICE_RETRYING = { ip: "203.0.113.30", people: 25, minutes: 1, pressesPerPerson: 3 };
-const CGNAT = { ip: "198.51.100.40", people: 2000, minutes: 60, pressesPerPerson: 1 };
+const CGNAT = { ip: "198.51.100.40", people: 2000, minutes: 1, pressesPerPerson: 1 };
 
 test("the two sign-in bindings are distinct namespaces, as a deploy needs", () => {
   // Two bindings on one namespace share their counters, so the per-IP and the
@@ -307,6 +317,13 @@ test("a whole small office signing in at once clears the edge per-IP ceiling", a
     `the edge per-IP ceiling refused ${measured.edgeRefused} of ${OFFICE.people} in an office arriving together, peaking at ${measured.peak} against a ${PER_IP.limit}-a-minute ceiling`,
   );
   assert.equal(measured.edgeAllowed, OFFICE.people, "the edge serves every person in the office");
+  // The peak the config comment records for this row, pinned so a traffic or
+  // clock regression fails here rather than silently shrinking the measurement.
+  assert.equal(
+    measured.peak,
+    OFFICE.people,
+    `the office peaked at ${measured.peak}/min, not the measured ${OFFICE.people}`,
+  );
 });
 
 test("an office retrying a mistyped link three times each clears the edge ceiling", async () => {
@@ -324,6 +341,11 @@ test("an office retrying a mistyped link three times each clears the edge ceilin
     0,
     `the edge per-IP ceiling refused ${measured.edgeRefused} of an office retrying, peaking at ${measured.peak} against a ${PER_IP.limit}-a-minute ceiling`,
   );
+  assert.equal(
+    measured.peak,
+    OFFICE_RETRYING.people * OFFICE_RETRYING.pressesPerPerson,
+    `the retrying office peaked at ${measured.peak}/min, not the measured ${OFFICE_RETRYING.people * OFFICE_RETRYING.pressesPerPerson}`,
+  );
 });
 
 test("a university lab's worst minute is under the per-IP ceiling", async () => {
@@ -332,6 +354,14 @@ test("a university lab's worst minute is under the per-IP ceiling", async () => 
   const report = await measure({ perIp: PER_IP, global: GLOBAL }, sharedEgressTraffic(LAB));
   const measured = report.get(LAB.ip);
   assert.ok(measured);
+  // Pinned so the 2x margin below is not satisfied by a peak that never
+  // happened: 200 people in one minute peak at 200, not at the 40 a five-minute
+  // spread would give (the units bug the review caught).
+  assert.equal(
+    measured.peak,
+    LAB.people,
+    `the lab peaked at ${measured.peak}/min, not the measured ${LAB.people}`,
+  );
   assert.ok(
     measured.peak < PER_IP.limit,
     `a ${LAB.people}-person lab peaked at ${measured.peak} on one IP a minute, which does not clear the ${PER_IP.limit}-a-minute ceiling`,
@@ -359,18 +389,19 @@ test("a CGNAT pool is refused by the edge per-IP ceiling", async () => {
   );
 });
 
-test("the global ceiling sits above the per-IP world it caps", () => {
-  // The issue's own requirement: "the global is the spend backstop, so it must
-  // stay above the per-IP world it caps". The world one ceiling caps is the
-  // per-IP figure times the locations a service can be reached from, because
-  // Cloudflare counts a key separately in each location. A stand-in measures
-  // one location, so the factor is named rather than guessed: two is the
-  // smallest world that is not one machine's counter. The shipped numbers
-  // carry the wider margin, recorded beside the bindings.
-  const LOCATIONS = 2;
+test("the constant-key ceiling stays above the per-IP addresses in one location", () => {
+  // NOT an account-wide check, and it must not read like one. Cloudflare counts
+  // a rate-limit key separately in each location, so this binding bounds one
+  // location and a walk spread over many locations is not bounded by it at all
+  // (that gap is issue #878). What it must do inside one location is not bind
+  // before the per-IP ceilings it sits above, so a location's shared addresses
+  // are shaped by their own per-IP limits first. The shipped 5000 is 10x the
+  // per-IP 500; assert at least a few maxed addresses so the relationship
+  // cannot silently invert.
+  const MAXED_ADDRESSES = 2;
   assert.ok(
-    GLOBAL.limit >= PER_IP.limit * LOCATIONS,
-    `the global ceiling (${GLOBAL.limit}/min) must stay above ${LOCATIONS} locations of the per-IP world (${PER_IP.limit}/min each)`,
+    GLOBAL.limit >= PER_IP.limit * MAXED_ADDRESSES,
+    `the constant-key ceiling (${GLOBAL.limit}/min) must stay above ${MAXED_ADDRESSES} maxed per-IP addresses (${PER_IP.limit}/min each) in one location`,
   );
 });
 
@@ -389,7 +420,7 @@ test("the per-IP send bound a customer meets is the library's, not this edge's",
   // The finding of drive issue #202, measured here so the next reader sees the
   // number instead of re-deriving it: raising the two edge ceilings does NOT by
   // itself free a shared office. Better Auth keys its own `/sign-in/magic-link`
-  // rule on the same client IP (src/auth.js: max 3 per 60s, D1-backed, so the
+  // rule on the same client IP (core/auth.js: max 3 per 60s, D1-backed, so the
   // counter is one per IP across every isolate), and that rule runs AFTER both
   // edge bindings, so it refuses first.
   //
