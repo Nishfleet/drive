@@ -1,0 +1,47 @@
+# Private-detail rules for the PR scan (see "Private detail scan" in README.md).
+#
+# Not named .gitleaks.toml on purpose: gitleaks loads that name on its own, and
+# the existing full-history scan would then fail on old commits. CI passes this
+# file with --config and only scans the commits a pull request adds.
+#
+# To silence one line, put `gitleaks:allow` in a comment on it.
+
+title = "private detail rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "private-home-path"
+description = "Absolute path under a personal home directory"
+# Starts at "home", not "/home": the default allowlist drops matches that begin with a slash.
+regex = '''\bhome/nish/[A-Za-z0-9._~/-]*'''
+keywords = ["home/nish/"]
+
+[[rules]]
+id = "private-fleet-seats-config"
+description = "Path of the local seat configuration"
+regex = '''\.config/fleet-ops/seats'''
+keywords = [".config/fleet-ops/seats"]
+
+[[rules]]
+id = "private-tailscale-ipv4"
+description = "Tailscale address (100.64.0.0/10)"
+regex = '''\b100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}\b'''
+keywords = ["100."]
+
+[[rules]]
+id = "private-tailscale-name"
+description = "Tailscale MagicDNS name"
+regex = '''[A-Za-z0-9-]+\.ts\.net\b'''
+keywords = [".ts.net"]
+
+[[rules]]
+id = "private-cloudflare-account-id"
+description = "32-hex value next to an account id name"
+regex = '''(?i)account[_-]?id\b[^\n]{0,24}?\b[0-9a-f]{32}\b'''
+keywords = ["account"]
+
+[[allowlists]]
+description = "This file names the patterns it looks for"
+paths = ['''(^|/)gitleaks-private-detail\.toml$''']
