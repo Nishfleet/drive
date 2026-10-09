@@ -1259,7 +1259,8 @@ test("the deletion notice is only sent for a purge that actually happened", asyn
   assert.ok(
     !world.email.sent.some(
       (mail) =>
-        /** @type {{subject: string}} */ (mail).subject === "Your Storagebun files have been deleted",
+        /** @type {{subject: string}} */ (mail).subject ===
+        "Your Storagebun files have been deleted",
     ),
     "a purge that failed sends no deletion notice",
   );

@@ -42,9 +42,10 @@ and the point where the decision is Nish's.
   browser in that request sees: the response is pinned `cache-control:
   no-store` and `x-robots-tag: noindex`, so neither a browser nor a crawler
   keeps the error.
-- **Access.** Until Drive has its own domain, the site sits behind Cloudflare
-  Access. A stranger reaching the site instead of the Access sign-in is an
-  incident in itself (drive#159).
+- **Access.** The site stays behind Cloudflare Access until launch (drive#870).
+  A stranger reaching the site instead of the Access sign-in is an incident
+  in itself (drive#159). That covers the workers.dev address now, and
+  storagebun.com once the hostname answers.
 
 ## Roll back
 

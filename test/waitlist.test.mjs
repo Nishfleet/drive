@@ -485,10 +485,7 @@ test("isSameOriginRequest accepts our own origin and a request without Origin", 
     ),
     true,
   );
-  assert.equal(
-    isSameOriginRequest(new Request("https://storagebun.com/api/waitlist")),
-    true,
-  );
+  assert.equal(isSameOriginRequest(new Request("https://storagebun.com/api/waitlist")), true);
   assert.equal(
     isSameOriginRequest(
       new Request("https://storagebun.com/api/waitlist", {
