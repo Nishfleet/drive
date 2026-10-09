@@ -106,7 +106,8 @@ export function safeAfterSigninPath(raw) {
   return url.pathname + url.search;
 }
 
-// ---- the return path a device-approval sign-in lands on (drive issue #558) ----
+// ---- the return path a device-approval sign-in lands on (drive issue #558),
+// ---- and the age attestation that rides along (drive#781, drive#785)
 //
 // The approve page leaves its path in a cookie of the browser that opened it,
 // so a link opened on a phone (the second device, the one that signs in) lost
@@ -115,6 +116,12 @@ export function safeAfterSigninPath(raw) {
 // `metadata` field (src/signin.js), `sendMagicLink` below stores one row keyed
 // by the link token before the mail goes out, and the verify step reads and
 // deletes the row on whichever device followed the link.
+//
+// The same row carries the 18+ attestation (drive#785): the page cannot tell
+// a first-time address from a returning one (drive#538 — refusing at the
+// start step reports which one it is), so the tick does not gate the link,
+// it travels with it. The verify step reads the row before the library opens
+// the account and refuses a first-time address whose start posted no tick.
 
 /**
  * How long a stored return path stays readable. Fifteen minutes, five minutes
@@ -126,17 +133,34 @@ export function safeAfterSigninPath(raw) {
  */
 export const SIGNIN_RETURN_TTL_SECONDS = 15 * 60;
 
+/** What one link token's row says, read back. */
+const EMPTY_SIGNIN_RETURN = Object.freeze({
+  returnPath: "",
+  email: "",
+  ageAttested: false,
+});
+
 /**
- * Stores the return path one link token must land on. The key is the token's
- * SHA-256 digest, never the raw token or the address, so two codes (or two
- * starts) never overwrite each other and the table holds no secret a row
- * could leak. The path must already have passed safeAfterSigninPath; the
- * reader validates it again anyway.
+ * Stores what one link token must land on. The key is the token's SHA-256
+ * digest, never the raw token or the address, so two codes (or two starts)
+ * never overwrite each other and the table holds no secret a row could leak.
+ * The path must already have passed safeAfterSigninPath; the reader validates
+ * it again anyway.
+ *
+ * One row for every send since drive#785: the age gate reads the address and
+ * the tick from this row at the link moment, so a plain sign-in's row carries
+ * them even when the return path is empty. On a row the gate cannot
+ * evaluate — one written by the code before the migration, whose tick
+ * defaulted to 0 and whose email it never knew — the verify step answers
+ * permissively, because a form post backed this link the same way every
+ * other one was backed.
  * @param {D1Database} db
  * @param {string} token the raw magic-link token this row belongs to
  * @param {string} returnPath a path safeAfterSigninPath already returned
+ * @param {string} email the address the start was posted for
+ * @param {boolean} ageAttested whether the start posted the age tick (drive#785)
  */
-export async function storeSigninReturn(db, token, returnPath) {
+export async function storeSigninReturn(db, token, returnPath, email, ageAttested) {
   const at = Math.floor(Date.now() / 1000);
   // Sweep-then-insert is one batch, the pattern the device-code store uses:
   // rows nobody followed give their row up after the TTL, and a token re-sent
@@ -148,25 +172,53 @@ export async function storeSigninReturn(db, token, returnPath) {
       .bind(at - SIGNIN_RETURN_TTL_SECONDS),
     db
       .prepare(
-        `INSERT INTO signin_return (token_hash, return_path, created_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT (token_hash) DO UPDATE SET return_path = ?2, created_at = ?3`,
+        `INSERT INTO signin_return (token_hash, return_path, created_at, email, age_attested)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (token_hash) DO UPDATE
+           SET return_path = ?2, created_at = ?3, email = ?4, age_attested = ?5`,
       )
-      .bind(await sha256Hex(token), returnPath, at),
+      .bind(await sha256Hex(token), returnPath, at, email, ageAttested === true),
   ]);
 }
 
 /**
- * Reads and deletes the return path one link token stored. Single use by
- * construction: the row is deleted in the same breath it is read, so a spent
- * link cannot hand out the path twice. Returns the path only if it still
- * passes safeAfterSigninPath — the writer validated it, and this side
- * validates again so a row nothing wrote can still not bounce the session
- * elsewhere. An empty string means "no stored path", and the caller falls
- * back to the after-signin cookie.
+ * Reads one link token's row without consuming it: the age gate (drive#785)
+ * has to look before the library's verify runs — once that runs, an account
+ * may already exist — and the row's return path is still spent at the
+ * consume below it, on the same token. Returns null for a token nothing
+ * stored. An email the writer never knew reads as "", and a NULL tick reads
+ * as false.
  * @param {D1Database} db
  * @param {string} token the raw magic-link token the link carried
- * @returns {Promise<string>}
+ * @returns {Promise<{returnPath: string, email: string, ageAttested: boolean}|null>}
+ */
+export async function readSigninReturn(db, token) {
+  const row = await db
+    .prepare("SELECT return_path, email, age_attested FROM signin_return WHERE token_hash = ?1")
+    .bind(await sha256Hex(token))
+    .first();
+  if (row === null || row === undefined) {
+    return null;
+  }
+  return {
+    returnPath: typeof row.return_path === "string" ? safeAfterSigninPath(row.return_path) : "",
+    email: typeof row.email === "string" ? row.email : "",
+    ageAttested: row.age_attested === 1 || row.age_attested === true,
+  };
+}
+
+/**
+ * Reads and deletes what one link token stored. Single use by construction:
+ * the row is deleted in the same breath it is read, so a spent link cannot
+ * hand out the path twice. The return path comes back only if it still passes
+ * safeAfterSigninPath — the writer validated it, and this side validates
+ * again so a row nothing wrote can still not bounce the session elsewhere.
+ * An empty return path means "no stored path", and the caller falls back to
+ * the after-signin cookie. The age fields ride back for symmetry with
+ * readSigninReturn; by the time this runs the gate has already looked.
+ * @param {D1Database} db
+ * @param {string} token the raw magic-link token the link carried
+ * @returns {Promise<{returnPath: string, email: string, ageAttested: boolean}>}
  */
 export async function consumeSigninReturn(db, token) {
   const row = await db
@@ -174,13 +226,16 @@ export async function consumeSigninReturn(db, token) {
     .bind(await sha256Hex(token))
     .first();
   if (row === null || row === undefined) {
-    return "";
+    return { ...EMPTY_SIGNIN_RETURN };
   }
   await db
     .prepare("DELETE FROM signin_return WHERE token_hash = ?1")
     .bind(await sha256Hex(token))
     .run();
-  return safeAfterSigninPath(row.return_path);
+  return {
+    ...EMPTY_SIGNIN_RETURN,
+    returnPath: safeAfterSigninPath(row.return_path),
+  };
 }
 
 /**
@@ -287,24 +342,27 @@ export function createAuth(options) {
         // left on: the spec's screen has no separate registration step.
         disableSignUp: false,
         // `metadata` is the library's own field for per-send state: the start
-        // step forwards the approve page's return path in it (src/signin.js,
-        // drive#558), and the mapping row is written here, before the mail
-        // goes out. A row that cannot be written is a sign-in that cannot
+        // step forwards the approve page's return path and the 18+ tick in it
+        // (src/signin.js, drive#558, drive#785), and the mapping row is
+        // written here, before the mail goes out, for every send — the age
+        // gate reads the row at the link moment even when the return path is
+        // empty, because that row is the only record of whether the tick
+        // travelled. A row that cannot be written is a sign-in that cannot
         // keep its promise, so the failure propagates and the route answers
         // 503 rather than mailing a link whose landing page is already lost.
         sendMagicLink: async ({ email, token, metadata }, ctx) => {
-          const returnPath = safeAfterSigninPath(
+          const meta =
             metadata && typeof metadata === "object"
-              ? /** @type {{returnPath?: unknown}} */ (metadata).returnPath
-              : undefined,
+              ? /** @type {{returnPath?: unknown, age?: unknown}} */ (metadata)
+              : undefined;
+          const returnPath = safeAfterSigninPath(meta?.returnPath);
+          await storeSigninReturn(
+            /** @type {D1Database} */ (options.database),
+            token,
+            returnPath,
+            email,
+            meta?.age === true,
           );
-          if (returnPath !== "") {
-            await storeSigninReturn(
-              /** @type {D1Database} */ (options.database),
-              token,
-              returnPath,
-            );
-          }
           // Which browser or device asked, out of the library's own request
           // context: src/signin.js forwards this Worker request's user-agent
           // to the magic-link endpoint, so this is the header the person's

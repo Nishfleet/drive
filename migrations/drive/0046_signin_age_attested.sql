@@ -1,0 +1,24 @@
+-- The 18+ gate applies at account opening only (drive#781, decided for
+-- drive#785): an address that already has an account signs in without
+-- attesting again, and a first-time address attests when the emailed link is
+-- followed, not when the start step is posted. The page cannot tell the two
+-- apart (drive#538), so the tick travels with the link instead of gating it.
+--
+-- The row the link token already had (0031_signin_return.sql, drive#558)
+-- carries both fields: the address the start was posted for, and whether the
+-- age box was ticked on that start. The verify step reads the row by the
+-- link's token digest and refuses only when the address has no account and no
+-- tick travelled — the same honour-the-token design the return path uses.
+--
+-- The address is stored as the start posted it (the gate's lookup lowercases
+-- both sides, the way workers/api reads the user row). No secret sits here:
+-- the row keys on the token's SHA-256 digest, and a row leaks nothing the
+-- emailed token does not already prove.
+--
+-- Expand only: two new columns, one with a default, no drop and no rename.
+-- The code before this file inserts no email and no tick, so the default
+-- keeps writing working and reading NULL, which the verify gate treats as a
+-- link that carries no attestation. Rollback is rolling the code back; D1 has
+-- no down-migrations, so this file is one-way.
+ALTER TABLE signin_return ADD COLUMN email TEXT;
+ALTER TABLE signin_return ADD COLUMN age_attested INTEGER NOT NULL DEFAULT 0;
