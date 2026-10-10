@@ -258,9 +258,10 @@ export default defineConfig({
       // POST /api/signin mails a real email, so a script walking many
       // addresses is a mailbomb and a send-cost vector once the route is
       // open in production. The second binding, keyed on a constant, bounds one
-      // Cloudflare location's total, not the account (the locality note below).
-      // Both configs are one minute, the waitlist's period, and both are turned
-      // on before sign-in opens in production.
+      // Cloudflare location's total, not the account — the locality note below
+      // names the shared counter that bounds the account. Both configs are one
+      // minute, the waitlist's period, and both are turned on before sign-in
+      // opens in production.
       //
       // THE MEASURED NUMBERS (drive issue #202, the tuning pass this comment
       // used to ask for). The route was not reachable when the tuning was due:
@@ -287,17 +288,27 @@ export default defineConfig({
       // office arriving together and 190 of 200 in the lab.
       //
       // SIGNIN_GLOBAL_RATE_LIMITER's key is a constant, so inside one
-      // Cloudflare location it bounds that location to 5000 starts a minute. It
-      // is NOT an account-wide spend cap. Cloudflare counts a rate-limit key
-      // separately in each location ("rate limits ... are local to the
-      // Cloudflare location"), so a walk spread over N locations can start
-      // 5000 in each one and this binding never sees the sum. A true
-      // account-wide cap needs a counter shared across locations, which is a
-      // mechanism change rather than the tuning #202 scopes (the edge mechanism
-      // shipped with #147), and is tracked as issue #878. 5000/min is 10x the
-      // per-IP ceiling: inside one location ten shared addresses can each run
-      // at their own 500/min before this bucket moves, so it caps a
-      // single-location flood from many addresses and nothing wider.
+      // Cloudflare location it bounds that location to 5000 starts a minute.
+      // The binding alone is still only that per-location bound: Cloudflare
+      // counts a rate-limit key separately in each location ("rate limits ...
+      // are local to the Cloudflare location"), so a walk spread over N
+      // locations can start 5000 in each one and this binding never sees the
+      // sum. The account-wide bound is the shared counter beside the
+      // bindings: signinAccountSendOutcome (src/signin-send-limit.js, the
+      // signin_account_sends row from migration 0047) spends one row on the
+      // customer database per start — one database, so the same row in every
+      // location — and refuses the start step once the account has started
+      // SIGNIN_ACCOUNT_SEND_MAX in its 60-second window. That max is this
+      // binding's own figure on purpose: inside any one location the binding
+      // refuses first and the counter only records what it let through, and
+      // across every location the account's total is now 5000/min rather than
+      // 5000 x N (issue #878). The window's edges are each location's clock,
+      // so the account figure is 5000 per 60 seconds minus the locations'
+      // skew — the same clock trust the per-IP and per-address windows on
+      // D1 already run on. 5000/min is 10x the per-IP ceiling: inside one
+      // location ten shared addresses can each run at their own 500/min before
+      // this bucket moves, so it caps a single-location flood from many
+      // addresses and nothing wider.
       //
       // MEASURED, NOT YET FIXED, and it is the finding of issue #202: raising
       // these two numbers does not by itself free a shared office. Better Auth
