@@ -11,7 +11,11 @@
 // location, so the constant-key binding bounds one location and a walk spread
 // over many locations multiplies it. This guard's row lives on the customer
 // database — one database, so one row for every location — and the account's
-// total of sign-in starts is bounded by it however the requests arrive.
+// total of sign-in starts is bounded by it however the requests arrive. One
+// honest limit: a window's edges are whichever location's clock ran the send,
+// so the account figure is 5000 per (60 seconds minus the locations' clock
+// skew) — the same clock trust the address guard's windows run on, at
+// account scale.
 //
 // Cloudflare's rate-limit binding only offers 10- and 60-second windows, so
 // an hour and a day cannot be expressed there. The count lives on the

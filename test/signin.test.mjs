@@ -1061,6 +1061,16 @@ test("the account-wide bound refuses the account's 5001st start from a fresh add
     assert.deepEqual(answer.body, sentLinkBody, `ask #${ask + 1} is answered as a sent link is`);
   }
   assert.equal(made.sent.length, 2, "two links go out; the account's ceiling refuses the third");
+  const spentAddress = await made.db
+    .prepare('SELECT "hour_count" FROM "signin_address_sends" WHERE "address" = ?1')
+    .bind("walk2@b.co")
+    .first();
+  assert.ok(spentAddress !== null);
+  assert.equal(
+    spentAddress.hour_count,
+    1,
+    "the refused ask had already spent its address's slot: it did reach for a send",
+  );
 });
 
 test("an account counter that cannot be written answers that no link went out", async () => {

@@ -302,7 +302,10 @@ export default defineConfig({
       // binding's own figure on purpose: inside any one location the binding
       // refuses first and the counter only records what it let through, and
       // across every location the account's total is now 5000/min rather than
-      // 5000 x N (issue #878). 5000/min is 10x the per-IP ceiling: inside one
+      // 5000 x N (issue #878). The window's edges are each location's clock,
+      // so the account figure is 5000 per 60 seconds minus the locations'
+      // skew — the same clock trust the per-IP and per-address windows on
+      // D1 already run on. 5000/min is 10x the per-IP ceiling: inside one
       // location ten shared addresses can each run at their own 500/min before
       // this bucket moves, so it caps a single-location flood from many
       // addresses and nothing wider.
