@@ -6,21 +6,22 @@
 // live.
 //
 // The page prose is the drive#882 drafts, quoted from the issue. Two facts
-// are the owner's to decide, not a worker's: the payee's legal name and the
-// postal contact address. Each one is a marked placeholder in exactly one
-// page:
+// stay marked placeholders, each in exactly one page: the payee's legal name
+// and the postal contact address.
 //
 //     <mark class="to-fill" data-placeholder="<id>">[To fill: ...]</mark>
 //
-// Nish decided the other two on 2026-10-09 (drive#523, drive#882): the refund
-// rule (unused balance refundable within 14 days of a top-up, non-refundable
-// but never expiring after that) and the VAT line (prices exclude VAT, shown
-// at checkout by the payment provider). Both are written on the refunds page
-// now, so they are no longer placeholders. The support mailbox is a decided
-// fact too, and the drafts put it on each of the four pages, so it is typed on
-// each; only the two placeholders above are single-owner facts. Every other
-// page links to the page that holds a placeholder (the support page for the
-// address), so each of those is typed once.
+// The refund rule and the VAT line used to be placeholders too. They are
+// filled from the owner's published defaults, not from this file: drive#523
+// MEMBER comment https://github.com/Nishfleet/drive/issues/523#issuecomment-6086208024
+// (2026-10-09) and the drive#882 body (same author) say to leave placeholders
+// only for LEGAL_NAME and ADDRESS, and they give the refund default (unused
+// balance refundable within 14 days of a top-up, then non-refundable but
+// never expiring) and the VAT default (prices exclude VAT where it applies,
+// shown at checkout by the payment provider). Both sit on the refunds page
+// as real words. The support mailbox is on each of the four pages the drafts
+// put an address on. Every other page links to the page that holds a
+// remaining placeholder (the support page for the address).
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/

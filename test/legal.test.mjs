@@ -1,9 +1,11 @@
-// The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
-// use and support. This file pins what the issue's finish line asks for:
-// the pages ship and are in the sitemap, every footer and the sign-in page
-// link them, the four owner facts stay marked placeholders in one place
-// each, the pages state the real price and the real storage provider, and
-// security.txt points at the support page.
+// The legal and trust pages (drive#523, drive#882): terms, privacy, refunds,
+// acceptable use and support. This file pins what the issue's finish line
+// asks for: the pages ship and are in the sitemap, every footer and the
+// sign-in page link them, the two remaining owner facts (payee name, postal
+// address) stay marked placeholders in one place each, the refund rule and
+// the VAT line are the owner's published defaults, the pages state the real
+// price and the real storage provider, and security.txt points at the
+// support page.
 //
 // drive#584 adds the accessibility and status pages to the same list, plus the
 // three operator runbooks, the site's own 5xx page, and the sub-processor list
@@ -161,7 +163,7 @@ test("the two owner facts are marked placeholders, each in one place only", () =
   for (const id of seen.keys()) {
     assert.ok(
       LEGAL_PLACEHOLDERS.some((fact) => fact.id === id),
-      `${id} is not one of the four owner facts in core/legal.js`,
+      `${id} is not one of the two remaining owner facts in core/legal.js`,
     );
   }
   // A fact may be filled (gone), never typed twice or moved off its page.
@@ -172,18 +174,17 @@ test("the two owner facts are marked placeholders, each in one place only", () =
       assert.equal(where[0], fact.file, `${fact.id} belongs on ${fact.file}`);
     }
   }
-  // The refund rule and the VAT line were decided (drive#882, Nish
-  // 2026-10-09): the refunds page carries both as real words, not as
-  // placeholders.
+  // Refund and VAT defaults from drive#523#issuecomment-6086208024, restated
+  // in the drive#882 body: real words on the refunds page, not placeholders.
   assert.match(legalText("refunds.html"), /14 days of a top-up/);
   assert.match(legalText("refunds.html"), /Prices exclude VAT/);
 });
 
 test("the legal pages carry the support mailbox and no other address", () => {
-  // drive#882 (Nish, 2026-10-09): the support mailbox is a shared inbox on the
-  // site's own domain, so the four legal pages carry it where the drafts put
-  // an address. The rule that replaces the old "no page carries an address"
-  // line is the same one: a personal inbox must never reach the site, so
+  // drive#882: the support mailbox is a shared inbox on the site's own
+  // domain, so the four legal pages carry it where the drafts put an address.
+  // The rule that replaces the old "no page carries an address" line is the
+  // same one: a personal inbox must never reach the site, so
   // support@storagebun.com is the only address any legal page may show.
   // These four are the files the drive#882 drafts put an address on, so the
   // mailbox is required on each. The second loop walks every legal page, so a
