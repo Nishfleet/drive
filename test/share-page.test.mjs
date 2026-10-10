@@ -160,6 +160,7 @@ test("the landing page carries no script, refuses to be framed, and is noindex",
   assert.equal(page.headers.get("referrer-policy"), "no-referrer");
   assert.equal(page.headers.get("cache-control"), "private, no-store");
   assert.equal(page.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(page.headers.get("x-frame-options"), "DENY");
 });
 
 test("a page view draws no bytes and counts no download; the open flag still does", async () => {
@@ -285,6 +286,21 @@ test("a file name that is markup shows as text on the page, never as markup", as
   const html = await (await visit()(browserVisit())).text();
   assert.ok(html.includes("Tom &amp; Jerry &lt;watch&gt;.txt"));
   assert.ok(!html.includes("Tom & Jerry <watch>.txt"), "the raw name never reaches the page");
+
+  // Attribute context: the picture's alt interpolates the same escaped name.
+  // A quote that closed the attribute would let the rest of the name run as
+  // markup; the escaper turns " into &quot;, so the alt stays one attribute.
+  const picture = drive();
+  const raw = `x"><img src=y>.png`;
+  await picture.upload(raw, "png-bytes", "image/png");
+  await picture.mint(raw);
+  const pictured = await (await picture.visit()(browserVisit())).text();
+  assert.ok(pictured.includes("Shared picture: x&quot;&gt;&lt;img src=y&gt;.png"));
+  assert.ok(
+    !pictured.includes('alt="Shared picture: x">'),
+    "a quote in the name cannot close the alt",
+  );
+  assert.ok(!pictured.includes("<img src=y>"));
 });
 
 test("the real app serves the landing on /s/ and the bytes on the flags", async () => {

@@ -30,19 +30,14 @@
 // or a constant from core/legal.js.
 
 import { escapeHtml } from "../core/escape-html.js";
-import { fileKind, previewDisposition, scopeStore } from "../core/files.js";
+import { fileKind, previewDisposition } from "../core/files.js";
 import { LEGAL_PAGES, REPORT_PATH, SUPPORT_EMAIL } from "../core/legal.js";
-import { failureMessage } from "../core/messages.js";
-import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import {
+  admitShareLink,
   expiresAtIso,
   handleShareFileRequest,
-  linkIsOpen,
-  plain,
+  liveShareObject,
   SHARE_LINK_PREFIX,
-  serverFailure,
-  shareContentChanged,
-  validateToken,
 } from "./share.js";
 
 /** The query flag that reads the bytes as the page's own media source. */
@@ -105,45 +100,15 @@ function wantsLanding(request, url) {
  * @returns {Promise<Response>}
  */
 async function shareLanding(request, url, files, links, options) {
-  const now = options.now ?? Date.now();
-  const limited = await enforceEdgeLimits(
-    [
-      {
-        binding: options.ipLimiter,
-        key: clientIpKey(request, "share-download"),
-        name: "SHARE_DOWNLOAD_RATE_LIMITER",
-      },
-    ],
-    "share-download",
-  );
-  if (limited) {
-    return limited;
+  const admitted = await admitShareLink(request, files, links, options);
+  if (admitted instanceof Response) {
+    return admitted;
   }
-  const token = url.pathname.slice(SHARE_LINK_PREFIX.length + 1);
-  const checked = validateToken(token);
-  if (checked.error) {
-    return plain(failureMessage("link-not-found"), 404);
+  const stat = await liveShareObject(admitted.scoped, admitted.record);
+  if (stat instanceof Response) {
+    return stat;
   }
-  const record = await links.shares.get(checked.token);
-  if (record === null || !linkIsOpen(record, now)) {
-    return plain(failureMessage("link-not-found"), 404);
-  }
-  // The one scoping place, the same as the byte path: the share row names the
-  // owner, so the row is what the read is scoped to.
-  const scoped = scopeStore(files, { id: record.accountId, name: "" });
-  let stat;
-  try {
-    stat = await scoped.stat(record.path);
-  } catch (cause) {
-    return serverFailure(`reading a shared file: ${String(cause)}`);
-  }
-  if (!stat) {
-    return plain(failureMessage("link-not-found"), 404);
-  }
-  if (shareContentChanged(record.etag, stat.etag)) {
-    return plain(failureMessage("share-changed"), 409);
-  }
-  return new Response(shareLandingHtml({ record, stat, url }), {
+  return new Response(shareLandingHtml({ record: admitted.record, stat, url }), {
     status: 200,
     headers: landingHeaders(),
   });
@@ -154,8 +119,10 @@ async function shareLanding(request, url, files, links, options) {
  * (public/_headers) with two hardenings this page's job asks for: no script
  * may ever run here (script-src 'none'), and the answer is noindex twice over
  * (the header and the meta), because a share link is a capability, not a
- * place for a search result to point at. no-referrer keeps the token out of
- * the next page's request when the visitor follows the mail or a footer link.
+ * place for a search result to point at. X-Frame-Options DENY matches the
+ * static pages for pre-CSP2 browsers that ignore frame-ancestors. no-referrer
+ * keeps the token out of the next page's request when the visitor follows the
+ * mail or a footer link.
  * @returns {Record<string, string>}
  */
 function landingHeaders() {
@@ -164,6 +131,7 @@ function landingHeaders() {
     "content-security-policy":
       "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; media-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
     "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
     "referrer-policy": "no-referrer",
     "cache-control": "private, no-store",
     "x-robots-tag": "noindex",

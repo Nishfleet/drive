@@ -16,8 +16,9 @@
 // address, the refunds page for the rule), so each fact is typed once.
 // test/legal.test.mjs allows no placeholder outside this list and none twice.
 // The one fact that IS decided is the support mailbox: SUPPORT_EMAIL below,
-// typed once here, read by the support page, security.txt and the share
-// landing page's report mail.
+// typed once here. The support page and the share landing page's report mail
+// import it. security.txt is a static file and cannot import, so
+// test/legal.test.mjs pins that its Contact: line is the same spelling.
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/

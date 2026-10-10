@@ -1133,7 +1133,7 @@ export function newRequestRecord({
  * @param {number} status
  * @param {Record<string, string>} [extraHeaders]
  */
-export function plain(message, status, extraHeaders = {}) {
+function plain(message, status, extraHeaders = {}) {
   return new Response(message, {
     status,
     headers: {
@@ -1178,7 +1178,7 @@ function storedShareEtag(etag) {
  * @param {string|null|undefined} live
  * @returns {boolean}
  */
-export function shareContentChanged(minted, live) {
+function shareContentChanged(minted, live) {
   const pin = storedShareEtag(minted);
   if (pin === "") {
     return false;
@@ -1195,7 +1195,7 @@ export function shareContentChanged(minted, live) {
 /**
  * @param {string} where
  */
-export function serverFailure(where) {
+function serverFailure(where) {
   console.error(`drive share: ${where}`);
   return json({ error: failureMessage("unexpected") }, 500);
 }
@@ -1521,6 +1521,78 @@ export async function handleShareRequest(request, files, links, account, options
 }
 
 /**
+ * Shared admission for every /s/<token> visit (drive#883): the share-download
+ * edge limiter, a token of our shape, an open row, and the one scoping place
+ * (the share row names the owner). The landing page and the byte path both
+ * start here, so a new check on the link cannot land on one and miss the
+ * other. A refusal is the same Response the byte path has always returned.
+ *
+ * @param {Request} request
+ * @param {import("../core/files.js").FileStore} files a FileStore
+ * @param {LinkStore} links
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @returns {Promise<Response | {record: ShareRecord, token: string, scoped: import("../core/files.js").FileStore}>}
+ */
+export async function admitShareLink(request, files, links, options = {}) {
+  const now = options.now ?? Date.now();
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: options.ipLimiter,
+        key: clientIpKey(request, "share-download"),
+        name: "SHARE_DOWNLOAD_RATE_LIMITER",
+      },
+    ],
+    "share-download",
+  );
+  if (limited) {
+    return limited;
+  }
+  const token = new URL(request.url).pathname.slice(SHARE_LINK_PREFIX.length + 1);
+  const checked = validateToken(token);
+  if (checked.error) {
+    return plain(failureMessage("link-not-found"), 404);
+  }
+  const record = await links.shares.get(checked.token);
+  if (record === null || !linkIsOpen(record, now)) {
+    return plain(failureMessage("link-not-found"), 404);
+  }
+  // The one scoping place: the share row names the owner, so the row is what
+  // the read is scoped to, not whatever the request carried.
+  return {
+    record,
+    token: checked.token,
+    scoped: scopeStore(files, { id: record.accountId, name: "" }),
+  };
+}
+
+/**
+ * The live-object checks the landing page and the byte path's HEAD share:
+ * the file is still there, and its etag still matches the pin. A GET that
+ * needs the bytes still reads them itself, so a download does not pay an
+ * extra stat.
+ *
+ * @param {import("../core/files.js").FileStore} scoped
+ * @param {ShareRecord} record
+ * @returns {Promise<Response | {contentType: string, size: number, etag?: string|null}>}
+ */
+export async function liveShareObject(scoped, record) {
+  let stat;
+  try {
+    stat = await scoped.stat(record.path);
+  } catch (cause) {
+    return serverFailure(`reading a shared file: ${String(cause)}`);
+  }
+  if (!stat) {
+    return plain(failureMessage("link-not-found"), 404);
+  }
+  if (shareContentChanged(record.etag, stat.etag)) {
+    return plain(failureMessage("share-changed"), 409);
+  }
+  return stat;
+}
+
+/**
  * Handles GET (and HEAD) on /s/<token>: the link itself, for a logged-out
  * browser. Every reason not to serve the bytes — an unknown token, a revoked
  * one, an expired one, a file that is gone — is the same 404 with the message
@@ -1547,57 +1619,28 @@ export async function handleShareRequest(request, files, links, account, options
  *   (drive#517), so a share download is billed to the account that shared it.
  */
 export async function handleShareFileRequest(request, files, links, options = {}) {
-  const now = options.now ?? Date.now();
   if (request.method !== "GET" && request.method !== "HEAD") {
     return methodNotAllowed("GET", "GET this link to open the file.");
   }
-  const limited = await enforceEdgeLimits(
-    [
-      {
-        binding: options.ipLimiter,
-        key: clientIpKey(request, "share-download"),
-        name: "SHARE_DOWNLOAD_RATE_LIMITER",
-      },
-    ],
-    "share-download",
-  );
-  if (limited) {
-    return limited;
+  const admitted = await admitShareLink(request, files, links, options);
+  if (admitted instanceof Response) {
+    return admitted;
   }
-  const token = new URL(request.url).pathname.slice(SHARE_LINK_PREFIX.length + 1);
-  const checked = validateToken(token);
-  if (checked.error) {
-    return plain(failureMessage("link-not-found"), 404);
-  }
-  const record = await links.shares.get(checked.token);
-  if (record === null || !linkIsOpen(record, now)) {
-    return plain(failureMessage("link-not-found"), 404);
-  }
-  // The one scoping place: the share row names the owner, so the row is what
-  // the read is scoped to, not whatever the request carried.
-  const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  const { record, token, scoped } = admitted;
   const range = request.headers.get("range");
   const ifNoneMatch = request.headers.get("if-none-match");
 
   // A HEAD answer needs the headers, not the bytes (drive#570): storage is
   // asked with a HEAD, and the whole object is never fetched to be dropped.
   if (request.method === "HEAD") {
-    let stat;
-    try {
-      stat = await scoped.stat(record.path);
-    } catch (cause) {
-      return serverFailure(`reading a shared file: ${String(cause)}`);
-    }
-    if (!stat) {
-      return plain(failureMessage("link-not-found"), 404);
-    }
-    if (shareContentChanged(record.etag, stat.etag)) {
-      return plain(failureMessage("share-changed"), 409);
+    const stat = await liveShareObject(scoped, record);
+    if (stat instanceof Response) {
+      return stat;
     }
     // An open is counted, no bytes: the same rule the old HEAD path kept.
     // A link that has served its byte cap is refused instead (issue #549),
     // so an open cannot outrun the owner's limit.
-    const counted = await links.shares.addDownload(checked.token, 0);
+    const counted = await links.shares.addDownload(token, 0);
     if (!counted) {
       return plain(failureMessage("download-link-cap"), 429);
     }
@@ -1640,7 +1683,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // working link; the dl Worker's byte rollup (#58) is what measures the
   // bytes actually served.
   const served = object.contentLength ?? object.size;
-  const counted = await links.shares.addDownload(checked.token, served);
+  const counted = await links.shares.addDownload(token, served);
   if (!counted) {
     // The reservation and the cap are the same statement (issue #549), so a
     // full link refuses here instead of serving more bytes it cannot count.

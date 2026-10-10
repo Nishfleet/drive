@@ -178,10 +178,13 @@ test("the four owner facts are marked placeholders, each in one place only", () 
 });
 
 test("no legal page carries an email address but the one support mailbox", () => {
-  // The mailbox is the one decided contact fact (drive#883): SUPPORT_EMAIL on
-  // the support page, and nowhere else, so nobody's personal inbox ends up on
-  // the site by accident. Everywhere else the address is still the owner's to
-  // fill, so a second address cannot ride along behind the allowed one.
+  // The mailbox is the one decided contact fact (drive#883): SUPPORT_EMAIL in
+  // core/legal.js. The support page and the share report mail import it. The
+  // static security.txt copy cannot import, so this file pins that spelling
+  // too (see the security.txt test below). Nowhere else, so nobody's personal
+  // inbox ends up on the site by accident. Everywhere else the address is
+  // still the owner's to fill, so a second address cannot ride along behind
+  // the allowed one.
   const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[\w.-]+/;
   for (const page of LEGAL_PAGES) {
     const html = readPublic(page.file);
@@ -255,8 +258,8 @@ test("the report and support paths are real pages, and security.txt carries the 
   assert.match(readPublic(acceptable.file), new RegExp(`id="${anchor}"`));
   assert.ok(LEGAL_PAGES.some((page) => page.path === SUPPORT_PATH));
   const securityTxt = readPublic(".well-known/security.txt");
-  // drive#883: the contact is the one support mailbox (SUPPORT_EMAIL), which
-  // the support page also carries, so the address is typed once.
+  // drive#883: security.txt is a static file and cannot import SUPPORT_EMAIL,
+  // so this match is what pins its Contact: spelling to the one mailbox.
   assert.match(securityTxt, new RegExp(`^Contact: mailto:${SUPPORT_EMAIL}$`, "m"));
   const expires = securityTxt.match(/^Expires: (\S+)$/m);
   assert.ok(expires, "security.txt must carry Expires (RFC 9116)");
