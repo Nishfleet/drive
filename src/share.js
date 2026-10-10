@@ -1133,7 +1133,7 @@ export function newRequestRecord({
  * @param {number} status
  * @param {Record<string, string>} [extraHeaders]
  */
-function plain(message, status, extraHeaders = {}) {
+export function plain(message, status, extraHeaders = {}) {
   return new Response(message, {
     status,
     headers: {
@@ -1178,7 +1178,7 @@ function storedShareEtag(etag) {
  * @param {string|null|undefined} live
  * @returns {boolean}
  */
-function shareContentChanged(minted, live) {
+export function shareContentChanged(minted, live) {
   const pin = storedShareEtag(minted);
   if (pin === "") {
     return false;
@@ -1195,7 +1195,7 @@ function shareContentChanged(minted, live) {
 /**
  * @param {string} where
  */
-function serverFailure(where) {
+export function serverFailure(where) {
   console.error(`drive share: ${where}`);
   return json({ error: failureMessage("unexpected") }, 500);
 }

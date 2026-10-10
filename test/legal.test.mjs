@@ -25,6 +25,7 @@ import {
   LEGAL_PLACEHOLDERS,
   PLACEHOLDER_MARK,
   REPORT_PATH,
+  SUPPORT_EMAIL,
   SUPPORT_PATH,
 } from "../core/legal.js";
 import { PREPAID, PRICE } from "../core/pricing.js";
@@ -176,11 +177,33 @@ test("the four owner facts are marked placeholders, each in one place only", () 
   assert.match(legalText("refunds.html"), /14 days of a top-up/);
 });
 
-test("no legal page carries an email address", () => {
-  // The contact fact is the owner's to fill. Until then no page may carry an
-  // address, so nobody's personal inbox ends up on the site by accident.
+test("no legal page carries an email address but the one support mailbox", () => {
+  // The mailbox is the one decided contact fact (drive#883): SUPPORT_EMAIL on
+  // the support page, and nowhere else, so nobody's personal inbox ends up on
+  // the site by accident. Everywhere else the address is still the owner's to
+  // fill, so a second address cannot ride along behind the allowed one.
+  const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[\w.-]+/;
   for (const page of LEGAL_PAGES) {
-    assert.doesNotMatch(readPublic(page.file), /[\w.+-]+@[\w-]+\.[\w.-]+/, page.file);
+    const html = readPublic(page.file);
+    if (page.path === SUPPORT_PATH) {
+      assert.match(
+        html,
+        new RegExp(`mailto:${SUPPORT_EMAIL}`),
+        "the support page must carry the support mailbox",
+      );
+      const withoutMailbox = html
+        .split(`mailto:${SUPPORT_EMAIL}`)
+        .join("")
+        .split(SUPPORT_EMAIL)
+        .join("");
+      assert.doesNotMatch(
+        withoutMailbox,
+        EMAIL_PATTERN,
+        `${page.file} carries an address besides the support mailbox`,
+      );
+    } else {
+      assert.doesNotMatch(html, EMAIL_PATTERN, page.file);
+    }
   }
 });
 
@@ -225,14 +248,16 @@ test("the security page and the changelog name the real storage provider", () =>
   assert.match(changelog, /moves to Backblaze B2\. Reversed the\s+next day/);
 });
 
-test("the report and support paths are real pages, and security.txt points at support", () => {
+test("the report and support paths are real pages, and security.txt carries the support mailbox", () => {
   const [reportPage, anchor] = REPORT_PATH.split("#");
   const acceptable = LEGAL_PAGES.find((page) => page.path === reportPage);
   assert.ok(acceptable, `${reportPage} is a legal page`);
   assert.match(readPublic(acceptable.file), new RegExp(`id="${anchor}"`));
   assert.ok(LEGAL_PAGES.some((page) => page.path === SUPPORT_PATH));
   const securityTxt = readPublic(".well-known/security.txt");
-  assert.match(securityTxt, new RegExp(`^Contact: ${absoluteUrl(SUPPORT_PATH)}$`, "m"));
+  // drive#883: the contact is the one support mailbox (SUPPORT_EMAIL), which
+  // the support page also carries, so the address is typed once.
+  assert.match(securityTxt, new RegExp(`^Contact: mailto:${SUPPORT_EMAIL}$`, "m"));
   const expires = securityTxt.match(/^Expires: (\S+)$/m);
   assert.ok(expires, "security.txt must carry Expires (RFC 9116)");
   assert.ok(Date.parse(expires[1]) > Date.now(), "security.txt has expired: move Expires on");
