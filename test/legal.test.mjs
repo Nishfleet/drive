@@ -172,9 +172,11 @@ test("the two owner facts are marked placeholders, each in one place only", () =
       assert.equal(where[0], fact.file, `${fact.id} belongs on ${fact.file}`);
     }
   }
-  // The refund rule was decided (drive#882, Nish 2026-10-09): the refunds page
-  // carries it as real words, not as a placeholder.
+  // The refund rule and the VAT line were decided (drive#882, Nish
+  // 2026-10-09): the refunds page carries both as real words, not as
+  // placeholders.
   assert.match(legalText("refunds.html"), /14 days of a top-up/);
+  assert.match(legalText("refunds.html"), /Prices exclude VAT/);
 });
 
 test("the legal pages carry the support mailbox and no other address", () => {
@@ -183,6 +185,10 @@ test("the legal pages carry the support mailbox and no other address", () => {
   // an address. The rule that replaces the old "no page carries an address"
   // line is the same one: a personal inbox must never reach the site, so
   // support@storagebun.com is the only address any legal page may show.
+  // These four are the files the drive#882 drafts put an address on, so the
+  // mailbox is required on each. The second loop walks every legal page, so a
+  // different address added anywhere still fails even though the positive
+  // list is explicit.
   for (const page of ["terms.html", "privacy.html", "refunds.html", "acceptable-use.html"]) {
     assert.ok(
       readPublic(page).includes("support@storagebun.com"),
@@ -190,7 +196,7 @@ test("the legal pages carry the support mailbox and no other address", () => {
     );
   }
   for (const page of LEGAL_PAGES) {
-    for (const match of readPublic(page.file).matchAll(/[\w.+-]+@[\w-]+\.[\w.-]+/g)) {
+    for (const match of readPublic(page.file).matchAll(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g)) {
       assert.equal(
         match[0],
         "support@storagebun.com",

@@ -5,19 +5,22 @@
 // test/legal.test.mjs cannot disagree about which pages exist or where they
 // live.
 //
-// Two facts are the owner's to decide, not a worker's: the payee's legal
-// name and the postal contact address. Each one is a marked placeholder in
-// exactly one page:
+// The page prose is the drive#882 drafts, quoted from the issue. Two facts
+// are the owner's to decide, not a worker's: the payee's legal name and the
+// postal contact address. Each one is a marked placeholder in exactly one
+// page:
 //
 //     <mark class="to-fill" data-placeholder="<id>">[To fill: ...]</mark>
 //
 // Nish decided the other two on 2026-10-09 (drive#523, drive#882): the refund
-// rule (unused balance refundable within 14 days of the top-up, non-refundable
+// rule (unused balance refundable within 14 days of a top-up, non-refundable
 // but never expiring after that) and the VAT line (prices exclude VAT, shown
 // at checkout by the payment provider). Both are written on the refunds page
-// now, so they are no longer placeholders. Every other page links to the page
-// that holds a fact (the support page for the address), so each fact is typed
-// once.
+// now, so they are no longer placeholders. The support mailbox is a decided
+// fact too, and the drafts put it on each of the four pages, so it is typed on
+// each; only the two placeholders above are single-owner facts. Every other
+// page links to the page that holds a placeholder (the support page for the
+// address), so each of those is typed once.
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/
