@@ -241,11 +241,7 @@ test("the 5000th account-wide send is allowed and the 5001st is refused", async 
   for (let attempt = 1; attempt <= SIGNIN_ACCOUNT_SEND_MAX; attempt += 1) {
     assert.equal(await spendAccount(db, HOUR), "allowed", `send #${attempt}`);
   }
-  assert.equal(
-    await spendAccount(db, HOUR + 1000),
-    "refused",
-    "the one over the account ceiling",
-  );
+  assert.equal(await spendAccount(db, HOUR + 1000), "refused", "the one over the account ceiling");
   assert.equal(await spendAccount(db, HOUR + 2000), "refused", "and it stays refused");
   const row = /** @type {{window_start: number, count: number}} */ (
     await db
@@ -276,11 +272,7 @@ test("the account window reopens a full minute after it started", async () => {
   for (let attempt = 0; attempt < SIGNIN_ACCOUNT_SEND_MAX; attempt += 1) {
     await spendAccount(db, HOUR);
   }
-  assert.equal(
-    await spendAccount(db, HOUR + 59_000),
-    "refused",
-    "one second short of the minute",
-  );
+  assert.equal(await spendAccount(db, HOUR + 59_000), "refused", "one second short of the minute");
   assert.equal(
     await spendAccount(db, HOUR + 60_000),
     "allowed",

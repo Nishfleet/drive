@@ -33,7 +33,6 @@ import { createD1DeviceStore } from "../core/devices.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -46,6 +45,7 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
+import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
 import {
   createTestAuth,
   DRIVE_MIGRATIONS,
@@ -1060,11 +1060,7 @@ test("the account-wide bound refuses the account's 5001st start from a fresh add
     assert.equal(answer.status, 202, `ask #${ask + 1} is answered`);
     assert.deepEqual(answer.body, sentLinkBody, `ask #${ask + 1} is answered as a sent link is`);
   }
-  assert.equal(
-    made.sent.length,
-    2,
-    "two links go out; the account's ceiling refuses the third",
-  );
+  assert.equal(made.sent.length, 2, "two links go out; the account's ceiling refuses the third");
 });
 
 test("an account counter that cannot be written answers that no link went out", async () => {

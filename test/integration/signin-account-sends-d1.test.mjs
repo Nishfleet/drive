@@ -84,9 +84,7 @@ test("the account counter's write and its read both land on the real row", async
   assert.equal(await spend(db, NOW), "allowed", "the first send");
   // READ: the row a plain SELECT finds is the row the guard wrote, and the
   // window starts at the send's own second.
-  const row = sqlite
-    .prepare("SELECT * FROM signin_account_sends WHERE counter = ?")
-    .get("account");
+  const row = sqlite.prepare("SELECT * FROM signin_account_sends WHERE counter = ?").get("account");
   assert.ok(row !== undefined, "the counter is in D1, not in memory");
   assert.equal(row.counter, "account", "keyed on the constant, not on a caller");
   assert.equal(row.window_start, second(NOW));
@@ -97,11 +95,7 @@ test("the account counter's write and its read both land on the real row", async
   // account's total — not one location's — is what fills it. Every send lands
   // in the same window, the way a real minute's flood would.
   for (let attempt = 1; attempt < SIGNIN_ACCOUNT_SEND_MAX; attempt += 1) {
-    assert.equal(
-      await spend(db, NOW),
-      "allowed",
-      `send #${attempt + 1}`,
-    );
+    assert.equal(await spend(db, NOW), "allowed", `send #${attempt + 1}`);
   }
   const atCeiling = sqlite
     .prepare("SELECT count FROM signin_account_sends WHERE counter = ?")
