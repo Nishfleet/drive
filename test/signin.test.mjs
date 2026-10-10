@@ -33,6 +33,7 @@ import { createD1DeviceStore } from "../core/devices.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
+import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -996,6 +997,85 @@ test("a counter that cannot be written answers that no link went out", async () 
   });
   const response = await workerFetch(
     post({ step: "start", method: "email", email: "broken@b.co" }),
+    made.env,
+  );
+  assert.equal(response.status, 503, "a counter that cannot be written is not a 202");
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
+  assert.equal(made.sent.length, 0, "no link went out");
+});
+
+// --------------------------------------- the account-wide send bound (drive#878)
+
+// The counter the edge bindings cannot be: one row on the customer database,
+// shared by every caller in every Cloudflare location, where a rate-limit key
+// would be counted once per location. The asks below come from fresh
+// addresses on fresh client IPs (the same walk helper the address tests use),
+// because the bound this section proves is the one that holds when the per-IP
+// and per-address guards both let the ask through.
+
+test("a mailed link spends the account-wide counter, keyed on the one constant row", async () => {
+  const made = dispatchEnv();
+  await askSixTimes(made);
+  assert.equal(made.sent.length, 5, "the address guard let five through");
+  const row = await made.db
+    .prepare('SELECT "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+    .bind("account")
+    .first();
+  assert.ok(row !== null, "the account row exists after the first mailed link");
+  assert.equal(row.count, 5, "each mailed link spent one account slot");
+});
+
+test("an ask the address guard refused never moves the account counter", async () => {
+  // Narrow-first, the order the edge limits run in (the per-IP bucket before
+  // the service-wide one): the account's counter only moves for asks the
+  // address guard let through, so retries against one flooded inbox cannot
+  // crowd the rest of the account's mail out.
+  const made = dispatchEnv();
+  await askSixTimes(made, "flooded@b.co");
+  assert.equal(made.sent.length, 5);
+  const row = await made.db
+    .prepare('SELECT "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+    .bind("account")
+    .first();
+  assert.ok(row !== null);
+  assert.equal(row.count, 5, "the sixth ask spent an address slot, not an account slot");
+});
+
+test("the account-wide bound refuses the account's 5001st start from a fresh address and a fresh IP", async () => {
+  // The bound the issue asks for, measured on the real dispatch: a walk with
+  // a fresh address per request and a different IP per request clears the
+  // per-IP limit and the per-address limit, so this is the only guard left.
+  // The counter is filled to two under its ceiling, three asks arrive from
+  // three addresses on three IPs, and the third is the account's 5001st:
+  // answered like a sent link, and no mail.
+  const made = dispatchEnv();
+  await made.db
+    .prepare(
+      'insert into "signin_account_sends" ("counter", "window_start", "count") values (?1, ?2, ?3)',
+    )
+    .bind("account", Math.floor(Date.now() / 1000), SIGNIN_ACCOUNT_SEND_MAX - 2)
+    .run();
+  for (let ask = 0; ask < 3; ask += 1) {
+    const answer = await askForLink(made, `walk${ask}@b.co`);
+    assert.equal(answer.status, 202, `ask #${ask + 1} is answered`);
+    assert.deepEqual(answer.body, sentLinkBody, `ask #${ask + 1} is answered as a sent link is`);
+  }
+  assert.equal(
+    made.sent.length,
+    2,
+    "two links go out; the account's ceiling refuses the third",
+  );
+});
+
+test("an account counter that cannot be written answers that no link went out", async () => {
+  // The address guard's rule again (drive#431): a counter that failed is a
+  // deployment problem, not a caller over a ceiling, so the public answer is
+  // the mail-failure body and the reason travels to the log only.
+  const made = dispatchEnv({
+    migrations: DRIVE_MIGRATIONS.filter((name) => !name.includes("0047_signin_account_sends")),
+  });
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "broken-account@b.co" }),
     made.env,
   );
   assert.equal(response.status, 503, "a counter that cannot be written is not a 202");

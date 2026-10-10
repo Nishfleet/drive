@@ -10,6 +10,12 @@ the live site.
 
 ## 2026-10-09
 
+- Sign-in now bounds the whole account's emailed links to 5000 a minute, not
+  just one Cloudflare location's. The old ceiling counted each server location
+  on its own, so a flood spread over many locations was not capped; the new
+  shared counter is one row on the drive's own database, so the total is
+  capped wherever the requests come from. When the account's ceiling is full,
+  the sign-in page answers as usual and asks again in a minute.
 - "I am 18 or older" is now asked once, when an account opens — the moment
   its emailed link is followed — not on every sign-in. A link that asks for
   an account without the tick opens no account and the sign-in page explains

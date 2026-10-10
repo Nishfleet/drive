@@ -1,8 +1,10 @@
-// The per-address send guard (drive#550) on its own: the one statement's
-// behaviour, both ceilings, and the third answer that is not either of them.
+// The send guards the edge bindings cannot be, on their own: the per-address
+// one (drive#550), the account-wide one (drive#878), each statement's
+// behaviour, the ceilings, and the third answer that is not either of them.
 //
-// The integration test beside this one
-// (test/integration/signin-address-sends-d1.test.mjs) proves the same
+// The integration tests beside this one
+// (test/integration/signin-address-sends-d1.test.mjs,
+// test/integration/signin-account-sends-d1.test.mjs) prove the same
 // decisions against the real migration files on a real SQLite engine. This
 // file is the fast loop and the table of edges the route tests cannot reach
 // cleanly: a thrown write, and a clock the test owns.
@@ -10,10 +12,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  SIGNIN_ACCOUNT_SEND_MAX,
+  SIGNIN_ACCOUNT_SEND_WINDOW_SECONDS,
   SIGNIN_SEND_DAILY_MAX,
   SIGNIN_SEND_DAY_SECONDS,
   SIGNIN_SEND_HOUR_SECONDS,
   SIGNIN_SEND_HOURLY_MAX,
+  signinAccountSendOutcome,
   signinSendOutcome,
 } from "../src/signin-send-limit.js";
 import { createTestD1 } from "./harness.mjs";
@@ -202,5 +207,137 @@ test("the default clock is the real one, and it counts seconds, not milliseconds
   assert.ok(
     Math.abs(now - row.hour_window_start) < 120,
     "the window start is a second count near now, not a millisecond count",
+  );
+});
+
+// --------------------------------------- the account-wide send guard (drive#878)
+
+// The counter the edge bindings cannot be: one row on the customer database,
+// shared by every caller in every Cloudflare location, where a rate-limit key
+// would be counted once per location. No address argument on purpose — the
+// whole account is the bucket.
+
+/**
+ * The account guard's send-counting helper, the account mirror of `spend`.
+ * @param {import("./harness.mjs").TestD1} db
+ * @param {number} whenMs
+ */
+function spendAccount(db, whenMs) {
+  return signinAccountSendOutcome(db, second(whenMs));
+}
+
+test("the account ceiling is the location binding's own figure, in a 60-second window", () => {
+  // Pinned because the design says so (cloudflare.config.ts): inside any one
+  // location the per-location binding refuses first, so the counter only
+  // records what a location's own ceilings let through. A different figure
+  // here would either bind before the binding inside a location or leave the
+  // account bound wider than the location one.
+  assert.equal(SIGNIN_ACCOUNT_SEND_MAX, 5000);
+  assert.equal(SIGNIN_ACCOUNT_SEND_WINDOW_SECONDS, 60);
+});
+
+test("the 5000th account-wide send is allowed and the 5001st is refused", async () => {
+  const db = createTestD1();
+  for (let attempt = 1; attempt <= SIGNIN_ACCOUNT_SEND_MAX; attempt += 1) {
+    assert.equal(await spendAccount(db, HOUR), "allowed", `send #${attempt}`);
+  }
+  assert.equal(
+    await spendAccount(db, HOUR + 1000),
+    "refused",
+    "the one over the account ceiling",
+  );
+  assert.equal(await spendAccount(db, HOUR + 2000), "refused", "and it stays refused");
+  const row = /** @type {{window_start: number, count: number}} */ (
+    await db
+      .prepare('SELECT "window_start", "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+      .bind("account")
+      .first()
+  );
+  assert.ok(row !== null);
+  assert.equal(row.count, SIGNIN_ACCOUNT_SEND_MAX, "the refusal wrote nothing");
+});
+
+test("every sender draws from the one row, so distinct addresses and IPs share the ceiling", async () => {
+  // The property the per-location binding lacks: the walk that mints a fresh
+  // address per request and a different IP per request still lands in the
+  // same bucket. Two "senders" here stand for two locations — the row is the
+  // same because the database is one database.
+  const db = createTestD1();
+  assert.equal(await spendAccount(db, HOUR), "allowed");
+  assert.equal(await spendAccount(db, HOUR), "allowed");
+  const rows = await db.prepare('SELECT "counter", "count" FROM "signin_account_sends"').all();
+  assert.equal(rows.results.length, 1, "one row, whatever the sender count");
+  assert.equal(rows.results[0].counter, "account", "keyed on the constant, not a caller");
+  assert.equal(rows.results[0].count, 2, "both sends counted in it");
+});
+
+test("the account window reopens a full minute after it started", async () => {
+  const db = createTestD1();
+  for (let attempt = 0; attempt < SIGNIN_ACCOUNT_SEND_MAX; attempt += 1) {
+    await spendAccount(db, HOUR);
+  }
+  assert.equal(
+    await spendAccount(db, HOUR + 59_000),
+    "refused",
+    "one second short of the minute",
+  );
+  assert.equal(
+    await spendAccount(db, HOUR + 60_000),
+    "allowed",
+    "the minute has passed, so the window is open",
+  );
+  const row = /** @type {{window_start: number, count: number}} */ (
+    await db
+      .prepare('SELECT "window_start", "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+      .bind("account")
+      .first()
+  );
+  assert.ok(row !== null);
+  assert.equal(row.count, 1, "the window restarts at one");
+  assert.equal(row.window_start, second(HOUR + 60_000), "started at the send's own second");
+});
+
+test("an account counter write that throws is broken, never an allowed send", async () => {
+  const throwing = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            run() {
+              return Promise.reject(new Error("d1 is unreachable"));
+            },
+          };
+        },
+      };
+    },
+  };
+  assert.equal(
+    await signinAccountSendOutcome(/** @type {D1Database} */ (/** @type {unknown} */ (throwing))),
+    "broken",
+  );
+});
+
+test("an account counter with no table is broken too, and the reason stays in the log", async () => {
+  // The shape a deploy that has not run migration 0047 has: the database is
+  // bound and every other statement works, and this one does not. The error
+  // text must not travel anywhere a caller can read it, so it is logged.
+  const withoutTable = createTestD1({
+    migrations: ["drive/0002_file_index.sql", "drive/0003_branches.sql"],
+  });
+  /** @type {string[]} */
+  const logged = [];
+  const realError = console.error;
+  console.error = (...parts) => {
+    logged.push(parts.map((part) => String(part)).join(" "));
+  };
+  try {
+    assert.equal(await spendAccount(withoutTable, HOUR), "broken");
+  } finally {
+    console.error = realError;
+  }
+  assert.equal(logged.length, 1, "the reason is logged once");
+  assert.ok(
+    logged[0].startsWith("signin-send-limit:"),
+    "the log line names the module, the way the address guard's does",
   );
 });
