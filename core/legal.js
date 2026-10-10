@@ -5,16 +5,19 @@
 // test/legal.test.mjs cannot disagree about which pages exist or where they
 // live.
 //
-// Four facts are the owner's to decide, not a worker's: the payee's legal
-// name, the contact address, the refund rule and the VAT line on receipts.
-// Each one is a marked placeholder in exactly one page:
+// Two facts are the owner's to decide, not a worker's: the payee's legal
+// name and the postal contact address. Each one is a marked placeholder in
+// exactly one page:
 //
 //     <mark class="to-fill" data-placeholder="<id>">[To fill: ...]</mark>
 //
-// To fill one, replace that whole <mark> element with the real words. Every
-// other page links to the page that holds the fact (the support page for the
-// address, the refunds page for the rule), so each fact is typed once.
-// test/legal.test.mjs allows no placeholder outside this list and none twice.
+// Nish decided the other two on 2026-10-09 (drive#523, drive#882): the refund
+// rule (unused balance refundable within 14 days of the top-up, non-refundable
+// but never expiring after that) and the VAT line (prices exclude VAT, shown
+// at checkout by the payment provider). Both are written on the refunds page
+// now, so they are no longer placeholders. Every other page links to the page
+// that holds a fact (the support page for the address), so each fact is typed
+// once.
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/
@@ -56,17 +59,7 @@ export const LEGAL_PLACEHOLDERS = Object.freeze([
   Object.freeze({
     id: "contact-address",
     file: "support.html",
-    what: "The address that reaches a person: an email inbox, and a postal address if the law needs one.",
-  }),
-  Object.freeze({
-    id: "refund-rule",
-    file: "refunds.html",
-    what: "The refund rule for unused balance. The draft default is a refund within 14 days of a top-up.",
-  }),
-  Object.freeze({
-    id: "vat-line",
-    file: "refunds.html",
-    what: "The VAT or sales-tax line that receipts carry.",
+    what: "The postal contact address for Storagebun.",
   }),
 ]);
 

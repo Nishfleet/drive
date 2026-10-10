@@ -143,10 +143,10 @@ test("the terms carry an age line (drive#547)", () => {
   assert.match(legalText("terms.html"), /You must be 18 or older to open an account/);
 });
 
-test("the four owner facts are marked placeholders, each in one place only", () => {
+test("the two owner facts are marked placeholders, each in one place only", () => {
   assert.deepEqual(
     LEGAL_PLACEHOLDERS.map((fact) => fact.id),
-    ["payee-name", "contact-address", "refund-rule", "vat-line"],
+    ["payee-name", "contact-address"],
   );
   /** @type {Map<string, string[]>} */
   const seen = new Map();
@@ -172,15 +172,31 @@ test("the four owner facts are marked placeholders, each in one place only", () 
       assert.equal(where[0], fact.file, `${fact.id} belongs on ${fact.file}`);
     }
   }
-  // The refund placeholder carries the draft default the owner can accept.
+  // The refund rule was decided (drive#882, Nish 2026-10-09): the refunds page
+  // carries it as real words, not as a placeholder.
   assert.match(legalText("refunds.html"), /14 days of a top-up/);
 });
 
-test("no legal page carries an email address", () => {
-  // The contact fact is the owner's to fill. Until then no page may carry an
-  // address, so nobody's personal inbox ends up on the site by accident.
+test("the legal pages carry the support mailbox and no other address", () => {
+  // drive#882 (Nish, 2026-10-09): the support mailbox is a shared inbox on the
+  // site's own domain, so the four legal pages carry it where the drafts put
+  // an address. The rule that replaces the old "no page carries an address"
+  // line is the same one: a personal inbox must never reach the site, so
+  // support@storagebun.com is the only address any legal page may show.
+  for (const page of ["terms.html", "privacy.html", "refunds.html", "acceptable-use.html"]) {
+    assert.ok(
+      readPublic(page).includes("support@storagebun.com"),
+      `${page} must carry the support mailbox`,
+    );
+  }
   for (const page of LEGAL_PAGES) {
-    assert.doesNotMatch(readPublic(page.file), /[\w.+-]+@[\w-]+\.[\w.-]+/, page.file);
+    for (const match of readPublic(page.file).matchAll(/[\w.+-]+@[\w-]+\.[\w.-]+/g)) {
+      assert.equal(
+        match[0],
+        "support@storagebun.com",
+        `${page.file} carries ${match[0]}: only the support mailbox may appear`,
+      );
+    }
   }
 });
 
