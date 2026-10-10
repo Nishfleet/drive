@@ -12,16 +12,16 @@
 //     <mark class="to-fill" data-placeholder="<id>">[To fill: ...]</mark>
 //
 // The refund rule and the VAT line used to be placeholders too. They are
-// filled from the owner's published defaults, not from this file: drive#523
-// MEMBER comment https://github.com/Nishfleet/drive/issues/523#issuecomment-6086208024
-// (2026-10-09) and the drive#882 body (same author) say to leave placeholders
-// only for LEGAL_NAME and ADDRESS, and they give the refund default (unused
-// balance refundable within 14 days of a top-up, then non-refundable but
-// never expiring) and the VAT default (prices exclude VAT where it applies,
-// shown at checkout by the payment provider). Both sit on the refunds page
-// as real words. The support mailbox is on each of the four pages the drafts
-// put an address on. Every other page links to the page that holds a
-// remaining placeholder (the support page for the address).
+// filled from the drive#882 body (MEMBER): leave placeholders only for
+// LEGAL_NAME and ADDRESS; unused balance is refundable within 14 days of a
+// top-up, then non-refundable but never expiring; prices exclude VAT where
+// it applies, shown at checkout by the payment provider. The same defaults
+// were first published on drive#523
+// (https://github.com/Nishfleet/drive/issues/523#issuecomment-6086208024).
+// Both sit on the refunds page as real words. The support mailbox is on each
+// of the four pages the drafts put an address on, and on the support page
+// those pages send a reader to. Every other page links to the page that
+// holds a remaining placeholder (the support page for the postal address).
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/
@@ -44,6 +44,9 @@ export const LEGAL_PAGES = Object.freeze([
 
 /** Where a person reaches a human, and where abuse reports go. */
 export const SUPPORT_PATH = "/support";
+
+/** The shared support mailbox on the site's own domain (drive#882). */
+export const SUPPORT_MAILBOX = "support@storagebun.com";
 
 /** Where a share link is reported (the report section on the acceptable-use page). */
 export const REPORT_PATH = "/acceptable-use#report";

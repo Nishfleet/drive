@@ -27,6 +27,7 @@ import {
   LEGAL_PLACEHOLDERS,
   PLACEHOLDER_MARK,
   REPORT_PATH,
+  SUPPORT_MAILBOX,
   SUPPORT_PATH,
 } from "../core/legal.js";
 import { PREPAID, PRICE } from "../core/pricing.js";
@@ -145,6 +146,15 @@ test("the terms carry an age line (drive#547)", () => {
   assert.match(legalText("terms.html"), /You must be 18 or older to open an account/);
 });
 
+test("the terms pin the balance pause, the low-balance email, and the 30-day notices", () => {
+  const terms = legalText("terms.html");
+  assert.match(terms, new RegExp(`falls to \\$${PREPAID.lowBalanceUsd}`));
+  assert.match(terms, /At \$0, uploads pause/);
+  assert.ok(readRepo("core/prepaid-pause.js").includes("The prepaid pause at $0"));
+  assert.match(terms, /at least 30 days before the new price applies/);
+  assert.match(terms, /at least 30 days before they apply/);
+});
+
 test("the two owner facts are marked placeholders, each in one place only", () => {
   assert.deepEqual(
     LEGAL_PLACEHOLDERS.map((fact) => fact.id),
@@ -174,10 +184,13 @@ test("the two owner facts are marked placeholders, each in one place only", () =
       assert.equal(where[0], fact.file, `${fact.id} belongs on ${fact.file}`);
     }
   }
-  // Refund and VAT defaults from drive#523#issuecomment-6086208024, restated
-  // in the drive#882 body: real words on the refunds page, not placeholders.
-  assert.match(legalText("refunds.html"), /14 days of a top-up/);
-  assert.match(legalText("refunds.html"), /Prices exclude VAT/);
+  // Refund and VAT defaults from the drive#882 body (MEMBER): real words on
+  // the refunds page, not placeholders.
+  const refunds = legalText("refunds.html");
+  assert.match(refunds, /14 days of a top-up/);
+  assert.match(refunds, /non-refundable, but it never expires/);
+  assert.match(refunds, /Prices exclude VAT/);
+  assert.match(refunds, /shows any VAT at checkout/);
 });
 
 test("the legal pages carry the support mailbox and no other address", () => {
@@ -186,21 +199,23 @@ test("the legal pages carry the support mailbox and no other address", () => {
   // The rule that replaces the old "no page carries an address" line is the
   // same one: a personal inbox must never reach the site, so
   // support@storagebun.com is the only address any legal page may show.
-  // These four are the files the drive#882 drafts put an address on, so the
-  // mailbox is required on each. The second loop walks every legal page, so a
-  // different address added anywhere still fails even though the positive
-  // list is explicit.
-  for (const page of ["terms.html", "privacy.html", "refunds.html", "acceptable-use.html"]) {
-    assert.ok(
-      readPublic(page).includes("support@storagebun.com"),
-      `${page} must carry the support mailbox`,
-    );
+  // The four legal pages plus the support page readers are sent to. The
+  // second loop walks every legal page, so a different address added
+  // anywhere still fails.
+  for (const page of [
+    "terms.html",
+    "privacy.html",
+    "refunds.html",
+    "acceptable-use.html",
+    "support.html",
+  ]) {
+    assert.ok(readPublic(page).includes(SUPPORT_MAILBOX), `${page} must carry the support mailbox`);
   }
   for (const page of LEGAL_PAGES) {
     for (const match of readPublic(page.file).matchAll(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g)) {
       assert.equal(
         match[0],
-        "support@storagebun.com",
+        SUPPORT_MAILBOX,
         `${page.file} carries ${match[0]}: only the support mailbox may appear`,
       );
     }
@@ -238,6 +253,12 @@ test("the privacy policy names every company that handles data, with the storage
   }
   assert.match(privacy, /Paris, France \(region eu-west-3\)/);
   assert.ok(privacy.includes(`${CLOSE_GRACE_DAYS} days after you close the account`));
+  assert.match(privacy, /Device names/);
+  assert.match(privacy, /bytes stored and bytes transferred/);
+  assert.match(privacy, /card fingerprint/);
+  assert.match(readRepo("core/devices.js"), /name: String\(r\.name/);
+  assert.match(readRepo("core/meter.js"), /downloadBytes/);
+  assert.match(readRepo("core/ledger.js"), /fingerprint/);
 });
 
 test("the security page and the changelog name the real storage provider", () => {
