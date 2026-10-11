@@ -881,6 +881,9 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
     "REINDEX_QUEUE",
     "METER_JOBS",
     "BRANCH_JOBS",
+    // The service binding to drive-api (drive#342): probing it would send a
+    // real request to that Worker.
+    "API",
   ]);
   assert.ok(
     !REQUIRED_BINDINGS.includes("REINDEX_QUEUE"),
