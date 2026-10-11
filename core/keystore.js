@@ -126,7 +126,9 @@ function liveKeyCountInMap(devices, accountId, atSeconds) {
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off. `size30DayUnpaid` is the size30 raise
  * check (drive#642).
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
+ * `fairUseForUpload` is the fair-use pause (drive#364): when set, it answers
+ * the same check the web upload uses for this write's size.
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -824,6 +826,31 @@ export function createMemoryStore(options = {}) {
      */
     async balancePaused(device) {
       return options.writesPaused ? options.writesPaused(device.accountId) : false;
+    },
+
+    fairUseRefuse: options.fairUseRefuse === true,
+
+    /**
+     * @param {unknown} error
+     */
+    onFairUseError(error) {
+      if (typeof options.onFairUseError === "function") {
+        options.onFairUseError(error);
+      }
+    },
+
+    /**
+     * Whether this write would trip the fair-use pause (drive#364). Unset
+     * while the check is off or the meter cannot be read, so a missing
+     * snapshot never pauses a write by guesswork.
+     * @param {{accountId: string}} device
+     * @param {number} uploadBytes
+     * @returns {Promise<{wouldRefuse: boolean, line: {copy: string}}|null>}
+     */
+    async fairUseForUpload(device, uploadBytes) {
+      return options.fairUseForUpload
+        ? options.fairUseForUpload(device.accountId, uploadBytes)
+        : null;
     },
 
     /**

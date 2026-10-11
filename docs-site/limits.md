@@ -92,6 +92,7 @@ would rather you read it here than find out in week three.
 - **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
   drive goes read-only at it: nothing is deleted, and the bill stops there.
   The default cap is {{DEFAULT_CAP}}.
+- **Uploads pause when young deletes would make the drive cost more than you pay.** Reading, downloading and deleting keep working, nothing is deleted, and nothing extra is charged. Uploads open again on the day the oldest of those deletes ages out.
 - **The maximum.** The bill is never more than {{MAX_PER_TB}} for each TB you
   store, so a full drive cannot surprise you.
 - **An agent's delete is undoable for a short time only.** {{AGENT_DELETE}}
