@@ -1,5 +1,5 @@
 // The account gate (drive issue #73, north star: Safe). One gate —
-// signedInAccount() in src/status.js — stands in front of every /api/*
+// signedInAccount() in core/status.js — stands in front of every /api/*
 // route that touches an account, and every read and write is scoped to the
 // signed-in account's own prefix.
 //
@@ -15,24 +15,36 @@
 //   3. Downloads and previews can never render script from our own origin:
 //      an uploaded .html and .svg come back as attachments with a safe type
 //      and nosniff.
-//   4. Upload, delete and restore refuse a cross-site request.
+//   4. One CSRF middleware refuses a cross-site write on every account POST.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
+import { handleUsageRequest, USAGE_ENDPOINT } from "../core/billing.js";
+import { CAP_ENDPOINT } from "../core/cap.js";
+import { isSameOriginRequest } from "../core/email-send.js";
+import { EXPORT_ENDPOINT } from "../core/export.js";
+import {
+  createMemoryStore,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+} from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
+import { STATUS_ENDPOINT } from "../core/status.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
+import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
-import { CAP_ENDPOINT } from "../src/cap.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { DEVICES_ENDPOINT } from "../src/devices-page.js";
 import { HEALTH_PATH } from "../src/health.js";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
+import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
-import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
+import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
@@ -52,6 +64,9 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
 // shaped (`u/<id>/...`) and deliberately different lengths, so a prefix that
 // is not cut at a segment boundary would show up.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 /** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
@@ -71,6 +86,12 @@ const workerFetch =
   );
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
+/** The one route the site Worker forwards to the api Worker inside its own
+ * /api/* namespace, ahead of the gate (src/index.js, drive#354): the key the
+ * rclone config holds is the whole credential, so no session exists to gate
+ * on. It is the only path the walk below lets through. */
+const REVOKE_PATH = "/api/keys/revoke";
+
 // ------------------------------------------------------------------ the walk
 
 // The public half of the route table is not repeated here. src/index.js
@@ -87,11 +108,20 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/`,
   `${FILES_ENDPOINT}/download?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/preview?path=%2Fa.txt`,
+  // drive#657: the page's media URL. It names files in the account's own
+  // drive like the preview URL, so the walk requires it to answer 401
+  // anonymously too.
+  `${FILES_ENDPOINT}/embed?path=%2Fa.txt`,
   `${FILES_ENDPOINT}/upload?path=%2F&name=a.txt`,
   `${FILES_ENDPOINT}/delete`,
   `${FILES_ENDPOINT}/restore`,
   `${USAGE_ENDPOINT}`,
   `${USAGE_ENDPOINT}/`,
+  // drive#547: own-data export, served on the site Worker so a signed-in
+  // browser can download it before the api Worker is bound. Same gate as
+  // the usage read: the document is this account's records.
+  `${EXPORT_ENDPOINT}`,
+  `${EXPORT_ENDPOINT}/`,
   // drive issue #64: the spending cap write. Same gate as the usage read.
   `${CAP_ENDPOINT}`,
   `${CAP_ENDPOINT}/`,
@@ -122,6 +152,28 @@ const ACCOUNT_ROUTES = [
   // classifies the path so a GET without an account is also 401.
   `${STARTER_ENDPOINT}`,
   `${STARTER_ENDPOINT}/`,
+  // drive issue #235: close account. The person types their email, keys go
+  // at once, files after 30 days. Same gate as every other account write.
+  `${CLOSE_ENDPOINT}`,
+  `${CLOSE_ENDPOINT}/`,
+  `${CLOSE_CANCEL_ENDPOINT}`,
+  `${CLOSE_CANCEL_ENDPOINT}/`,
+  // drive#586: the prepaid balance and a top-up's checkout. Money on the
+  // account, so the same gate as the usage read.
+  `${BALANCE_ENDPOINT}`,
+  `${BALANCE_ENDPOINT}/`,
+  `${TOPUP_ENDPOINT}`,
+  `${TOPUP_ENDPOINT}/`,
+  `${AUTO_TOPUP_ENDPOINT}`,
+  // drive#575: the billing portal, where the account's card is updated. It
+  // names the account's own customer and billing page, so it is behind the
+  // account gate exactly like the balance read beside it, and the walk
+  // requires the same 401 for a stranger.
+  `${PORTAL_ENDPOINT}`,
+  `${PORTAL_ENDPOINT}/`,
+  // drive#525: the devices page lists keys and revokes one at the provider.
+  `${DEVICES_ENDPOINT}`,
+  `${DEVICES_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -149,6 +201,11 @@ function anonymous(request) {
       DRIVE_DB: createTestD1(),
       REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      HEALTH_RATE_LIMITER: makeLimiter(),
+      SHARE_DOWNLOAD_RATE_LIMITER: makeLimiter(),
+      // Tests inject the in-memory files store. Production never builds it
+      // (src/index.js storeFor, drive#505).
+      [TEST_FILES_STORE]: createMemoryStore(),
     },
     ctx,
   );
@@ -190,12 +247,17 @@ test("every route src/index.js registers is either public or behind the gate", a
         ACCOUNT_ROUTES.includes(path) ||
         path.startsWith(FILES_ENDPOINT) ||
         path.startsWith(USAGE_ENDPOINT) ||
+        path.startsWith(EXPORT_ENDPOINT) ||
         path.startsWith(STATUS_ENDPOINT) ||
         path.startsWith(SEARCH_ENDPOINT) ||
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
+        path.startsWith(DEVICES_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
+        path.startsWith(STARTER_ENDPOINT) ||
+        path.startsWith(CLOSE_ENDPOINT) ||
+        path.startsWith(CLOSE_CANCEL_ENDPOINT) ||
         path === HEALTH_PATH,
       `${path} is registered but not classified; add it to PUBLIC_ROUTES or ACCOUNT_ROUTES`,
     );
@@ -224,12 +286,19 @@ test("every route src/index.js registers is either public or behind the gate", a
         registered.some((path) => path.endsWith("/*") && route.startsWith(path.slice(0, -1))) ||
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
+        route.startsWith(EXPORT_ENDPOINT) ||
         route.startsWith(CAP_ENDPOINT) ||
+        route.startsWith(BALANCE_ENDPOINT) ||
+        route.startsWith(TOPUP_ENDPOINT) ||
+        route.startsWith(PORTAL_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(DEVICES_ENDPOINT) ||
         route.startsWith(STARTER_ENDPOINT) ||
+        route.startsWith(CLOSE_ENDPOINT) ||
+        route.startsWith(CLOSE_CANCEL_ENDPOINT) ||
         route.startsWith(SHARE_ENDPOINT) ||
         route.startsWith(REQUEST_ENDPOINT),
       `${route} must be a route the Worker really serves`,
@@ -247,12 +316,17 @@ test("a public route answers with no account", async () => {
   const health = await anonymous(new Request(`https://drive.test${HEALTH_PATH}`));
   assert.notEqual(health.status, 401, "the health probe must answer without an account");
   assert.equal(health.status, 503, "no bindings here is the honest unhealthy answer");
-  assert.deepEqual(await health.json(), { ok: false, failing: "WAITLIST_DB" });
+  // No sender either, so the email part says so beside the verdict (drive#522).
+  assert.deepEqual(await health.json(), {
+    ok: false,
+    failing: "WAITLIST_DB",
+    email: "not-ready",
+  });
 });
 
 test("an anonymous request to every account route is 401 and no data", async () => {
   const unauthorized = failureMessage("unauthorized");
-  // The words are the one message table's (src/messages.js), not a second copy
+  // The words are the one message table's (core/messages.js), not a second copy
   // written here, so the page and the endpoint cannot say different things.
   assert.equal(
     unauthorized,
@@ -315,6 +389,99 @@ test("deny by default, walked from Hono's own route table: every registered non-
   }
 });
 
+test("the one forwarded /api/* route frames the hole the deny-by-default gate leaves", async () => {
+  // Drive issue #354's choice: POST /api/keys/revoke is the api registry's own
+  // route (workers/api/src/routes.js), and it lives outside the registry's
+  // /v1 family because `drive logout` calls it with the key the rclone config
+  // holds — the key itself is the credential, so there is no session to gate
+  // on and the api Worker is the only thing that can judge it. src/index.js
+  // registers it ahead of the account gate and forwards it over the service
+  // binding, so the api Worker answers 204 for a live key and its own 401 for a
+  // dead one.
+  //
+  // This is the hole in a deny-by-default gate, so it is named here and it is
+  // the only one: the walk must still classify it (a route the site Worker
+  // forwards is neither public nor account, because the credential it wants is
+  // the caller's own key), the walk must skip it rather than answer 401, and
+  // the site must forward it unchanged with the Basic header still on the
+  // request. A second /api/* route forwarded past the gate fails the first
+  // two checks, so it cannot join this one quietly.
+  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const app = createApp();
+  const forwarded = app.routes.filter((r) => r.method === "ALL" && r.path === REVOKE_PATH);
+  assert.equal(
+    forwarded.length,
+    1,
+    `src/index.js must register the api Worker's own ${REVOKE_PATH} exactly once (drive#354)`,
+  );
+  assert.ok(
+    !exportedPublic.includes(REVOKE_PATH),
+    "the forwarded route is not a public route: the credential that answers it is the caller's own key",
+  );
+  assert.ok(
+    !ACCOUNT_ROUTES.includes(REVOKE_PATH),
+    "the forwarded route is not an account route: no session can authenticate to it",
+  );
+  // And it is registered before the gate, which is what makes the gate unable
+  // to answer it: Hono runs the first matching handler it finds, and the
+  // registration order below is that order.
+  const revoke = app.routes.findIndex((r) => r.path === REVOKE_PATH);
+  const gate = app.routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
+  assert.ok(
+    revoke !== -1 && gate !== -1 && revoke < gate,
+    "the forwarded route must be registered ahead of the /api/* gate (drive#354)",
+  );
+  // The walk above probes every registered non-public route, so it has to skip
+  // this one: what a caller with no key gets here is the api Worker's own
+  // 401, not the gate's.
+  const closed = await anonymous(
+    new Request(`https://drive.test${REVOKE_PATH}`, { method: "POST" }),
+  );
+  assert.equal(closed.status, 503, "no binding means the api Worker is not reached");
+  assert.deepEqual(await closed.json(), { error: failureMessage("unexpected") });
+
+  // With a binding, the request the site forwards is the request the api
+  // Worker receives: the method, the path and the caller's own Basic
+  // credential are unchanged, and nothing on this side has to know what the
+  // key is. The api Worker answers this request itself — 401 with its own
+  // words for no key at all — which is the property the issue asks for.
+  /** @type {Request|null} */
+  let seen = null;
+  const forwardedRequest = await workerFetch(
+    new Request(`https://drive.test${REVOKE_PATH}`, {
+      method: "POST",
+      headers: { authorization: `Basic ${btoa("k_test:not-the-secret")}` },
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+      DRIVE_DB: createTestD1(),
+      REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
+      REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      API: {
+        fetch: (/** @type {Request} */ request) => {
+          seen = request;
+          // The api Worker's own answer for a key it does not hold: its words,
+          // its status, and no account data of anyone's.
+          return Promise.resolve(
+            Response.json({ error: "This key was revoked or is not valid." }, { status: 401 }),
+          );
+        },
+      },
+    },
+    ctx,
+  );
+  assert.equal(forwardedRequest.status, 401, "the api Worker's own answer is the caller's answer");
+  assert.ok(seen, "the request must reach the binding");
+  const carried = /** @type {Request} */ (seen);
+  assert.equal(carried.method, "POST", "the method is not rewritten");
+  assert.equal(new URL(carried.url).pathname, REVOKE_PATH, "the path is not rewritten");
+  assert.equal(
+    carried.headers.get("authorization"),
+    `Basic ${btoa("k_test:not-the-secret")}`,
+    "the presented key reaches the api Worker that checks it",
+  );
+});
+
 test("a link token answers without an account, and never data", async () => {
   // The stranger's side of issue #19: /s/<token> and the two public
   // upload-request routes carry the proof in the path or the query, not in a
@@ -334,7 +501,7 @@ test("a link token answers without an account, and never data", async () => {
     assert.match(await response.text(), /That link does not open anything/);
   }
   // And the owner's roots are the account's: a signed-out caller cannot list,
-  // mint or revoke on either feature, with the shared 401 (src/status.js).
+  // mint or revoke on either feature, with the shared 401 (core/status.js).
   const unauthorized = failureMessage("unauthorized");
   for (const route of [SHARE_ENDPOINT, REQUEST_ENDPOINT]) {
     for (const method of ["GET", "POST", "DELETE"]) {
@@ -379,8 +546,12 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   //
   // The mailer is how this test reads the link that left by email: the token is
   // never in a reply, so the mail is the only place it can be seen, which is
-  // the whole point of the flow.
-  const made = createTestAuth();
+  // the whole point of the flow. The whole schema, not the harness's short
+  // list: /api/usage reads the account's metered month (drive#496), and the
+  // month's read needs `usage_minutes.stored_bytes`, which a later migration
+  // than the short list carries. On the short list the route 500s on a column
+  // production has, which is the gap the full list exists to close.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const emailed = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -401,6 +572,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
@@ -422,7 +594,13 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     );
 
   // 1. Start: an address, and a link that leaves by email and nowhere else.
-  const start = await signin({ step: "start", method: "email", email: "newperson@example.com" });
+  const start = await signin({
+    step: "start",
+    method: "email",
+    email: "newperson@example.com",
+    card: true, // a card at sign-up (drive#387)
+    age: true, // and the 18+ box (drive#781)
+  });
   assert.equal(start.status, 202, "a start emails a link");
   const accepted = await start.json();
   assert.equal(accepted.ok, true);
@@ -525,6 +703,7 @@ test("sign-out revokes the session the cookie names", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await workerFetch(
@@ -574,12 +753,28 @@ test("an anonymous files request never reaches the store", async () => {
 test("scopeStore puts every drive path under the account's own prefix", async () => {
   /** @type {Array<string[]>} */
   const seen = [];
-  /** @type {import("../src/files.js").FileStore} */
+  /** @type {import("../core/files.js").FileStore} */
   const recorder = {
     /** @param {string} path */
     async list(path) {
       seen.push(["list", path]);
       return [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
+    },
+    /** @param {string} path */
+    async listPage(path) {
+      seen.push(["listPage", path]);
+      const entries = [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
+      return { entries, nextCursor: null };
+    },
+    /** @param {string} path */
+    async listAll(path) {
+      seen.push(["listAll", path]);
+      return [];
+    },
+    /** @param {string} path */
+    async stat(path) {
+      seen.push(["stat", path]);
+      return null;
     },
     /** @param {string} path */
     async read(path) {
@@ -590,10 +785,21 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     async write(path, _body, _contentType) {
       seen.push(["write", path]);
     },
+    /** @param {string} path @param {BodyInit} _body @param {string} _contentType */
+    async writeIfAbsent(path, _body, _contentType) {
+      seen.push(["writeIfAbsent", path]);
+      return true;
+    },
     /** @param {string} path */
     async remove(path) {
       seen.push(["remove", path]);
     },
+    /** @param {{startAfter?: string, limit?: number}} [_options] @returns {Promise<string[]>} */
+    async listKeys(_path, _options) {
+      return [];
+    },
+    /** @param {string[]} _paths @returns {Promise<void>} */
+    async removeBatch(_paths) {},
     /** @param {string} from @param {string} to @returns {Promise<void>} */
     async copy(from, to) {
       seen.push(["copy", from, to]);
@@ -617,11 +823,13 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
   await scoped.list("/");
   await scoped.read("/notes.txt");
   await scoped.write("/docs/a b.txt", new Blob([""]).stream(), "text/plain");
+  await scoped.writeIfAbsent("/docs/a b.txt", new Blob([""]).stream(), "text/plain");
   await scoped.remove("/.trash/1__%2Fnotes.txt");
   assert.deepEqual(seen, [
     ["list", "u/acct-9/"],
     ["read", "u/acct-9/notes.txt"],
     ["write", "u/acct-9/docs/a b.txt"],
+    ["writeIfAbsent", "u/acct-9/docs/a b.txt"],
     ["remove", "u/acct-9/.trash/1__%2Fnotes.txt"],
   ]);
   // Versions go through the scope too: the store is asked under this
@@ -795,63 +1003,190 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
 
 // ----------------------------------------------------------------- cross-site
 
-test("upload, delete and restore refuse a cross-site request", async () => {
-  const store = createMemoryStore();
-  /** @param {Request} request @returns {Promise<Response>} */
-  const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
-  /** @param {string|undefined} origin @returns {Promise<Response>} */
-  const upload = (origin) =>
-    call(
-      new Request(`${api("/upload")}?path=%2F&name=a.txt`, {
+test("one CSRF middleware refuses a cross-site write on every account POST", async () => {
+  // Branch, rewind, starter, files, cap and top-up used to rely on per-handler
+  // copies of isSameOriginRequest, or had no Origin check at all. The one
+  // middleware on /api/* (src/index.js) is the rule now; these posts go
+  // through the Worker's own dispatch so that is what is proved.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "csrfmw@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+    BRANCH_SNAPSHOTS: {
+      get: async () => null,
+      put: async () => {},
+      delete: async () => {},
+    },
+  };
+  const paths = [
+    `${FILES_ENDPOINT}/upload?path=%2F&name=a.txt`,
+    STARTER_ENDPOINT,
+    BRANCHES_ENDPOINT,
+    REWIND_ENDPOINT,
+    CAP_ENDPOINT,
+    TOPUP_ENDPOINT,
+    AUTO_TOPUP_ENDPOINT,
+    PORTAL_ENDPOINT,
+    CLOSE_ENDPOINT,
+  ];
+  for (const path of paths) {
+    const forged = await workerFetch(
+      new Request(`https://drive.test${path}`, {
         method: "POST",
-        headers: { "content-type": "text/plain", ...(origin ? { origin } : {}) },
-        body: "bytes",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          origin: "https://evil.example",
+          "sec-fetch-site": "cross-site",
+        },
+        body: JSON.stringify({}),
       }),
+      env,
+      ctx,
     );
-  /** @param {string} path @param {unknown} body @param {string|undefined} origin @returns {Promise<Response>} */
-  const stateChange = (path, body, origin) =>
-    call(
-      new Request(api(path), {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(origin ? { origin } : {}) },
-        body: JSON.stringify(body),
-      }),
-    );
-
-  assert.equal((await upload("https://evil.example")).status, 403);
-  assert.equal(
-    (await stateChange("/delete", { path: "/a.txt" }, "https://evil.example")).status,
-    403,
-  );
-  assert.equal(
-    (await stateChange("/restore", { path: "/a.txt" }, "https://evil.example")).status,
-    403,
-  );
-  // The refusal names the one next step rather than the table's generic
-  // "try again in a moment", which is advice to retry a request that is always
-  // refused.
-  const refused = await upload("https://evil.example");
-  const refusedBody = await refused.json();
-  assert.match(refusedBody.error, /only accepted from the drive page/);
-  assert.doesNotMatch(refusedBody.error, /try again/i);
-  // Nothing was written: a refused cross-site upload is refused before the
-  // store is touched.
-  const after = await (await call(new Request(api("?path=%2F")))).json();
-  assert.deepEqual(after.rows, [], "a refused cross-site upload must store nothing");
-  // Our own page, and a caller with no Origin at all (curl, the CLI), pass:
-  // the check is the extra browser-facing rule, not the whole gate.
-  assert.equal((await upload("https://drive.test")).status, 201);
-  const deleted = await stateChange("/delete", { path: "/a.txt" }, "https://drive.test");
-  assert.equal(deleted.status, 200);
-  const restored = await stateChange("/restore", { path: "/a.txt" }, undefined);
-  assert.equal(restored.status, 200);
+    assert.equal(forged.status, 403, `${path} must be refused by the CSRF middleware`);
+    assert.deepEqual(await forged.json(), { error: failureMessage("cross-site") });
+  }
 });
 
 // ---------------------------------------------------------------- the read
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
-  const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
+  const signedIn = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    ACCOUNT_A,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(signedIn.status, 200);
-  assert.equal((await signedIn.json()).billUsd, 0);
+  assert.equal((await signedIn.json()).billUsd, 0, "an empty month bills $0: no minimum");
+});
+
+// -------------------------------------------------------------- the cap write
+
+test("a signed-in browser's cap write passes; a forged cross-site one is refused", async () => {
+  // The cap write became a browser-facing lane on drive#421 (the usage page's
+  // slider saves a cap), and a cap write is a key swap: it revokes the old
+  // credential and mints a new one, so a page on another origin that could
+  // forge this POST would revoke a real drive's keys. The request goes through
+  // the Worker's own dispatch, so what is proved here is the middleware that
+  // stands in front of the handler rather than a handler called directly.
+  //
+  // The account store is a real one (the migration list the site Worker runs
+  // in production), so the write that passes is a write that really lands.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account } = await signIn(made, "capslider@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  /** @param {Record<string, string>} headers @returns {Promise<Response>} */
+  const post = (headers) =>
+    workerFetch(
+      new Request(`https://drive.test${CAP_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie, ...headers },
+        body: JSON.stringify({ amount: "20" }),
+      }),
+      env,
+      ctx,
+    );
+
+  // Our own page: the Origin the browser sends for a same-origin POST, and the
+  // Sec-Fetch-Site that says so without an Origin. Both are the request the
+  // slider makes, and both must reach the handler.
+  for (const headers of /** @type {Array<Record<string, string>>} */ ([
+    { origin: "https://drive.test" },
+    { "sec-fetch-site": "same-origin" },
+  ])) {
+    const answer = await post(headers);
+    assert.equal(answer.status, 200, `a ${Object.keys(headers)[0]} write must reach the handler`);
+  }
+  /** @returns {number} */
+  const storedCapCents = () => {
+    const row = made.db.sqlite
+      .prepare("SELECT cap_cents FROM accounts WHERE id = ?")
+      .get(account.id);
+    assert.notEqual(row, undefined, "the account's own row is the one the cap is stored on");
+    return Number(/** @type {{cap_cents: number}} */ (row).cap_cents);
+  };
+  // The person's own choice, and no one else's: the row now says $20.00, and
+  // the answer is the api's own cap line rather than a sentence of ours.
+  assert.equal(storedCapCents(), 2000);
+
+  // A page on another origin, forged into this one's request: it is refused
+  // before the handler runs, so it never reaches the account's keys.
+  const forged = await post({
+    origin: "https://evil.example",
+    "sec-fetch-site": "cross-site",
+  });
+  assert.equal(forged.status, 403);
+  // The words are the one message table's, and the next step names the page
+  // the write is allowed from rather than a retry that always fails.
+  assert.deepEqual(await forged.json(), {
+    error: failureMessage("cross-site"),
+  });
+  // Nothing moved: the cap the person set is still the cap in force.
+  assert.equal(storedCapCents(), 2000, "a refused cross-site write must leave the cap alone");
+
+  // And the Go CLI, which is what `drive cap 20` sends: no Origin and no
+  // Sec-Fetch-Site at all, so it is not a browser request and passes through
+  // to the account gate, which is what identifies it.
+  const cli = await post({});
+  assert.equal(cli.status, 200, "the CLI's write must still reach the handler");
+  assert.equal(storedCapCents(), 2000);
+});
+
+test("a cap write that fails says what to do next, in plain words", async () => {
+  // The words a browser sees: a number the api cannot read, and a deployment
+  // with no account store behind it. Neither ends in a command the page's
+  // visitor cannot run (drive#421).
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "capwords@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  /** @param {string} amount @returns {Promise<Response>} */
+  const post = (amount) =>
+    workerFetch(
+      new Request(`https://drive.test${CAP_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie, origin: "https://drive.test" },
+        body: JSON.stringify({ amount }),
+      }),
+      env,
+      ctx,
+    );
+
+  const bad = await post("abc");
+  assert.equal(bad.status, 400);
+  const badBody = await bad.json();
+  assert.match(badBody.error, /A spending cap is a dollar amount like 20 or 12\.50/);
+  // One next step, and it holds on either surface: the page's slider sends the
+  // same request `drive cap` does, so it cannot end in "Run: drive cap 20"
+  // and it cannot tell a terminal to save anything.
+  assert.match(badBody.error, /Type a number like that again/);
+  assert.doesNotMatch(badBody.error, /drive cap/);
+  assert.doesNotMatch(badBody.error, /save/);
+});
+
+test("isSameOriginRequest lets no-Origin requests through", () => {
+  const same = isSameOriginRequest(new Request("https://drive.test/api/cap", { headers: {} }));
+  assert.equal(same, true, "a caller with no Origin is not blocked");
+  const diff = isSameOriginRequest(
+    new Request("https://drive.test/api/cap", {
+      headers: { origin: "https://evil.example" },
+    }),
+  );
+  assert.equal(diff, false, "a different origin is refused");
 });

@@ -145,10 +145,14 @@ func runExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	if creds.DeviceToken == "" || creds.APIBase == "" {
-		return fmt.Errorf("this machine is not signed in; run `drive init` first")
+	base, err := resolveAPIBase(common.home, "")
+	if err != nil {
+		return err
 	}
-	document, err := fetchExport(creds.APIBase, creds.DeviceToken)
+	if creds.DeviceToken == "" || base == "" {
+		return fail("not-signed-in")
+	}
+	document, err := fetchExport(base, creds.DeviceToken)
 	if err != nil {
 		return err
 	}
@@ -213,7 +217,7 @@ func fetchExport(apiBase, deviceToken string) (*ExportDocument, error) {
 		return nil, err
 	}
 	var document ExportDocument
-	if err := client.do(http.MethodGet, exportPagePath("", nil), nil, &document); err != nil {
+	if err := client.Do(http.MethodGet, exportPagePath("", nil), nil, &document); err != nil {
 		return nil, err
 	}
 	if document.Account.ID == "" {
@@ -236,7 +240,7 @@ func fetchExport(apiBase, deviceToken string) (*ExportDocument, error) {
 			fileCursor = *document.Next.FileCursor
 		}
 		var page ExportDocument
-		if err := client.do(http.MethodGet, exportPagePath(fileCursor, document.Next.VersionCursor), nil, &page); err != nil {
+		if err := client.Do(http.MethodGet, exportPagePath(fileCursor, document.Next.VersionCursor), nil, &page); err != nil {
 			return nil, fmt.Errorf("continue the export after %d file(s): %w", len(document.Files), err)
 		}
 		document.Files = append(document.Files, page.Files...)

@@ -1,0 +1,389 @@
+package main
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+
+	home := t.TempDir()
+	opened := make(chan string, 1)
+	origOpen := openURL
+	openURL = func(raw string) error {
+		opened <- raw
+		return nil
+	}
+	t.Cleanup(func() { openURL = origOpen })
+
+	api.approved["dev_secret"] = true
+
+	var out strings.Builder
+	if err := Login(home, server.URL, "", &out); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case url := <-opened:
+		if !strings.Contains(url, "device/approve") {
+			t.Errorf("opened %q, want the device-approve page", url)
+		}
+	default:
+		t.Fatal("login did not open the browser to the device-approve page")
+	}
+
+	printed := out.String()
+	t.Logf("login output:\n%s", printed)
+	if !strings.Contains(printed, "BCDF-GHJK") {
+		t.Errorf("the code was not shown:\n%s", printed)
+	}
+	if !strings.Contains(printed, "Signed in as nish@example.com") {
+		t.Errorf("login must print the email, not the account id:\n%s", printed)
+	}
+	if strings.Contains(printed, "acct_1") {
+		t.Errorf("login printed the account id:\n%s", printed)
+	}
+
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.DeviceToken != testDeviceToken {
+		t.Fatalf("credentials token = %q", creds.DeviceToken)
+	}
+	if creds.TokenExpiresAt != testDeviceTokenExpiry {
+		t.Fatalf("credentials expiry = %d, want the poll's expiresAt so the CLI knows the window", creds.TokenExpiresAt)
+	}
+	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
+		t.Fatalf("credentials missing storage location: %+v", creds)
+	}
+	// drive#517: the mint's download URL is saved, so the mount reads through
+	// the dl Worker instead of straight from storage.
+	if !strings.HasPrefix(creds.DownloadURL, "https://dl.example.test/k/grant_") {
+		t.Fatalf("credentials download URL = %q, want the mint's", creds.DownloadURL)
+	}
+
+	cfg, err := ParseRcloneConfig(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AccessKey == "" || cfg.Endpoint == "" {
+		t.Fatalf("rclone.conf missing access key or endpoint: %+v", cfg)
+	}
+	secret, err := ReadSecretKey(RcloneConfigPath(home), false, strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret == "" {
+		t.Fatal("login did not write the storage secret to rclone.env")
+	}
+
+	t.Setenv("DRIVE_S3_ENDPOINT", "")
+	t.Setenv("DRIVE_S3_BUCKET", "")
+	t.Setenv("DRIVE_S3_PREFIX", "")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	loaded, err := LoadStorageConfig("", "", "", "", "", "", storageFromDisk(home))
+	if err != nil {
+		t.Fatalf("init/mount must work after login with no pasted keys: %v", err)
+	}
+	if loaded.AccessKey != cfg.AccessKey || loaded.SecretKey != secret {
+		t.Fatalf("loaded %+v, want the key login wrote", loaded)
+	}
+	if loaded.Endpoint != creds.Endpoint || loaded.Bucket != creds.Bucket {
+		t.Fatalf("loaded location %+v, want credentials %+v", loaded, creds)
+	}
+	if loaded.DownloadURL != creds.DownloadURL {
+		t.Fatalf("mount config download URL = %q, want the saved %q", loaded.DownloadURL, creds.DownloadURL)
+	}
+	env, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), rcloneDownloadURLEnv+"=") {
+		t.Fatalf("login did not put the download URL in rclone.env:\n%s", env)
+	}
+}
+
+func TestLoginNamesMissingStorageInsteadOfLooping(t *testing.T) {
+	api := newFakeAPI()
+	api.keys = map[string]MintedKey{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == keysPath && r.Method == http.MethodPost {
+			writeTestJSON(w, 201, MintedKey{
+				KeyID: "key_bare", AccessKeyID: "ak", Secret: "sk", Prefix: "u/acct_1/",
+			})
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	err := Login(t.TempDir(), server.URL, "", io.Discard)
+	if err == nil {
+		t.Fatal("expected login to refuse a mint with no storage location")
+	}
+	if !strings.Contains(err.Error(), "did not send storage settings") {
+		t.Fatalf("got %v, want login-no-storage", err)
+	}
+	if strings.Contains(err.Error(), "Run `drive login` so this device gets") {
+		t.Fatalf("looping missing-config advice: %v", err)
+	}
+}
+
+func TestEmptyAPIBaseIsNoAPINotUnexpected(t *testing.T) {
+	_, err := NewAPIClient("", "")
+	var f *failure
+	if !errors.As(err, &f) || f.Kind != "no-api" {
+		t.Fatalf("empty api base = %v, want no-api", err)
+	}
+	if strings.Contains(err.Error(), "That did not work") {
+		t.Fatalf("empty api base was wrapped as unexpected: %v", err)
+	}
+}
+
+func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_API_URL", "")
+	env := Env{
+		Home:     home,
+		Runner:   &recordingRunner{},
+		LookPath: func(name string) (string, error) { return "/fake/" + name, nil },
+	}.withDefaults()
+	stubAgentPath(t)
+	out := captureStdout(t, func() {
+		if err := initAgents(env); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "no drive api configured") {
+		t.Fatalf("init ignored the apiBase login saved:\n%s", out)
+	}
+	if strings.Contains(out, "sign in with") {
+		t.Fatalf("init advised signing in again after a saved login:\n%s", out)
+	}
+}
+
+// The one site address (drive#527). The CLI embeds cmd/drive/site.json, and
+// core/seo.js imports the same file, so this test reads that file rather than
+// searching a source file for a literal that no longer lives there.
+func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
+	src, err := os.ReadFile("site.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), defaultAPIBase) {
+		t.Fatalf("defaultAPIBase %q is not the origin cmd/drive/site.json holds", defaultAPIBase)
+	}
+	if !strings.HasPrefix(defaultAPIBase, "https://") {
+		t.Fatalf("defaultAPIBase %q must be an https address", defaultAPIBase)
+	}
+}
+
+func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	api.approved["dev_secret"] = true
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.KeyID == "" {
+		t.Fatal("the first login wrote no key id")
+	}
+	// The real Worker issues a new device token per login; the stand-in
+	// issues one, so the first login's file is given its own.
+	const oldToken = "dtok_from_the_first_login"
+	first.DeviceToken = oldToken
+	if err := SaveCredentials(home, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.queueClears) != 1 || api.queueClears[0] != "Bearer "+oldToken {
+		t.Fatalf("queue clears %v, want one with the previous login's token", api.queueClears)
+	}
+	if len(api.revokedIDs) != 1 || api.revokedIDs[0] != first.KeyID {
+		t.Fatalf("revoked %v, want the previous key %q", api.revokedIDs, first.KeyID)
+	}
+	second, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.KeyID == "" || second.KeyID == first.KeyID {
+		t.Fatalf("second key %q, want a new id after %q", second.KeyID, first.KeyID)
+	}
+}
+
+// TestLoginStoresADeviceKeyWithAnHourOnIt is drive#749 on top of drive#544.
+// The api records a provider's own session on the key's row, so a device mint
+// can answer with an hour on it. The renew loop rewrites rclone.conf before
+// that session ends, so login stores the expiry instead of refusing the key.
+func TestLoginStoresADeviceKeyWithAnHourOnIt(t *testing.T) {
+	api := newFakeAPI()
+	mintedAt := time.Now().Add(time.Hour).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == keysPath && r.Method == http.MethodPost {
+			at := mintedAt
+			writeTestJSON(w, 201, MintedKey{
+				KeyID: "key_sts", AccessKeyID: "ak", Secret: "sk",
+				Prefix: "u/acct_1/", SessionToken: "tok",
+				Endpoint: "http://127.0.0.1:39181", Bucket: "drive-standin",
+				ExpiresAt: &at,
+			})
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	home := t.TempDir()
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.KeyExpiresAt != mintedAt {
+		t.Fatalf("KeyExpiresAt = %d, want the mint's %d", creds.KeyExpiresAt, mintedAt)
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Fatalf("rclone.conf was not written: %v", err)
+	}
+}
+
+// The device-name flag (drive issue #561): `drive login
+// --device studio` names this device at sign-in, both on the
+// approval page (the device-code request) and on the device
+// key, so the account and the drive agree on what the machine
+// is called.
+func TestEnvDeviceNameReadsDriveDevice(t *testing.T) {
+	// DRIVE_DEVICE (the mount's own setting) wins, and sign-in answers
+	// to the same name the mount carries.
+	t.Setenv(deviceEnvName, "studio")
+	if got := envDeviceName(t.TempDir()); got != "studio" {
+		t.Fatalf("envDeviceName(t.TempDir()) = %q, want the DRIVE_DEVICE value", got)
+	}
+	t.Setenv(deviceEnvName, "")
+	if got := envDeviceName(t.TempDir()); strings.TrimSpace(got) == "" {
+		t.Fatal("envDeviceName(t.TempDir()) with DRIVE_DEVICE unset = \"\", want the hostname fallback")
+	}
+}
+
+func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	var out strings.Builder
+	if err := Login(t.TempDir(), server.URL, "studio", &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("the device-code request named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("the device key was minted as %v, want [studio]", api.mintedNames)
+	}
+}
+
+// `drive login --device studio` is remembered in the credentials file, so a
+// later re-sign-in or `drive agents` answers to "studio" and does not
+// register a second device under the hostname.
+func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	t.Setenv(deviceEnvName, "")
+
+	home := t.TempDir()
+	if err := Login(home, server.URL, "studio", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := envDeviceName(home); got != "studio" {
+		t.Fatalf("envDeviceName after login --device studio = %q, want studio", got)
+	}
+	// A later login without the flag keeps the chosen name at sign-in
+	// and on the minted key, not only in the credentials file.
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := envDeviceName(home); got != "studio" {
+		t.Fatalf("envDeviceName after a flagless login = %q, want studio kept", got)
+	}
+	if len(api.deviceNames) != 2 || api.deviceNames[1] != "studio" {
+		t.Fatalf("flagless login named the device %v, want [studio, studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 2 || api.mintedNames[1] != "studio" {
+		t.Fatalf("flagless login minted %v, want [studio, studio]", api.mintedNames)
+	}
+	// DRIVE_DEVICE still wins.
+	t.Setenv(deviceEnvName, "laptop")
+	if got := envDeviceName(home); got != "laptop" {
+		t.Fatalf("envDeviceName with DRIVE_DEVICE = %q, want laptop", got)
+	}
+}
+
+// DRIVE_DEVICE is the same name the mount carries, so a login with no
+// --device still registers that name instead of the hostname.
+func TestLoginHonorsDriveDeviceWithoutFlag(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+	t.Setenv(deviceEnvName, "studio")
+
+	if err := Login(t.TempDir(), server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("login with DRIVE_DEVICE named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("login with DRIVE_DEVICE minted %v, want [studio]", api.mintedNames)
+	}
+}

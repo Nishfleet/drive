@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createApp, dispatch } from "../src/index.js";
-import { AUTH_RULES, routes } from "../src/routes.js";
+import { API_PREFIX, AUTH_RULES, routes } from "../src/routes.js";
 
 /** @typedef {import("../src/index.js").Ctx} Ctx */
 // `Route.handler` is `Function` in the product (its real handlers assume a
@@ -39,6 +39,64 @@ test("every route in the registry declares an auth rule", () => {
         `add one of ${AUTH_RULES.join(", ")}`,
     );
   }
+});
+
+test("every route in the registry is reachable on the one host that fronts both Workers", async () => {
+  // A route on no prefix the site Worker forwards is a route with no address:
+  // the CLI holds one APIBase, and the host that answers it is this Worker
+  // (drive#156/#341, #342). Two prefixes carry the api Worker today, each for
+  // its own reason, and the checks below are what keep them in step with the
+  // site's table and the assets config:
+  //   - /v1: the api Worker's own family, API_PREFIX here. src/index.js mounts
+  //     `${API_PREFIX}/*` and cloudflare.config.ts's runWorkerFirst carries it,
+  //     both pinned in test/deploy-assets.test.mjs.
+  //   - /api/*: the site's own namespace, already in runWorkerFirst. One route
+  //     lives here — POST /api/keys/revoke, which `drive logout` calls with the
+  //     key the rclone config holds, so it cannot want a session. The site
+  //     Worker forwards it to the binding ahead of its deny-by-default
+  //     /api/* gate (drive#354), and it is the only route allowed to: a
+  //     second route on /api/* fails rather than quietly joining it.
+  assert.ok(routes.length > 0, "the registry is empty");
+  const outsideV1 = [];
+  for (const route of routes) {
+    if (route.path.startsWith(`${API_PREFIX}/`)) continue;
+    outsideV1.push(`${route.method} ${route.path}`);
+    assert.equal(
+      `${route.method} ${route.path}`,
+      "POST /api/keys/revoke",
+      `${route.method} ${route.path} is on no prefix the site Worker forwards to the api Worker: it is unreachable through the CLI's one APIBase. Add it to ${API_PREFIX} and to the site Worker's forward table, or open an issue with the routing decision it needs`,
+    );
+  }
+  assert.deepEqual(
+    outsideV1,
+    ["POST /api/keys/revoke"],
+    "the api Worker's surface outside its own family has changed: say where it is forwarded here",
+  );
+  // The other half of drive#354: the route the site forwards on this Worker
+  // must be the route this registry serves, and the site must forward it
+  // ahead of the gate that would otherwise answer it 401. Both are read from
+  // the modules themselves — the site Worker's own route table and this
+  // registry — so the path here cannot drift from the one `drive logout`
+  // posts (cmd/drive/revoke.go RevokePath).
+  const site = await import("../../../src/index.js");
+  const siteRoutes = site.createApp().routes;
+  assert.ok(
+    siteRoutes.some((route) => route.method === "ALL" && route.path === "/api/keys/revoke"),
+    "the site Worker must forward /api/keys/revoke to this one (drive#354); without the forward the account gate answers `drive logout` 401",
+  );
+  const gate = siteRoutes.findIndex((route) => route.method === "ALL" && route.path === "/api/*");
+  const forward = siteRoutes.findIndex(
+    (route) => route.method === "ALL" && route.path === "/api/keys/revoke",
+  );
+  assert.ok(
+    forward < gate,
+    "/api/keys/revoke must be registered before the /api/* account gate, or the gate answers it first (drive#354)",
+  );
+  assert.equal(
+    outsideV1.length,
+    1,
+    "one route on /api/* is a deliberate hole in the site's gate; a second needs its own decision",
+  );
 });
 
 test("the Hono route table is the registry, and the walk reads it", () => {

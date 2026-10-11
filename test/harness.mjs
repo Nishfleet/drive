@@ -9,28 +9,59 @@
 // deliberately the D1 interface, not node:sqlite's, so every query these tests
 // run is a query the Worker can run against the deployed database.
 //
-// The value coercion below is the part D1 does for us and node:sqlite does
-// not: D1 takes a JavaScript boolean and a Date as bind values, node:sqlite
-// takes neither. Turning them into the integers SQLite stores is what makes the
-// two the same engine rather than two similar ones.
+// The bind values below are the part D1 does for us and node:sqlite does not,
+// and it cuts both ways. D1 converts a JavaScript boolean to the INTEGER it
+// stores, so the adapter does too; and D1 refuses an `undefined` or a `Date`
+// with a D1_TYPE_ERROR rather than guessing, so the adapter refuses them in the
+// same words. A test that binds what production cannot bind fails here instead
+// of proving something true only of this harness (drive#579).
 
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createAuth } from "../src/auth.js";
+import { AUTH_COOKIE_PREFIX, createAuth } from "../core/auth.js";
+// The on-demand module's factory, imported statically here because this is
+// test code: the harness is never bundled into the Worker entry, so importing
+// it costs nothing the entry would pay (drive#848). What it proves is the
+// shape a test asks for — `twoFactor: true` — matches what the on-demand
+// module the Worker imports at runtime actually exports.
+import { twoFactorPlugin as twoFactorPluginFactory } from "../core/auth-two-factor.js";
+import { applyMigrations, d1BindValue, MIGRATION_FILES } from "./d1-sqlite.mjs";
 
-/** Every migration that applies to the customer database, in order. */
-export const DRIVE_MIGRATIONS = Object.freeze([
-  "drive/0002_file_index.sql",
-  "drive/0003_branches.sql",
-  "drive/0004_agent_undo.sql",
-  "drive/0005_better_auth.sql",
-  "drive/0006_share_links.sql",
-  "drive/0008_teams.sql",
-  "drive/0009_upload_request_caps.sql",
-  "drive/0010_accounts_devices.sql",
-  "drive/0011_rate_limit.sql",
-  "drive/0012_branch_snapshot_kv.sql",
-]);
+/**
+ * Every migration in `migrations/drive/`, in the order the deploy applies them
+ * — the whole schema, read from the folder rather than written out here, so a
+ * test cannot pass against a schema production does not have (drive#579).
+ *
+ * test/d1-sqlite.mjs owns the read and the order: `wrangler d1 migrations
+ * apply` applies by full filename, which is the only rule that does not leave a
+ * shared prefix's tie to whichever order the filesystem happened to hand back
+ * (drive#619). This is the same list that module applies, so both stand-ins
+ * build one schema and test/d1-sqlite.test.mjs proves it.
+ *
+ * The hand-written array that used to sit here was the bug, not the concept of
+ * a short list: ten files in the folder were in no list at all (the same ten
+ * `test/d1-sqlite.test.mjs` names: stored-bytes, device codes, billing pushes,
+ * the two 0017 drops, the month-spend drop, nightly sizes, hidden_at,
+ * meter-scale, welcome_sent_at). `0005_meter.sql` and `0019_abuse_guards.sql`
+ * were already in the old list. A default-harness test could prove a thing
+ * true only of itself. A migration added today lands here with no edit, and
+ * the next run either reads the real column or fails.
+ */
+export const DRIVE_MIGRATIONS = Object.freeze(MIGRATION_FILES.map((name) => `drive/${name}`));
+
+/**
+ * The same folder, under the name the sign-in, cap and a11y tests ask for it
+ * by, so no test has to be rewritten to read the same list under a new name
+ * (drive#579). It is built from `MIGRATION_FILES` like `DRIVE_MIGRATIONS`
+ * above, so the two cannot drift apart from each other or from the folder, and
+ * test/migrations.test.mjs asserts both against the folder read off disk.
+ *
+ * A test that asserts a cap really is stored reads the row back through one of
+ * these names rather than through a list it wrote out itself (drive issue
+ * #421).
+ */
+export const DRIVE_SCHEMA_MIGRATIONS = DRIVE_MIGRATIONS;
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
@@ -40,24 +71,24 @@ export const TEST_BASE_URL = "https://drive.test";
 /** @typedef {import("node:sqlite").SQLInputValue} SQLInputValue */
 
 /**
- * The bind values D1 accepts and node:sqlite does not, turned into what
- * SQLite stores. Anything else passes through untouched, so a test that binds
- * a string still binds that string.
+ * D1's write conversion table, shared with the meter's adapter rather than
+ * written a second time here (test/d1-sqlite.mjs `d1BindValue`): null, a
+ * number, a string and a blob pass through, a boolean becomes the INTEGER 1 or
+ * 0 it reads back as, and `undefined` and every other type raise the
+ * D1_TYPE_ERROR the real binding raises.
+ *
+ * The two this adapter used to accept silently are the ones that cost a test its
+ * meaning (drive#579). Coercing a `Date` to epoch millis let code that binds an
+ * instant run green here and throw D1_TYPE_ERROR on every request in production
+ * — node:sqlite itself would have written a NULL — and turning `undefined` into
+ * NULL let a statement write a NULL into a NOT NULL column here that production
+ * refuses to send at all. A harness that is stricter than the database it stands
+ * in for is safe; one that is laxer is the bug.
+ *
  * @param {unknown} value
  * @returns {SQLInputValue}
  */
-function sqliteValue(value) {
-  if (typeof value === "boolean") {
-    return value ? 1 : 0;
-  }
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-  if (value === undefined) {
-    return null;
-  }
-  return /** @type {SQLInputValue} */ (value);
-}
+const sqliteValue = (value) => /** @type {SQLInputValue} */ (d1BindValue(value));
 
 /**
  * D1 numbered placeholders (`?1`, `?2`, …) as node:sqlite can bind them.
@@ -116,23 +147,30 @@ export function sqliteBoundValues(sql, bound) {
 function runOne(sqlite, sql, params) {
   const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = sqliteBoundValues(sql, params).map(sqliteValue);
+  // `total_changes()` delta, not `changes()`: `changes()` is the last
+  // INSERT/UPDATE/DELETE and DDL does not reset it, so a CREATE after a write
+  // used to answer with the write's count. The delta is this statement's own
+  // count, matching test/d1-sqlite.mjs, and each counter is prepared after
+  // `all()` returns so it is not held while that statement iterates.
+  const before = Number(
+    /** @type {{n: number}} */ (sqlite.prepare("SELECT total_changes() AS n").get()).n,
+  );
   const results = statement.all(...bound);
+  const changes =
+    Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT total_changes() AS n").get()).n) -
+    before;
   return {
     results,
     success: true,
     meta: {
-      // The change count comes from SQLite's own `changes()`, which is true the
-      // moment the statement ran. node:sqlite exposes no `changes` property on a
-      // prepared statement, so reading one off it would answer 0 for every
-      // write: a test that asserts a revoke or a sweep landed would be told it
-      // did not, and a caller that trusts `meta.changes` for a conditional
-      // update would see no winner at all (drive#174). The two rows are read
-      // once and cast, because node:sqlite's types allow `get()` to answer
-      // undefined where a `SELECT` of one row always answers an object.
-      changes: Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT changes() AS n").get()).n),
-      last_row_id: Number(
-        /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get()).n,
-      ),
+      changes,
+      last_row_id:
+        changes === 0
+          ? 0
+          : Number(
+              /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get())
+                .n,
+            ),
     },
   };
 }
@@ -153,8 +191,14 @@ function runOne(sqlite, sql, params) {
  */
 export function createTestD1(options = {}) {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
-    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+  if (options.migrations === undefined) {
+    // Every file in the folder, in the deploy's order: the one list
+    // test/d1-sqlite.mjs applies.
+    applyMigrations(sqlite);
+  } else {
+    for (const name of options.migrations) {
+      sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+    }
   }
   /**
    * @param {string} sql
@@ -172,10 +216,24 @@ export function createTestD1(options = {}) {
     async all() {
       return runOne(sqlite, sql, params);
     },
-    async first() {
-      const bound = sqliteBoundValues(sql, params).map(sqliteValue);
-      const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
-      return row === undefined ? null : row;
+    /**
+     * D1's `first()`: the row, or the row's one column when the caller names
+     * it, and null when the query matched nothing. The column argument used to
+     * be ignored here, so `first("id")` answered a whole row and a test that
+     * read it as the scalar it is in production read a property off an object
+     * (drive#579).
+     * @param {string} [column]
+     */
+    async first(column) {
+      const row = (await runOne(sqlite, sql, params)).results[0];
+      if (row === undefined) {
+        return null;
+      }
+      if (column === undefined) {
+        return row;
+      }
+      const asRow = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
+      return asRow[column] ?? null;
     },
     async run() {
       return runOne(sqlite, sql, params);
@@ -200,14 +258,49 @@ export function createTestD1(options = {}) {
         sqlite.exec(sql);
         return { count: 0, duration: 0 };
       },
+      // D1 runs a batch as one transaction: a statement that fails rolls the
+      // whole batch back. test/d1-sqlite.mjs keeps the same guarantee, so code
+      // that leans on it (the arrival digest's clear and stamp, drive#684) is
+      // tested against D1's behaviour, not a run of independent writes.
       /**
+       * D1 sends a batch as ONE transaction: every statement commits together,
+       * and one that fails takes the whole batch with it. Running the
+       * statements as independent writes is what this did, so a batch whose
+       * second statement failed left the first one's row behind and a test
+       * read a half-written event as a whole one (drive#579).
        * @param {Array<{sql: string, params?: unknown[]}>} statements
        */
       async batch(statements) {
-        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+        sqlite.exec("BEGIN");
+        try {
+          const results = statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+          sqlite.exec("COMMIT");
+          return results;
+        } catch (error) {
+          sqlite.exec("ROLLBACK");
+          throw error;
+        }
       },
     })
   );
+}
+
+/**
+ * Every row the known-bad hash table holds, read off the database itself.
+ *
+ * The check that proves a load landed as real data rather than as a value a
+ * helper handed back (drive issue #826). It lives here, on the harness every
+ * D1 test already imports, because the two files that load the stock feed
+ * each had a copy of it and a second copy of a read is a second thing to drift
+ * from the query it stands for.
+ * @param {import("./harness.mjs").TestD1} db
+ * @returns {Array<{sha256: string, seenAt: number}>}
+ */
+export function knownBadHashRows(db) {
+  return db.sqlite
+    .prepare("SELECT sha256, seen_at AS seenAt FROM known_bad_hashes ORDER BY sha256")
+    .all()
+    .map((row) => ({ sha256: String(row.sha256), seenAt: Number(row.seenAt) }));
 }
 
 /**
@@ -219,14 +312,23 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
- * @typedef {{to: string, url: string}} SentLink
- * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
+ * (drive#550): `userAgent` is the requesting request's own header, null when
+ * there was none, so a test can read what the mail would name. `deviceApproval`
+ * is true when the start stored a return path for the approve page (drive#558).
+ * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
+ * @param {{migrations?: readonly string[], twoFactor?: boolean}} [options]
+ * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);
   /** @type {SentLink[]} */
   const sent = [];
+  // `twoFactor: true` builds the instance the way the /api/auth/two-factor/*
+  // routes get (drive#848): same createAuth, with the factor's factory handed
+  // in from the on-demand module. Off by default, so a test that only signs in
+  // gets the same factorless instance the main Worker entry builds and the
+  // entry-chunk saving this change is for is not quietly tested away.
+  const twoFactorPlugin = options.twoFactor ? twoFactorPluginFactory : undefined;
   const auth = createAuth({
     database: db,
     secret: TEST_SECRET,
@@ -234,6 +336,7 @@ export function createTestAuth(options = {}) {
     sendLink: async (link) => {
       sent.push(link);
     },
+    twoFactorPlugin,
   });
   return { auth, db, sent };
 }
@@ -275,6 +378,93 @@ export async function signIn(made, email) {
   return {
     cookie,
     account: { id: found.user.id, name: found.user.name, email: found.user.email },
+  };
+}
+
+/** Headers that carry a signed-in session, so a call can read the cookie. */
+/** @param {string} cookie */
+export const sessionHeaders = (cookie) => new Headers({ cookie, origin: TEST_BASE_URL });
+
+/**
+ * The TOTP code a real authentication app would show for `secret` — the same
+ * HMAC-SHA1, 6 digits, 30-second step the library verifies (RFC 6238). A test
+ * that needs a fresh code when one was already used asks for `1` (the next
+ * step), because a code is only valid inside its step.
+ * @param {string} secret the base32 secret from the enrollment TOTP URI
+ * @param {number} [step] the 30-second step offset, 0 being now
+ * @returns {string}
+ */
+export function totpCode(secret, step = 0) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  /** @type {number[]} */
+  const bytes = [];
+  let bits = 0;
+  let value = 0;
+  for (const character of secret.replace(/=+$/, "").toUpperCase()) {
+    const index = alphabet.indexOf(character);
+    if (index === -1) continue;
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  const counter = Math.floor(Date.now() / 30000) + step;
+  const buffer = Buffer.alloc(8);
+  buffer.writeUInt32BE(Math.floor(counter / 2 ** 32), 0);
+  buffer.writeUInt32BE(counter % 2 ** 32, 4);
+  const digest = createHmac("sha1", Buffer.from(bytes)).update(buffer).digest();
+  const offset = digest[digest.length - 1] & 0xf;
+  const code =
+    (((digest[offset] & 0x7f) << 24) |
+      (digest[offset + 1] << 16) |
+      (digest[offset + 2] << 8) |
+      digest[offset + 3]) %
+    10 ** 6;
+  return String(code).padStart(6, "0");
+}
+
+/**
+ * Arms the second factor on a fresh sign-in: enables two-factor
+ * authentication, then confirms it with one correct code — the step that sets
+ * the account's `twoFactorEnabled` and rotates the session. Answers the new
+ * session cookie (the one the browser carries afterwards), the TOTP secret,
+ * and the one-time recovery codes.
+ * @param {ReturnType<typeof createTestAuth>} made
+ * @param {string} email
+ * @returns {Promise<{cookie: string, secret: string, backupCodes: string[], account: {id: string, name: string, email: string}}>}
+ */
+export async function armTwoFactor(made, email) {
+  const signed = await signIn(made, email);
+  // `body: {}` is the library's default method, the reader: the enrollment URI
+  // and the ten one-time codes, which the caller must show once.
+  const enabled = /** @type {{totpURI: string, backupCodes: string[]}} */ (
+    await made.auth.api.enableTwoFactor({
+      body: {},
+      headers: sessionHeaders(signed.cookie),
+    })
+  );
+  const secret = new URL(enabled.totpURI).searchParams.get("secret");
+  if (secret === null) {
+    throw new Error("the enrollment TOTP URI carried no secret");
+  }
+  const confirm = await made.auth.api.verifyTOTP({
+    body: { code: totpCode(secret) },
+    headers: sessionHeaders(signed.cookie),
+    returnHeaders: true,
+  });
+  const rotated = confirm.headers
+    .getSetCookie()
+    .find((cookie) => cookie.startsWith(`__Secure-${AUTH_COOKIE_PREFIX}.session_token=`));
+  if (rotated === undefined) {
+    throw new Error("confirming the factor set no session cookie");
+  }
+  return {
+    cookie: rotated.split(";")[0],
+    secret,
+    backupCodes: enabled.backupCodes,
+    account: signed.account,
   };
 }
 

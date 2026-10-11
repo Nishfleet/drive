@@ -34,7 +34,8 @@
 //                               port is read back from the server's log
 //   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO)
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  root credential
-//   DRIVE_STANDIN_BUCKET        bucket (default drive-meter-standin)
+//   DRIVE_STANDIN_BUCKET        bucket, over the signed-in account's own
+//                               (default drv-<accountId>)
 //   DRIVE_STANDIN_REGION        region (default us-east-1)
 //   DRIVE_STANDIN_ENGINE        force docker or podman
 //
@@ -49,17 +50,24 @@ import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseListVersions } from "../src/files.js";
+import { parseListVersions } from "../core/files.js";
+import { bucketForAccount } from "../core/keyprovider.js";
+import { createMemoryStore } from "../core/keystore.js";
+import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../core/meter.js";
+import { createS3Client, provisionBucket } from "../core/s3.js";
+import { createS3KeyProvider } from "../core/s3-keys.js";
+import { computeHiddenAt, versionMarkers } from "../core/s3-listing.js";
 import worker from "../src/index.js";
-import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../src/meter.js";
 import { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
-import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
-import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 
-const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-meter-standin";
+// No bucket is named at module level: the bucket this proof provisions is the
+// account's own (`drv-<accountId>`, keyprovider.js `bucketForAccount`),
+// because the key the proof writes with is scoped to it and to nothing else
+// (drive#371, drive#462). The account signs in below, so its bucket is known
+// then. DRIVE_STANDIN_BUCKET still overrides it for a caller pointing at a
+// stand-in that is already provisioned.
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
 // 0 asks the kernel for a free port; the stand-in logs the one it bound and
 // `startMinioStandin` reads it back. A number reserved by binding, closing and
@@ -189,7 +197,14 @@ function providerDayGbMinutes(versions, day) {
   return gbMinutes;
 }
 
-test("a full day of GB-minutes matches the storage provider's own report within 1%", async (t) => {
+// startMinioStandin waits 30s for the API port and 60s for /minio/health/live.
+// The test then waitFor(3, 60) and waitFor(4, 60) for webhook deliveries.
+// node:test's default 5s timeout killed startup (drive#457: 4999.68ms on PR 435).
+const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
+
+test("a full day of GB-minutes matches the storage provider's own report within 1%", {
+  timeout: STANDIN_TEST_TIMEOUT_MS,
+}, async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
     return t.skip("the stand-in starts in a container; only Linux runners are covered here");
   }
@@ -230,22 +245,15 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     region: REGION,
     credentials: { accessKeyId: ROOT_ACCESS_KEY, secretAccessKey: ROOT_SECRET_KEY },
   });
-  const provisioned = await provisionBucket(root, {
-    bucket: BUCKET,
-    notificationQueueArn: NOTIFICATION_ARN,
-    hiddenVersionDays: 1,
-  });
-  t.diagnostic(
-    `provisioned ${BUCKET} at ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}, notifications to ${receiver.url}`,
-  );
 
-  // The account, signed in and given a key exactly as a device would get one,
-  // so every call below is scoped by the endpoint and not by this test.
+  // The account signs in before any bucket is provisioned, so the bucket it
+  // owns is known when the bucket is made. The key this proof writes with is
+  // scoped to the account's own bucket, so the events the meter reads are
+  // events that bucket delivered (drive#371, drive#462).
   const keyStore = createMemoryStore({
     keyProvider: createS3KeyProvider({
       endpoint,
       region: REGION,
-      bucket: BUCKET,
       masterAccessKeyId: ROOT_ACCESS_KEY,
       masterSecretAccessKey: ROOT_SECRET_KEY,
     }),
@@ -257,6 +265,23 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   const signedIn = /** @type {{account: {id: string}, deviceToken: string}} */ (
     /** @type {unknown} */ (poll)
   );
+  // The account row exists the moment sign-up lands (drive issue #564): the
+  // metered account list is read off `accounts`, so a proof that signs an
+  // account in must make the row the production sign-up makes.
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(signedIn.account.id, "meter-proof@drive.test", Date.now())
+    .run();
+  const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(signedIn.account.id);
+  const provisioned = await provisionBucket(root, {
+    bucket: BUCKET,
+    notificationQueueArn: NOTIFICATION_ARN,
+    hiddenVersionDays: 1,
+  });
+  t.diagnostic(
+    `provisioned ${BUCKET} at ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}, notifications to ${receiver.url}`,
+  );
+
   const minted = await dispatch(
     new Request("https://api.example/v1/keys", {
       method: "POST",
@@ -387,9 +412,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     query: { versions: "", prefix: key.prefix },
   });
   assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
-  const listed = parseListVersions(listing.text).filter((version) =>
-    version.path.startsWith(key.prefix),
-  );
+  // One page alone cannot know a version's stop — the pair that ends a
+  // version can sit on two pages (drive issue #504) — so the stop is the
+  // shipped cross-page pass, the same one the store answers with.
+  const listed = computeHiddenAt(
+    parseListVersions(listing.text),
+    versionMarkers(listing.text),
+  ).filter((version) => version.path.startsWith(key.prefix));
   t.diagnostic(
     `the provider's own listing: ${JSON.stringify(listed.map((v) => ({ version: v.b2FileId.slice(0, 8), marker: v.hiddenAt === null && v.sizeBytes === 0, size: v.sizeBytes, at: new Date(v.createdAt).toISOString(), hidden: v.hiddenAt === null ? null : new Date(v.hiddenAt).toISOString() })))}`,
   );
@@ -403,7 +432,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   );
   assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
   // The dead-letter table was an earlier design that was replaced by the
-  // per-event rejection in the intake (src/meter.js recordEvents). The test
+  // per-event rejection in the intake (core/meter.js recordEvents). The test
   // keeps the assertion as a gate: the name must not appear in the schema.
   assert.ok(
     !Object.hasOwn(db.tables, "event_dead_letters"),
@@ -421,7 +450,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   // learns a hide from the provider's own version listing, through the nightly
   // reconciler (build step 5, #59) - which is why the event stream alone
   // cannot answer this proof.
-  const reconciled = await reconcileMeter(db, signedListingStore(client), Date.now());
+  const reconciled = await reconcileMeter(db, signedListingStore(client, BUCKET), Date.now());
   t.diagnostic(
     `the reconciler walked the provider's listing: inserted=${reconciled.inserted} hidden=${reconciled.hidden} marked=${reconciled.marked}`,
   );
@@ -464,29 +493,36 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
  * account writes with: ListObjectVersions is the stock API for a versioned
- * bucket, and the parser is the shipped one (src/files.js
+ * bucket, and the parse is the shipped one (core/files.js
  * `createS3Store.listVersions` answers with it), so a version's stop time here
- * is the stop time the product reads in production.
+ * is the stop time the product reads in production. This proof's listing is
+ * one page; the store folds the pages together and computes the stops once
+ * over the whole list (drive issue #504), and so does this call.
  * The reconciler only calls listVersions; the other methods are stubs that
  * throw if reached, which would indicate a bug in the reconciler.
  * @param {ReturnType<typeof createS3Client>} client
+ * @param {string} bucket the bucket the listed prefix lives in, which is the
+ *   account's own
  */
-function signedListingStore(client) {
+function signedListingStore(client, bucket) {
   return {
     /** @param {string} path */
     async listVersions(path) {
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const response = await client.send("GET", {
-        bucket: BUCKET,
+        bucket,
         query: { versions: "", prefix },
       });
       if (response.status !== 200) {
         throw new Error(`the provider's own version listing failed with ${response.status}`);
       }
-      return parseListVersions(response.text);
+      return computeHiddenAt(parseListVersions(response.text), versionMarkers(response.text));
     },
     async list() {
       throw new Error("the reconciler never lists a folder");
+    },
+    async listKeys() {
+      throw new Error("the reconciler never walks the key space");
     },
     async read() {
       throw new Error("the reconciler never reads a file");
@@ -494,11 +530,26 @@ function signedListingStore(client) {
     async write() {
       throw new Error("the reconciler never writes a file");
     },
+    async writeIfAbsent() {
+      throw new Error("the reconciler never writes a file");
+    },
     async remove() {
       throw new Error("the reconciler never removes a file");
     },
+    async removeBatch() {
+      throw new Error("the reconciler never deletes a batch");
+    },
     async copy() {
       throw new Error("the reconciler never copies a file");
+    },
+    async listPage() {
+      throw new Error("the reconciler never lists a page");
+    },
+    async listAll() {
+      throw new Error("the reconciler never lists a bucket");
+    },
+    async stat() {
+      throw new Error("the reconciler never stats a file");
     },
   };
 }

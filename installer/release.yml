@@ -1,0 +1,75 @@
+# Tagged release of the drive CLI (drive#509). A v* tag runs the stock
+# goreleaser action. Signing and notarize are blocks in this file and in
+# .goreleaser.yaml; they stay off until their secrets exist, so a pre-release
+# tag still publishes GitHub release assets. A public stable release waits
+# for Nish. Hosted macOS minutes are refused (drive#486), so this job is the
+# same self-hosted Linux runner CI uses; goreleaser cross-compiles darwin.
+#
+# This file is the one copy a worker token can land (drive#509, fleet-ops#105).
+# GitHub refuses an App without `workflows` permission from creating
+# `.github/workflows/release.yml`. A coordinator copies this file there;
+# test/packaging.test.mjs fails if that copy drifts from this one.
+#
+# GPG import and the MACOS_* env vars are the signing and notarize blocks.
+# `--skip=sign` runs when the GPG import step is skipped. NOTARIZE stays
+# false when MACOS_SIGN_P12 is empty, because an empty GitHub secret is still
+# "set" and would otherwise fail the release.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  goreleaser:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    env:
+      # Map secrets to env so step `if:` can test them. actionlint forbids
+      # `secrets` in step if-expressions; empty means the import/notarize
+      # blocks stay off.
+      HAS_GPG: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+      HAS_NOTARY: ${{ secrets.MACOS_SIGN_P12 != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # cache: false on a job that publishes artifacts: a poisoned Go module
+      # cache would reach the GitHub release (zizmor cache-poisoning).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24"
+          cache: false
+      - name: Import GPG key
+        id: import_gpg
+        if: env.HAS_GPG == 'true'
+        uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "v2.18.2"
+          args: ${{ steps.import_gpg.outcome == 'success' && 'release --clean' || 'release --clean --skip=sign' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          NOTARIZE: ${{ env.HAS_NOTARY }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}

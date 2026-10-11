@@ -1,9 +1,9 @@
 # Research: send only the changed bytes when a big file is saved
 
-**Status: research and recommendation. Every price, limits-page and Space-comparison line below is a
+**Status: research and recommendation. Every price, limits-page and the competitor-comparison line below is a
 proposal for Nish, not a decision — those are reserved classes.**
 
-Space's edge, as recorded in the gap list (2026-09-30, internal, no public source): a 4 KiB edit in a
+The competitor's edge, as recorded in the gap list (2026-09-30, internal, no public source): a 4 KiB edit in a
 64 MiB file takes them 111 ms because only the touched piece is re-sent. That figure is not
 comparable with anything measured here — it is somebody else's network, and this document never
 reproduces it. What we can reproduce is the byte count, and stock rclone re-sends the whole file,
@@ -41,7 +41,7 @@ against a local `rclone serve s3` stand-in and names the one to adopt after laun
    also moves files out of the plain-file model and its restore story bypasses provider versioning.
 5. **No pricing change is needed for either path** — a save is a new version, billed to the user
    only while it is the live one, and delta saves do not change GB-minutes materially. *Proposal for
-   Nish:* the Space comparison line ("saves of big files don't re-send what didn't change") waits
+   Nish:* the competitor comparison line ("saves of big files don't re-send what didn't change") waits
    until the re-save actually ships, and the limits page gets the whole-file note from point 1.
 6. **What the re-save must handle before it is worth shipping** (from the design, not measured):
    S3 parts have a 5 MiB floor and a 10 000-part cap, so 8 MiB parts cover files up to ~78 GiB and

@@ -134,7 +134,7 @@ func TestExportRefusesAMachineThatIsNotSignedIn(t *testing.T) {
 	if err == nil {
 		t.Fatal("export on an unsigned-in machine must fail, not write an empty document")
 	}
-	if !strings.Contains(err.Error(), "drive init") {
+	if !strings.Contains(err.Error(), "drive login") {
 		t.Errorf("the failure should say what to do next, got: %v", err)
 	}
 }

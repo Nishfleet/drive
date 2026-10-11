@@ -1,0 +1,23 @@
+-- The stamp that keeps the vendor-key sweep one pass per key (drive issue #552).
+--
+-- A minted key lives at the vendor as long as the row says so: an agent key's
+-- hour expires our row but not the vendor's key (0012 added the row's half
+-- only), and a revoked key can outlive its revoke at the vendor when the
+-- revoke call failed. The nightly sweep removes the dead rows' vendor keys
+-- and stamps the row here, so the next night does not call
+-- `remove_access_key` again for a key the vendor no longer holds.
+--
+-- NULL is "the sweep has not accounted for this row's vendor key yet", which
+-- is the state every row written before this column exists in, so the first
+-- sweep after this migration checks each one. A stamped row is finished: the
+-- column is written once, by the sweep, and never read by the mint,
+-- authenticate or revoke paths.
+--
+-- Expand only: one nullable column, no default, no NOT NULL, nothing dropped,
+-- renamed or backfilled. The code that was running before this migration
+-- neither writes nor reads the column, so a Worker that reverts serves the
+-- same rows the same way and the fleet's auto-revert stays possible. The
+-- sweep that writes it ships in the same PR, which is safe for exactly that
+-- reason: a new Worker over an old schema and an old Worker over a new schema
+-- both keep serving.
+ALTER TABLE devices ADD COLUMN vendor_key_removed_at INTEGER;

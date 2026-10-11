@@ -1,62 +1,67 @@
 ---
 title: Pricing and your bill
-description: The rate, the ceiling, the free $1, downloads, and the bill worked out for four sizes.
+description: The rate, the maximum, downloads, and the bill worked out for four sizes.
 ---
 
 # Pricing and your bill
 
+{{HEADLINE}}
+
 ## The rate
 
-{{RATE}}, kept a month, counted by the minute. You pay for what you store, and
-stop paying for what you delete.
+{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB. {{NO_PLANS}}
 
-## The ceiling
+## Deleted files
 
-Your bill is the metered cost, cut off at a ceiling that rises with the size of
-the drive: a flat {{CEILING_FLOOR}} until the drive passes 1.5 TB, then
-{{CEILING_PER_TB}} for each TB after. A drive that grows never bills less.
+{{TRASH_BILLING}} Deleting from the Files page moves the file to Recently
+deleted, where it stays 30 days and you can restore it yourself.
+[See how deletes and restores work](/how-it-works).
 
-The default cap is {{DEFAULT_CAP}}, so a drive up to 1.5 TB cannot be cut off
-by default. Raise or lower it in your account, and at your cap the drive goes
-read-only: nothing is deleted and the bill stops there.
+{{VERSION_MINIMUM}}
 
-## The free $1
+## The maximum
 
-{{FREE_USD}} of storage is free every month, and no card is needed to start.
-That is {{FREE_GB}} GB a month — about 50 photos, or a season of video — and it
-comes off the bill first, never below zero.
+{{PRICE_RULE}} A drive that grows never bills less.
+
+The default cap is {{DEFAULT_CAP}}. Raise or lower it in your account, and at
+your cap the drive goes read-only: nothing is deleted and the bill stops there.
+
+## Sign-up
+
+We need a card at sign-up because there is no free tier.
 
 ## Downloads
 
-Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
-{{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
-for.
+Downloads are not in the published price, so nothing is charged for them
+today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store,
+then {{DOWNLOAD_RATE}} (planned).
 
 ## Version history
 
-Version history is not in version 1. See [Limits](/limits) for what is not in
+{{VERSION_HISTORY}} {{NOT_OPEN}} See [Limits](/limits) for what is not in
 version 1.
 
 ## The bill worked out
 
-Storage is counted for the part of the month you kept it, so a drive that grew
-pays only for the days each file was there. The meter is the rate on that; the
-ceiling is the largest the drive got; your bill is the smaller of the two, and
-then the free {{FREE_USD}} comes off.
+You pay for the biggest size your drive reached in the last 30 days. The meter
+is {{RATE}} on that size; the maximum is {{MAX_PER_TB}} for each TB of it, and
+never less than one TB's worth; your bill is the smaller of the two.
 
 {{BILL_TABLE}}
 
-The last column is the whole month, the free {{FREE_USD}} already taken off
-it. An empty drive bills nothing, and a drive kept under 50 GB bills nothing
-at all.
+The last column is the whole month. An empty drive bills nothing.
+
+## Savings calculator
+
+The pricing page has a public savings calculator: enter how many TB you keep
+all month, and it shows this month's bill beside our maximum and a usual 1 TB
+plan. The numbers come from the same function the invoice uses.
 
 ## Honest notes
 
 - There is no plan size. A drive is a drive: you are never moved to a bigger
   plan, and there is a cap you can set that stops spending before you think
   about it.
-- We do not advertise a per-minute price. The rate is monthly; the minute is
-  how the meter follows you when you delete something.
 - Every figure above is worked out by the same function the invoice is worked
   out from, and a test fails the build if the page and the invoice disagree.
 - What is not in version 1 is on the [Limits](/limits) page, and it is
@@ -64,17 +69,15 @@ at all.
 
 ## A bill that looks wrong, checked in order
 
-A per-minute bill with a ceiling and a free allowance can look wrong three
+A bill for the biggest size in 30 days, with a maximum, can look wrong two
 different ways, and only the first one is the bill:
 
-1. **The metered figure.** `drive status` shows this month's cost so far, and
-   the usage page shows the month's stored size worked out from the same
-   numbers as the invoice.
-2. **The ceiling.** Your bill is the smaller of the metered cost and the
-   ceiling, so a drive that grew pays for the days each file was there, never
-   more than the ceiling below.
-3. **The free {{FREE_USD}}.** It comes off the total, never below zero, so a
-   small drive can bill nothing at all.
+1. **The metered figure.** `drive status` shows the biggest size in the last
+   30 days and today's draw, and the usage page shows those from the same
+   function as the charge.
+2. **The maximum.** Your bill is the smaller of the metered cost and the
+   maximum, so a drive never pays more than {{MAX_PER_TB}} for each TB of
+   that biggest size.
 
-When those three agree with the invoice, [tell us](/faq) the month and the
+When those two agree with the invoice, [tell us](/faq) the month and the
 figure; the docs do not promise a refund, so nobody will read one here.

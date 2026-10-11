@@ -15,7 +15,18 @@ tool's own `mcp add` command. Nothing is installed beyond the server itself.
 drive init
 ```
 
-To see what is connected, or to connect or disconnect one tool on its own:
+## Each tool gets its own folder
+
+`drive init` mounts `~/Drive-agents/<tool>` for each tool on that tool's own
+key. The MCP server and the tool's allowed folders point at that folder, not at
+the folder you use, so the agent works through its own credential and your own
+files are not in the way.
+
+`drive agents revoke <tool>` unmounts that folder and revokes the key behind it.
+
+Windows is not in version 1, and the agent mount is not proven there, so the
+tool writes inside your own Drive. Linux and macOS get the folder.
+
 
 ```sh
 drive agents
@@ -36,11 +47,9 @@ drive approve <branch>    # copy the branch's changes back into the folder
 drive discard <branch>    # throw the branch away; the folder is untouched
 ```
 
-The agent works with its own branch key: a branch key is scoped to the
-branch's one path under `.branches/<name>/` in your account folder, so it can
-list, read and write there and cannot remove anything — the same rule every
-agent key follows. Your other files are outside its reach, and only you can
-approve the copy back.
+The agent works with its own branch key, made for the branch's one path under
+`.branches/<name>/` in your account folder, and only you can approve the copy
+back. [Branch keys](#branch-keys) says how far that key reaches.
 
 Stop a tool with `drive agents revoke <tool>`, using the tool's own name
 (`claude`, `codex`, `cursor`, `gemini` or `kiro`); the other tools stay
@@ -53,18 +62,15 @@ your own machine has:
 
 {{KEY_TABLE}}
 
-{{AGENT_CANNOT_DELETE}} An agent can create, change and rename anything in your
-Drive; it cannot remove anything, so an agent that decides a file is finished
-leaves it in place. Deleting needs a person.
+An agent can create, change and rename anything in your Drive. {{AGENT_DELETE}}
 
 ## Branch keys
 
 `drive branch <folder>` creates a server-side copy of that folder for an agent
 to work in. The branch takes the folder's name, or `--name <n>`. The agent gets a
-**branch key** limited to the branch's own prefix:
-`u/<your-id>/.branches/<branch-name>/`. It can read and write inside that
-branch, but it cannot delete — the same rule as a regular agent key. A branch
-key cannot reach your other files or other branches.
+**branch key** made for the branch's own prefix:
+`u/<your-id>/.branches/<branch-name>/`. It can read and write, and its deletes
+follow the same rule as a regular agent key. {{BRANCH_REACH}}
 
 Since a branch is a full copy, it counts against your storage until you
 discard or approve it. Measured branch times for large folders are on the

@@ -13,7 +13,7 @@ dist/
 
 # The Windows installer (drive#154): the built drive.exe, the vendor's
 # rclone.exe, WinFsp's MSI and the MSI and bundle built from installer/*.wxs
-# are all build artifacts of installer/windows-msi.yml, never committed. The
+# are all build artifacts of .github/workflows/windows-msi.yml, never committed. The
 # sources beside them are.
 /installer/drive.exe
 /installer/rclone.exe
@@ -36,3 +36,13 @@ dist/
 # public/docs, which is the Worker's static asset directory.
 docs-site/.rendered/
 public/docs/
+
+# Inspect eval logs (evals/agents) stay out of the repository.
+logs/
+docsbuild.done
+docsbuild.log
+
+# Stryker's run output (npm run mutate): the score and the survivors are read
+# from reports/mutation/mutation.json. The run's output is a report, like the
+# Lighthouse reports above, so it is never committed.
+reports/

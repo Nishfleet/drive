@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseStorageEvents } from "../src/event-routes.js";
+import { parseStorageEvents } from "../../../core/event-routes.js";
 import { dispatch } from "../src/index.js";
 
 // The event intake is a public route because the caller is the storage server,
@@ -91,6 +91,29 @@ test("a MinIO envelope is accepted once, with the key decoded", async () => {
       eventTime: "2026-10-01T16:13:31.921Z",
     },
   ]);
+});
+
+test("the log line names the event and the version, never the object's path", async () => {
+  // The customer's file path is data, not a log line: a push notification log
+  // is read by whoever has the deploy tool, and the key is the one thing in
+  // the event that names what a person stores (issue #583).
+  /** @type {string[]} */
+  const written = [];
+  const realLog = console.log;
+  console.log = (...parts) => written.push(parts.join(" "));
+  try {
+    const response = await call({ authorization: `Bearer ${TOKEN}` });
+    assert.equal(response.status, 202);
+  } finally {
+    console.log = realLog;
+  }
+  assert.equal(written.length, 1, `one log line, got ${JSON.stringify(written)}`);
+  const line = written[0];
+  assert.match(line, /^\[api\] storage event s3:ObjectCreated:Put /);
+  assert.match(line, /version=80c891ba-5f55-4ba9-a5d0-0b3c07ba89bd/);
+  assert.ok(!line.includes("report.txt"), "the log line must not name the file");
+  assert.ok(!line.includes("acct-a"), "the log line must not name the account");
+  assert.ok(!line.includes("drive-standin"), "the log line must not name the bucket");
 });
 
 test("only POST reaches the route", async () => {

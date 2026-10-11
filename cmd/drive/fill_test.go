@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -47,9 +51,11 @@ func TestBackgroundFillFlagsOnTheMount(t *testing.T) {
 		}
 		// The remote control is how the fill reads the cache and refreshes
 		// the directory, and it must be bound to loopback: rclone's rc is
-		// unauthenticated here (--rc-no-auth), so a wildcard bind would be an
-		// open control port on the network.
-		if !hasArgPair(args, "--rc-addr", "127.0.0.1:5572") {
+		// password-protected (drive#498), so a wildcard bind would still be an
+		// open control port on the network. A prepared mount picks a free
+		// port (drive#807); this check is the unprepared plan.
+		rcAddr := argValue(args, "--rc-addr")
+		if rcAddr == "" || !IsLoopbackAddr(rcAddr) {
 			t.Errorf("%s: mount is not binding the remote control to loopback:\n%v", tc.goos, args)
 		}
 		if !hasArg(args, "--rc") {
@@ -150,34 +156,65 @@ func TestReadLoadAverages(t *testing.T) {
 	}
 }
 
-// A folder kept offline is filled by reading it through the mount, so the read
-// a pass does must land every byte in rclone's cache and must not follow a
-// symlink out of the drive.
-func TestFillReaderReadsThroughTheMount(t *testing.T) {
+// `sysctl -n vm.loadavg` is how a Mac reports load (it has no /proc).
+func TestParseDarwinLoadAverages(t *testing.T) {
+	one, five, err := parseDarwinLoadAverages("{ 2.06 1.88 1.75 }\n")
+	if err != nil || one != 2.06 || five != 1.88 {
+		t.Fatalf("parse = %v, %v, %v; want 2.06, 1.88, nil", one, five, err)
+	}
+	if _, _, err := parseDarwinLoadAverages("{ }"); err == nil {
+		t.Error("an empty vm.loadavg returned no error")
+	}
+	if _, _, err := parseDarwinLoadAverages("{ x y z }"); err == nil {
+		t.Error("a non-numeric vm.loadavg returned no error")
+	}
+}
+
+// A file somebody opened is filled by reading it through the mount, under the
+// per-pass byte budget, and the fill reads nothing when this pass is not
+// filling the recently-opened set (drive#568).
+func TestFillTargetsReadsOpenedFilesUnderTheBudget(t *testing.T) {
 	dir := t.TempDir()
-	want := strings.Repeat("drive", 1000)
-	if err := os.WriteFile(filepath.Join(dir, "doc.txt"), []byte(want), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "a.bin"), []byte("alpha"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "b.bin"), []byte("beta"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "sub", "movie.mp4"), []byte("bytes"), 0o644); err != nil {
-		t.Fatal(err)
+	var read []string
+	targets := fillTargets{
+		root:   dir,
+		recent: []string{"a.bin", "b.bin"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			return 60, nil
+		},
 	}
-	// A file the person wrote and rclone has not uploaded yet: the fill must
-	// not report an error for a tree it can read, and must not read a file
-	// that has been removed under it.
-	read := fillReader(dir)
-	if err := read("drive:bucket/u/1", true); err != nil {
-		t.Fatalf("fill read: %v", err)
+	ctx := context.Background()
+	// The budget stops after the first file: one pass reads at most budget
+	// bytes, so a drive larger than the cache is filled over several passes.
+	if _, err := targets.read(ctx, true, 60); err != nil {
+		t.Fatalf("read under the budget: %v", err)
 	}
-	// A file that vanished between the walk and the read is not an error: the
-	// next pass sees the new tree.
-	if _, err := fillReadFile(filepath.Join(dir, "gone.bin")); err != nil {
+	if len(read) != 1 || read[0] != "a.bin" {
+		t.Errorf("the budgeted read read %v, want only a.bin", read)
+	}
+	// A pass that is not filling the recently-opened set reads none of them.
+	read = nil
+	if _, err := targets.read(ctx, false, 1<<20); err != nil {
+		t.Fatalf("read with the recent set off: %v", err)
+	}
+	if len(read) != 0 {
+		t.Errorf("the pass read %v although it was not filling recently-opened files", read)
+	}
+	// A file that vanished between the open and the read is not a failure: the
+	// next pass sees the new tree. Reading a directory as a file is an error.
+	targets.recent = []string{"gone.bin"}
+	targets.readFile = nil
+	if _, err := targets.read(ctx, true, 1<<20); err != nil {
 		t.Errorf("a removed file failed the fill: %v", err)
 	}
-	if _, err := fillReadFile(dir); err == nil {
+	if _, err := fillReadFile(ctx, dir); err == nil {
 		t.Error("reading a directory as a file returned no error")
 	}
 }
@@ -240,11 +277,29 @@ func TestParseSizeSuffix(t *testing.T) {
 // (TestBackgroundFillFillsThroughTheCappedCache), and this one is what makes the
 // "the fill stops at the cap" branch a failing test rather than a comment.
 type countedBackend struct {
-	used      int64
-	cap       int64
+	used int64
+	cap  int64
+	// refreshes counts the root refreshes and nothing else, so "the listing
+	// was refreshed once" names one call. Named folders are counted
+	// separately: they are a different remote-control call (issue #541).
 	refreshes int
+	// namedDirRefreshes counts directories passed to refreshDirs (issue #541
+	// nested listings).
+	namedDirRefreshes int
+	// recursiveRefreshes counts the refreshes that asked for a whole-tree
+	// listing, which the fill must never do on a timer (drive#568).
+	recursiveRefreshes int
 	// addPerRead is how many bytes the fake read puts in the cache.
 	addPerRead int64
+	// unreach is the error reachable returns. Nil means storage answers,
+	// which is the fill's usual case; a set error is a dropped link
+	// (issue #541).
+	unreach error
+	// refreshErr is the error refresh answers with, which is the probe's
+	// blind window: the store answered the probe and the refresh then
+	// failed, so the pass must name it instead of reporting success
+	// (issue #541).
+	refreshErr error
 }
 
 func (b *countedBackend) stats(context.Context) (vfsStats, error) {
@@ -254,8 +309,21 @@ func (b *countedBackend) stats(context.Context) (vfsStats, error) {
 	return s, nil
 }
 
-func (b *countedBackend) refresh(context.Context, bool) error {
+func (b *countedBackend) refresh(_ context.Context, recursive bool) error {
 	b.refreshes++
+	if recursive {
+		b.recursiveRefreshes++
+	}
+	return b.refreshErr
+}
+
+func (b *countedBackend) reachable(context.Context) error { return b.unreach }
+
+func (b *countedBackend) refreshDirs(_ context.Context, dirs []string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	b.namedDirRefreshes += len(dirs)
 	return nil
 }
 
@@ -272,27 +340,24 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := &countedBackend{used: capBytes, cap: capBytes, addPerRead: 500 << 20}
-		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
-			t.Error("the fill read a file although the cache was already at the cap")
-			return nil
-		})
+		res, err := fillPass(context.Background(), b, fillTargets{}, 0.1, 0.1)
 		if err != nil {
 			t.Fatalf("fillPass at the cap: %v", err)
 		}
 		if res.Ran() {
 			t.Errorf("the fill ran with the cache at the %s cap", FormatBytes(capBytes))
 		}
-		if b.refreshes != 0 {
-			t.Errorf("the fill refreshed the directory %d times with the cache at the cap", b.refreshes)
+		if b.refreshes != 1 {
+			t.Errorf("the fill refreshed the directory %d times at the cap, want 1 (issue #541 freshness)", b.refreshes)
+		}
+		if b.recursiveRefreshes != 0 {
+			t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
 		}
 	})
 
 	t.Run("a busy machine does not fill", func(t *testing.T) {
 		b := &countedBackend{used: 0, cap: 20 << 30, addPerRead: 1 << 30}
-		res, err := fillPass(context.Background(), b, false, 2.5, 2.0, func(string, bool) error {
-			t.Error("the fill read a file on a busy machine")
-			return nil
-		})
+		res, err := fillPass(context.Background(), b, fillTargets{recent: []string{"x.bin"}}, 2.5, 2.0)
 		if err != nil {
 			t.Fatalf("fillPass on a busy machine: %v", err)
 		}
@@ -302,18 +367,25 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		if b.used != 0 {
 			t.Errorf("the fill put %s in the cache on a busy machine", FormatBytes(b.used))
 		}
+		if b.refreshes != 1 {
+			t.Errorf("the busy machine still refreshes listings %d times, want 1 (issue #541 freshness)", b.refreshes)
+		}
 	})
 
 	t.Run("a pass that would leave the cache over the cap is a named failure", func(t *testing.T) {
 		capBytes, _ := parseSizeSuffix("20G")
-		// Just under the cap, with a read that would cross it: the loop
+		// Just under the cap, with a read larger than the headroom: the loop
 		// cannot stop rclone mid-read, so it must say so rather than report
 		// success with the cache over the user's cap.
 		b := &countedBackend{used: capBytes - (1 << 20), cap: capBytes, addPerRead: 4 << 30}
-		_, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
-			b.used += b.addPerRead
-			return nil
-		})
+		targets := fillTargets{
+			recent: []string{"big.bin"},
+			readFile: func(context.Context, string) (int64, error) {
+				b.used += b.addPerRead
+				return b.addPerRead, nil
+			},
+		}
+		_, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
 		if err == nil {
 			t.Fatal("a fill that left the cache over the cap returned no error")
 		}
@@ -325,10 +397,14 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 	t.Run("a fill under the cap succeeds and reports rclone's own numbers", func(t *testing.T) {
 		capBytes, _ := parseSizeSuffix("20G")
 		b := &countedBackend{used: 1 << 30, cap: capBytes, addPerRead: 500 << 20}
-		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
-			b.used += b.addPerRead
-			return nil
-		})
+		targets := fillTargets{
+			recent: []string{"x.bin"},
+			readFile: func(context.Context, string) (int64, error) {
+				b.used += b.addPerRead
+				return b.addPerRead, nil
+			},
+		}
+		res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
 		if err != nil {
 			t.Fatalf("fillPass under the cap: %v", err)
 		}
@@ -345,27 +421,30 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		if b.refreshes != 1 {
 			t.Errorf("the fill refreshed the directory %d times, want 1", b.refreshes)
 		}
+		if b.recursiveRefreshes != 0 {
+			t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
+		}
 	})
 
 	t.Run("a kept-offline set is still read when the cache is at the cap", func(t *testing.T) {
 		capBytes, _ := parseSizeSuffix("20G")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		b := &countedBackend{used: capBytes, cap: capBytes}
-		var idleArg *bool
-		res, err := fillPass(context.Background(), b, true, 3.5, 3.0, func(_ string, idle bool) error {
-			idleArg = &idle
-			return nil
-		})
+		res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 3.5, 3.0)
 		if err != nil {
 			t.Fatalf("fillPass at the cap with a kept-offline set: %v", err)
 		}
-		if idleArg == nil {
-			t.Fatal("the keep-warm read did not run with the cache at the cap")
-		}
-		if *idleArg {
-			t.Error("the keep-warm pass filled the rest of the drive at the cap")
-		}
 		if !res.Ran() {
-			t.Error("the keep-warm pass did not refresh the directory cache")
+			t.Error("the keep-warm pass did not run at the cap")
+		}
+		if b.refreshes != 1 {
+			t.Errorf("the keep-warm pass refreshed the directory %d times, want 1", b.refreshes)
+		}
+		if b.recursiveRefreshes != 0 {
+			t.Errorf("the keep-warm pass refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
 		}
 	})
 }
@@ -388,14 +467,621 @@ func TestFillTargetsWalksAKeptFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	targets := fillTargets{root: dir, offline: []string{"keep"}}
-	if err := targets.read("", false); err != nil {
+	if _, err := targets.read(context.Background(), false, 0); err != nil {
 		t.Fatalf("walking a kept-offline folder: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "keep", "new.txt"), []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.read("", false); err != nil {
+	if _, err := targets.read(context.Background(), false, 0); err != nil {
 		t.Fatalf("a new file inside a kept-offline folder failed the keep-warm: %v", err)
+	}
+}
+
+// The open registry is what makes the fill read only recently-opened files,
+// and its filled set is the guard that stops the fill's own read from looking
+// like a fresh open (drive#568).
+func TestRecentOpensTracksAndDropsOpens(t *testing.T) {
+	r := &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}, sizes: map[string]int64{}}
+	now := time.Now()
+	r.record("/m/a.bin")
+	r.record("/m/sub/b.bin")
+	r.record("/elsewhere/c.bin") // not under this mount
+	if got := strings.Join(r.since("/m", now.Add(time.Second), 24*time.Hour), ","); got != "a.bin,sub/b.bin" {
+		t.Errorf("since = %q, want %q", got, "a.bin,sub/b.bin")
+	}
+	// A file the fill just read is not a target again in the window: this is
+	// the guard against the fill re-arming its own read.
+	r.markFilled("/m/a.bin", 10)
+	if got := r.windowBytes(); got != 10 {
+		t.Errorf("windowBytes = %d after filling one file, want 10", got)
+	}
+	if got := strings.Join(r.since("/m", now.Add(time.Second), 24*time.Hour), ","); got != "sub/b.bin" {
+		t.Errorf("after markFilled, since = %q, want %q", got, "sub/b.bin")
+	}
+	// An open older than the window is dropped.
+	if got := r.since("/m", now.Add(48*time.Hour), 24*time.Hour); len(got) != 0 {
+		t.Errorf("a stale open was still a target: %v", got)
+	}
+	if got := r.windowBytes(); got != 0 {
+		t.Errorf("windowBytes = %d after the window aged out, want 0", got)
+	}
+}
+
+// A drive twice the cache size, idle for ten passes, must download the cache
+// size at most once. The fill reads the recently-opened set up to the cache
+// size in the window, marks each file filled, and every later pass sees either
+// no headroom, an already-filled set, or an exhausted window budget, so it
+// reads nothing, instead of the old whole-tree fill that re-read the drive from
+// the top each minute (drive#568). The fake cache evicts between passes the way
+// rclone's own poll does, so the test cannot pass merely because the cache is
+// still full.
+func TestFillDoesNotReDownloadADriveLargerThanTheCache(t *testing.T) {
+	capBytes, err := parseSizeSuffix("1G")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const fileSize = int64(64 << 20)
+	// 32 x 64 MiB is 2 GiB, twice the 1 GiB cap.
+	root := "/drive"
+	opens := &recentOpens{opened: map[string]time.Time{}, filled: map[string]time.Time{}, sizes: map[string]int64{}}
+	for i := 0; i < 32; i++ {
+		n := fmt.Sprintf("f%02d.bin", i)
+		opens.record(filepath.Join(root, n))
+	}
+	b := &countedBackend{used: 0, cap: capBytes}
+	cache := &fakeCache{cap: capBytes, fileSize: fileSize}
+	reads := 0
+	targets := fillTargets{
+		root:  root,
+		opens: opens,
+		readFile: func(_ context.Context, p string) (int64, error) {
+			reads++
+			n, err := cache.read(p)
+			b.used = cache.used
+			return n, err
+		},
+	}
+	for pass := 0; pass < 10; pass++ {
+		// rclone's own cache poll evicts over the cap between passes, which is
+		// what made the old whole-tree fill download the drive again.
+		cache.evictTo(capBytes / 2)
+		b.used = cache.used
+		targets.recent = opens.since(root, time.Now(), fillRecentAge)
+		if _, err := fillPass(context.Background(), b, targets, 0.1, 0.1); err != nil {
+			t.Fatalf("idle pass %d: %v", pass+1, err)
+		}
+	}
+	// A fill that ignored the window budget, the per-pass budget or the filled
+	// set would read the drive again on each pass and download far more than
+	// the cache once.
+	if cache.downloads != capBytes {
+		t.Errorf("ten idle passes downloaded %s of a %s drive, want exactly the %s cache once",
+			FormatBytes(cache.downloads), FormatBytes(2*capBytes), FormatBytes(capBytes))
+	}
+	if reads != 16 {
+		t.Errorf("ten idle passes read %d files, want exactly the %d files in one cache", reads, capBytes/fileSize)
+	}
+	if b.recursiveRefreshes != 0 {
+		t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
+	}
+}
+
+// fakeCache models rclone's own VFS cache for the budget test: it holds at
+// most cap bytes, evicts the least-recently-used file when a read needs room,
+// and counts a download only for a file that is not already cached. The
+// eviction matters: without it a re-read of a cached file downloads nothing,
+// and the old whole-tree fill only downloaded continuously because rclone
+// evicted between passes (drive#568).
+type fakeCache struct {
+	cap       int64
+	fileSize  int64
+	used      int64
+	order     []string
+	cached    map[string]bool
+	downloads int64
+}
+
+func (c *fakeCache) read(p string) (int64, error) {
+	if c.cached == nil {
+		c.cached = map[string]bool{}
+	}
+	if !c.cached[p] {
+		c.downloads += c.fileSize
+	}
+	for c.used+c.fileSize > c.cap && len(c.order) > 0 {
+		c.evictOldest()
+	}
+	if !c.cached[p] {
+		c.cached[p] = true
+		c.used += c.fileSize
+	}
+	c.touch(p)
+	return c.fileSize, nil
+}
+
+// evictTo drops least-recently-used files until used is at most want, the way
+// rclone's own cache poll reclaims space between fill passes.
+func (c *fakeCache) evictTo(want int64) {
+	for c.used > want && len(c.order) > 0 {
+		c.evictOldest()
+	}
+}
+
+func (c *fakeCache) evictOldest() {
+	victim := c.order[0]
+	c.order = c.order[1:]
+	if c.cached[victim] {
+		delete(c.cached, victim)
+		c.used -= c.fileSize
+	}
+}
+
+func (c *fakeCache) touch(p string) {
+	for i, q := range c.order {
+		if q == p {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.order = append(c.order, p)
+}
+
+// A pass with nothing kept offline and nothing opened in the window still
+// refreshes the root listing once, non-recursively, so the other machine's
+// save appears (issue #541). A whole-tree refresh on a timer is the bug
+// (drive#568) and must stay at zero.
+func TestFillRefreshesRootWhenNothingOpened(t *testing.T) {
+	b := &countedBackend{used: 1 << 30, cap: 20 << 30}
+	res, err := fillPass(context.Background(), b, fillTargets{}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with nothing opened: %v", err)
+	}
+	if res.Ran() {
+		t.Error("the fill ran with nothing opened and nothing kept offline")
+	}
+	if b.refreshes != 1 {
+		t.Errorf("the fill refreshed the directory cache %d times with nothing to fill, want 1 (issue #541 freshness)", b.refreshes)
+	}
+	if b.recursiveRefreshes != 0 {
+		t.Errorf("the fill refreshed the directory recursively %d times, want none", b.recursiveRefreshes)
+	}
+}
+
+// A dropped link must not vfs/refresh: rclone forces the directory cache
+// stale before it re-lists, so a failed refresh would make every later
+// open fail (issue #541). The keep-warm of a kept-offline file still runs.
+func TestFillSkipsRefreshWhenStorageIsDownAndStillKeepWarms(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, unreach: errors.New("storage is down")}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage down: %v", err)
+	}
+	if !res.Ran() {
+		t.Error("the keep-warm pass did not run while storage was down")
+	}
+	if b.refreshes != 0 {
+		t.Errorf("the fill refreshed the directory %d times with storage down, want none", b.refreshes)
+	}
+}
+
+// A dropped link must not read recently-opened files either: the probe that
+// gated the refresh is a list on the same remote the read goes through, so a
+// file that is not already in the cache cannot be fetched, and trying turns
+// one dropped link into one I/O error per recently-opened file on every pass.
+// The kept-offline set is the opposite and still warms (#115).
+func TestFillSkipsRecentOpensWhenStorageIsDown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, unreach: errors.New("storage is down")}
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"opened.txt"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			reads = append(reads, p)
+			return int64(len(p)), nil
+		},
+	}
+	res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage down: %v", err)
+	}
+	if !res.Ran() {
+		t.Error("the keep-warm pass did not run while storage was down")
+	}
+	if len(reads) != 0 {
+		t.Errorf("the fill read %v with storage down, want no recently-opened file", reads)
+	}
+}
+
+// A recently-opened file is read through the same injected readFile, so the
+// assertion above is not vacuous: with storage back up the same targets fill
+// the opened file. This is the half of the rule that must not become "never
+// fill recent opens".
+func TestFillFillsRecentOpensWhenStorageAnswers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "opened.txt"), []byte("opened"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30}
+	targets := fillTargets{
+		root:   dir,
+		recent: []string{"opened.txt"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			reads = append(reads, p)
+			return 1, nil
+		},
+	}
+	res, err := fillPass(context.Background(), b, targets, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass with storage up: %v", err)
+	}
+	if !res.Ran() || !res.Idle {
+		t.Errorf("an idle fill with storage up did not run: %+v", res)
+	}
+	if len(reads) != 1 || reads[0] != filepath.Join(dir, "opened.txt") {
+		t.Errorf("the fill read %v with storage up, want the opened file", reads)
+	}
+}
+
+func TestFillRefreshesAKeptOfflineFolder(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "photos")
+	if err := os.Mkdir(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keep, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"photos"}}, 0.1, 0.1)
+	if err != nil {
+		t.Fatalf("fillPass for a kept folder: %v", err)
+	}
+	if !res.Ran() {
+		t.Fatal("the keep-warm pass did not run")
+	}
+	if b.namedDirRefreshes != 1 {
+		t.Errorf("named directory refreshes = %d, want 1 (the kept folder)", b.namedDirRefreshes)
+	}
+}
+
+func TestVfsRefreshReplyError(t *testing.T) {
+	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"": "OK"}}, false); err != nil {
+		t.Errorf("OK: %v", err)
+	}
+	err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"": "connection refused"}}, false)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("root listing failure: %v", err)
+	}
+	if err := vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "directory not found"}}, true); err != nil {
+		t.Errorf("skipFailed must ignore a named-dir not-found: %v", err)
+	}
+	// Anything else in a named dir is real: a swallowed listing error would
+	// leave the machine reading a listing older than it thinks (issue #541).
+	err = vfsRefreshReplyError(map[string]any{"result": map[string]any{"photos": "connection refused"}}, true)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("skipFailed must not swallow a real named-dir failure: %v", err)
+	}
+	// A reply with no result is not success: a caller that reads its
+	// absence as an OK hides a changed remote-control shape behind a
+	// listing that now stays stale for --dir-cache-time (24h) (issue #541).
+	err = vfsRefreshReplyError(map[string]any{"result": nil}, false)
+	if err == nil {
+		t.Error("a null result must be a named failure, not a silent OK")
+	}
+	if err := vfsRefreshReplyError(map[string]any{}, false); err == nil {
+		t.Error("an empty reply must be a named failure, not a silent OK")
+	}
+}
+
+// TestFillRefreshFailureIsNamed proves the window the keep-warm probe cannot
+// close: the store answers the probe and then the refresh fails (the link
+// drops, or the rc call outruns the pass budget). The fill must say so as a
+// named error rather than report a refreshed cache, and it must leave the
+// named folders alone, because a half-refreshed listing is what the caller
+// would read as fresh (issue #541; upstream rclone#1963 means the cache
+// rclone already forced stale cannot be un-staled, so the next pass's probe
+// and refresh is the recovery, not a retry inside this one).
+func TestFillRefreshFailureIsNamed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &countedBackend{used: 1 << 20, cap: 20 << 30, refreshErr: errors.New("connection reset by peer")}
+	res, err := fillPass(context.Background(), b, fillTargets{root: dir, offline: []string{"keep.bin"}}, 0.1, 0.1)
+	if err == nil || !strings.Contains(err.Error(), "refresh directory cache") {
+		t.Fatalf("fillPass with a failing refresh: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Errorf("the error does not carry the backend's own message: %v", err)
+	}
+	if b.namedDirRefreshes != 0 {
+		t.Errorf("the fill refreshed %d named folders after the root refresh failed, want none: a half-refreshed listing is what the caller would read as fresh", b.namedDirRefreshes)
+	}
+	if res.Refreshed {
+		t.Error("the fill reported a refreshed directory cache from a refresh that failed")
+	}
+}
+
+// ---- one read stops at the pass deadline (drive issue #742) ----
+
+// A read in the fill loop stops at the next chunk boundary after the deadline.
+// The slow read is an OS pipe fed a piece at a time: without the deadline the
+// fill read consumes the whole pipe, which is what one large file did to a fill
+// pass (cmd/drive/fill_run.go checked the context only between files, so the
+// read of a file that outgrew the pass ran until the file ended).
+//
+// The bound is measured, not asserted by inspection: the deadline is cancelled
+// while the read is still going, and the bytes read after it may not exceed one
+// fillReadChunk, because the loop checks the context between two chunks.
+func TestFillReadStopsWithinOneChunkOfTheDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close(); w.Close() })
+
+	// The writer feeds the pipe one piece per tick for far longer than the
+	// deadline, so a read that ignored the context would still be reading
+	// chunks when this test's assertions run.
+	const ticks = 30
+	const piece = fillReadChunk / 2
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	var written atomic.Int64
+	go func() {
+		buf := bytes.Repeat([]byte("x"), piece)
+		for i := 0; i < ticks; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n, err := w.Write(buf)
+			written.Add(int64(n))
+			if err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	type outcome struct {
+		n   int64
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		n, err := readCtxChunked(ctx, r)
+		done <- outcome{n, err}
+	}()
+	// The deadline lands part way through the pipe: some chunks have been read
+	// and there are more to come. Take the writer's total after the cancel so it
+	// is an upper bound on what the read could have consumed before the deadline
+	// (the writer may add one more piece), and the assertion does not race the
+	// cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	atDeadline := written.Load()
+	if atDeadline == 0 {
+		t.Fatal("the writer fed the pipe nothing before the deadline, so the test cannot prove a stop")
+	}
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read was still running 5s after the deadline, so it did not stop at the pass deadline")
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("the read returned %v after the deadline, want %v", got.err, context.Canceled)
+	}
+	if extra := got.n - atDeadline; extra > fillReadChunk {
+		t.Errorf("the read continued for %d bytes after the deadline, want at most one %d-byte chunk "+
+			"(read %d bytes, %d had been written when the deadline landed)",
+			extra, fillReadChunk, got.n, atDeadline)
+	}
+}
+
+// The fill read honours the deadline at its entry as well as mid-read, and a
+// read whose deadline has not passed still reads the whole file: chunking the
+// read must not change what fills the cache.
+func TestFillReadFileStopsAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	const size = 3 * fillReadChunk
+	path := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A live deadline reads the whole file: the chunk boundary is the chunked
+	// read's own, not the file's.
+	n, err := fillReadFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("read a %d-byte file with the deadline unexpired: %v", size, err)
+	}
+	if n != size {
+		t.Errorf("read %d bytes of a %d-byte file, want all of it", n, size)
+	}
+	// A pass whose deadline has already passed reads nothing, rather than
+	// starting another file it must then abandon.
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	deadBytes, err := fillReadFile(dead, path)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("read with the deadline already passed returned %v, want %v", err, context.Canceled)
+	}
+	if deadBytes != 0 {
+		t.Errorf("read %d bytes with the deadline already passed, want 0", deadBytes)
+	}
+}
+
+// drive#742 at the fill pass itself: a read that hits the deadline reports the
+// context error, and the pass stops instead of reading the rest of the
+// recently-opened set. The stand-in read is the large file: the deadline lands
+// inside it, and the pass aborts on that error, so the bytes the failed read
+// got through are not part of the pass's result.
+func TestFillTargetsReadStopsWhenAReadHitsTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const gotThrough = 1 << 20
+	var read []string
+	targets := fillTargets{
+		root:   dir,
+		recent: []string{"a.bin", "b.bin", "c.bin"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			if len(read) > 1 {
+				return 10, nil
+			}
+			// The deadline lands inside this read: the chunked read returns the
+			// context error together with the bytes it read before the deadline.
+			cancel()
+			return gotThrough, context.Canceled
+		},
+	}
+	spent, err := targets.read(ctx, true, 1<<30)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("the read returned %v after the deadline, want %v", err, context.Canceled)
+	}
+	if len(read) != 1 || read[0] != "a.bin" {
+		t.Errorf("the pass read %v after the deadline, want only a.bin", read)
+	}
+	if spent != 0 {
+		t.Errorf("the pass reported %d bytes read, want 0: the pass aborts on the read "+
+			"error, so the failed read's bytes are not part of its result", spent)
+	}
+}
+
+// drive#742: the deadline lands while a large file is being read. The reader
+// stands in for a slow mounted file: it never ends, and the context is
+// cancelled during its third chunk. The read must return the context error
+// within one more chunk, not read on to the end.
+func TestReadCtxChunkedStopsWhenCancelledDuringARead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelAfterReader{cancelOn: 3, cancel: cancel}
+	done := make(chan struct{})
+	var n int64
+	var err error
+	go func() {
+		defer close(done)
+		n, err = readCtxChunked(ctx, r)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read kept going after the context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("read returned %v after cancel, want %v", err, context.Canceled)
+	}
+	if r.reads > r.cancelOn+1 {
+		t.Errorf("read %d chunks, cancelled during chunk %d: it must stop within one chunk", r.reads, r.cancelOn)
+	}
+	if want := int64(r.reads) * fillReadChunk; n != want {
+		t.Errorf("reported %d bytes, want %d (the chunks it read)", n, want)
+	}
+}
+
+// cancelAfterReader serves full chunks forever and cancels its context during
+// the cancelOn-th Read, as a deadline firing mid-file would.
+type cancelAfterReader struct {
+	cancelOn, reads int
+	cancel          context.CancelFunc
+}
+
+func (r *cancelAfterReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == r.cancelOn {
+		r.cancel()
+	}
+	time.Sleep(time.Millisecond)
+	return len(p), nil
+}
+
+// The fill's read chunk is the mount's shipped first chunk, --vfs-read-ahead
+// (vfsReadAheadValue): the fill stops on the requests rclone already serves at
+// the default tuning. The chunk is a compile-time constant, so a run that
+// retunes --vfs-read-ahead (VFS_READ_AHEAD) cannot widen the fill's own
+// deadline bound; this pins the shipped pair so a change to one is a change to
+// both (drive#742).
+func TestFillReadChunkMatchesTheMountReadAhead(t *testing.T) {
+	want, err := parseSizeSuffix(vfsReadAheadValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fillReadChunk != want {
+		t.Errorf("fillReadChunk is %d bytes, want the shipped --vfs-read-ahead, %s = %d; "+
+			"tune them together or the fill's deadline bound stops matching the mount's default read", fillReadChunk, vfsReadAheadValue, want)
+	}
+}
+
+// A cancelled pass stops before it reads the next file: the last thing the pass
+// checks before each file is the deadline, and a pass that is already cancelled
+// reads nothing at all. drive#742 keeps this between-files check while also
+// bounding a single file's read, so the two are separate tests.
+func TestFillTargetsHonoursCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reads := 0
+	targets := fillTargets{
+		offline: []string{"keep.bin"},
+		recent:  []string{"a.bin"},
+		readFile: func(context.Context, string) (int64, error) {
+			reads++
+			return 1, nil
+		},
+	}
+	if _, err := targets.read(ctx, true, 1<<20); err == nil {
+		t.Fatal("a cancelled fill read returned no error")
+	}
+	if reads != 0 {
+		t.Errorf("a cancelled fill still read %d files", reads)
+	}
+}
+
+// A file that is not kept offline and was not opened is not a target, so a
+// keep-warm pass reads nothing for it (drive#568).
+func TestFillTargetsSkipsUnpinnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.bin"), []byte("pin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var read []string
+	targets := fillTargets{
+		root:    dir,
+		offline: []string{"keep.bin"},
+		recent:  []string{"other.bin"},
+		readFile: func(_ context.Context, p string) (int64, error) {
+			read = append(read, filepath.Base(p))
+			return 4, nil
+		},
+	}
+	if _, err := targets.read(context.Background(), false, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 0 {
+		t.Errorf("an unpinned file was filled: %v", read)
 	}
 }
 

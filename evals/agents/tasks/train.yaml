@@ -40,15 +40,15 @@
     - type: javascript
       value: "/never a flag|--secret-key.{0,12}is refused|shell history|\\bps\\b/i.test(output)"
 
-- description: install the command with no install script yet
+- description: install the command from a tagged release
   vars:
     task: >
-      There is no release download and no install script. What is the one way
-      to get the drive command on my machine today?
+      How do I install the drive command on macOS or Linux from a tagged
+      release? Give the exact one-line command for my system.
     source: docs-site/quickstart.md, "1. Install the command"
   assert:
     - type: javascript
-      value: "/go install github.com\\/Nishfleet\\/drive\\/cmd\\/drive/.test(output)"
+      value: "/brew install nish3451\\/tap\\/drive/.test(output) || /apt install \\.\\/drive_\\*\\.deb/.test(output) || /dnf install \\.\\/drive_\\*\\.rpm/.test(output)"
 
 - description: connect the agent tools that are already installed
   vars:
@@ -71,17 +71,17 @@
     - type: javascript
       value: "/drive status/.test(output)"
 
-- description: what an agent tool's key can do, and the one thing it cannot
+- description: what an agent tool's key can do, and how long its delete can be undone
   vars:
     task: >
-      I am about to connect an agent to my drive. What can its key do, and what
-      can it never do? I want the rule, not the reassurance.
+      I am about to connect an agent to my drive. What can its key do, and if
+      it deletes a file, can I get it back? I want the rule, not the reassurance.
     source: docs-site/agents.md, "What an agent key can do"
   assert:
     - type: javascript
       value: "/delet/i.test(output) && /(create, change|can write|write)/i.test(output)"
     - type: javascript
-      value: "/cannot delete|cannot remove|can never (carry )?delete|never delete/i.test(output)"
+      value: "/(1|one) day/i.test(output) && /recently deleted|put it back|undo/i.test(output)"
 
 - description: take one agent tool off the drive and leave the others
   vars:
@@ -113,14 +113,38 @@
     - type: javascript
       value: "/read-only/i.test(output) && /nothing is deleted/.test(output)"
 
+- description: resume writing after the cap is raised
+  vars:
+    task: >
+      My drive went read-only at my spending cap. I raised the cap. Does it
+      start writing again, and what happens to the uploads that were waiting?
+    source: docs-site/security.md, "The spending cap"
+  assert:
+    - type: javascript
+      value: "/raise the cap and the drive starts writing again/i.test(output)"
+    - type: javascript
+      value: "/uploads that waited in the cache go up/i.test(output)"
+
 - description: the default spending cap
   vars:
     task: >
       What is the default spending cap on a new drive, in dollars?
     source: docs-site/security.md, "The spending cap" (the rendered page carries {{DEFAULT_CAP}})
   assert:
+    # drive#526: the figure is read from the page the agent was handed, which
+    # the docs render fills from src/cap-default.js, so a re-price moves the
+    # grader with the page. A literal here failed 2026-10-05: it still expected
+    # the retired $12 an agent key's cap default used to be (drive#534).
     - type: javascript
-      value: "/(12|twelve) dollars|\\$12/i.test(output)"
+      value: |
+        const page = String(context.vars.docs_security || "");
+        const cap = /The default cap is \$(\d+(?:\.\d+)?)\./.exec(page);
+        if (cap === null) return false;
+        // The figure, in either form the page's own sentence allows: "$20"
+        // or "20 dollars".
+        const fig = cap[1].replace(/\./g, "\\.");
+        const named = new RegExp(`\\$${fig}\\b|\\b${fig} dollars\\b`);
+        return named.test(output);
 
 - description: how the bill is counted for a file I keep for a week
   vars:
@@ -163,17 +187,42 @@
       would the ceiling have been?
     source: docs-site/pricing.md, "The bill worked out"
   assert:
+    # drive#526: the bill is read from the worked table on the page the agent
+    # was handed, which src/docs.js builds from the one bill function, so the
+    # grader cannot name a figure the invoice would not. A literal here named
+    # the retired $12 for 800 GB, which bills $10.
     - type: javascript
-      value: "/(11|eleven) dollars|\\$11/i.test(output)"
+      value: |
+        const page = String(context.vars.docs_pricing || "");
+        const row = page.split("\n").find((line) => /^\| 0\.8 TB \|/.test(line));
+        if (row === undefined) return false;
+        const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
+        if (cells.length < 4) return false;
+        const figure = cells[3].replace(/[$,]/g, "").replace(/\.00$/, "");
+        if (!/^\d+(\.\d+)?$/.test(figure)) return false;
+        const bill = figure.replace(/\./g, "\\.");
+        // The figure, in either form the page's own row allows: "$10" or
+        // "10 dollars".
+        return new RegExp(`\\$${bill}\\b|\\b${bill} dollars\\b`).test(output);
 
-- description: what is free every month, and what it needs from me
+- description: is there a free tier, and what sign-up needs from me
   vars:
     task: >
-      What comes free every month, and do I need a card to get it?
-    source: docs-site/pricing.md, "The free $1"
+      Is anything free every month, and do I need a card to sign up?
+    source: docs-site/pricing.md, "Founding members" (no free tier, card); docs-site/pricing.md, "The maximum" (the per-TB ceiling)
   assert:
+    # drive#526: the ceiling is read from the page the agent was handed, which
+    # the docs render fills from src/pricing.js, rather than typed here. The
+    # task pointed at a "The membership" section that no longer exists.
     - type: javascript
-      value: "/1 dollar|\\$1/i.test(output) && /no card|without a card/i.test(output)"
+      value: "/no free tier/i.test(output) && /card/i.test(output)"
+    - type: javascript
+      value: |
+        const page = String(context.vars.docs_pricing || "");
+        const ceiling = /Never more than \$(\d+(?:\.\d+)?) per TB/.exec(page);
+        if (ceiling === null) return false;
+        const fig = ceiling[1].replace(/\./g, "\\.");
+        return new RegExp(`\\$${fig}\\b|\\b${fig} dollars\\b`).test(output);
 
 - description: when downloads start costing money
   vars:
@@ -254,9 +303,16 @@
       What shipped most recently, according to the docs? Give the date and the
       one line.
     source: docs-site/changelog.md, latest dated entry
+  # drive#324: the date is not written here. A literal goes stale the day the
+  # changelog gains a newer heading (2026-10-02 failed 6/6 when 2026-10-03
+  # shipped), so the grader reads the changelog the agent was handed and
+  # asserts the answer names its newest dated heading.
   assert:
     - type: javascript
-      value: "/2026-10-02|2026-10-0?1/.test(output)"
+      value: |
+        const changelog = String(context.vars.docs_changelog || "");
+        const newest = /^## (\d{4}-\d{2}-\d{2})/m.exec(changelog);
+        return newest !== null && output.includes(newest[1]);
 
 - description: what a branch is for, and what it gives an agent
   vars:
@@ -276,7 +332,7 @@
     source: docs/build-spec.md, "Keys and safety"
   assert:
     - type: javascript
-      value: "/cannot delete|cannot remove/i.test(output) && /branch/i.test(output)"
+      value: "/whole drive/i.test(output) && /branch/i.test(output)"
 
 - description: mount and save a file
   metadata:
@@ -396,6 +452,25 @@
       value: "/rclone|copy|cache|not pin|no pin|does not pin|not in version 1/i.test(output)"
     - type: javascript
       value: "!/drive pin \\S+/.test(output)"
+
+- description: how to rotate storage keys
+  metadata:
+    hard: true
+  vars:
+    task: >
+      My storage key pair needs to be rotated. How do I rotate the access
+      key and secret key for the drive?
+    why_hard: >
+      Version 1 hands you the invite's key pair and never has a procedure for
+      changing it, so a model's instinct is to offer a command, and every
+      command it offers is invented. Being helpful the wrong way round is the
+      failure here: the reading stack has no procedure for changing a key.
+    source: docs-site/quickstart.md, "2. Point it at your storage"; docs-site/faq.md
+  assert:
+    - type: javascript
+      value: "/(nothing you are given expires|no rotation|not in the docs|docs do not say|does not say|do not say|not say|not in version 1)/i.test(output)"
+    - type: javascript
+      value: "!/drive rotate-keys|rotate key|--rotate/i.test(output)"
 
 - description: put a 10 GB branch in the sky without copying 10 GB twice
   metadata:

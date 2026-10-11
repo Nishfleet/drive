@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — notes starter</title>
+  <title>Storagebun — notes starter</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="An optional notes starter for your drive: a vault your notes app opens, a daily note, and one note your agent reads. Off by default, and never required.">
   <!-- drive issue #15: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
@@ -16,51 +17,52 @@
        hash could verify. That is why the nosemgrep rule id is on the tag: this
        html.security rule only honors a same-line suppression, and the finding is
        a false positive. -->
-  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/starter.html"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <link rel="canonical" href="https://storagebun.com/starter.html"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/starter.html">
-  <meta property="og:site_name" content="Drive">
-  <meta property="og:title" content="Drive — 2¢ per GB, never more than $12 a TB">
-  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
-  <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <meta property="og:url" content="https://storagebun.com/starter.html">
+  <meta property="og:site_name" content="Storagebun">
+  <meta property="og:title" content="Storagebun — 2¢ per GB, never more than $15 per TB">
+  <meta property="og:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.">
+  <meta property="og:image" content="https://storagebun.com/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Drive — 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:image:alt" content="Storagebun — Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $12 a TB">
-  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
-  <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <meta name="twitter:title" content="Storagebun — 2¢ per GB, never more than $15 per TB">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.">
+  <meta name="twitter:image" content="https://storagebun.com/og.png">
   <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "Drive",
+  "name": "Storagebun",
   "applicationCategory": "BusinessApplication",
   "operatingSystem": "macOS, Linux",
-  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.",
-  "url": "https://drive-pricing.nishant345.workers.dev/",
-  "image": "https://drive-pricing.nishant345.workers.dev/og.png",
+  "description": "A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.",
+  "url": "https://storagebun.com/",
+  "image": "https://storagebun.com/og.png",
   "offers": {
     "@type": "Offer",
-    "price": "12.00",
+    "price": "15.00",
     "priceCurrency": "USD",
     "priceSpecification": {
       "@type": "UnitPriceSpecification",
-      "price": "12.00",
+      "price": "15.00",
       "priceCurrency": "USD",
       "unitText": "TB-month"
     },
-    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. The bill is the metered cost capped at max($12, $8 × TB stored) less the $1 free every month, never below zero: a flat $12 up to 1.5 TB, then $8 for each TB after."
+    "description": "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB. You pay for the biggest size your drive reached in the last 30 days. 2 cents per GB a month, never more than $15 per TB."
   }
 }
   </script>
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
 /* Notes starter: the palette, the reset and the chrome the other pages use are
    in the shared site stylesheet (public/site.css, drive #71); what is left here
    is this page's own layout, with no custom property declared because every
-   token it needs belongs to the shared file. System font stacks only: no web
-   font files, so nothing blocks first paint. */
+   token it needs belongs to the shared file. class="drive" on <html> aliases
+   those tokens onto the home-page look (drive#458). */
 
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
@@ -74,11 +76,6 @@ body {
   max-width: 940px;
 }
 
-.masthead a[aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
-}
-
 .wordmark {
   font-size: 28px;
 }
@@ -90,10 +87,11 @@ main {
 h1 {
   margin: 0;
   font-family: var(--serif);
-  font-size: clamp(34px, 5.4vw, 52px);
-  font-weight: 600;
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 900;
   letter-spacing: -0.02em;
-  line-height: 1.05;
+  line-height: 0.9;
+  text-transform: uppercase;
 }
 
 .lede {
@@ -109,7 +107,7 @@ h2 {
   margin: 0 0 12px;
   font-family: var(--serif);
   font-size: 26px;
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: -0.01em;
 }
 
@@ -251,7 +249,7 @@ button:disabled {
 <body>
   <a class="skip-link" href="#starter-heading">Skip to the starter</a>
   <header class="masthead">
-    <span class="wordmark">Drive</span>
+    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/">Pricing</a>
     <a href="/starter.html" aria-current="page">Notes starter</a>
@@ -259,6 +257,17 @@ button:disabled {
     <a href="/signin">Sign in</a>
   </header>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </div>
   <main>
     <section aria-labelledby="starter-heading">
       <h1 id="starter-heading">Notes starter</h1>
@@ -305,7 +314,8 @@ button:disabled {
         reads and writes the files you do; an agent cannot permanently delete a
         file, and one tap puts back anything it removes.
       </p>
-      <p class="free">No card asked. $1 free every month, no card needed</p>
+      <p class="free">No plans. Your balance never expires.</p>
+      <p class="free">We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
     </section>
 
     <section aria-labelledby="create-heading">
@@ -331,7 +341,16 @@ button:disabled {
   </main>
 
   <footer class="footer">
-    <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>Pay from your balance for the biggest size your drive reached in the last 30 days. <a href="/">See the price</a>.</p>
   </footer>
 
   <script>
@@ -451,5 +470,10 @@ button.addEventListener("click", async () => {
   }
 });
   </script>
+  <!-- The one shared pending-close banner script (drive issue #424).
+       The static signed-in pages load this file as a module; get-started
+       imports the same file into its one bundle so it stays inside the
+       Lighthouse script-count budget. -->
+  <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

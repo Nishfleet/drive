@@ -23,7 +23,10 @@ package main
 // decision): the same benchmarks run against the loopback stand-in and against
 // the real account. A figure measured against the stand-in is a harness proof,
 // never a published number, so every line this file prints names which of the
-// two it came from.
+// two it came from. One guard is looser on HTTPS: BenchmarkReadDuringPrefetch
+// asserts 20 ms and 2x on a loopback (or any non-HTTPS) server, and 10x the
+// control on HTTPS real storage (issue #382), because a real link is shared
+// between the user's read and the prefetch pass and a loopback server is not.
 
 import (
 	"bytes"
@@ -90,6 +93,40 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
+// extraMountEnv is the environment for a second `drive mount` next to the
+// shared harness. The first mount already binds the shipped remote-control
+// address (127.0.0.1:5572), so a second mount with that same address dies
+// before it is up ("address already in use") and the bench skips as if FUSE
+// were missing. A free loopback port is the product's own DRIVE_RC_ADDR
+// override.
+func extraMountEnv(tb testing.TB, cfg StorageConfig) []string {
+	return append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
+		"DRIVE_RC_ADDR=127.0.0.1:"+freePort(tb),
+	)
+}
+
+func TestExtraMountEnvUsesAFreeRCPort(t *testing.T) {
+	env := extraMountEnv(t, testStorage())
+	addr := ""
+	for _, item := range env {
+		if strings.HasPrefix(item, "DRIVE_RC_ADDR=") {
+			addr = strings.TrimPrefix(item, "DRIVE_RC_ADDR=")
+		}
+	}
+	if addr == "" {
+		t.Fatal("extra mount env must set DRIVE_RC_ADDR")
+	}
+	if addr == loopbackRCAddr {
+		t.Fatalf("extra mount RC %q must not reuse the shipped address %s", addr, loopbackRCAddr)
+	}
+	if !IsLoopbackAddr(addr) {
+		t.Fatalf("extra mount RC %q must be loopback", addr)
+	}
+}
+
 // benchStandin is a loopback S3 server plus the drive mount on it: the setup
 // every benchmark in this file shares, brought up once for the whole -bench
 // run and torn down by TestMain.
@@ -130,7 +167,7 @@ func benchSetup(tb testing.TB) *benchStandin {
 		benchH = benchStart(tb)
 	})
 	if benchH == nil {
-		tb.Skip("this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
+		skipNoMount(tb, "this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
 	}
 	return benchH
 }
@@ -155,14 +192,9 @@ func benchStart(tb testing.TB) *benchStandin {
 	if !h.real {
 		port := freePort(tb)
 		h.cfg.Endpoint = "http://127.0.0.1:" + port
-		h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+		h.serve = startRcloneServe(tb, filepath.Join(root, "data"), port,
 			"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
-			"--addr", "127.0.0.1:"+port, "--log-level", "INFO")
-		h.serve.Stdout, h.serve.Stderr = os.Stdout, os.Stderr
-		if err := h.serve.Start(); err != nil {
-			tb.Fatal(err)
-		}
-		waitForPort(tb, port)
+			"--log-level", "INFO")
 	}
 	// The config is written after the stand-in port is known, so direct rclone
 	// calls (seed, objectSize, --bwlimit) hit the same endpoint as the mount.
@@ -170,7 +202,7 @@ func benchStart(tb testing.TB) *benchStandin {
 		h.close()
 		tb.Fatal(err)
 	}
-	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 
 	h.mount = exec.Command(driveBin(tb), "mount",
 		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,
@@ -288,13 +320,20 @@ func (h *benchStandin) waitStored(name string, want int64, timeout time.Duration
 	return false
 }
 
+// storageName is the word the printed lines use for the storage they
+// measured: the loopback stand-in or real storage. Every line this file
+// prints carries one of the two.
+func (h *benchStandin) storageName() string {
+	if h.real {
+		return "real"
+	}
+	return "stand-in"
+}
+
 // report prints one publishable line per figure: the scenario, which storage it
 // came from, the region, the measured link speed, the commit and the value.
 func (h *benchStandin) report(b *testing.B, scenario, metric string, d time.Duration, bytes int64) {
-	storage := "stand-in"
-	if h.real {
-		storage = "real"
-	}
+	storage := h.storageName()
 	b.Logf("bench scenario=%s storage=%s region=%s link_mbps=%s commit=%s metric=%s value=%.3f unit=s bytes=%d",
 		scenario, storage, envOr("DRIVE_BENCH_REGION", "unmeasured"),
 		envOr("DRIVE_BENCH_LINK_MBPS", "unmeasured"), benchCommit(),
@@ -310,7 +349,7 @@ func benchCommit() string {
 }
 
 // BenchmarkVideoStartFirstByte times the first byte and the first 100 MB of the
-// 5 GB video through the mount, the same scenario Space publishes for 64 MiB
+// 5 GB video through the mount, the same scenario the competitor publishes for 64 MiB
 // and 256 MiB streams.
 func BenchmarkVideoStartFirstByte(b *testing.B) {
 	h := benchSetup(b)
@@ -386,10 +425,9 @@ func BenchmarkSaveReachesStorage(b *testing.B) {
 }
 
 // BenchmarkSmallEdit appends 4 KiB to a 64 MiB file and to a 2 GB file and
-// times each until the new size is in storage. Space publishes the 64 MiB case.
+// times each until the new size is in storage. The competitor publishes the 64 MiB case.
 func BenchmarkSmallEdit(b *testing.B) {
 	h := benchSetup(b)
-	const edit = "bench-edit.txt"
 	const size = 4096
 	for _, c := range []struct {
 		scenario, name string
@@ -444,7 +482,7 @@ func BenchmarkListFolder(b *testing.B) {
 }
 
 // BenchmarkSmallFiles times a 4 KiB put, a 1 MiB put and a 1 MiB get, the
-// three figures Space publishes for files under 1 MiB.
+// three figures the competitor publishes for files under 1 MiB.
 func BenchmarkSmallFiles(b *testing.B) {
 	h := benchSetup(b)
 	for _, c := range []struct {
@@ -547,7 +585,7 @@ func BenchmarkVideoStartBandwidth(b *testing.B) {
 }
 
 // BenchmarkInstallToMounted times the path a new user walks: install the
-// binary, mount the drive, and read the first file. Space publishes about five
+// binary, mount the drive, and read the first file. The competitor publishes about five
 // minutes for its six-step quickstart.
 func BenchmarkInstallToMounted(b *testing.B) {
 	h := benchSetup(b)
@@ -573,11 +611,7 @@ func BenchmarkInstallToMounted(b *testing.B) {
 	}
 	mount := exec.Command(bin, "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatalf("mount with the installed binary: %v", err)
@@ -596,7 +630,7 @@ func BenchmarkInstallToMounted(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit an unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit an unprivileged FUSE mount")
 	}
 	f, err := os.Open(filepath.Join(mountDir, "bench-install.bin"))
 	if err != nil {
@@ -626,11 +660,7 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 	}
 	mount := exec.Command(driveBin(b), "mount", "--home", homeB, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatalf("mount the second device: %v", err)
@@ -649,7 +679,7 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountB).Run()
 	}()
 	if !waitForMount(b, mount, mountB) {
-		b.Skip("this host does not permit a second unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit a second unprivileged FUSE mount")
 	}
 
 	const name = "bench-sync.txt"
@@ -708,8 +738,8 @@ func BenchmarkFileOpen(b *testing.B) {
 	h.report(b, "file-open", "open", time.Since(start), 4096)
 }
 
-// BenchmarkBigFolderRename times renaming a folder through the mount. Space
-// publishes a 200-file move; quick scale uses the harness's listN.
+// BenchmarkBigFolderRename times renaming a folder through the mount. The
+// competitor publishes a 200-file move; quick scale uses the harness's listN.
 func BenchmarkBigFolderRename(b *testing.B) {
 	h := benchSetup(b)
 	const src = "bench-rename-src"
@@ -742,11 +772,7 @@ func BenchmarkMountReady(b *testing.B) {
 	start := time.Now()
 	mount := exec.Command(driveBin(b), "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatalf("start the mount: %v", err)
@@ -765,7 +791,7 @@ func BenchmarkMountReady(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit a second unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit a second unprivileged FUSE mount")
 	}
 	h.report(b, "mount-ready", "ready", time.Since(start), 0)
 }
@@ -776,6 +802,11 @@ func BenchmarkMountReady(b *testing.B) {
 func BenchmarkCLIColdStart(b *testing.B) {
 	bin := driveBin(b)
 	h := &benchStandin{}
+	if benchH != nil {
+		h.real = benchH.real
+	} else if os.Getenv("DRIVE_BENCH_ENDPOINT") != "" {
+		h.real = true
+	}
 	start := time.Now()
 	cmd := exec.Command(bin, "version")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -841,11 +872,7 @@ func BenchmarkPrefetchMountReady(b *testing.B) {
 	start := time.Now()
 	mount := exec.Command(driveBin(b), "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatal(err)
@@ -857,7 +884,7 @@ func BenchmarkPrefetchMountReady(b *testing.B) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}()
 	if !waitForMount(b, mount, mountDir) {
-		b.Skip("this host does not permit an unprivileged FUSE mount")
+		skipNoMount(b, "this host does not permit an unprivileged FUSE mount")
 	}
 	d := time.Since(start)
 	b.Logf("prefetch-bench metric=mount-ready value=%.3f unit=s", d.Seconds())
@@ -923,11 +950,60 @@ func BenchmarkPrefetchBrowse(b *testing.B) {
 	b.Logf("prefetch-bench metric=small-file-with value=%.6f unit=s", withFile.Seconds())
 }
 
+// prefetchOverlapTooSlow reports whether the overlapping user read is a
+// regression for this storage. A non-HTTPS endpoint has no WAN link to share,
+// so 20 ms and 2x still apply. HTTPS real storage shares one link; issue #382
+// measured a healthy overlap of 3.1x to 3.4x, and the gate there is 10x the
+// control, which those pairs pass and a 200 ms stall of the user read fails.
+func prefetchOverlapTooSlow(with, without time.Duration, https bool) bool {
+	if https {
+		return with > without*10
+	}
+	return with > without+20*time.Millisecond && with > without*2
+}
+
+func TestPrefetchOverlapTooSlow(t *testing.T) {
+	cases := []struct {
+		name    string
+		with    time.Duration
+		without time.Duration
+		https   bool
+		want    bool
+	}{
+		{"stand-in holds", 13878 * time.Microsecond, 9809 * time.Microsecond, false, false},
+		{"stand-in 200ms stall", 211271 * time.Microsecond, 6949 * time.Microsecond, false, true},
+		{"https issue pair", 218692 * time.Microsecond, 63907 * time.Microsecond, true, false},
+		{"https this branch", 181956 * time.Microsecond, 59848 * time.Microsecond, true, false},
+		{"https 200ms stall", 214250 * time.Microsecond, 8533 * time.Microsecond, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := prefetchOverlapTooSlow(c.with, c.without, c.https)
+			if got != c.want {
+				t.Fatalf("prefetchOverlapTooSlow(%s, %s, https=%v)=%v want %v",
+					c.with, c.without, c.https, got, c.want)
+			}
+		})
+	}
+}
+
 func BenchmarkReadDuringPrefetch(b *testing.B) {
 	// This bench is the user-read vs prefetchOnce overlap with the same
 	// userBusy flag runPrefetchLoop sets on a file open. The inotify path is
 	// TestPrefetchWatcherSeesDirectoryOpen; spinning the watcher here would
 	// contend with the mount's own FUSE traffic.
+	//
+	// The overlap assertion at the bottom is 20 ms and 2x on a non-HTTPS
+	// server (issue #382). The loopback stand-in has no link to share, so
+	// the only thing that can slow a user read there is the overlap itself.
+	// HTTPS real storage shares one link between the prefetch pass and the
+	// user's own read, and the first read through a fresh mount pays
+	// connection costs a loopback server does not have, so the same healthy
+	// overlap is slower there than any stand-in figure can be: drive#382
+	// measured 218 ms against 64 ms (3.4x) on the iDrive e2 account, and
+	// this branch reproduced 194 ms against 62 ms (3.1x). The HTTPS gate
+	// is 10x the control, so those pairs pass and a stall that holds the
+	// pipe (a 200 ms injected delay, 25x) still fails.
 	h := benchSetup(b)
 	local := filepath.Join(h.root, "fixtures", "busy")
 	if err := os.MkdirAll(local, 0o755); err != nil {
@@ -974,9 +1050,22 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 		b.Fatalf("read with prefetch stopped: %v", err)
 	}
 	without := time.Since(start)
-	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s", with.Seconds())
-	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s", without.Seconds())
-	if with > without+20*time.Millisecond && with > without*2 {
+	storage := h.storageName()
+	region := envOr("DRIVE_BENCH_REGION", "unmeasured")
+	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s storage=%s region=%s", with.Seconds(), storage, region)
+	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s storage=%s region=%s", without.Seconds(), storage, region)
+	// HTTPS is the real-storage check: h.real is also true for an HTTP
+	// server on this host's own IP, which has no WAN link to share, so that
+	// path keeps the 20 ms / 2x rule. The 10x pairs live in
+	// docs/research/prefetch-overlap-bench.md and in TestPrefetchOverlapTooSlow.
+	https := strings.HasPrefix(h.cfg.Endpoint, "https://")
+	if https {
+		b.Logf("prefetch-bench metric=user-read-during-prefetch-overlap gate=real-10x storage=%s region=%s note=measured_not_2x", storage, region)
+	}
+	if prefetchOverlapTooSlow(with, without, https) {
+		if https {
+			b.Fatalf("user read during prefetch %s is more than 10x %s without", with, without)
+		}
 		b.Fatalf("user read during prefetch %s is slower than %s without", with, without)
 	}
 }

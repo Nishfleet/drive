@@ -24,8 +24,12 @@ const xml = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 
 /**
  * The rows rclone cuts one listing into: a key below the prefix is a folder
- * the delimiter cut off, a key inside it is a file.
- * @param {Map<string, string>} objects every key rclone would store
+ * the delimiter cut off, a key inside it is a file. A key maps to its stored
+ * value, which may be the bytes themselves (a `Uint8Array`) or, in a test that
+ * never round-trips a body, the text standing for them: the size is read as a
+ * byte count either way, because rclone reports bytes and a string's
+ * `.length` is characters.
+ * @param {Map<string, Uint8Array | string>} objects every key rclone would store
  * @param {string} prefix the storage prefix the listing was for
  * @param {string} delimiter the delimiter the store sent, "" for none
  * @returns {{folders: string[], files: Array<{name: string, size: number}>}}
@@ -55,7 +59,19 @@ export function rcloneListingRows(objects, prefix, delimiter) {
   ];
   const files = children
     .filter((name) => !deeper(name))
-    .map((name) => ({ name, size: (objects.get(name) ?? "").length }));
+    .map((name) => {
+      const stored = objects.get(name);
+      return {
+        name,
+        // Bytes, not characters: `byteLength` where the bytes are held, and
+        // the encoded length where a test stands text in for them, so a
+        // non-ASCII row is never reported short.
+        size:
+          typeof stored === "string"
+            ? new TextEncoder().encode(stored).byteLength
+            : (stored ?? new Uint8Array()).byteLength,
+      };
+    });
   return { folders, files };
 }
 
@@ -99,7 +115,7 @@ ${rows}
 /**
  * Answer a `list-type=2` request the way rclone answers it. Both stand-ins call
  * this so the delimiter split has one copy; each keeps its own key handling.
- * @param {Map<string, string>} objects every key rclone would store
+ * @param {Map<string, Uint8Array | string>} objects every key rclone would store
  * @param {string} search the request's query string
  * @param {{bucket: string, onPrefix?: (prefix: string) => void}} options
  * @returns {Response}

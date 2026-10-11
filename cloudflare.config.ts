@@ -1,7 +1,28 @@
 import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
-import { METER_CRON, METER_RECONCILE_SCHEDULE } from "./src/meter.js";
-import { REINDEX_SCHEDULE } from "./src/search.js";
+
+// The cron trips this Worker runs, spelled out below in `triggers` and
+// read back out of the modules that own them — core/meter.js (METER_CRON,
+// METER_RECONCILE_SCHEDULE), src/search.js (REINDEX_SCHEDULE),
+// src/account-close.js (CLOSE_SCHEDULE) and src/malware.js
+// (KNOWN_BAD_FEED_SCHEDULE) — by the `scheduled` handler in src/index.js.
+//
+// They are spelled in both places on purpose, and this import list is why it
+// must: an import here is a *config dependency*. @cloudflare/config executes
+// this file to read it, and every plain import it follows lands in the
+// dependency set the Cloudflare Vite plugin adds to Vite's `server.fs.deny`
+// list. Vite then refuses to read any of those files in `cf dev`, so a config
+// that imports core/meter.js or src/search.js for a cron string drags the whole
+// shared Worker graph behind it (core/files.js, core/messages.js, core/status.js,
+// core/auth.js, core/db.js) and `npm run dev` dies with `Failed to
+// load url /src/auth.js ... Does the file exist?` before it prints a route
+// (drive#432). test/meter.test.mjs pins the two halves together string by
+// string, so the schedule here cannot drift from the one src/index.js
+// answers to.
+//
+// The `entrypoint` import above is the exception that proves the rule: it
+// carries `with { type: "cf-worker" }`, so @cloudflare/config records the
+// specifier without loading the module, and it never reaches the deny list.
 
 // drive issue #11: the pricing and landing page, served as Worker static
 // assets, with /api/* routed to the Worker for the waitlist form and the
@@ -10,10 +31,24 @@ export default defineConfig({
   worker: {
     name: "drive-pricing",
     compatibilityDate: "2026-09-29",
-    // Private until drive has its own domain (Nish, 2026-10-01). The
-    // workers.dev address is on only behind Cloudflare Access ("All
-    // traffic", Cloudflare account members); the deploy fails if a
-    // stranger ever reaches the site without the sign-in. No preview URLs.
+    // Private until launch (Nish, 2026-10-01). The workers.dev address is
+    // on only behind Cloudflare Access ("All traffic", Cloudflare account
+    // members); the deploy fails if a stranger ever reaches the site without
+    // the sign-in. No preview URLs.
+    //
+    // storagebun.com (drive issue #870) is the site's own domain, so the
+    // public pages, the sitemap, robots.txt and llms.txt all carry it.
+    // `domains` is the Worker custom domain: one line here is what puts the
+    // Worker on the zone. The workers.dev address stays on until the custom
+    // domain answers for real (issue #870: removing it is a separate,
+    // verified step). Nameservers are still at the registrar, so this line
+    // attaches the hostname inside the Cloudflare zone and does not publish
+    // it. Access must cover storagebun.com before nameservers move, or the
+    // pre-launch site would answer a stranger (drive#159).
+    // test/access-wall.test.mjs fails a 200 from the hostname. The deploy
+    // workflow's matching check is drive#872 (this token cannot push
+    // workflow files).
+    domains: ["storagebun.com"],
     workersDev: true,
     previewUrls: false,
     entrypoint,
@@ -27,27 +62,115 @@ export default defineConfig({
       // share link served by the Worker (src/share.js
       // handleShareFileRequest); the rest of the site is still straight from
       // the asset layer.
-      runWorkerFirst: ["/api/*", "/s/*"],
+      //
+      // /v1/* is the api Worker's family, on this same host (drive#156/#341,
+      // #342): the CLI posts it to the one APIBase it posts /api/* to, so the
+      // Worker that answers that address has to be the one that receives it.
+      // It forwards the request over a service binding (src/index.js) rather
+      // than serving it, so the api Worker's own gate, limits and words answer
+      // it. The binding itself is not declared here yet: Cloudflare fails this
+      // Worker's deploy against a service binding whose target Worker does not
+      // exist, and the api Worker is a separate deployable that no deploy ships
+      // until its deploy step lands, so until then /v1/* is the closed door
+      // src/index.js answers rather than a family that pretends to be routed.
+      runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
-    // Three Cron Triggers: the meter's hourly rollup (drive issue #6), the
-    // meter's nightly reconciler (drive issue #59), and the file index's
-    // nightly reconciler (drive issue #18). `scheduled` in src/index.js tells
+    // Five Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // meter's nightly reconciler (drive issue #59), the file index's
+    // nightly reconciler (drive issue #18), the nightly trash purge
+    // (drive issue #521), and the account close cron (drive issue #522).
+    // `scheduled` in src/index.js tells
     // them apart by the cron string the platform hands it, so no trigger
     // spends another's work. The reindex schedule is the only way a rebuild
     // starts, so no web request can spend the walk (the safety review: reindex
-    // is not a public route); 03:00 UTC is the spec's quiet hour, before the
-    // meter's first hourly run. The meter's reconciler runs at 04:00 UTC, an
-    // hour later, so the two nightly walks do not share a trip. All three
-    // schedules are the constants the modules that own them export, so a
-    // changed schedule cannot drift from the trigger that runs it.
+    // is not a public route). 03:00 UTC is the spec's quiet hour, before the
+    // meter's first hourly run; the meter's reconciler runs at 04:00 UTC, an
+    // hour later, so the two nightly walks do not share a trip; the trash
+    // purge runs at 05:00 UTC, after the reconciler, so a parked file's last
+    // hour is re-rolled before its bytes leave the bucket; the account close
+    // cron runs at 06:00 UTC, after the purge, on the same blast-radius rule
+    // that keeps it off the 04:00 reconcile's trip.
+    //
+    // Each schedule is the string the module that owns it exports:
+    // core/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
+    // src/search.js's REINDEX_SCHEDULE, core/files.js's
+    // TRASH_PURGE_SCHEDULE, and src/account-close.js's CLOSE_SCHEDULE.
+    // test/meter.test.mjs reads these five
+    // out of this file and asserts they equal those exports, so a changed
+    // schedule cannot drift from the trigger that runs it. They are not
+    // imported from those modules - see the note at the top of this file for
+    // why an import here breaks `npm run dev` (drive#432).
     triggers: [
-      triggers.scheduled({ schedule: METER_CRON }),
-      triggers.scheduled({ schedule: METER_RECONCILE_SCHEDULE }),
-      triggers.scheduled({ schedule: REINDEX_SCHEDULE }),
+      triggers.scheduled({ schedule: "5 * * * *" }),
+      triggers.scheduled({ schedule: "0 4 * * *" }),
+      triggers.scheduled({ schedule: "0 3 * * *" }),
+      triggers.scheduled({ schedule: "0 5 * * *" }),
+      // The account close cron, on its own trip (drive#522, CLOSE_SCHEDULE
+      // in src/account-close.js). It used to share the 04:00 reconcile's
+      // trigger, which gave a metering failure one blast radius big enough to
+      // delay every close receipt, reminder and purge behind it; the nightly
+      // trash purge (drive#521) took 05:00 in the same window, so the close
+      // cron runs after it, at 06:00 UTC.
+      triggers.scheduled({ schedule: "0 6 * * *" }),
+      // The known-bad feed load (drive#826, KNOWN_BAD_FEED_SCHEDULE in
+      // src/malware.js): the Cron Trigger that reads the stock public
+      // MalwareBazaar SHA-256 list into D1. It runs last of the nightly trips,
+      // after the close cron, and it is the only one of this Worker's cron
+      // trips that makes an outbound call — the request path reads the table
+      // it fills.
+      triggers.scheduled({ schedule: "0 7 * * *" }),
+      // The nightly reindex's consumer (drive#566). The 03:00 cron enqueues
+      // one message per account on this queue, and each message is consumed
+      // on its own: maxBatchSize 1 is one account per invocation, so a
+      // broken account cannot spend a sibling's retry budget, which is what
+      // the serial loop this replaces did. maxRetries 2 gives a failed walk
+      // its own retry budget. There is no dead-letter queue yet: after the
+      // retries the message is dropped, the nightly cron enqueues the
+      // account again, and a message is lost for at most a day (#519 tracks
+      // the meter crons' dead-letter queues; the reindex can join them).
+      // The queue is created once, out of band, like the branch-snapshot
+      // namespace below: a deploy cannot provision one, and `ensureQueuesExistByConfig`
+      // fails the deploy with
+      //   Queue "drive-reindex" does not exist. To create it, run:
+      //   cf queues create drive-reindex
+      triggers.queue({
+        name: "drive-reindex",
+        maxBatchSize: 1,
+        maxRetries: 2,
+      }),
+      // One message per account from the meter crons (drive#519). Both
+      // queues were created on the account on 2026-10-06; see the note at
+      // the top of src/meter-jobs.js. Remove this and METER_JOBS to go back
+      // to the in-process loop.
+      triggers.queue({
+        name: "drive-meter-jobs",
+        deadLetterQueue: "drive-meter-jobs-dlq",
+        maxRetries: 5,
+        maxBatchSize: 10,
+      }),
     ],
+    // Issue #520: failures were invisible because this key was absent — the
+    // Worker shipped with observability off, so `console.error` in the cron
+    // branches and `app.onError` went nowhere a human looks. Workers Logs
+    // collects every invocation's console lines for 14 days (the default
+    // sampling here is 1, everything), which is the floor; the pipeline that
+    // pages a human is Sentry, wired in src/monitoring.js off the
+    // per-deployment SENTRY_DSN var (the docs runbook has the setup).
+    observability: {
+      enabled: true,
+      headSamplingRate: 1,
+    },
     env: {
       ASSETS: bindings.assets(),
+      METER_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
+      // Branch copy/approve/discard/rewind (drive#563). The producer rides the
+      // meter queue that already exists, because a deploy that names a queue
+      // which does not exist fails. Message kinds are `branch.*` vs `meter.*`,
+      // and src/index.js's queue handler splits the batch. A dedicated
+      // `drive-branch-jobs` queue is a later bind-name change once it is
+      // created out of band (`src/branch-jobs.js`).
+      BRANCH_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
       // Two databases, one purpose each (drive issue #170). The waitlist's
       // table lives alone in the waitlist database: the sign-up list is
       // public data and can be exported, reset or handed on without
@@ -67,7 +190,7 @@ export default defineConfig({
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
       }),
       // The meter binds the same drive database under a name of its own (drive
-      // issue #6): src/meter.js says which tables it owns and which binding
+      // issue #6): core/meter.js says which tables it owns and which binding
       // carries them, so the customer-data split is a binding line here rather
       // than a code change in the meter. Same database, so same id:
       // file_versions, usage_minutes, events_seen and meter_rollup_state
@@ -81,23 +204,34 @@ export default defineConfig({
       // branch records one `{size, etag, modified}` entry per file it copied;
       // that is ~117 bytes a file, so a 100,000-file branch is ~11 MiB of JSON
       // — twelve times D1's 1 MiB row limit, which is why phase 1 refused it
-      // and why the snapshot now lives here instead. The `branches` row keeps
-      // a pointer to the key and the value's byte length
-      // (migrations/drive/0012_branch_snapshot_kv.sql), and
-      // src/branches.js readSnapshot prefers this namespace and falls back to
-      // the legacy column for a row written before the migration.
-      //
-      // Optional, not required: `snapshotsFor()` in src/index.js answers null
-      // for a deployment with no namespace, and every reader treats null as
-      // "use the row", so it is deliberately NOT on the health check's
-      // required-bindings list (src/health.js) — a binding that a small
-      // deployment legitimately lacks must not page a human. It is created
-      // once, out of band, because an unattended `cf deploy` does not
-      // provision a namespace (it prompts, and nothing answers):
+      // and why the snapshot now lives here instead. drive#563 runs copy,
+      // approve, discard and rewind as queued jobs in file batches so the
+      // 10,000-subrequest ceiling is no longer the cap; 100,000 files is still
+      // the remaining size limit (`BRANCH_FILE_LIMIT` in src/branches.js)
+      // because that snapshot has to sit in memory. BRANCH_JOBS produces onto
+      // the existing `drive-meter-jobs` queue (kinds `branch.*`) until a
+      // dedicated queue is created out of band (`src/branch-jobs.js`). The
+      // `branches` row
+      // keeps a pointer to the key and the value's byte length
+      // (migrations/drive/0012_branch_snapshot_kv.sql). Since drive#329 the
+      // leftover column is unread and unwritten: `readSnapshot` takes the
+      // pointer only, and a missing namespace is a 503 on every branch and
+      // rewind route. The binding is on src/health.js `REQUIRED_BINDINGS`.
+      // It is created once, out of band, because an unattended `cf deploy`
+      // does not provision a namespace (it prompts, and nothing answers):
       //   cf kv namespaces create --title drive-branch-snapshots
       BRANCH_SNAPSHOTS: bindings.kv({
         id: "13f2292d4fdc448492c2a4603e1cc682",
       }),
+      // The reindex queue's producer half (drive#566). The 03:00 cron sends
+      // one `{accountId}` message per account on it, and the same Worker
+      // consumes it (`queue` in src/index.js; the consumer trigger is above).
+      // Only an account id is in a message: the walk is scoped to that
+      // account's own prefix, so a message can name no file and no other
+      // account's bytes. Like the namespace above it, the queue is created
+      // once, out of band:
+      //   cf queues create drive-reindex
+      REINDEX_QUEUE: bindings.queue<{ accountId: string }>({ name: "drive-reindex" }),
       // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
       // from a Worker secret. The secret binding declares the name so the
       // runtime knows to inject it; a missing secret produces a warning at
@@ -122,10 +256,9 @@ export default defineConfig({
       METER_EVENT_TOKEN: bindings.secret(),
       // The Dodo billing push (drive issue #51) reads
       // `DODO_PAYMENTS_API_KEY` from a Worker secret, the same
-      // way `METER_EVENT_TOKEN` above does. A missing secret makes
-      // pushBillingHours skip the ingest rather than failing the
-      // meter's rollup (src/dodo.js), so a deploy that has not
-      // set it still rolls hours.
+      // way `METER_EVENT_TOKEN` above does. A missing secret leaves
+      // the Dodo calls closed (core/dodo.js) rather than failing the
+      // meter's rollup, so a deploy that has not set it still rolls hours.
       DODO_PAYMENTS_API_KEY: bindings.secret(),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
@@ -140,36 +273,82 @@ export default defineConfig({
       // closed-door posture the sign-in route ships with (src/signin.js).
       // POST /api/signin mails a real email, so a script walking many
       // addresses is a mailbomb and a send-cost vector once the route is
-      // open in production. Per IP it is far above the retries a person
-      // makes from their own connection (10 a minute against a couple of
-      // sign-in posts) and far below what a script needs to walk
-      // addresses; the global one bounds the whole service. Both configs
-      // are one minute, the waitlist's period, and both are turned on
-      // before sign-in opens in production.
+      // open in production. The second binding, keyed on a constant, bounds one
+      // Cloudflare location's total, not the account — the locality note below
+      // names the shared counter that bounds the account. Both configs are one
+      // minute, the waitlist's period, and both are turned on before sign-in
+      // opens in production.
       //
-      // The numbers are a pre-production guard, not a capacity answer, and
-      // the honest caveat is shared egress: an office or CGNAT downlink
-      // concentrates people onto one client IP, so `limit: 10` shapes the
-      // whole office to 10 sign-ins a minute, not one person. Acceptable
-      // while the site is behind Cloudflare Access; on the day sign-in
-      // opens, measure the real sign-in rate and raise the per-IP (and the
-      // global above it) first, before a customer shares their login
-      // morning with a landline's worth of neighbours (#147's follow-up).
+      // THE MEASURED NUMBERS (drive issue #202, the tuning pass this comment
+      // used to ask for). The route was not reachable when the tuning was due:
+      // every path on the live Worker answered 302 to Cloudflare Access and
+      // the tables the route writes were empty (session 0, user 0, rateLimit
+      // 0), so the real sign-in rate was 0. The ceilings below are therefore
+      // measured on stand-in traffic through the real route
+      // (test/signin-rate-traffic.test.mjs), which drives the Worker's own
+      // dispatch with the shipped numbers parsed out of this file, so this
+      // comment and the test cannot drift. Measured peak on ONE client IP in
+      // one minute, each person pressing once because the page sends one link
+      // per press:
       //
-      // The global ceiling is a spend bound, not a traffic shaper: it sits
-      // far above the per-IP world it caps, and it caps the worst case at
-      // 100 sends a minute however many addresses a distributed walk
-      // touches.
+      //   25 people behind one office router, arriving together   25/min
+      //   the same office, each pressing 3 times (a mistyped     75/min
+      //     link) — 3 is Better Auth's own per-IP rule (core/auth.js)
+      //   200 people behind one campus NAT, arriving together   200/min
+      //
+      // Worst realistic NAT case = 200/min. The SIGNIN_RATE_LIMITER ceiling is
+      // 500/min: it clears the measured worst case by 2.5x, so an office twice
+      // the lab's size or a campus twice as large is still served, and sitting
+      // exactly on the measured number would refuse the next office one person
+      // larger. The old figure was 10/min, which refused 15 of 25 people in an
+      // office arriving together and 190 of 200 in the lab.
+      //
+      // SIGNIN_GLOBAL_RATE_LIMITER's key is a constant, so inside one
+      // Cloudflare location it bounds that location to 5000 starts a minute.
+      // The binding alone is still only that per-location bound: Cloudflare
+      // counts a rate-limit key separately in each location ("rate limits ...
+      // are local to the Cloudflare location"), so a walk spread over N
+      // locations can start 5000 in each one and this binding never sees the
+      // sum. The account-wide bound is the shared counter beside the
+      // bindings: signinAccountSendOutcome (src/signin-send-limit.js, the
+      // signin_account_sends row from migration 0047) spends one row on the
+      // customer database per start — one database, so the same row in every
+      // location — and refuses the start step once the account has started
+      // SIGNIN_ACCOUNT_SEND_MAX in its 60-second window. That max is this
+      // binding's own figure on purpose: inside any one location the binding
+      // refuses first and the counter only records what it let through, and
+      // across every location the account's total is now 5000/min rather than
+      // 5000 x N (issue #878). The window's edges are each location's clock,
+      // so the account figure is 5000 per 60 seconds minus the locations'
+      // skew — the same clock trust the per-IP and per-address windows on
+      // D1 already run on. 5000/min is 10x the per-IP ceiling: inside one
+      // location ten shared addresses can each run at their own 500/min before
+      // this bucket moves, so it caps a single-location flood from many
+      // addresses and nothing wider.
+      //
+      // MEASURED, NOT YET FIXED, and it is the finding of issue #202: raising
+      // these two numbers does not by itself free a shared office. Better Auth
+      // keys its own `/sign-in/magic-link` rule on the same client IP
+      // (core/auth.js, max 3 per 60s, D1-backed), and it runs after these two,
+      // so an office behind one NAT still gets 3 links out of 25 at any edge
+      // ceiling: measured at 10/min and at 400/min alike, 3 of 25 served both
+      // times. The per-IP send bound a customer actually meets is the
+      // library's, and widening it trades mail cost for shared-egress access,
+      // which is a decision #202's scope explicitly excludes. It is tracked as
+      // issue #876 rather than changed here.
+      //
       // Each binding needs its own namespace: Cloudflare wants a positive
       // integer string, and a namespace another binding already uses fails
-      // the deploy. These are distinct from the waitlist's 1001.
+      // the deploy. Two bindings on one namespace would share their counters
+      // and the constant-key binding would stop being a separate backstop.
+      // These are distinct from the waitlist's 1001.
       SIGNIN_RATE_LIMITER: bindings.rateLimit({
         namespace: "1002",
-        simple: { limit: 10, period: 60 },
+        simple: { limit: 500, period: 60 },
       }),
       SIGNIN_GLOBAL_RATE_LIMITER: bindings.rateLimit({
         namespace: "1003",
-        simple: { limit: 100, period: 60 },
+        simple: { limit: 5000, period: 60 },
       }),
       // drive issue #208: bound POST /api/request/upload at the edge, beside
       // the spending cap the route already applies (src/share.js). A stranger
@@ -191,8 +370,65 @@ export default defineConfig({
         namespace: "1005",
         simple: { limit: 10, period: 60 },
       }),
+      // drive#539: GET /api/health fans out to every D1, five other rate-limit
+      // bindings, KV and ASSETS. The route itself sits behind this limiter so
+      // an anonymous loop cannot spend those billed ops at will. 10 a minute
+      // per IP is the sign-in figure: far above a monitor that polls once a
+      // minute, far below a script. Namespace 1009, because 1006/1007 are the
+      // api Worker's device pair (workers/api/cloudflare.config.ts) and 1008 is
+      // the share-download limiter below.
+      HEALTH_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1009",
+        simple: { limit: 10, period: 60 },
+      }),
+      // GET /s/<token> (drive issue #506): a logged-out share download has no
+      // account gate, so the stock rate-limit binding is the bound. Per IP it
+      // sits at 60 a minute: far above a person opening a handful of links,
+      // far below a script walking tokens. One minute, the waitlist's period.
+      // Namespace 1008: 1001–1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair. A namespace another binding already uses fails
+      // the deploy with 10021.
+      SHARE_DOWNLOAD_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1008",
+        simple: { limit: 60, period: 60 },
+      }),
+      // The two mint routes (drive issue #549): POST /api/share and POST
+      // /api/request each get their own bound, on top of the per-account cap
+      // of 50 open links the handlers enforce. 30 a minute per IP is far
+      // above an owner clicking "Share" and far below a script minting tokens
+      // to walk. Namespaces 1010/1011 continue the 1001-1009 series; a reused
+      // namespace fails the deploy with 10021. 1010/1011 were free because the
+      // HEALTH_RATE_LIMITER above took 1009, so test/deploy-api-worker.test.mjs
+      // (which reads both this file and the api Worker's, and fails on the
+      // first duplicate it finds) caught the SHARE_MINT_RATE_LIMITER reusing
+      // it here.
+      SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1010",
+        simple: { limit: 30, period: 60 },
+      }),
+      REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1011",
+        simple: { limit: 30, period: 60 },
+      }),
+      // POST /api/branches (drive issue #553): a branch is a full server-side
+      // copy of a folder, so a loop of creates costs the operator real storage
+      // and real copy work. Per IP it sits at 10 a minute, the upload-request
+      // limit: far above a person or agent making a handful of branches, far
+      // below a script churning them. One minute, the family's period.
+      // Namespace 1013: 1001-1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair, 1008 is the share download, 1009/1010 are the
+      // health and download pair above, 1011 is this Worker's mint limit, and
+      // 1012 is the api Worker's KEYS_RATE_LIMITER (drive#745), which landed
+      // on main while this issue was in rework and took the number this
+      // binding first chose. A namespace another binding already uses fails
+      // the deploy with 10021, and test/deploy-api-worker.test.mjs fails on
+      // the first duplicate it finds.
+      BRANCH_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1013",
+        simple: { limit: 10, period: 60 },
+      }),
       // Cloudflare Email Sending (drive#33): the stock provider every
-      // drive email goes through, in src/email-send.js. No options: the
+      // drive email goes through, in core/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and
       // the sender address is set per deployment, so nothing here pins a
       // brand domain before drive has one.

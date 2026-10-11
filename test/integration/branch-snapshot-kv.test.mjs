@@ -11,8 +11,9 @@
 // What the stand-ins here are, and are not:
 //   * the D1 is a real SQLite engine with the real migration files applied
 //     (test/harness.mjs createTestD1 applies every file in
-//     migrations/drive/, 0012_branch_snapshot_kv.sql included). The row this
-//     test reads back is read with plain node:sqlite, so a store that
+//     migrations/drive/, 0012_branch_snapshot_kv.sql and the
+//     0017_drop_branches_snapshot.sql that dropped `snapshot` included). The
+//     row this test reads back is read with plain node:sqlite, so a store that
 //     answered from a Map would leave the table empty and fail here — the rule
 //     test/integration/share-links-d1.test.mjs follows;
 //   * the KV namespace is the stand-in test/harness.mjs createTestKv builds:
@@ -32,6 +33,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../../core/files.js";
 import {
   approveBranch,
   createBranch,
@@ -41,7 +43,6 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../../src/branches.js";
-import { createMemoryStore, scopeStore } from "../../src/files.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };
@@ -53,12 +54,27 @@ const D1_ROW_LIMIT = 1024 * 1024;
 const FILES = 100000;
 
 /**
+ * The columns the `branches` table really has, read off the schema the
+ * harness built. `snapshot` is not one of them: 0017_drop_branches_snapshot.sql
+ * dropped it, and both proofs below read the row through this list so a query
+ * that names the dropped column fails at prepare rather than quietly reading a
+ * column the harness used to add and production had dropped (drive#579).
+ * @param {{sqlite: import("node:sqlite").DatabaseSync}} db
+ * @returns {string[]}
+ */
+function branchColumns(db) {
+  return /** @type {{name: string}[]} */ (
+    db.sqlite.prepare("PRAGMA table_info('branches')").all()
+  ).map((column) => column.name);
+}
+
+/**
  * A file store whose listing answers `FILES` real entries under one folder,
  * over the in-memory store, so the branch walk really walks `FILES` files and
  * the snapshot it builds is the one a 100,000-file folder produces. The bytes
  * are the in-memory store's (this is not a claim about copying 100,000 files'
  * worth of data — drive#157 measured the copy side against a real MinIO).
- * @returns {Promise<{scoped: import("../../src/files.js").FileStore, files: number}>}
+ * @returns {Promise<{scoped: import("../../core/files.js").FileStore, files: number}>}
  */
 async function driveWithManyFiles() {
   const store = scopeStore(createMemoryStore(), ACCOUNT);
@@ -101,7 +117,7 @@ async function driveWithManyFiles() {
       ...entry,
       path: `${base}/${entry.path.slice("/Photos/".length)}`,
     }));
-  /** @type {import("../../src/files.js").FileStore} */
+  /** @type {import("../../core/files.js").FileStore} */
   const store2 = {
     ...real,
     async list(path) {
@@ -183,20 +199,25 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   assert.equal(branch.files, FILES, "the walk saw 100,000 files and none was refused");
 
   // The row, read with plain node:sqlite: it carries a pointer and a length,
-  // and no snapshot JSON. This is the D1 row the deploy's migration produced
-  // (0012 adds the two columns with DEFAULTs), read off the same engine.
-  const row =
-    /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number, state: string}} */ (
-      db.sqlite
-        .prepare(
-          "SELECT snapshot, snapshot_key, snapshot_bytes, state FROM branches WHERE account_id = ? AND name = ?",
-        )
-        .get(ACCOUNT.id, "hundred-k")
-    );
+  // and no snapshot JSON - there is no `snapshot` column left to carry any,
+  // because 0017_drop_branches_snapshot.sql dropped it and the harness applies
+  // every migration in the folder (drive#579). This is the D1 row the deploy's
+  // migrations produced (0012 adds the pointer columns, 0017 drops the JSON),
+  // read off the same engine.
+  const row = /** @type {{snapshot_key: string, snapshot_bytes: number, state: string}} */ (
+    db.sqlite
+      .prepare(
+        "SELECT snapshot_key, snapshot_bytes, state FROM branches WHERE account_id = ? AND name = ?",
+      )
+      .get(ACCOUNT.id, "hundred-k")
+  );
   assert.equal(row.state, "open");
-  assert.equal(row.snapshot, "{}", "the row carries no snapshot JSON");
+  assert.ok(
+    !branchColumns(db).includes("snapshot"),
+    "the schema carries no snapshot column to fill with JSON",
+  );
   assert.equal(row.snapshot_key, snapshotKey(ACCOUNT, "hundred-k"));
-  const rowTextBytes = Buffer.byteLength(row.snapshot) + Buffer.byteLength(row.snapshot_key);
+  const rowTextBytes = Buffer.byteLength(row.snapshot_key);
   assert.ok(
     rowTextBytes < D1_ROW_LIMIT,
     `the row's own text is ${rowTextBytes} bytes, far under D1's 1 MiB limit`,
@@ -204,20 +225,25 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
 
   // The value, read off the namespace itself: 100,000 entries, and over the
   // row limit D1 would have refused. This is the "this lands" measurement, and
-  // the number to cite is the same ~11 MiB phase 1 refused.
-  const stored = kv.values.get(row.snapshot_key);
-  assert.ok(typeof stored === "string", "the value is in the namespace, not the row");
+  // the number to cite is the same ~11 MiB phase 1 refused. Since drive #564
+  // the namespace holds a small manifest naming generation-scoped parts, so
+  // the value is reassembled through the store's own get over this map - the
+  // manifest pins the value's byte length, and the parts are what carry it.
+  const stored = /** @type {string} */ (await createKvSnapshotStore(kv).get(row.snapshot_key));
   const snapshot = JSON.parse(stored);
   assert.equal(Object.keys(snapshot).length, FILES, "all 100,000 entries are in the namespace");
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(row.snapshot_key)));
+  assert.equal(manifest.fmt, "drive-branch-snapshot-chunked-1", "the key holds a chunked manifest");
+  assert.equal(manifest.bytes, Buffer.byteLength(stored), "the manifest pins the value's length");
   assert.ok(
-    Buffer.byteLength(stored) > D1_ROW_LIMIT,
-    `the value is over the row limit (${Buffer.byteLength(stored)} bytes), which is why it moved`,
+    kv.values.size <= manifest.parts + 2,
+    `the namespace holds one manifest and ${manifest.parts} parts, not ${FILES} entries`,
   );
-  assert.equal(
-    row.snapshot_bytes,
-    Buffer.byteLength(stored),
-    "the row records that value's length",
+  assert.ok(
+    manifest.bytes > D1_ROW_LIMIT,
+    `the value is over the row limit (${manifest.bytes} bytes), which is why it moved`,
   );
+  assert.equal(row.snapshot_bytes, manifest.bytes, "the row records that value's length");
 
   // ------------------------------------------------------------------ list
   const listed = await listBranches(db, snapshots, scoped, ACCOUNT);
@@ -242,7 +268,7 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   // one reader the route uses.
   const diff = await diffBranch(scoped, {
     ...huge,
-    snapshot: await readSnapshot(snapshots, huge.snapshotKey, huge.snapshot),
+    snapshot: await readSnapshot(snapshots, huge.snapshotKey),
   });
   assert.deepEqual(diff.added, [], "the branch copy matches the snapshot file for file");
   assert.deepEqual(diff.changed, []);
@@ -256,23 +282,23 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   const approved = await approveBranch(db, snapshots, scoped, ACCOUNT, "hundred-k");
   const result = /** @type {{name: string, state: string}} */ (approved);
   assert.equal(result.state, "approved", "the approve closed the branch");
-  const closed = /** @type {{state: string, snapshot_key: string, snapshot: string}} */ (
+  const closed = /** @type {{state: string, snapshot_key: string}} */ (
     db.sqlite
-      .prepare(
-        "SELECT state, snapshot_key, snapshot FROM branches WHERE account_id = ? AND name = ?",
-      )
+      .prepare("SELECT state, snapshot_key FROM branches WHERE account_id = ? AND name = ?")
       .get(ACCOUNT.id, "hundred-k")
   );
   assert.equal(closed.state, "approved");
   assert.equal(closed.snapshot_key, row.snapshot_key, "the pointer is the branch's own key");
+  // The row grew by nothing: the approve wrote the value to the namespace, and
+  // the row still carries the pointer and its length and nothing else.
   assert.equal(
-    closed.snapshot,
-    "{}",
-    "the row still carries no JSON: the approve wrote to the namespace",
+    branchColumns(db).includes("snapshot"),
+    false,
+    "the approve did not bring the dropped JSON column back",
   );
   // The value the approve left is the same 100,000 entries (this store's copy
   // was a no-op, so nothing was applied and the snapshot is unchanged).
-  const after = await readSnapshot(snapshots, closed.snapshot_key, closed.snapshot);
+  const after = await readSnapshot(snapshots, closed.snapshot_key);
   assert.equal(Object.keys(after).length, FILES, "the approved branch's snapshot is still whole");
 
   // The proof, in one line for the PR body.
@@ -282,5 +308,145 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
       `(namespace drive-branch-snapshots), row text ${rowTextBytes} bytes, ` +
       `listed changed=${huge.changed} sourceChanged=${huge.sourceChanged}, diff all-zero, ` +
       `approved state=approved.`,
+  );
+});
+
+// The pointer path on the schema production has. #339's migration
+// (0017_drop_branches_snapshot.sql) has shipped, so the `snapshot` column is
+// already gone from every database built from the folder: the harness applies
+// every migration in it (drive#579), so this run is the post-drop schema
+// rather than a pre-drop one the test had to stage. Production D1 `drive-data`
+// at 2026-10-04T08:37:56Z already had nothing to recover: empty_pointer_open=0,
+// open_rows=0, all_rows=0. Branch and snapshot numbers stay this file's own, so
+// the two proofs do not share a name a citation could confuse.
+const ACCOUNT_AFTER = { id: "acct-399", name: "The pointer-only drive" };
+const AFTER_AT = Date.parse("2026-10-04T05:00:00.000Z");
+
+test("the pointer path survives the snapshot column being dropped", async () => {
+  const db = createTestD1();
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
+  const scope = scopeStore(createMemoryStore(), ACCOUNT_AFTER);
+  // One folder with two files: the smallest tree that makes a snapshot, a diff
+  // and an approve each real, so this stays under a second rather than the
+  // 100,000-file walk the first proof in this file measures. `entry` builds
+  // the one listing shape `createBranch` and `diffBranch` consume.
+  const entry = (
+    /** @type {string} */ prefix,
+    /** @type {string} */ name,
+    /** @type {number} */ size,
+  ) => ({
+    name,
+    path: `${prefix}/${name}`,
+    kind: /** @type {const} */ ("file"),
+    size,
+    etag: size.toString(16).padStart(32, "0"),
+    modified: AFTER_AT,
+  });
+  // The walk is breadth-first over real listings: `folderState` decides "is
+  // this a folder" from a listing of its PARENT (src/branches.js), so the drive
+  // root answers with the folder, the folder answers with its files, and the
+  // branch's own prefix answers with the copies the walk made. That is the
+  // shape a real drive's listing returns, and it is why the diff below is a
+  // diff of two real trees rather than of two fixtures.
+  // Every file the walk copied, keyed by the branch path it was copied to, so
+  // the branch's own listing answers back the real copies rather than a
+  // second hand-written list that could drift from what `copy` was asked for.
+  /** @type {Map<string, {name: string, path: string, kind: string, size: number, etag: string, modified: number}>} */
+  const copied = new Map();
+  /** The source entry for a copy, as the walk read it. @param {string} from @param {string} to */
+  const entryFrom = (from, to) => {
+    const name = from.slice(from.lastIndexOf("/") + 1);
+    const size = name === "a.txt" ? 4 : 5;
+    return {
+      name,
+      path: to,
+      kind: "file",
+      size,
+      etag: entry("/Notes", name, size).etag,
+      modified: AFTER_AT,
+    };
+  };
+  const scoped = /** @type {import("../../core/files.js").FileStore} */ ({
+    ...scope,
+    async list(path) {
+      if (path === "/") {
+        return [{ name: "Notes", path: "/Notes", kind: "folder" }];
+      }
+      if (path === "/Notes") {
+        return [entry("/Notes", "a.txt", 4), entry("/Notes", "b.txt", 5)];
+      }
+      if (path === "/.branches/after") {
+        return [...copied.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+      }
+      return [];
+    },
+    // The copy is recorded under the branch path, so the branch's own listing
+    // above answers the files the walk really copied and the diff below is a
+    // diff of two real trees. `copy` on the in-memory store would refuse: the
+    // store has no bytes at `u/acct-399/Notes/a.txt`, because the stand-in for
+    // the object storage is the listing above (drive#157 measured the bytes).
+    async copy(/** @type {string} */ from, /** @type {string} */ to, /** @type {number} */ size) {
+      void size;
+      copied.set(to, { ...entryFrom(from, to) });
+    },
+  });
+
+  // The drop is already in the schema (0017_drop_branches_snapshot.sql), so
+  // this states what it did rather than staging it: createBranch has to
+  // succeed with no `snapshot` column at all, not only list a row written
+  // while the column still existed, and any SQL that names the dropped column
+  // fails at prepare.
+  const columns = branchColumns(db);
+  assert.ok(
+    !columns.includes("snapshot"),
+    `branches carries no snapshot column: ${columns.join(",")}`,
+  );
+  assert.throws(
+    () => db.sqlite.prepare("SELECT snapshot FROM branches"),
+    (error) =>
+      /no such column: snapshot/.test(error instanceof Error ? error.message : String(error)),
+  );
+
+  const created = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT_AFTER,
+    { folder: "/Notes", name: "after" },
+    () => AFTER_AT,
+  );
+  const branch = /** @type {{name: string, state: string}} */ (created);
+  assert.equal(branch.name, "after");
+
+  // The acceptance's three calls, over the pointer, after the drop.
+  const listed = await listBranches(db, snapshots, scoped, ACCOUNT_AFTER);
+  assert.equal(listed.length, 1, "the branch is listed across the dropped column");
+  const restored = await readSnapshot(snapshots, listed[0].snapshotKey);
+  assert.deepEqual(
+    Object.keys(restored).sort(),
+    ["a.txt", "b.txt"],
+    "the pointer resolves the snapshot",
+  );
+  assert.equal(listed[0].changed, 0, "a branch nobody touched has changed nothing");
+
+  const diff = await diffBranch(scoped, { ...listed[0], snapshot: restored });
+  assert.deepEqual(diff.added, [], "the diff reads the pointer");
+  assert.deepEqual(diff.removed, []);
+
+  const approved = await approveBranch(db, snapshots, scoped, ACCOUNT_AFTER, "after");
+  assert.equal(/** @type {{state: string}} */ (approved).state, "approved");
+  const after = await readSnapshot(snapshots, snapshotKey(ACCOUNT_AFTER, "after"));
+  assert.deepEqual(
+    Object.keys(after).sort(),
+    ["a.txt", "b.txt"],
+    "the approve wrote the pointer, not the dropped column",
+  );
+
+  console.log(
+    `drive#399 proof: branch "after" of account ${ACCOUNT_AFTER.id}, ` +
+      `created ${new Date(AFTER_AT).toISOString()}; 0017_drop_branches_snapshot.sql already ` +
+      `dropped the column, so branches columns [${columns.join(", ")}]; createBranch on that schema, ` +
+      `then listBranches, readSnapshot, diffBranch and approveBranch all answered over the pointer.`,
   );
 });

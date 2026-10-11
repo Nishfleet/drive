@@ -26,9 +26,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createBranch, createKvSnapshotStore, handleBranchesRequest } from "../src/branches.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import {
+  createMemoryStore,
+  createS3Store,
+  scopeStore,
+  storageBucketForKey,
+} from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { decodeEntities } from "../core/s3-listing.js";
+import {
+  createBranch,
+  createKvSnapshotStore,
+  handleBranchesRequest,
+  snapshotKey,
+} from "../src/branches.js";
 import {
   handleRewindRequest,
   REWIND_ENDPOINT,
@@ -37,6 +48,7 @@ import {
   rewindPreview,
 } from "../src/rewind.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -77,7 +89,18 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0005_meter.sql",
+    "drive/0010_accounts_devices.sql",
     "drive/0012_branch_snapshot_kv.sql",
+    "drive/0015_branch_row_id.sql",
+    // 0016/0019 for the pre-charge guard createBranch reads (drive#553), 0030
+    // for the job columns and in-flight unique index it inserts through
+    // (drive#563), and 0040 for the reservation every branch read selects
+    // (drive#801).
+    "drive/0016_founding.sql",
+    "drive/0019_abuse_guards.sql",
+    "drive/0030_branch_jobs.sql",
+    "drive/0040_branch_reserved_bytes.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -96,7 +119,7 @@ function makeD1() {
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
-   * @returns {{results: Record<string, unknown>[], changes: number}}
+   * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
     // D1 binds a numbered placeholder by its NUMBER; node:sqlite binds the
@@ -112,10 +135,15 @@ function makeD1() {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
+        lastRowId: 0,
       };
     }
     const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
+    return {
+      results: [],
+      changes: Number(info.changes),
+      lastRowId: Number(info.lastInsertRowid),
+    };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
    * run the statements the caller built and not re-derive them.
@@ -153,10 +181,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async all() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
         /**
@@ -164,10 +193,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async run() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
       })
@@ -238,7 +268,7 @@ function makeD1() {
  * The bytes a scoped store holds at `path`, as text. A read that answers null
  * is a real miss, so it throws rather than resolving an empty string the
  * assertions below could not tell from a genuinely empty file.
- * @param {import("../src/files.js").FileStore} store
+ * @param {import("../core/files.js").FileStore} store
  * @param {string} path
  * @returns {Promise<string>}
  */
@@ -249,9 +279,13 @@ const text = (store, path) =>
       found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
     );
 
-/** A drive with a folder an agent branched and then changed. */
-async function agentBranch({ changedBy = "k-claude" } = {}) {
-  const raw = createMemoryStore();
+/** A drive with a folder an agent branched and then changed.
+ * @param {{changedBy?: string, store?: import("../core/files.js").FileStore | null}} [arg] `store` hands
+ * in the store the Worker builds on a storage deployment (the S3 test
+ * below); the default is the in-memory store the other tests drive.
+ */
+async function agentBranch({ changedBy = "k-claude", store = null } = {}) {
+  const raw = store ?? createMemoryStore();
   // The branches module scopes the store itself, exactly as the Worker hands
   // it in (src/index.js passes the unscoped store and the handler scopes it),
   // so the test drives it the way the Worker does.
@@ -262,7 +296,8 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   // The branch snapshot lives in the KV namespace the Worker binds (drive
   // #252), and this test drives it through the same store object the route
   // gets, so the rewind below reads a snapshot out of KV rather than the row.
-  const snapshots = createKvSnapshotStore(createTestKv());
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
   const created = await createBranch(
     db,
     snapshots,
@@ -274,7 +309,7 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   // The agent edits one file and deletes another, inside the branch copy.
   await scoped.write("/.branches/fix/a.txt", new Blob(["agent rewrote a"]).stream(), "text/plain");
   await scoped.remove("/.branches/fix/keep.txt");
-  return { raw, scoped, db, snapshots, created };
+  return { raw, scoped, db, snapshots, kv, created };
 }
 
 test("the rewind screen lists what the agent changed before anything is touched", async () => {
@@ -288,7 +323,7 @@ test("the rewind screen lists what the agent changed before anything is touched"
     snapshots,
     raw,
     ACCOUNT,
-    () => AT,
+    { now: () => AT },
   );
   const [row] = (await branches.json()).branches;
   const preview = await rewindPreview(scopeStore(raw, ACCOUNT), row, AT, snapshots);
@@ -304,7 +339,7 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // Attribution is on the same row the rewind reads, so the screen can say
   // whose work this is with no second store.
   assert.equal(preview.changedBy, "k-claude");
-  // The window is the drive's own 30 days, read from src/files.js rather than
+  // The window is the drive's own 30 days, read from core/files.js rather than
   // declared here, so the two promises are one number.
   assert.equal(REWIND_WINDOW_DAYS, 30);
   assert.equal(preview.windowDays, 30);
@@ -340,6 +375,33 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   const again = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT);
   assert.equal(failedStatus(again), 409);
   assert.equal(/** @type {{error: string}} */ (again).error, failureMessage("branch-not-open"));
+});
+
+test("rewind refuses an unavailable snapshot before it discards the copy", async () => {
+  const { raw, db, snapshots, kv } = await agentBranch();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const key = snapshotKey(ACCOUNT, "fix");
+
+  kv.values.delete(key);
+  assert.equal(failedStatus(await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT)), 500);
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
+
+  kv.values.set(key, "not-json");
+  assert.equal(failedStatus(await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT)), 500);
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
+
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = '{}', snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "fix")
+    .run();
+  assert.equal(failedStatus(await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT)), 500);
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
 });
 
 test("the 30-day window is the server's, not a hidden button", async () => {
@@ -436,6 +498,7 @@ test("the rewind route lists, previews, rewinds and refuses the rest", async () 
 
   // Then the one click.
   const done = await call("/fix", { method: "POST" });
+  assert.equal(done.status, 202);
   const body = await done.json();
   assert.equal(body.state, "discarded");
   assert.equal(body.rewound, 2);
@@ -460,6 +523,35 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
   assert.equal(body.rewinds, undefined);
   // And the branch is untouched: an anonymous POST rewound nothing.
   assert.equal(await text(scopeStore(raw, ACCOUNT), "/.branches/fix/a.txt"), "agent rewrote a");
+
+  // drive#329: a missing namespace is a 503, not a rewind that reports nothing
+  // changed, because the snapshot has one source and the leftover column is
+  // not read.
+  const unbound = await handleRewindRequest(
+    new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),
+    db,
+    null,
+    raw,
+    ACCOUNT,
+    () => AT,
+  );
+  assert.equal(unbound.status, 503);
+  assert.match(await unbound.text(), /can't reach storage/);
+
+  // drive#854: the scope the handler applies now sits between the guards and
+  // the rewind, so a store the Worker could not build stays a 503 and never
+  // reaches it. scopeStore throws a TypeError on no store, which would turn
+  // the answer into a crash; the guard answering first is what the pin below
+  // proves.
+  const storeless = await handleRewindRequest(
+    new Request(`https://drive.test${REWIND_ENDPOINT}/fix`, { method: "POST" }),
+    db,
+    snapshots,
+    null,
+    ACCOUNT,
+    () => AT,
+  );
+  assert.equal(storeless.status, 503);
 });
 
 // The one branch row a test needs by name, through the same list the screen
@@ -468,7 +560,7 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
 /**
  * @param {D1Database} db
  * @param {import("../src/branches.js").SnapshotStore|null} snapshots
- * @param {import("../src/files.js").FileStore} raw
+ * @param {import("../core/files.js").FileStore} raw
  * @param {string} name
  * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
  */
@@ -479,7 +571,7 @@ async function rewindBranchRowFor(db, snapshots, raw, name) {
     snapshots,
     raw,
     ACCOUNT,
-    () => AT,
+    { now: () => AT },
   );
   // `Response.json()` is typed as `Promise<any>` by the DOM lib, so the row is
   // read through one bound local carrying the list's own shape.
@@ -487,3 +579,150 @@ async function rewindBranchRowFor(db, snapshots, raw, name) {
   const body = await branches.json();
   return body.branches.find((row) => row.name === name) ?? null;
 }
+
+// The fake `rclone serve s3` the S3 test below answers: a Map of storage key
+// to bytes, one bucket per account, and every listing split through the one
+// shared rclone shape (test/rclone-listing.mjs). Each request is recorded, so
+// the test can prove the rewind only ever asked for the account's own bucket.
+function fakeS3() {
+  /** @type {Map<string, string>} */
+  const objects = new Map();
+  /** @type {string[]} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const method = init.method ?? "GET";
+    const url = new URL(String(input));
+    const segments = url.pathname
+      .split("/")
+      .filter((segment) => segment !== "")
+      .map(decodeURIComponent);
+    const bucket = segments[0] ?? "";
+    const key = segments.slice(1).join("/");
+    seen.push(`${method} /${bucket}/${key}${url.search}`);
+    if (url.search.includes("list-type=2")) {
+      // `start-after` is the resume marker the provider applies before the
+      // listing is cut: the answer holds only the keys after it. `max-keys` is
+      // not enforced — the answer is untruncated, which IsTruncated=false
+      // declares, and the store's own limit slice does the paging.
+      const after = url.searchParams.get("start-after");
+      const visible =
+        after === null ? objects : new Map([...objects].filter(([name]) => name > after));
+      return rcloneListResponse(visible, url.search, { bucket });
+    }
+    if (method === "PUT") {
+      const headers = /** @type {Record<string, string>|undefined} */ (init.headers);
+      const source = headers?.["x-amz-copy-source"];
+      if (typeof source === "string") {
+        // CopyObject: one key to another, bytes included, which is the part
+        // the branch copy hangs on. The source header carries its own bucket:
+        // there is one bucket per account here, so a copy that reaches across
+        // buckets is refused the way the provider refuses it.
+        const [, sourceBucket, ...sourceKey] = decodeURIComponent(source).split("/");
+        if (sourceBucket !== bucket) {
+          return new Response("<Error><Code>AccessDenied</Code></Error>", { status: 403 });
+        }
+        const from = sourceKey.join("/");
+        const bytes = objects.get(from);
+        if (bytes === undefined) {
+          return new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 });
+        }
+        objects.set(key, bytes);
+        return new Response('<CopyObjectResult><ETag>"copied"</ETag></CopyObjectResult>');
+      }
+      objects.set(key, await new Response(init.body).text());
+      return new Response("");
+    }
+    if (method === "GET") {
+      const bytes = objects.get(key);
+      return bytes === undefined
+        ? new Response("no such key", { status: 404 })
+        : new Response(bytes);
+    }
+    if (method === "DELETE") {
+      objects.delete(key);
+      return new Response(null, { status: 204 });
+    }
+    if (method === "POST" && url.search === "?delete") {
+      // DeleteObjects: every named key goes; the answer carries an <Error>
+      // block only for a key the provider refused, and none is refused here.
+      const body = await new Response(init.body).text();
+      for (const match of body.matchAll(/<Key>([\s\S]*?)<\/Key>/g)) {
+        objects.delete(decodeEntities(match[1]));
+      }
+      return new Response("<DeleteResult></DeleteResult>");
+    }
+    return new Response("the fake answers only the calls the rewind flow makes", { status: 400 });
+  };
+  return { objects, seen, fetchImpl };
+}
+
+test("a rewind on an S3 store scopes the store itself, so the copy removal walks storage keys", async () => {
+  // The Worker hands the rewind route the store `storeFor` built, and on a
+  // storage deployment that is an S3 store: every key is mapped through
+  // storageBucketForKey, which refuses a drive path with a TypeError. Before
+  // drive#854 the route passed that unscoped store on to the walk below, so
+  // the first drive-path listing threw and `drive undo` answered 500 on every
+  // S3-backed drive. The memory store never maps keys, which is why the tests
+  // above passed without the scope. Here the fixture writes through the scoped
+  // store — every key in the fake sits on a real `u/<account>/` storage key in
+  // the account's own bucket — and the route is driven with the raw store,
+  // exactly the call src/index.js makes.
+  const fake = fakeS3();
+  const s3 = createS3Store({
+    endpoint: "https://s3.test",
+    bucketFor: storageBucketForKey,
+    fetchImpl: fake.fetchImpl,
+  });
+  const { db, snapshots, raw } = await agentBranch({ store: s3 });
+  const scoped = scopeStore(s3, ACCOUNT);
+  // The fixture really is S3-shaped: the branch copy exists as a storage key
+  // in the account's bucket, not as a drive path, and the agent's edit is the
+  // one file the copy still holds.
+  const copyKeys = [...fake.objects.keys()].filter((key) =>
+    key.startsWith("u/acct-1/.branches/fix/"),
+  );
+  assert.deepEqual(copyKeys, ["u/acct-1/.branches/fix/a.txt"]);
+  assert.ok(fake.seen.every((line) => line.includes("/drv-acct-1/")));
+
+  // The undo screen: the diff comes off the branch's own copy, so the walk
+  // listed `u/acct-1/.branches/fix` through the scoped store and read the
+  // snapshot out of KV. Before the fix this request threw.
+  const list = await handleRewindRequest(
+    new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    () => AT,
+  );
+  assert.equal(list.status, 200);
+  const [row] = (await list.json()).rewinds;
+  assert.deepEqual(row.files.added, []);
+  assert.deepEqual(row.files.changed, ["a.txt"]);
+  assert.deepEqual(row.files.removed, ["keep.txt"]);
+  assert.equal(row.canRewind, true);
+
+  // Then `drive undo`'s one click: the branch copy's keys go, the original
+  // folder does not, and every request stayed in the account's own bucket.
+  const done = await handleRewindRequest(
+    new Request(`https://drive.test${REWIND_ENDPOINT}/fix`, { method: "POST" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+    () => AT,
+  );
+  assert.equal(done.status, 202);
+  const body = await done.json();
+  assert.equal(body.state, "discarded");
+  assert.equal(body.rewound, 2);
+  assert.deepEqual(
+    [...fake.objects.keys()].filter((key) => key.startsWith("u/acct-1/.branches/")),
+    [],
+  );
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/Photos/keep.txt"), "untouched");
+  assert.ok(fake.seen.length > 0);
+  assert.ok(fake.seen.every((line) => line.includes("/drv-acct-1/")));
+});

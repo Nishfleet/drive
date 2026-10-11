@@ -10,24 +10,36 @@
 // DRIVE_STANDIN_ENDPOINT and friends to run the same proof against real
 // storage (step 1) with no code change.
 //
+// Platforms: the two machines run the mount command the product runs on that
+// platform (cmd/drive/mount.go BuildMountPlan, issue #116/#279): `rclone
+// nfsmount` on macOS, which goes through the system NFS server so no macFUSE
+// is needed, and `rclone mount` on Linux. "Is it mounted" is the same platform
+// question the CLI asks (mount.go MountedDir): the BSD `mount` listing on
+// macOS, which has no findmnt at all, and findmnt on Linux. A macOS host that
+// does not give passwordless sudo (which `nfsmount` needs) skips with that
+// reason, as the Go proofs do (e2e_test.go mountSkipReason).
+//
 // Unprivileged FUSE: GitHub's ubuntu runners allow a direct mount. This VPS
-// refuses one (AppArmor restricts unprivileged user namespaces), so when the
-// direct mount is refused while a user namespace is available, the test
-// re-executes itself inside `unshare -Urm`, where the mounts are allowed and
-// visible to the test process itself.
+// refuses one (AppArmor restricts unprivileged user namespaces), so on Linux
+// when the direct mount is refused while a user namespace is available, the
+// test re-executes itself inside `unshare -Urm`, where the mounts are allowed
+// and visible to the test process itself. macOS has no user-namespace FUSE
+// escape hatch here, so the Linux fallback never runs there.
 //
 //   DRIVE_STANDIN_ENDPOINT  S3 endpoint (default: local `rclone serve s3`)
 //   DRIVE_STANDIN_BUCKET    bucket (stand-in default: "bucket")
 //   DRIVE_STANDIN_PREFIX    optional key prefix, e.g. u/<id>
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  S3 keys
 //   DRIVE_STANDIN_RCLONE    explicit path to the rclone binary
-//   DRIVE_STANDIN_FETCH_RCLONE=0  refuse to download rclone when it is absent
+//   DRIVE_STANDIN_FETCH_RCLONE=1  download the pinned rclone when it is absent
+//                                 (without it, a host with no rclone skips)
+//   DRIVE_STANDIN_RCLONE_URL / DRIVE_STANDIN_RCLONE_SHA256  another zip and
+//                                 its digest; one without the other fails
 //   DRIVE_STANDIN_PROPAGATION_SECONDS  seconds a save may take to cross
 //
-// Both machines in this proof are Linux (the VPS and CI runners). The Mac half
-// of the cross-machine proof is step 2's (issue #3) and lands with it, so this
-// file proves Linux to Linux: the storage backend is the only thing the two
-// machines share.
+// Both machines in this proof are the same platform, which is what a Mac
+// (issue #121) and a Linux box each run. The storage backend is the only thing
+// the two machines share.
 
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
@@ -41,8 +53,13 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { killTracked, spawnTracked } from "./minio-standin.mjs";
 
 const run = promisify(execFile);
+// The mount subcommand and the mount-detection tool differ by platform (the
+// same switch cmd/drive/mount.go BuildMountPlan and MountedDir make): nfsmount
+// + BSD mount listing on macOS, mount + findmnt on Linux.
+const isDarwin = platform() === "darwin";
 const TEST_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(TEST_FILE), "..");
 
@@ -60,10 +77,12 @@ const MTIME_WINDOW_MS = Math.max(60_000, (PROPAGATION_SECONDS + 15) * 1000);
 
 // The step-3 mount flag set. These are the spec's flags (docs/build-spec.md,
 // "The pieces" item 2): the VFS cache flags are the product's, and
-// --dir-cache-time is what lets machine B see machine A's save at all. The
-// first test asserts the spec names every one of them, so the doc and the
-// mount cannot drift apart. `export` is deliberately absent: this list is the
-// proof's copy of the flags, and the product's copy is cmd/drive/config.go.
+// --dir-cache-time 24h keeps a kept-offline folder open after the network
+// drops (issue #541). The other machine sees a save through vfs/refresh,
+// which the proof calls over rclone rc. The first test asserts the spec
+// names every flag, so the doc and the mount cannot drift apart. `export`
+// is deliberately absent: this list is the proof's copy of the flags, and
+// the product's copy is cmd/drive/config.go.
 const MOUNT_FLAGS = [
   "--vfs-cache-mode",
   "full",
@@ -72,7 +91,7 @@ const MOUNT_FLAGS = [
   "--vfs-cache-max-size",
   "20G",
   "--dir-cache-time",
-  "5s",
+  "24h",
   "--vfs-read-ahead",
   "128k",
 ];
@@ -93,9 +112,33 @@ function runs(bin) {
 
 // --- the stock rclone, from PATH or the pinned release ----------------------
 
-const RCLONE_RELEASE = "v1.71.2";
+// The release ci.yml pins (test/installer.test.mjs keeps the two equal).
+const RCLONE_RELEASE = "v1.75.1";
 const RCLONE_RELEASE_URL = `https://downloads.rclone.org/${RCLONE_RELEASE}`;
-const RCLONE_DEFAULT_URL = `${RCLONE_RELEASE_URL}/rclone-${RCLONE_RELEASE}-linux-amd64.zip`;
+// The pinned rclone release ships one zip per OS+arch pair. Each digest is
+// copied from that release's SHA256SUMS, the same way ci.yml pins the Linux
+// zip, so a download is checked against a value in this repo rather than one
+// fetched over the same channel as the zip.
+const RCLONE_ZIPS = {
+  "linux-x64": {
+    name: `rclone-${RCLONE_RELEASE}-linux-amd64.zip`,
+    sha256: "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab",
+  },
+  "darwin-x64": {
+    name: `rclone-${RCLONE_RELEASE}-osx-amd64.zip`,
+    sha256: "29253d0288b8fbbac46baad6e5f6add6cb01d462c79f10805bbd4631c4cdf82c",
+  },
+  "darwin-arm64": {
+    name: `rclone-${RCLONE_RELEASE}-osx-arm64.zip`,
+    sha256: "c61d7a371c62bcbbe882c3423aa4b8bf63485c248dd0f692997b8f0c3f6d0c6f",
+  },
+};
+// The right zip for this host; null means the host's platform is not
+// supported, in which case the caller skips instead of downloading.
+function rcloneDownload() {
+  const zip = RCLONE_ZIPS[/** @type {keyof typeof RCLONE_ZIPS} */ (`${platform()}-${arch()}`)];
+  return zip ? { url: `${RCLONE_RELEASE_URL}/${zip.name}`, sha256: zip.sha256 } : null;
+}
 let rcloneBin = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
 // The run inside the user namespace reports its outcome here, so the outer run
@@ -110,35 +153,27 @@ function reportResult(status, detail = "") {
 }
 
 /** @param {string} p */
-function sha256OfFile(p) {
-  const sum = spawnSync("sha256sum", [p], { encoding: "utf8" });
-  if (sum.status !== 0) throw new Error(`sha256sum ${p} exited ${sum.status}: ${sum.stderr}`);
-  return sum.stdout.trim().split(/\s+/)[0];
+async function sha256OfFile(p) {
+  // Uses Node's crypto rather than the `sha256sum` binary, so the release
+  // verification works on macOS as well as Linux.
+  const buf = await readFile(p);
+  return createHash("sha256").update(buf).digest("hex");
 }
 
-// The fetched binary is executed, so it is checked against the SHA256SUMS
-// rclone publishes beside the release. That catches a truncated or corrupted
-// download, not a compromised mirror (the sums come over the same channel).
-// Someone who points DRIVE_STANDIN_RCLONE_URL at their own copy owns that
-// copy's integrity, so only the default download is checked here.
+// The fetched binary is executed, so it is checked against the digest pinned
+// in RCLONE_ZIPS before it runs. A copy fetched from DRIVE_STANDIN_RCLONE_URL
+// is checked too, against DRIVE_STANDIN_RCLONE_SHA256, which must be set with
+// it: nothing downloaded here runs unchecked.
 /**
  * @param {import("node:test").TestContext} t
  * @param {string} zip
+ * @param {string} want
  */
-function verifyReleaseChecksum(t, zip) {
+async function verifyReleaseChecksum(t, zip, want) {
   const name = path.basename(zip);
-  const sumsUrl = `${RCLONE_RELEASE_URL}/SHA256SUMS`;
-  const sums = spawnSync("curl", ["-f", "-sSL", "--proto", "=https", sumsUrl], {
-    encoding: "utf8",
-  });
-  if (sums.status !== 0) throw new Error(`could not fetch ${sumsUrl} (curl exited ${sums.status})`);
-  const entry = sums.stdout.split("\n").find((line) => line.trim().split(/\s+/)[1] === name);
-  if (!entry) throw new Error(`${sumsUrl} lists no ${name}`);
-  const want = entry.trim().split(/\s+/)[0];
-  const got = sha256OfFile(zip);
-  if (got !== want)
-    throw new Error(`${name} failed its checksum: got ${got}, ${sumsUrl} says ${want}`);
-  t.diagnostic(`verified ${name} against ${sumsUrl}: sha256 ${got.slice(0, 16)}`);
+  const got = await sha256OfFile(zip);
+  if (got !== want) throw new Error(`${name} failed its checksum: got ${got}, pinned ${want}`);
+  t.diagnostic(`verified ${name} against its pinned sha256 ${got.slice(0, 16)}`);
 }
 
 // A runnable rclone, or null when this host legitimately cannot have one (the
@@ -153,15 +188,22 @@ async function findStockRclone(t) {
   const explicit = process.env.DRIVE_STANDIN_RCLONE;
   if (explicit)
     throw new Error(`DRIVE_STANDIN_RCLONE=${explicit} does not run; fix it or unset it`);
-  if (platform() !== "linux" || arch() !== "x64") return null;
-  if ((process.env.DRIVE_STANDIN_FETCH_RCLONE ?? "") === "0") {
+  const pinned = rcloneDownload();
+  if (!pinned) return null;
+  // A test run downloads and executes a binary only when asked to (drive#581).
+  if ((process.env.DRIVE_STANDIN_FETCH_RCLONE ?? "") !== "1") {
     t.diagnostic(
-      "rclone is not installed and DRIVE_STANDIN_FETCH_RCLONE=0, so nothing was downloaded",
+      "rclone is not installed and DRIVE_STANDIN_FETCH_RCLONE is not 1, so nothing was downloaded",
     );
     return null;
   }
 
-  const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? RCLONE_DEFAULT_URL;
+  const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? pinned.url;
+  const want = process.env.DRIVE_STANDIN_RCLONE_URL
+    ? process.env.DRIVE_STANDIN_RCLONE_SHA256
+    : pinned.sha256;
+  if (!want)
+    throw new Error("DRIVE_STANDIN_RCLONE_URL needs DRIVE_STANDIN_RCLONE_SHA256, the zip's digest");
   const dir = await mkdtemp(path.join(tmpdir(), "drive-standin-rclone-"));
   t.after(() => rm(dir, { recursive: true, force: true }).catch(() => {}));
   const bin = path.join(dir, "rclone");
@@ -170,7 +212,7 @@ async function findStockRclone(t) {
     stdio: "inherit",
   });
   if (curl.status !== 0) throw new Error(`could not download ${url} (curl exited ${curl.status})`);
-  if (url === RCLONE_DEFAULT_URL) verifyReleaseChecksum(t, zip);
+  await verifyReleaseChecksum(t, zip, want);
   const unzip = spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" });
   if (unzip.status !== 0) throw new Error(`could not unpack ${zip} (unzip exited ${unzip.status})`);
   const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
@@ -238,13 +280,13 @@ async function startStandin(dir) {
   // below and the two rclone configs in the temp work dir. It is not a real
   // credential and never leaves the test.
   const port = await freePort();
-  const server = spawn(
+  const server = spawnTracked(
     rcloneBin,
     ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`, "--auth-key", `${accessKey},${secretKey}`],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
   let stderr = "";
-  server.stderr.on("data", (chunk) => {
+  server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
   const deadline = Date.now() + 20_000;
@@ -258,7 +300,7 @@ async function startStandin(dir) {
       if (Date.now() > deadline) {
         // Kill it before throwing, or a stand-in that never listened would
         // outlive this function and hold its directory open.
-        server.kill("SIGTERM");
+        killTracked(server);
         throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
       }
       await sleep(300);
@@ -272,14 +314,50 @@ async function startStandin(dir) {
     secretKey,
     source: "local rclone serve s3 stand-in",
     stop: () => {
-      server.kill("SIGTERM");
+      killTracked(server);
       return Promise.resolve();
     },
   };
 }
 
 /**
- * @typedef {{label: string, mountDir: string, child: import("node:child_process").ChildProcess}} Machine
+ * @typedef {{label: string, mountDir: string, rcAddr: string, child: import("node:child_process").ChildProcess}} Machine
+ * @param {string} label
+ * @param {string} workDir
+ * @param {StorageCfg} cfg
+ * @returns {Promise<Machine>}
+ */
+// --- mount helpers ----------------------------------------------------------
+
+// Whether the kernel has dir mounted, through the one implementation the
+// product already has (mount.go MountedDir): the BSD `mount` listing on macOS
+// (which has no findmnt) or findmnt on Linux. A 5s per-call timeout bounds a
+// wedged mount the same way the product's 2s context does.
+/** @param {string} dir */
+function isMountPoint(dir) {
+  if (isDarwin) {
+    const out = spawnSync("mount", { encoding: "utf8", timeout: 5_000 });
+    if (out.status !== 0) return false;
+    for (const line of out.stdout.split("\n")) {
+      const i = line.indexOf(" on ");
+      if (i < 0) continue;
+      let point = line.slice(i + " on ".length);
+      const j = point.lastIndexOf(" (");
+      if (j > 0) point = point.slice(0, j);
+      // undo the octal escaping BSD mount(8) uses for spaces/tabs/backslashes
+      const unescaped = point
+        .replace(/\\040/g, " ")
+        .replace(/\\011/g, "\t")
+        .replace(/\\134/g, "\\");
+      if (unescaped === dir) return true;
+    }
+    return false;
+  }
+  const out = spawnSync("findmnt", ["-n", "-M", dir], { encoding: "utf8", timeout: 5_000 });
+  return out.status === 0 && (out.stdout ?? "").trim() !== "";
+}
+
+/**
  * @param {string} label
  * @param {string} workDir
  * @param {StorageCfg} cfg
@@ -307,10 +385,13 @@ async function startMachine(label, workDir, cfg) {
   const logPath = path.join(workDir, `rclone-${label}.log`);
   await run("mkdir", ["-p", mountDir, cacheDir]);
 
+  const rcAddr = `127.0.0.1:${await freePort()}`;
   const child = spawn(
     rcloneBin,
     [
-      "mount",
+      // nfsmount on macOS (system NFS server, no macFUSE), mount on Linux
+      // (FUSE). This is the same subcommand choice BuildMountPlan makes.
+      isDarwin ? "nfsmount" : "mount",
       `drive:${cfg.bucket}${cfg.prefix}`,
       mountDir,
       "--config",
@@ -322,6 +403,10 @@ async function startMachine(label, workDir, cfg) {
       "--log-level",
       "INFO",
       "--allow-non-empty",
+      "--rc",
+      "--rc-addr",
+      rcAddr,
+      "--rc-no-auth",
       ...MOUNT_FLAGS,
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
@@ -336,31 +421,33 @@ async function startMachine(label, workDir, cfg) {
     if (child.exitCode !== null) {
       const log = await readFile(logPath, "utf8").catch(() => "");
       const tail = log.split("\n").slice(-6).join("\n");
-      const refused = /Operation not permitted|fusermount:/.test(`${stderr}${tail}`);
+      const refused =
+        /Operation not permitted|fusermount:|nfsmount:|mount_nfs|sudoers|password is required/i.test(
+          `${stderr}${tail}`,
+        );
       const err = /** @type {Error & {refusedFuse?: boolean}} */ (
-        new Error(`rclone mount ${label} exited ${child.exitCode}\n${stderr}${tail}`)
+        new Error(
+          `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} exited ${child.exitCode}\n${stderr}${tail}`,
+        )
       );
       if (refused) err.refusedFuse = true;
       throw err;
     }
     // A live mount is a mount point in the kernel's table; an empty directory
-    // rclone has not mounted lists identically, so findmnt is the probe (the
-    // same check the CLI's Mounted() uses).
-    try {
-      await run("findmnt", ["-n", "-M", mountDir]);
-      return { label, mountDir, child };
-    } catch {
-      if (Date.now() > deadline) {
-        // Kill the stalled mount and keep its log tail in the error: the child
-        // would otherwise stay behind holding the FUSE mount and cache dir.
-        child.kill("SIGTERM");
-        const log = await readFile(logPath, "utf8").catch(() => "");
-        throw new Error(
-          `rclone mount ${label} never came up in 30s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
-        );
-      }
-      await sleep(500);
+    // rclone has not mounted lists identically, so isMountPoint is the probe
+    // (the same check the CLI's MountedDir() uses: findmnt on Linux, the BSD
+    // mount listing on macOS).
+    if (isMountPoint(mountDir)) {
+      return { label, mountDir, rcAddr, child };
     }
+    if (Date.now() > deadline) {
+      child.kill("SIGTERM");
+      const log = await readFile(logPath, "utf8").catch(() => "");
+      throw new Error(
+        `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} never came up in 30s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+      );
+    }
+    await sleep(500);
   }
 }
 
@@ -370,20 +457,37 @@ async function stopMachine(m) {
   const exited = new Promise((resolve) => m.child.once("exit", resolve));
   await Promise.race([exited, sleep(10_000)]);
   if (m.child.exitCode === null) m.child.kill("SIGKILL");
-  await run("fusermount3", ["-uz", m.mountDir]).catch(() => {});
-  await run("fusermount", ["-uz", m.mountDir]).catch(() => {});
+  // Clear the mount point after rclone exits the same way Unmount() does:
+  // umount on macOS (nfsmount's NFS share), fusermount on Linux (FUSE mount).
+  // A mount rclone already cleared is the normal case, hence the catch-all.
+  if (isDarwin) {
+    await run("umount", [m.mountDir]).catch(() => {});
+  } else {
+    await run("fusermount3", ["-uz", m.mountDir]).catch(() => {});
+    await run("fusermount", ["-uz", m.mountDir]).catch(() => {});
+  }
 }
 
 /**
  * @param {string} mountDir
  * @param {string} name
  * @param {number} seconds
+ * @param {string} rcAddr
  * @returns {Promise<{seconds: number} | null>}
  */
-async function waitForFile(mountDir, name, seconds) {
+async function waitForFile(mountDir, name, seconds, rcAddr) {
   const deadline = Date.now() + seconds * 1000;
   const started = Date.now();
   for (;;) {
+    // This proof drives vfs/refresh itself so a 24h directory cache still
+    // sees the other machine's save. The seconds it reports are therefore
+    // a floor (write-back plus one refresh), not the fill loop's interval.
+    // The refresh is called outside the try on purpose: a failed refresh
+    // must fail the proof with rclone's own message, not be swallowed into
+    // a bare timeout that hides why the save never appeared (issue #541).
+    // No fs= is passed: this machine has one mount, and rclone's vfs/refresh
+    // uses the only active VFS when fs is absent (vfs/rc.go, getVFS).
+    await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "vfs/refresh"]);
     try {
       await stat(path.join(mountDir, name));
       return { seconds: (Date.now() - started) / 1000 };
@@ -455,7 +559,7 @@ async function proof(t, workDir) {
   // Direction 1: machine A saves, machine B sees the save.
   const savedAtA = new Date();
   await writeFile(path.join(a.mountDir, fromA), payload("a"));
-  const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS);
+  const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS, b.rcAddr);
   assert.ok(
     onB,
     `a save on machine A (${fromA}) never reached machine B within ${PROPAGATION_SECONDS}s`,
@@ -464,7 +568,7 @@ async function proof(t, workDir) {
   // Direction 2: machine B saves, machine A sees the save.
   const savedAtB = new Date();
   await writeFile(path.join(b.mountDir, fromB), payload("b"));
-  const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS);
+  const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS, a.rcAddr);
   assert.ok(
     onA,
     `a save on machine B (${fromB}) never reached machine A within ${PROPAGATION_SECONDS}s`,
@@ -499,11 +603,12 @@ async function proof(t, workDir) {
 }
 
 test("a save on one machine reaches the other, both ways, with matching checksum and timestamp", async (t) => {
-  // Both machines here are Linux; the Mac half of the cross-machine proof is
-  // step 2's (issue #3, `rclone nfsmount` on a macOS runner).
-  if (platform() !== "linux") {
-    reportResult("skipped", "not Linux");
-    return t.skip("Linux-only proof (step 3); the Mac half is step 2, issue #3");
+  // Runs on macOS (rclone nfsmount, the system NFS server) and Linux
+  // (rclone mount, FUSE). A macOS host that lacks passwordless sudo skips
+  // below, just as the Go proofs do (e2e_test.go mountSkipReason).
+  if (platform() !== "linux" && platform() !== "darwin") {
+    reportResult("skipped", `not supported on ${platform()}`);
+    return t.skip(`cross-machine proof is Linux/macOS-only; this host is ${platform()}`);
   }
 
   const stock = await findStockRclone(t);
@@ -533,10 +638,18 @@ test("a save on one machine reaches the other, both ways, with matching checksum
     t.diagnostic(`a direct mount was refused here: ${refused.message.split("\n")[0]}`);
   }
 
-  // This host refuses an unprivileged FUSE mount (AppArmor on the VPS), so run
-  // the whole proof again inside a user namespace, where the mounts are legal
-  // and visible to this process. `proof`'s cleanup already ran with the test's
-  // teardown, so nothing from the refused attempt is still mounted.
+  // This host refuses an unprivileged FUSE mount (AppArmor on the VPS), so on
+  // Linux run the whole proof again inside a user namespace, where the mounts
+  // are legal and visible to this process. `proof`'s cleanup already ran with
+  // the test's teardown, so nothing from the refused attempt is still mounted.
+  // macOS has no user-namespace escape hatch here: a refused NFS mount (no
+  // passwordless sudo) skips with that reason instead.
+  if (isDarwin) {
+    reportResult("skipped", "the mount was refused (passwordless sudo NFS needed on macOS)");
+    return t.skip(
+      "this macOS host refuses the NFS mount; rclone nfsmount needs passwordless sudo for the built-in NFS server",
+    );
+  }
   if (inNamespace) {
     reportResult("skipped", "the mount was refused even inside a user namespace");
     return t.skip("this host refuses an unprivileged FUSE mount even inside a user namespace");

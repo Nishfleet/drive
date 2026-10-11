@@ -127,18 +127,18 @@ func TestUploadLabel(t *testing.T) {
 }
 
 // TestUploadLabelMatchesThePageWords pins the CLI's queue words to the ones
-// the first-run page uses (src/status.js UPLOAD_LABEL). The page is JavaScript
+// the first-run page uses (core/status.js UPLOAD_LABEL). The page is JavaScript
 // and cannot import the Go, and the Go cannot import the page, so this
 // test is the join between the two copies.
 func TestUploadLabelMatchesThePageWords(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{upToDateLabel, "Uploading 1 file", "Uploading {files} files"} {
 		if !strings.Contains(html, want) {
-			t.Errorf("src/status.js no longer carries %q; "+
+			t.Errorf("core/status.js no longer carries %q; "+
 				"the page and the CLI must show the same words for the same queue", want)
 		}
 	}
@@ -151,7 +151,7 @@ func TestReadCostLinePrintsTheCapLineFromTheWorker(t *testing.T) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("authorization")
 		var u UsageSummary
-		u.MeteredUsd, u.BillUsd, u.CeilingUsd = 1.25, 1.25, 12
+		u.MeteredUsd, u.BillUsd, u.MaximumUsd = 1.25, 1.25, 10
 		u.Cap.CapUsd, u.Cap.CountedUsd, u.Cap.RemainingUsd, u.Cap.State = 12, 1.25, 10.75, "active"
 		u.CapLine = capLine
 		_ = json.NewEncoder(w).Encode(u)
@@ -194,13 +194,66 @@ func TestReadCostLinePrintsTheWorkersReadOnlyCapLine(t *testing.T) {
 	}
 }
 
+func TestReadCostLinePrintsTheWorkersBalanceLine(t *testing.T) {
+	const balanceLine = "Your balance is $0, so uploads are paused. Your files are safe and downloads keep working. Top up to keep adding files."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $20.00: $0.00 counted this month, $20.00 left."
+		u.BalanceLine = balanceLine
+		u.Cap.State = "active"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want the cap and balance lines", reason)
+		}
+	})
+	if !strings.Contains(out, balanceLine) {
+		t.Errorf("got %q, want the Worker's balance line printed as-is", out)
+	}
+	if !strings.Contains(out, "Top up to keep adding files.") {
+		t.Errorf("got %q, want the top-up prompt", out)
+	}
+}
+
+func TestReadCostLinePrintsSize30AndTodayDraw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $12.00: $4.00 counted this month, $8.00 left."
+		u.Labels.Size30 = "1.0 TB"
+		u.Labels.Size30Reached = "2026-09-10"
+		u.Labels.Size30DropsOut = "2026-10-10"
+		u.Labels.TodayDraw = "$0.50"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, "dtok_test"); reason != "" {
+			t.Errorf("readCostLine said %q, want the size30 lines", reason)
+		}
+	})
+	for _, want := range []string{
+		"Biggest size in the last 30 days: 1.0 TB",
+		"Reached: 2026-09-10",
+		"Drops out: 2026-10-10",
+		"Today's draw: $0.50",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("got %q, want %q", out, want)
+		}
+	}
+}
+
 func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string
 		base string
 		want string
 	}{
-		{"unconfigured", "", "no api Worker configured"},
+		{"unconfigured", "", "No drive api is configured"},
 		{"bad url", "ftp://drive.example", "must be http or https"},
 		{"no host", "https://", "no host"},
 	}
@@ -227,8 +280,11 @@ func TestReadCostLineNamesAnUnreachableService(t *testing.T) {
 	}))
 	defer srv.Close()
 	reason := readCostLine(srv.URL, "")
-	if !strings.Contains(reason, "500") {
-		t.Errorf("reason %q, want the failing status named", reason)
+	if want := fail("api-down").Error(); reason != want {
+		t.Errorf("reason %q, want %q", reason, want)
+	}
+	if strings.Contains(reason, "500") || strings.Contains(reason, "nope") {
+		t.Errorf("reason %q carries raw error text; it must not", reason)
 	}
 }
 
@@ -245,6 +301,22 @@ func TestParseAPIBaseTrimsTheTrailingSlash(t *testing.T) {
 func TestParseAPIBaseRejectsAValueThatWouldBreakTheLine(t *testing.T) {
 	if _, err := parseAPIBase("https://drive.example\nGET /elsewhere"); err == nil {
 		t.Fatal("got no error for a newline in the api Worker URL, want one")
+	}
+}
+
+func TestNewAPIClientRefusesTheSameBrokenURLsAsParseAPIBase(t *testing.T) {
+	broken := []string{
+		"https://drive.example\nGET /elsewhere",
+		"https://drive.example\x00",
+		"https://user:pass@example.com",
+		"http://example.com",
+	}
+	for _, raw := range broken {
+		_, parseErr := parseAPIBase(raw)
+		_, newErr := NewAPIClient(raw, "")
+		if parseErr == nil || newErr == nil {
+			t.Errorf("%q: parseAPIBase=%v NewAPIClient=%v, want both refused", raw, parseErr, newErr)
+		}
 	}
 }
 
@@ -272,39 +344,156 @@ func TestQueueWhySaysWhatIsWaitingAndWhy(t *testing.T) {
 }
 
 func TestQueueWhyWordsMatchTheSources(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{waitingToUploadWhy, waitingUnmountedWhy, waitingUnmountedNext} {
 		if !strings.Contains(html, want) {
-			t.Errorf("src/status.js no longer carries %q", want)
+			t.Errorf("core/status.js no longer carries %q", want)
 		}
 	}
-	messages, err := os.ReadFile(filepath.Join("..", "..", "src", "messages.js"))
+	messages, err := os.ReadFile(filepath.Join("..", "..", "core", "messages.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(messages)
 	if !strings.Contains(text, diskCacheFullWhat) || !strings.Contains(text, diskCacheFullNext) {
-		t.Errorf("src/messages.js no longer carries the disk-cache-full words; the CLI must print the table")
+		t.Errorf("core/messages.js no longer carries the disk-cache-full words; the CLI must print the table")
 	}
 }
 
 func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 	home := t.TempDir()
-	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "vfs/stats") {
 			_, _ = w.Write([]byte(`{"diskCache":{"outOfSpace":true}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
-	})
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	}))
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if !cacheIsFull(home, true) {
 		t.Fatal("cacheIsFull = false, want true when rclone vfs/stats says outOfSpace")
+	}
+}
+
+// TestCacheStateReadsTheCapAndUseFromVFSStats is issue #543's watcher: the
+// status line is driven by rclone's own vfs/stats numbers, so a paused mount
+// with more unsent saves than the cache cap names the real cause instead of
+// telling the person to free disk space.
+func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
+	home := t.TempDir()
+	c := fakeRclone(t, withRCVersion(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "vfs/stats") {
+			_, _ = w.Write([]byte(`{"opt":{"CacheMaxSize":1073741824},"diskCache":{"bytesUsed":1610612736}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
+	capBytes, usedBytes, ok := cacheState(home, true)
+	if !ok {
+		t.Fatal("cacheState did not read vfs/stats")
+	}
+	if capBytes != 1<<30 || usedBytes != 3<<29 {
+		t.Fatalf("cacheState = (%d, %d), want the vfs/stats cap and use", capBytes, usedBytes)
+	}
+	line := cacheCapWhy(capBytes, usedBytes, 2<<30, true, true)
+	if !strings.Contains(line, "past its 1.0 GiB limit") || !strings.Contains(line, "paused") {
+		t.Errorf("cap line = %q, want the exceeded cap and the paused cause", line)
+	}
+}
+
+// TestFormatRCProgressRendersAFailingUpload is issue #543's third line:
+// rclone reports how many times it has tried and failed to send a save and
+// how long until it tries again; more than three tries is a failing save, not
+// a waiting one. The numbers are rclone's own vfs/queue fields.
+func TestFormatRCProgressRendersAFailingUpload(t *testing.T) {
+	got := formatRCProgress(
+		[]QueueItem{{Name: "stuck.bin", Size: 10 * 1024 * 1024, Tries: 14, Delay: 300}},
+		Stats{},
+	)
+	if !strings.Contains(got, "failed 14 times, retrying in 5 minutes") {
+		t.Errorf("failing line = %q, want the tries and the delay rclone reports", got)
+	}
+}
+
+// TestFormatRCProgressKeepsAWorkingUploadAtWaiting: an item with no failed
+// tries is still just waiting, so the failing words do not leak onto a save
+// that is moving.
+func TestFormatRCProgressKeepsAWorkingUploadAtWaiting(t *testing.T) {
+	got := formatRCProgress([]QueueItem{{Name: "ok.bin", Size: 1024}}, Stats{})
+	if strings.Contains(got, "failed") {
+		t.Errorf("waiting line = %q, must not read as failing", got)
+	}
+	if !strings.Contains(got, "waiting") {
+		t.Errorf("waiting line = %q, want waiting", got)
+	}
+}
+
+// TestUploadFailingIsANamedFailure is the summary status prints above the
+// per-file block: a save past the threshold is a named failure with a next
+// step that points at the storage error in the mount's log, not a bare
+// "waiting".
+func TestUploadFailingIsANamedFailure(t *testing.T) {
+	line := failf("upload-failing", "14", "the drive log").Error()
+	if !strings.Contains(line, "failed to upload 14 times") {
+		t.Errorf("upload-failing = %q, want the try count", line)
+	}
+	if !strings.Contains(line, "Next:") || !strings.Contains(line, "the drive log") {
+		t.Errorf("upload-failing = %q, want a next step naming the log", line)
+	}
+}
+
+// TestMaxUploadTriesReadsTheQueue pins the threshold's input: the summary
+// fires on the highest try count in the queue, so one dead file is enough.
+func TestMaxUploadTriesReadsTheQueue(t *testing.T) {
+	if got := maxUploadTries([]QueueItem{{Tries: 1}, {Tries: 14}, {Tries: 2}}); got != 14 {
+		t.Errorf("maxUploadTries = %d, want 14", got)
+	}
+	if got := maxUploadTries(nil); got != 0 {
+		t.Errorf("maxUploadTries(nil) = %d, want 0", got)
+	}
+}
+
+// TestCacheCapWhyNamesTheCauseWhenDirtySavesExceedTheCap is issue #543's
+// headline: a paused mount with 2 GiB of saves is over the cache cap because
+// the saves are unsent, not because the disk needs freeing. The line must say
+// the cap is exceeded and name the real cause.
+func TestCacheCapWhyNamesTheCauseWhenDirtySavesExceedTheCap(t *testing.T) {
+	const (
+		giB = 1 << 30
+		cap = 1 * giB
+	)
+	dirty := int64(2 * giB)
+	got := cacheCapWhy(cap, 3*giB/2, dirty, true, true)
+	if got == "" {
+		t.Fatal("cacheCapWhy = empty, want the cap-exceeded line")
+	}
+	if !strings.Contains(got, "past its 1.0 GiB limit") {
+		t.Errorf("cacheCapWhy = %q, want the cap named as exceeded", got)
+	}
+	if !strings.Contains(got, "2.0 GiB of saves") || !strings.Contains(got, "paused") {
+		t.Errorf("cacheCapWhy = %q, want the waiting bytes and the paused cause", got)
+	}
+	if !strings.Contains(got, "Next:") {
+		t.Errorf("cacheCapWhy = %q, want a next step", got)
+	}
+	// A paused cause must not be claimed when the drive is running.
+	if got := cacheCapWhy(cap, 3*giB/2, dirty, false, true); !strings.Contains(got, "uploads are behind") {
+		t.Errorf("running cause = %q, want uploads behind, not paused", got)
+	}
+	// Inside the cap the line is silent, so a healthy drive prints nothing.
+	if got := cacheCapWhy(20*giB, 1*giB, 2*giB, true, true); got != "" {
+		t.Errorf("inside the cap = %q, want empty", got)
+	}
+	// No limit means no claim.
+	if got := cacheCapWhy(0, 5*giB, 5*giB, true, true); got != "" {
+		t.Errorf("no cap = %q, want empty", got)
 	}
 }
 
@@ -338,4 +527,86 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return <-done
+}
+
+// TestStatusNamesABrokenCredentialsFileInsteadOfStopping is drive#544: a
+// machine that lost power mid-write leaves a half-written credentials.json,
+// and the command used to end there, before it printed anything. The answers
+// the command was opened for come first, and the broken file becomes one line
+// that names it and the command that writes it back.
+func TestStatusNamesABrokenCredentialsFileInsteadOfStopping(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CredentialsPath(home), []byte(`{"account_id": "acct_`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := runStatus([]string{"--home", home}); err != nil {
+			t.Fatalf("runStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "drive: not mounted") {
+		t.Errorf("the first answer is missing:\n%s", out)
+	}
+	if !strings.Contains(out, "uploads:") {
+		t.Errorf("the second answer is missing:\n%s", out)
+	}
+	var line string
+	for _, candidate := range nonEmptyLines(out) {
+		if strings.Contains(candidate, "this month: unknown") {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("the broken file is not reported as one unknown line:\n%s", out)
+	}
+	if !strings.Contains(line, CredentialsPath(home)) {
+		t.Errorf("line %q must name the file that could not be read", line)
+	}
+	if !strings.Contains(line, "drive login") {
+		t.Errorf("line %q must name the command that rewrites the file", line)
+	}
+	// The table's words, not the JSON parser's: a person reading the answer is
+	// given something to do, and no rclone or Go error text.
+	if strings.Contains(out, "unexpected end of JSON") || strings.Contains(out, "invalid character") {
+		t.Errorf("status printed the parser's error text:\n%s", out)
+	}
+}
+
+func TestStatusNamesABrokenOfflineListWithoutStopping(t *testing.T) {
+	// The other half of the file the drive wrote itself (drive#544): a
+	// truncated offline.json used to end the command, and the list is what
+	// tells the fill loop what to keep.
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(OfflineIndexPath(home), []byte(`{"paths": ["a`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := runStatus([]string{"--home", home}); err != nil {
+			t.Fatalf("runStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "uploads:") {
+		t.Errorf("the answer the command was opened for is missing:\n%s", out)
+	}
+	var line string
+	for _, candidate := range nonEmptyLines(out) {
+		if strings.Contains(candidate, "offline: unknown") {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("the broken list is not reported as one unknown line:\n%s", out)
+	}
+	if !strings.Contains(line, OfflineIndexPath(home)) || !strings.Contains(line, "drive offline") {
+		t.Errorf("line %q must name the file and the command that rebuilds it", line)
+	}
+	if strings.Contains(out, "unexpected end of JSON") {
+		t.Errorf("status printed the parser's error text:\n%s", out)
+	}
 }

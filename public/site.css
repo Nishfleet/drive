@@ -11,7 +11,16 @@
    z-index 30), the reading pages' type rules (h1, h2, section, .lede) and the
    pricing page's own sections.
 
-   System font stacks only: no web font files, so nothing blocks first paint. */
+   Two type and colour sets live here. The first (--paper, --ink, --accent,
+   --serif, --sans, --mono) is the one every page shipped with, on system font
+   stacks. The second (--drive-*, --font-*) is the loud price-first look the
+   home page moved to in drive#152: signal orange on warm paper and ink, with
+   three self-hosted faces (public/fonts/, each with its OFL licence). A page
+   adopts it by setting class="drive" on <html>, which aliases the old names
+   onto the new tokens so page CSS does not have to be rewritten token by
+   token (docs/design/DESIGN.md). Until a page does that, the @font-face rules
+   below download nothing, because a browser fetches a face only when a
+   rendered element uses it. */
 
 :root {
   --paper: #faf6ee;
@@ -29,6 +38,156 @@
   --sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* drive#152 palette. One accent: signal orange. --drive-orange is a fill
+     (the hero field, bars, buttons); text on it is --drive-ink (5.4:1). Orange
+     text on paper needs a darker shade to pass AA: --drive-orange-ink for any
+     size (5.3:1 on --drive-paper), --drive-orange-deep only for display type
+     of 24px and up (3.7:1, the large-text bar). No pure black or white. */
+  --drive-orange: #ff4f12;
+  --drive-orange-deep: #e23f05;
+  --drive-orange-ink: #b83200;
+  --drive-orange-wash: #ffe3d6;
+  --drive-ink: #1b1712;
+  --drive-ink-soft: #4a433a;
+  --drive-paper: #f5efe4;
+  --drive-paper-deep: #ebe3d4;
+  --drive-card: #fbf7f0;
+  --drive-line: #d8cdb9;
+  --drive-term: #2a241d;
+  --drive-term-text: #efe7da;
+  --drive-term-dim: #a49a8b;
+  --drive-term-ok: #cfe8b0;
+  --font-display:
+    "Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif;
+  --font-body: "Instrument Sans", "Instrument Sans Fallback", "Helvetica Neue", Arial, sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* drive#458: pages that adopt the home-page look set class="drive" on <html>.
+   The old names stay on :root with their reviewed values (test/site-styles.test.mjs
+   pins them), and this alias is how a page switches without restating every
+   colour. --serif becomes the display face so headings move with the home page;
+   body type comes along because body already reads --sans. */
+html.drive {
+  --paper: var(--drive-paper);
+  --paper-raised: var(--drive-card);
+  --ink: var(--drive-ink);
+  --ink-soft: var(--drive-ink-soft);
+  --ink-faint: var(--drive-ink-soft);
+  --rule: var(--drive-line);
+  --accent: var(--drive-orange-ink);
+  --accent-soft: var(--drive-orange-wash);
+  --serif: var(--font-display);
+  --sans: var(--font-body);
+  --mono: var(--font-code);
+}
+
+/* The three faces, latin subset, only the weights the home page sets. swap
+   shows the fallback at once and swaps when the file lands, so text is never
+   invisible; the home page preloads the 900 display face its price uses. */
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/big-shoulders-display-latin-800-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/big-shoulders-display-latin-900-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+/* Metric-matched fallbacks (drive#152). swap paints the fallback first, and
+   a fallback of a different width rewraps the text when the real face lands:
+   Lighthouse measured a 0.30 layout shift on the home page, against a 0.01
+   budget. These faces are the local Arial (Liberation Sans on Linux, the same
+   metrics), resized so a line takes the same width and height as it will in
+   the real face. They download nothing. size-adjust is the measured width
+   ratio of each real face to the fallback at the weight the page uses; the
+   ascent and descent are the real face's own (Big Shoulders 1971/429 of
+   2000 units, Instrument Sans 970/250 of 1000) divided by that ratio. JetBrains
+   Mono needs none: a monospace fallback is within 0.4% of its width. */
+@font-face {
+  font-family: "Big Shoulders Display Fallback";
+  font-weight: 800;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 66.3%;
+  ascent-override: 148.6%;
+  descent-override: 32.3%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Big Shoulders Display Fallback";
+  font-weight: 900;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 70.8%;
+  ascent-override: 139.2%;
+  descent-override: 30.3%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  font-weight: 400;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans");
+  size-adjust: 100.6%;
+  ascent-override: 96.5%;
+  descent-override: 24.9%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  font-weight: 600;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 95.7%;
+  ascent-override: 101.4%;
+  descent-override: 26.1%;
+  line-gap-override: 0%;
 }
 
 *,
@@ -70,24 +229,89 @@ body {
   outline-offset: 2px;
 }
 
+/* drive#870: the brand word is five characters longer than "drive" (Nish,
+   2026-10-09), and the 940px masthead row had no slack left for it. The last
+   nav item wrapped to a second line, and because the self-hosted faces land
+   after the first paint the rewrap counted as a layout shift: Lighthouse
+   measured 0.27 on /usage.html and 0.42 on /get-started.html against a 0.01
+   budget. One gap, 18px to 8px, buys back the room the word needs with room
+   to spare, so the row no longer depends on the brand fitting to the pixel. */
 .masthead {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px 18px;
+  gap: 8px;
   margin: 0 auto;
   padding: 28px 0 20px;
   border-bottom: 1px solid var(--rule);
 }
 
 .wordmark {
-  font-family: var(--serif);
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-weight: 900;
   letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+}
+
+/* The orange dash on the wordmark, from the home page (drive#152). Shared so
+   every page that carries <i> inside .wordmark gets the same mark. */
+.wordmark i {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--drive-ink);
+  position: relative;
+}
+
+.wordmark i::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--drive-orange);
+}
+
+/* The line under the wordmark, which names what the site is on every page that
+   carries the masthead. The pricing and sign-in pages declared it themselves
+   with these values; the shared chrome owns it now, so a page that adopts the
+   header does not have to know this rule exists. */
+.tagline {
+  color: var(--ink-soft);
+  font-size: 15px;
 }
 
 .masthead a {
   color: var(--ink-soft);
+}
+
+/* Sign out is an action, not a place, so it is a button. It has to read as
+   the other menu items or it looks bolted on. The no-script path is a form
+   that posts the same step, so the form itself must not add a box. */
+.masthead form {
+  display: inline;
+  margin: 0;
+}
+
+.masthead button {
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The page you are on, in the menu. Declared here so a page takes the shared
+   header with it, as the Web Files page took its own markup until drive#425. */
+.masthead a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 main {
@@ -97,4 +321,146 @@ main {
 .footer {
   padding-top: 18px;
   border-top: 1px solid var(--rule);
+}
+
+/* The pending-close banner (drive issue #424). Every signed-in page carries
+   this one <aside>, hidden until GET /api/account/close says the account is
+   closing, and public/close-banner.js fills the two slots from that payload:
+   the sentence is the module's CLOSE_COPY.pendingWhat with the endpoint's
+   purgeOn in it, and the link is the module's pendingCancel words. The styles
+   live here rather than in each page's <style> block so the four pages that
+   show it are one banner, and a page cannot drift from the others. */
+
+.close-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  border: 1px solid var(--bad);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.close-banner[hidden] {
+  display: none;
+}
+
+.close-banner p {
+  margin: 0;
+}
+
+.close-banner a {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The legal links every page footer carries (drive#523). */
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+
+.legal-links a {
+  color: inherit;
+}
+
+/* The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
+   use and support (src/legal.js). They share one reading column, declared
+   here once so the five pages cannot drift. */
+
+body.policy .masthead,
+body.policy main,
+body.policy .footer {
+  max-width: 720px;
+}
+
+body.policy h1 {
+  font-family: var(--serif);
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 900;
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin: 32px 0 12px;
+}
+
+body.policy main a {
+  color: var(--accent);
+}
+
+body.policy h2 {
+  font-size: 20px;
+  margin: 32px 0 8px;
+}
+
+body.policy .lede {
+  color: var(--ink-soft);
+  margin: 0 0 4px;
+}
+
+body.policy .updated {
+  color: var(--ink-faint);
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+body.policy table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+body.policy th,
+body.policy td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 8px 8px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* At phone width the processor table stacks, one company per block, and
+   each cell names its column, so the page never scrolls sideways. */
+@media (max-width: 600px) {
+  body.policy thead {
+    position: absolute;
+    left: -9999px;
+  }
+
+  body.policy tr {
+    display: block;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  body.policy td {
+    display: block;
+    border: 0;
+    padding: 2px 0;
+  }
+
+  body.policy td::before {
+    content: attr(data-label) ": ";
+    font-weight: 600;
+  }
+}
+
+body.policy .footer {
+  margin: 40px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+/* A fact the owner still has to fill in (src/legal.js LEGAL_PLACEHOLDERS).
+   Loud on purpose, so an unfilled one cannot pass for real words. */
+mark.to-fill {
+  background: var(--drive-orange-wash);
+  color: var(--ink);
+  outline: 2px dashed var(--drive-orange-ink);
+  padding: 0 4px;
 }

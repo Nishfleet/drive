@@ -34,5 +34,12 @@
   // (test/** and workers/api/test/**) were drive#162's remainder: their fakes
   // are now JSDoc-typed, so including them here leaves `npm run typecheck`
   // (and therefore `npm test`) green on main. This is the tracked inclusion.
-  "include": ["src", "test", "workers", "cloudflare.config.ts", ".cloudflare/types/index.d.ts"]
+  "include": [
+    "core",
+    "src",
+    "test",
+    "workers",
+    "cloudflare.config.ts",
+    ".cloudflare/types/index.d.ts"
+  ]
 }

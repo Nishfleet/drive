@@ -5,7 +5,7 @@
 // `branches.snapshot` column, and D1's row limit is 1 MiB. A 100,000-file
 // branch averages ~117 bytes an entry and comes to ~11 MiB — twelve
 // row-limits — so the write was refused and the person was told
-// `snapshot-bound` (src/messages.js). The boundary is the file count, not the
+// `snapshot-bound` (core/messages.js). The boundary is the file count, not the
 // branch's byte size: a 10 GB branch of one file is one entry.
 //
 // Phase 2, this file's other half: the snapshot moved out of the row into the
@@ -25,16 +25,18 @@
 //   * `this lands` — a branch whose snapshot is 12 row-limits big is created,
 //     listed, diffed and approved, and the row stays small while the value
 //     goes to the namespace;
-//   * a row written the old way (JSON in the column, no pointer) still diffs
-//     and approves, which is what makes a code rollback safe;
+//   * an empty pointer is not filled from that leftover column (drive#329):
+//     the reader has one source, the namespace, so a pre-namespace row reads
+//     empty;
 //   * a failure that is not the row limit is still the generic failure, and a
 //     namespace that cannot be written is `storage-down` with the copy cleaned
 //     up, not a 201 for a half-made branch.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../core/files.js";
+import { failureMessage } from "../core/messages.js";
 import {
-  approveBranch,
   createBranch,
   createKvSnapshotStore,
   diffBranch,
@@ -42,9 +44,58 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../src/branches.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import { failureMessage } from "../src/messages.js";
+import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 import { createTestD1, createTestKv } from "./harness.mjs";
+
+// The schema the proofs below that name `branches.snapshot` need: a branch
+// row that still has the column the code stopped reading, and every column the
+// current `src/branches.js` reads. `0017_drop_branches_snapshot.sql` has
+// shipped, so the harness default - the whole folder, which is what production
+// has (drive#579) - carries no `snapshot` column at all, and those proofs would
+// fail at prepare on a schema production does not have.
+//
+// So this is a SUBSET, and it says which two ends it is built from: the folder
+// up to and not including the drop, plus the files after it that today's reader
+// names a column of. Nothing here is a copy of a migration list, so the order
+// and the SQL are the folder's own and cannot drift from what the deploy
+// applies; `READER_DEPENDS_ON` is a list of NAMES that must sort after the
+// drop (a name at or before it throws, so it cannot double-apply or run out
+// of folder order), and a reader that starts to need a later migration fails
+// these proofs with `no such column` until its name goes in. That failure is
+// the point: it is the next run's edit, not a silently passing proof of nothing.
+//
+// The proofs are kept because what they measure is the reader's rule (drive#329:
+// the namespace the pointer names is the only source), and that rule has to hold
+// for a row written before the drop.
+const LEFTOVER_COLUMN_DROP = "0017_drop_branches_snapshot.sql";
+const READER_DEPENDS_ON = [
+  "0019_abuse_guards.sql",
+  "0030_branch_jobs.sql",
+  "0040_branch_reserved_bytes.sql",
+];
+const leftoverDropAt = MIGRATION_FILES.indexOf(LEFTOVER_COLUMN_DROP);
+if (leftoverDropAt < 0) {
+  throw new Error(
+    `${LEFTOVER_COLUMN_DROP} is not in migrations/drive/; the leftover-column subset cannot be built`,
+  );
+}
+const extraAfterDrop = READER_DEPENDS_ON.map((name) => {
+  const at = MIGRATION_FILES.indexOf(name);
+  if (at < 0) {
+    throw new Error(`${name} is not in migrations/drive/; add it under its real filename`);
+  }
+  if (at <= leftoverDropAt) {
+    throw new Error(
+      `${name} sorts at or before ${LEFTOVER_COLUMN_DROP}; READER_DEPENDS_ON is only files after the drop`,
+    );
+  }
+  return name;
+});
+const WITH_LEFTOVER_COLUMN = Object.freeze(
+  [...MIGRATION_FILES.slice(0, leftoverDropAt), ...extraAfterDrop]
+    .sort()
+    .map((name) => `drive/${name}`),
+);
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 
@@ -105,7 +156,7 @@ test("the row limit is the file count, not the branch's bytes, and it is read of
   // has no row length limit of its own, which is why the ladder below stores
   // every size — and why the pinned number is the snapshot the product
   // produces, against the limit D1 applies to it.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const insert = db.prepare(
     "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
       "VALUES (?1,?2,?3,?4,?5,'open',?6,?7)",
@@ -154,7 +205,7 @@ test("a 100,000-file branch lands: the value goes to the namespace and the row s
   // A store that silently wrote the JSON back into the column would fail (2);
   // a store that wrote the row without the value would fail (1). Neither can
   // pass by accident.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
   const store = scopeStore(createMemoryStore(), ACCOUNT);
@@ -209,7 +260,7 @@ test("a 100,000-file branch lands: the value goes to the namespace and the row s
   );
   // The whole value is readable through the one reader every diff uses, and it
   // parses to all 100,000 entries — so a branch of that size is not refused.
-  const read = await readSnapshot(snapshots, row.snapshot_key, row.snapshot);
+  const read = await readSnapshot(snapshots, row.snapshot_key);
   assert.equal(Object.keys(read).length, 100000, "every entry is readable from the namespace");
   assert.deepEqual(read["Photos/album-000/img-000000.jpg"], entry(0));
 });
@@ -235,15 +286,9 @@ test("a branch whose snapshot is over the row limit is created, listed and diffe
   const branches = await listBranches(db, snapshots, store, ACCOUNT);
   const huge = branches.find((branch) => branch.name === "huge");
   assert.ok(huge, "the branch is listed");
-  // The diff ran against the namespace's value, not the row's column: the row's
-  // column is `{}`, which would have reported 1 addition (the copy's one file)
-  // and no removals. Only a value read out of the namespace produces 100,000
-  // removals, so the counts below prove which source was read.
-  assert.equal(
-    huge.changed,
-    100001,
-    "the diff ran against the namespace's value, not the row's column",
-  );
+  // drive#563: the list reads stored counts, not a live walk of 100,000
+  // files. The one-branch diff below is what still reads the namespace.
+  assert.equal(huge.changed, 0, "the list does not walk the store");
   assert.equal(huge.snapshotKey, key, "the list row points at the value, and carries no JSON");
   assert.deepEqual(
     Object.keys(/** @type {{snapshot: Record<string, unknown>}} */ (huge).snapshot),
@@ -253,87 +298,116 @@ test("a branch whose snapshot is over the row limit is created, listed and diffe
   // And the full diff, for one branch, resolves the same value.
   const diff = await diffBranch(store, {
     ...huge,
-    snapshot: await readSnapshot(snapshots, huge.snapshotKey, huge.snapshot),
+    snapshot: await readSnapshot(snapshots, huge.snapshotKey),
   });
   assert.equal(diff.removed.length, 100000, "the 100,000 entries are all the copy is missing");
   assert.deepEqual(diff.added, ["img.jpg"], "and the copy's one file is not in the snapshot");
   assert.deepEqual(diff.changed, []);
 });
 
-test("a row written before the migration still diffs and approves from its column", async () => {
-  // The rollback claim. A row made before migration 0012 has its JSON in
-  // `branches.snapshot` and an empty `snapshot_key`, and the code falls back to
-  // the column, so an open branch a person is working in keeps working across
-  // the deploy and across a rollback. The branch is created with NO snapshot
-  // store at all, which is what a deployment with no namespace looks like, and
-  // it lands in the column exactly as it did before this change.
-  const db = createTestD1();
+test("an empty pointer is not filled from the leftover column", async () => {
+  // drive#329: the column is no longer a source. A pre-namespace row may still
+  // hold its JSON there (the drop is the next phase), but `readSnapshot` does
+  // not consult it, so an empty pointer reads empty. That is the only source
+  // left: the namespace the pointer names.
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
-  const created = await createBranch(db, null, store, ACCOUNT, { folder: "/Photos", name: "old" });
+  const created = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "old",
+  });
   assert.equal(/** @type {{state: string}} */ (created).state, "open");
-  const row = /** @type {{snapshot: string, snapshot_key: string}} */ (
-    await db
-      .prepare("SELECT snapshot, snapshot_key FROM branches WHERE account_id = ?1 AND name = ?2")
-      .bind(ACCOUNT.id, "old")
-      .first()
-  );
-  assert.equal(row.snapshot_key, "", "no namespace, no pointer");
-  assert.equal(
-    Object.keys(JSON.parse(row.snapshot)).length,
-    1,
-    "the JSON is in the column, as before",
-  );
-  // It diffs: an edit in the branch copy is seen.
+  const key = snapshotKey(ACCOUNT, "old");
+  const json = kv.values.get(key);
+  assert.equal(typeof json, "string");
+  // Strip the pointer so the row looks the way migration 0012 left it: JSON in
+  // the column, empty key. The copy on disk is real, so a fallback would still
+  // see the one-file change; the pointer-only reader must not.
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = ?3, snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "old", json)
+    .run();
   await store.write("/.branches/old/a.txt", new Blob(["edited"]).stream(), "text/plain");
-  const listed = await listBranches(db, null, store, ACCOUNT);
-  assert.equal(listed[0].changed, 1, "the column is the fallback, so the diff is still real");
-  // And it approves: the copy goes back into the original.
-  const approved = await approveBranch(db, null, store, ACCOUNT, "old");
-  assert.equal(/** @type {{state: string}} */ (approved).state, "approved");
-  const object = await store.read("/Photos/a.txt");
-  assert.equal(object ? await new Response(object.body).text() : null, "edited");
+
+  assert.deepEqual(
+    await readSnapshot(snapshots, ""),
+    {},
+    "an empty pointer is empty, not the column",
+  );
+  const before = await listBranches(db, snapshots, store, ACCOUNT);
+  assert.equal(before[0].changed, 0, "the list reads stored counts, not a live walk");
+  const emptyDiff = await diffBranch(store, {
+    ...before[0],
+    snapshot: await readSnapshot(snapshots, before[0].snapshotKey),
+  });
+  assert.equal(
+    emptyDiff.added.length + emptyDiff.changed.length + emptyDiff.removed.length,
+    1,
+    "the copy's one file counts as added because the snapshot did not come from the column",
+  );
 });
 
-test("a row written before the migration is listed correctly beside a row in the namespace", async () => {
-  // The mixed case, and the one `listBranches` can get wrong. A deployment
-  // that has migrated has BOTH kinds of open branch: rows made before the
-  // migration (JSON in the column, no pointer) and rows made after (JSON in the
-  // namespace). The list must resolve each through its own source, and must not
-  // read the column for a row that has a pointer.
-  //
-  // The drift is built so the two sources give DIFFERENT numbers, because a
-  // count that is the same either way proves nothing: a branch whose copy has
-  // one file added and one file changed reports 2 against the real snapshot,
-  // and 3 against an empty one (every file in the copy is then "added"). A
-  // list that read the column for a migrated row, or that resolved an old row
-  // against an empty map, lands on the wrong one.
-  const db = createTestD1();
+test("listBranches never fills an empty pointer from the leftover column", async () => {
+  // The mixed case `listBranches` can get wrong: one open row with a pointer
+  // and one without, after the same copy drift. Against the real snapshot that
+  // is 1 added + 1 changed (count 2). Against an empty map every copy file is
+  // "added" (count 3). drive#329 has one source, so the empty-pointer row must
+  // land on 3 — if it landed on 2, the column was still being read.
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
   await store.write("/Photos/b.txt", new Blob(["b"]).stream(), "text/plain");
-  // The old row, written the way the pre-migration code wrote it.
-  await createBranch(db, null, store, ACCOUNT, { folder: "/Photos", name: "old" });
-  // The new row, written with the namespace.
   const snapshots = createKvSnapshotStore(createTestKv());
+  await createBranch(db, snapshots, store, ACCOUNT, { folder: "/Photos", name: "old" });
   await createBranch(db, snapshots, store, ACCOUNT, { folder: "/Photos", name: "new" });
-  // Both branches' copies drift the same way: b.txt edited in the copy, and a
-  // c.txt that is only in the copy.
   for (const branch of ["old", "new"]) {
     await store.write(`/.branches/${branch}/b.txt`, new Blob(["edited"]).stream(), "text/plain");
     await store.write(`/.branches/${branch}/c.txt`, new Blob(["c"]).stream(), "text/plain");
   }
+  const oldKey = snapshotKey(ACCOUNT, "old");
+  const json = await snapshots.get(oldKey);
+  assert.equal(typeof json, "string");
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = ?3, snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "old", json)
+    .run();
 
   const listed = await listBranches(db, snapshots, store, ACCOUNT);
   const old = listed.find((branch) => branch.name === "old");
   const fresh = listed.find((branch) => branch.name === "new");
-  assert.equal(old?.changed, 2, "the pre-migration row diffs from its column: 1 added, 1 changed");
-  assert.equal(fresh?.changed, 2, "the migrated row diffs from the namespace: 1 added, 1 changed");
-  assert.equal(old?.snapshotKey, "", "the old row has no pointer");
-  assert.notEqual(fresh?.snapshotKey, "", "the new row has one");
-  // Neither answer carries a snapshot: the read-path half of drive#252 is that
-  // the list body is pointers, whether the JSON is in the column or the
-  // namespace.
+  assert.ok(old);
+  assert.ok(fresh);
+  assert.equal(old.changed, 0, "the list reads stored counts, not a live walk");
+  assert.equal(fresh.changed, 0, "the list reads stored counts, not a live walk");
+  const oldDiff = await diffBranch(store, {
+    ...old,
+    snapshot: await readSnapshot(snapshots, old.snapshotKey),
+  });
+  const freshDiff = await diffBranch(store, {
+    ...fresh,
+    snapshot: await readSnapshot(snapshots, fresh.snapshotKey),
+  });
+  assert.equal(
+    oldDiff.added.length + oldDiff.changed.length + oldDiff.removed.length,
+    3,
+    "an empty pointer is not filled from the column: every copy file counts as added",
+  );
+  assert.equal(
+    freshDiff.added.length + freshDiff.changed.length + freshDiff.removed.length,
+    2,
+    "a pointer still diffs from the namespace: 1 added, 1 changed",
+  );
+  assert.equal(old?.snapshotKey, "", "the stripped row has no pointer");
+  assert.notEqual(fresh?.snapshotKey, "", "the namespaced row has one");
   for (const branch of listed) {
     assert.deepEqual(
       Object.keys(/** @type {{snapshot: Record<string, unknown>}} */ (branch).snapshot),
@@ -347,7 +421,7 @@ test("a branch of a folder under the row limit is still stored whole", async () 
   // The other side of the measurement: the boundary is the file count, not the
   // branch's byte size, so an 8,800-file branch (~1,005 KiB) is written and
   // read back byte for byte — here into the namespace, which holds it whole.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
   const json = snapshotJson(8800);
@@ -381,7 +455,7 @@ test("a branch of a folder under the row limit is still stored whole", async () 
   );
   const big = branches.find((branch) => branch.name === "big");
   assert.ok(big, "the branch this test just wrote is there");
-  const read = await readSnapshot(snapshots, big.snapshotKey, big.snapshot);
+  const read = await readSnapshot(snapshots, big.snapshotKey);
   assert.equal(Object.keys(read).length, 8800, "the whole value is readable through the namespace");
 });
 
@@ -451,12 +525,35 @@ test("a namespace that cannot be written is storage-down, and the copy is cleane
   );
   const left = await store.list("/.branches/gone");
   assert.deepEqual(left, [], "the copy is cleaned up, so a retry does not find a stale branch");
-  const rows = await db.prepare("SELECT COUNT(*) AS n FROM branches").first();
+  const leftover = await db
+    .prepare("SELECT state FROM branches WHERE account_id = ?1 AND name = ?2")
+    .bind(ACCOUNT.id, "gone")
+    .first();
   assert.equal(
-    Number(/** @type {{n: number}} */ (rows).n),
-    0,
-    "no row is left for a branch that never landed",
+    leftover?.state,
+    "discarded",
+    "the claim is closed so a retry of the name is not a 409",
   );
+});
+
+test("createBranch without a snapshot store is storage-down before it claims", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  const result = await createBranch(
+    db,
+    /** @type {import("../src/branches.js").SnapshotStore} */ (/** @type {unknown} */ (null)),
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "gone" },
+  );
+  assert.equal(/** @type {{status: number}} */ (result).status, 500);
+  assert.equal(/** @type {{error: string}} */ (result).error, failureMessage("storage-down"));
+  const leftover = await db
+    .prepare("SELECT name FROM branches WHERE account_id = ?1 AND name = ?2")
+    .bind(ACCOUNT.id, "gone")
+    .first();
+  assert.equal(leftover, null, "no claim row is written");
 });
 
 /**
@@ -512,7 +609,7 @@ function failingRun(failure) {
 
 /**
  * A scoped drive with one small file, over a fresh D1.
- * @returns {Promise<{db: import("./harness.mjs").TestD1, store: import("../src/files.js").FileStore}>}
+ * @returns {Promise<{db: import("./harness.mjs").TestD1, store: import("../core/files.js").FileStore}>}
  */
 async function driveWithOneFile() {
   const db = createTestD1();
@@ -520,3 +617,212 @@ async function driveWithOneFile() {
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
   return { db, store };
 }
+
+// --- The namespace's 25 MiB value cap, and the chunked store (drive #564) --
+
+test("a snapshot bigger than the cap splits into write-token-scoped parts, and reads back byte for byte", async () => {
+  // The cap is 25 MiB a value; ~117 bytes an entry put 100,000 files at 11 MiB
+  // and a branch five times that size past the cap with nothing in the design
+  // to catch it. The chunker splits, so growth lands in more parts instead of
+  // in a refusal. The tests run the same store the Worker runs with a few
+  // dozen bytes a chunk, because the split logic is size-independent.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const json = snapshotJson(20);
+  const key = snapshotKey(ACCOUNT, "chunked");
+  const bytes = await snapshots.put(key, json);
+  assert.equal(bytes, Buffer.byteLength(json), "the store still reports the value's byte length");
+
+  // The key itself is the manifest: small, parseable, and naming the parts.
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  assert.equal(manifest.fmt, "drive-branch-snapshot-chunked-1");
+  assert.equal(typeof manifest.gen, "string", "the manifest names a write token");
+  assert.match(
+    manifest.gen,
+    /^[0-9a-z]+\.[0-9a-f]{12}$/,
+    "the token is the write's own start clock and an unshared random suffix",
+  );
+  assert.ok(manifest.parts > 1, `20 entries at 64 bytes a part split (${manifest.parts} parts)`);
+  assert.equal(manifest.bytes, bytes);
+  // Every part lives beside the snapshot key under the same account prefix,
+  // so one account's parts can never be another account's.
+  for (let index = 0; index < manifest.parts; index += 1) {
+    assert.ok(
+      kv.values.has(`${key}.p${manifest.gen}.${index}`),
+      `part ${index} is at the key the manifest's write token names`,
+    );
+  }
+
+  const read = await readSnapshot(snapshots, key);
+  assert.deepEqual(read, JSON.parse(json), "the parts reassemble to the same JSON");
+});
+
+test("a name with characters outside the basic plane survives the split", async () => {
+  // The split is over UTF-8 bytes, and a cut in the middle of a four-byte
+  // character would corrupt both halves. The entries below put such a
+  // character across every possible offset in a 64-byte chunk, so the
+  // boundary scan is exercised against each of the character's four bytes.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const emoji = "\u{1F43D}"; // a pig snout, four bytes in UTF-8
+  /** @type {Record<string, {size: number, etag: string, modified: number}>} */
+  const entries = {};
+  for (let pad = 0; pad < 8; pad += 1) {
+    entries[`Photos/${"\u00e9".repeat(pad)}${emoji}-img-${pad}.jpg`] = entry(pad);
+  }
+  const json = JSON.stringify(entries);
+  const key = snapshotKey(ACCOUNT, "unicode");
+  await snapshots.put(key, json);
+  const read = await readSnapshot(snapshots, key);
+  assert.deepEqual(read, entries, "every four-byte character crossed the split whole");
+});
+
+test("the second write claims its own token, and deletes the first write's parts only after the manifest lands", async () => {
+  // The manifest is the commit point: while a write is in flight the old
+  // manifest still names the old write's token, so a concurrent reader reads
+  // the old snapshot whole. The old parts are deleted only once the new
+  // manifest has replaced it - and part keys carry the write's own token, so
+  // a retry never overwrites a part a reader might be reading.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const key = snapshotKey(ACCOUNT, "gen");
+  await snapshots.put(key, snapshotJson(5));
+  const firstManifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  const firstToken = firstManifest.gen;
+  const firstWriteParts = [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`));
+  await snapshots.put(key, snapshotJson(9));
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  assert.notEqual(manifest.gen, firstToken, "each write claims a token of its own");
+  for (const stale of firstWriteParts) {
+    assert.ok(!kv.values.has(stale), `${stale} is deleted once the new manifest has landed`);
+  }
+  assert.equal(
+    [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`)).length,
+    manifest.parts,
+    "exactly the live write's parts remain",
+  );
+  const read = await readSnapshot(snapshots, key);
+  assert.equal(Object.keys(read).length, 9);
+});
+
+test("two writes in flight at once never share a part key, and a reader reads one write whole", async () => {
+  // The in-run review's Critical: a generation derived from the manifest a
+  // write read is the same number for every write that read it, so two
+  // writes to one key interleaving could land parts on the same keys and the
+  // later cleanup could delete the other's parts mid-commit - a reader would
+  // then reassemble one write's manifest from the other write's parts. Each
+  // write claims an unshared token, so there is no shared key to collide on
+  // and no cleanup that can reach the other write's parts.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const key = snapshotKey(ACCOUNT, "race");
+  await snapshots.put(key, snapshotJson(2));
+  const before = JSON.parse(/** @type {string} */ (kv.values.get(key))).gen;
+  await Promise.all([snapshots.put(key, snapshotJson(3)), snapshots.put(key, snapshotJson(4))]);
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  assert.notEqual(manifest.gen, before, "the live manifest names a new write's token");
+  for (let index = 0; index < manifest.parts; index += 1) {
+    assert.ok(
+      kv.values.has(`${key}.p${manifest.gen}.${index}`),
+      `part ${index} of the live write is in the namespace whole`,
+    );
+  }
+  // Both writes read the same previous manifest, so both cleaned up the same
+  // token's parts, and neither touched the other's.
+  assert.ok(
+    ![...kv.values.keys()].some((name) => name.startsWith(`${key}.p${before}.`)),
+    "the manifest both writes read has no parts left",
+  );
+  // The direct evidence for the fix: both writes' part sets are in the
+  // namespace under different tokens, so neither writer's parts collided with
+  // or were deleted by the other's - with one shared generation number these
+  // keys would have been the same keys.
+  const partNames = [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`));
+  assert.ok(
+    partNames.some((name) => !name.startsWith(`${key}.p${manifest.gen}.`)),
+    "the losing write's parts are still there, on a token of their own",
+  );
+  assert.ok(
+    partNames.length > manifest.parts,
+    "two writes, two part sets: the live one and the orphaned one",
+  );
+  const read = await readSnapshot(snapshots, key);
+  assert.ok(
+    [3, 4].includes(Object.keys(read).length),
+    "the reader sees exactly one of the two writes, never a mix of their parts",
+  );
+});
+
+test("a write that died before its manifest has its parts swept by the next write, past the lease", async () => {
+  // A write that crashes between its parts and its manifest leaves parts no
+  // manifest names, and manifest-ordered cleanup never comes back for them -
+  // the parts would linger forever. The sweep at the next write's start
+  // takes any token the live manifest does not name once it outlasts the
+  // lease, and only then: a write whose parts are landing right now is
+  // inside the lease, so a racing sweep cannot delete it from under itself.
+  const kv = createTestKv();
+  let clock = Date.parse("2026-10-05T00:00:00.000Z");
+  const snapshots = createKvSnapshotStore(kv, {
+    chunkBytes: 64,
+    orphanLeaseMs: 60 * 1000,
+    now: () => clock,
+  });
+  const key = snapshotKey(ACCOUNT, "orphans");
+  /** @param {number} ms @returns {string} */
+  const orphanTokenAt = (ms) => `${new Date(ms).getTime().toString(36)}.aaaabbbbcccc`;
+  const crashedAt = clock - 10 * 60 * 1000;
+  const inFlightAt = clock - 1000;
+  await kv.put(`${key}.p${orphanTokenAt(crashedAt)}.0`, "garbage");
+  await kv.put(`${key}.p${orphanTokenAt(crashedAt)}.1`, "garbage");
+  await kv.put(`${key}.p${orphanTokenAt(inFlightAt)}.0`, "in flight");
+  await snapshots.put(key, snapshotJson(3));
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(crashedAt)}.0`),
+    false,
+    "the crashed write's parts are gone",
+  );
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(crashedAt)}.1`),
+    false,
+    "every part of the crashed write is gone",
+  );
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(inFlightAt)}.0`),
+    true,
+    "a part younger than the lease stays - it belongs to a write still in flight",
+  );
+  clock += 2 * 60 * 1000;
+  await snapshots.put(key, snapshotJson(4));
+  assert.equal(
+    kv.values.has(`${key}.p${orphanTokenAt(inFlightAt)}.0`),
+    false,
+    "once the lease runs out on a write that never committed, its parts go too",
+  );
+  const read = await readSnapshot(snapshots, key);
+  assert.equal(Object.keys(read).length, 4, "the sweep never touched the live write's parts");
+});
+
+test("a snapshot written before chunking reads unchanged, and a missing part is an error, not an empty drive", async () => {
+  // Deployments roll, and a namespace holds values an earlier version wrote:
+  // a plain whole-JSON value at the key is read exactly as the old store read
+  // it. But a manifest that names parts the namespace does not hold is
+  // corruption the caller must see - returning null would read as "no
+  // snapshot" and a diff would quietly rebuild from nothing.
+  const kv = createTestKv();
+  const plain = createKvSnapshotStore(kv);
+  const key = snapshotKey(ACCOUNT, "legacy");
+  await plain.put(key, snapshotJson(3));
+  const chunked = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const read = await readSnapshot(chunked, key);
+  assert.equal(Object.keys(read).length, 3, "the pre-chunking value reads through the new store");
+
+  const key2 = snapshotKey(ACCOUNT, "torn");
+  await chunked.put(key2, snapshotJson(4));
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key2)));
+  kv.values.delete(`${key2}.p${manifest.gen}.0`);
+  await assert.rejects(
+    readSnapshot(chunked, key2),
+    /does not have it/,
+    "a torn snapshot is named as such, loudly",
+  );
+});

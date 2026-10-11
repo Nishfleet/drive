@@ -14,6 +14,7 @@ import (
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
+  drive login [flags]     connect this machine to your account and write its storage settings
   drive init [flags]      mount the drive, start it at login, and connect your agent tools
   drive agents [flags]                list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
@@ -24,34 +25,60 @@ Usage:
   drive diff <branch> [flags]           files added, changed or removed in a branch
   drive approve <branch> [flags]        copy a branch's changes back into the original
   drive discard <branch> [flags]        throw a branch away; the original is untouched
+  drive undo [branch] [flags]           rewind the last branch an agent worked in
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
+  drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
+  drive renew [flags]      renew this device's storage key before the vendor session ends
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
-  drive status [flags]     the mount, the cache, the upload queue, what is kept offline, and this month's cost
+  drive status [flags]     is it working, what is waiting, how much am I spending
+  drive doctor [flags]     print the one block to paste into a support message
   drive pause [flags]      stop the bytes leaving the device; survives a restart
   drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
   drive cache              show the disk the mount's cache uses and its limit
   drive cache --max 5G     change that limit
   drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
-  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive share <file>       make a link anyone can open, logged out
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
+  drive logout --all      sign out every device signed in to this account (--yes to confirm)
   drive export [flags]     write this account's data to a file (or stdout)
+  drive import <remote>    copy files from an rclone remote you already have
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
 
+Install, one line per system, then run drive login and drive init:
+  macOS                   brew install nish3451/tap/drive
+  Linux, Debian or Ubuntu  sudo apt install ./drive_*.deb
+  Linux, Fedora or RHEL    sudo dnf install ./drive_*.rpm
+
+Linux: download the package for your CPU from the GitHub release first, then
+run the line above in that folder. Windows: winget install Nishfleet.Drive
+once a signed build is published.
+
+drive update hands off to the package manager that installed this binary
+(brew, apt, dnf or winget).
+
 Update flags:
   --check   say whether a newer release exists, install nothing
-  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
+  --home    where the drive lives (default $HOME); a mount that is up restarts on it
+  --rclone  path to the rclone binary (default rclone from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
+
+Every failure prints what happened and the exact next step.
+DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
+the mount's own log.
+
+When something goes wrong, the docs have a page for it:
+  https://storagebun.com/docs/troubleshooting
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)
@@ -72,15 +99,20 @@ Mount flags:
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --rc-addr     loopback address the mount's remote control binds (env
-                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+                DRIVE_RC_ADDR; default a free loopback port stored in rclone.env)
   --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
-                default the hostname)
+                default the hostname, with a suffix when it is a stock model name)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
 Mount flags work on drive init too: init mounts the drive first, then
 connects the agent tools, so one command takes a machine from nothing to a
 mounted drive.
+
+Login flags:
+  --api    drive api base URL (env DRIVE_API_URL, default the live site)
+  --device  name this device is called in the account (default the hostname,
+            with a suffix when it is a stock model name)
 
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
@@ -97,6 +129,15 @@ Cache flags:
 Export flags:
   --out   file to write the export to; stdout when it is not given
 
+Doctor flags:
+  --api          api Worker base URL (env DRIVE_API_URL)
+  --logs <n>     how many log lines to print (default 20, 0 for none)
+
+Import flags:
+  --rclone   path to the rclone binary (env DRIVE_RCLONE, default rclone)
+  --dry-run  print the copy rclone would run, copy nothing
+  --home     home directory (default $HOME)
+
 The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
 The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
 or --secret-key-stdin. --secret-key is refused.
@@ -106,13 +147,54 @@ Logout flags:
   --force       discard files waiting to upload instead of refusing to logout
   --forget-pending  clear the failed-revoke record, after you have revoked the
                key on the devices page in the web app
+  --all         sign out every device signed in to this account, not just this
+               one. It prints what it would do and changes nothing without --yes
+  --yes         answer yes to --all's confirm step
 `
 
+// commands is the drive's command table: one entry per subcommand, and the
+// one place a command exists. main dispatches through it, `drive --help`
+// (usage) documents every entry in it, and the agent notes (noteBody,
+// access.go; skillBody, skill.go) name only entries from it. The gate tests
+// in command_table_test.go hold the help text and the notes to this table,
+// so neither can drift from what actually runs (drive#461: both notes
+// advertised `drive restore`, which no step has shipped).
+var commands = map[string]func([]string) error{
+	"login":     runLogin,
+	"init":      runInit,
+	"agents":    runAgents,
+	"search":    runSearch,
+	"branch":    runBranch,
+	"branches":  runBranches,
+	"diff":      runDiff,
+	"approve":   runApprove,
+	"discard":   runDiscard,
+	"undo":      runUndo,
+	"mount":     runMount,
+	"unmount":   runUnmount,
+	"offline":   runOffline,
+	"online":    runOnline,
+	"uninstall": runUninstall,
+	"status":    runStatus,
+	"doctor":    runDoctor,
+	"pause":     runPause,
+	"resume":    runResume,
+	"cap":       runCap,
+	"cache":     runCache,
+	"share":     runShare,
+	"request":   runRequest,
+	"logout":    runLogout,
+	"export":    runExport,
+	"import":    runImport,
+	"update":    runUpdate,
+	"prefetch":  runPrefetch,
+	"renew":     runRenew,
+}
+
 // version is the fallback when the toolchain records no module version
-// in this binary (a checkout build: go build, go run, go test). A binary
-// installed with `go install github.com/Nishfleet/drive/cmd/drive@<tag>`
-// carries that tag in its build information, and `drive version`
-// prints that instead (cmd/drive/update.go versionText).
+// in this binary (a checkout build: go build, go run, go test). A released
+// binary carries the tag goreleaser stamped, and `drive version` prints
+// that instead (cmd/drive/update.go versionText).
 var version = "0.1.0"
 
 func main() {
@@ -122,61 +204,17 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
-	case "init":
-		err = runInit(os.Args[2:])
-	case "agents":
-		err = runAgents(os.Args[2:])
-	case "search":
-		err = runSearch(os.Args[2:])
-	case "branch":
-		err = runBranch(os.Args[2:])
-	case "branches":
-		err = runBranches(os.Args[2:])
-	case "diff":
-		err = runDiff(os.Args[2:])
-	case "approve":
-		err = runApprove(os.Args[2:])
-	case "discard":
-		err = runDiscard(os.Args[2:])
-	case "mount":
-		err = runMount(os.Args[2:])
-	case "unmount":
-		err = runUnmount(os.Args[2:])
-	case "offline":
-		err = runOffline(os.Args[2:])
-	case "online":
-		err = runOnline(os.Args[2:])
-	case "uninstall":
-		err = runUninstall(os.Args[2:])
-	case "status":
-		err = runStatus(os.Args[2:])
-	case "pause":
-		err = runPause(os.Args[2:])
-	case "resume":
-		err = runResume(os.Args[2:])
-	case "cap":
-		err = runCap(os.Args[2:])
-	case "cache":
-		err = runCache(os.Args[2:])
-	case "share":
-		err = runShare(os.Args[2:])
-	case "request":
-		err = runRequest(os.Args[2:])
-	case "logout":
-		err = runLogout(os.Args[2:])
-	case "export":
-		err = runExport(os.Args[2:])
-	case "update":
-		err = runUpdate(os.Args[2:])
-	case "prefetch":
-		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(versionText())
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		run, ok := commands[os.Args[1]]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
+			os.Exit(2)
+		}
+		err = run(os.Args[2:])
 	}
 	if err != nil {
 		// A FlagSet with ContinueOnError has already printed the parse error
@@ -189,8 +227,9 @@ func main() {
 		if errors.Is(err, errFlagParse) {
 			os.Exit(2)
 		}
-		fmt.Fprintln(os.Stderr, "drive:", err)
-		os.Exit(1)
+		// Every failure a person reads goes through the message table:
+		// what happened, then the exact next step (drive#117).
+		os.Exit(printFailure(os.Stderr, err))
 	}
 }
 
@@ -205,7 +244,7 @@ type commonFlags struct {
 
 func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.StringVar(&c.home, "home", os.Getenv("HOME"), "home directory")
+	fs.StringVar(&c.home, "home", DefaultHome(), "home directory")
 	fs.StringVar(&c.rclone, "rclone", "", "path to the rclone binary (default rclone from PATH)")
 	return c
 }
@@ -297,7 +336,7 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	if err != nil {
 		return "", StorageConfig{}, err
 	}
-	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey)
+	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey, storageFromDisk(m.common.home))
 	if err != nil {
 		return "", StorageConfig{}, err
 	}
@@ -319,7 +358,7 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 		// falls back, because it is not a command and cannot answer.
 		if !IsLoopbackAddr(m.rcAddr) {
 			return "", StorageConfig{}, fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
-				"is unauthenticated, so it binds %s only", m.rcAddr, RCAddr())
+				"binds loopback only, so it stays on this machine", m.rcAddr)
 		}
 		_ = os.Setenv(rcAddrEnvName, m.rcAddr)
 	}
@@ -356,7 +395,29 @@ func runUnmount(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	return Unmount(CurrentGOOS(), common.home)
+	goos := CurrentGOOS()
+	home := common.home
+	mountDir := DefaultMountDir(home)
+	before, listErr := Mounted(goos, home)
+	if listErr != nil {
+		before = true
+	}
+	if err := Unmount(goos, home); err != nil {
+		return err
+	}
+	after, err := Mounted(goos, home)
+	if err != nil {
+		return err
+	}
+	if after {
+		return failf("unmount-failed", mountDir)
+	}
+	if before {
+		fmt.Printf("drive: unmounted %s\n", mountDir)
+	} else {
+		fmt.Printf("drive: no mount at %s\n", mountDir)
+	}
+	return nil
 }
 
 // countEntries lists a mount dir with a deadline. A FUSE mount whose backing

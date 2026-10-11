@@ -19,7 +19,7 @@
 //   2. The 30-day window, and it is enforced on the server rather than by
 //      hiding a button: a branch older than the window answers that it cannot
 //      be rewound, so a caller who ignores the page cannot rewind it either.
-//      The window is the drive's own (src/files.js RECENTLY_DELETED_DAYS, the
+//      The window is the drive's own (core/files.js RECENTLY_DELETED_DAYS, the
 //      same 30 days the 30-day undo promises), read from there so the two
 //      cannot disagree about how long a rewind lasts.
 //   3. Who changed what, from the same row the rewind reads: the key on the
@@ -32,38 +32,27 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
-import { diffBranch, discardBranch, listBranches, readSnapshot } from "./branches.js";
-import { RECENTLY_DELETED_DAYS } from "./files.js";
-import { failureMessage } from "./messages.js";
-import { unauthorizedResponse } from "./status.js";
+
+import { RECENTLY_DELETED_DAYS, scopeStore } from "../core/files.js";
+import { json } from "../core/http.js";
+import { failureMessage } from "../core/messages.js";
+import { unauthorizedResponse } from "../core/status.js";
+import { DAY_MS } from "../core/units.js";
+import {
+  diffBranch,
+  discardBranch,
+  listBranches,
+  readSnapshot,
+  readSnapshotObject,
+} from "./branches.js";
 
 /** The route family the rewind screen and the CLI read. */
 export const REWIND_ENDPOINT = "/api/rewind";
 
 /** How long a rewind stays available, in days. Read from the drive's own
- * 30-day undo window (src/files.js) rather than declared here, so the screen's
+ * 30-day undo window (core/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message
@@ -107,17 +96,22 @@ function plain(message, status, headers = {}) {
  *   string, createdAt: string, ageDays: number, windowDays: number,
  *   restorableUntil: string, canRewind: boolean,
  *   unavailableReason: "window-closed"|"already-closed"|null,
- *   files: {added: string[], changed: string[], removed: string[], count: number}}} RewindPreview
+ *   files: {added: string[], changed: string[], removed: string[], count: number},
+ *   progress: {kind: string, done: number, total: number}}} RewindPreview
  *
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
  * @param {number} now epoch milliseconds, injected so the tests pin the clock
- * @param {import("./branches.js").SnapshotStore|null} [snapshots] the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store;
+ *   required because the leftover column is no longer a source (drive#329)
  * @returns {Promise<RewindPreview>}
  */
-export async function rewindPreview(store, branch, now, snapshots = null) {
+export async function rewindPreview(store, branch, now, snapshots) {
   if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`rewindPreview needs a clock, got ${String(now)}`);
+  }
+  if (!snapshots) {
+    throw new TypeError("rewindPreview needs the branch snapshot store");
   }
   const createdAt = Date.parse(branch.createdAt);
   if (!Number.isFinite(createdAt)) {
@@ -143,7 +137,7 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
   const diff = open
     ? await diffBranch(store, {
         ...branch,
-        snapshot: await readSnapshot(snapshots, branch.snapshotKey, branch.snapshot),
+        snapshot: await readSnapshot(snapshots, branch.snapshotKey),
       })
     : null;
   const files = diff
@@ -170,6 +164,11 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
     canRewind: open && withinWindow,
     unavailableReason: open ? (withinWindow ? null : "window-closed") : "already-closed",
     files,
+    progress: {
+      kind: branch.jobKind ?? "",
+      done: branch.jobDone ?? 0,
+      total: branch.jobTotal ?? 0,
+    },
   });
 }
 
@@ -180,12 +179,12 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
  * would not show and a branch of another account is "not found", never
  * "forbidden" — the same answer `drive branches` gives.
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {{id: string}} account
  * @param {string} name
  */
-export async function rewindBranchRow(db, snapshots, store, account, name) {
+async function rewindBranchRow(db, snapshots, store, account, name) {
   const branch = (await listBranches(db, snapshots, store, account)).find(
     (row) => row.name === name,
   );
@@ -204,18 +203,52 @@ export async function rewindBranchRow(db, snapshots, store, account, name) {
  * from ever meaning two different things to the same branch.
  *
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {{id: string}} account
  * @param {string} name
  * @param {number} now epoch milliseconds
+ * @param {{send?: Function, sendBatch?: Function}|null} [queue]
  * @returns {Promise<{error: string, status: number, rewind?: RewindPreview}
- *   |{name: string, state: string, rewound: number, changedBy: string}>}
+ *   |{name: string, state: string, rewound: number, changedBy: string, progress?: {kind: string, done: number, total: number}}>}
  */
-export async function rewindBranch(db, snapshots, store, account, name, now) {
+export async function rewindBranch(db, snapshots, store, account, name, now, queue = null) {
   const branch = await rewindBranchRow(db, snapshots, store, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
+  }
+  // A rewind the queue's retries used up (drive#844). The row is claimed in
+  // `rewinding`, its message was dead-lettered, and `rewindPreview` below
+  // refuses it, because a branch whose row already says `rewinding` does not
+  // read as an open branch — so nothing moves the row and the name stays held
+  // by the one-active-name index for good. Finishing a rewind is not starting
+  // one: it removes this branch's own copies and never names the original, so
+  // neither the open state nor the 30-day window decides it, and the batches
+  // run from the cursor the row carries, the way the queue would have
+  // continued them. This sits above the snapshot check below for the same
+  // reason: a row stuck long enough to lose its snapshot can still be
+  // cleaned up, and refusing it would keep the name held for good over a
+  // snapshot the cleanup never reads. Cancelling it instead is the discard
+  // door, which has taken a `rewinding` row since this change.
+  if (branch.state === "rewinding" && branch.jobKind === "rewind") {
+    const resumed = await discardBranch(db, snapshots, store, account, name, {
+      kind: "rewind",
+      queue,
+    });
+    if ("error" in resumed) {
+      return resumed;
+    }
+    return {
+      name: resumed.name,
+      state: resumed.state,
+      rewound: resumed.removed ?? 0,
+      changedBy: branch.changedBy,
+      progress: resumed.progress,
+    };
+  }
+  if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
+    console.error?.(`rewind refused unavailable snapshot for row ${branch.id}`);
+    return { error: failureMessage("unexpected"), status: 500 };
   }
   const preview = await rewindPreview(store, branch, now, snapshots);
   if (!preview.canRewind) {
@@ -223,7 +256,10 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
       preview.unavailableReason === "window-closed" ? "rewind-window-closed" : "branch-not-open";
     return { error: failureMessage(key), status: 409, name, rewind: preview };
   }
-  const result = await discardBranch(db, snapshots, store, account, name);
+  const result = await discardBranch(db, snapshots, store, account, name, {
+    kind: "rewind",
+    queue,
+  });
   // `result` is a union; the failure arm is the one carrying a status, and
   // `"error" in result` is its discriminator and narrows the success arm.
   if ("error" in result) {
@@ -234,6 +270,7 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
     state: result.state,
     rewound: preview.files.count,
     changedBy: preview.changedBy,
+    progress: result.progress,
   };
 }
 
@@ -248,10 +285,14 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
  *
  * @param {Request} request
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
- * @param {import("./branches.js").FileStore|null} store a scoped store
+ * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot
+ *   store; a request with no namespace is a 503, because the legacy column a
+ *   branch could fall back to is gone (drive#329)
+ * @param {import("./branches.js").FileStore|null} store the store as the
+ *   Worker built it, unscoped; the handler scopes it below
  * @param {{id: string}|null} account
  * @param {() => number} now
+ * @param {{send?: Function, sendBatch?: Function}|null} [queue]
  */
 export async function handleRewindRequest(
   request,
@@ -260,6 +301,7 @@ export async function handleRewindRequest(
   store,
   account,
   now = () => Date.now(),
+  queue = null,
 ) {
   if (!account) {
     return unauthorizedResponse();
@@ -267,6 +309,21 @@ export async function handleRewindRequest(
   if (!db || !store) {
     return json({ error: failureMessage("unexpected") }, 503);
   }
+  if (!snapshots) {
+    // A rewind names the files it would undo by diffing against the branch's
+    // snapshot, and that snapshot has exactly one source now, so a missing
+    // namespace is the "a dependency the drive cannot serve without" answer and
+    // not a rewind that reports nothing changed.
+    console.error?.("rewind: BRANCH_SNAPSHOTS is not bound");
+    return json({ error: failureMessage("storage-down") }, 503);
+  }
+  // The store arrives unscoped, exactly as src/index.js hands it over, and the
+  // walk below is all drive paths. An S3 store maps every key through
+  // storageBucketForKey, which refuses a drive path, so the scope goes on
+  // here, after the account gate — the same handling handleBranchesRequest
+  // gives its own store, so no caller can hand the rewind an unscoped store
+  // and turn `drive undo` into a 500 (drive#854).
+  const scoped = scopeStore(store, account);
   const url = new URL(request.url);
   const rest = url.pathname.slice(REWIND_ENDPOINT.length).replace(/\/$/, "");
   const at = now();
@@ -280,8 +337,8 @@ export async function handleRewindRequest(
     // so the screen's list and its detail cannot disagree about what a rewind
     // would undo or whether one is still possible.
     const previews = [];
-    for (const branch of await listBranches(db, snapshots, store, account)) {
-      previews.push(await rewindPreview(store, branch, at, snapshots));
+    for (const branch of await listBranches(db, snapshots, scoped, account)) {
+      previews.push(await rewindPreview(scoped, branch, at, snapshots));
     }
     return json({ rewinds: previews });
   }
@@ -294,19 +351,19 @@ export async function handleRewindRequest(
   if (name === "") {
     return json({ error: "Not found." }, 404);
   }
-  const branch = await rewindBranchRow(db, snapshots, store, account, name);
+  const branch = await rewindBranchRow(db, snapshots, scoped, account, name);
   if (!branch) {
     return json({ error: failureMessage("branch-not-found") }, 404);
   }
   if (request.method === "GET") {
-    return json({ rewind: await rewindPreview(store, branch, at, snapshots) });
+    return json({ rewind: await rewindPreview(scoped, branch, at, snapshots) });
   }
   if (request.method === "POST") {
-    const result = await rewindBranch(db, snapshots, store, account, name, at);
+    const result = await rewindBranch(db, snapshots, scoped, account, name, at, queue);
     if ("error" in result) {
       return json(result, result.status);
     }
-    return json(result);
+    return json(result, 202);
   }
   return plain("Method not allowed. GET the rewind, or POST it.", 405, { allow: "GET, POST" });
 }

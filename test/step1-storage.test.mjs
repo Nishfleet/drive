@@ -12,7 +12,13 @@
 // stock S3, so the endpoint, region, bucket and root credential are the whole
 // of the difference; pointing this at iDrive e2 or B2 uses the same code
 // (`DRIVE_STANDIN_ENDPOINT` + the credential variables), but a real account's
-// bucket is the vendor's to configure and that is #173's step, not this test's.
+// bucket has to be configured first. It was, on 2026-10-03 (drive#173), and
+// the real run then stops in `provisionBucket`: iDrive e2 refuses every
+// notification destination ARN (`400 InvalidArgument`), because its
+// destinations are registered in the vendor's console, not through the bucket
+// API. So a real-account proof runs against the bucket as configured, and the
+// notification half of the done-when is read off the vendor's console — the
+// measured answers are in docs/build-spec.md.
 //
 // Keys are minted the way the product mints them: through the api Worker's own
 // POST /v1/keys route, which hands the scope to the storage endpoint as an STS
@@ -30,7 +36,8 @@
 //   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO in
 //                               test/minio-standin.mjs)
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  root credential
-//   DRIVE_STANDIN_BUCKET        bucket (default drive-standin)
+//   DRIVE_STANDIN_BUCKET        bucket, over each signed-in account's own
+//                               (`drv-<accountId>`, default)
 //   DRIVE_STANDIN_REGION        region (default us-east-1)
 //   DRIVE_STANDIN_WEBHOOK_URL   where notifications are POSTed (default: the
 //                               receiver binds an ephemeral port and the URL
@@ -45,26 +52,30 @@ import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-
-import { dispatch } from "../workers/api/src/index.js";
-import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "../workers/api/src/keyprovider.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
+import {
+  bucketForAccount,
+  CAPABILITIES_BY_KIND,
+  KEY_KINDS,
+  scopeFor,
+} from "../core/keyprovider.js";
+import { createMemoryStore } from "../core/keystore.js";
 import {
   createS3Client,
   parseListVersions,
   provisionBucket,
   readBucketConfig,
-} from "../workers/api/src/s3.js";
-import { createS3KeyProvider, policyForScope } from "../workers/api/src/s3-keys.js";
+} from "../core/s3.js";
+import { createS3KeyProvider, policyForScope } from "../core/s3-keys.js";
+import { dispatch } from "../workers/api/src/index.js";
 import { startMinioStandin } from "./minio-standin.mjs";
 
 // The last MinIO release, pinned by tag. MinIO's own downloads and Docker Hub
 // images were taken down at the end of 2025 and its GitHub repo is archived;
 // this image is the archived Bitnami package of that release, which is a stock
 // server with the three things step 1 needs (versioning, lifecycle rules and
-// bucket notifications). It is a stand-in: iDrive e2 replaces it in #173.
+// bucket notifications). It is a stand-in: a real vendor's bucket is the
+// credential swap away, and drive#173 measured one (iDrive e2, 2026-10-03).
 // `test/minio-standin.mjs` pins it and starts it.
-const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-standin";
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
 // 0 asks the kernel for a free port; the stand-in logs the one it bound and
 // `startMinioStandin` reads it back. A number reserved by binding, closing and
@@ -214,7 +225,7 @@ test("S3 signing is aws4fetch, not a hand-written SigV4 module", () => {
     false,
     "workers/api/src/sigv4.js was replaced by aws4fetch",
   );
-  const s3 = readFileSync(new URL("../workers/api/src/s3.js", import.meta.url), "utf8");
+  const s3 = readFileSync(new URL("../core/s3.js", import.meta.url), "utf8");
   assert.match(s3, /from "aws4fetch"/);
 });
 
@@ -263,24 +274,44 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     region: REGION,
     credentials: { accessKeyId: ROOT_ACCESS_KEY, secretAccessKey: ROOT_SECRET_KEY },
   });
-  const provisioned = await provisionBucket(root, {
-    bucket: BUCKET,
-    notificationQueueArn: NOTIFICATION_ARN,
-    hiddenVersionDays: 1,
-  });
-  t.diagnostic(
-    `provisioned ${BUCKET} on ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}`,
-  );
-
   const keyStore = createMemoryStore({
     keyProvider: createS3KeyProvider({
       endpoint,
       region: REGION,
-      bucket: BUCKET,
       masterAccessKeyId: ROOT_ACCESS_KEY,
       masterSecretAccessKey: ROOT_SECRET_KEY,
     }),
   });
+
+  // One bucket per account, which is what drive#371 moved the layout to and
+  // what drive#462 scopes every minted key to: the account signs in, the
+  // account's own bucket is provisioned below, and the keys minted for it are
+  // scoped to that bucket and nothing else. `DRIVE_STANDIN_BUCKET` still
+  // forces one bucket for a caller pointing at a bucket that is already
+  // provisioned (a real vendor's, as in drive#173).
+  /**
+   * Provision an account's own bucket the way build step 1 asks for a bucket
+   * (versioning, a one-day hidden-version lifecycle rule, the worker's event
+   * target) and give back the name every call below addresses it by.
+   * @param {string} accountId
+   */
+  async function ownBucket(accountId) {
+    const bucket = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(accountId);
+    const provisioned = await provisionBucket(root, {
+      bucket,
+      notificationQueueArn: NOTIFICATION_ARN,
+      hiddenVersionDays: 1,
+    });
+    t.diagnostic(
+      `provisioned ${bucket} for ${accountId} on ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}`,
+    );
+    return bucket;
+  }
+
+  // The first account signed in, and the bucket that is its own: the config
+  // read-back below is about this bucket.
+  const standinAccount = await signIn(keyStore, "standin-owner");
+  const BUCKET = await ownBucket(standinAccount.account.id);
 
   const logMock = t.mock.method(console, "log");
 
@@ -316,6 +347,10 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     "a delete leaves a hidden version and the restore brings back the same checksum",
     async () => {
       const owner = await signIn(keyStore, "proof-owner");
+      // The bucket that is this account's own, and the one every call below
+      // addresses: the keys minted for this account are scoped to it by the
+      // storage server and to no other bucket (drive#371, drive#462).
+      const bucket = await ownBucket(owner.account.id);
       const deviceKey = await mintKey(keyStore, owner.token, {
         kind: "device",
         name: "proof-laptop",
@@ -335,7 +370,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
       const savedAt = new Date().toISOString();
       const wrote = await device.send("PUT", {
-        bucket: BUCKET,
+        bucket,
         key,
         body: first,
         headers: { "content-type": "text/plain" },
@@ -346,7 +381,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       );
 
       const edited = await device.send("PUT", {
-        bucket: BUCKET,
+        bucket,
         key,
         body: second,
         headers: { "content-type": "text/plain" },
@@ -358,7 +393,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
       // The agent key's delete is refused by storage, not by the api: the key
       // carries no `s3:DeleteObject`.
-      const agentDelete = await agent.send("DELETE", { bucket: BUCKET, key });
+      const agentDelete = await agent.send("DELETE", { bucket, key });
       assert.equal(agentDelete.status, 403, "an agent key's delete must be refused by storage");
       assert.equal(
         accessDenied(agentDelete),
@@ -371,18 +406,18 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
       // The device key deletes. On a versioned bucket that leaves a delete
       // marker: the file is hidden, not gone.
-      const deleted = await device.send("DELETE", { bucket: BUCKET, key });
+      const deleted = await device.send("DELETE", { bucket, key });
       assert.equal(deleted.status, 204, `the device delete must succeed: ${deleted.text}`);
       const markerVersion = deleted.headers.get("x-amz-version-id");
       t.diagnostic(
         `device delete ${new Date().toISOString()}: delete-marker version ${markerVersion}`,
       );
 
-      const hidden = await device.send("GET", { bucket: BUCKET, key });
+      const hidden = await device.send("GET", { bucket, key });
       assert.equal(hidden.status, 404, "a deleted file must read as gone");
 
       const listing = await device.send("GET", {
-        bucket: BUCKET,
+        bucket,
         query: { versions: "", prefix: deviceKey.prefix },
       });
       assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
@@ -404,12 +439,12 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
       // Restore: remove the marker, which puts the last save back.
       const restored = await device.send("DELETE", {
-        bucket: BUCKET,
+        bucket,
         key,
         query: { versionId: marker.versionId },
       });
       assert.equal(restored.status, 204, `removing the marker must succeed: ${restored.text}`);
-      const back = await device.send("GET", { bucket: BUCKET, key });
+      const back = await device.send("GET", { bucket, key });
       assert.equal(back.status, 200, `the file must come back: ${back.text}`);
       assert.equal(
         sha256(back.text),
@@ -426,17 +461,29 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
   await t.test("an agent key cannot list, read or write another account's folder", async () => {
     const one = await signIn(keyStore, "account-one");
     const two = await signIn(keyStore, "account-two");
+    // Two accounts, so two buckets: every account's files are in the bucket that
+    // is its own (drive#371), and each key below is scoped to its own bucket by
+    // the storage server (drive#462).
+    const bucketOne = await ownBucket(one.account.id);
+    const bucketTwo = await ownBucket(two.account.id);
     const agentOne = await mintKey(keyStore, one.token, { kind: "agent", name: "agent-one" });
     const deviceTwo = await mintKey(keyStore, two.token, { kind: "device", name: "laptop-two" });
     assert.notEqual(one.account.id, two.account.id, "the two sign-ins must be two accounts");
+    assert.notEqual(bucketOne, bucketTwo, "the two accounts must not share a bucket");
+    assert.equal(
+      agentOne.bucket,
+      bucketOne,
+      "the minted key names the bucket the storage server scoped it to",
+    );
+    assert.equal(deviceTwo.bucket, bucketTwo, "the second account's key names its own bucket");
     t.diagnostic(
-      `account one ${one.account.id} -> agent ${agentOne.keyId}; account two ${two.account.id} -> device ${deviceTwo.keyId}`,
+      `account one ${one.account.id} owns ${bucketOne} -> agent ${agentOne.keyId}; account two ${two.account.id} owns ${bucketTwo} -> device ${deviceTwo.keyId}`,
     );
 
     const twoClient = s3For(endpoint, deviceTwo);
     const twoKey = `${deviceTwo.prefix}private.txt`;
     const placed = await twoClient.send("PUT", {
-      bucket: BUCKET,
+      bucket: bucketTwo,
       key: twoKey,
       body: "not for agents\n",
     });
@@ -444,40 +491,55 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
     const oneAgent = s3For(endpoint, agentOne);
     const own = await oneAgent.send("PUT", {
-      bucket: BUCKET,
+      bucket: bucketOne,
       key: `${agentOne.prefix}own.txt`,
       body: "mine\n",
     });
     assert.equal(own.status, 200, `the agent's own write must succeed: ${own.text}`);
     const ownList = await oneAgent.send("GET", {
-      bucket: BUCKET,
+      bucket: bucketOne,
       query: { "list-type": "2", prefix: agentOne.prefix },
     });
     assert.equal(ownList.status, 200, `the agent's own listing must succeed: ${ownList.text}`);
 
+    // The bucket boundary on its own: the agent's key carries no statement for
+    // the other account's bucket, so a listing of that bucket is refused
+    // whatever the prefix says — the per-account bucket is what makes this a
+    // storage-enforced boundary rather than a prefix convention (drive#371,
+    // drive#462).
+    const otherBucket = await oneAgent.send("GET", {
+      bucket: bucketTwo,
+      query: { "list-type": "2" },
+    });
+    assert.equal(otherBucket.status, 403, "listing another account's bucket must be refused");
+    assert.equal(accessDenied(otherBucket), "AccessDenied", "the refusal must be AccessDenied");
+
     const foreignList = await oneAgent.send("GET", {
-      bucket: BUCKET,
+      bucket: bucketTwo,
       query: { "list-type": "2", prefix: deviceTwo.prefix },
     });
     assert.equal(foreignList.status, 403, "listing another account's folder must be refused");
     assert.equal(accessDenied(foreignList), "AccessDenied", "the refusal must be AccessDenied");
-    const foreignRead = await oneAgent.send("GET", { bucket: BUCKET, key: twoKey });
+    const foreignRead = await oneAgent.send("GET", { bucket: bucketTwo, key: twoKey });
     assert.equal(foreignRead.status, 403, "reading another account's file must be refused");
     assert.equal(accessDenied(foreignRead), "AccessDenied", "the refusal must be AccessDenied");
     const foreignWrite = await oneAgent.send("PUT", {
-      bucket: BUCKET,
+      bucket: bucketTwo,
       key: `${deviceTwo.prefix}intruder.txt`,
       body: "no\n",
     });
     assert.equal(foreignWrite.status, 403, "writing into another account's folder must be refused");
     t.diagnostic(
       `agent ${agentOne.keyId} against ${two.account.id}/: ` +
-        `list 403 ${accessDenied(foreignList)}, read 403 ${accessDenied(foreignRead)}, write 403 ${accessDenied(foreignWrite)}`,
+        `bucket listing 403 ${accessDenied(otherBucket)}, list 403 ${accessDenied(foreignList)}, read 403 ${accessDenied(foreignRead)}, write 403 ${accessDenied(foreignWrite)}`,
     );
   });
 
   await t.test("a saved file produces an event that reaches the api Worker", async () => {
     const account = await signIn(keyStore, "event-account");
+    // The account's own bucket, so the event this save produces is one that
+    // bucket's own notification rule delivered (drive#371, drive#462).
+    const bucket = await ownBucket(account.account.id);
     const deviceKey = await mintKey(keyStore, account.token, {
       kind: "device",
       name: "event-laptop",
@@ -485,18 +547,24 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     const client = s3For(endpoint, deviceKey);
     const key = `${deviceKey.prefix}notified.txt`;
     const savedAt = new Date().toISOString();
-    const saved = await client.send("PUT", { bucket: BUCKET, key, body: "notify me\n" });
+    const saved = await client.send("PUT", { bucket, key, body: "notify me\n" });
     assert.equal(saved.status, 200, `the save must succeed: ${saved.text}`);
-    t.diagnostic(`save ${savedAt}: version ${saved.headers.get("x-amz-version-id")}`);
+    const savedVersion = saved.headers.get("x-amz-version-id");
+    assert.ok(savedVersion, "the bucket gives the save a version, so the event can be named by it");
+    t.diagnostic(`save ${savedAt}: version ${savedVersion}`);
 
     const deadline = Date.now() + 30_000;
     let line = null;
     for (;;) {
       const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
+      // The log line names the event and the version the bucket created, never
+      // the object's path (issue #583), so this save's own line is the one
+      // carrying the version this save was given.
       line =
         lines.find(
           (candidate) =>
-            candidate.includes("storage event s3:ObjectCreated:Put") && candidate.includes(key),
+            candidate.includes("storage event s3:ObjectCreated:Put") &&
+            candidate.includes(`version=${savedVersion}`),
         ) ?? null;
       if (line !== null) {
         break;
@@ -509,6 +577,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       await sleep(500);
     }
     t.diagnostic(`worker log: ${line}`);
+    assert.ok(!line.includes(key), `the log line must not name the object's path: ${line}`);
 
     const forThisSave = receiver.answers.find((answer) => answer.body.includes(key));
     assert.ok(forThisSave, `an answer naming ${key} must have reached the worker's route`);
@@ -524,8 +593,11 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       (candidate) => candidate.key === key,
     );
     assert.ok(event, `the event names ${key}`);
-    assert.equal(event.bucket, BUCKET, "the event names the bucket");
-    assert.ok(event.versionId, "the event carries the saved version's id");
+    assert.equal(event.bucket, bucket, "the event names the bucket");
+    // The notification carries the version the bucket gave the save, which is
+    // what the log line is matched on above: the line names the version, so the
+    // version has to be the save's own and not some other object's.
+    assert.equal(event.versionId, savedVersion, "the event carries the saved version's id");
     t.diagnostic(
       `event at ${event.eventTime}: ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId}`,
     );
@@ -540,6 +612,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       // the notification (S3 form-encodes a space as `+`). The three are one
       // proof because the same save has to survive all of them.
       const account = await signIn(keyStore, "awkward-name-account");
+      const bucket = await ownBucket(account.account.id);
       const deviceKey = await mintKey(keyStore, account.token, {
         kind: "device",
         name: "awkward-laptop",
@@ -550,7 +623,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
       const savedAt = new Date().toISOString();
       const saved = await client.send("PUT", {
-        bucket: BUCKET,
+        bucket,
         key,
         body: bytes,
         headers: { "content-type": "application/octet-stream" },
@@ -562,7 +635,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       );
       t.diagnostic(`awkward save ${savedAt}: version ${saved.headers.get("x-amz-version-id")}`);
 
-      const back = await client.send("GET", { bucket: BUCKET, key });
+      const back = await client.send("GET", { bucket, key });
       assert.equal(back.status, 200, `the awkward key must read back: ${back.text}`);
       // The ETag of a single-part save is the MD5 of exactly the bytes stored, so
       // this is the binary round-trip check: the bytes that went out are the
@@ -599,7 +672,13 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     // on directly as well.
     for (const kind of KEY_KINDS) {
       const scope = scopeFor(kind, "acct-a", kind === "branch" ? { name: "b1" } : {});
-      const policy = policyForScope(scope, BUCKET);
+      // The policy is read for the account's own bucket, because that is the
+      // bucket the scope has to name: a policy built for any other bucket
+      // would be a policy the endpoint enforces somewhere this account has
+      // nothing (drive#371, drive#462).
+      const bucket = bucketForAccount("acct-a");
+      const policy = policyForScope(scope, bucket);
+      assert.equal(scope.bucket, bucket, `${kind}: the scope names its bucket`);
       const actions = policy.Statement.flatMap((statement) => statement.Action);
       assert.equal(
         actions.includes("s3:DeleteObject"),
@@ -610,7 +689,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
         policy.Statement.some((statement) => {
           const resource = statement.Resource;
           return (
-            Array.isArray(resource) && resource.includes(`arn:aws:s3:::${BUCKET}/${scope.prefix}*`)
+            Array.isArray(resource) && resource.includes(`arn:aws:s3:::${bucket}/${scope.prefix}*`)
           );
         }),
         `${kind}: every statement must stay inside the key's own prefix`,

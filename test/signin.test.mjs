@@ -20,10 +20,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createAuth, SIGNIN_LINK_PATH } from "../src/auth.js";
+import {
+  AFTER_SIGNIN_COOKIE,
+  createAuth,
+  SIGNIN_LINK_PATH,
+  SIGNIN_LINK_TTL_SECONDS,
+  safeAfterSigninPath,
+  signinLinkEmail,
+} from "../core/auth.js";
+import { createD1DeviceSigninStore } from "../core/device-signin.js";
+import { createD1DeviceStore } from "../core/devices.js";
+import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { PRICE } from "../src/pricing.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -34,8 +43,17 @@ import {
   SIGNIN_PATH,
   SIGNIN_STEPS,
   signinClosedBody,
+  signinEmailFailedBody,
 } from "../src/signin.js";
-import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
+import {
+  createTestAuth,
+  DRIVE_MIGRATIONS,
+  DRIVE_SCHEMA_MIGRATIONS,
+  signIn,
+  TEST_BASE_URL,
+  TEST_SECRET,
+} from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -57,25 +75,26 @@ const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "ut
  * the two Better Auth settings and the test mailer standing in for the EMAIL
  * binding. Every claim about a real sign-in below runs through this.
  * @typedef {{limit: (options: {key: string}) => Promise<{success: boolean}>, calls?: Array<{key: string}>}} SigninLimiterFake
+ * @param {{migrations?: readonly string[]}} [options]
  * @returns {ReturnType<typeof createTestAuth> & {env: {
  *   ASSETS: {fetch: () => Response},
  *   DRIVE_DB: unknown,
  *   BETTER_AUTH_SECRET: string,
  *   BETTER_AUTH_URL: string,
- *   SIGNIN_MAIL: (link: {to: string, url: string}) => void,
+ *   SIGNIN_MAIL: (link: {to: string, url: string, userAgent: string|null}) => void,
  *   SIGNIN_RATE_LIMITER?: SigninLimiterFake,
  *   SIGNIN_GLOBAL_RATE_LIMITER?: SigninLimiterFake,
  * }}}
  */
-function dispatchEnv() {
-  const made = createTestAuth();
+function dispatchEnv(options = {}) {
+  const made = createTestAuth(options);
   const sent = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
     BETTER_AUTH_URL: TEST_BASE_URL,
-    /** @param {{to: string, url: string}} link */
+    /** @param {{to: string, url: string, userAgent: string|null}} link */
     SIGNIN_MAIL: (link) => {
       sent.push(link);
     },
@@ -90,15 +109,28 @@ function dispatchEnv() {
 }
 
 /**
+ * JSON start posts get `age: true` unless the body names `age` itself, so the
+ * rest of this file can keep proving mail, limits and verify without repeating
+ * the box. A JSON *string* is sent as written, which is how a missing age
+ * field is tested (drive#781).
  * @param {unknown} body
  * @param {{url?: string, headers?: Record<string, string>}} [options]
  */
-const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) =>
-  new Request(url, {
+const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) => {
+  const payload =
+    typeof body === "string"
+      ? body
+      : JSON.stringify(
+          typeof body === "object" && body !== null && !Array.isArray(body)
+            ? { age: true, ...body }
+            : body,
+        );
+  return new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    body: payload,
   });
+};
 
 // The edge limits (drive issue #147): the stock binding's whole contract is
 // `limit({ key }) -> { success }`, the same fake test/waitlist.test.mjs drives.
@@ -218,6 +250,8 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
         step: "start",
         method: "email",
         email: "you@example.com",
+        card: "on",
+        age: "on",
       }),
     }),
     made.env,
@@ -226,6 +260,273 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal("url" in payload, false, "the link leaves by email, never in the reply");
+});
+
+test("the start step answers the same for a known address and an unknown one (drive#538)", async () => {
+  const made = dispatchEnv();
+  await signIn(made, "known@example.com");
+  const unknown = await workerFetch(
+    post({ step: "start", method: "email", email: "unknown@example.com", card: false }),
+    made.env,
+  );
+  const known = await workerFetch(
+    post({ step: "start", method: "email", email: "known@example.com", card: false }),
+    made.env,
+  );
+  assert.equal(unknown.status, 202);
+  assert.equal(known.status, unknown.status);
+  assert.deepEqual(await known.json(), await unknown.json());
+});
+
+test("a returning address signs in with no card field (drive#538)", async () => {
+  const made = dispatchEnv();
+  await signIn(made, "back@example.com");
+  const response = await workerFetch(
+    post(
+      JSON.stringify({
+        step: "start",
+        method: "email",
+        email: "back@example.com",
+        age: true,
+      }),
+    ),
+    made.env,
+  );
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).ok, true);
+  assert.equal(made.sent.length, 2, "the returning start mailed a link");
+});
+
+test("an attacker start cannot lock the owner out (drive#538)", async () => {
+  const made = dispatchEnv();
+  const attacker = await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "owner@example.com",
+      card: true,
+      cardFingerprint: "attacker-card",
+    }),
+    made.env,
+  );
+  assert.equal(attacker.status, 202);
+  const hold = await made.db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind("hold:owner@example.com")
+    .first();
+  assert.equal(hold, null, "the start step writes no hold");
+  const owner = await workerFetch(
+    post({ step: "start", method: "email", email: "owner@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(owner.status, 202, "the owner's start is a normal answer, not card-in-use");
+  assert.equal((await owner.json()).ok, true);
+  assert.equal(made.sent.length, 2, "both starts mailed a link");
+  const followed = await workerFetch(new Request(made.sent[1].url), made.env);
+  assert.equal(followed.status, 302, "the owner follows their own link");
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind("owner@example.com")
+    .first();
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    null,
+    "the sign-in writes no card: the attacker's posted fingerprint is not read (drive#503)",
+  );
+});
+
+test("a leftover hold is dropped at verify and does not keep the attacker's card (drive#538)", async () => {
+  const made = dispatchEnv();
+  const now = Math.floor(Date.now() / 1000);
+  await made.db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, state, card_fingerprint, card_added_at)
+       VALUES (?1, ?2, ?3, 'active', ?4, ?3)`,
+    )
+    .bind("hold:owner@example.com", "Owner@example.com", now, "posted:attacker-card")
+    .run();
+  const start = await workerFetch(
+    post({ step: "start", method: "email", email: "Owner@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(start.status, 202);
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  const leftover = await made.db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind("hold:owner@example.com")
+    .first();
+  assert.equal(leftover, null, "the leftover hold is gone");
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind("Owner@example.com")
+    .first();
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    null,
+    "the leftover hold's fingerprint is not carried onto the new account (drive#503)",
+  );
+});
+
+test("every new-account path still cannot open an account through OAuth (drive#417)", async () => {
+  const made = dispatchEnv();
+  for (const method of ["google", "github"]) {
+    const response = await workerFetch(post({ step: "start", method }), made.env);
+    assert.equal(response.status, 503, `${method} is a closed door, not a new account`);
+    assert.deepEqual(await response.json(), signinClosedBody());
+    assert.equal(response.headers.get("set-cookie"), null, `${method} sets no session`);
+  }
+  assert.equal(made.sent.length, 0, "a closed sign-in mails nothing");
+  const withCard = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(withCard.status, 202);
+  assert.equal((await withCard.json()).ok, true);
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.ok(user !== null && typeof user.id === "string");
+  const account = await made.db
+    .prepare("SELECT card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(user.id)
+    .first();
+  assert.ok(account !== null && typeof account === "object", "verify wrote the accounts row");
+  assert.equal(
+    /** @type {{card_fingerprint?: unknown}} */ (account).card_fingerprint,
+    null,
+    "no card is written at sign-up: only the payment webhook writes one (drive#503)",
+  );
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "form@example.com",
+        age: "on",
+      }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 202, "the form path mails a link with no card field");
+  assert.equal((await form.json()).ok, true);
+  assert.equal(made.sent.length, 2);
+});
+
+test("a first-time address that did not tick is stopped at the link (drive#785)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "young@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 202, "the start still mails the link for any address");
+  assert.equal(made.sent.length, 1, "exactly one link went out");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302, "the link answers with a redirect, not a session");
+  assert.match(String(followed.headers.get("location")), /error=need-age/);
+  assert.equal(followed.headers.getSetCookie().length, 0, "no session was minted");
+  const user = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("young@example.com")
+    .first();
+  assert.equal(user, null, "no account opened behind an unattested link");
+});
+
+test("an older account signs in with no tick (drive#785)", async () => {
+  const made = dispatchEnv();
+  await signIn(made, "known@example.com");
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "known@example.com", age: false }),
+    made.env,
+  );
+  assert.equal(response.status, 202, "the start mails the link as any other would");
+  assert.equal(made.sent.length, 2, "the returning start mailed its own link");
+  const followed = await workerFetch(new Request(made.sent[1].url), made.env);
+  assert.equal(followed.status, 302, "the link signs the account in");
+  assert.equal(followed.headers.get("location"), "/files");
+  assert.ok(followed.headers.getSetCookie()[0], "a session was minted");
+});
+
+test("a start with no age field mails the link (drive#785)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+    made.env,
+  );
+  assert.equal(response.status, 202, "a start with no age field mails like any other");
+  assert.equal(made.sent.length, 1, "the link leaves by email");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.match(
+    String(followed.headers.get("location")),
+    /error=need-age/,
+    "the gate still holds at the link, because no tick travelled with it",
+  );
+});
+
+test("an attested link opens the account (drive#785)", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", age: true }),
+    made.env,
+  );
+  assert.equal(response.status, 202, "the start mails the link");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302, "the link signs the new account in");
+  assert.equal(followed.headers.get("location"), "/files");
+  assert.ok(followed.headers.getSetCookie()[0], "a session was minted");
+  const user = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.ok(user, "the account opened");
+});
+
+test("the form path mails a link with no age box (drive#785)", async () => {
+  const made = dispatchEnv();
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "form@example.com",
+      }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 202, "the form path mails like any other start");
+  assert.equal(made.sent.length, 1, "the form path's link leaves by email");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.match(
+    String(followed.headers.get("location")),
+    /error=need-age/,
+    "a url-encoded start carries no tick, so the gate holds at the link",
+  );
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -249,12 +550,19 @@ test("a body that is not JSON, or not an object, is a 400 and never a 202", asyn
 });
 
 test("the three methods the spec's screen names are the three it accepts", () => {
-  // docs/build-spec.md, "Screens": "Sign in | Email one-time link, or Google
-  // or GitHub. No card asked". This is the spec's own sentence, kept here as
-  // the line a change to the method list has to argue with.
+  // docs/build-spec.md, "Screens": the sign-in row, corrected in drive#524.
+  // SIGNIN_METHODS is the endpoint's list (all three are read and answered,
+  // two of them with the closed door); SIGNIN_OFFERED_METHODS is the screen's
+  // list, which carries email alone because no client id exists to redirect to
+  // (drive#180). The spec sentence says that, and this is the line a change to
+  // either list has to argue with.
   assert.ok(
-    spec.includes("Email one-time link, or Google or GitHub. No card asked"),
+    spec.includes("Email one-time link only"),
     "the spec's sign-in screen sentence has changed; update this test and the copy",
+  );
+  assert.ok(
+    spec.includes("A card is needed at sign-up"),
+    "the card sentence has changed; update this test and the copy",
   );
   assert.deepEqual([...SIGNIN_METHODS], ["email", "google", "github"]);
   for (const method of SIGNIN_METHODS) {
@@ -276,8 +584,8 @@ test("the three methods the spec's screen names are the three it accepts", () =>
   // one thing this request must name.
   assert.ok("error" in readSigninRequest({ step: "start", email: "you@example.com" }));
   assert.ok("error" in readSigninRequest());
-  // The two steps are the route's, documented above each endpoint.
-  assert.deepEqual([...SIGNIN_STEPS], ["start", "signout"]);
+  // The three steps are the route's, documented above each endpoint.
+  assert.deepEqual([...SIGNIN_STEPS], ["start", "signout", "signout-all"]);
 });
 
 test("the OAuth methods are a closed door, not a 202 for a redirect to nowhere", async () => {
@@ -327,7 +635,7 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   );
   assert.equal(response.status, 429, "the walk must hit the edge limit, not the mailer");
   assert.equal(response.headers.get("retry-after"), "60");
-  // The shared refusal's shape (src/rate-limit.js): exactly the header set the
+  // The shared refusal's shape (core/rate-limit.js): exactly the header set the
   // waitlist's own limiter answers with, so the two endpoints cannot differ.
   assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -457,13 +765,338 @@ test("a limiter that throws fails closed with the table's words, never the error
   assert.equal(made.sent.length, before, "a failed limiter mails nothing");
 });
 
+// ------------------------------------- the per-address send limits (drive#550)
+
+// POST /api/signin mails a real link, so an inbox can be flooded with mail
+// that costs the drive a send and the customer their attention. The edge
+// limits above bound that by caller IP, which a script spread across many
+// hosts walks straight through while it fills one inbox. These are the second
+// guard: 5 links an hour and 20 a day to one address, however the asks arrive
+// and however many IPs they use (src/signin-send-limit.js over migration 0026).
+
+/** The body a sent link is answered with, which a refused one must match. */
+const sentLinkBody = {
+  ok: true,
+  step: "start",
+  method: "email",
+  expiresIn: SIGNIN_LINK_TTL_SECONDS,
+};
+
+/**
+ * The client address the next ask walks from. Every ask in this section comes
+ * from a different address on purpose, so neither the per-IP edge limit nor
+ * Better Auth's own per-IP limiter (three sends an address, the fourth a 429)
+ * can answer instead of the per-address counter under test.
+ * @type {number}
+ */
+let walk = 0;
+
+/**
+ * @returns {string} a client address no earlier ask in the file has used
+ */
+function nextClientIp() {
+  walk += 1;
+  if (walk <= 250) {
+    return `198.51.100.${walk}`;
+  }
+  if (walk <= 500) {
+    return `203.0.113.${walk - 250}`;
+  }
+  return `192.0.2.${walk - 500}`;
+}
+
+/**
+ * Asks for a link, from a client address no earlier ask has used, so the only
+ * guard left standing is the per-address counter, and the answer is read the
+ * way a browser would read it.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} email the address the link is asked for
+ * @returns {Promise<{status: number, body: unknown, cookies: string|null}>}
+ */
+async function askForLink(made, email) {
+  const response = await workerFetch(
+    post(
+      { step: "start", method: "email", email },
+      { headers: { "cf-connecting-ip": nextClientIp() } },
+    ),
+    made.env,
+  );
+  return {
+    status: response.status,
+    body: await response.json(),
+    cookies: response.headers.get("set-cookie"),
+  };
+}
+
+/**
+ * Six asks for one address, so the sixth is the one the hour ceiling speaks
+ * to.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} [email]
+ * @returns {Promise<{status: number, body: unknown, cookies: string|null}[]>}
+ */
+async function askSixTimes(made, email = "crowd@b.co") {
+  const answered = [];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    answered.push(await askForLink(made, email));
+  }
+  return answered;
+}
+
+/**
+ * The counter row, read through the deployed schema rather than through the
+ * mail seam above it: the row is the thing the next ask reads.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} address
+ * @returns {Promise<{hour_count: number, day_count: number}|null>}
+ */
+async function counterRow(made, address) {
+  const row = await made.db
+    .prepare('SELECT "hour_count", "day_count" FROM "signin_address_sends" WHERE "address" = ?1')
+    .bind(address)
+    .first();
+  if (row === null) {
+    return null;
+  }
+  const counted = /** @type {{hour_count: number, day_count: number}} */ (row);
+  return { hour_count: counted.hour_count, day_count: counted.day_count };
+}
+
+test("the sixth sign-in link in an hour is answered like a sent link, and never arrives", async () => {
+  // The issue's first half. Five links in an hour go out; the sixth is
+  // answered with the same 202 body a sent link is answered with and no mail
+  // arrives. The identical answer on purpose: an address that hears a
+  // different answer for the sixth ask has been told it is a real inbox
+  // somebody was asking about, which is the enumeration the sign-in screen
+  // avoids everywhere else.
+  const made = dispatchEnv();
+  const answered = await askSixTimes(made);
+  assert.equal(made.sent.length, 5, "5 links in an hour go out");
+  for (const [index, answer] of answered.entries()) {
+    assert.equal(answer.status, 202, `ask #${index + 1} is answered, not 429 or 503`);
+    assert.deepEqual(answer.body, sentLinkBody, `ask #${index + 1} is answered as a sent link is`);
+    assert.equal(answer.cookies, null, "a refused ask holds no session either");
+  }
+  assert.equal(made.sent[5], undefined, "the sixth ask mailed nothing");
+  assert.deepEqual(
+    await counterRow(made, "crowd@b.co"),
+    {
+      hour_count: 5,
+      day_count: 5,
+    },
+    "the row counted the five links that went out",
+  );
+});
+
+test("the twenty-first sign-in link in a day is answered like a sent link, and never arrives", async () => {
+  // The second ceiling, and the proof the two are separate counters. Four
+  // hour windows' worth of asks, five links each, spend the day's twenty;
+  // every ask after them is answered without mail. The clock is the test's
+  // own here: the deployed code reads the send's own second, and moving the
+  // hour window's start back is how a test says "this ask arrives an hour
+  // later" (the same move the integration test makes on the same SQL).
+  const made = dispatchEnv();
+  for (let burst = 0; burst < 4; burst += 1) {
+    const answered = await askSixTimes(made, "flood@b.co");
+    for (const [index, answer] of answered.entries()) {
+      assert.equal(answer.status, 202, `ask #${index + 1} of hour ${burst + 1} is answered`);
+    }
+    assert.equal(made.sent.length, (burst + 1) * 5, `hour ${burst + 1} mailed its five`);
+    if (burst < 3) {
+      await made.db
+        .prepare(
+          'update "signin_address_sends" set "hour_window_start" = "hour_window_start" - 4000 where "address" = ?1',
+        )
+        .bind("flood@b.co")
+        .run();
+    }
+  }
+  // A fifth hour: the day ceiling is what refuses now, not the hour's.
+  const overTheDay = await askForLink(made, "flood@b.co");
+  assert.equal(overTheDay.status, 202, "the ask after the day's twenty is still answered");
+  assert.deepEqual(overTheDay.body, sentLinkBody, "and answered as a sent link is");
+  assert.equal(made.sent.length, 20, "20 links in a day go out; the rest are answered only");
+  assert.deepEqual(await counterRow(made, "flood@b.co"), { hour_count: 5, day_count: 20 });
+});
+
+test("one address's ceiling is shared by every spelling of it", async () => {
+  // The address is the account key, and the user row is looked up by
+  // lower(email), so the counter is keyed the same way: Alice@, alice@ and
+  // ALICE@ share one ceiling. Without the lowercase key a script would mint
+  // five more links per spelling of the same inbox.
+  const made = dispatchEnv();
+  for (let ask = 0; ask < 5; ask += 1) {
+    const answer = await askForLink(made, "Same@b.co");
+    assert.equal(answer.status, 202);
+  }
+  assert.equal(made.sent.length, 5, "the first five go out");
+  const shouted = await askForLink(made, "same@B.co");
+  assert.equal(shouted.status, 202, "the other spelling is still answered");
+  assert.deepEqual(shouted.body, sentLinkBody, "and answered as a sent link is");
+  assert.equal(made.sent[5], undefined, "the other spelling mailed nothing");
+  const row = await made.db
+    .prepare('SELECT "address", "hour_count" FROM "signin_address_sends"')
+    .first();
+  assert.ok(row !== null);
+  assert.equal(row.address, "same@b.co", "one row, keyed by the lowercase address");
+  assert.equal(row.hour_count, 5);
+});
+
+test("two inboxes have two ceilings, so one flooded address does not lock out another", async () => {
+  // The guard is per address, not global: a customer who genuinely asks for
+  // links cannot spend another customer's ceiling, and a flooded neighbour's
+  // link still goes out.
+  const made = dispatchEnv();
+  const answered = await askSixTimes(made, "locked@b.co");
+  assert.equal(answered[5].status, 202, "the sixth ask is answered");
+  assert.equal(made.sent.length, 5, "the flooded address mailed five");
+  const neighbour = await askForLink(made, "neighbour@b.co");
+  assert.equal(neighbour.status, 202);
+  assert.equal(made.sent.length, 6, "the neighbour's first link goes out");
+  assert.equal(made.sent[5].to, "neighbour@b.co");
+});
+
+test("an address that went over its ceiling this hour gets its next link when the hour passes", async () => {
+  // The ceiling is a window, not a lifetime ban. The hour the counters name
+  // is what decides, and the day window does not reset with it: the same
+  // second the deployed rollover branch reads is the one the edit stands for.
+  const made = dispatchEnv();
+  await askSixTimes(made, "patient@b.co");
+  assert.equal(made.sent.length, 5, "the sixth ask was refused");
+  await made.db
+    .prepare(
+      'update "signin_address_sends" set "hour_window_start" = "hour_window_start" - 4000 where "address" = ?1',
+    )
+    .bind("patient@b.co")
+    .run();
+  const nextHour = await askForLink(made, "patient@b.co");
+  assert.equal(nextHour.status, 202);
+  assert.deepEqual(nextHour.body, sentLinkBody);
+  assert.equal(made.sent.length, 6, "the hour passed, so the link goes out again");
+  assert.deepEqual(
+    await counterRow(made, "patient@b.co"),
+    {
+      hour_count: 1,
+      day_count: 6,
+    },
+    "the hour window reset, the day window did not",
+  );
+});
+
+test("a counter that cannot be written answers that no link went out", async () => {
+  // The two answers differ on purpose (src/signin-send-limit.js). Over the
+  // limit is a caller the answer 202 does not distinguish from a sent link.
+  // A counter that failed to write is a deployment problem — a migration
+  // that has not been applied, a database that threw — and drive#431's rule
+  // covers that: nobody is told to check an inbox that will stay empty. The
+  // error text stays in the log (the throw test lives with the module), and
+  // the public answer is the one body the mail-failure path already answers
+  // with.
+  const made = dispatchEnv({
+    migrations: DRIVE_MIGRATIONS.filter((name) => !name.includes("0026_signin_address_sends")),
+  });
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "broken@b.co" }),
+    made.env,
+  );
+  assert.equal(response.status, 503, "a counter that cannot be written is not a 202");
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
+  assert.equal(made.sent.length, 0, "no link went out");
+});
+
+// --------------------------------------- the account-wide send bound (drive#878)
+
+// The counter the edge bindings cannot be: one row on the customer database,
+// shared by every caller in every Cloudflare location, where a rate-limit key
+// would be counted once per location. The asks below come from fresh
+// addresses on fresh client IPs (the same walk helper the address tests use),
+// because the bound this section proves is the one that holds when the per-IP
+// and per-address guards both let the ask through.
+
+test("a mailed link spends the account-wide counter, keyed on the one constant row", async () => {
+  const made = dispatchEnv();
+  await askSixTimes(made);
+  assert.equal(made.sent.length, 5, "the address guard let five through");
+  const row = await made.db
+    .prepare('SELECT "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+    .bind("account")
+    .first();
+  assert.ok(row !== null, "the account row exists after the first mailed link");
+  assert.equal(row.count, 5, "each mailed link spent one account slot");
+});
+
+test("an ask the address guard refused never moves the account counter", async () => {
+  // Narrow-first, the order the edge limits run in (the per-IP bucket before
+  // the service-wide one): the account's counter only moves for asks the
+  // address guard let through, so retries against one flooded inbox cannot
+  // crowd the rest of the account's mail out.
+  const made = dispatchEnv();
+  await askSixTimes(made, "flooded@b.co");
+  assert.equal(made.sent.length, 5);
+  const row = await made.db
+    .prepare('SELECT "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+    .bind("account")
+    .first();
+  assert.ok(row !== null);
+  assert.equal(row.count, 5, "the sixth ask spent an address slot, not an account slot");
+});
+
+test("the account-wide bound refuses the account's 5001st start from a fresh address and a fresh IP", async () => {
+  // The bound the issue asks for, measured on the real dispatch: a walk with
+  // a fresh address per request and a different IP per request clears the
+  // per-IP limit and the per-address limit, so this is the only guard left.
+  // The counter is filled to two under its ceiling, three asks arrive from
+  // three addresses on three IPs, and the third is the account's 5001st:
+  // answered like a sent link, and no mail.
+  const made = dispatchEnv();
+  await made.db
+    .prepare(
+      'insert into "signin_account_sends" ("counter", "window_start", "count") values (?1, ?2, ?3)',
+    )
+    .bind("account", Math.floor(Date.now() / 1000), SIGNIN_ACCOUNT_SEND_MAX - 2)
+    .run();
+  for (let ask = 0; ask < 3; ask += 1) {
+    const answer = await askForLink(made, `walk${ask}@b.co`);
+    assert.equal(answer.status, 202, `ask #${ask + 1} is answered`);
+    assert.deepEqual(answer.body, sentLinkBody, `ask #${ask + 1} is answered as a sent link is`);
+  }
+  assert.equal(made.sent.length, 2, "two links go out; the account's ceiling refuses the third");
+  const spentAddress = await made.db
+    .prepare('SELECT "hour_count" FROM "signin_address_sends" WHERE "address" = ?1')
+    .bind("walk2@b.co")
+    .first();
+  assert.ok(spentAddress !== null);
+  assert.equal(
+    spentAddress.hour_count,
+    1,
+    "the refused ask had already spent its address's slot: it did reach for a send",
+  );
+});
+
+test("an account counter that cannot be written answers that no link went out", async () => {
+  // The address guard's rule again (drive#431): a counter that failed is a
+  // deployment problem, not a caller over a ceiling, so the public answer is
+  // the mail-failure body and the reason travels to the log only.
+  const made = dispatchEnv({
+    migrations: DRIVE_MIGRATIONS.filter((name) => !name.includes("0047_signin_account_sends")),
+  });
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "broken-account@b.co" }),
+    made.env,
+  );
+  assert.equal(response.status, 503, "a counter that cannot be written is not a 202");
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
+  assert.equal(made.sent.length, 0, "no link went out");
+});
+
 // ---------------------------------------------------------- the verify link
 
-test("a mailer that throws is a closed door, never a 202 for a link that never left", async () => {
+test("a mailer that throws says the email did not go out, never a 202 for a link that never left", async () => {
   // The guarantee the hand-written store made ("a code that could not be sent
   // is never reported as sent") has to hold on the library too: Better Auth
-  // propagates a rejected sendMagicLink, and the route turns that into the
-  // closed door rather than a 202 the person waits on.
+  // propagates a rejected sendMagicLink, and the route turns that into words
+  // that say no email went out (drive#431) rather than a 202 the person waits
+  // on an inbox for.
   const db = createTestAuth().db;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -481,8 +1114,64 @@ test("a mailer that throws is a closed door, never a 202 for a link that never l
     env,
   );
   assert.equal(response.status, 503, "a link that could not be sent is not a 202");
-  assert.deepEqual(await response.json(), signinClosedBody());
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("a deployment with no email setting says the email did not go out", async () => {
+  // The walkthrough path (drive#431): no mailer behind the route at all, so
+  // nothing can be sent. Every shape of the missing setting — no EMAIL binding
+  // at all, and a binding with no sending domain — is one failure path, because
+  // from the person's side all of them mean the same: no link is on its way.
+  const made = createTestAuth();
+  const base = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: TEST_BASE_URL,
+    SIGNIN_RATE_LIMITER: makeRateLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeRateLimiter(),
+  };
+  for (const [name, env] of [
+    // No EMAIL binding and no MAIL_FROM: the provider's send function is gone.
+    ["no EMAIL binding", base],
+    // The binding is there but no domain to send from, which sendEmail refuses.
+    ["a binding with no MAIL_FROM", { ...base, EMAIL: { send: async () => {} } }],
+    // The one that works: the send is a seam in the test env, so this case is
+    // the control that proves the two above are the setting, not the request.
+    [
+      "a working mailer",
+      {
+        ...base,
+        SIGNIN_MAIL: (/** @type {{to: string, url: string, userAgent: string|null}} */ link) =>
+          made.sent.push(link),
+      },
+    ],
+  ]) {
+    const response = await workerFetch(
+      post({ step: "start", method: "email", email: "a@b.co" }),
+      env,
+    );
+    if (name === "a working mailer") {
+      assert.equal(response.status, 202, `${name} sends the link`);
+      assert.equal(made.sent.length, 1);
+      continue;
+    }
+    assert.equal(response.status, 503, `${name} is not a 202`);
+    assert.deepEqual(await response.json(), signinEmailFailedBody(), `${name} says so`);
+    assert.equal(made.sent.length, 0, `${name} mails nothing`);
+    assert.equal(response.headers.get("set-cookie"), null, `${name} mints no session`);
+  }
+});
+
+test("the email-failed words are the message table's, once", () => {
+  // The one source for the words: src/signin.js builds the body from the
+  // table, so the sentence the person reads is the entry's two halves and
+  // never a copy this route wrote for itself.
+  assert.deepEqual(signinEmailFailedBody(), {
+    error: `${FAILURE_MESSAGES["sign-in-email-failed"].what} ${FAILURE_MESSAGES["sign-in-email-failed"].next}`,
+  });
+  assert.equal(signinEmailFailedBody().error, failureMessage("sign-in-email-failed"));
 });
 
 test("the sign-in link is at the path the page and the email name", async () => {
@@ -552,6 +1241,148 @@ test("a good link mints the session and lands on the drive; a used one does not"
   }
 });
 
+test("safeAfterSigninPath only returns the device-approve page", () => {
+  assert.equal(
+    safeAfterSigninPath("/v1/device/approve?user_code=BCDF-GHJK"),
+    "/v1/device/approve?user_code=BCDF-GHJK",
+  );
+  assert.equal(safeAfterSigninPath("/v1/device/approve"), "/v1/device/approve");
+  assert.equal(safeAfterSigninPath("https://evil.test/v1/device/approve"), "");
+  assert.equal(safeAfterSigninPath("//evil.test"), "");
+  assert.equal(safeAfterSigninPath("/files"), "");
+  assert.equal(safeAfterSigninPath("/v1/device/approve?user_code=x&next=https://evil.test"), "");
+});
+
+test("a good link with the after-signin cookie returns to the approve page", async () => {
+  const made = dispatchEnv();
+  await workerFetch(
+    post({ step: "start", method: "email", email: "device@example.com" }),
+    made.env,
+  );
+  const next = "/v1/device/approve?user_code=BCDF-GHJK";
+  const followed = await workerFetch(
+    new Request(made.sent[0].url, {
+      headers: { cookie: `${AFTER_SIGNIN_COOKIE}=${encodeURIComponent(next)}` },
+    }),
+    made.env,
+  );
+  assert.equal(followed.status, 302);
+  assert.equal(followed.headers.get("location"), next);
+  assert.match(
+    followed.headers.getSetCookie().join("\n"),
+    new RegExp(`${AFTER_SIGNIN_COOKIE}=;`),
+    "the return cookie is cleared after it is used",
+  );
+});
+
+test("a sign-in started on the approve page lands there from a second browser (drive#558)", async () => {
+  const made = dispatchEnv();
+  const next = "/v1/device/approve?user_code=BCDF-GHJK";
+  const started = await workerFetch(
+    post({ step: "start", method: "email", email: "second@example.com", next }),
+    made.env,
+  );
+  assert.equal(started.status, 202);
+  assert.equal(
+    made.sent[0].deviceApproval,
+    true,
+    "the start told the mailer this sign-in waits on a device approval",
+  );
+  assert.match(
+    signinLinkEmail(made.sent[0].url, null, undefined, true).text,
+    /Open this link on the computer you ran drive login on, or approve from any device\./,
+    "the rendered mail says the link works from any device",
+  );
+
+  // No cookie at all: this browser is a different device, and the return path
+  // still reaches the approve page because it travels with the link's token.
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302);
+  assert.equal(followed.headers.get("location"), next);
+
+  // The mapping row is spent with the link, so a replayed link cannot hand
+  // the path out again. The link itself is spent too (the test above pins
+  // that), and answers the screen.
+  const replay = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(replay.status, 302);
+  assert.match(String(replay.headers.get("location")), /error=invalid-link/);
+});
+
+test("a start whose next is not the approve page is a plain sign-in (drive#558)", async () => {
+  const badNexts = [
+    "https://evil.test/files",
+    "/files",
+    "//evil.test",
+    "/v1/device/approve?user_code=x&next=https://evil.test",
+  ];
+  for (const [index, next] of badNexts.entries()) {
+    // A fresh database each time: the D1-backed rate limiter (drive#200)
+    // would answer the second start from one test with a 429, and this test
+    // is about the return path, not the ceiling.
+    const made = dispatchEnv();
+    const started = await workerFetch(
+      post({ step: "start", method: "email", email: `plain-${index}@example.com`, next }),
+      made.env,
+    );
+    assert.equal(started.status, 202);
+    assert.equal(
+      made.sent[0].deviceApproval,
+      false,
+      "a dropped path mails the plain sign-in email, which promises nothing",
+    );
+    const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+    assert.equal(followed.status, 302);
+    assert.equal(followed.headers.get("location"), "/files", `${next} lands on the drive`);
+  }
+});
+
+test("the stored return path wins over a stale after-signin cookie (drive#558)", async () => {
+  const made = dispatchEnv();
+  await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "cookie@example.com",
+      next: "/v1/device/approve?user_code=AAAA-1111",
+    }),
+    made.env,
+  );
+  const followed = await workerFetch(
+    new Request(made.sent[0].url, {
+      headers: {
+        cookie: `${AFTER_SIGNIN_COOKIE}=${encodeURIComponent("/v1/device/approve?user_code=BBBB-2222")}`,
+      },
+    }),
+    made.env,
+  );
+  assert.equal(followed.status, 302);
+  assert.equal(
+    followed.headers.get("location"),
+    "/v1/device/approve?user_code=AAAA-1111",
+    "the path the start stored is the one this sign-in returns to",
+  );
+});
+
+test("the mail's device line and the page's device note are one sentence (drive#558)", () => {
+  const mail = signinLinkEmail(
+    "https://drive.test/api/signin/verify?token=t",
+    null,
+    undefined,
+    true,
+  );
+  assert.ok(
+    mail.text.includes(SIGNIN_COPY.deviceNote),
+    "the mail text carries the page's sentence",
+  );
+  assert.ok(
+    mail.html.includes(SIGNIN_COPY.deviceNote),
+    "the mail html carries the page's sentence",
+  );
+  const plain = signinLinkEmail("https://drive.test/api/signin/verify?token=t");
+  assert.ok(!plain.text.includes(SIGNIN_COPY.deviceNote), "a plain sign-in promises nothing");
+  assert.ok(!page.includes(plain.text), "the page's own copy is untouched by the mail");
+});
+
 test("sign-out through the route revokes the session the cookie names", async () => {
   const made = dispatchEnv();
   const { cookie } = await signIn(made, "leaver@example.com");
@@ -578,6 +1409,261 @@ test("sign-out through the route revokes the session the cookie names", async ()
   assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
 });
 
+test("sign-out everywhere revokes keys, device tokens, and the browser session", async () => {
+  // drive#423: the website's Sign out everywhere is the same two writes
+  // DELETE /v1/keys runs, then this browser's session. A second account's
+  // rows stay live.
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const mine = await signIn(made, "mine@example.com");
+  const theirs = await signIn(made, "theirs@example.com");
+  const now = 1_800_000_000_000;
+  const devices = createD1DeviceStore(made.db, { now: () => now });
+  await devices.put({
+    id: "key_mine",
+    accountId: mine.account.id,
+    name: "laptop",
+    kind: "device",
+    accessKeyId: "ak_mine",
+    secretHash: "hash_mine",
+    prefix: `u/${mine.account.id}/`,
+    capabilities: ["list", "read"],
+    createdAt: now,
+    lastSeenAt: null,
+    revokedAt: null,
+    expiresAt: null,
+    ttlSeconds: null,
+  });
+  await devices.put({
+    id: "key_theirs",
+    accountId: theirs.account.id,
+    name: "pi",
+    kind: "device",
+    accessKeyId: "ak_theirs",
+    secretHash: "hash_theirs",
+    prefix: `u/${theirs.account.id}/`,
+    capabilities: ["list", "read"],
+    createdAt: now,
+    lastSeenAt: null,
+    revokedAt: null,
+    expiresAt: null,
+    ttlSeconds: null,
+  });
+  const signinStore = createD1DeviceSigninStore(made.db, { now: () => now });
+  const myCode = await signinStore.requestDeviceCode({ name: "Nish's MacBook" });
+  const myApproved = await signinStore.approveDeviceCode(myCode.userCode, mine.account);
+  assert.equal(myApproved.accountId, mine.account.id);
+  const myPolled = await signinStore.pollDeviceCode(myCode.deviceCode);
+  assert.equal(myPolled.status, "approved");
+  const myToken = /** @type {{deviceToken: string}} */ (/** @type {unknown} */ (myPolled))
+    .deviceToken;
+  const theirCode = await signinStore.requestDeviceCode({ name: "Nish's Pi" });
+  await signinStore.approveDeviceCode(theirCode.userCode, theirs.account);
+  const theirPolled = await signinStore.pollDeviceCode(theirCode.deviceCode);
+  assert.equal(theirPolled.status, "approved");
+  const theirToken = /** @type {{deviceToken: string}} */ (/** @type {unknown} */ (theirPolled))
+    .deviceToken;
+  assert.notEqual(await signinStore.accountForDeviceToken(myToken), null);
+  assert.notEqual(await signinStore.accountForDeviceToken(theirToken), null);
+  const again = await signIn(made, "mine@example.com");
+  assert.notEqual(again.cookie, mine.cookie, "a second browser has its own session");
+
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie: mine.cookie },
+      body: JSON.stringify({ step: "signout-all" }),
+    }),
+    made.env,
+  );
+  assert.equal(out.status, 200, "sign-out everywhere answers ok");
+  assert.deepEqual(await out.json(), { ok: true, step: "signout-all" });
+
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: mine.cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "the browser session is gone");
+  const otherBrowser = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: again.cookie } }),
+    made.env,
+  );
+  assert.equal(otherBrowser.status, 401, "the other browser session is gone");
+  const theirBrowser = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: theirs.cookie } }),
+    made.env,
+  );
+  assert.notEqual(theirBrowser.status, 401, "another account's browser session stays live");
+
+  const mineRow = made.db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get("key_mine");
+  assert.ok(mineRow !== undefined);
+  assert.notEqual(mineRow.revoked_at, null, "this account's key is revoked");
+  const theirsRow = made.db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get("key_theirs");
+  assert.ok(theirsRow !== undefined);
+  assert.equal(theirsRow.revoked_at, null, "another account's key stays live");
+  assert.equal(
+    await signinStore.accountForDeviceToken(myToken),
+    null,
+    "this account's token is dead",
+  );
+  assert.notEqual(
+    await signinStore.accountForDeviceToken(theirToken),
+    null,
+    "another account's token stays live",
+  );
+});
+
+test("a no-JavaScript sign-out form posts and lands on the sign-in page", async () => {
+  const made = dispatchEnv();
+  const { cookie } = await signIn(made, "form@example.com");
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+        cookie,
+      },
+      body: new URLSearchParams({ step: "signout" }),
+    }),
+    made.env,
+  );
+  assert.equal(out.status, 302, "a form post is a redirect, not a JSON body");
+  assert.equal(out.headers.get("location"), SIGNIN_PATH);
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "the form's sign-out ended the session");
+});
+
+test("sign-out everywhere still ends this session when the key store fails", async () => {
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "partial@example.com");
+  const db = made.db;
+  const failing = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          if (/UPDATE\s+devices/i.test(String(sql))) {
+            throw new Error("devices store down");
+          }
+          return target.prepare(sql);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: TEST_BASE_URL,
+        cookie,
+      },
+      body: JSON.stringify({ step: "signout-all" }),
+    }),
+    { ...made.env, DRIVE_DB: failing },
+  );
+  assert.equal(out.status, 503, "a partial everywhere is not reported as ok");
+  assert.deepEqual(await out.json(), { error: failureMessage("storage-down") });
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "this browser is signed out even when keys stay live");
+});
+
+test("sign-out everywhere withdraws every key at the vendor, and a retry finishes a refused one", async () => {
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const account = await signIn(made, "vendor@example.com");
+  const now = 1_800_000_000_000;
+  const devices = createD1DeviceStore(made.db, { now: () => now });
+  for (const name of ["one", "two"]) {
+    await devices.put({
+      id: `key_${name}`,
+      accountId: account.account.id,
+      name,
+      kind: "agent",
+      accessKeyId: `ak_${name}`,
+      secretHash: `hash_${name}`,
+      prefix: `u/${account.account.id}/`,
+      capabilities: ["list", "read"],
+      createdAt: now,
+      lastSeenAt: null,
+      revokedAt: null,
+      expiresAt: null,
+      ttlSeconds: null,
+    });
+  }
+  // The deployment's own vendor (keyprovider-env.js): the reseller API's
+  // remove_access_key, answered here instead of at iDrive.
+  const vendor = "https://reseller.vendor.test/v1";
+  /** @type {string[]} */
+  const removed = [];
+  /** @type {Set<string>} */
+  const refusing = new Set(["ak_one"]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith(vendor)) {
+        return realFetch(input, init);
+      }
+      const { access_key_id: id } = JSON.parse(String(init?.body ?? "{}"));
+      if (refusing.has(id)) {
+        return new Response(JSON.stringify({ message: "vendor down" }), { status: 500 });
+      }
+      removed.push(id);
+      return new Response("{}", { status: 200 });
+    }
+  );
+  const env = {
+    ...made.env,
+    IDRIVE_E2_API_TOKEN: "reseller-token",
+    IDRIVE_E2_API_ENDPOINT: vendor,
+  };
+  const signOutAll = (/** @type {string} */ cookie) =>
+    workerFetch(
+      new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie },
+        body: JSON.stringify({ step: "signout-all" }),
+      }),
+      env,
+    );
+  const revokedAt = (/** @type {string} */ id) =>
+    made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(id)?.revoked_at;
+  try {
+    const out = await signOutAll(account.cookie);
+    assert.equal(out.status, 503, "a key the vendor kept is not reported as signed out");
+    assert.deepEqual(await out.json(), { error: failureMessage("storage-down") });
+    assert.deepEqual(removed, ["ak_two"], "the refusal did not stop the other key");
+    assert.equal(revokedAt("key_one"), null, "the refused key stays live for the retry");
+    assert.notEqual(revokedAt("key_two"), null);
+    const after = await workerFetch(
+      new Request(`${TEST_BASE_URL}/api/first-run-status`, {
+        headers: { cookie: account.cookie },
+      }),
+      env,
+    );
+    assert.equal(after.status, 401, "the sessions still went");
+
+    refusing.clear();
+    const again = await signIn(made, "vendor@example.com");
+    const retried = await signOutAll(again.cookie);
+    assert.equal(retried.status, 200);
+    assert.deepEqual(removed, ["ak_two", "ak_one"], "the retry attempted only the live key");
+    assert.notEqual(revokedAt("key_one"), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // --------------------------------------------------------- per-IP rate limit
 
 test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
@@ -588,7 +1674,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const env = made.env;
 
   // The first three sends from one IP land. Each one carries a different
-  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // x-forwarded-for: that header is not the key (core/auth.js consults only
   // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
   for (let i = 0; i < 3; i++) {
     const response = await workerFetch(
@@ -781,6 +1867,9 @@ test("an address the library refuses is a 400, not a closed door", async () => {
 
 test("the page carries every string from src/signin.js verbatim", () => {
   for (const [name, value] of Object.entries(SIGNIN_COPY)) {
+    // Sign out copy is the signed-in menu (drive#423), pinned on the three
+    // pages that carry it by test/usage.test.mjs, not on the sign-in screen.
+    if (name === "signOut" || name === "signOutEverywhere") continue;
     assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
   }
   // The endpoints, from the modules, never typed into the page a second time.
@@ -795,7 +1884,10 @@ test("the page carries every string from src/signin.js verbatim", () => {
   );
   // The page is a static asset, so the price line it shows is the price
   // module's; the test reads the module, so the two cannot drift.
-  assert.ok(page.includes(PRICE.freeLine), "the page must carry the price module's free line");
+  assert.ok(
+    page.includes(PRICE.noPlansLine),
+    "the page must carry the price module's no-minimum line",
+  );
 });
 
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
@@ -921,9 +2013,25 @@ test("the page offers no provider the server cannot complete (drive#180)", async
   }
 });
 
-test("the page states the spec's two promises: no card, and the free dollar", () => {
-  assert.ok(page.includes(SIGNIN_COPY.noCard), "the page must say no card is asked");
-  assert.ok(page.includes(SIGNIN_COPY.freeLine), "the page must quote the free line");
+test("the page states the spec's two promises: a card at sign-up, and the membership", () => {
+  assert.ok(page.includes(SIGNIN_COPY.needCard), "the page must say why a card is needed");
+  // drive#420: once. The sentence used to sit in three places — the paragraph
+  // above the form, a tick-box label and the footer — which read as a legal
+  // notice rather than a reason. The count is what holds it: a second copy
+  // anywhere on the page fails here, so a future edit cannot put one back
+  // silently.
+  assert.equal(
+    page.split(SIGNIN_COPY.needCard).length - 1,
+    1,
+    "the card sentence appears exactly once on the page",
+  );
+  // drive#538 finish line 3: this form has no card checkbox. The needCard
+  // sentence above is where the rule is stated. Verify claims a test
+  // stand-in; a real card waits on the Dodo key. A box here made every
+  // returning customer tick "I understand a card is required".
+  assert.doesNotMatch(page, /id="card"/);
+  assert.doesNotMatch(page, /I understand a card is required/);
+  assert.ok(page.includes(SIGNIN_COPY.noPlansLine), "the page must quote the no-minimum line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
   // "Never do" row). This page is a step-9 surface, so the rule is pinned on
   // it too, not only on the pricing page.
@@ -934,11 +2042,79 @@ test("the page states the spec's two promises: no card, and the free dollar", ()
   assert.equal(/\d+\s*¢\s*per minute/.test(page), false, "no per-minute price on the sign-in page");
 });
 
+test("the page states the age rule and labels the age box in short (drive#781)", () => {
+  // The terms carry the rule; this page shows it once and carries the box
+  // that agrees to it. The box is optional since drive#785: the gate holds
+  // at the link for a first-time address and never re-asks an older one, so
+  // the page is the same one for both (drive#538) and the tick travels with
+  // the link.
+  const terms = readFileSync(new URL("../public/terms.html", import.meta.url), "utf8");
+  assert.ok(terms.includes(SIGNIN_COPY.needAge), "the terms must carry the same age sentence");
+  assert.ok(page.includes(SIGNIN_COPY.needAge), "the page must say the age rule");
+  assert.equal(
+    page.split(SIGNIN_COPY.needAge).length - 1,
+    1,
+    "the age sentence appears exactly once on the page",
+  );
+  assert.ok(page.includes(`for="age"`), "the page carries a label for the age checkbox");
+  assert.ok(page.includes(SIGNIN_COPY.ageConsent), "the age box is labelled in short");
+  assert.match(
+    page,
+    /<input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence"/,
+    "the page posts the age box the route reads",
+  );
+  assert.equal(
+    /<input id="age" name="age"[^>]*required/.test(page),
+    false,
+    "the age box is optional: an older account must not attest again",
+  );
+  assert.ok(
+    page.includes('errorParam === "need-age"'),
+    "the page answers an unattested link with its own age rule",
+  );
+});
+
+test("no other shipped page posts a sign-in start (drive#781)", () => {
+  // The age box lives on the sign-in form. Other pages post sign-out only.
+  const others = [
+    "../get-started.html",
+    "../public/files.html",
+    "../public/usage.html",
+    "../public/devices.html",
+    "../public/index.html",
+    "../public/upload.html",
+  ];
+  for (const rel of others) {
+    const html = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.equal(
+      html.includes('name="step" value="start"'),
+      false,
+      `${rel} must not post a sign-in start`,
+    );
+  }
+});
+
 test("the page's failure words are the message table's", () => {
   // The same two constants the pricing page carries, and the same gate
   // test/messages.test.mjs runs over this page.
   assert.ok(page.includes(FAILURE_MESSAGES.offline.what));
   assert.ok(page.includes(FAILURE_MESSAGES.unexpected.what));
+});
+
+test("the page shows the route's own error words, so every failure names a next step", () => {
+  // The server owns the words for the failures only it can see (drive#431:
+  // an email that could not be sent). The page is a static asset, so it cannot
+  // hold them; what it must do is put the answer's `error` in the live status
+  // line as it arrives, which is what keeps those failure paths from falling
+  // back to "That did not work." with no next step.
+  assert.ok(
+    page.includes("payload.error"),
+    "the page must read the error field the route answers with",
+  );
+  assert.ok(
+    page.includes('id="signin-status"') && page.includes("aria-live"),
+    "the page must have the live region the status words are read into",
+  );
 });
 
 test("the page is at the path the module names, and the Worker serves it as an asset", async () => {

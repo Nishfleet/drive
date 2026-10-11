@@ -7,7 +7,7 @@
 // "a capped account goes read-only with no file lost and starts writing again
 // once the cap is raised". The last two tests below walk exactly that: a
 // default account past 1.5 TB goes read-only through enforceCap() reading
-// src/billing.js's usageSummary(), nothing but the storage key is touched, and
+// core/billing.js's usageSummary(), nothing but the storage key is touched, and
 // a raised cap puts the write capability back.
 //
 // The plan and its execution are pure data and an injected provider, so the
@@ -23,7 +23,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../src/billing.js";
+import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../core/billing.js";
 import {
   applyCapSwap,
   capSwapPlan,
@@ -32,10 +32,11 @@ import {
   isWriteCapable,
   parseCapUsd,
   READ_ONLY_CAPABILITIES,
+  SPEND_CAP_REASON,
   WRITE_SCOPE_BY_KIND,
-} from "../src/cap.js";
+} from "../core/cap.js";
+import { failureMessage as tableMessage } from "../core/messages.js";
 import worker from "../src/index.js";
-import { failureMessage as tableMessage } from "../src/messages.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -51,25 +52,22 @@ const workerFetch =
 
 // Minutes in an average month, so a test can say "2 TB held all month" and
 // mean the metered bill and the peak are the same number.
-const MINUTES_PER_MONTH = 43800;
-/** @param {number} gb */
-const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
-// past the $12 default cap (2000 GB bills $40, capped to the $16 ceiling) and
-// under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
+// past the $20 default cap (2600 GB meters $52, held to the $26 maximum) and
+// under it (1200 GB bills the $12 maximum).
 /** @param {number} gb */
 const monthUsage = (gb) => ({
-  gbMinutes: fullMonthGbMinutes(gb),
-  peakGb: gb,
+  size30Bytes: gb * 1e9,
   storedGb: gb,
   storedDaily: [],
   downloadBytes: 0,
-  averageStoredGb: gb,
   capUsd: BILLING_CONFIG.defaultCapUsd,
   cardAdded: true,
 });
-const capUsage = () => monthUsage(2000);
+const capUsage = () => monthUsage(2600);
 const underCapUsage = () => monthUsage(1200);
 
 // The four kinds of key the spec mints, in the shape the plan reads.
@@ -117,14 +115,23 @@ const capped = (key, capabilities) => ({
   cappedFrom: Object.freeze([...capabilities]),
 });
 
-// A provider that records every call, so order and scope are visible.
+// A provider that records every call, so order and scope are visible. The
+// freeze's reason (drive#661) is recorded beside the call that carried it, so
+// the wiring from a capSwapPlan swap to the row the provider writes is visible
+// here and not only in the Worker's store.
+/** @param {{cappedReason?: string|null}} [options] */
+const reasonOf = (options) =>
+  options !== undefined && options.cappedReason !== undefined
+    ? { cappedReason: options.cappedReason }
+    : {};
+
 /**
  * @param {{swapToReadOnly?: boolean}} [options]
  * @returns {{
  *   calls: Array<Record<string, unknown>>,
- *   mint: (scope: Record<string, unknown>) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+ *   mint: (scope: Record<string, unknown>, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
  *   revoke: (keyId: string) => Promise<void>,
- *   swapToReadOnly?: (keyId: string) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+ *   swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
  * }}
  */
 function recordingProvider({ swapToReadOnly = false } = {}) {
@@ -133,15 +140,15 @@ function recordingProvider({ swapToReadOnly = false } = {}) {
   let minted = 0;
   /** @type {{
    *   calls: Array<Record<string, unknown>>,
-   *   mint: (scope: Record<string, unknown>) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+   *   mint: (scope: Record<string, unknown>, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
    *   revoke: (keyId: string) => Promise<void>,
-   *   swapToReadOnly?: (keyId: string) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+   *   swapToReadOnly?: (keyId: string, options?: {cappedReason?: string|null}) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
    * }} */
   const provider = {
     calls,
-    /** @param {Record<string, unknown>} scope */
-    async mint(scope) {
-      calls.push({ call: "mint", ...scope });
+    /** @param {Record<string, unknown>} scope @param {{cappedReason?: string|null}} [options] */
+    async mint(scope, options) {
+      calls.push({ call: "mint", ...scope, ...reasonOf(options) });
       minted += 1;
       return { keyId: `new-${minted}`, accessKeyId: `id-${minted}`, secret: `s-${minted}` };
     },
@@ -151,9 +158,9 @@ function recordingProvider({ swapToReadOnly = false } = {}) {
     },
   };
   if (swapToReadOnly) {
-    /** @param {string} keyId */
-    provider.swapToReadOnly = async (keyId) => {
-      calls.push({ call: "swapToReadOnly", keyId });
+    /** @param {string} keyId @param {{cappedReason?: string|null}} [options] */
+    provider.swapToReadOnly = async (keyId, options) => {
+      calls.push({ call: "swapToReadOnly", keyId, ...reasonOf(options) });
       minted += 1;
       return { keyId: `new-${minted}`, accessKeyId: `id-${minted}`, secret: `s-${minted}` };
     };
@@ -173,23 +180,32 @@ test("at the cap every write-capable key is replaced by a read-only one on its o
   );
   const byId = Object.fromEntries(plan.swaps.map((swap) => [swap.keyId, swap]));
   assert.equal(byId["k-ro"], undefined, "a key that already cannot write is not churned");
-  // A swap names the key, the scope that replaces it, and the scope it took
-  // away (issue #74: the record is what the cap is allowed to give back later).
-  // A deepEqual on the whole entry is the negative that matters here: no file
-  // id, no path inside the prefix, nothing that a swap could delete is in the
-  // plan.
+  // A swap names the key, the scope that replaces it, the scope it took away
+  // (issue #74: the record is what the cap is allowed to give back later), and
+  // the reason that names the cap that did it (drive#661, the only value this
+  // phase sets). A deepEqual on the whole entry is the negative that matters
+  // here: no file id, no path inside the prefix, nothing that a swap could
+  // delete is in the plan.
   assert.deepEqual(byId["k-device"], {
     keyId: "k-device",
     kind: "device",
     prefix: "u/a1/",
     capabilities: Object.freeze(["list", "read"]),
     cappedFrom: Object.freeze(["list", "read", "write", "delete"]),
+    cappedReason: SPEND_CAP_REASON,
   });
   assert.deepEqual(byId["k-agent"].capabilities, READ_ONLY_CAPABILITIES);
   assert.equal(
     byId["k-branch"].prefix,
     "u/a1/.branches/fix/",
     "a branch key narrows to itself, never to the account",
+  );
+  // Every swap on the freeze names the same word, and only this phase's word:
+  // a give-back pass (drive#656) reads it to tell the cap's own freeze from
+  // another cap's, so it has to be on every entry rather than on the plan.
+  assert.ok(
+    plan.swaps.every((swap) => swap.cappedReason === SPEND_CAP_REASON),
+    "every freeze carries the spending cap's reason",
   );
   // The mount holds the old key until it restarts, so a swap is a restart.
   assert.deepEqual(plan.mount, { restart: true, reason: "cap-reached" });
@@ -254,6 +270,10 @@ test("raising the cap gives back exactly what the cap took, and nothing more", (
   // on the row it just minted: a later cap starts from what the key holds.
   for (const swap of plan.swaps) {
     assert.equal(swap.cappedFrom, null, `${swap.keyId} has nothing left to give back`);
+    // ...and the reason is cleared with it (drive#661). A raised key is not a
+    // key the spending cap froze, so a second freeze has to be free to write
+    // the reason again rather than finding a marker it did not leave.
+    assert.equal(swap.cappedReason, null, `${swap.keyId} has no reason left either`);
   }
   // Once restored, a second pass has nothing to do either: the keys on file
   // are the ones the first pass minted, not the read-only ones it replaced.
@@ -546,9 +566,22 @@ test("the provider call order keeps the write key from outliving the cap", async
 
   assert.deepEqual(provider.calls, [
     { call: "revoke", keyId: "k-device" },
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read"] },
+    // The freeze's reason rides on the mint that leaves the replacement row
+    // live (drive#661), so the store has one value to write and core/cap.js
+    // names the word once.
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read"],
+      cappedReason: SPEND_CAP_REASON,
+    },
     { call: "revoke", keyId: "k-agent" },
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read"] },
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read"],
+      cappedReason: SPEND_CAP_REASON,
+    },
   ]);
   assert.equal(result.state, "read_only");
   assert.equal(result.applied.length, 2);
@@ -568,17 +601,27 @@ test("the provider call order keeps the write key from outliving the cap", async
     raised,
   );
   assert.deepEqual(raised.calls, [
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write"] },
+    // null, not absent: the raise is the one path that has to clear a reason it
+    // once wrote, and it does it by sending null rather than by saying
+    // nothing, so a store that kept the old row's value would overwrite it.
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read", "write"],
+      cappedReason: null,
+    },
     { call: "revoke", keyId: "k-agent" },
   ]);
 });
 
 test("a provider's own swapToReadOnly is used for the cap swap, never for a restore", async () => {
-  // workers/api/src/keyprovider.js names swapToReadOnly for exactly this call;
+  // core/keyprovider.js names swapToReadOnly for exactly this call;
   // when a provider has it, enforcement must not re-do revoke-then-mint by hand.
   const provider = recordingProvider({ swapToReadOnly: true });
   await applyCapSwap(capSwapPlan([deviceKey], { state: "read_only" }), provider);
-  assert.deepEqual(provider.calls, [{ call: "swapToReadOnly", keyId: "k-device" }]);
+  assert.deepEqual(provider.calls, [
+    { call: "swapToReadOnly", keyId: "k-device", cappedReason: SPEND_CAP_REASON },
+  ]);
 
   const raised = recordingProvider({ swapToReadOnly: true });
   await applyCapSwap(
@@ -586,7 +629,12 @@ test("a provider's own swapToReadOnly is used for the cap swap, never for a rest
     raised,
   );
   assert.deepEqual(raised.calls, [
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write", "delete"] },
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read", "write", "delete"],
+      cappedReason: null,
+    },
     { call: "revoke", keyId: "k-device" },
   ]);
 });
@@ -644,42 +692,46 @@ test("a key is write-capable when it can write or delete", () => {
   assert.equal(isWriteCapable(null), false);
 });
 
-test("enforcement reads the month's numbers from src/billing.js capStatus()", async () => {
+test("enforcement reads the month's numbers from core/billing.js capStatus()", async () => {
   /** @param {number} gb */
   const usage = (gb) => ({
-    gbMinutes: fullMonthGbMinutes(gb),
-    peakGb: gb,
+    size30Bytes: gb * 1e9,
     storedGb: gb,
     storedDaily: [],
     downloadBytes: 0,
-    averageStoredGb: gb,
     capUsd: BILLING_CONFIG.defaultCapUsd,
     cardAdded: true,
   });
   const keys = [deviceKey];
 
-  // 1.3 TB on the default $12 cap: the invoice is the $12 floor, so the cap is
-  // not passed and the drive keeps writing (the orchestrator decision on #39).
-  const active = await enforceCap({ usage: usage(1300), keys }, recordingProvider());
+  // 1 TB on the default $20 cap: the invoice is the $10 maximum, so the cap is
+  // not passed and the drive keeps writing (drive#464).
+  const active = await enforceCap({ usage: usage(1000), keys }, recordingProvider());
   assert.equal(active.state, "active");
   assert.equal(active.applied.length, 0);
   assert.equal(active.mount.restart, false);
 
-  // 2 TB: the ceiling rises to $16, past the $12 cap, so the one write key is
+  // 2.6 TB: the maximum is $26, past the $20 cap, so the one write key is
   // replaced by a read-only key and the mount is told to restart.
   const capProvider = recordingProvider();
-  const capped = await enforceCap({ usage: usage(2000), keys }, capProvider);
+  const capped = await enforceCap({ usage: usage(2600), keys }, capProvider);
   assert.equal(capped.state, "read_only");
   assert.equal(capped.applied.length, 1);
   assert.deepEqual(capProvider.calls, [
     { call: "revoke", keyId: "k-device" },
-    { call: "mint", prefix: "u/a1/", capabilities: ["list", "read"] },
+    {
+      call: "mint",
+      prefix: "u/a1/",
+      capabilities: ["list", "read"],
+      cappedReason: SPEND_CAP_REASON,
+    },
   ]);
 
   // The same two conclusions the capStatus() tests pin, read through the
-  // summary rule too: 2 TB at the default cap is read_only, 1.3 TB is active.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), 2000, 12).state, "read_only");
-  assert.equal(capStatus(fullMonthGbMinutes(1300), 1300, 12).state, "active");
+  // summary rule too: 2.6 TB at the default cap is read_only, 1 TB is active.
+  const cap = BILLING_CONFIG.defaultCapUsd;
+  assert.equal(capStatus(2600 * 1e9, cap).state, "read_only");
+  assert.equal(capStatus(1000 * 1e9, cap).state, "active");
 });
 
 test("a card-less account goes read-only at the free $1, the same rule the usage page shows", async () => {
@@ -687,12 +739,10 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   // that from usageSummary(), not from a second copy of the rule.
   const account = {
     usage: {
-      gbMinutes: fullMonthGbMinutes(60),
-      peakGb: 60,
+      size30Bytes: 60 * 1e9,
       storedGb: 60,
       storedDaily: [],
       downloadBytes: 0,
-      averageStoredGb: 60,
       capUsd: BILLING_CONFIG.defaultCapUsd,
     },
     keys: [deviceKey],
@@ -700,7 +750,7 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   const report = await enforceCap(account, recordingProvider());
   assert.equal(report.state, "read_only", "60 GB is over the free $1 without a card");
   assert.equal(report.applied.length, 1);
-  // With the card on file the same drive is under the $12 cap and writing.
+  // With the card on file the same drive is under the $20 cap and writing.
   const withCard = await enforceCap(
     { ...account, usage: { ...account.usage, cardAdded: true } },
     recordingProvider(),
@@ -743,28 +793,40 @@ test("drive cap takes a dollar amount and nothing else", () => {
       `rejects ${String(bad)}`,
     );
   }
-  // The error tells the person what to type, not just that the input was bad.
-  assert.throws(() => parseCapUsd("abc"), /Run: drive cap 20/);
+  // The error tells the person what to type next, in words that hold on either
+  // surface: the usage page's slider sends the same request, so it cannot end
+  // in a command only the CLI can run, and it cannot name a page a terminal
+  // user cannot see (drive#421).
+  assert.throws(() => parseCapUsd("abc"), /Type a number like that again/);
+  // Zero is a cap, and the usage page's slider offers it (min="0"), so the
+  // api has to take it: a page that offered a number the Worker refused would
+  // answer the number the page itself put there (drive#421).
+  assert.equal(parseCapUsd("0"), 0);
+  assert.equal(parseCapUsd("0.00"), 0);
+  // The culprit stays delimited, so an empty amount and a stray word do not
+  // read as part of the sentence.
+  assert.throws(() => parseCapUsd(""), /got ""\./);
+  assert.throws(() => parseCapUsd("20 dollars"), /got "20 dollars"\./);
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
-  const active = capLine(capStatus(fullMonthGbMinutes(300), 300, 12));
+  const active = capLine(capStatus(300 * 1e9, 12));
   assert.equal(active, "Cap $12.00: $6.00 counted this month, $6.00 left.");
 
-  const capped = capLine(capStatus(fullMonthGbMinutes(2000), 2000, 12));
+  const capped = capLine(capStatus(2000 * 1e9, 12));
   const [what, numbers] = capped.split("\n");
   // The words for a read-only drive come from the one message table, so the
   // page, the CLI and the api cannot drift apart.
   assert.equal(what, tableMessage("cap-reached"));
   assert.equal(
     numbers,
-    "Cap $12.00 reached: $16.00 counted this month. " +
+    "Cap $12.00 reached: $30.00 counted this month. " +
       "Uploads waiting in the cache stay on this Mac and go up once the cap is raised.",
   );
   // Raised again: the line goes back to one line and says there is room.
   assert.equal(
-    capLine(capStatus(fullMonthGbMinutes(2000), 2000, 20)),
-    "Cap $20.00: $16.00 counted this month, $4.00 left.",
+    capLine(capStatus(2000 * 1e9, 35)),
+    "Cap $35.00: $30.00 counted this month, $5.00 left.",
   );
   for (const bad of [
     null,
@@ -777,18 +839,24 @@ test("the cap line is one line while writing and two at the cap", () => {
 });
 
 test("the usage response carries the cap line, and the Worker routes it", async () => {
-  // `drive status` is Go: it cannot import src/billing.js, so the line has to
+  // `drive status` is Go: it cannot import core/billing.js, so the line has to
   // travel in the response for the CLI to print the same words. The handler is
   // behind the account gate (issue #73), so the line is proven by calling it
   // as a signed-in request until the sign-in flow lands (build step 4, #5).
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), {
-    id: "1",
-    name: "Your drive",
-  });
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      id: "1",
+      name: "Your drive",
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
-  assert.equal(body.capLine, "Cap $12.00: $0.00 counted this month, $12.00 left.");
+  assert.equal(body.capLine, "Cap $20.00: $0.00 counted this month, $20.00 left.");
   // The Worker still routes the path to the handler, and the handler's gate
   // answers 401 to an anonymous request rather than the asset layer's 404.
   const anonymous = await workerFetch(new Request("https://drive.test/api/usage"), {
@@ -798,6 +866,9 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     { id: "1", name: "Your drive" },
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
 });
@@ -820,6 +891,9 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
       return recordingProvider();
     },
     async setAccountState() {},
+    async accountState() {
+      return /** @type {"active"} */ ("active");
+    },
   };
   const ok = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -848,7 +922,7 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.equal(bad.status, 400);
   const err = await bad.json();
   assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
-  assert.match(err.error, /Run: drive cap 20/);
+  assert.match(err.error, /Type a number like that again/);
 
   const mangled = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -868,4 +942,165 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
     capStore,
   );
   assert.equal(anon.status, 401);
+
+  // A Worker with no account store behind it: the request is well-formed and
+  // the account is identified, so the 503 is the message table's own pair and
+  // not a sentence invented here. The cap did not move, and the next step is
+  // not to wait and retry (drive#421).
+  const unwired = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-1", name: "You", email: "you@example.com" },
+    null,
+  );
+  assert.equal(unwired.status, 503);
+  assert.deepEqual(await unwired.json(), { error: tableMessage("cap-store-missing") });
+});
+
+test("POST /api/cap answers 409 on a closed account and does not write", async () => {
+  /** @type {number[]} */
+  const stored = [];
+  const capStore = {
+    /**
+     * @param {{id: string}} _account
+     * @param {number} cents
+     */
+    async setCapCents(_account, cents) {
+      stored.push(cents);
+    },
+    async listCapKeys() {
+      return [];
+    },
+    keyProviderFor() {
+      return recordingProvider();
+    },
+    async setAccountState() {
+      throw new Error("a closed account must not reach setAccountState");
+    },
+    async accountState() {
+      return /** @type {"closed"} */ ("closed");
+    },
+  };
+  const refused = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-closed", name: "You", email: "you@example.com" },
+    capStore,
+  );
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: tableMessage("cap-account-closed") });
+  assert.notEqual(
+    tableMessage("cap-account-closed"),
+    tableMessage("account-closed"),
+    "the cap refusal is not the key-mint refusal",
+  );
+  assert.deepEqual(stored, [], "the cap row must not move on a closed account");
+});
+
+test("the swap's own credential is in the answer, so the mount can sign with it", async () => {
+  // The finish line of drive issue #241 is a real mount going read-only, and
+  // nothing can go read-only on a mount that still holds the pre-cap key.
+  // rclone's config is a local file, so the CLI has to be *told* which key to
+  // write: the answer to POST /api/cap carries the credential the store just
+  // minted (access key id, secret and the STS session token a scoped key
+  // needs), and `drive cap` writes that into the rclone config on the restart.
+  //
+  // The swap is decided from the account's own month, not from a blank one:
+  // `capStore.monthUsage` is the read that makes setting the cap smaller than
+  // what the account already counted enforce at once (the finish line), and
+  // without it `drive cap 0` on a live drive would swap nothing.
+  const overCapMonth = {
+    size30Bytes: 2000 * 1e9,
+    storedGb: 2000,
+    storedDaily: [],
+    downloadBytes: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  };
+  const deviceKeyRow = { ...deviceKey, capabilities: ["list", "read", "write", "delete"] };
+  const minted = {
+    keyId: "key-ro",
+    accessKeyId: "ro-access-key-id",
+    secret: "ro-secret",
+    sessionToken: "ro-session-token",
+  };
+  const store = {
+    async setCapCents() {},
+    async listCapKeys() {
+      return [deviceKeyRow];
+    },
+    async monthUsage() {
+      return { ...overCapMonth, capUsd: 0 };
+    },
+    keyProviderFor() {
+      return {
+        mint: async () => ({ ...minted }),
+        revoke: async () => {},
+        swapToReadOnly: async () => ({ ...minted }),
+      };
+    },
+    async setAccountState() {},
+    async accountState() {
+      return /** @type {"active"} */ ("active");
+    },
+  };
+  const swapped = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "0" }),
+    }),
+    { id: "acct-1" },
+    store,
+  );
+  assert.equal(swapped.status, 200);
+  assert.equal(
+    swapped.headers.get("cache-control"),
+    "no-store",
+    "the swap answer carries the secret, so it must not be stored",
+  );
+  const body = await swapped.json();
+  assert.equal(
+    body.cap.state,
+    "read_only",
+    "a cap below what the month already counted is reached",
+  );
+  assert.equal(body.mount.restart, true);
+  // The three values the mount needs to sign. The secret and the token are a
+  // credential, so they are only ever in this response and in the rclone
+  // config this CLI writes 0600.
+  assert.deepEqual(body.credential, {
+    accessKeyId: minted.accessKeyId,
+    secret: minted.secret,
+    sessionToken: minted.sessionToken,
+  });
+
+  // A store with no month read (a deployment without the meter tables) still
+  // answers, and with nothing over the cap the answer carries no credential:
+  // a second `drive cap` at the same amount must not make the CLI rewrite the
+  // mount config with the key it is already holding.
+  const settled = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-1" },
+    {
+      ...store,
+      async listCapKeys() {
+        return [{ ...deviceKeyRow, capabilities: ["list", "read"] }];
+      },
+    },
+  );
+  assert.equal(settled.status, 200);
+  const settledBody = await settled.json();
+  assert.equal(settledBody.mount.restart, false);
+  assert.equal(settledBody.credential, undefined, "nothing was swapped, so no key is handed back");
 });

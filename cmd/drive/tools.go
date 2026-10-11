@@ -87,6 +87,12 @@ func environWithHome(environ []string, home string) []string {
 type Env struct {
 	Home     string
 	DriveDir string
+	// AgentDir is the tool's agent path (agentmount.go, drive#514): its own
+	// rclone mount, holding the tool's own key. The MCP server and the tool's
+	// allowed folders point here and not at DriveDir, because the kernel
+	// serves a mount whatever credential rclone holds, and only this mount
+	// holds the key that cannot delete.
+	AgentDir string
 	Runner   Runner
 	LookPath func(string) (string, error)
 	Minter   KeyMinter
@@ -98,6 +104,13 @@ type Env struct {
 type KeyMinter interface {
 	MintKey(kind, name string) (MintedKey, error)
 	RevokeKey(keyID string) error
+	// RenewKey restarts the hour on a key this device already holds
+	// (POST /v1/keys/<keyId>/renew, issue #106). A tool idle for longer than an
+	// hour outlives its credential, so a drive command that finds one asks the
+	// Worker to restart the hour instead of leaving a dead key in the tool's
+	// entry. The answer is the restarted row, so the expiry the CLI shows and
+	// decides against is the Worker's own.
+	RenewKey(keyID string) (RenewedKey, error)
 }
 
 // agentKeyEnv is the one key an agent tool's MCP server runs on (build-spec.md
@@ -117,7 +130,14 @@ func (e Env) withDefaults() Env {
 		e.LookPath = exec.LookPath
 	}
 	if e.DriveDir == "" {
-		e.DriveDir = filepath.Join(e.Home, "Drive")
+		e.DriveDir = DefaultMountDir(e.Home)
+	}
+	if e.AgentDir == "" {
+		// The agent path is per tool (agentmount.go), so a caller that has no
+		// tool to name gets the drive folder itself. Every real caller sets
+		// this: `drive init` and `drive agents connect` set it to the tool's
+		// own mount point before they register anything.
+		e.AgentDir = e.DriveDir
 	}
 	return e
 }
@@ -233,14 +253,15 @@ func tools() []Tool {
 	}
 }
 
-// toolByName returns the adapter for name, or an error naming what exists.
+// toolByName returns the adapter for name, or a table failure naming what
+// exists and how to see it.
 func toolByName(name string) (Tool, error) {
 	for _, t := range tools() {
 		if t.Name == name {
 			return t, nil
 		}
 	}
-	return Tool{}, fmt.Errorf("unknown tool %q (known: %s)", name, strings.Join(toolNames(), ", "))
+	return Tool{}, failf("unknown-tool", name, strings.Join(toolNames(), ", "))
 }
 
 func toolNames() []string {
@@ -326,6 +347,17 @@ func (t Tool) Installed(env Env) (bool, string) {
 // into its MCP entry; otherwise the server is registered exactly as before.
 func (t Tool) Connect(env Env) error {
 	env = env.withDefaults()
+	// Every tool's own entry runs the drive's MCP server through
+	// `npx -y @modelcontextprotocol/server-filesystem`, so a machine
+	// that has the tool installed but no Node has a tool that cannot
+	// run: the registration would succeed and the failure would only
+	// surface later, inside the editor, as a server that never starts
+	// (issue #561). The check runs before anything is written, so the
+	// failure is here, at the person's own command, with the install
+	// that fixes it.
+	if _, err := env.LookPath("npx"); err != nil {
+		return fail("no-node")
+	}
 	keyArg, err := t.connectKey(env)
 	if err != nil {
 		return err
@@ -335,8 +367,8 @@ func (t Tool) Connect(env Env) error {
 	// tools run it on registration to report a live status: claude mcp get said
 	// "Failed to connect" until the folder existed (seen on this host
 	// 2026-09-30). Create it before the tool is pointed at it.
-	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
-		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
+	if err := os.MkdirAll(env.AgentDir, 0o755); err != nil {
+		return failDetail("drive-folder", err, env.AgentDir)
 	}
 	// The skill note goes first. A note with no registration is recoverable
 	// (the next `drive init` finds the tool and registers it), while a tool
@@ -367,7 +399,7 @@ func (t Tool) Connect(env Env) error {
 // runAdd runs the tool's add command, replacing an existing entry when the
 // tool refuses to overwrite one (claude says "already exists in user config").
 func (t Tool) runAdd(env Env, keyArg string) error {
-	argv := expand(t.Add, env.DriveDir, keyArg)
+	argv := expand(t.Add, env.AgentDir, keyArg)
 	out, err := env.Runner.Run(t.Name, argv...)
 	if err == nil {
 		return nil
@@ -479,10 +511,17 @@ func serverTable(doc map[string]any, create bool) (map[string]any, error) {
 // when this tool has its own key, the two key env vars. Every JSON-config tool
 // in the registry reads this shape. The secret is an env value, never argv, so
 // a `ps` on this machine cannot read it (drive#75).
+//
+// The one path argument is the tool's agent path, not the person's drive
+// folder (drive#514). The server serves plain files through the kernel, so a
+// drive folder would hand a tool the delete-capable key whatever env vars the
+// entry carries; the agent folder is the mount that holds the tool's own
+// no-delete key, so the filesystem the server reads is the one storage
+// already bounds.
 func serverEntry(t Tool, env Env, keyArg string) (map[string]any, error) {
 	entry := map[string]any{
 		"command": "npx",
-		"args":    []string{"-y", mcpPackage, env.DriveDir},
+		"args":    []string{"-y", mcpPackage, env.AgentDir},
 	}
 	if t.KeyEnv == "" || keyArg == "" {
 		return entry, nil

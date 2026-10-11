@@ -5,11 +5,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import "urlpattern-polyfill";
+import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
+import { createMemoryStore } from "../../../core/keystore.js";
 import { applyMigrations, d1Over } from "../../../test/d1-sqlite.mjs";
-import { createD1DeviceSigninStore } from "../src/device-signin.js";
+import { sqlitePlaceholders } from "../../../test/harness.mjs";
 import { EXPORT_ROW_CAP } from "../src/export-routes.js";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 
 // A clock the test owns, so a device token can be pushed past its TTL
 // without sleeping; the store reads `now` from the context it is given.
@@ -44,7 +45,7 @@ function exportD1(sqlite) {
   return /** @type {D1Database} */ (
     /** @type {unknown} */ ({
       ...inner,
-      /** db.batch (workers/api/src/db.js) hands over prepared, bound
+      /** db.batch (core/db.js) hands over prepared, bound
        * statements; d1Over's `_exec` re-runs one against SQLite. D1's batch
        * answers `Promise<D1Result[]>`, so the array of promises is awaited
        * here rather than handed back unresolved. */
@@ -233,9 +234,9 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
 
   // One more file than a page holds, so the first page must stop short.
   const total = EXPORT_ROW_CAP + 1;
-  const insert = sqlite.prepare(
-    "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', ?4)",
-  );
+  const insertSql =
+    "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', ?4)";
+  const insert = sqlite.prepare(sqlitePlaceholders(insertSql));
   for (let i = 0; i < total; i++) {
     // Zero-padded so the path order is the same as the numeric order, which is
     // what the keyset cursor walks.
@@ -245,10 +246,10 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
   // export exactly once: a later page (driven by the file cursor) must not
   // re-read the version list and duplicate it, which is the bug a live run of
   // `drive export` found against a hand-written stand-in on 2026-10-02.
+  const versionSql =
+    "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)";
   sqlite
-    .prepare(
-      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-    )
+    .prepare(sqlitePlaceholders(versionSql))
     .run("acct-big", "v1", "/f000000.txt", 1, 1700000000000);
 
   const first = await dispatch(

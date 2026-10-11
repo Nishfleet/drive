@@ -1,17 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — usage</title>
+  <title>Storagebun — usage</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
   <style>
 /* Usage page: the shared site stylesheet (public/site.css) carries the palette,
    the reset and the chrome the pricing and first-run pages also use (drive
-   #71); what is left here is this page's readouts. System font stacks only: no
-   web font files, so nothing blocks first paint. */
+   #71); what is left here is this page's readouts. class="drive" on <html>
+   aliases those tokens onto the home-page look, calmer than the public pages
+   (docs/design/DESIGN.md). */
 
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
@@ -25,10 +27,6 @@ body {
   max-width: 940px;
 }
 
-.masthead a[aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
-}
 
 .wordmark {
   font-size: 28px;
@@ -42,7 +40,7 @@ h1 {
   margin: 0;
   font-family: var(--serif);
   font-size: clamp(34px, 5.4vw, 52px);
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.05;
 }
@@ -60,7 +58,7 @@ h2 {
   margin: 0 0 12px;
   font-family: var(--serif);
   font-size: 26px;
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: -0.01em;
 }
 
@@ -74,7 +72,7 @@ h2 {
   border-left: 4px solid var(--accent);
   border-radius: 10px;
   background: var(--paper-raised);
-  font-family: var(--serif);
+  font-family: var(--sans);
   font-size: 21px;
 }
 
@@ -115,6 +113,14 @@ h2 {
    read, it is this browser having no signed-in account, and it gets its own
    colour and its own words. */
 .status[data-state="signed-out"] {
+  border-left-color: var(--accent);
+}
+
+/* A month with nothing stored (drive issue #427). Not an error and not signed
+   out, so it takes the accent: the drive is fine, it just has no files on it
+   yet, and a new account has to be told that rather than left looking at a
+   blank box. */
+.status[data-state="empty"] {
   border-left-color: var(--accent);
 }
 
@@ -205,6 +211,24 @@ h2 {
   background: var(--paper-raised);
 }
 
+.cap label {
+  display: block;
+  margin: 10px 0 6px;
+}
+
+.cap input[type="number"] {
+  display: block;
+  width: 8rem;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: clamp(18px, 2.6vw, 22px);
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .cap input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
@@ -213,6 +237,61 @@ h2 {
 .cap-value {
   font-family: var(--mono);
   font-size: clamp(18px, 2.6vw, 22px);
+}
+
+/* The save button the slider reveals once it holds a number worth keeping.
+   The same shape as the close form's button, because it is the same promise:
+   a deliberate write on this page. */
+.cap button {
+  margin: 6px 0 0;
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.cap button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.close-form {
+  display: grid;
+  gap: 10px;
+  max-width: 28rem;
+  margin: 16px 0 0;
+}
+
+.close-form label {
+  font-weight: 600;
+}
+
+.close-form input {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.close-form button {
+  justify-self: start;
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.close-form .error {
+  margin: 0;
+  color: var(--ink-soft);
 }
 
 .empty {
@@ -232,6 +311,167 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* ---- The prepaid balance (drive#586) --------------------------------- */
+
+/* The balance is the account's money, read from GET /api/balance. Every
+   amount is the API's own string; the page formats no money. */
+/* The balance's box is its full size from the first paint, so its read
+   lands into space the page already has (drive#586, same idea as the
+   month's .status-slot). The status and the body share one grid cell, and a
+   hidden one keeps its place without painting, so showing either one moves
+   nothing. Every part of the body that only fills in on a read holds its
+   height while empty, and the ledger scrolls inside a fixed box, so ten
+   lines take the same room as none. */
+.balance-slot {
+  display: grid;
+}
+
+.balance-slot > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.balance-slot > [hidden] {
+  display: block;
+  visibility: hidden;
+}
+
+.balance-slot > .status {
+  align-self: start;
+}
+
+.balance-amount {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: clamp(34px, 5vw, 48px);
+  line-height: 1.1;
+  min-height: 1.1em;
+}
+
+.balance-line {
+  margin: 6px 0 0;
+  min-height: 2lh;
+  padding-left: 12px;
+  border-left: 4px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+.balance-line[data-state="low"],
+.balance-line[data-state="paused"] {
+  border-left-color: var(--bad);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.topup {
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.topup-presets {
+  min-height: calc(1lh + 16px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topup button,
+.topup-form button {
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.topup button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.topup-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 10px;
+  margin: 14px 0 0;
+}
+
+.topup-form label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.topup input[type="number"] {
+  width: 8rem;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.topup .error {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.auto-topup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 14px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.auto-topup input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+.ledger-box {
+  height: 16rem;
+  margin: 18px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ledger {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.ledger li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 18px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ledger .amount {
+  font-family: var(--mono);
+}
+
+.ledger .when {
+  flex-basis: 100%;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
 .footer {
   max-width: 940px;
   margin: 48px auto 0;
@@ -247,15 +487,43 @@ h2 {
 <body>
   <a class="skip-link" href="#month-heading">Skip to this month's usage</a>
   <header class="masthead">
-    <span class="wordmark">Drive</span>
+    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/files">Your files</a>
     <a href="/">Pricing</a>
     <a href="/get-started">Get started</a>
     <a href="/usage" aria-current="page">Usage</a>
-    <a href="/signin">Sign in</a>
+    <a href="/devices">Devices</a>
+    <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </div>
   <main>
     <section aria-labelledby="usage-heading">
       <h1 id="usage-heading">Usage</h1>
@@ -267,6 +535,12 @@ h2 {
 
     <section aria-labelledby="month-heading">
       <h2 id="month-heading" tabindex="-1">This month</h2>
+      <!-- The month the section is about, named (drive#559): /api/usage carries
+           the month's first instant and this slot is filled from it, with the
+           zone the rollup is measured in. "This month" is what a browser with
+           no script reads; the slot under it is the sentence that says which
+           month a UTC rollup means, and it is readable with no script too. -->
+      <p class="hint" id="month-note">Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>
       <p class="saved" id="saved" hidden></p>
       <!-- The reserved slot (drive#225): the status is hidden until a read
            lands, and this holds the box it will land in, so nothing below it
@@ -284,6 +558,48 @@ h2 {
          priced month of zeros. Without JavaScript there is no read at all, and
          this says so instead of leaving a blank page. -->
     <div id="usage-body" hidden>
+      <!-- The prepaid balance (drive#586). The balance is added first and
+           usage is drawn from it. A top-up goes to the payment page and comes
+           back here; the balance moves only when the payment is confirmed.
+           It sits inside the usage body so it paints with the month, never
+           above it: a box that fills in above the month would push the whole
+           page down under the reader. Its own read lands into a box that is
+           already its full size (the .balance-slot rules), so nothing moves
+           when it does. -->
+      <section aria-labelledby="balance-heading">
+        <h2 id="balance-heading">Balance</h2>
+        <div class="balance-slot">
+          <p class="status" id="balance-status" role="status" aria-live="polite" hidden></p>
+          <div id="balance-body" hidden>
+            <p class="balance-amount" id="balance-amount"></p>
+            <p class="balance-line" id="balance-line" data-state="ok"></p>
+            <p class="hint" id="topup-pending" role="status" hidden>Thanks. Your balance goes up here as soon as the payment is confirmed.</p>
+            <div class="topup">
+              <div class="topup-presets" id="topup-presets"></div>
+              <form class="topup-form" id="topup-form">
+                <label for="topup-amount">Another amount, in dollars
+                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required>
+                </label>
+                <button type="submit">Add</button>
+              </form>
+              <p class="error" id="topup-error" role="alert" hidden></p>
+              <div class="auto-topup">
+                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note">
+                <label for="auto-topup">Auto top-up: add</label>
+                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars">
+                <span>when the balance drops under $2</span>
+              </div>
+              <p class="hint" id="auto-topup-note" role="status">Off until you turn it on. It uses your saved card and emails a receipt each time.</p>
+            </div>
+            <h3 class="hint" id="ledger-heading">Recent lines</h3>
+            <section class="ledger-box" aria-labelledby="ledger-heading">
+              <ul class="ledger" id="ledger-list"></ul>
+              <p class="hint" id="ledger-empty" hidden>No lines yet. Your first top-up shows here.</p>
+            </section>
+          </div>
+        </div>
+      </section>
+
       <section aria-labelledby="stored-heading">
         <h2 id="stored-heading">Stored</h2>
         <figure class="chart" id="chart-figure">
@@ -303,14 +619,27 @@ h2 {
             <dd id="stored-now"></dd>
           </div>
           <div class="pair">
-            <dt>GB-months so far</dt>
-            <dd id="gb-months"></dd>
+            <dt>Biggest size in the last 30 days</dt>
+            <dd id="size30"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size was reached</dt>
+            <dd id="size30-reached"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size drops out</dt>
+            <dd id="size30-drops-out"></dd>
+          </div>
+          <div class="pair">
+            <dt>Today's draw</dt>
+            <dd id="today-draw"></dd>
           </div>
           <div class="pair">
             <dt>Cost so far</dt>
             <dd id="cost"></dd>
           </div>
         </dl>
+        <dl class="readout" id="bill-lines" hidden></dl>
       </section>
 
       <section aria-labelledby="downloads-heading">
@@ -321,7 +650,17 @@ h2 {
             <dd id="downloads-line"></dd>
           </div>
         </dl>
-        <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
+        <p class="hint" id="downloads-hint">Free up to 3× the biggest size in the last 30 days</p>
+      </section>
+
+      <section aria-labelledby="links-heading">
+        <h2 id="links-heading">Public links</h2>
+        <dl class="readout">
+          <div class="pair">
+            <dt>Open public links</dt>
+            <dd id="open-public-links"></dd>
+          </div>
+        </dl>
       </section>
 
       <!-- The upload-progress line (drive issue #308): the same live words
@@ -339,14 +678,43 @@ h2 {
       <section aria-labelledby="cap-heading">
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
-          <label for="cap-slider">Monthly cap, in dollars</label>
-          <input type="range" id="cap-slider" min="0.01" max="12" step="0.01" value="12" disabled aria-describedby="cap-note">
+          <label for="cap-amount">Monthly cap, in whole dollars</label>
+          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note">
+          <label for="cap-slider">Or move the slider</label>
+          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note">
           <p class="cap-value" id="cap-value"></p>
+          <button type="button" id="cap-save" hidden>Save cap</button>
         </div>
         <div class="empty" id="cap-note">
-          <p class="what">At the cap the drive goes read-only; nothing is ever deleted.</p>
-          <p class="next">Changing the cap from this page arrives with accounts.</p>
+          <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
+          <p class="next" id="cap-note-next">Type the cap or move the slider, then choose Save cap.</p>
         </div>
+        <p class="hint" id="cap-saved" role="status" hidden></p>
+        <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
+        <p class="hint" id="card-portal-line"><a id="card-portal-link" href="/api/billing/portal">Update your card in the billing portal</a></p>
+      </section>
+
+      <section aria-labelledby="export-heading" id="export-section">
+        <h2 id="export-heading">Your data</h2>
+        <p class="lede" id="export-what">Download a JSON file of this account's records: the account, keys, file names and version history. Your files stay in the drive folder.</p>
+        <p class="hint" id="export-line"><a id="export-download" href="/api/export" download="drive-export.json">Download your data as JSON</a></p>
+      </section>
+
+      <section aria-labelledby="close-heading" id="close-section">
+        <h2 id="close-heading">Close your account</h2>
+        <p class="lede" id="close-what">Closing revokes every key at once. Your files stay for 30 days, then they are deleted.</p>
+        <p class="hint" id="close-next">Type your email to confirm. You can cancel any time in those 30 days.</p>
+        <p class="hint" id="close-reminder">We email you now and again 5 days before the files go.</p>
+        <p class="hint" id="close-purge-on" hidden></p>
+        <p class="lede" id="close-closed-what" hidden>This account is closed. Keys are already revoked. Files are deleted 30 days after you closed it.</p>
+        <p class="hint" id="close-closed-next" hidden>You can cancel until then. Type your email to cancel.</p>
+        <p class="hint" id="close-purged-next" hidden>Your files were deleted. This account stays closed.</p>
+        <form class="close-form" id="close-form">
+          <label for="close-email" id="close-email-label">Type your email to confirm</label>
+          <input type="email" id="close-email" name="email" autocomplete="email" required>
+          <p class="error" id="close-error" hidden></p>
+          <button type="submit" id="close-submit">Close account</button>
+        </form>
       </section>
     </div>
     <noscript>
@@ -355,7 +723,16 @@ h2 {
   </main>
 
   <footer class="footer">
-    <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>Pay from your balance for the biggest size your drive reached in the last 30 days. <a href="/">See the price</a>.</p>
   </footer>
 
   <script>
@@ -366,13 +743,47 @@ h2 {
 // sentence, the endpoint or the poll interval drifts from there — the same gate
 // test/status.test.mjs runs for the first-run page.
 const USAGE_ENDPOINT = "/api/usage";
+// The cap write the slider POSTs to: the same route `drive cap` writes, so
+// one function on the Worker parses and writes a cap however it arrives. It
+// is already behind the account gate, and its words are the api's own.
+const CAP_ENDPOINT = "/api/cap";
+const CLOSE_ENDPOINT = "/api/account/close";
+const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 const POLL_INTERVAL_MS = 60000;
+
+// The month the section is about, named (drive#559). /api/usage carries the
+// month's first instant, and the name is written here in the browser's own
+// words: a month rendered on the server is a UTC month, so the gateway a
+// browser sits behind does not decide when the month a customer is billed for
+// turned over. The zone is spelled out beside it, because "October 2026" on
+// its own is the month of the reader's calendar too.
+const MONTH_ZONE = "UTC";
+
+function monthName(iso) {
+  if (typeof iso !== "string") {
+    return "";
+  }
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) {
+    return "";
+  }
+  return at.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+}
 
 // One sentence and one next step for a read that could not reach the Worker,
 // the same pair src/usage.js pins as USAGE_LABELS.unreachable.
 const UNREACHABLE = {
   what: "Could not reach the usage service just now.",
   next: "Leave this page open. It checks again in a minute.",
+};
+
+// The cap's own pair, the one src/usage.js pins as USAGE_LABELS.capNote. The
+// `next` is the resting instruction, and it says what to do rather than what
+// is not possible yet: the accounts store is live (drive issue #2), so the
+// slider below is a control and this is how a person uses it.
+const CAP_NOTE = {
+  what: "At the cap the drive goes read-only; nothing is ever deleted.",
+  next: "Move the slider, then choose Save cap.",
 };
 
 // The account gate's words (drive issue #73) are not repeated here: the 401
@@ -382,7 +793,16 @@ const UNREACHABLE = {
 // service: it means this browser has no signed-in account, and showing one
 // account's month to another is the bug the gate exists to stop.
 
+// A month with nothing stored in it (drive issue #427). These are the
+// `monthEmpty` sentences src/usage.js pins, carried here for the same reason
+// UNREACHABLE is: the page is a static asset and cannot import the module.
+const MONTH_EMPTY = {
+  what: "Nothing stored yet.",
+  next: "Save a file in the drive folder and the chart below fills in from that day.",
+};
+
 const savedEl = document.getElementById("saved");
+const monthHeadingEl = document.getElementById("month-heading");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
 const chartEl = document.getElementById("chart");
@@ -390,12 +810,118 @@ const chartLine = document.getElementById("chart-line");
 const chartFigureEl = document.getElementById("chart-figure");
 const storageEmptyEl = document.getElementById("storage-empty");
 const storedNowEl = document.getElementById("stored-now");
-const gbMonthsEl = document.getElementById("gb-months");
+const size30El = document.getElementById("size30");
+const size30ReachedEl = document.getElementById("size30-reached");
+const size30DropsOutEl = document.getElementById("size30-drops-out");
+const todayDrawEl = document.getElementById("today-draw");
 const costEl = document.getElementById("cost");
+const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
+const openPublicLinksEl = document.getElementById("open-public-links");
 const uploadLineEl = document.getElementById("upload-line");
+const capAmount = document.getElementById("cap-amount");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
+const capSaveEl = document.getElementById("cap-save");
+const capSavedEl = document.getElementById("cap-saved");
+const capSavingEl = document.getElementById("cap-saving");
+const capNoteEl = document.getElementById("cap-note");
+const closeWhatEl = document.getElementById("close-what");
+const closeNextEl = document.getElementById("close-next");
+const closeClosedWhatEl = document.getElementById("close-closed-what");
+const closeClosedNextEl = document.getElementById("close-closed-next");
+const closePurgeOnEl = document.getElementById("close-purge-on");
+const closeFormEl = document.getElementById("close-form");
+const closeErrorEl = document.getElementById("close-error");
+const closeEmailLabelEl = document.getElementById("close-email-label");
+const closeSubmitEl = document.getElementById("close-submit");
+const closePurgedNextEl = document.getElementById("close-purged-next");
+
+// The one box (drive#422): the close form and the cancel form were
+// two boxes that both asked for "Type your email to confirm", and
+// the cancel one stayed on the page after the 30 days were up.
+const CLOSE_BOX = {
+  confirm: { label: "Type your email to confirm", submit: "Close account" },
+  cancel: { label: "Type your email to cancel", submit: "Cancel closing" },
+};
+// Which action the one box posts to (drive#422): the close endpoint
+// while the account is open, the cancel endpoint while a close is
+// pending. renderClose() sets it from the account's state.
+let closeTarget = CLOSE_ENDPOINT;
+
+// The cap's note under the slider. It rests on the instruction above, and it
+// carries the words of a save that failed, the way the signed-out state
+// carries the 401's own words.
+function showCapNote(note) {
+  capNoteEl.querySelector(".what").textContent = note.what;
+  capNoteEl.querySelector(".next").textContent = note.next;
+}
+
+// The two cap controls move together: the typed number and the slider are
+// one cap, so they disable and wake as a pair (drive#527).
+function setCapControlsDisabled(disabled) {
+  capAmount.disabled = disabled;
+  capSlider.disabled = disabled;
+}
+
+// A save that failed. The Worker's sentence is the one that answers what went
+// wrong, so it is shown as it arrived, with no second sentence of ours next to
+// it -- the same shape the signed-out state uses. The button stays, so the
+// same amount can be tried again without moving the slider back.
+function sayCapError(note) {
+  capSavedEl.hidden = true;
+  showCapNote(note);
+  setCapControlsDisabled(false);
+  capSaveEl.disabled = false;
+  capSaveEl.hidden = false;
+}
+
+// The cap write (drive issue #421). The accounts store is live, so the slider
+// is a control and not a readout: it sends the number to the one route that
+// writes a cap, which `drive cap` also uses, so a cap is parsed and written
+// once however it arrives. The answer is the month with the cap just written,
+// so the endpoint's own `capLine` sentence is what confirms the save, and the
+// read that follows paints the cap now in force. No money is worked out here
+// and no sentence is written here.
+async function saveCap() {
+  if (!capAmountIsWholeDollar()) return;
+  const amount = capAmount.value;
+  setCapControlsDisabled(true);
+  capSaveEl.disabled = true;
+  capSavingEl.hidden = false;
+  let response;
+  try {
+    response = await fetch(CAP_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ amount }),
+    });
+  } catch (_error) {
+    capSavingEl.hidden = true;
+    setCapControlsDisabled(false);
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
+    sayCapError(UNREACHABLE);
+    return;
+  }
+  const payload = await response.json().catch(() => null);
+  const error = payload && typeof payload.error === "string" ? payload.error : "";
+  capSavingEl.hidden = true;
+  setCapControlsDisabled(false);
+  if (!response.ok) {
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
+    sayCapError(error ? { what: error, next: "" } : UNREACHABLE);
+    return;
+  }
+  capSaveEl.hidden = true;
+  capSaveEl.disabled = false;
+  capSavedEl.hidden = true;
+  capSavedEl.textContent = payload && typeof payload.capLine === "string" ? payload.capLine : "";
+  capSavedEl.hidden = capSavedEl.textContent === "";
+  showCapNote(CAP_NOTE);
+  readMonth();
+}
 
 function sayUnreachable() {
   statusEl.dataset.state = "unreachable";
@@ -417,17 +943,43 @@ function saySignedOut(message) {
   statusEl.querySelector(".next").textContent = "";
   statusEl.hidden = false;
   bodyEl.hidden = true;
-  capSlider.disabled = true;
+  showSessionNav(false);
+  // An account on this browser is what a write needs, so a signed-out page
+  // cannot move a cap: the slider and the button that saves it both sleep, and
+  // a save that was in flight when the session ended has no answer left to
+  // wait for, so its two hints sleep with them.
+  setCapControlsDisabled(true);
+  capSaveEl.hidden = true;
+  capSavingEl.hidden = true;
+  capSavedEl.hidden = true;
 }
 
 function sayReachable() {
   statusEl.hidden = true;
-  // A read that succeeded proves the account is there, so the slider the
-  // signed-out state disabled is usable again.
-  capSlider.disabled = false;
+  showSessionNav(true);
+  // `sayReachable` is the neutral reset: it also clears whatever status state a
+  // previous render left on the shared slot (empty, unreachable, signed-out),
+  // so only this call's own state — a fresh `sayMonthEmpty` when the month is
+  // empty, nothing at all when it has history — is what the markup carries.
+  statusEl.dataset.state = "";
+  // A read that succeeded proves the account is there, so the cap controls
+  // the signed-out state disabled are usable again.
+  setCapControlsDisabled(false);
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
+}
+
+// A month that read fine and holds no files (drive issue #427). The status
+// slot above the numbers is reserved from the first paint so nothing moves
+// under the reader, and hiding it left a new account staring at that reserved
+// space with a chart below it that has nothing to draw. This is what fills it:
+// the month is empty, said in the month's own words, in the month's own area.
+function sayMonthEmpty() {
+  statusEl.dataset.state = "empty";
+  statusEl.querySelector(".what").textContent = MONTH_EMPTY.what;
+  statusEl.querySelector(".next").textContent = MONTH_EMPTY.next;
+  statusEl.hidden = false;
 }
 
 // The chart's viewBox is one unit per day and 100 units tall, so a day is its
@@ -471,7 +1023,7 @@ function drawChart(series) {
 // line prints), and every one is required: a payload missing any label is as
 // unusable as no answer, and setting it would put "undefined" on the page,
 // which is the failure this check exists for.
-const LABEL_KEYS = ["storedNow", "gbMonths", "downloads", "cost", "cap", "accountCap"];
+const LABEL_KEYS = ["storedNow", "size30", "size30Reached", "size30DropsOut", "todayDraw", "downloads", "cost", "cap", "accountCap"];
 
 // A payload that is not the summary shape is as unusable as no answer, so it
 // leaves the numbers on the page alone and says the service was unreachable.
@@ -482,14 +1034,19 @@ function render(summary) {
   }
   const labels = summary.labels;
   const cap = summary.cap;
+  // The month these numbers belong to, named (drive#559). A payload that
+  // carries no readable month instant is as unusable as no answer, so it takes
+  // the unreachable state rather than a heading with nothing under it.
+  const month = monthName(summary.monthIso);
   if (
+    month === "" ||
     typeof labels !== "object" ||
     labels === null ||
     LABEL_KEYS.some((key) => typeof labels[key] !== "string") ||
     typeof cap !== "object" ||
     cap === null ||
     !Number.isFinite(cap.capUsd) ||
-    !Number.isFinite(summary.ceilingUsd) ||
+    !Number.isFinite(summary.maximumUsd) ||
     !Array.isArray(summary.storedDaily) ||
     // The chart draws every entry's day and gb, so a payload whose entries are
     // not a real day and a real size is refused here rather than drawn as
@@ -509,12 +1066,25 @@ function render(summary) {
     // sentence when something is. A value that is neither is a payload this
     // page cannot render, so it takes the unreachable state rather than
     // printing "null" or "undefined" where a line belongs.
-    (summary.uploadLine !== null && typeof summary.uploadLine !== "string")
+    (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
+    typeof summary.billCents !== "object" ||
+    summary.billCents === null ||
+    !Array.isArray(summary.billCents.lines) ||
+    typeof summary.cardOnFile !== "boolean"
   ) {
     sayUnreachable();
     return;
   }
   sayReachable();
+  monthHeadingEl.textContent = `${month}, ${MONTH_ZONE}`;
+
+  // A month with no stored day has no chart to draw and no saving to report, so
+  // without this the "This month" area is blank for every new account (drive
+  // issue #427). The days, not the sizes: a month that stored and then emptied
+  // itself still has its history to draw, and says so.
+  if (summary.storedDaily.length === 0) {
+    sayMonthEmpty();
+  }
 
   // The saved line is the endpoint's own sentence, shown only when it is a
   // real saving: an empty month has none and stays hidden.
@@ -527,21 +1097,190 @@ function render(summary) {
 
   drawChart(summary.storedDaily);
   storedNowEl.textContent = labels.storedNow;
-  gbMonthsEl.textContent = labels.gbMonths;
+  size30El.textContent = labels.size30;
+  size30ReachedEl.textContent = labels.size30Reached;
+  size30DropsOutEl.textContent = labels.size30DropsOut;
+  todayDrawEl.textContent = labels.todayDraw;
   costEl.textContent = labels.cost;
+  billLinesEl.replaceChildren();
+  for (const line of summary.billCents.lines) {
+    if (typeof line?.label !== "string" || typeof line?.usd !== "string") {
+      sayUnreachable();
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "pair";
+    const dt = document.createElement("dt");
+    dt.textContent = line.label;
+    const dd = document.createElement("dd");
+    dd.textContent = line.usd;
+    row.append(dt, dd);
+    billLinesEl.append(row);
+  }
+  // Until a card is really on file the page shows no bill at all
+  // (drive#417): a card-less month has no charge on it, so the cost line above
+  // is the no-charge sentence and the invoice rows stay hidden rather than
+  // looking like a bill that was taken.
+  billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
+  openPublicLinksEl.textContent = Number.isFinite(summary.openPublicLinks)
+    ? String(summary.openPublicLinks)
+    : "0";
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.
   uploadLineEl.textContent = summary.uploadLine === null ? "" : summary.uploadLine;
   uploadLineEl.hidden = summary.uploadLine === null;
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
-  // month's ceiling or the cap, whichever is larger, in whole dollars. It is a
-  // display until the accounts store lands (issue #2), which is why it ships
-  // disabled.
-  capSlider.max = String(Math.ceil(Math.max(summary.ceilingUsd, cap.capUsd)));
-  capSlider.value = String(cap.capUsd);
+  // month's maximum or the cap, whichever is larger, in whole dollars.
+  capCeiling(Math.max(summary.maximumUsd, cap.capUsd));
+  // A person who has moved the slider is not moved back: the minute's read
+  // would otherwise throw away the amount they just picked, so it paints the
+  // value only while no save is waiting.
+  if (capSaveEl.hidden) {
+    capWhole(cap.capUsd);
+  }
 }
+
+// The cap is whole dollars on this page (drive#527). Both controls carry the
+// same number: cap-amount is what a person types, cap-slider is the same
+// number they can drag, and whichever one they touch becomes the other. The
+// old slider alone could never reach above the month's maximum, because that
+// maximum was its ceiling; the typed number carries the ceiling with it, so
+// the page can now ask for any cap the person names.
+//
+// A cap with cents in force (say $12.50) reads as its next whole dollar in the
+// two controls. The exact amount is the sentence above them — the endpoint's
+// own `capLine`, painted as cap-value — and neither control is armed until a
+// person touches one, so a cents cap is never quietly rounded up.
+function capCeiling(usd) {
+  // The slider's max follows the typed number. The number field itself has
+  // no max, so a person can type above the month's maximum (drive#527).
+  const whole = Math.max(0, Math.ceil(Number(usd)));
+  capSlider.max = String(whole);
+  return whole;
+}
+
+function capWhole(usd) {
+  // Value only. Calling capCeiling here would shrink the slider's range to
+  // the cap in force, and a $2 cap on a $10 month would then be undraggable
+  // upward.
+  const whole = Math.max(0, Math.ceil(Number(usd)));
+  capAmount.value = String(whole);
+  capSlider.value = String(whole);
+  return whole;
+}
+
+function showCloseError(el, message) {
+  el.textContent = message;
+  el.hidden = !message;
+}
+
+function renderClose(status) {
+  const closed = status.state === "closed";
+  // A close is pending while the 30-day window is open: the
+  // account is closed and the nightly cron has not reached the
+  // purge. After the purge there is nothing left to close and
+  // nothing left to cancel, so the box is not on the page.
+  const pending = closed && (status.purgedAt === null || status.purgedAt === undefined);
+  // The one box posts to whichever action it now offers: the close
+  // endpoint while the account is open, the cancel endpoint while a
+  // close is pending.
+  closeTarget = pending ? CLOSE_CANCEL_ENDPOINT : CLOSE_ENDPOINT;
+  closeEmailLabelEl.textContent = pending ? CLOSE_BOX.cancel.label : CLOSE_BOX.confirm.label;
+  closeSubmitEl.textContent = pending ? CLOSE_BOX.cancel.submit : CLOSE_BOX.confirm.submit;
+  closeFormEl.hidden = closed && !pending;
+  closeWhatEl.hidden = closed;
+  closeNextEl.hidden = closed;
+  closeClosedWhatEl.hidden = !closed;
+  closeClosedNextEl.hidden = !pending;
+  closePurgedNextEl.hidden = pending || !closed;
+  showCloseError(closeErrorEl, "");
+  if (closed && typeof status.purgeOn === "string") {
+    closePurgeOnEl.textContent = pending
+      ? `Files are deleted on ${status.purgeOn}.`
+      : `Files were deleted on ${status.purgeOn}.`;
+    closePurgeOnEl.hidden = false;
+  } else {
+    closePurgeOnEl.hidden = true;
+  }
+}
+
+async function readClose() {
+  let response;
+  try {
+    response = await fetch(CLOSE_ENDPOINT, { headers: { accept: "application/json" } });
+  } catch (_error) {
+    return;
+  }
+  if (!response.ok) {
+    return;
+  }
+  const status = await response.json().catch(() => null);
+  if (status && typeof status.state === "string") {
+    renderClose(status);
+  }
+}
+
+async function postClose(url, email, errorEl) {
+  showCloseError(errorEl, "");
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ email }),
+    });
+  } catch (_error) {
+    showCloseError(errorEl, UNREACHABLE.what);
+    return;
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showCloseError(errorEl, payload.error || UNREACHABLE.what);
+    return;
+  }
+  renderClose(payload);
+}
+
+closeFormEl.addEventListener("submit", (event) => {
+  event.preventDefault();
+  postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
+});
+capAmount.addEventListener("input", () => {
+  // The typed number is the ceiling: the slider follows it up so the drag can
+  // reach what was typed, and an empty or half-typed field leaves the slider
+  // alone rather than snapping it to a number nobody chose.
+  const typed = Number(capAmount.value);
+  if (capAmount.value !== "" && Number.isFinite(typed)) {
+    capCeiling(typed);
+    capSlider.value = String(typed);
+  }
+  showCapSave();
+});
+capSlider.addEventListener("input", () => {
+  capAmount.value = capSlider.value;
+  showCapSave();
+});
+// The two controls share one note, because there is one unsaved cap between
+// them and one sentence that describes it.
+function capAmountIsWholeDollar() {
+  const typed = Number(capAmount.value);
+  return capAmount.value !== "" && Number.isFinite(typed) && typed >= 0 && Number.isInteger(typed);
+}
+
+function showCapSave() {
+  // A chosen number is not a saved number: the button is there to make it one.
+  // An empty, negative or fractional field is not a cap, so the button stays
+  // hidden until the field holds a whole dollar.
+  capSaveEl.hidden = !capAmountIsWholeDollar();
+  if (capSaveEl.hidden) return;
+  capNoteEl.querySelector(".what").textContent = CAP_NOTE.what;
+  capNoteEl.querySelector(".next").textContent = CAP_NOTE.next;
+}
+capSaveEl.addEventListener("click", () => {
+  saveCap();
+});
 
 async function readMonth() {
   // A tab in the background does not ask; the browser already sleeps it.
@@ -574,6 +1313,7 @@ async function readMonth() {
     return;
   }
   render(summary);
+  readClose();
 }
 
 readMonth();
@@ -584,6 +1324,229 @@ document.addEventListener("visibilitychange", () => {
     readMonth();
   }
 });
+
+// The signed-in menu (drive#423). Sign in is the default so a browser with
+// no script still has a way in. A successful usage read flips it to Sign out
+// and Sign out everywhere; a 401 flips it back. The posts go to the same
+// /api/signin steps the route already serves.
+const SIGNIN_ENDPOINT = "/api/signin";
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    sayUnreachable();
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    sayUnreachable();
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
   </script>
+  <!-- The one shared pending-close banner script (drive issue #424).
+       The static signed-in pages load this file as a module; get-started
+       imports the same file into its one bundle so it stays inside the
+       Lighthouse script-count budget. -->
+  <script data-part="balance">
+// The prepaid balance (drive#586). Every amount is the API's own string from
+// GET /api/balance (src/topup.js balanceSummary): this block formats no money
+// and works out no balance. The Worker checks every amount again, so the one
+// check here only saves a round trip for an amount under the smallest top-up.
+// test/account-balance.test.mjs runs this block against a stub page.
+(() => {
+  const BALANCE_ENDPOINT = "/api/balance";
+  const TOPUP_ENDPOINT = "/api/topup";
+  const AUTO_TOPUP_ENDPOINT = "/api/topup/auto";
+  const UNREACHABLE = "Could not reach the balance just now. Reload the page to try again.";
+  const LABELS = {
+    topup: "Top-up",
+    usage: "Storage and downloads",
+    refund: "Refund",
+    adjustment: "Adjustment",
+  };
+
+  const statusEl = document.getElementById("balance-status");
+  const bodyEl = document.getElementById("balance-body");
+  const amountEl = document.getElementById("balance-amount");
+  const lineEl = document.getElementById("balance-line");
+  const presetsEl = document.getElementById("topup-presets");
+  const formEl = document.getElementById("topup-form");
+  const customEl = document.getElementById("topup-amount");
+  const errorEl = document.getElementById("topup-error");
+  const pendingEl = document.getElementById("topup-pending");
+  const autoEl = document.getElementById("auto-topup");
+  const autoAmountEl = document.getElementById("auto-topup-amount");
+  const autoNoteEl = document.getElementById("auto-topup-note");
+  const ledgerEl = document.getElementById("ledger-list");
+  const ledgerEmptyEl = document.getElementById("ledger-empty");
+
+  let minTopUpUsd = 10;
+
+  function sayStatus(message) {
+    statusEl.textContent = message;
+    statusEl.hidden = false;
+    bodyEl.hidden = true;
+  }
+
+  function sayError(message) {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  }
+
+  async function postJson(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => null);
+    return { response, payload };
+  }
+
+  // Sends one top-up and follows the checkout the Worker answered, only when
+  // it is an https page. The balance is not touched here: it moves when the
+  // payment provider confirms the payment to the Worker.
+  async function topUp(amount) {
+    errorEl.hidden = true;
+    const dollars = Number(amount);
+    if (!Number.isFinite(dollars) || dollars < minTopUpUsd) {
+      sayError(`Add $${minTopUpUsd} or more.`);
+      return;
+    }
+    let answer;
+    try {
+      answer = await postJson(TOPUP_ENDPOINT, { amount_usd: String(amount) });
+    } catch (_error) {
+      sayError(UNREACHABLE);
+      return;
+    }
+    const { response, payload } = answer;
+    const url = payload && typeof payload.checkout_url === "string" ? payload.checkout_url : "";
+    if (!response.ok || !url.startsWith("https://")) {
+      sayError(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    window.location.assign(url);
+  }
+
+  async function saveAuto() {
+    const turningOn = autoEl.checked;
+    autoEl.disabled = true;
+    let answer;
+    try {
+      answer = await postJson(AUTO_TOPUP_ENDPOINT, {
+        amount_usd: turningOn ? String(autoAmountEl.value) : null,
+      });
+    } catch (_error) {
+      answer = null;
+    }
+    autoEl.disabled = false;
+    if (!answer || !answer.response.ok) {
+      autoEl.checked = !turningOn;
+      const payload = answer ? answer.payload : null;
+      autoNoteEl.textContent =
+        payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;
+      return;
+    }
+    autoNoteEl.textContent = turningOn
+      ? "On. It uses your saved card and emails a receipt each time."
+      : "Off. Top up by hand when you need to.";
+  }
+
+  function ledgerLine(line) {
+    const item = document.createElement("li");
+    const what = document.createElement("span");
+    what.textContent = line.reason ? `${LABELS[line.kind] || line.kind}: ${line.reason}` : LABELS[line.kind] || line.kind;
+    const amount = document.createElement("span");
+    amount.className = "amount";
+    amount.textContent = line.amount_cents > 0 ? `+${line.amount}` : line.amount;
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = typeof line.at === "string" ? line.at.slice(0, 10) : "";
+    item.append(what, amount, when);
+    return item;
+  }
+
+  function render(summary) {
+    minTopUpUsd = summary.min_top_up_usd;
+    amountEl.textContent = summary.balance;
+    lineEl.textContent = summary.balance_line;
+    lineEl.dataset.state = summary.paused ? "paused" : summary.low_balance ? "low" : "ok";
+    presetsEl.replaceChildren(
+      ...summary.top_up_presets_usd.map((dollars) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `Add $${dollars}`;
+        button.addEventListener("click", () => topUp(dollars));
+        return button;
+      }),
+    );
+    customEl.min = String(summary.min_top_up_usd);
+    autoEl.checked = summary.auto_topup_usd !== null;
+    autoAmountEl.min = String(summary.min_top_up_usd);
+    autoAmountEl.value = String(
+      summary.auto_topup_usd === null ? summary.min_top_up_usd : summary.auto_topup_usd,
+    );
+    ledgerEl.replaceChildren(...summary.recent.map(ledgerLine));
+    ledgerEmptyEl.hidden = summary.recent.length > 0;
+    statusEl.hidden = true;
+    bodyEl.hidden = false;
+  }
+
+  async function read() {
+    let response;
+    try {
+      response = await fetch(BALANCE_ENDPOINT, { headers: { accept: "application/json" } });
+    } catch (_error) {
+      sayStatus(UNREACHABLE);
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || typeof payload.balance !== "string") {
+      sayStatus(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    render(payload);
+  }
+
+  formEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    return topUp(customEl.value);
+  });
+  autoEl.addEventListener("change", () => saveAuto());
+  pendingEl.hidden = new URLSearchParams(window.location.search).get("topup") !== "done";
+  read();
+})();
+  </script>
+  <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

@@ -1,0 +1,27 @@
+-- Phase 1 of link caps and pruning (drive issue #549, from the read-only
+-- audit of main at 2f62b7a). Additive only: two new columns, each with a
+-- DEFAULT or nullable, so the previous Worker version that does not name them
+-- still inserts and still reads. No existing column is dropped or renamed
+-- (fleet D1 expand/contract rule). This lands in the customer database
+-- (drive-data, bound as DRIVE_DB).
+--
+-- upload_requests.max_files is the per-link file-count cap, default 100
+-- (src/share.js REQUEST_MAX_FILES). The link's reservation UPDATE refuses the
+-- 101st file in the same statement that counts the bytes, so two concurrent
+-- drops cannot both pass the count. A link minted before this file reads back
+-- the default, which is the cap every link should have had.
+--
+-- shares.max_download_bytes is the per-link byte cap, computed at mint time
+-- from the file's own size (src/share.js SHARE_DOWNLOAD_CAP_MULTIPLIER). A
+-- NULL is a link minted before this file: it carries no byte cap and keeps
+-- serving, rather than being refused by a limit the owner never set.
+--
+-- apply this file before shipping the Worker version that names the new
+-- columns: the INSERTs in src/share.js list them, so the new code cannot run
+-- against the pre-migration schema. The previous Worker version still runs
+-- after this file (it names neither column). Phase 1 of expand/contract:
+-- add default-or-nullable columns, then the code switch, in this one PR; no
+-- DROP.
+
+ALTER TABLE upload_requests ADD COLUMN max_files INTEGER NOT NULL DEFAULT 100;
+ALTER TABLE shares ADD COLUMN max_download_bytes INTEGER;

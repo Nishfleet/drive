@@ -1,0 +1,33 @@
+-- Phase 3 of the per-agent cap (drive issue #401, the follow-up to #171's
+-- deploy): drop `month_spend_cents`, the second of the two columns migration
+-- 0004 wrote for the per-agent spend ledger that was never built.
+--
+-- Why this phase exists: #171's deploy shipped the reader that uses
+-- `agent_caps` (workers/api/src/agent-caps.js), and it reads only
+-- `daily_requests, monthly_cap_usd, day_key` and `day_requests`, and writes
+-- only `day_key, day_requests, updated_at` through one upsert. The expand/
+-- contract rule says a column drop cannot ride in the same deploy as the code
+-- that stops reading it, so the drop waits for its own migration-only phase.
+-- #171 is merged (PR #400), so that phase is now: this PR changes no code at
+-- all, only these two files and the integration test that proves the table
+-- still reads and writes.
+--
+-- Why the drop is safe: this column is the second ledger the whole point of
+-- which was to keep it out. The month a key spent is the metered month,
+-- `usage_minutes` (src/meter.js), which `agentCapGate` reads through
+-- `monthUsageThrough` and which the usage page and the account cap read. A
+-- spend total kept beside the meter would be a second place for the same
+-- number to live, so #171's deploy never wrote it and it held 0 on every row
+-- since migration 0004. Integration test: the monthly half of
+-- test/integration/agent-caps-d1.test.mjs now asserts the column is not there
+-- at all, so no future writer can put a second ledger back beside the meter
+-- without failing this file.
+--
+-- One column per file, the way the issue's acceptance asks: each drop is a
+-- step a deploy applies and verifies on its own, and a failure in one does not
+-- leave the other's drop half-applied in the same file. Numbered 0018 so it
+-- sorts after 0017 (month_key), which the deploy applies first.
+--
+-- Rollback is rolling the code back. D1 has no down-migrations, so this file
+-- is one-way.
+ALTER TABLE agent_caps DROP COLUMN month_spend_cents;

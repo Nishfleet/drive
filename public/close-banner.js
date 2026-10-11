@@ -1,0 +1,138 @@
+// The pending-close banner (drive issue #424). One script, loaded by every
+// signed-in page, so the banner cannot drift between them.
+//
+// It is a static asset served next to the pages that load it, so it cannot
+// import src/account-close.js the way the Worker does. The words come from
+// where every other page's words come from: the endpoint's own payload. GET
+// /api/account/close answers `{state, purgeOn, purgedAt, copy}`, and `copy` is the
+// CLOSE_COPY object in src/account-close.js, so the sentence on screen is the
+// module's and the date beside it is the date the nightly cron will actually
+// purge on. This file carries no sentence and no date arithmetic of its own,
+// which is what test/close-banner.test.mjs holds it to.
+//
+// How the banner behaves, and where it must stay quiet:
+//   - a 401 or any other failed read: this browser has no signed-in account, or
+//     the service is unreachable. Either way the page's own content is the
+//     truth, so the banner stays hidden and nothing is announced.
+//   - `state === "active"`: the account is not closing. Banner stays hidden.
+//   - `state === "closed"` and still pending: reveal it, with the purge date
+//     and a Cancel link. `state` stays "closed" after the cron has purged the
+//     files too, and there the banner is quiet, because its sentence is about
+//     files that are still there (see read()).
+//
+// The link is a real link to /usage, the page where the close and the cancel
+// both live and where the person types their email to confirm. It is a link and
+// not a button that posts, because cancelling is a confirmation step: the
+// endpoint wants the account's email typed back (src/account-close.js
+// requireMatchingEmail), and that form is already on /usage. A button here
+// would either skip the confirmation or open a second copy of it.
+
+(() => {
+  // src/get-started.js imports this file so the first-run page can carry the
+  // banner inside its one module (lighthouserc.json allows one script resource).
+  // node --test imports that module with no document, and the first real work
+  // here is getElementById, so there is nothing to do in that process.
+  if (typeof document === "undefined") return;
+
+  const CLOSE_ENDPOINT = "/api/account/close";
+  const BANNER_ID = "close-banner";
+  const WHAT_ID = "close-banner-what";
+  const CANCEL_ID = "close-banner-cancel";
+  const USAGE_PAGE = "/usage";
+
+  /**
+   * The banner's own element, or null on a page that does not carry one. A
+   * page without it is not a signed-in page, and the script returns without
+   * touching anything rather than throwing on a null reference.
+   * @returns {HTMLElement | null}
+   */
+  const bannerEl = () => document.getElementById(BANNER_ID);
+
+  /**
+   * The endpoint's `{purgeOn}` placeholder, filled with the payload's date.
+   * The module writes the sentence with one placeholder and the payload carries
+   * the one value for it, so a payload that ever gained a second placeholder
+   * would leave its braces in the sentence rather than show an empty gap.
+   * @param {string} sentence
+   * @param {string} purgeOn
+   * @returns {string}
+   */
+  const fill = (sentence, purgeOn) => sentence.replace(/\{purgeOn\}/g, () => purgeOn);
+
+  /**
+   * Show the banner for a closing account. The text is set and then the region
+   * is revealed, the same order the usage page's status region uses
+   * (public/usage.html sayUnreachable), so the two status regions on that page
+   * are read the same way.
+   * @param {{state: string, purgeOn: unknown, copy: Record<string, string>}} payload
+   */
+  const reveal = (payload) => {
+    const banner = bannerEl();
+    if (!banner) return;
+    const what = document.getElementById(WHAT_ID);
+    const cancel = document.getElementById(CANCEL_ID);
+    const sentence = fill(payload.copy.pendingWhat, String(payload.purgeOn));
+    // The 60s poll re-reads a pending close that has not changed. Writing the
+    // same sentence into an aria-live region again would re-announce it.
+    if (!banner.hidden && what && what.textContent === sentence) return;
+    if (what) {
+      what.textContent = sentence;
+    }
+    if (cancel) {
+      // The link's own words are the payload's too, and its href is the page
+      // that holds the cancel form.
+      cancel.textContent = payload.copy.pendingCancel;
+      cancel.setAttribute("href", USAGE_PAGE);
+    }
+    banner.hidden = false;
+  };
+
+  /**
+   * Read the close state and reveal the banner only when the account is
+   * actually closing. A failed read, a 401, an unparseable body, or a payload
+   * without the words all leave the page exactly as it was.
+   */
+  const read = () => {
+    fetch(CLOSE_ENDPOINT, { headers: { accept: "application/json" } })
+      .then((response) => {
+        if (!response.ok) return null;
+        return response.json();
+      })
+      .then((payload) => {
+        if (!payload || typeof payload !== "object") return;
+        if (payload.state !== "closed") return;
+        // `state === "closed"` is true both while the grace window runs and
+        // after the nightly cron deleted the files, so the account state alone
+        // is not the pending case. The sentence is about files that are still
+        // there, so the banner is for a close that has not been purged yet.
+        // `purgedAt` is how the endpoint and the usage page separate the two
+        // (public/usage.html: `const pending = closed && (status.purgedAt ===
+        // null || status.purgedAt === undefined)`), and it is null while the
+        // files stay. A purged account keeps its closed state but carries a
+        // stamp, and its files are already gone, so the banner stays quiet
+        // there (drive#424).
+        if (payload.purgedAt !== null && payload.purgedAt !== undefined) return;
+        if (!payload.copy || typeof payload.copy !== "object") return;
+        reveal(payload);
+      })
+      .catch((_error) => {
+        // A banner that could not be read stays hidden. The page's own content
+        // is still correct, and a close that is in flight is also shown in the
+        // account's email, so nothing is lost by saying nothing here.
+      });
+  };
+
+  if (!bannerEl()) return;
+  read();
+  // A close can start on another tab, or the same page can be left open across
+  // the close, so the banner is re-read on the same interval the usage page
+  // re-reads its month. Once the account is closing the banner is up, and this
+  // keeps the date fresh as the day moves.
+  window.setInterval(read, 60000);
+})();
+
+// The static signed-in pages load this file as type=module, and the first-run
+// page imports it, so it has to be a module. The empty export is that mark;
+// nothing reads it. test/close-banner.test.mjs strips this line before it
+// runs the file as a script, because the vm script context rejects export.
+export {};

@@ -1,0 +1,33 @@
+-- Phase 3 of the per-agent cap (drive issue #401, the follow-up to #171's
+-- deploy): drop `month_key`, the first of the two columns migration 0004 wrote
+-- for the per-agent spend ledger that was never built.
+--
+-- Why this phase exists: #171's deploy shipped the reader that uses
+-- `agent_caps` (workers/api/src/agent-caps.js), and it reads only
+-- `daily_requests, monthly_cap_usd, day_key` and `day_requests`, and writes
+-- only `day_key, day_requests, updated_at` through one upsert. The expand/
+-- contract rule says a column drop cannot ride in the same deploy as the code
+-- that stops reading it, so the drop waits for its own migration-only phase.
+-- #171 is merged (PR #400), so that phase is now: this PR changes no code at
+-- all, only these two files and the integration test that proves the table
+-- still reads and writes.
+--
+-- Why the drop is safe: nothing in this repo ever wrote either column. The one
+-- INSERT into `agent_caps` (agent-caps.js `stampAgentRequest`) names its five
+-- columns and no others, and every UPDATE of this table names
+-- `daily_requests`. So `month_key` holds the DEFAULT '' its row was created
+-- with, and a month is decided by `usage_minutes` (the meter) — the number
+-- `agentCapGate` reads through `monthUsageThrough` and the number the usage
+-- page and the account cap read. One meter, one number.
+--
+-- One column per file, the way the issue's acceptance asks: each drop is a
+-- step a deploy applies and verifies on its own, and a failure in one does not
+-- leave the other's drop half-applied in the same file. Numbered 0017 because
+-- the deploy sorts on the numeric prefix alone and 0016_founding is the last
+-- file on the drive database today.
+--
+-- Rollback is rolling the code back. D1 has no down-migrations, so this file
+-- is one-way. The columns' values are re-created only by a forward migration,
+-- and nothing needs to: the spend ledger they belonged to was removed in
+-- #169.
+ALTER TABLE agent_caps DROP COLUMN month_key;

@@ -203,6 +203,10 @@ func runPrefetchLoop(ctx context.Context, root string) error {
 			continue
 		}
 		if !ev.Dir {
+			// A file somebody opened is a fill target for the background
+			// fill (drive#568). rclone already keeps the bytes; this is only
+			// the list of paths, so the fill never has to walk the tree.
+			mountOpens.record(ev.Path)
 			prefetchUserBusy.Store(true)
 			time.AfterFunc(250*time.Millisecond, func() { prefetchUserBusy.Store(false) })
 			continue

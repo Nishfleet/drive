@@ -28,6 +28,7 @@ package main
 // proofs already do (issue #62; two-mount-sync.test.mjs).
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -56,7 +58,7 @@ type hillClimbFlag struct {
 func tunableFlags() []hillClimbFlag {
 	return []hillClimbFlag{
 		{name: "vfs-read-ahead", flag: "--vfs-read-ahead", env: "VFS_READ_AHEAD", baseline: vfsReadAheadValue, candidate: "0", target: "open-time"},
-		{name: "vfs-read-chunk-size", flag: "--vfs-read-chunk-size", env: "VFS_READ_CHUNK_SIZE", baseline: vfsReadChunkSizeValue, candidate: "32M", target: "video-start"},
+		{name: "vfs-read-chunk-size", flag: "--vfs-read-chunk-size", env: "VFS_READ_CHUNK_SIZE", baseline: vfsReadChunkSizeValue, candidate: "16M", target: "video-start"},
 		{name: "vfs-read-chunk-streams", flag: "--vfs-read-chunk-streams", env: "VFS_READ_CHUNK_STREAMS", baseline: vfsReadChunkStreamsValue, candidate: "4", target: "video-start"},
 		{name: "buffer-size", flag: "--buffer-size", env: "BUFFER_SIZE", baseline: vfsChunkStreamSize, candidate: "16M", target: "small-file-get-1mib"},
 		{name: "transfers", flag: "--transfers", env: "TRANSFERS", baseline: vfsTransfersValue, candidate: "8", target: "small-file-put-4kib"},
@@ -294,7 +296,7 @@ func (h *hillStandin) seedFolderCopies(t *testing.T, name string, nfiles, copies
 func (h *hillStandin) rclone(t *testing.T, args ...string) {
 	t.Helper()
 	cmd := exec.Command("rclone", args...)
-	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rclone %s: %v\n%s", strings.Join(args, " "), err, b)
 	}
@@ -391,6 +393,50 @@ func TestVFSArgsPinsTheSafetyFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestVFSReadChunkingBoundsPerFileMemory is the memory half of the mount's
+// safety flags (issue #543): rclone's parallel reader allocates one read-chunk
+// buffer per stream, so chunk size x streams is the memory one open file can
+// take. The shipped pair is 2-4 streams of 16-32 MiB and the product stays at
+// or under 128 MiB per file. The last two checks prove the bound bites: the old
+// 128M x 2 pair (the bug this fixes) trips it.
+func TestVFSReadChunkingBoundsPerFileMemory(t *testing.T) {
+	const (
+		minChunk   = 16 << 20
+		maxChunk   = 32 << 20
+		minStreams = 2
+		maxStreams = 4
+		maxPerFile = 128 << 20
+	)
+	args := VFSArgs(vfsCacheMaxValue)
+	chunk, err := parseSizeSuffix(argValue(args, "--vfs-read-chunk-size"))
+	if err != nil {
+		t.Fatalf("--vfs-read-chunk-size: %v", err)
+	}
+	streams, err := strconv.Atoi(argValue(args, "--vfs-read-chunk-streams"))
+	if err != nil {
+		t.Fatalf("--vfs-read-chunk-streams: %v", err)
+	}
+	if chunk < minChunk || chunk > maxChunk {
+		t.Errorf("--vfs-read-chunk-size is %d bytes, want %d..%d (issue #543)", chunk, minChunk, maxChunk)
+	}
+	if streams < minStreams || streams > maxStreams {
+		t.Errorf("--vfs-read-chunk-streams is %d, want %d..%d (issue #543)", streams, minStreams, maxStreams)
+	}
+	if got := perFileReadMemory(chunk, streams); got > maxPerFile {
+		t.Errorf("one open file can take %d bytes of read buffers (chunk x streams), want at most %d", got, maxPerFile)
+	}
+	if got := perFileReadMemory(maxChunk, maxStreams); got > maxPerFile {
+		t.Errorf("the largest pair the bound allows (%d x %d) is %d, over the %d ceiling; the bound is wrong", maxChunk, maxStreams, got, maxPerFile)
+	}
+	if perFileReadMemory(128<<20, 2) <= maxPerFile {
+		t.Error("the old 128M x 2 pair must exceed the 128 MiB ceiling, or this test cannot catch the bug it guards")
+	}
+}
+
+// perFileReadMemory is the read-buffer memory one open file can take: rclone
+// allocates one read-chunk buffer per stream.
+func perFileReadMemory(chunk int64, streams int) int64 { return chunk * int64(streams) }
 
 func TestTunedVFSValueOverride(t *testing.T) {
 	t.Setenv("DRIVE_BENCH_VFS_READ_AHEAD", "1M")
@@ -676,19 +722,10 @@ func startStandin(t *testing.T, rows []hillClimbRow, set string) *hillStandin {
 	}
 	port := freePort(t)
 	h.cfg.Endpoint = "http://127.0.0.1:" + port
-	h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	h.serve = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
-		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	serveLog, err := os.Create(filepath.Join(root, "serve.out"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.serve.Stdout, h.serve.Stderr = serveLog, serveLog
-	if err := h.serve.Start(); err != nil {
-		t.Fatal(err)
-	}
+		"--log-level", "ERROR")
 	t.Cleanup(h.close)
-	waitForPort(t, port)
 	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
 		h.close()
 		t.Fatal(err)
@@ -895,5 +932,454 @@ func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
 		if systemdUserSessionAbsent(errors.New(msg)) {
 			t.Errorf("systemdUserSessionAbsent(%q) = true, want false: this systemd host works, so a failed action is an error, not a fallback", msg)
 		}
+	}
+}
+
+// The re-run fix (drive issue #561): a second `drive init` (or
+// `drive mount`) whose files are already exactly on disk must not
+// restart the login item, because a restart stops the running
+// rclone and unmounts a live drive under open files. The start
+// action and both mounted probes are seams here: the test records
+// the action a real host's user manager would take, and answers
+// the probes without a kernel mount.
+func mountTestSeams(t *testing.T, gate bool) (*int, *bool) {
+	t.Helper()
+	starts := 0
+	up := gate
+	origStart, origState, origProbe := startLoginItem, mountState, waitProbe
+	startLoginItem = func(string, MountPlan, string) error {
+		starts++
+		return nil
+	}
+	mountState = func(string, string) (bool, error) { return up, nil }
+	waitProbe = func(string, string) (bool, error) { return true, nil }
+	t.Cleanup(func() { startLoginItem, mountState, waitProbe = origStart, origState, origProbe })
+	return &starts, &up
+}
+
+func TestMountSkipsRestartWhenNothingChanged(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 1 {
+		t.Fatalf("the first mount started the login item %d times, want 1", *starts)
+	}
+	// The cache is marked from the first mount on, on every
+	// platform, so a backup tool that walks the home folder skips
+	// the mount's transient bytes (issue #561).
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil {
+		t.Fatalf("CACHEDIR.TAG missing after the first mount: %v", err)
+	}
+
+	printed := captureStdout(t, func() {
+		if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if *starts != 1 {
+		t.Fatalf("a re-run that changed nothing took %d start actions, want 0 more: a restart unmounts the drive under open files", *starts-1)
+	}
+	if !strings.Contains(printed, "already running") {
+		t.Fatalf("re-run printed %q, want it to say the mount is already running", printed)
+	}
+	// The tag is rewritten identically, so the mark survives every
+	// re-run, not just the first one.
+	if got, err := os.ReadFile(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil || string(got) != cacheDirTag {
+		t.Fatalf("CACHEDIR.TAG after the re-run = (%q, %v), want the shipped tag", got, err)
+	}
+}
+
+func TestMountLeavesRcloneEnvByteIdentical(t *testing.T) {
+	home := t.TempDir()
+	mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The skip path only fires when the re-run writes the same bytes,
+	// so the env writer must be deterministic. If it ever writes a
+	// timestamp or reorders its keys, this test fails and the fix is
+	// known dead rather than silently never skipping.
+	if !bytes.Equal(first, second) {
+		t.Fatalf("rclone.env changed between two identical mounts:\n%s\n---\n%s", first, second)
+	}
+}
+
+func TestMountRepairsAModeThatDrifted(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The config carries the storage secret and is written 0600. A mode
+	// that drifted is a change the re-run must repair, not skip.
+	configPath := RcloneConfigPath(home)
+	if err := os.Chmod(configPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 2 {
+		t.Fatalf("a mount with a drifted config mode took %d start actions, want a restart", *starts)
+	}
+	if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode after the repair = (%v, %v), want 0600", info, err)
+	}
+}
+
+// A probe that cannot answer is not proof that the drive is up: with
+// unchanged files, Mount must not exit 0 on that.
+func TestMountDoesNotClaimAMountItCouldNotCheck(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	orig := mountState
+	mountState = func(string, string) (bool, error) { return false, errors.New("probe timed out") }
+	t.Cleanup(func() { mountState = orig })
+	err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, "")
+	if err == nil {
+		t.Fatal("Mount returned nil when it could not tell whether the drive is mounted")
+	}
+	if !strings.Contains(err.Error(), "probe timed out") {
+		t.Fatalf("error = %v, want the probe's cause", err)
+	}
+	if *starts != 1 {
+		t.Fatalf("an inconclusive probe took %d start actions in total, want 1: a wedged mount must not be restarted", *starts)
+	}
+}
+
+// A rclone.env that cannot be read (a stray line, a loose mode) is treated
+// as absent and rewritten, as before the pair was reused.
+func TestMountRegeneratesADamagedRcloneEnv(t *testing.T) {
+	home := t.TempDir()
+	mountTestSeams(t, true)
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(RcloneEnvPath(home), []byte("garbage without equals\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatalf("a damaged rclone.env failed the mount: %v", err)
+	}
+	if auth, err := ReadRCAuth(home); err != nil || auth.User == "" || auth.Pass == "" {
+		t.Fatalf("rclone.env after the repair = (%+v, %v), want a fresh pair", auth, err)
+	}
+}
+
+// --dry-run writes nothing: no cache tag, no login item, no tmutil.
+func TestMountDryRunWritesNoCacheTag(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+	captureStdout(t, func() {
+		if err := Mount("linux", home, "/fake/rclone", testStorage(), false, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err == nil {
+		t.Fatal("--dry-run wrote CACHEDIR.TAG")
+	}
+	if *starts != 0 {
+		t.Fatalf("--dry-run took %d start actions", *starts)
+	}
+}
+
+func TestMountRestartsWhenThePlanChanged(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// A rotated storage key rewrites the config, so this run is a
+	// real change: the login item restarts and rclone picks the
+	// key up, exactly as before the fix.
+	rotated := testStorage()
+	rotated.SecretKey = "rotatedsecretkey"
+	if err := Mount("linux", home, "/fake/rclone", rotated, false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 2 {
+		t.Fatalf("a changed plan took %d start actions in total, want 2: a changed unit must still restart", *starts)
+	}
+}
+
+func TestMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
+	home := t.TempDir()
+	starts, gate := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The drive is down (a reboot, a `drive unmount`): the files
+	// are unchanged, but "unchanged" is not a reason to leave a
+	// mount down, so this run still starts it. The wait then
+	// sees the mount up, which is what a start that worked
+	// looks like.
+	*gate = false
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 2 {
+		t.Fatalf("a stopped drive with unchanged files took %d start actions in total, want 2", *starts)
+	}
+}
+
+// The backup exclusion (drive issue #561): macOS's own backup tool walks the
+// home folder, so the mount's transient bytes — the cache chunks — are excluded
+// on the first mount and on every one after it. The exclusion is a note when it
+// fails: the drive works without it, and the CACHEDIR.TAG marker still tells a
+// tool that reads it.
+func TestWriteCacheTagEmptyDirIsANoOp(t *testing.T) {
+	if err := writeCacheTag(""); err != nil {
+		t.Fatalf("writeCacheTag(\"\") = %v, want nil so an empty cache dir does not fail the mount", err)
+	}
+}
+
+func TestExcludeTransientFromBackupAsksTmutilForTheCache(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\nprintf '%s\n' \"$*\" >> " + log + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmutil"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cache := t.TempDir()
+	excludeTransientFromBackup("darwin", MountPlan{CacheDir: cache})
+
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("tmutil was not called: %v", err)
+	}
+	// tmutil is called once, as "addexclusion <dir>" on its own line.
+	calls := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	want := "addexclusion " + cache
+	found := false
+	for _, call := range calls {
+		if call == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no %q call; tmutil was asked:\n%s", want, data)
+	}
+}
+
+// A `tmutil` that is not installed, or that refuses the exclusion, is a note
+// on stderr and nothing else: the drive mounts and runs either way. The
+// function must return, not fail the mount that called it.
+func TestExcludeTransientFromBackupWithoutTmutilIsNotAMountFailure(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin) // an empty PATH: no tmutil anywhere
+
+	excludeTransientFromBackup("darwin", MountPlan{CacheDir: t.TempDir()})
+}
+
+// Everywhere but macOS there is no command to call, so the marker is the whole
+// of the exclusion and the call must be a no-op rather than a failed command.
+func TestExcludeTransientFromBackupIsANoOpOffMacOS(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\nprintf '%s\n' \"$*\" >> " + log + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmutil"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	excludeTransientFromBackup("linux", MountPlan{CacheDir: t.TempDir()})
+
+	if _, err := os.ReadFile(log); err == nil {
+		data, _ := os.ReadFile(log)
+		t.Fatalf("tmutil was called on a non-macOS mount:\n%s", data)
+	}
+}
+
+func TestParkStrayMountFilesMovesLocalFiles(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(mount, "notes.txt")
+	if err := os.WriteFile(local, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	holding, names, err := parkStrayMountFiles(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.txt" {
+		t.Fatalf("names = %v, want notes.txt", names)
+	}
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Fatal("the stray file is still in the mount folder")
+	}
+	if err := restoreStrayMountFiles(holding, mount); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored %q, want the original bytes", got)
+	}
+}
+
+func TestParkStrayMountFilesRestoresOnPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	orig := renameFile
+	renameFile = func(from, to string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected rename failure")
+		}
+		return orig(from, to)
+	}
+	t.Cleanup(func() { renameFile = orig })
+	_, _, err := parkStrayMountFiles(mount)
+	if err == nil {
+		t.Fatal("a mid-park failure returned no error")
+	}
+	if _, err := os.Stat(filepath.Join(mount, "a.txt")); err != nil {
+		t.Errorf("a.txt was not restored after a partial park: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "b.txt")); err != nil {
+		t.Errorf("b.txt was not left in the mount folder: %v", err)
+	}
+}
+
+func TestParkStrayMountFilesReclaimsALeftoverHolding(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holding := strayHoldingDir(mount) + "-old"
+	if err := os.MkdirAll(holding, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gotHolding, names, err := parkStrayMountFiles(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.txt" {
+		t.Fatalf("names = %v, want notes.txt reclaimed then parked", names)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "notes.txt")); !os.IsNotExist(err) {
+		t.Fatal("the reclaimed file is still in the mount folder")
+	}
+	if err := restoreStrayMountFiles(gotHolding, mount); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(mount, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("restored %q, want the leftover bytes", got)
+	}
+}
+
+// TestRestoreStrayMountFilesCopiesAcrossFilesystems proves the parked files
+// reach a mounted drive: the holding folder is on the local disk and the
+// mount is another filesystem, where a rename fails with EXDEV, so each entry
+// is copied (folders too) and then removed from the holding folder.
+func TestRestoreStrayMountFilesCopiesAcrossFilesystems(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	holding := filepath.Join(dir, "Drive.drive-local-1")
+	if err := os.MkdirAll(filepath.Join(holding, "photos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "photos", "a.jpg"), []byte("jpg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	renameFile = func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	}
+	t.Cleanup(func() { renameFile = orig })
+	if err := restoreStrayMountFiles(holding, mount); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"notes.txt": "keep me", "photos/a.jpg": "jpg"} {
+		got, err := os.ReadFile(filepath.Join(mount, filepath.FromSlash(name)))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v, want %q", name, got, err, want)
+		}
+	}
+	if _, err := os.Stat(holding); !os.IsNotExist(err) {
+		t.Errorf("the holding folder is still there: %v", err)
+	}
+}
+
+// TestRestoreStrayMountFilesKeepsTheDrivesVersion proves a parked file never
+// overwrites a file of the same name already in the drive.
+func TestRestoreStrayMountFilesKeepsTheDrivesVersion(t *testing.T) {
+	dir := t.TempDir()
+	mount := filepath.Join(dir, "Drive")
+	holding := filepath.Join(dir, "Drive.drive-local-1")
+	for _, d := range []string{mount, holding} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mount, "notes.txt"), []byte("the drive's"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(holding, "notes.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreStrayMountFiles(holding, mount); err == nil {
+		t.Fatal("a name clash returned no error, so nobody is told the local copy stayed")
+	}
+	got, _ := os.ReadFile(filepath.Join(mount, "notes.txt"))
+	if string(got) != "the drive's" {
+		t.Errorf("drive copy = %q, want it untouched", got)
+	}
+	got, _ = os.ReadFile(filepath.Join(holding, "notes.txt"))
+	if string(got) != "local" {
+		t.Errorf("local copy = %q, want it kept in the holding folder", got)
 	}
 }

@@ -1,80 +1,83 @@
-# Drive
+# Storagebun
 
 > A Finder drive for people and their agents: plain files in object storage,
-> mounted with stock rclone, and billed at 2¢ per GB-month by the minute. The
-> monthly bill never passes max($12, $8 × TB stored): a flat $12 up to 1.5 TB,
-> then $8 for each TB after. $1 of storage is free every month, no card needed.
-> Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
+> mounted with stock rclone, and billed at 2¢ per GB-month for the biggest size in the last 30 days.
+> Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
+> No plans. Your balance never expires.
 
-Drive is a mounted folder (macOS and Linux) where your files live in object
+Storagebun is a mounted folder (macOS and Linux) where your files live in object
 storage; what is on your disk is the parts you have opened, held in a cache
 capped at 20G with 1G of your disk always kept free. Libraries bigger than the
-laptop open on demand. Agents read and write the same files through the folder, the
-MCP filesystem server, or the S3 API, each with its own scoped key.
+laptop open on demand. Agents read and write the same files through the folder
+and the stock MCP filesystem server; `drive init` connects each tool it finds
+and gives that tool its own key.
 
 ## Pricing
 
-- Rate: 2¢ per GB per month, billed by the minute, pay only for what you store.
-- Bill ceiling: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
-  The monthly bill is min(metered, max($12, $8 × TB stored)) less the $1 free,
-  never below zero, TB measured to the GB, so the cap is a flat $12 up to
-  1.5 TB and only then rises at $8 a TB.
-- Free: $1 free every month, no card needed to start. That is about 50 GB of
-  storage each month, and a card is only needed to go past it. It comes off the
-  bill as a dollar line, after the ceiling and the downloads.
-- Downloads: free up to 3× what you store each month, then 1¢ per GB.
-- Version history: not in version 1.
-- No plan sizes and no fixed plans: you are billed for the GB you store, so a
-  1 TB drive kept 60% full bills $11 a month ($12 of storage, less the $1).
+- Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
+- The rule: You pay for the biggest size your drive reached in the last 30 days. 2 cents per GB a month, never more than $15 per TB.
+- No plans. Your balance never expires.
+- The bill follows the biggest size your drive reached in the last 30 days, not how often you save.
+- We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
+- Downloads: not in the published price, so they are free today. The plan is 3× your stored size free, then 1¢ per GB (planned).
+- Version history is not in version 1.
+- A 1 TB drive kept 60% full bills $12 a month.
+- Pay only for what you use.
 
-Worked examples, each the amount charged after the $1 free:
+Worked examples, each the biggest size in the last 30 days, with a usual 1 TB plan beside it:
 
-- 800 GB kept all month = $11 ($12 of storage)
-- 1.6 TB = $11.80 ($12.80 of storage)
-- 2 TB = $15 ($16 of storage, against Space $27)
-- 5 TB = $39 ($40 of storage, against Space $63)
+- 50 GB = $1 (a usual 1 TB plan: $15, so you save $14)
+- 200 GB = $4 (a usual 1 TB plan: $15, so you save $11)
+- 1 TB = $15 (the same $15, and less in any month you store less)
 
 ## What it is
 
 - A drive folder that works in any app. Files stream on demand, so a 5 GB video
   opens without downloading first.
 - The cache on your disk is capped at 20G, and 1G of free space is always kept.
-  Your disk never fills up; the cache is capped at a size you choose.
+  The cap covers only what has already uploaded: a save that has not gone up
+  yet stays on disk past the cap until it uploads, so uploads that are paused or
+  behind can use more disk than the cap.
   `drive cache` shows the disk in use and the limit, `drive cache --max <size>`
   changes it, and `drive cache --clear` empties it without touching a file still
   waiting to upload. `drive status` shows the same cache use. Files you keep
   offline stay, are never evicted, and count toward that limit.
 - Saves upload after the file is closed and appear on the other machines. How
   long a save takes to cross between two real machines is not yet measured.
-  The [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md)
+  The [Benchmarks](https://storagebun.com/docs/benchmarks.md)
   page carries the rows that do and do not have a figure.
 - A spending cap you set; at the cap the drive goes read-only and nothing is
   deleted.
 - Agents read and write freely but cannot permanently delete; a person can undo
-  an agent's delete. Branches copy a folder for an agent to work in, then you
-  approve or discard the copy.
+  an agent's delete. `drive init` gives each tool its own mount at ~/Drive-agents/<tool> on
+  its own key, and the MCP server and the tool's allowed folders use that path.
+  Branches copy a folder for an agent to work in, then you approve or discard the
+  copy.
 
 ## Docs
 
 Every page below is one plain-words page about the drive, also served as
-Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
-holds all nine in one file.
+Markdown: add `.md` to the address. [llms-full.txt](https://storagebun.com/docs/llms-full.txt)
+holds all ten in one file.
 
-- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
-- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
-- [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
-- [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the ceiling and four worked sizes.
-- [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
-- [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits.md): what version 1 does not do, in plain words.
-- [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md): measured speed, including where we lose.
-- [Security](https://drive-pricing.nishant345.workers.dev/docs/security.md): who can see your files, and what we cannot claim.
-- [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog.md): one line per shipped thing.
+- [Quickstart](https://storagebun.com/docs/quickstart.md): six steps from nothing to a mounted drive.
+- [How it works](https://storagebun.com/docs/how-it-works.md): plain files, and how the bill is counted.
+- [Agents](https://storagebun.com/docs/agents.md): `drive init`, and what an agent key cannot do.
+- [Pricing and your bill](https://storagebun.com/docs/pricing.md): the rate, the maximum and four worked sizes.
+- [FAQ](https://storagebun.com/docs/faq.md): the questions we can answer with a measured number.
+- [When something goes wrong](https://storagebun.com/docs/troubleshooting.md): what to run first, the log on each system, a lost laptop, your files out.
+- [Limits](https://storagebun.com/docs/limits.md): what version 1 does not do, in plain words.
+- [Benchmarks](https://storagebun.com/docs/benchmarks.md): measured speed, including where we lose.
+- [Security](https://storagebun.com/docs/security.md): who can see your files, and what we cannot claim.
+- [Changelog](https://storagebun.com/docs/changelog.md): one line per shipped thing.
 
 ## Not yet
 
 The drive is not open yet. Sign-ups on the pricing page go to a waitlist.
+Sign-in on this site is for an invited account: the sign-in page sits beside
+the waitlist, so joining is the only step that reaches a new person.
 
 ## Links
 
-- Pricing page (canonical): https://drive-pricing.nishant345.workers.dev/
-- Sitemap: https://drive-pricing.nishant345.workers.dev/sitemap.xml
+- Pricing page (canonical): https://storagebun.com/
+- Sitemap: https://storagebun.com/sitemap.xml

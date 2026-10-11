@@ -1,7 +1,7 @@
 // The docs site (drive issue #98): every page reachable, every number the
 // invoice's own, and the agent-facing index complete. The docs are a generated
 // section of the site, so the gate is the same one the shipped pricing page
-// uses: the tests build their expectations from src/billing.js and fail CI
+// uses: the tests build their expectations from core/billing.js and fail CI
 // when a page drifts from it.
 
 import assert from "node:assert/strict";
@@ -10,16 +10,23 @@ import { test } from "node:test";
 import {
   BILLING_CONFIG,
   GB_PER_TB,
-  MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyCeilingUsd,
-} from "../src/billing.js";
-import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+  monthlyMaximumUsd,
+} from "../core/billing.js";
+import { PRICE } from "../core/pricing.js";
+import { PAGES, SITE } from "../core/seo.js";
+import {
+  agentDeleteSentence,
+  FAQ,
+  faqMarkdown,
+  markerValues,
+  RIVAL_1TB_LINE,
+  scoreboardVerdict,
+} from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
-import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
-import { PAGES, SITE } from "../src/seo.js";
-import { INSTALL_COMMAND } from "../src/status.js";
+import { applyMarkers, cliSubcommands, DOC_PAGES, renderDocs } from "../src/render-docs.js";
+import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
@@ -35,13 +42,10 @@ const siteDir = new URL("../public/docs/", import.meta.url);
 /** @param {string} name */
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
-// The price numbers, worked out the way the invoice works them out: a month
-// that stored `tb` terabytes all month is gb x 43,800 GB-minutes and a peak of
-// the same gb. Nothing in these tests types a dollar figure.
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH, peakGb: gb });
+  return monthBillCents({ size30Bytes: Math.round(gb * 1e9) });
 }
 
 /** @param {number} amount */
@@ -135,21 +139,23 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The rate, both halves of the ceiling, the free credit and the cap, each
-  // read from the one config the invoice reads.
-  assert.ok(page.includes("2¢ per GB"), "the pricing page must state the rate");
+  // The headline, the rule, the prepaid lines, the cap, and the per-save hour:
+  // each read from the one config the invoice reads.
+  for (const line of [
+    PRICE.headline,
+    PRICE.rule,
+    PRICE.noPlansLine,
+    // drive#642: the page that used to say billing is counted by the minute
+    // now says the bill follows size30, not how often you save.
+    PRICE.versionMinimumLine,
+  ]) {
+    assert.ok(page.includes(line), `the pricing page must state "${line}"`);
+  }
   assert.ok(
-    page.includes(dollars(BILLING_CONFIG.floorUsd)),
-    "the pricing page must state the ceiling floor",
+    page.includes(`$${BILLING_CONFIG.maxUsdPerTb} per TB`),
+    "the pricing page must state the maximum per TB",
   );
-  assert.ok(
-    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
-    "the pricing page must state the per-TB ceiling",
-  );
-  assert.ok(
-    page.includes(dollars(BILLING_CONFIG.freeMonthlyUsd)),
-    "the pricing page must state the free credit",
-  );
+  assert.doesNotMatch(page, /membership|ceiling/i, "the pricing page must not name the old rule");
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the pricing page must state the default cap",
@@ -158,17 +164,17 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
 
 test("every worked example on the pricing page is the invoice's own arithmetic", () => {
   const page = shipped("pricing.md");
-  for (const tb of [0.8, 1.3, 2, 5]) {
+  for (const tb of [0.2, 0.8, 1.5, 3]) {
     const gb = tb * GB_PER_TB;
     const bill = billFor(tb);
-    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyCeilingUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(Math.round(gb * 1e9)))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
     assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
   }
   // And the metered column is genuinely larger than the bill at the sizes the
-  // ceiling exists for, so the page cannot quietly drop the ceiling.
+  // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
-    meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) > billFor(2).totalCents / 100,
-    "2 TB metered must be more than 2 TB billed, or the ceiling is not being applied",
+    meteredMonthlyBillUsd(Math.round(2 * GB_PER_TB * 1e9)) > billFor(2).totalCents / 100,
+    "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
 });
 
@@ -192,23 +198,21 @@ test("the agents page names the tools the CLI connects and their real powers", (
   for (const tool of AGENT_TOOLS) {
     assert.ok(page.includes(tool), `the agents page must name the ${tool} tool`);
   }
-  // The key table is read from workers/api/src/keyprovider.js, so the page
-  // cannot claim a power the api Worker does not grant.
+  // The key table is read from core/keyprovider.js, so the page
+  // cannot claim a power the api Worker does not grant, and the delete and
+  // reach sentences from what the storage enforces (test/key-truth.test.mjs).
   assert.equal(KEY_POWERS.device.canDelete, true);
   assert.equal(KEY_POWERS.agent.canDelete, false);
   assert.ok(
-    page.includes("An agent key cannot delete a file."),
-    "the agents page must say an agent key cannot delete",
+    page.includes(agentDeleteSentence()),
+    "the agents page must say what an agent key's delete really does",
   );
-  assert.ok(
-    page.includes(INSTALL_COMMAND),
-    `the agents page must name the one command (${INSTALL_COMMAND})`,
-  );
+  assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {
   const page = shipped("security.md");
-  assert.ok(page.includes("An agent key cannot delete a file."));
+  assert.ok(page.includes(agentDeleteSentence()));
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the security page must state the default cap",
@@ -229,7 +233,7 @@ test("the security page answers whether writing resumes once the cap is raised",
   // stack: docs-site/*.md and `drive --help` both said the drive goes read-only
   // at the cap, and neither said what raising it does. The pages an agent
   // reads were also the only place the answer could live, because the code that
-  // decides it (src/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
+  // decides it (core/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
   // is not served. So the answer is one sentence on the page that already
   // states the cap, and this pins it: an eval cannot grade an answer the
   // reading stack does not carry, and a page that loses the sentence fails here
@@ -247,13 +251,40 @@ test("the security page answers whether writing resumes once the cap is raised",
   );
 });
 
+test("the limits page states the account size search stays under a second at (drive#571)", () => {
+  const page = shipped("limits.md");
+  // The issue asks for the size, so the number is pinned here: a search under
+  // one second is claimed for an account of a million files, and the number
+  // must not drift off the figure test/search.test.mjs measures.
+  assert.match(
+    page,
+    /Search on an account of a million files/i,
+    "the limits page must name the account size search stays under a second at",
+  );
+  assert.match(
+    page,
+    /1,000,000\s*\n?\s*file/,
+    "the limits page must state the figure as one million files",
+  );
+  assert.match(
+    page,
+    /milliseconds/,
+    "the limits page must give the measured time, not only the size",
+  );
+});
+
 test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
   const page = shipped("limits.md");
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /go install github\.com\/Nishfleet\/drive\/cmd\/drive/,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+same\s+package\s+locally\s+with/i,
     "the limits page must give the install that works today",
+  );
+  assert.match(
+    page,
+    /goreleaser release --snapshot --clean/,
+    "the limits page must name the snapshot command that produces the packages",
   );
   assert.match(
     page,
@@ -289,14 +320,14 @@ test("the changelog opens today and every entry is a real line", () => {
   const page = shipped("changelog.md");
   assert.match(page, /## \d{4}-\d{2}-\d{2}/, "the changelog must open with a date heading");
   assert.ok(
-    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
-    "the changelog must state the ceiling it recorded",
+    page.includes(`$${BILLING_CONFIG.maxUsdPerTb} per TB`),
+    "the changelog must state the maximum it recorded",
   );
 });
 
 test("the changelog's docs list names every page in DOC_PAGES order", () => {
   // The changelog repeats the docs list in prose ("These docs: ..."), a second
-  // copy of src/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
+  // copy of core/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
   // sitemap and the built site, but not in this sentence, so an agent reading
   // the changelog missed a shipped page. The gate reads that one sentence and
   // requires every DOC_PAGES title, in the same order, so the next page added
@@ -334,11 +365,11 @@ test("every FAQ answer rests on a scoreboard row that is a measured win", () => 
 });
 
 test("the render refuses an FAQ answer whose row is not yet measured", () => {
-  // The same gate, turned around: take a row the FAQ answers rest on
-  // and read it the way the scoreboard reads it before a measurement
-  // lands. faqMarkdown() must refuse, naming the answer and the row,
-  // so the answer leaves the page at the next build rather than
-  // staying up unmeasured.
+  // drive#642: the cost answer rests on the "price at 500 GB" row, so that is
+  // the row whose measurement it loses. The "price at 1 TB" row is a "lose"
+  // now that the maximum is $15 a TB, and no answer rests on it - so the gate
+  // must key on the row the answer DECLARES, and a lose row that nothing rests
+  // on must neither remove an answer nor let one through.
   /** @param {string} metric @param {string} verdict */
   const flip = (metric, verdict) =>
     scoreboard
@@ -348,8 +379,8 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
       )
       .join("\n");
   assert.throws(
-    () => faqMarkdown(flip("price at 1 TB", "not yet measured")),
-    /price at 1 TB/,
+    () => faqMarkdown(flip("price at 500 GB", "not yet measured")),
+    /price at 500 GB/,
     "the cost answer must come out when its row is not yet measured",
   );
   assert.throws(
@@ -357,6 +388,44 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
     /no-delete keys/,
     "the agents answer must come out when one of its rows is not yet measured",
   );
+});
+
+test("a lose row no answer rests on leaves the FAQ exactly as it is", () => {
+  // The same gate, the other way round: "price at 1 TB" reads "lose" on the
+  // shipped scoreboard, because $15 for 1 TB is the same price as the
+  // competitor's yearly line. The cost answer rests on the 500 GB row, so a row
+  // going lose must not take a true answer off the page - a gate that keyed on
+  // every row would silently delete the cost answer, and a gate that ignored
+  // rows would ship an unmeasured one. This is the half that catches the
+  // former.
+  assert.equal(faqMarkdown(scoreboard), faqMarkdown(scoreboard), "the page is stable");
+  const shippedFaq = faqMarkdown(scoreboard);
+  for (const verdict of ["lose", "not yet measured"]) {
+    const flipped = scoreboard
+      .split("\n")
+      .map((line) =>
+        line.startsWith("| price at 1 TB |")
+          ? line.replace(/(\| (?:win|lose) \|)/, `| ${verdict} |`)
+          : line,
+      )
+      .join("\n");
+    assert.equal(faqMarkdown(flipped), shippedFaq);
+  }
+});
+
+test("the FAQ states the one-hour minimum on a saved version", () => {
+  // drive#535, finish line 2 - the FAQ half. The cost answer used to say "Files
+  // are billed for at least one hour.", which is true of a FILE and reads as a
+  // floor on what you keep. The meter bills a full hour for every SAVED VERSION
+  // (core/meter.js's MINIMUM_MINUTES_PER_VERSION), and a customer who saves
+  // six times inside an hour is billed six hours, so the answer carries the
+  // pricing page's own sentence rather than a shorter one.
+  const faq = shipped("faq.md");
+  assert.ok(
+    faq.includes(PRICE.versionMinimumLine),
+    "the FAQ must state the per-save hour the meter bills",
+  );
+  assert.equal(faq.includes("Files are billed for at least one hour."), false);
 });
 
 test("the shipped FAQ is exactly the answers the data publishes", () => {
@@ -372,24 +441,20 @@ test("the shipped FAQ is exactly the answers the data publishes", () => {
   }
 });
 
-test("the FAQ's rival line keeps the orchestrator's phrasing, from the scoreboard's row", () => {
+test("the FAQ does not name a rival or quote a rival's price", () => {
   const faq = shipped("faq.md");
-  // "Space price line: say '$20 a month, or $15 paid yearly'" — the
-  // phrasing is fixed, and both figures must still be the ones the
-  // scoreboard's price-at-1-TB row records for Space, so the line
-  // cannot drift from the row it came from.
-  assert.ok(faq.includes(RIVAL_1TB_LINE), "the FAQ must carry the rival line built in src/docs.js");
-  assert.ok(
-    faq.includes("Space charges $20 a month, or $15 paid yearly, for 1 TB."),
-    "the rival line must keep the orchestrator's exact phrasing",
-  );
+  // Drive#387: public copy uses our words. The scoreboard still records the
+  // rival's 1 TB figures internally, and the line is kept in src/docs.js so
+  // this test can prove the FAQ never quotes it.
+  assert.equal(faq.includes(RIVAL_1TB_LINE), false, "the FAQ must not quote the rival line");
+  assert.doesNotMatch(faq, RIVAL_PRODUCT);
   const row = scoreboard.split("\n").find((line) => line.startsWith("| price at 1 TB |"));
   assert.ok(row);
   const figures = [...row.matchAll(/\$(\d+)/g)].map((match) => match[1]);
   for (const figure of ["20", "15"]) {
     assert.ok(
       figures.includes(figure),
-      `the scoreboard's price at 1 TB row must still record $${figure} for Space`,
+      `the scoreboard's price at 1 TB row must still record $${figure} for the competitor`,
     );
   }
 });
@@ -504,10 +569,139 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   }
 });
 
+// The docs count public/llms.txt states (drive#814). The links above are gated
+// but the sentence that tells an answer engine how many pages there are is
+// prose, so drive#562 could add a page, add its link, and leave the sentence
+// counting the old nine with nothing failing. The count is read out of the file
+// and compared with DOC_PAGES, the list core/seo.js holds and the link gate
+// walks, so the sentence and the page list cannot disagree.
+//
+// It is stated once: the sentence is found by shape and never by a typed figure,
+// and the two other files that advertise the docs list state no count, so a
+// reword that drops the count or a second figure written elsewhere both fail
+// here rather than shipping a number nobody checked.
+const COUNT_SENTENCE = /holds all ([\w-]+) in one file/gi;
+
+// The counts the sentence may spell, so "nine" is read as nine rather than as a
+// word the gate cannot compare. A page list past twenty is a rewrite of this
+// table, which is a louder change than editing a sentence.
+/** @type {Readonly<Record<string, number>>} */
+const COUNT_WORDS = Object.freeze({
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+});
+
+/**
+ * @param {string} text
+ * @returns {string} the text with a hard wrap folded away, a blank line kept
+ */
+const foldSentence = (text) => text.replace(/(?<!\n)\n(?!\n)/g, " ");
+
+// The count written in other words, so a second figure is caught rather than
+// read past: "nine pages", "9 docs pages", "the docs have 12 pages". The number
+// words are the keys of the table above, so there is one list of them, and every
+// space here is a space and not a line break, so a claim cannot be assembled out
+// of two paragraphs. The number sits against "pages", so prose like "one of the
+// pages" is not read as a count of them.
+const NUMBER = `(?:\\d{1,3}|${Object.keys(COUNT_WORDS).join("|")})`;
+const PAGE_COUNT_CLAIM = new RegExp(
+  [
+    `\\b${NUMBER}\\b[^\\S\\n]+(?:docs?[^\\S\\n]+)?pages?\\b`,
+    `\\bdocs?\\b[^\\S\\n]+(?:has|have|holds?)[^\\S\\n]+${NUMBER}\\b[^\\S\\n]+pages?\\b`,
+  ].join("|"),
+  "gi",
+);
+
+/**
+ * The docs count a file states, in the one sentence that states it. A
+ * hard-wrapped sentence is folded to the one sentence a reader sees, but a blank
+ * line is a paragraph break and is kept, so "holds all nine" and "in one file"
+ * either side of one are not read as a claim the file makes.
+ * @param {string} text
+ * @returns {Array<{sentence: string, said: string, count: number | undefined}>}
+ */
+function statedCounts(text) {
+  return [...foldSentence(text).matchAll(COUNT_SENTENCE)].map((match) => {
+    const said = match[1].toLowerCase();
+    const digits = Number(said);
+    return {
+      sentence: match[0],
+      said,
+      count: said === String(digits) ? digits : COUNT_WORDS[said],
+    };
+  });
+}
+
+/**
+ * @param {string} text
+ * @returns {string[]} the page-count phrases the text states
+ */
+function pageCountClaims(text) {
+  return [...text.matchAll(PAGE_COUNT_CLAIM)].map((match) => match[0]);
+}
+
+/** @param {string} name */
+const readRepoText = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+
+test("public/llms.txt states the docs page count DOC_PAGES has, and states it once", () => {
+  const llms = readRepoText("../public/llms.txt");
+  const stated = statedCounts(llms);
+  assert.equal(
+    stated.length,
+    1,
+    `public/llms.txt must state the docs page count in exactly one sentence of the shape "holds all <count> in one file", and it states it in ${stated.length}`,
+  );
+  const { said, count, sentence } = stated[0];
+  assert.ok(
+    count !== undefined,
+    `public/llms.txt states "${sentence}", and this gate cannot read "${said}" as a count`,
+  );
+  assert.equal(
+    count,
+    DOC_PAGES.length,
+    `public/llms.txt says there are ${said} docs pages, and DOC_PAGES (core/seo.js) has ${DOC_PAGES.length}`,
+  );
+  // The count is stated once across the three files that advertise the docs
+  // list, and in public/llms.txt only in the sentence above: a second figure in
+  // this file, or a count added to the README or the docs home, is a number kept
+  // in step by hand, which is the gap this gate closes.
+  assert.deepEqual(
+    pageCountClaims(llms),
+    [],
+    "public/llms.txt states the count in the one sentence above, not a second time",
+  );
+  for (const name of ["../README.md", "../docs-site/index.md"]) {
+    const other = readRepoText(name);
+    assert.deepEqual(
+      [...statedCounts(other), ...pageCountClaims(other)],
+      [],
+      `${name} must not state a docs page count: the count is stated once, in public/llms.txt`,
+    );
+  }
+});
+
 test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  // The indexable pages come from src/seo.js PAGES rather than a typed path,
+  // The indexable pages come from core/seo.js PAGES rather than a typed path,
   // so a page that moves there moves this expectation with it instead of the
   // test and the sitemap drifting together.
   assert.deepEqual(
@@ -530,19 +724,19 @@ test("the sitemap lists the home page and the indexable pages, then every docs p
 
 test("every shell sample in the docs is a command the CLI actually has", () => {
   // The orchestrator's second-pass note (issue #98, comment 1) asks for every
-  // code sample to be run in CI, the way Space checks its 84 samples. There is
+  // code sample to be run in CI, the way the competitor checks its 84 samples. There is
   // no stock doc-test route for this corpus: `mdbook test` runs Rust in fenced
   // blocks, `sphinx.ext.doctest` runs Python `>>>` sessions, and VitePress,
   // Starlight and Docusaurus ship no runner at all (searched the three tools'
   // own docs plus mdBook's, on 2026-09-30). The samples here are shell commands
   // that mount storage and connect agent tools, which a CI runner cannot do, so
   // the mechanical substitute is this: every `drive ...` sample is checked
-  // against the subcommand switch in cmd/drive/main.go, and the one sample that
+  // against the command table in cmd/drive/main.go (the one place a
+  // subcommand exists: the dispatch reads it, and Go-side gates hold the
+  // agent notes and the help text to it), and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
-  const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
-  const switchBody = mainGo.slice(mainGo.indexOf("switch os.Args[1]"), mainGo.indexOf("default:"));
-  const subcommands = new Set([...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]));
+  const subcommands = cliSubcommands();
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",
@@ -551,15 +745,16 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "go install github.com/Nishfleet/drive/cmd/drive@latest",
-    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
-    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
-    "brew install nishfleet/tap/drive",
+    "brew install nish3451/tap/drive",
+    "sudo apt install ./drive_*.deb",
+    "sudo dnf install ./drive_*.rpm",
+    "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",
     "export DRIVE_S3_ACCESS_KEY_ID=...",
     "export DRIVE_S3_SECRET_ACCESS_KEY=...",
+    "rclone config",
   ]);
 
   let samples = 0;
@@ -589,20 +784,33 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
 });
 
 test("the docs config and the site's own config agree on the origin", () => {
-  // The VitePress config cannot import src/seo.js (it is outside the docs
-  // project, and VitePress's Vite will not load from there), so it repeats the
-  // origin. This is the gate that keeps the repeat honest: a base or an origin
-  // edited in one place fails here rather than shipping a docs site on a
-  // different host from the pricing page.
+  // The one site address lives in cmd/drive/site.json (drive#527). The docs
+  // config and core/seo.js both import it, so this gate checks the docs config
+  // reads that file and writes no address of its own, and that core/seo.js
+  // carries the same value.
   const config = readFileSync(
     new URL("../docs-site/.vitepress/config.mts", import.meta.url),
     "utf8",
   );
   assert.match(
     config,
-    new RegExp(`const SITE_ORIGIN = "${SITE.origin}";`),
-    "the docs config must use the canonical origin from src/seo.js",
+    /import site from "\.\.\/\.\.\/cmd\/drive\/site\.json" with \{ type: "json" \};/,
+    "the docs config must import the one site address from cmd/drive/site.json",
   );
+  assert.match(
+    config,
+    /const SITE_ORIGIN = site\.origin/,
+    "the docs config must take its origin from site.json",
+  );
+  assert.doesNotMatch(
+    config,
+    /https:\/\/[a-z0-9.-]+\.(dev|com|in|app)/,
+    "the docs config must not write a site address of its own",
+  );
+  const siteFile = JSON.parse(
+    readFileSync(new URL("../cmd/drive/site.json", import.meta.url), "utf8"),
+  );
+  assert.equal(SITE.origin, siteFile.origin, "core/seo.js must read the same site address");
   assert.match(
     config,
     /base: "\/docs\/"/,
@@ -636,35 +844,102 @@ test("the README describes the drive and points at the docs", () => {
     /node-repo-template/,
     "the README must not still be the template stub",
   );
-  assert.match(readme, /^# Drive$/m, "the README must name the product");
-  assert.match(readme, /2¢ per GB a month/, "the README must state the rate");
+  assert.match(readme, /^# Storagebun$/m, "the README must name the product");
+  assert.ok(readme.includes(PRICE.headline), "the README must state the price");
   for (const page of DOC_PAGES) {
     assert.ok(readme.includes(`${SITE.origin}${page.url}`), `the README must point at ${page.url}`);
   }
 });
 
-test("the docs carry the pricing page's design tokens, not a different palette", () => {
+test("the shipped docs do not preload Inter", () => {
+  // VitePress's default theme preloads Inter. transformHtml strips those
+  // tags (drive#458 CLS). A path-shape change that lets a tag through fails
+  // here rather than shipping a 0.015 layout shift.
+  const html = shipped("index.html");
+  assert.doesNotMatch(html, /inter-/i, "the docs HTML must not preload or link Inter");
+});
+
+test("every docs page links the served favicon", () => {
+  // drive#546: without a rel="icon" link every tab fetched /favicon.ico and
+  // hit the 404 page. The home page and every docs page point at the one
+  // served SVG.
+  assert.ok(
+    existsSync(new URL("../public/favicon.svg", import.meta.url)),
+    "public/favicon.svg must ship",
+  );
+  const docsHtml = readdirSync(siteDir).filter(
+    (name) => name.endsWith(".html") && name !== "404.html",
+  );
+  assert.ok(docsHtml.length >= 10, "the docs home and every page must have built");
+  for (const name of docsHtml) {
+    assert.match(
+      shipped(name),
+      /<link\s+rel="icon"\s+href="\/favicon\.svg"/,
+      `${name} must carry <link rel="icon" href="/favicon.svg">`,
+    );
+  }
+});
+
+test("every docs table is wrapped in a scroll container and stays a table", () => {
+  // drive#546: Chrome ignores overflow on a table box, so a wide table cannot
+  // scroll on its own. The markdown renderer wraps each table in
+  // .table-wrap (overflow-x: auto); the theme keeps display: table so the
+  // cells stay aligned.
+  const theme = readFileSync(
+    new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(theme, /\.VPDoc \.table-wrap\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(theme, /\.VPDoc table\s*\{[^}]*display:\s*table/);
+  const docsHtml = readdirSync(siteDir).filter(
+    (name) => name.endsWith(".html") && name !== "404.html",
+  );
+  let tables = 0;
+  for (const name of docsHtml) {
+    const html = shipped(name);
+    const all = (html.match(/<table\b/g) ?? []).length;
+    const wrapped = (html.match(/<div class="table-wrap"><table\b/g) ?? []).length;
+    tables += all;
+    assert.equal(wrapped, all, `${name}: every <table> must sit inside .table-wrap`);
+  }
+  assert.ok(tables > 0, "the benchmark and security pages ship tables");
+});
+
+test("the docs carry the home page's design tokens, not a different palette", () => {
   // The site palette lives in the shared stylesheet (public/site.css, drive
-  // #71), which the pricing page links; the docs site cannot import a served
-  // asset, so the tokens are copied. This reads the shipped stylesheet and the
-  // shipped theme, so a colour edited in one place without the other fails
-  // here rather than shipping two products.
+  // #71 / #152 / #458), which the pricing page links; the docs site cannot
+  // import a served asset, so the tokens are copied. This reads the shipped
+  // stylesheet and the shipped theme, so a colour edited in one place without
+  // the other fails here rather than shipping two products.
   const page = readFileSync(new URL("../public/site.css", import.meta.url), "utf8");
   const theme = readFileSync(
     new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
     "utf8",
   );
-  for (const token of ["--paper", "--ink", "--ink-soft", "--rule", "--accent"]) {
+  for (const token of [
+    "--drive-paper",
+    "--drive-ink",
+    "--drive-ink-soft",
+    "--drive-line",
+    "--drive-orange",
+    "--drive-orange-ink",
+    "--drive-card",
+  ]) {
     const from = page.match(new RegExp(`${token}:\\s*([^;]+);`));
     assert.ok(from, `the shared stylesheet must define ${token}`);
     assert.ok(
-      theme.includes(`${token.replace("--", "--vp-")}`) ||
-        theme.includes(`#${from[1].trim().replace("#", "")}`),
-      `the docs theme must carry ${token} (${from[1].trim()}) from the pricing page`,
+      theme.includes(from[1].trim()),
+      `the docs theme must carry ${token} (${from[1].trim()}) from the home page`,
     );
   }
-  // System fonts only: the pricing page ships no web font, so the docs must
-  // not start one either.
-  assert.doesNotMatch(theme, /@font-face/);
-  assert.match(theme, /system-ui/);
+  // Same three self-hosted faces as the home page, swap, no Google Fonts.
+  assert.doesNotMatch(theme, /fonts\.(googleapis|gstatic)\.com/);
+  const faces = (theme.match(/@font-face\s*\{[\s\S]*?\}/g) ?? []).filter((face) =>
+    face.includes("url("),
+  );
+  assert.equal(faces.length, 6, "the docs theme ships the same six face files as public/site.css");
+  for (const face of faces) {
+    assert.match(face, /font-display: swap/);
+    assert.match(face, /url\("\/fonts\/[^"]+\.woff2"\)/);
+  }
 });

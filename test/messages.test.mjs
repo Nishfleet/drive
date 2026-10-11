@@ -9,9 +9,13 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "../src/branches.js";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import { FAILURE_MESSAGES, failureMessage, SIGN_IN_COMMAND } from "../core/messages.js";
+import {
+  BRANCHES_ENDPOINT,
+  createMemorySnapshotStore,
+  handleBranchesRequest,
+} from "../src/branches.js";
 import { readSigninRequest } from "../src/signin.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -28,6 +32,10 @@ const REQUIRED_PATHS = [
   // account store lands with build step 1, and the refusal a cross-site
   // request gets from the same-origin rule.
   "sign-in-closed",
+  // The sign-in link that never left, which is its own door and not the closed
+  // one: no email setting, or a mailer that threw, still names a next step
+  // instead of falling back to unexpected (drive#431).
+  "sign-in-email-failed",
   "cross-site",
   // The account routes' four failure paths (drive#158): the deployment with no
   // drive behind it, the request that is not a JSON object, the upload with no
@@ -36,6 +44,14 @@ const REQUIRED_PATHS = [
   "json-object-needed",
   "upload-needs-name",
   "file-not-found",
+  // Abuse guards (drive#464): a second sign-up with the same card, and an
+  // unpaid account that has filled the 1 TB storage limit.
+  "card-in-use",
+  "pre-charge-storage-limit",
+  // The live-key count cap the key mint answers with (drive#552): a mint past
+  // the account's 20 live keys is refused with this one, the same shape the
+  // agent's own cap answers with.
+  "key-count-cap",
 ];
 
 // Every entry must have exactly these keys, no more, no less (sorted for the
@@ -209,11 +225,14 @@ test("the branch route refuses a body that is not a JSON object in the table's w
       // The body is refused before the branches table is touched, so this only
       // has to be there for the route to get as far as reading the request.
       {},
-      // No snapshot store and no table: the body is refused before either is
-      // read, and this is the shape of a request with no account's data on it.
-      null,
+      // drive#329: a missing snapshot store is 503 before the body is read, so
+      // the json-object-needed path needs a store. The table is still unused.
+      createMemorySnapshotStore(),
       createMemoryStore(),
       account,
+      // The create limiter runs before the body is read, so it has to allow
+      // this call for the body refusal below to be the answer under test.
+      { ipLimiter: { limit: () => Promise.resolve({ success: true }) } },
     );
   for (const body of ["[]", "null", "a form", "="]) {
     const refused = await call(body);
@@ -222,24 +241,28 @@ test("the branch route refuses a body that is not a JSON object in the table's w
   }
 });
 
-test("no module under src/ carries a second copy of a table sentence", () => {
+test("no module under src/ or core/ carries a second copy of a table sentence", () => {
   // The other half of the same rule, and the one that catches the drift the
-  // route assertions above cannot see: the words live in src/messages.js, so
-  // every other module under src/ reaches them through failureMessage(key).
-  // The whole tree is read, not just the top of it, and every sentence is
-  // looked for in the file text rather than in the code the parser can see: a
-  // sentence pasted into a handler reads the same to the next person whether
-  // it is code or a comment, and a table sentence quoted in a comment under
-  // src/ is the drift this exists to stop.
-  const src = new URL("../src/", import.meta.url);
-  const modules = readdirSync(src, { recursive: true })
-    .filter(
-      (name) =>
-        typeof name === "string" &&
-        name.endsWith(".js") &&
-        !name.split("/").includes("messages.js"),
-    )
-    .map((name) => [String(name), readFileSync(new URL(String(name), src), "utf8")]);
+  // route assertions above cannot see: the words live in core/messages.js, so
+  // every other module reaches them through failureMessage(key). The whole
+  // tree is read, not just the top of it, and every sentence is looked for in
+  // the file text rather than in the code the parser can see: a sentence pasted
+  // into a handler reads the same to the next person whether it is code or a
+  // comment, and a table sentence quoted in a comment under either tree is the
+  // drift this exists to stop. Both trees are walked (drive#616): the table
+  // and most of the modules that name a key moved into the shared core, so a
+  // walk of src/ alone would stop guarding them.
+  const modules = ["core", "src"].flatMap((tree) => {
+    const dir = new URL(`../${tree}/`, import.meta.url);
+    return readdirSync(dir, { recursive: true })
+      .filter(
+        (name) =>
+          typeof name === "string" &&
+          name.endsWith(".js") &&
+          !name.split("/").includes("messages.js"),
+      )
+      .map((name) => [`${tree}/${String(name)}`, readFileSync(new URL(String(name), dir), "utf8")]);
+  });
   for (const [key, entry] of Object.entries(FAILURE_MESSAGES)) {
     for (const sentence of [entry.what, entry.next]) {
       for (const [name, text] of modules) {
@@ -250,4 +273,28 @@ test("no module under src/ carries a second copy of a table sentence", () => {
       }
     }
   }
+});
+
+test("drive init is never presented as the sign-in step", () => {
+  // drive#557: drive init mounts and connects tools. It cannot sign anyone in.
+  // A sentence that still points at it as the sign-in step is the bug this
+  // issue exists to close. The surfaces a person actually reads are the ones
+  // named here; comments in tests and docs are out of this scan.
+  const asSignIn = /(?:^|[^\w])drive init(?:`|'|")?(?: again)? to sign(?:s|ing)? in/i;
+  const files = [
+    "core/messages.js",
+    "core/emails.js",
+    "core/status.js",
+    "public/index.html",
+    "get-started.html",
+    "workers/api/src/device-routes.js",
+    "cmd/drive/messages.go",
+  ];
+  for (const rel of files) {
+    const text = readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+    const hit = text.match(asSignIn);
+    assert.equal(hit, null, `${rel} presents drive init as the sign-in step: ${hit?.[0]}`);
+  }
+  assert.equal(SIGN_IN_COMMAND, "drive login");
+  assert.match(FAILURE_MESSAGES["key-revoked"].next, new RegExp(SIGN_IN_COMMAND));
 });

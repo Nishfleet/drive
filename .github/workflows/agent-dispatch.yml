@@ -3,15 +3,26 @@
 name: agent-dispatch
 on:
   issues:
-    types: [labeled, closed]
+    types: [labeled, closed, reopened]
+  # A park: comment starts a miss review (fleet-ops#9211).
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         required: false
         type: string
+      task:
+        description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
+        required: false
+        type: string
+  # The last five types feed fleet-ops' hold-risky job, which disarms, dequeues
+  # and labels needs-coordinator any risky PR whose head sha has no
+  # coordinator approval. It only calls the API and never checks out PR code.
+  # Without them hold-risky never ran here (fleet-ops#9293). Same list as 0509.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled]
+    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -23,6 +34,9 @@ on:
 jobs:
   dispatch:
     uses: Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main # same ref runner group 3 enforces for agent.yml; a SHA pin here drifts from agent.yml@main and strands jobs (0509#5231)
+    # contents: write is the ceiling for two fleet-ops jobs: hold-risky's
+    # merge-queue dequeue and the close job's branch delete. fleet-ops writers
+    # are drive writers; docs/security.md states that boundary (drive#581).
     permissions:
       issues: write
       pull-requests: write
@@ -33,3 +47,4 @@ jobs:
     with:
       issue: ${{ inputs.issue }}
       agent_mode: ${{ vars.AGENT_MODE }}
+      task: ${{ inputs.task }}

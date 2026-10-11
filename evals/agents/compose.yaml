@@ -1,0 +1,26 @@
+# The stock container the end-state suite's agent runs in (drive#526).
+#
+# endstate.py declares Inspect's own Docker sandbox
+# (`sandbox=("docker", "compose.yaml")`); Inspect finds this file beside the
+# task and gives each sample its own container from it. The container is the
+# agent's whole machine: its `bash` tool runs here, and the grader reads the
+# stand-in from the host, so a task can only be passed from inside the
+# container. Without a working Docker the run fails — Inspect's stock
+# prerequisite check raises before any sample starts — instead of falling
+# back to a shell on the host.
+#
+# `network_mode: host` puts the container on the host's loopback, which is
+# where the stand-in serves: the endpoint the prompt carries,
+# http://127.0.0.1:<port>, is the same host the eval process runs on.
+# RCLONE_BIN lets a host whose rclone lives elsewhere point at its binary;
+# the default is this VPS's own.
+services:
+  default:
+    image: python:3.12-bookworm
+    # The container must stay up for the length of a sample: Inspect starts
+    # it with `docker compose up --wait` and then execs the agent's bash
+    # tool inside it.
+    command: ["sleep", "infinity"]
+    network_mode: host
+    volumes:
+      - ${RCLONE_BIN:-/home/nish/.local/bin/rclone}:/usr/local/bin/rclone:ro

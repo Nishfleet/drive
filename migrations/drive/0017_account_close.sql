@@ -1,0 +1,30 @@
+-- Account close grace period (drive issue #235).
+--
+-- `accounts.state` already carries `closed` (migrations/drive/0010). Closing
+-- needs the instant that happened, so the nightly cron can mail at day 25 and
+-- delete files at day 30, and so a cancel inside the window can clear the
+-- timer. Expand only: four nullable INTEGER columns, no DEFAULT, no NOT
+-- NULL, nothing dropped or renamed. The previous Worker version neither
+-- reads nor writes them, so a revert keeps serving the same rows.
+--
+--   closed_at           unix seconds when the person asked to close
+--   reminder_sent_at    unix seconds when the day-25 mail went out
+--   close_mail_sent_at  unix seconds when the day-0 receipt went out
+--   purged_at           unix seconds when the files were deleted
+--
+-- Rows already at `state = 'closed'` with `closed_at` NULL cannot enter the
+-- grace window. No code wrote `state = 'closed'` before this PR (0010 only
+-- declared the value), so there is nothing to backfill. A writer that sets
+-- closed without `closed_at` is a bug in that writer.
+--
+-- Numbered 0017 because 0016 is the founding-member flag (drive#386). The
+-- deploy sorts on the numeric prefix alone, so two 0016 files would be
+-- unordered against each other.
+--
+-- Rollback of the code leaves the columns in place (D1 has no down-migration).
+-- The fleet's auto-revert stays possible because an old Worker ignores them.
+
+ALTER TABLE accounts ADD COLUMN closed_at INTEGER;
+ALTER TABLE accounts ADD COLUMN reminder_sent_at INTEGER;
+ALTER TABLE accounts ADD COLUMN close_mail_sent_at INTEGER;
+ALTER TABLE accounts ADD COLUMN purged_at INTEGER;

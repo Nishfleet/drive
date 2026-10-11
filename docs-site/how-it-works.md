@@ -1,6 +1,6 @@
 ---
 title: How it works
-description: Plain files in object storage, versions, restore, and how the bill is counted.
+description: Plain files in object storage, the cache, restore, and how the bill is counted.
 ---
 
 # How it works
@@ -12,7 +12,7 @@ open in the apps you already use. Nothing is packed into a database or a
 proprietary container, so if you ever leave, your files come with you in the
 shape you put them in.
 
-Under the folder, the bytes live in an object store we run. You never see that
+Under the folder, the bytes live in object storage. You never see that
 layer; you see files.
 
 ## Files on demand
@@ -26,7 +26,9 @@ do and do not carry a figure.
 
 What is on your disk is the parts you have already opened, held in a cache
 capped at {{CACHE_LIMIT}} with {{CACHE_FLOOR}} of your disk always kept free.
-Your disk never fills up; the cache is capped at a size you choose.
+The cap covers only what has already uploaded: a save that has not gone up yet
+stays on disk past the cap until it uploads, so uploads that are paused or
+behind can use more disk than the cap.
 `drive cache` shows the disk in use and the limit, `drive cache --max <size>`
 changes it, and `drive cache --clear` empties it without touching a file still
 waiting to upload. `drive status` shows the same cache use. Files you keep
@@ -44,7 +46,11 @@ drive online <path>       # stop keeping it here; with no path, all of it
 ```
 
 `drive status` says what is kept offline. What is kept here is a copy on this
-machine's disk, so it is the one thing that a wiped laptop can lose.
+machine's disk, so it is the one thing that a wiped laptop can lose. A kept
+folder still opens, lists and accepts a new file after the network has been
+down for more than five minutes. While the network is down the listing is
+the one last fetched: saves that landed elsewhere in the meantime are not in
+it until the network is back.
 
 ## Stopping the uploads for a while
 
@@ -58,28 +64,33 @@ the drive keep working, because reads come the other way.
 
 ## Versions
 
-Version history is not in version 1. Saving a file again replaces it, and no
-command lists the versions that were there before. See
+{{VERSION_HISTORY}} Saving a file again replaces it, and no
+command lists the versions that were there before. {{NOT_OPEN}} See
 [Limits](/limits) for what is not in version 1.
 
 ## Restore
 
-Deleting a file moves it aside rather than erasing it, and a delete can be
-undone. The `drive restore` command is not in the CLI yet — see
-[Limits](/limits) — but an agent cannot delete at all, so an agent's
-mistake cannot cost you a file. See [Agents](/agents) for what a key can
-and cannot do.
+Deleting a file on the Files page does not erase it. It moves to Recently
+deleted and stays there for 30 days, the meter stops counting it the same
+hour, and you can put it back yourself: open your drive in the browser, press
+the **Recently deleted** tab, find the file, and press **Restore**. After 30
+days the file is removed for good.
+
+A delete made anywhere else — `rm` in the mounted folder, an rclone command,
+or an S3 client with a storage key — does not pass through Recently deleted.
+The storage keeps the previous copy for one day and removes it after. To get
+such a file back, leave your email in the form on the [landing page](/)
+within that day; we reply and put it back. {{AGENT_DELETE}} See
+[Agents](/agents) for what a key can and cannot do.
 
 ## How the bill is counted
 
-The meter counts every GB you keep, by the minute. At the end of the month the
-rate is {{RATE}} on the month's GB-months, and that number is cut off at the
-ceiling: a flat {{CEILING_FLOOR}} until the drive passes 1.5 TB, then
-{{CEILING_PER_TB}} a TB. Then {{FREE_USD}} comes off, and downloads are counted
-separately. The numbers worked out for four sizes are on
+You pay for the biggest size your drive reached in the last 30 days. The rate is {{RATE}} a month, and the bill is never more than
+{{MAX_PER_TB}} for each TB. {{NO_PLANS}} {{VERSION_MINIMUM}} Downloads are
+counted separately. The numbers worked out for four sizes are on
 [Pricing and your bill](/pricing).
 
 ## Next
 
-- [Quickstart](/quickstart) — five steps to a mounted drive.
-- [Pricing and your bill](/pricing) — the rate and the ceiling.
+- [Quickstart](/quickstart) — six steps to a mounted drive.
+- [Pricing and your bill](/pricing) — the rate and the maximum.

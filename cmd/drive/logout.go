@@ -20,6 +20,87 @@ type TokenRevoker interface {
 	RevokeDeviceToken() error
 }
 
+// AccountRevoker signs the WHOLE account out of every device at once, and is
+// what `drive logout --all` asks for (drive#236, the standalone action
+// `nish3451` resolved in #34: sign out every device, separate from closing the
+// account). It is its own interface, not another method on TokenRevoker,
+// because it is not about this device's token: it is the route behind the
+// account gate that revokes every key and every token the gate resolved, so the
+// two revokes are not two views of one credential and one cannot stand in for
+// the other. A CLI half can be handed the one and not the other — the account
+// store is not configured — and that has to be a state it can report, not a
+// silent skip.
+type AccountRevoker interface {
+	RevokeAllKeys() error
+}
+
+// The pending-uploads refusal, factored out of Logout so `drive logout --all`
+// can ask the same question first (pendingUploadsRefusal). The account-wide
+// revoke cannot run before this answer is known: it turns off every key on the
+// account, this device's included, so asking afterwards would leave a person
+// who has files still queued with a machine that can no longer upload them and
+// a command that then refuses to clear the queue. Refuse first, revoke second.
+//
+// With force the queue is the person's call to discard, exactly as in Logout,
+// and the answer here is nil so the account-wide revoke proceeds to the same
+// judgement Logout makes.
+func pendingUploadsRefusal(force bool, home string) error {
+	pending, err := PendingUploads(DefaultCacheDir(home))
+	if err != nil {
+		return failDetail("queue-unreadable", err, DefaultCacheDir(home))
+	}
+	if pending.Files > 0 && !force {
+		return failf("uploads-stuck", fmt.Sprint(pending.Files), fmt.Sprint(pending.Bytes))
+	}
+	return nil
+}
+
+// LogoutEveryDevice is `drive logout --all`: sign every device signed in to
+// this account out, then sign this one out locally (drive#236).
+//
+// The order is the whole design. The upload queue is checked FIRST, because the
+// account-wide revoke takes this device's key with it like any other and a
+// command that asked afterwards would kill the device's upload path before it
+// had looked. Then the account-wide revoke runs while the credentials file that
+// holds the token is still on disk, and only then does Logout do its own local
+// work: stop the mount, ask the server about this device's key and token again
+// (both answer "already dead" and both are read as the state logout wants),
+// and delete the local config.
+//
+// Two failures are refused rather than worked around, and both leave this
+// device exactly as it was:
+//
+//   - No account revoker at all is "there is no signed-in account here", not a
+//     local-only logout. Running it as a plain `drive logout` would sign this
+//     machine out and leave every other device live, which is the opposite of
+//     what --all means.
+//   - An account-wide revoke that fails stops the command before Logout runs.
+//     The account is unchanged, so the local half would print a clean sign-out
+//     over an account that is still signed in on every other device.
+//
+// The confirm step is not here: it belongs to the command line (runLogout),
+// which is the only place that knows whether the person said yes. This function
+// is the work, and taking an unconfirmed argument to a function would put the
+// gate one layer away from the person who typed the flags.
+func LogoutEveryDevice(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevoker, account AccountRevoker) error {
+	if account == nil {
+		return fail("signout-everywhere-no-account")
+	}
+	// Stop this device's mount before counting dirty files, so a save in the
+	// window between the count and the stop cannot vanish with the cache.
+	if err := stopLogoutMount(goos, home); err != nil {
+		return err
+	}
+	if err := pendingUploadsRefusal(force, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the drive is unmounted; waiting files stay in the cache\n")
+		return err
+	}
+	if err := account.RevokeAllKeys(); err != nil {
+		return failDetail("signout-everywhere-failed", err)
+	}
+	return Logout(goos, home, force, revoker, revoke)
+}
+
 // Logout is `drive logout`: stop the mount, revoke this device's key and its
 // device token on the server, then delete the key and its local config
 // (issue #75, build-spec.md "Commands" — "Unmount, delete this device's key
@@ -67,36 +148,24 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	if revoke == nil {
 		revoke = noAPIKeyStore{}
 	}
-	pending, err := PendingUploads(DefaultCacheDir(home))
-	if err != nil {
+	// Stop the mount first, then count dirty files. A save that lands after
+	// the count and before the stop used to vanish with the cache. With the
+	// mount already down, the count is the whole remaining queue.
+	if err := stopLogoutMount(goos, home); err != nil {
 		return err
 	}
-	if pending.Files > 0 && !force {
-		return fmt.Errorf(
-			"%d file(s) waiting to upload (%d bytes) are still in the cache; "+
-				"start the mount and let them finish, or run `drive logout --force` to discard them",
-			pending.Files, pending.Bytes)
+	// The same question `drive logout --all` asks before it revokes the account
+	// (pendingUploadsRefusal), asked through the one helper so the two answers
+	// cannot drift. A refusal here keeps the cache: the files are still queued
+	// and the key is still live, so the person can mount again and let them up.
+	if err := pendingUploadsRefusal(force, home); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the drive is unmounted; waiting files stay in the cache\n")
+		return err
 	}
-	// Stop the mount before the key goes, so nothing is mid-upload when the
-	// config it reads disappears. Unmount stops the login item; stopMount then
-	// makes sure the mount point itself is down. Unmount can legitimately fail
-	// to disable a login item that was never installed (systemctl exits 1 with
-	// "Unit file ... does not exist"), and that failure is not fatal to
-	// logout: the login item file is deleted below, so it cannot come back at
-	// the next login, and stopMount proves the mount is gone. So the end state
-	// is measured, not the exit code: only a still-mounted drive fails.
-	stopErr := Unmount(goos, home)
-	if err := stopMount(goos, home); err != nil {
-		if stopErr != nil {
-			return fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err)
+	if clearer, ok := revoker.(interface{ ClearQueueReport() error }); ok {
+		if err := clearer.ClearQueueReport(); err != nil {
+			fmt.Fprintf(os.Stderr, "note: the live queue report could not be cleared: %v\n", err)
 		}
-		return err
-	}
-	if stopErr != nil {
-		// The mount is down and the login item is about to be deleted, so the
-		// only thing the disable error could have been protecting (a login
-		// item restarting the drive) is already handled. Note it and continue.
-		fmt.Fprintf(os.Stderr, "note: could not disable the login item (%v); it is deleted below, so the drive will not start at the next login\n", stopErr)
 	}
 	// The server is asked while the config still holds the key. A missing
 	// config is no key at all, and a receipt from an earlier run that could
@@ -170,9 +239,9 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	// Prove the key is gone rather than trust the unlink: the acceptance is
 	// "keeps nothing secret on disk", so a leftover config is a failure.
 	if _, err := os.Stat(RcloneConfigPath(home)); err == nil {
-		return errors.Join(removed, fmt.Errorf("logout left %s behind", RcloneConfigPath(home)))
+		return failf("logout-leftover", RcloneConfigPath(home))
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return errors.Join(removed, fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err))
+		return failDetail("unexpected", fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err))
 	}
 	// What the person is told is decided by what is left live, not by this run's
 	// own revoke. The record is folded forward after the config is gone — so the
@@ -211,13 +280,13 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	case revokeFailed != nil:
 		// This device's own key is live and still has its secret on this
 		// machine, so this is the acceptance sentence of issue #75.
-		return fmt.Errorf("%s (%w)", revokeWarning, revokeFailed)
+		return failDetail("key-still-live", revokeFailed)
 	case len(live) > 0:
 		// Nothing this run held is live, but the record says something is: a
 		// key from an earlier logout, or one this run could not name. The
 		// success line would be a lie about the whole of it, so the live-key
 		// sentence is what reaches the person instead.
-		return errors.New(revokePendingWarning)
+		return fail("key-still-live-elsewhere")
 	}
 	if removed != nil {
 		// Nothing is live and nothing secret is on disk any more, so this is
@@ -275,6 +344,13 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.SecretKey == "" {
+		if secret, envErr := secretFromEnvFile(RcloneEnvPath(home)); envErr != nil {
+			return nil, envErr
+		} else {
+			c.SecretKey = secret
+		}
+	}
 	// The parser reports what the file carries, so this is where a half-written
 	// config is refused: a key id with no secret cannot be revoked, and a secret
 	// with no id names no key.
@@ -282,6 +358,34 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 		return nil, fmt.Errorf("%s: the [%s] remote needs both an access key id and a secret key to be revoked", path, RcloneRemoteName)
 	}
 	return &KeyPair{AccessKeyID: c.AccessKey, SecretKey: c.SecretKey}, nil
+}
+
+// stopLogoutMount brings the login item and the mount point down before logout
+// counts dirty files or deletes anything. Unmount stops the login item;
+// stopMount then makes sure the mount point itself is down. Unmount can
+// legitimately fail to disable a login item that was never installed
+// (systemctl exits 1 with "Unit file ... does not exist"), and that failure is
+// not fatal to logout: the login item file is deleted later, so it cannot come
+// back at the next login, and stopMount proves the mount is gone. So the end
+// state is measured, not the exit code: only a still-mounted drive fails.
+func stopLogoutMount(goos, home string) error {
+	stopErr := Unmount(goos, home)
+	if err := stopMount(goos, home); err != nil {
+		mountDir := DefaultMountDir(home)
+		if stopErr != nil {
+			return failDetail("unmount-failed",
+				fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err),
+				mountDir)
+		}
+		return failDetail("unmount-failed", err, mountDir)
+	}
+	if stopErr != nil {
+		// The mount is down and the login item is about to be deleted, so the
+		// only thing the disable error could have been protecting (a login
+		// item restarting the drive) is already handled. Note it and continue.
+		fmt.Fprintf(os.Stderr, "note: the login item could not be disabled; it is deleted below, so the drive will not start at the next login\n")
+	}
+	return nil
 }
 
 // stopMount brings the mount point itself down and reports success only once
@@ -294,25 +398,32 @@ func stopMount(goos, home string) error {
 	if goos == "windows" {
 		return stopWindowsMount(home)
 	}
+	mountDir := DefaultMountDir(home)
 	on, err := Mounted(goos, home)
-	if err != nil {
-		return err
-	}
-	if !on {
+	if err == nil && !on && !mountDirNotConnected(goos, mountDir) {
 		return nil
 	}
-	mountDir := DefaultMountDir(home)
+	stale := err != nil || mountDirNotConnected(goos, mountDir)
 	// fusermount3 ships with current FUSE; fusermount is the older name. Every
 	// call site runs a literal binary name, never a variable, and the only
 	// argument is the mount dir (the caller's --home); exec.Command takes an
-	// argument vector and no shell.
+	// argument vector and no shell. A stale entry uses the lazy/force flag
+	// only: a plain -u / umount can hang on ENOTCONN or a hard NFS mount.
 	if goos == "darwin" {
-		if err := runUmount(mountDir); err != nil {
+		if stale {
+			if err := runUmountFlag(mountDir, "-f"); err != nil {
+				return fmt.Errorf("unmount %s: %w", mountDir, err)
+			}
+		} else if err := runUmount(mountDir); err != nil {
 			return fmt.Errorf("unmount %s: %w", mountDir, err)
 		}
 		return expectUnmounted(goos, home)
 	}
-	if err := runFusermount(mountDir); err != nil {
+	if stale {
+		if err := runFusermountFlag(mountDir, "-uz"); err != nil {
+			return fmt.Errorf("unmount %s: %w", mountDir, err)
+		}
+	} else if err := runFusermount(mountDir); err != nil {
 		return fmt.Errorf("unmount %s: %w", mountDir, err)
 	}
 	return expectUnmounted(goos, home)
@@ -320,21 +431,37 @@ func stopMount(goos, home string) error {
 
 // runUmount unmounts with the stock macOS umount.
 func runUmount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("umount", mountDir).CombinedOutput()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("umount", mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
+	return runUmountFlag(mountDir, "-f")
+}
+
+func runUmountFlag(mountDir, umountFlag string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount" and literal flag -f; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("umount", umountFlag, mountDir).CombinedOutput()
 	return unmountError("umount", err, out)
 }
 
 // runFusermount unmounts with the stock Linux FUSE tool: fusermount3 where it
-// exists, fusermount otherwise. Each is a literal binary and the only argument
-// is the mount dir.
+// exists, fusermount otherwise. -uz is lazy so a dead FUSE entry (ENOTCONN)
+// comes down even when a plain -u would block. Each call is a literal binary
+// name and a literal flag; the only path argument is the mount dir.
 func runFusermount(mountDir string) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	if _, err := exec.Command("fusermount3", "-u", mountDir).CombinedOutput(); err == nil {
+	if err := runFusermountFlag(mountDir, "-u"); err == nil {
 		return nil
 	}
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
-	out, err := exec.Command("fusermount", "-u", mountDir).CombinedOutput()
+	return runFusermountFlag(mountDir, "-uz")
+}
+
+func runFusermountFlag(mountDir, fuseFlag string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3" and literal flag -u or -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", fuseFlag, mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount" and literal flag -u or -uz; the only path argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("fusermount", fuseFlag, mountDir).CombinedOutput()
 	return unmountError("fusermount", err, out)
 }
 
@@ -355,7 +482,7 @@ func expectUnmounted(goos, home string) error {
 		return err
 	}
 	if on {
-		return fmt.Errorf("unmount %s: still mounted after fusermount", DefaultMountDir(home))
+		return failf("unmount-failed", DefaultMountDir(home))
 	}
 	return nil
 }
@@ -364,10 +491,22 @@ func expectUnmounted(goos, home string) error {
 // success it is (logout is safe to run twice).
 func removeIfPresent(path string) error {
 	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove %s: %w", path, err)
+		return failDetail("unexpected", fmt.Errorf("remove %s: %w", path, err))
 	}
 	return nil
 }
+
+// signOutEverywhereWarning is what `drive logout --all` prints before it asks
+// for --yes. It is the whole confirm step: `--all` on its own says exactly what
+// would happen and changes nothing, and only `--yes` goes on. The words name
+// every device, this one included, because the thing a person must weigh is not
+// "my key dies" (they asked to log out) but "the laptop in my bag stops
+// working" — the cost of running this by accident, and the reason it is not one
+// keystroke away on the way to an ordinary logout.
+const signOutEverywhereWarning = `About to sign out EVERY device signed in to this account: every key and every
+signed-in session, on this machine and on every other one. The files stay
+where they are; each device has to sign in again before it can reach them.
+Run drive logout --all --yes to go ahead.`
 
 // runLogout is `drive logout`.
 func runLogout(args []string) error {
@@ -376,6 +515,8 @@ func runLogout(args []string) error {
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL (env DRIVE_API_URL); the key-revoke endpoint")
 	force := fs.Bool("force", false, "discard files waiting to upload instead of stopping")
 	forgetPending := fs.Bool("forget-pending", false, "clear the failed-revoke record after you revoked the key on the devices page")
+	all := fs.Bool("all", false, "sign out every device signed in to this account, not just this one (asks for --yes)")
+	yes := fs.Bool("yes", false, "answer yes to --all's confirm step")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -402,13 +543,50 @@ func runLogout(args []string) error {
 	// file is absent or has no token, there is nothing to revoke; a missing file
 	// is the "not signed in" case, not an error.
 	var revoker TokenRevoker
+	var account AccountRevoker
 	creds, _ := LoadCredentials(common.home)
-	if creds.DeviceToken != "" && creds.APIBase != "" {
-		client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
-		if err != nil {
-			return fmt.Errorf("build api client: %w", err)
-		}
-		revoker = client
+	base, err := resolveAPIBase(common.home, *api)
+	if err != nil {
+		return err
 	}
-	return Logout(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api))
+	if creds.DeviceToken != "" && base != "" {
+		client, err := NewAPIClient(base, creds.DeviceToken)
+		if err != nil {
+			return err
+		}
+		// One client, both seams: the account-wide revoke and this device's own
+		// token revoke are the same token against the same api Worker, and
+		// holding two clients would mean two credentials for one account.
+		revoker = client
+		account = client
+	}
+	// The storage-key revoker is built from the RESOLVED base, not from the
+	// raw --api flag. `drive login` writes the api address into the credentials
+	// file, so a person who signed in once has no DRIVE_API_URL in their
+	// environment and passes no --api; handing that empty string to the revoker
+	// answered every revoke with "set --api or DRIVE_API_URL" (noAPIKeyStore),
+	// which is how a device whose sign-in had already lapsed signed out with
+	// its key still live on the server (drive#557). The key revoke is
+	// authenticated with the key pair itself and never with the device token,
+	// so it works for an expired token; it only ever needed the address, and
+	// the address the person signed in to is the one above.
+	keyRevoker := resolveKeyRevoker(base)
+	if *all {
+		// The confirm step, and it is a step: `--all` says what it would do
+		// and stops, so an account-wide revoke can never be one keystroke away
+		// on the way to an ordinary logout. The words are the account-wide ones
+		// on purpose — "every device", including the laptop in the bag — because
+		// the cost of running it by accident is every other signed-in machine
+		// needing to sign in again, and the cost of not saying so is that
+		// surprise. --yes is the answer; there is no prompt to mistype.
+		if !*yes {
+			fmt.Println(signOutEverywhereWarning)
+			return fail("signout-everywhere-unconfirmed")
+		}
+		return LogoutEveryDevice(CurrentGOOS(), common.home, *force, revoker, keyRevoker, account)
+	}
+	if *yes {
+		return fail("confirm-without-all")
+	}
+	return Logout(CurrentGOOS(), common.home, *force, revoker, keyRevoker)
 }

@@ -1,6 +1,6 @@
 ---
 title: Limits
-description: What version 1 of Drive does not do, and where it is slower than the alternatives.
+description: What version 1 of Storagebun does not do, and where it is slower than the alternatives.
 ---
 
 # Limits
@@ -10,29 +10,39 @@ would rather you read it here than find out in week three.
 
 ## Not in version 1
 
-- **We are not open yet.** Sign-ups on the pricing page go to a waitlist, and
-  an account arrives by invitation.
-- **The packages are built but not published yet.** GoReleaser builds the
-  `.deb`, the `.rpm` and the Homebrew formula from `.goreleaser.yaml`, and a
-  release on a `v*` tag publishes them. Until that release runs, install from
-  the source with `go install github.com/Nishfleet/drive/cmd/drive@latest`, or
-  build the same package locally with
+- **We are not open yet.** {{NOT_OPEN}} An account arrives by invitation.
+- **The packages publish on a `v*` tag.** GoReleaser builds the
+  `.deb`, the `.rpm` and the Homebrew cask from `.goreleaser.yaml`, and the
+  release workflow on a `v*` tag publishes them. Signing and notarize stay
+  off until their secrets exist. Until a public stable tag, the install
+  that works today is to build the same package locally with
   `goreleaser release --snapshot --clean` and install the file under `dist/`.
-  The [Quickstart](/quickstart) is written for the released commands.
-- **macOS is read-only for us.** We can prove the drive on a Mac only on a
-  GitHub macOS runner or by hand, so what we have measured end to end is
-  Linux.
-- **No `restore` command yet.** A delete is still reversible through the
-  storage provider's own versioning, but `drive restore` is not in the CLI.
-- **No version history.** Save a file again and the file is replaced; no command
+  The [Quickstart](/quickstart) leads with the released commands and
+  keeps the details in its Other ways section.
+- **We cannot yet prove the drive end to end on a Mac.** We can test a Mac
+  only on a GitHub macOS runner or by hand, so what we have measured end to
+  end is Linux. The Mac mount is in the CLI and is built for macOS, but we
+  have not run the measured suite on a Mac, so treat read-write on a Mac as
+  untested.
+- **No `restore` command yet.** A delete from the Files page is restorable for
+  30 days in Recently deleted; a delete made any other way is recoverable for
+  one day by asking us. `drive restore` is not in the CLI.
+- **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
-- **Windows installs with an MSI, not a command.** Windows gets the
+- **Twenty live keys per account.** An account holds at most 20 live keys at
+  once — its device, agent, s3 and branch keys all counted together. A mint
+  past the cap is refused until you revoke a key you no longer use or let an
+  hourly key expire. The storage vendor sets no per-account limit of its
+  own, so this cap is ours (and the nightly sweep removes the vendor keys of
+  expired or revoked entries, so dead rows do not hold slots).
+- **Windows is not in version 1, and its installer is an unsigned MSI, not a
+  command.** Windows gets the
   same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
   and a Task Scheduler task at logon. The installer builds in CI with the
   stock WiX toolchain and WinFsp arrives through its own package dependency,
   never a vendored copy. Builds are unsigned until a signing certificate is
-  bought, so no published release exists yet (#154).
+  bought, so no published release exists yet.
 - **No second person on the account.** There is one account, your devices and
   your agents, so sharing a folder with a colleague is not a version 1 thing.
   When someone leaves there is no access of theirs to take away: revoke that
@@ -46,14 +56,33 @@ would rather you read it here than find out in week three.
   connection will stutter. `drive offline <path>` keeps a folder on this
   computer instead, which is what a rival's local copy already does.
 - **Rename and move are not free.** A folder move is a copy and a delete on
-  plain object storage. It does not copy the bytes through your machine, but
-  it is still not an instant rename, and a big move takes time.
+  plain object storage, so renaming a 200-file folder takes about 0.6 seconds
+  and moving a 10 GB folder about 18 seconds on our test storage (a local
+  stand-in, so read both as an order of magnitude) — the storage server makes
+  the copy, so nothing is re-uploaded through your machine, and a move never
+  adds a byte to your bill.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
-- **Your disk holds a cache, and it is capped.** Your disk never fills up; the
-  cache is capped at a size you choose. What is on disk is the parts of your
-  files you have already opened. It grows to at most {{CACHE_LIMIT}}, and the
-  drive always keeps at least {{CACHE_FLOOR}} of your disk free.
+- **Search on an account of a million files.** Search reads a trigram index
+  over your file names, so it does not scan the whole drive: at a **1,000,000
+  file** account, a search for the name of one file answers in about **5
+  milliseconds** on the SQLite engine the repository tests run (the same
+  engine D1 uses; a live query also pays the network round-trip). The test
+  that proves it is in the repository. The one slower case is a search word
+  that every one of a million names contains — "invoice" on a drive of a
+  million invoices — where the index has to rank a million matching names and
+  the search takes on the order of a second. A search of one or two
+  characters (a single letter, say) does not use the trigram index at all,
+  because a three-letter window is the shortest one it can hold, and scans
+  the account's index rows to answer. Saving a file writes the name into the
+  trigram table as well as the index (one seek per file, not a scan), so a
+  search is current without waiting for the nightly rebuild.
+- **Your disk holds a cache, and it is capped.** What is on disk is the parts
+  of your files you have already opened. It grows to at most {{CACHE_LIMIT}},
+  and the drive always keeps at least {{CACHE_FLOOR}} of your disk free. The
+  cap covers only what has already uploaded: a save waiting to go up stays on
+  disk past the cap until it uploads, so uploads that are paused or behind can
+  use more disk than the cap.
   {{CACHE_COMMANDS}}; a file waiting to upload is never cleared. Files you keep
   offline stay on this computer, count toward that limit, and `drive status`
   shows the same cache use.
@@ -63,25 +92,29 @@ would rather you read it here than find out in week three.
 - **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
   drive goes read-only at it: nothing is deleted, and the bill stops there.
   The default cap is {{DEFAULT_CAP}}.
-- **The bill ceiling.** The metered cost is cut off at a flat
-  {{CEILING_FLOOR}} until the drive passes 1.5 TB, then {{CEILING_PER_TB}} for
-  each TB after, so a full drive cannot surprise you.
-- **Agents cannot delete.** An agent key cannot remove a file; only a person
-  can, and a person's delete is restorable.
+- **The maximum.** The bill is never more than {{MAX_PER_TB}} for each TB you
+  store, so a full drive cannot surprise you.
+- **An agent's delete is undoable for a short time only.** {{AGENT_DELETE}}
+- **A branch key is not a wall.** {{BRANCH_REACH}}
 - **A branch is a real copy.** `drive branch` copies every byte of the folder,
   so a branch counts against your storage until you `discard` it or `approve`
   it, and `approve` stops with a list of conflicting files instead of a
   silent overwrite.
+- **A branch still has a size cap.** Copy, approve, discard and rewind now run
+  as a queued job in file batches, so they stay inside one Worker's request
+  budget. A folder with more than 100,000 files still cannot be branched: the
+  snapshot for that many files is about 11 MiB in memory, and that is the
+  remaining limit.
 
 ## Honest notes on the numbers
 
 - Every figure on the [pricing page](/pricing) is worked out from the
   same config the invoice is worked out from, and a test fails the build if
   the two disagree.
-- Where Drive is slower than a rival, we say so here rather than on the
+- Where Storagebun is slower than a rival, we say so here rather than on the
   pricing page, and we would rather add a line to this page than remove one.
 
 ## Next
 
 - [Security](/security) — who can see your files.
-- [Pricing and your bill](/pricing) — the rate and the ceiling.
+- [Pricing and your bill](/pricing) — the rate and the maximum.

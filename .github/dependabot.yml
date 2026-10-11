@@ -4,9 +4,12 @@
 #
 # npm carries two prerelease specs, both pinned exactly in package.json and
 # matched by a package-lock.json entry with integrity:
-#   @cloudflare/vite-plugin 2.0.0-beta.sha-ad79608dd — the 2.0 prerelease the
-#     floating `beta` dist-tag already resolved to on 2026-09-30. Pinning the
-#     version records the choice; the tag alone left it unstated and floating.
+#   @cloudflare/vite-plugin 2.0.0-beta.sha-805ec1ff3 — a per-commit 2.0
+#     prerelease. It waits for a tagged 2.0.0 release: only 2.0 depends on
+#     @cloudflare/config, which reads the cloudflare.config.ts files
+#     vite.config.ts and the `cf` CLI build from. The newest tagged release,
+#     1.62.5 (checked 2026-10-05), has no such dependency. Move the pin to
+#     2.0.0 once npm tags it, and delete this note (drive#508).
 #   cf ^1.0.0-beta.5 — the `cf` CLI has no stable release (its `latest` tag is
 #     itself 1.0.0-beta.6), so the range stays and Dependabot moves it.
 # Dependabot's own version-update PRs keep both current.
@@ -52,6 +55,35 @@ updates:
       default-days: 7
     groups:
       github-actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
+
+  # The agent eval (evals/agents/) is its own npm project and its own Python
+  # requirements, pinned there and not in the root package.json (drive#257),
+  # so each needs its own entry or its pins never move (drive#581).
+  - package-ecosystem: npm
+    directory: /evals/agents
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      evals-npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /evals/agents
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      evals-pip-minor-patch:
         applies-to: version-updates
         patterns:
           - "*"

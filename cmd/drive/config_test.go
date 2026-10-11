@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"html"
 	"io"
 	"os"
@@ -9,6 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Nishfleet/drive/internal/atomicwrite"
 )
 
 func testStorage() StorageConfig {
@@ -19,6 +23,16 @@ func testStorage() StorageConfig {
 		Bucket:    "drive-standin",
 		Prefix:    "u/1234",
 		Region:    "us-east-1",
+	}
+}
+
+func TestVFSDirCacheTimeIsAtLeastFiveMinutes(t *testing.T) {
+	d, err := time.ParseDuration(vfsDirCacheTimeValue)
+	if err != nil {
+		t.Fatalf("vfsDirCacheTimeValue %q: %v", vfsDirCacheTimeValue, err)
+	}
+	if d < 5*time.Minute {
+		t.Errorf("vfsDirCacheTimeValue = %s (%v), want at least 5m (issue #541)", vfsDirCacheTimeValue, d)
 	}
 }
 
@@ -35,6 +49,12 @@ func TestRcloneConfigRendersS3Remote(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("rclone config missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "no_check_bucket") {
+		t.Errorf("a permanent key can HeadBucket, so no_check_bucket must stay off:\n%s", got)
+	}
+	if strings.Contains(got, "secret_access_key") || strings.Contains(got, testStorage().SecretKey) {
+		t.Errorf("rclone.conf must not carry the storage secret:\n%s", got)
 	}
 }
 
@@ -57,9 +77,9 @@ func TestRemoteForTrimsPrefix(t *testing.T) {
 func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
-	if _, err := LoadStorageConfig("", "", "", "", "", ""); err == nil {
+	if _, err := LoadStorageConfig("", "", "", "", "", "", StorageConfig{}); err == nil {
 		t.Fatal("expected an error when no storage config is given")
-	} else if !strings.Contains(err.Error(), "missing storage config") {
+	} else if !strings.Contains(err.Error(), "missing its storage settings") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
@@ -68,7 +88,7 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	c, err := LoadStorageConfig("http://x", "b", "", "", "", secret)
+	c, err := LoadStorageConfig("http://x", "b", "", "", "", secret, StorageConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +107,7 @@ func TestLoadStorageConfigReadsTheKeysFromTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	c, err := LoadStorageConfig("http://x", "b", "p", "", "", secret)
+	c, err := LoadStorageConfig("http://x", "b", "p", "", "", secret, StorageConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +130,7 @@ func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
 			t.Errorf("runMount(%q) = nil, want the refusal", args)
 			continue
 		}
-		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.conf"} {
+		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.env"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("runMount(%q) error %q is missing %q", args, err, want)
 			}
@@ -148,7 +168,7 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", "", secret)
+	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", "", secret, StorageConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,9 +179,9 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 
 // The mount must carry every VFS flag the product mounts with, on both
 // platforms, and use the platform's own rclone subcommand. --dir-cache-time is
-// the fourth: S3 sends no change notifications, so without it a save from the
-// other machine waits out rclone's 5-minute default (issue #62; the step-3
-// proof in PR #61 carries the same flag into docs/build-spec.md).
+// the fourth: S3 sends no change notifications, so listings stay fresh via
+// vfs/refresh from the fill loop (issue #541) rather than a 5s expiry that
+// broke kept-offline folders.
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
@@ -173,8 +193,8 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-cache-mode full",
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
-			"--dir-cache-time 5s",
-			"--vfs-read-chunk-size 128M",
+			"--dir-cache-time " + vfsDirCacheTimeValue,
+			"--vfs-read-chunk-size " + vfsReadChunkSizeValue,
 			"--vfs-read-chunk-streams 2",
 			"--buffer-size 32M",
 			"--transfers 4",
@@ -187,14 +207,14 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 		// The flag and its value are one pair: a plan that emitted
 		// --dir-cache-time with no value would still match the substring
 		// above, and rclone would take the next argument as the duration.
-		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", "5s") {
-			t.Errorf("%s: --dir-cache-time and 5s are not adjacent args:\n%v", tc.goos, args)
+		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
+			t.Errorf("%s: --dir-cache-time and %s are not adjacent args:\n%v", tc.goos, vfsDirCacheTimeValue, args)
 		}
 		if args := p.Args(); !hasArgPair(args, "--vfs-read-ahead", "128k") {
 			t.Errorf("%s: --vfs-read-ahead and 128k are not adjacent args:\n%v", tc.goos, args)
 		}
-		if args := p.Args(); !hasArgPair(args, "--vfs-read-chunk-size", "128M") {
-			t.Errorf("%s: --vfs-read-chunk-size and 128M are not adjacent args:\n%v", tc.goos, args)
+		if args := p.Args(); !hasArgPair(args, "--vfs-read-chunk-size", vfsReadChunkSizeValue) {
+			t.Errorf("%s: --vfs-read-chunk-size and %s are not adjacent args:\n%v", tc.goos, vfsReadChunkSizeValue, args)
 		}
 		if args := p.Args(); !hasArgPair(args, "--buffer-size", "32M") {
 			t.Errorf("%s: --buffer-size and 32M are not adjacent args:\n%v", tc.goos, args)
@@ -208,30 +228,102 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	}
 }
 
-func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
-	p := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage())
+func TestEnvWithoutDriveS3DropsStorageKeys(t *testing.T) {
+	got := envWithoutDriveS3([]string{
+		"PATH=/usr/bin",
+		"DRIVE_S3_SECRET_ACCESS_KEY=secret",
+		"DRIVE_S3_ACCESS_KEY_ID=ak",
+		"HOME=/home/test",
+	})
+	joined := strings.Join(got, ",")
+	if strings.Contains(joined, "DRIVE_S3_") {
+		t.Errorf("env still carries storage keys: %v", got)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") || !strings.Contains(joined, "HOME=/home/test") {
+		t.Errorf("env dropped unrelated keys: %v", got)
+	}
+}
+
+func TestDevicePlanIsNotAnAgent(t *testing.T) {
+	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+	if p.isAgent() || p.EnvPath != "" {
+		t.Fatalf("device plan isAgent=%v EnvPath=%q, want a product login item", p.isAgent(), p.EnvPath)
+	}
+	agent := BuildAgentMountPlan("linux", "/home/test", "/usr/bin/rclone", "claude", testStorage())
+	if !agent.isAgent() || agent.EnvPath == "" {
+		t.Fatalf("agent plan isAgent=%v EnvPath=%q, want stock rclone", agent.isAgent(), agent.EnvPath)
+	}
+	if agent.RCAddr != "" || agent.RCUser != "" || agent.RCPass != "" {
+		t.Fatalf("agent plan has remote control %q / %q, want none", agent.RCAddr, agent.RCUser)
+	}
+	argv := agent.productArgv()
+	if len(argv) == 0 || argv[0] != "/usr/bin/rclone" {
+		t.Fatalf("agent productArgv = %v, want stock rclone first", argv)
+	}
+}
+
+func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		p := withProductBin(BuildMountPlan(goos, "/home/test", "rclone", testStorage()))
+		if goos == "windows" {
+			p.MountDir = "Z:"
+		}
+		args := p.productArgs()
+		if !hasArg(args, "--foreground") {
+			t.Errorf("%s: productArgs missing --foreground: %v", goos, args)
+		}
+		if args[0] != "mount" {
+			t.Errorf("%s: productArgs[0] = %q, want mount", goos, args[0])
+		}
+		if !hasArgPair(args, "--rclone", p.RcloneBin) {
+			t.Errorf("%s: productArgs missing --rclone %s: %v", goos, p.RcloneBin, args)
+		}
+	}
+}
+
+// withProductBin fills DriveBin with a path shaped like the one the platform's
+// installer writes (the same paths the prefetch units are tested with), so a
+// renderer test asserts the vector a real login item carries.
+func withProductBin(p MountPlan) MountPlan {
+	switch p.GOOS {
+	case "windows":
+		p.DriveBin = `C:\Program Files\Drive\drive.exe`
+	case "darwin":
+		p.DriveBin = "/opt/homebrew/bin/drive"
+	default:
+		p.DriveBin = "/usr/local/bin/drive"
+	}
+	return p
+}
+
+func TestLaunchdPlistRunsTheProduct(t *testing.T) {
+	p := withProductBin(BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage()))
 	plist := LaunchdPlist(p)
 	for _, want := range []string{
 		"<string>" + LaunchdLabel + "</string>",
-		"<string>/opt/homebrew/bin/rclone</string>",
-		"<string>nfsmount</string>",
-		"<string>drive:drive-standin/u/1234</string>",
-		"<string>--vfs-cache-mode</string>",
+		"<string>/opt/homebrew/bin/drive</string>",
+		"<string>mount</string>",
+		"<string>--foreground</string>",
+		"<string>--home</string>",
+		"<string>/Users/test</string>",
 		"<true/>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("launchd plist missing %q:\n%s", want, plist)
 		}
 	}
-	// ProgramArguments is an argv array: the flag and its value are two
-	// adjacent elements, and rclone would read the next element as the
-	// duration if the value were dropped.
 	args := plistProgramArguments(t, plist)
-	if !hasArgPair(args, "--dir-cache-time", "5s") {
-		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time 5s:\n%v", args)
+	if len(args) < 6 || args[5] != "/opt/homebrew/bin/drive" {
+		t.Errorf("launchd exec target = %v, want this CLI after the umount wrapper", args)
 	}
-	if !hasArgPair(args, "--vfs-read-ahead", "128k") {
-		t.Errorf("launchd ProgramArguments missing adjacent --vfs-read-ahead 128k:\n%v", args)
+	if hasArg(args, "nfsmount") {
+		t.Errorf("launchd plist still execs nfsmount:\n%s", plist)
+	}
+	if !hasArgPair(args, "--rclone", "/opt/homebrew/bin/rclone") {
+		t.Errorf("launchd ProgramArguments missing --rclone of the resolved binary:\n%v", args)
+	}
+	if !hasArgPair(args, "--home", "/Users/test") || !hasArg(args, "--foreground") {
+		t.Errorf("launchd ProgramArguments missing the product command:\n%v", args)
 	}
 	if p := LaunchdPlistPath("/Users/test"); p != "/Users/test/Library/LaunchAgents/com.nishfleet.drive.plist" {
 		t.Errorf("LaunchdPlistPath = %q", p)
@@ -259,34 +351,82 @@ func plistProgramArguments(t *testing.T, plist string) []string {
 	return args
 }
 
-func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
-	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+func TestSystemdUnitRunsTheProduct(t *testing.T) {
+	p := withProductBin(BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage()))
 	unit := SystemdUnit(p)
 	for _, want := range []string{
-		"ExecStart=/usr/bin/rclone mount drive:drive-standin/u/1234",
-		"--vfs-cache-mode full",
-		"--dir-cache-time 5s",
-		"--vfs-read-ahead 128k",
-		"--buffer-size 32M",
-		"--transfers 4",
+		"ExecStart=/usr/local/bin/drive mount --foreground --home /home/test --rclone /usr/bin/rclone",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
 		}
 	}
-	// rclone has no `umount` subcommand; stopping is rclone's own SIGTERM
-	// handling, which is what systemd sends by default.
-	if strings.Contains(unit, "ExecStop") {
-		t.Errorf("systemd unit has an ExecStop line rclone cannot run:\n%s", unit)
+	if strings.HasPrefix(strings.TrimPrefix(extractExecStart(unit), "ExecStart="), "/usr/bin/rclone") {
+		t.Errorf("systemd unit still execs rclone:\n%s", unit)
 	}
-	// The flag and value must be adjacent on the ExecStart line (not in a comment).
+	if strings.Contains(unit, "Environment=") || strings.Contains(unit, "EnvironmentFile=") {
+		t.Errorf("systemd unit must not carry secrets in the unit file:\n%s", unit)
+	}
+	if strings.Contains(unit, "ExecStop") {
+		t.Errorf("systemd unit has an ExecStop line:\n%s", unit)
+	}
 	execStart := extractExecStart(unit)
-	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", "5s") {
-		t.Errorf("ExecStart line missing adjacent --dir-cache-time 5s:\n%s", execStart)
+	startArgs := strings.Fields(strings.TrimPrefix(execStart, "ExecStart="))
+	if !hasArgPair(startArgs, "--home", "/home/test") {
+		t.Errorf("ExecStart line missing adjacent --home /home/test:\n%s", execStart)
+	}
+	if !hasArgPair(startArgs, "--rclone", "/usr/bin/rclone") {
+		t.Errorf("ExecStart line missing adjacent --rclone of the resolved binary:\n%s", execStart)
 	}
 	if p := SystemdUnitPath("/home/test"); p != "/home/test/.config/systemd/user/drive-mount.service" {
 		t.Errorf("SystemdUnitPath = %q", p)
+	}
+}
+
+func TestSystemdUnitClearsADeadFuseEntryBeforeStart(t *testing.T) {
+	p := BuildMountPlan("linux", "/home/test", "/usr/bin/rclone", testStorage())
+	unit := SystemdUnit(p)
+	pre := extractExecStartPre(unit)
+	if pre == "" {
+		t.Fatalf("systemd unit missing ExecStartPre:\n%s", unit)
+	}
+	for _, want := range []string{"findmnt", "fuse.rclone", "-uz", "/home/test/Drive", "fusermount3", "fusermount"} {
+		if !strings.Contains(pre, want) {
+			t.Errorf("ExecStartPre missing %q:\n%s", want, pre)
+		}
+	}
+	if !strings.Contains(pre, "-t fuse.rclone,fuse") {
+		t.Errorf("ExecStartPre unmounts without a FUSE type check:\n%s", pre)
+	}
+}
+
+func extractExecStartPre(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStartPre=") {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestLaunchdPlistClearsADeadMountBeforeStart(t *testing.T) {
+	p := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", testStorage())
+	args := plistProgramArguments(t, LaunchdPlist(p))
+	if len(args) < 4 || args[0] != "/bin/sh" || args[1] != "-c" {
+		t.Fatalf("launchd ProgramArguments = %v, want /bin/sh -c <umount> … rclone", args)
+	}
+	if !strings.Contains(args[2], "umount") || !strings.Contains(args[2], "-f") {
+		t.Errorf("launchd pre-start script = %q, want a forced umount of a dead NFS entry", args[2])
+	}
+	if strings.Contains(args[2], `umount "$1"`) {
+		t.Errorf("launchd pre-start script = %q, want umount -f only: a plain umount hangs on a hard NFS mount", args[2])
+	}
+	if !strings.Contains(args[2], "mount -t nfs") {
+		t.Errorf("launchd pre-start script = %q, want an NFS mount-table check before umount", args[2])
+	}
+	if args[4] != "/Users/test/Drive" {
+		t.Errorf("launchd umount target = %q, want the mount dir", args[4])
 	}
 }
 
@@ -340,16 +480,121 @@ func hasArgPair(args []string, flag, value string) bool {
 	return false
 }
 
+// argValue returns the value argv carries for flag, or the empty string when
+// the flag is absent. Tests use it to read a mount flag the product set and
+// hold its number to a bound.
+func argValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// A scoped storage credential is an STS session: the access key, the secret
+// and the session token the storage server minted together. rclone signs with
+// all three or the server answers InvalidTokenId (measured against the pinned
+// MinIO, issue #241), so a config that renders only two of them cannot mount a
+// key the api Worker actually mints. A deployment with a permanent credential
+// has no token, and then the line is simply absent.
+func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
+	c := testStorage()
+	if strings.Contains(RcloneConfig(c), "session_token") {
+		t.Errorf("a permanent credential must not gain a session_token line:\n%s", RcloneConfig(c))
+	}
+	c.SessionToken = "FQoGZXIvYXdzEExampleSessionToken"
+	got := RcloneConfig(c)
+	if !strings.Contains(got, "session_token = "+c.SessionToken) {
+		t.Errorf("rclone config missing the session token rclone signs with:\n%s", got)
+	}
+	if !strings.Contains(got, "no_check_bucket = true") {
+		t.Errorf("a scoped key cannot HeadBucket, so rclone must skip the check:\n%s", got)
+	}
+	// It has to be the s3 backend's own option name, or rclone ignores the
+	// line and signs without it.
+	if !strings.Contains(got, "type = s3") {
+		t.Errorf("the session token needs the s3 backend to mean anything:\n%s", got)
+	}
+	// A dry run and a log must not print it: it is a credential like the other
+	// two, and the access key is already redacted there.
+	redacted := RcloneConfigRedacted(c)
+	if strings.Contains(redacted, c.SessionToken) {
+		t.Errorf("redacted config still carries the session token:\n%s", redacted)
+	}
+	if !strings.Contains(redacted, "session_token = <redacted>") {
+		t.Errorf("redacted config missing the redacted session token line:\n%s", redacted)
+	}
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := WriteFileAtomic(path, []byte(got), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseRcloneConfig(path)
+	if err != nil {
+		t.Fatalf("ParseRcloneConfig: %v", err)
+	}
+	if back.SessionToken != c.SessionToken {
+		t.Errorf("ParseRcloneConfig SessionToken = %q, want the token RcloneConfig wrote", back.SessionToken)
+	}
+}
+
+// The token comes from the same safe sources as the secret and the access key:
+// the environment for a scripted run, never a flag, because a session token in
+// argv is readable in /proc/<pid>/cmdline for the life of the process (#75).
+func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "DRIVETESTACCESSKEY")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "drivetestsecret")
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "envsessiontoken")
+
+	c, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{})
+	if err != nil {
+		t.Fatalf("LoadStorageConfig: %v", err)
+	}
+	if c.SessionToken != "envsessiontoken" {
+		t.Errorf("SessionToken = %q, want the environment's value", c.SessionToken)
+	}
+	// A deployment with permanent credentials sets nothing, and that is not a
+	// missing value: it is the shape of every non-scoped key.
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "")
+	c, err = LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{})
+	if err != nil {
+		t.Fatalf("LoadStorageConfig without a session token: %v", err)
+	}
+	if c.SessionToken != "" {
+		t.Errorf("SessionToken = %q, want empty", c.SessionToken)
+	}
+}
+
+// The token is an INI value like every other one, so the same newline check
+// that refuses an injected rclone option has to hold for it.
+func TestLoadStorageConfigRejectsASessionTokenThatWouldInjectAnOption(t *testing.T) {
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "DRIVETESTACCESSKEY")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "drivetestsecret")
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "tok\nno_check_certificate = true")
+	if _, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{}); err == nil {
+		t.Fatal("got nil error for a session token that would inject an rclone option")
+	} else if !strings.Contains(err.Error(), "session token") {
+		t.Errorf("got %q, want it to name the session token", err)
+	}
+}
+
 func TestRcloneConfigRedactedHidesBothKeys(t *testing.T) {
 	c := testStorage()
 	got := RcloneConfigRedacted(c)
 	if strings.Contains(got, c.AccessKey) || strings.Contains(got, c.SecretKey) {
 		t.Errorf("redacted config still carries a key:\n%s", got)
 	}
-	for _, want := range []string{"access_key_id = <redacted>", "secret_access_key = <redacted>", c.Endpoint} {
+	for _, want := range []string{"access_key_id = <redacted>", c.Endpoint} {
 		if !strings.Contains(got, want) {
 			t.Errorf("redacted config missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "secret_access_key") {
+		t.Errorf("redacted config still names the storage secret:\n%s", got)
 	}
 }
 
@@ -371,7 +616,7 @@ func TestLoadStorageConfigRejectsValuesThatWouldInjectAnOption(t *testing.T) {
 			// the flag, which wins over env.
 			t.Setenv("DRIVE_S3_ACCESS_KEY_ID", c.AccessKey)
 			t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", c.SecretKey)
-			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.DownloadURL, c.SecretKey); err == nil {
+			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.DownloadURL, c.SecretKey, StorageConfig{}); err == nil {
 				t.Fatal("want an error for a value that breaks out of its config line")
 			}
 		})
@@ -383,7 +628,7 @@ func TestLoadStorageConfigAcceptsAPrefixInsideTheDevice(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
 	for _, prefix := range []string{"", "/", "u/1", "/u/1/branches/", "u/1/...hidden"} {
-		if _, err := LoadStorageConfig("http://x", "b", prefix, "", "", "s"); err != nil {
+		if _, err := LoadStorageConfig("http://x", "b", prefix, "", "", "s", StorageConfig{}); err != nil {
 			t.Errorf("prefix %q rejected: %v", prefix, err)
 		}
 	}
@@ -449,6 +694,13 @@ func TestMountDryRunNeverPrintsAKey(t *testing.T) {
 	}
 	if strings.Contains(string(out), access) {
 		t.Errorf("dry-run output carries the access key:\n%s", out)
+	}
+	printed := string(out)
+	if !strings.Contains(printed, "mount --foreground") {
+		t.Errorf("dry-run login item does not run the product:\n%s", printed)
+	}
+	if strings.Contains(printed, "ExecStart="+rclone) {
+		t.Errorf("dry-run login item still execs the rclone stand-in:\n%s", printed)
 	}
 }
 
@@ -556,10 +808,26 @@ func TestReadSecretKeyFromTheEnvironment(t *testing.T) {
 	}
 }
 
-func TestReadSecretKeyFromTheConfigFile(t *testing.T) {
+func TestReadSecretKeyFromTheEnvFile(t *testing.T) {
+	home := t.TempDir()
+	cfg := testStorage()
+	if err := WriteRcloneEnv(home, cfg, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	got, err := ReadSecretKey(RcloneConfigPath(home), false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != cfg.SecretKey {
+		t.Errorf("secret = %q, want %q from rclone.env", got, cfg.SecretKey)
+	}
+}
+
+func TestReadSecretKeyFromALegacyRcloneConf(t *testing.T) {
 	home := t.TempDir()
 	path := RcloneConfigPath(home)
-	if err := WriteFileAtomic(path, []byte(RcloneConfig(testStorage())), 0o600); err != nil {
+	if err := WriteFileAtomic(path, []byte("[drive]\nsecret_access_key = leftover-secret\naccess_key_id = AK\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
@@ -567,8 +835,8 @@ func TestReadSecretKeyFromTheConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	if want := testStorage().SecretKey; got != want {
-		t.Errorf("secret = %q, want %q from the config file", got, want)
+	if got != "leftover-secret" {
+		t.Errorf("secret = %q, want the leftover rclone.conf line", got)
 	}
 }
 
@@ -619,8 +887,8 @@ func TestParseRcloneConfigIgnoresOtherRemotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a malformed line in another remote must not refuse the file: %v", err)
 	}
-	if got.AccessKey != testStorage().AccessKey || got.SecretKey != testStorage().SecretKey {
-		t.Errorf("parsed %+v, want the drive remote's key", got)
+	if got.AccessKey != testStorage().AccessKey {
+		t.Errorf("parsed %+v, want the drive remote's access key", got)
 	}
 }
 
@@ -656,9 +924,11 @@ func TestParseRcloneConfigReadsBackWhatRcloneConfigWrites(t *testing.T) {
 		t.Fatalf("ParseRcloneConfig: %v", err)
 	}
 	want := testStorage()
-	if got.AccessKey != want.AccessKey || got.SecretKey != want.SecretKey ||
-		got.Endpoint != want.Endpoint || got.Region != want.Region {
+	if got.AccessKey != want.AccessKey || got.Endpoint != want.Endpoint || got.Region != want.Region {
 		t.Errorf("round trip = %+v, want the fields RcloneConfig wrote", got)
+	}
+	if got.SecretKey != "" {
+		t.Errorf("rclone.conf still carries the storage secret %q", got.SecretKey)
 	}
 }
 
@@ -851,5 +1121,155 @@ func TestReadSecretKeyRejectsAnOversizeStdin(t *testing.T) {
 	_, err := ReadSecretKey("", true, strings.NewReader(strings.Repeat("a", maxSecretBytes+64)))
 	if err == nil {
 		t.Fatal("an unbounded pipe must not be read as a secret")
+	}
+}
+
+// TestDefaultHomeIsTheOSHomeDirectoryNotTheEnvironment is drive#544: the
+// default home used to be os.Getenv("HOME"), and Windows exports no HOME, so
+// every default path there resolved against an empty string.
+func TestDefaultHomeIsTheOSHomeDirectoryNotTheEnvironment(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	// The answer a Windows session gives: USERPROFILE.
+	const profile = `C:\Users\Jane`
+	userHomeDir = func() (string, error) { return profile, nil }
+	// A stale HOME is on the machine anyway. It is not the source any more.
+	t.Setenv("HOME", `/nonexistent/old-home`)
+	if got := DefaultHome(); got != profile {
+		t.Errorf("DefaultHome() = %q, want the OS's own home %q", got, profile)
+	}
+}
+
+func TestWindowsBuildWithNoHOMEResolvesTheConfigUnderTheProfile(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	const profile = `C:\Users\Jane`
+	userHomeDir = func() (string, error) { return profile, nil }
+	// What a Windows session has: no HOME at all (drive#544).
+	t.Setenv("HOME", "")
+
+	home := DefaultHome()
+	if home != profile {
+		t.Fatalf("DefaultHome() = %q, want %q with HOME unset", home, profile)
+	}
+	// The paths the config, the cache and the login task hang off must sit
+	// under the profile, not under an empty string. An empty home put them at
+	// `.config\drive` — a relative path that resolves against whatever folder
+	// the command ran from — and the login task runs from System32, so the
+	// mount it started read no rclone config and `drive status` answered from
+	// an empty cache with the mount down.
+	for name, got := range map[string]string{
+		"config dir":    DefaultConfigDir(home),
+		"cache dir":     DefaultCacheDir(home),
+		"credentials":   CredentialsPath(home),
+		"rclone config": RcloneConfigPath(home),
+		"mount log":     filepath.Join(DefaultConfigDir(home), "mount.log"),
+	} {
+		if !strings.HasPrefix(got, profile) {
+			t.Errorf("%s = %q, want it under the profile %q", name, got, profile)
+		}
+		if strings.HasPrefix(got, `.`) || strings.HasPrefix(got, `\`) {
+			t.Errorf("%s = %q is relative: a task that starts from System32 cannot open it", name, got)
+		}
+	}
+}
+
+func TestWriteFileAtomicSyncsTheBytesAndTheDirectory(t *testing.T) {
+	// The rename is a directory operation, not a promise: the bytes have to
+	// reach the disk before the rename, and the rename itself has to reach the
+	// disk after it, or a machine that loses power mid-write leaves a
+	// zero-length credentials.json (drive#544). Both calls are observed here
+	// because the writes are the only part a test can see.
+	var syncedFiles []string
+	var syncedDirs []string
+	origFile, origDir := atomicwrite.SyncFile, atomicwrite.SyncDir
+	t.Cleanup(func() { atomicwrite.SyncFile, atomicwrite.SyncDir = origFile, origDir })
+	atomicwrite.SyncFile = func(f *os.File) error {
+		syncedFiles = append(syncedFiles, f.Name())
+		return f.Sync()
+	}
+	atomicwrite.SyncDir = func(dir string) error {
+		syncedDirs = append(syncedDirs, dir)
+		return nil
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	if err := WriteFileAtomic(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	if len(syncedFiles) != 1 {
+		t.Fatalf("synced files = %v, want the temp file synced once", syncedFiles)
+	}
+	// The temp file is a sibling of its destination, so it is the same
+	// directory the rename moves it inside.
+	if got := filepath.Dir(syncedFiles[0]); got != dir {
+		t.Errorf("synced %s, want a sibling of %s", syncedFiles[0], path)
+	}
+	if len(syncedDirs) != 1 {
+		t.Fatalf("synced directories = %v, want one", syncedDirs)
+	}
+	if syncedDirs[0] != dir {
+		t.Errorf("synced directory %q, want the parent of %s", syncedDirs[0], path)
+	}
+}
+
+func TestWriteFileAtomicNamesTheFileWhenTheSyncRefuses(t *testing.T) {
+	origFile := atomicwrite.SyncFile
+	t.Cleanup(func() { atomicwrite.SyncFile = origFile })
+	atomicwrite.SyncFile = func(*os.File) error { return errors.New("no space left on device") }
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "offline.json")
+	err := WriteFileAtomic(path, []byte("{}\n"), 0o600)
+	if err == nil {
+		t.Fatal("a refused fsync must fail the write: the bytes are not on the disk")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error %v must name the file that was not saved", err)
+	}
+	// Nothing is renamed into place, and no temp file is left behind.
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("stat %s = %v, want no file", path, statErr)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("left behind %v", entries)
+	}
+}
+
+// TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses: the rename
+// is done by the time the directory fsync runs, so a machine that will not
+// fsync the directory has already put the bytes where the next read finds
+// them (drive#544). The command still says so, because nobody proved the
+// change reached the disk.
+func TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses(t *testing.T) {
+	orig := atomicwrite.SyncDir
+	t.Cleanup(func() { atomicwrite.SyncDir = orig })
+	atomicwrite.SyncDir = func(string) error { return errors.New("i/o error") }
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	err := WriteFileAtomic(path, []byte("{}\n"), 0o600)
+	if err == nil {
+		t.Fatal("an unconfirmed write must fail the command")
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "not confirmed") {
+		t.Errorf("error %v must name the file and that its durability is unproven", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read back: %v", readErr)
+	}
+	if string(got) != "{}\n" {
+		t.Errorf("contents = %q, want the new ones: the rename already happened", got)
+	}
+}
+func TestDefaultHomeIsEmptyWhenTheOSHasNoAnswer(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	userHomeDir = func() (string, error) { return "", errors.New("$HOME is not defined") }
+	if got := DefaultHome(); got != "" {
+		t.Errorf("DefaultHome = %q, want empty (the same empty the environment read gave)", got)
 	}
 }
