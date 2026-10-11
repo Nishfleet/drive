@@ -27,7 +27,7 @@ import {
   LEGAL_PLACEHOLDERS,
   PLACEHOLDER_MARK,
   REPORT_PATH,
-  SUPPORT_MAILBOX,
+  SUPPORT_EMAIL,
   SUPPORT_PATH,
 } from "../core/legal.js";
 import { PREPAID, PRICE } from "../core/pricing.js";
@@ -209,13 +209,13 @@ test("the legal pages carry the support mailbox and no other address", () => {
     "acceptable-use.html",
     "support.html",
   ]) {
-    assert.ok(readPublic(page).includes(SUPPORT_MAILBOX), `${page} must carry the support mailbox`);
+    assert.ok(readPublic(page).includes(SUPPORT_EMAIL), `${page} must carry the support mailbox`);
   }
   for (const page of LEGAL_PAGES) {
     for (const match of readPublic(page.file).matchAll(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g)) {
       assert.equal(
         match[0],
-        SUPPORT_MAILBOX,
+        SUPPORT_EMAIL,
         `${page.file} carries ${match[0]}: only the support mailbox may appear`,
       );
     }
@@ -269,14 +269,16 @@ test("the security page and the changelog name the real storage provider", () =>
   assert.match(changelog, /moves to Backblaze B2\. Reversed the\s+next day/);
 });
 
-test("the report and support paths are real pages, and security.txt points at support", () => {
+test("the report and support paths are real pages, and security.txt carries the support mailbox", () => {
   const [reportPage, anchor] = REPORT_PATH.split("#");
   const acceptable = LEGAL_PAGES.find((page) => page.path === reportPage);
   assert.ok(acceptable, `${reportPage} is a legal page`);
   assert.match(readPublic(acceptable.file), new RegExp(`id="${anchor}"`));
   assert.ok(LEGAL_PAGES.some((page) => page.path === SUPPORT_PATH));
   const securityTxt = readPublic(".well-known/security.txt");
-  assert.match(securityTxt, new RegExp(`^Contact: ${absoluteUrl(SUPPORT_PATH)}$`, "m"));
+  // drive#883: security.txt is a static file and cannot import SUPPORT_EMAIL,
+  // so this match is what pins its Contact: spelling to the one mailbox.
+  assert.match(securityTxt, new RegExp(`^Contact: mailto:${SUPPORT_EMAIL}$`, "m"));
   const expires = securityTxt.match(/^Expires: (\S+)$/m);
   assert.ok(expires, "security.txt must carry Expires (RFC 9116)");
   assert.ok(Date.parse(expires[1]) > Date.now(), "security.txt has expired: move Expires on");

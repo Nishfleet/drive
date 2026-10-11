@@ -1,10 +1,21 @@
-// One inbox's share of the sign-in mail (drive#550).
+// The sign-in send counters the edge bindings cannot be (drive#550, drive#878).
 //
 // The edge limits (drive issue #147) bound how much mail one caller IP can
 // ask for; a script spread across many IPs walks right past them and lands
-// every link in one customer's inbox. This guard is keyed on the address
-// instead: 5 links an hour and 20 a day, so no caller can push more than
-// that into one mailbox however many IPs the asks come from.
+// every link in one customer's inbox. The first guard here is keyed on the
+// address instead: 5 links an hour and 20 a day, so no caller can push more
+// than that into one mailbox however many IPs the asks come from.
+//
+// The second guard is keyed on nothing at all: the account-wide bound
+// (drive#878). Cloudflare counts a rate-limit key separately in each Cloudflare
+// location, so the constant-key binding bounds one location and a walk spread
+// over many locations multiplies it. This guard's row lives on the customer
+// database — one database, so one row for every location — and the account's
+// total of sign-in starts is bounded by it however the requests arrive. One
+// honest limit: a window's edges are whichever location's clock ran the send,
+// so the account figure is 5000 per (60 seconds minus the locations' clock
+// skew) — the same clock trust the address guard's windows run on, at
+// account scale.
 //
 // Cloudflare's rate-limit binding only offers 10- and 60-second windows, so
 // an hour and a day cannot be expressed there. The count lives on the
@@ -29,6 +40,28 @@ export const SIGNIN_SEND_HOUR_SECONDS = 60 * 60;
 
 /** One day, in seconds — the window the daily ceiling lives in. */
 export const SIGNIN_SEND_DAY_SECONDS = DAY_MS / 1000;
+
+/**
+ * Sign-in starts the whole account may make inside one account-wide window
+ * (drive#878). The figure is SIGNIN_GLOBAL_RATE_LIMITER's own 5000/min on
+ * purpose (cloudflare.config.ts): inside any one location the binding refuses
+ * first, so the counter only records what a location's own ceilings let
+ * through, and across every location the account's total is now 5000 a minute
+ * rather than 5000 times the number of locations. That is 25x the measured
+ * worst realistic case (200/min, the campus NAT the tuning pass measured) and
+ * 10x the per-IP ceiling, so real shared offices never meet it.
+ */
+export const SIGNIN_ACCOUNT_SEND_MAX = 5000;
+
+/** One minute, in seconds — the window the account-wide ceiling lives in. */
+export const SIGNIN_ACCOUNT_SEND_WINDOW_SECONDS = 60;
+
+/**
+ * The one row's key. A constant, which is the whole mechanism: the address
+ * guard has a row per inbox, and this guard has one row that every Cloudflare
+ * location shares, because the customer database is one database.
+ */
+const ACCOUNT_COUNTER_KEY = "account";
 
 /**
  * The one guarded upsert. ?1 the address, ?2 the send's second, ?3 the
@@ -75,6 +108,31 @@ where ("signin_address_sends"."hour_window_start" <= ?4
  */
 
 /**
+ * The account-wide guard's one guarded upsert (drive#878). ?1 the constant
+ * key, ?2 the send's second, ?3 the window cutoff (the send's second minus a
+ * full window), ?4 the account max.
+ *
+ * The WHERE is the ceiling, the same move SPEND_SQL makes: an update happens
+ * only when the window has room — expired (its start a full window before
+ * this send) or under its max — and when the guard holds the write back, D1
+ * answers a change count of 0 and nothing was spent. The cutoff comparison is
+ * `<=` because the window starts at its own start: a send one window after it
+ * belongs to the next window, and a send one second before it does not.
+ */
+const ACCOUNT_SPEND_SQL = `insert into "signin_account_sends"
+  ("counter", "window_start", "count")
+values (?1, ?2, 1)
+on conflict("counter") do update set
+  "window_start" = case
+    when "signin_account_sends"."window_start" <= ?3 then ?2
+    else "signin_account_sends"."window_start" end,
+  "count" = case
+    when "signin_account_sends"."window_start" <= ?3 then 1
+    else "signin_account_sends"."count" + 1 end
+where "signin_account_sends"."window_start" <= ?3
+   or "signin_account_sends"."count" < ?4`;
+
+/**
  * Spends one of the address's send slots and answers whether the send may go
  * out. The caller passes the lowercased address, the key the account row is
  * looked up by, so Alice@, alice@ and ALICE@ share one ceiling.
@@ -109,6 +167,47 @@ export async function signinSendOutcome(db, address, now = Math.floor(Date.now()
     // The reason travels to the log only: a public answer naming the
     // counter's failure would hand a stranger a map of what is broken.
     console.error("signin-send-limit: the address send counter write failed", error);
+    return "broken";
+  }
+  return meta.changes >= 1 ? "allowed" : "refused";
+}
+
+/**
+ * Spends one of the account's send slots and answers whether the send may go
+ * out (drive#878). No address argument, on purpose: the row is the same for
+ * every caller, so a walk that mints a fresh address per request and a
+ * different IP per request still draws from the one counter — the bound the
+ * per-location binding cannot be, because Cloudflare counts its keys in each
+ * location separately.
+ *
+ * The same spending rule as the address guard: a slot counts an ask that
+ * reached the send step, not a link that landed, so a broken mailer cannot
+ * turn the ceiling into an unbounded retry budget. The route runs this guard
+ * after the address one and before the send, so an ask the address guard
+ * refused never moves the account's counter, and an ask the account guard
+ * refuses has already spent its address's slot — it did reach for a send.
+ *
+ * @param {D1Database} db the customer database
+ * @param {number} [now] seconds since the epoch; a test's clock, or the
+ *   current time
+ * @returns {Promise<SigninSendOutcome>}
+ */
+export async function signinAccountSendOutcome(db, now = Math.floor(Date.now() / 1000)) {
+  let meta;
+  try {
+    ({ meta } = await db
+      .prepare(ACCOUNT_SPEND_SQL)
+      .bind(
+        ACCOUNT_COUNTER_KEY,
+        now,
+        now - SIGNIN_ACCOUNT_SEND_WINDOW_SECONDS,
+        SIGNIN_ACCOUNT_SEND_MAX,
+      )
+      .run());
+  } catch (error) {
+    // The reason travels to the log only: a public answer naming the
+    // counter's failure would hand a stranger a map of what is broken.
+    console.error("signin-send-limit: the account send counter write failed", error);
     return "broken";
   }
   return meta.changes >= 1 ? "allowed" : "refused";

@@ -136,7 +136,6 @@ import {
   handleRequestInfoRequest,
   handleRequestRequest,
   handleRequestUploadRequest,
-  handleShareFileRequest,
   handleShareRequest,
   purgeStaleLinks,
   REQUEST_ENDPOINT,
@@ -144,6 +143,7 @@ import {
   SHARE_LINK_PREFIX,
   sendArrivalDigests,
 } from "./share.js";
+import { handleShareLinkVisit } from "./share-page.js";
 import {
   handleSigninLinkVerify,
   handleSigninRequest,
@@ -1171,9 +1171,13 @@ export function createApp() {
 
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
+  // A browser navigation gets the landing page (src/share-page.js, drive#883:
+  // the page that carries the report-this-link mail); the bytes stay on the
+  // embed/open flags and every non-document client, through the same
+  // handleShareFileRequest as before.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
     withFileStore(c, (store) =>
-      handleShareFileRequest(c.req.raw, store, linksFor(c.env), {
+      handleShareLinkVisit(c.req.raw, store, linksFor(c.env), {
         ipLimiter: c.env.SHARE_DOWNLOAD_RATE_LIMITER,
         recordDownload: downloadRecorder(c.env.DRIVE_DB),
       }),

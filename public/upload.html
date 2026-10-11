@@ -194,6 +194,22 @@ button:focus-visible {
     <p class="status" id="status" role="status" aria-live="polite"></p>
   </main>
 
+  <!-- drive#883: the shared footer, so the page a stranger arrives on carries
+       the legal links like every other page (test/legal.test.mjs counts the
+       footers; this file was the one public page without one). -->
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
+  </footer>
+
   <script>
 // Upload request page (drive issue #19). The words live in src/share.js; this
 // page is a static asset and cannot import that module, so test/share.test.mjs

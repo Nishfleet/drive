@@ -38,11 +38,14 @@
 // anything but the request itself. So the two stock rate-limit bindings the
 // waitlist introduced (WAITLIST_RATE_LIMITER, cloudflare.config.ts) are the
 // guard here too, beside the waitlist's: a per-IP one (SIGNIN_RATE_LIMITER) so
-// one client cannot walk addresses, and a global one
-// (SIGNIN_GLOBAL_RATE_LIMITER) so a distributed walk cannot either. Both are
-// read off env and run before the body is parsed, so a refused request costs
-// no parse and no email; both are declared next to the waitlist's in
-// cloudflare.config.ts, and both are probed by the health endpoint
+// one client cannot walk addresses, and a constant-key one
+// (SIGNIN_GLOBAL_RATE_LIMITER) so a flood inside one Cloudflare location
+// cannot either. A rate-limit key counts separately in each location, so the
+// walk spread over many locations is the D1 account counter's job
+// (signinAccountSendOutcome, drive#878), run just before the send. Both
+// bindings are read off env and run before the body is parsed, so a refused
+// request costs no parse and no email; both are declared next to the
+// waitlist's in cloudflare.config.ts, and both are probed by the health endpoint
 // (src/health.js), which answers 503 naming one a deploy lost. The shared
 // module (core/rate-limit.js) owns the key, the fail-closed answer and the 429,
 // so the waitlist, this route and the api Worker's device routes cannot state
@@ -68,7 +71,7 @@ import { failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { NOT_OPEN } from "./release-state.js";
-import { signinSendOutcome } from "./signin-send-limit.js";
+import { signinAccountSendOutcome, signinSendOutcome } from "./signin-send-limit.js";
 import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 
 /** @typedef {import("../core/auth.js").Auth} Auth */
@@ -512,6 +515,31 @@ export async function handleSigninRequest(request, env) {
     return json(signinEmailFailedBody(), 503);
   }
   if (sendOutcome === "refused") {
+    return json(
+      { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
+      202,
+    );
+  }
+  // drive#878: the account-wide send bound, the counter the two edge bindings
+  // cannot be. Cloudflare counts a rate-limit key separately in each location,
+  // so SIGNIN_GLOBAL_RATE_LIMITER's constant key bounds one location and a
+  // walk spread over many locations multiplies it; this counter's row lives on
+  // the customer database — one database, so one row for every location — and
+  // the account's total is bounded by it whatever the walk does. It runs after
+  // the address guard and before the send, the same narrow-first order the
+  // edge limits run in (the per-IP bucket before the service-wide one): an ask
+  // the address guard refused never moves the account's counter, and an ask
+  // the account guard refuses has spent its address's slot, because it did
+  // reach for a send. The answers are the address guard's two: `refused` gets
+  // the sent link's own 202 (a different answer would tell a stranger the
+  // account is being walked, which is the enumeration this screen avoids),
+  // and `broken` is a deployment problem that keeps drive#431's rule — nobody
+  // is told a link is coming when none went out.
+  const accountOutcome = await signinAccountSendOutcome(env.DRIVE_DB);
+  if (accountOutcome === "broken") {
+    return json(signinEmailFailedBody(), 503);
+  }
+  if (accountOutcome === "refused") {
     return json(
       { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
       202,

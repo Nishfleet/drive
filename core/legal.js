@@ -22,6 +22,10 @@
 // of the four pages the drafts put an address on, and on the support page
 // those pages send a reader to. Every other page links to the page that
 // holds a remaining placeholder (the support page for the postal address).
+// The support mailbox is SUPPORT_EMAIL below, typed once here. The support
+// page and the share landing page's report mail import it. security.txt is a
+// static file and cannot import, so test/legal.test.mjs pins that its Contact:
+// line is the same spelling.
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/
@@ -45,11 +49,14 @@ export const LEGAL_PAGES = Object.freeze([
 /** Where a person reaches a human, and where abuse reports go. */
 export const SUPPORT_PATH = "/support";
 
-/** The shared support mailbox on the site's own domain (drive#882). */
-export const SUPPORT_MAILBOX = "support@storagebun.com";
-
 /** Where a share link is reported (the report section on the acceptable-use page). */
 export const REPORT_PATH = "/acceptable-use#report";
+
+// drive#523 part 2 (drive#883): the one support mailbox, Nish's decision — a
+// mailbox on the brand's own domain. Typed once here, so no page grows a
+// second spelling and no worker invents an address.
+/** The one support mailbox a person can write to. */
+export const SUPPORT_EMAIL = "support@storagebun.com";
 
 /**
  * One fact the owner fills in, and the one page that carries it.

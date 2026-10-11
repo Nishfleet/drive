@@ -43,6 +43,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker from "../src/index.js";
+import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
 import { createTestAuth, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -402,6 +403,22 @@ test("the constant-key ceiling stays above the per-IP addresses in one location"
   assert.ok(
     GLOBAL.limit >= PER_IP.limit * MAXED_ADDRESSES,
     `the constant-key ceiling (${GLOBAL.limit}/min) must stay above ${MAXED_ADDRESSES} maxed per-IP addresses (${PER_IP.limit}/min each) in one location`,
+  );
+});
+
+test("the account-wide counter's ceiling is the location binding's own figure", () => {
+  // drive#878: the D1 counter (src/signin-send-limit.js) bounds the account's
+  // total across every location — the bound this file's stand-in cannot
+  // measure, because its counter is one location's. Its ceiling is this
+  // binding's own figure on purpose: inside any one location the binding
+  // refuses first and the counter only records what it let through, so a
+  // lower figure would bind before the binding inside a location, and a
+  // higher one would leave the account bound wider than one location
+  // already is.
+  assert.equal(
+    GLOBAL.limit,
+    SIGNIN_ACCOUNT_SEND_MAX,
+    `the account-wide ceiling must stay equal to the location binding's figure (${GLOBAL.limit}/min), so the binding refuses first inside a location`,
   );
 });
 

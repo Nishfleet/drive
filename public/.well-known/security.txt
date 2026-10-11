@@ -1,6 +1,7 @@
-# drive#523. RFC 9116. The contact is the support page, which carries the one
-# contact address (src/legal.js), so the address is typed once.
-Contact: https://storagebun.com/support
+# drive#523, drive#883. RFC 9116. The contact is the one support mailbox
+# (SUPPORT_EMAIL in core/legal.js), which the support page also carries, so
+# the address is typed once.
+Contact: mailto:support@storagebun.com
 Expires: 2027-10-01T00:00:00.000Z
 Preferred-Languages: en
 Canonical: https://storagebun.com/.well-known/security.txt
