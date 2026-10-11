@@ -5,4 +5,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://drive-pricing.nishant345.workers.dev/sitemap.xml
+Sitemap: https://storagebun.com/sitemap.xml

@@ -77,10 +77,12 @@ const MTIME_WINDOW_MS = Math.max(60_000, (PROPAGATION_SECONDS + 15) * 1000);
 
 // The step-3 mount flag set. These are the spec's flags (docs/build-spec.md,
 // "The pieces" item 2): the VFS cache flags are the product's, and
-// --dir-cache-time is what lets machine B see machine A's save at all. The
-// first test asserts the spec names every one of them, so the doc and the
-// mount cannot drift apart. `export` is deliberately absent: this list is the
-// proof's copy of the flags, and the product's copy is cmd/drive/config.go.
+// --dir-cache-time 24h keeps a kept-offline folder open after the network
+// drops (issue #541). The other machine sees a save through vfs/refresh,
+// which the proof calls over rclone rc. The first test asserts the spec
+// names every flag, so the doc and the mount cannot drift apart. `export`
+// is deliberately absent: this list is the proof's copy of the flags, and
+// the product's copy is cmd/drive/config.go.
 const MOUNT_FLAGS = [
   "--vfs-cache-mode",
   "full",
@@ -89,7 +91,7 @@ const MOUNT_FLAGS = [
   "--vfs-cache-max-size",
   "20G",
   "--dir-cache-time",
-  "5s",
+  "24h",
   "--vfs-read-ahead",
   "128k",
 ];
@@ -319,7 +321,7 @@ async function startStandin(dir) {
 }
 
 /**
- * @typedef {{label: string, mountDir: string, child: import("node:child_process").ChildProcess}} Machine
+ * @typedef {{label: string, mountDir: string, rcAddr: string, child: import("node:child_process").ChildProcess}} Machine
  * @param {string} label
  * @param {string} workDir
  * @param {StorageCfg} cfg
@@ -383,6 +385,7 @@ async function startMachine(label, workDir, cfg) {
   const logPath = path.join(workDir, `rclone-${label}.log`);
   await run("mkdir", ["-p", mountDir, cacheDir]);
 
+  const rcAddr = `127.0.0.1:${await freePort()}`;
   const child = spawn(
     rcloneBin,
     [
@@ -400,6 +403,10 @@ async function startMachine(label, workDir, cfg) {
       "--log-level",
       "INFO",
       "--allow-non-empty",
+      "--rc",
+      "--rc-addr",
+      rcAddr,
+      "--rc-no-auth",
       ...MOUNT_FLAGS,
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
@@ -431,7 +438,7 @@ async function startMachine(label, workDir, cfg) {
     // (the same check the CLI's MountedDir() uses: findmnt on Linux, the BSD
     // mount listing on macOS).
     if (isMountPoint(mountDir)) {
-      return { label, mountDir, child };
+      return { label, mountDir, rcAddr, child };
     }
     if (Date.now() > deadline) {
       child.kill("SIGTERM");
@@ -465,12 +472,22 @@ async function stopMachine(m) {
  * @param {string} mountDir
  * @param {string} name
  * @param {number} seconds
+ * @param {string} rcAddr
  * @returns {Promise<{seconds: number} | null>}
  */
-async function waitForFile(mountDir, name, seconds) {
+async function waitForFile(mountDir, name, seconds, rcAddr) {
   const deadline = Date.now() + seconds * 1000;
   const started = Date.now();
   for (;;) {
+    // This proof drives vfs/refresh itself so a 24h directory cache still
+    // sees the other machine's save. The seconds it reports are therefore
+    // a floor (write-back plus one refresh), not the fill loop's interval.
+    // The refresh is called outside the try on purpose: a failed refresh
+    // must fail the proof with rclone's own message, not be swallowed into
+    // a bare timeout that hides why the save never appeared (issue #541).
+    // No fs= is passed: this machine has one mount, and rclone's vfs/refresh
+    // uses the only active VFS when fs is absent (vfs/rc.go, getVFS).
+    await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "vfs/refresh"]);
     try {
       await stat(path.join(mountDir, name));
       return { seconds: (Date.now() - started) / 1000 };
@@ -542,7 +559,7 @@ async function proof(t, workDir) {
   // Direction 1: machine A saves, machine B sees the save.
   const savedAtA = new Date();
   await writeFile(path.join(a.mountDir, fromA), payload("a"));
-  const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS);
+  const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS, b.rcAddr);
   assert.ok(
     onB,
     `a save on machine A (${fromA}) never reached machine B within ${PROPAGATION_SECONDS}s`,
@@ -551,7 +568,7 @@ async function proof(t, workDir) {
   // Direction 2: machine B saves, machine A sees the save.
   const savedAtB = new Date();
   await writeFile(path.join(b.mountDir, fromB), payload("b"));
-  const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS);
+  const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS, a.rcAddr);
   assert.ok(
     onA,
     `a save on machine B (${fromB}) never reached machine A within ${PROPAGATION_SECONDS}s`,

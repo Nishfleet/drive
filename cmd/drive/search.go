@@ -94,7 +94,7 @@ func fetchSearch(apiBase, query string, limit int) (*SearchResults, error) {
 		params.Set("limit", fmt.Sprintf("%d", limit))
 	}
 	target := base + SEARCH_PATH + "?" + params.Encode()
-	client := &http.Client{Timeout: searchTimeout}
+	client := newHTTPClient(searchTimeout)
 	resp, err := client.Get(target)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", target, err)

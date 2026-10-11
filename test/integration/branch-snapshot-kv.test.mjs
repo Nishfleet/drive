@@ -11,8 +11,9 @@
 // What the stand-ins here are, and are not:
 //   * the D1 is a real SQLite engine with the real migration files applied
 //     (test/harness.mjs createTestD1 applies every file in
-//     migrations/drive/, 0012_branch_snapshot_kv.sql included). The row this
-//     test reads back is read with plain node:sqlite, so a store that
+//     migrations/drive/, 0012_branch_snapshot_kv.sql and the
+//     0017_drop_branches_snapshot.sql that dropped `snapshot` included). The
+//     row this test reads back is read with plain node:sqlite, so a store that
 //     answered from a Map would leave the table empty and fail here — the rule
 //     test/integration/share-links-d1.test.mjs follows;
 //   * the KV namespace is the stand-in test/harness.mjs createTestKv builds:
@@ -51,6 +52,21 @@ const AT = Date.parse("2026-10-03T05:00:00.000Z");
 const D1_ROW_LIMIT = 1024 * 1024;
 /** The issue's number, used as the file count so the citation is one number. */
 const FILES = 100000;
+
+/**
+ * The columns the `branches` table really has, read off the schema the
+ * harness built. `snapshot` is not one of them: 0017_drop_branches_snapshot.sql
+ * dropped it, and both proofs below read the row through this list so a query
+ * that names the dropped column fails at prepare rather than quietly reading a
+ * column the harness used to add and production had dropped (drive#579).
+ * @param {{sqlite: import("node:sqlite").DatabaseSync}} db
+ * @returns {string[]}
+ */
+function branchColumns(db) {
+  return /** @type {{name: string}[]} */ (
+    db.sqlite.prepare("PRAGMA table_info('branches')").all()
+  ).map((column) => column.name);
+}
 
 /**
  * A file store whose listing answers `FILES` real entries under one folder,
@@ -183,20 +199,25 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   assert.equal(branch.files, FILES, "the walk saw 100,000 files and none was refused");
 
   // The row, read with plain node:sqlite: it carries a pointer and a length,
-  // and no snapshot JSON. This is the D1 row the deploy's migration produced
-  // (0012 adds the two columns with DEFAULTs), read off the same engine.
-  const row =
-    /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number, state: string}} */ (
-      db.sqlite
-        .prepare(
-          "SELECT snapshot, snapshot_key, snapshot_bytes, state FROM branches WHERE account_id = ? AND name = ?",
-        )
-        .get(ACCOUNT.id, "hundred-k")
-    );
+  // and no snapshot JSON - there is no `snapshot` column left to carry any,
+  // because 0017_drop_branches_snapshot.sql dropped it and the harness applies
+  // every migration in the folder (drive#579). This is the D1 row the deploy's
+  // migrations produced (0012 adds the pointer columns, 0017 drops the JSON),
+  // read off the same engine.
+  const row = /** @type {{snapshot_key: string, snapshot_bytes: number, state: string}} */ (
+    db.sqlite
+      .prepare(
+        "SELECT snapshot_key, snapshot_bytes, state FROM branches WHERE account_id = ? AND name = ?",
+      )
+      .get(ACCOUNT.id, "hundred-k")
+  );
   assert.equal(row.state, "open");
-  assert.equal(row.snapshot, "{}", "the row carries no snapshot JSON");
+  assert.ok(
+    !branchColumns(db).includes("snapshot"),
+    "the schema carries no snapshot column to fill with JSON",
+  );
   assert.equal(row.snapshot_key, snapshotKey(ACCOUNT, "hundred-k"));
-  const rowTextBytes = Buffer.byteLength(row.snapshot) + Buffer.byteLength(row.snapshot_key);
+  const rowTextBytes = Buffer.byteLength(row.snapshot_key);
   assert.ok(
     rowTextBytes < D1_ROW_LIMIT,
     `the row's own text is ${rowTextBytes} bytes, far under D1's 1 MiB limit`,
@@ -261,19 +282,19 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   const approved = await approveBranch(db, snapshots, scoped, ACCOUNT, "hundred-k");
   const result = /** @type {{name: string, state: string}} */ (approved);
   assert.equal(result.state, "approved", "the approve closed the branch");
-  const closed = /** @type {{state: string, snapshot_key: string, snapshot: string}} */ (
+  const closed = /** @type {{state: string, snapshot_key: string}} */ (
     db.sqlite
-      .prepare(
-        "SELECT state, snapshot_key, snapshot FROM branches WHERE account_id = ? AND name = ?",
-      )
+      .prepare("SELECT state, snapshot_key FROM branches WHERE account_id = ? AND name = ?")
       .get(ACCOUNT.id, "hundred-k")
   );
   assert.equal(closed.state, "approved");
   assert.equal(closed.snapshot_key, row.snapshot_key, "the pointer is the branch's own key");
+  // The row grew by nothing: the approve wrote the value to the namespace, and
+  // the row still carries the pointer and its length and nothing else.
   assert.equal(
-    closed.snapshot,
-    "{}",
-    "the row still carries no JSON: the approve wrote to the namespace",
+    branchColumns(db).includes("snapshot"),
+    false,
+    "the approve did not bring the dropped JSON column back",
   );
   // The value the approve left is the same 100,000 entries (this store's copy
   // was a no-op, so nothing was applied and the snapshot is unchanged).
@@ -290,15 +311,14 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   );
 });
 
-// Pre-migration regression for drive#399, not the #339 migration artifact.
-// #339 is the one-file DROP COLUMN PR; this run cannot ship that file beside
-// Worker code (D1 expand/contract). The statement below is that one ALTER,
-// applied on the harness D1 after the shipped migrations, so createBranch +
-// listBranches + readSnapshot still work with no `snapshot` column. Production
-// D1 `drive-data` at 2026-10-04T08:37:56Z already has nothing to recover:
-// empty_pointer_open=0, open_rows=0, all_rows=0. Branch and snapshot numbers
-// stay this file's own, so the two proofs do not share a name a citation
-// could confuse.
+// The pointer path on the schema production has. #339's migration
+// (0017_drop_branches_snapshot.sql) has shipped, so the `snapshot` column is
+// already gone from every database built from the folder: the harness applies
+// every migration in it (drive#579), so this run is the post-drop schema
+// rather than a pre-drop one the test had to stage. Production D1 `drive-data`
+// at 2026-10-04T08:37:56Z already had nothing to recover: empty_pointer_open=0,
+// open_rows=0, all_rows=0. Branch and snapshot numbers stay this file's own, so
+// the two proofs do not share a name a citation could confuse.
 const ACCOUNT_AFTER = { id: "acct-399", name: "The pointer-only drive" };
 const AFTER_AT = Date.parse("2026-10-04T05:00:00.000Z");
 
@@ -372,16 +392,12 @@ test("the pointer path survives the snapshot column being dropped", async () => 
     },
   });
 
-  // drive#339's one statement, run against the real engine before any Worker
-  // call: that is the order the later drop PR will ship, so createBranch has
-  // to succeed with no `snapshot` column, not only list a row written while
-  // the column still existed. From here on, any SQL that names the dropped
-  // column fails at prepare.
-  db.sqlite.exec("ALTER TABLE branches DROP COLUMN snapshot");
-
-  const columns = /** @type {{name: string}[]} */ (
-    db.sqlite.prepare("PRAGMA table_info('branches')").all()
-  ).map((column) => column.name);
+  // The drop is already in the schema (0017_drop_branches_snapshot.sql), so
+  // this states what it did rather than staging it: createBranch has to
+  // succeed with no `snapshot` column at all, not only list a row written
+  // while the column still existed, and any SQL that names the dropped column
+  // fails at prepare.
+  const columns = branchColumns(db);
   assert.ok(
     !columns.includes("snapshot"),
     `branches carries no snapshot column: ${columns.join(",")}`,
@@ -429,8 +445,8 @@ test("the pointer path survives the snapshot column being dropped", async () => 
 
   console.log(
     `drive#399 proof: branch "after" of account ${ACCOUNT_AFTER.id}, ` +
-      `created ${new Date(AFTER_AT).toISOString()}; ALTER TABLE branches DROP COLUMN snapshot ` +
-      `applied first; branches columns [${columns.join(", ")}]; createBranch after the drop, ` +
+      `created ${new Date(AFTER_AT).toISOString()}; 0017_drop_branches_snapshot.sql already ` +
+      `dropped the column, so branches columns [${columns.join(", ")}]; createBranch on that schema, ` +
       `then listBranches, readSnapshot, diffBranch and approveBranch all answered over the pointer.`,
   );
 });

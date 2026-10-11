@@ -18,6 +18,13 @@ func uninstallHome(t *testing.T) string {
 	if err := os.WriteFile(prefetch, []byte("prefetch unit file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	renew := DeviceRenewLoginItemPath("linux", home)
+	if err := os.MkdirAll(filepath.Dir(renew), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(renew, []byte("renew unit file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	driveDir := DefaultMountDir(home)
 	if err := os.MkdirAll(driveDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -41,6 +48,7 @@ func TestUninstallRemovesBothLoginItems(t *testing.T) {
 	for _, gone := range []string{
 		LoginItemPath("linux", home),
 		PrefetchLoginItemPath("linux", home),
+		DeviceRenewLoginItemPath("linux", home),
 	} {
 		if _, err := os.Stat(gone); !os.IsNotExist(err) {
 			t.Errorf("%s still exists after uninstall", gone)

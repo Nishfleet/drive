@@ -240,6 +240,7 @@ const HEALTHY_ENV = () => ({
   SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
   SHARE_MINT_RATE_LIMITER: fakeLimiter(),
   REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+  BRANCH_RATE_LIMITER: fakeLimiter(),
   BRANCH_SNAPSHOTS: fakeKv(),
   // The storage vars a healthy deployment carries (issue #520): without an
   // endpoint the Files handlers answer from the in-memory store, and the
@@ -286,6 +287,7 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -312,6 +314,7 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -336,6 +339,7 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     MAIL_FROM: SENDER,
   });
@@ -358,6 +362,7 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -387,6 +392,7 @@ test("every bound D1 database is checked, not just the first", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -433,6 +439,7 @@ test("a binding that is not a database is never read as one", () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.deepEqual(
@@ -461,6 +468,7 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -490,6 +498,7 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -518,6 +527,7 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
@@ -562,6 +572,7 @@ test("the failing body is the name and nothing else", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     MAIL_FROM: SENDER,
   });
@@ -619,6 +630,7 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -664,6 +676,7 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -772,6 +785,7 @@ test("the health check never spends a real caller's rate limit quota", async () 
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -809,6 +823,7 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -851,7 +866,10 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // email binding can only be exercised by really sending mail (only the
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
-  // absence fails closed at the intake (core/meter.js) instead of at the probe.
+  // absence fails closed at the intake (core/meter.js) instead of at the probe,
+  // and the reindex queue is only produced on by the nightly cron (drive#566),
+  // whose failure is a failed trigger rather than a customer request that
+  // could answer 503; a probe would have to enqueue a real walk to find out.
   // The meter's queue (drive#519) and the branch-jobs producer (drive#563)
   // are optional on purpose: without them the work runs in-process, and a
   // producer binding cannot be probed without sending a real job. Both
@@ -860,9 +878,14 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
     "EMAIL",
     "METER_EVENT_TOKEN",
     "HEALTH_RATE_LIMITER",
+    "REINDEX_QUEUE",
     "METER_JOBS",
     "BRANCH_JOBS",
   ]);
+  assert.ok(
+    !REQUIRED_BINDINGS.includes("REINDEX_QUEUE"),
+    "REINDEX_QUEUE is a documented exception, not a required binding",
+  );
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,
@@ -903,6 +926,7 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -938,6 +962,7 @@ test("a limiter that denies the probe is still healthy", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -968,6 +993,7 @@ test("a branch snapshot namespace that cannot be read is a 503 naming it", async
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: {
       get: () => Promise.reject(new Error("kv backend exploded: token=sk-secret")),
     },
@@ -1001,6 +1027,7 @@ test("a namespace that answers null for the probe key is healthy", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
     MAIL_FROM: SENDER,
@@ -1030,6 +1057,7 @@ test("the probe never reads a customer snapshot key", async () => {
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
     SHARE_MINT_RATE_LIMITER: fakeLimiter(),
     REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
+    BRANCH_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: {
       /** @param {string} key */
       get: (key) => {

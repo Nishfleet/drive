@@ -59,6 +59,9 @@ function allowLimits(nowValue) {
   return {
     now: nowValue,
     limiter: allowMint(),
+    // db is a required key on the drop handler (drive issue #826); the
+    // tests that take this helper run the in-memory list half only.
+    db: null,
     ipLimiter: {
       async limit() {
         return { success: true };
@@ -144,7 +147,7 @@ function drive() {
         files,
         links,
         account,
-        { now, limiter: allowMint(), token: TOKEN },
+        { now, db: null, limiter: allowMint(), token: TOKEN },
       ),
     /**
      * Revoke a share through the real owner route, as the given account.

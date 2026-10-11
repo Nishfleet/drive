@@ -30,6 +30,7 @@ type fakeAPI struct {
 	keys         map[string]MintedKey // key id -> key
 	mintedKinds  []string
 	mintedNames  []string
+	deviceNames  []string
 	revokedIDs   []string
 	queueClears  []string // the authorization header of each DELETE /v1/queue
 	renewedIDs   []string
@@ -40,6 +41,10 @@ type fakeAPI struct {
 	// renewBody, when set, is what the renew route answers instead of the
 	// row's own: the wrong-row answers a test needs to refuse.
 	renewBody map[string]any
+	// deviceExpiresIn, when set, is the session a device mint answers with
+	// (drive#749). Zero keeps the old stand-in: a device key with no expiry.
+	deviceExpiresIn int
+	keyKinds        map[string]string
 }
 
 func newFakeAPI() *fakeAPI {
@@ -47,6 +52,7 @@ func newFakeAPI() *fakeAPI {
 		codes:    map[string]DeviceCode{},
 		approved: map[string]bool{},
 		keys:     map[string]MintedKey{},
+		keyKinds: map[string]string{},
 	}
 }
 
@@ -61,6 +67,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Name string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.deviceNames = append(f.deviceNames, body.Name)
 		code := DeviceCode{
 			DeviceCode:              "dev_secret",
 			UserCode:                "BCDF-GHJK",
@@ -102,9 +109,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Worker answers POST /v1/keys with the second the credential stops
 		// working at, and only an agent key gets one.
 		var expiresAt *int64
+		var expiresIn int
 		if body.Kind == "agent" {
 			at := time.Now().Add(agentKeyTTL).Unix()
 			expiresAt = &at
+		} else if body.Kind == "device" && f.deviceExpiresIn > 0 {
+			at := time.Now().Add(time.Duration(f.deviceExpiresIn) * time.Second).Unix()
+			expiresAt = &at
+			expiresIn = f.deviceExpiresIn
 		}
 		keyID := "key_" + body.Name
 		if _, exists := f.keys[keyID]; exists {
@@ -117,12 +129,17 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Prefix:       "u/acct_1/",
 			Capabilities: []string{"list", "read", "write"},
 			ExpiresAt:    expiresAt,
+			ExpiresIn:    expiresIn,
 			Endpoint:     "http://127.0.0.1:39181",
 			Bucket:       "drive-standin",
 			Region:       "us-east-1",
 			DownloadURL:  "https://dl.example.test/k/grant_" + body.Name + "/",
 		}
+		if expiresIn > 0 {
+			key.SessionToken = "tok_" + body.Name
+		}
 		f.keys[key.KeyID] = key
+		f.keyKinds[key.KeyID] = body.Kind
 		writeTestJSON(w, 201, key)
 	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && strings.HasSuffix(r.URL.Path, "/renew") && r.Method == http.MethodPost:
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, keysPath+"/"), "/renew")
@@ -146,6 +163,35 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.keys[id] = key
 		if f.renewBody != nil {
 			writeTestJSON(w, 200, f.renewBody)
+			return
+		}
+		if f.keyKinds[id] == "device" {
+			ttl := f.deviceExpiresIn
+			if ttl <= 0 {
+				ttl = int(agentKeyTTL.Seconds())
+			}
+			at := time.Now().Add(time.Duration(ttl) * time.Second).Unix()
+			key.AccessKeyID = key.AccessKeyID + "_renewed"
+			key.Secret = key.Secret + "_renewed"
+			key.SessionToken = "tok_renewed"
+			key.ExpiresAt = &at
+			key.ExpiresIn = ttl
+			f.keys[id] = key
+			writeTestJSON(w, 200, map[string]any{
+				"keyId":        key.KeyID,
+				"name":         strings.TrimPrefix(id, "key_"),
+				"kind":         "device",
+				"prefix":       key.Prefix,
+				"capabilities": key.Capabilities,
+				"expiresAt":    at,
+				"credential": map[string]any{
+					"accessKeyId":  key.AccessKeyID,
+					"secret":       key.Secret,
+					"sessionToken": key.SessionToken,
+					"expiresIn":    ttl,
+					"expiresAt":    at,
+				},
+			})
 			return
 		}
 		writeTestJSON(w, 200, map[string]any{

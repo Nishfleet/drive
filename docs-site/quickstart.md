@@ -1,11 +1,11 @@
 ---
 title: Quickstart
-description: Put your files on a Drive and open them from any app, in one command.
+description: Put your files on Storagebun and open them from any app, in one command.
 ---
 
 # Quickstart
 
-A Drive is a folder that works like any other folder. Your files live in our
+A Storagebun drive is a folder that works like any other folder. Your files live in our
 storage, your machine opens them on demand, and your agents read and write the
 same files.
 

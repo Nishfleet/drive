@@ -74,9 +74,11 @@ const post = (body, url = `${TEST_BASE_URL}/api/signin`) =>
   new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", origin: TEST_BASE_URL },
-    // The card step the page's checkbox stands for (drive#387): a sign-up
-    // without it is refused before any link is mailed.
-    body: JSON.stringify({ card: true, ...body }),
+    // The age box the page posts (drive#781), held at the link now (drive#785):
+    // a start without it mails the link and the gate refuses to open an
+    // account behind it, so an attested start is what this helper sends. The
+    // helper does not strip a card field; the route ignores one (drive#538).
+    body: JSON.stringify({ age: true, ...body }),
   });
 
 test("a fresh web sign-up gets a working drive with no device key", async (t) => {

@@ -302,7 +302,7 @@ test("robots.txt allows the crawl and points at the sitemap", () => {
 test("llms.txt describes the drive and the current price rule", () => {
   const llms = read("llms.txt");
   // The llmstxt.org shape: an H1 name, a blockquote summary, then sections.
-  assert.match(llms, /^# Drive$/m);
+  assert.match(llms, /^# Storagebun$/m);
   assert.match(llms, /^> /m);
   assert.ok(llms.includes(BILLING.headline), "llms.txt must state the headline from config");
   assert.ok(llms.includes(BILLING.rule), "llms.txt must state the rule from config");
@@ -351,7 +351,7 @@ test("the maximum in the metadata is the issue's rule, from the one price source
   // one edit there and it moves the tags, the JSON-LD, llms.txt and the
   // visible copy together (issue #23).
   assert.equal(PRICE.rateUsdPerGbMonth, 0.02);
-  assert.equal(PRICE.maxUsdPerTb, 10);
+  assert.equal(PRICE.maxUsdPerTb, 15);
   // BILLING is built from PRICE, not declared beside it.
   assert.equal(BILLING.maxUsdPerTb, PRICE.maxUsdPerTb);
   assert.equal(BILLING.headline, PRICE.headline);
@@ -359,7 +359,7 @@ test("the maximum in the metadata is the issue's rule, from the one price source
   assert.equal(BILLING.rule, PRICE.rule);
   assert.equal(
     BILLING.headline,
-    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
+    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.",
   );
   // The superseded rules may not come back through the tags: the $12 floor,
   // the $8 slope, the 1.5 TB plateau and the membership.

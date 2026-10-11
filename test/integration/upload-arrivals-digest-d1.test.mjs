@@ -99,6 +99,9 @@ test("three drops through a real link queue three arrivals on the real columns",
     now: NOW,
     ipLimiter: allowLimiter(),
     linkLimiter: allowLimiter(),
+    // db is a required key on the drop handler (drive issue #826); these
+    // arrivals run against the in-memory list half only.
+    db: null,
   };
   for (const [name, body] of [
     ["first.txt", "aaa"],

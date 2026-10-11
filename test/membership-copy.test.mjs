@@ -9,7 +9,7 @@ import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
 import { FAILURE_MESSAGES } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { FAQ } from "../src/docs.js";
-import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/signin.js";
+import { SIGNIN_COPY } from "../src/signin.js";
 import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const CREDIT_TEXT =
@@ -193,17 +193,11 @@ test("the charge-at-$5 gate trips on the retired wording and passes the prepaid 
   }
 });
 
-test("sign-up without a card is refused, in plain words", () => {
-  assert.equal(hasSignupCard(undefined), false);
-  assert.equal(hasSignupCard(false), false);
-  assert.equal(hasSignupCard(""), false);
-  assert.equal(hasSignupCard(true), true);
-  assert.equal(hasSignupCard("on"), true);
-  const refused = refuseSignupWithoutCard(undefined);
-  assert.equal(refused, SIGNIN_COPY.needCard);
+test("the sign-in copy still says a card is needed at sign-up", () => {
+  // drive#538 dropped the start-step refusal; the page and this copy still
+  // name the rule. A real card waits on the Dodo key (drive#417, drive#325).
   assert.match(SIGNIN_COPY.needCard, /card/);
   assert.match(SIGNIN_COPY.needCard, /no free tier/);
-  assert.equal(refuseSignupWithoutCard(true), null);
 });
 
 test("pricing copy has no membership, and says minimum only as no minimum", () => {

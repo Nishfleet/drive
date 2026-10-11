@@ -33,10 +33,37 @@ func TestStandinOfflineProof(t *testing.T) {
 	if err := env.restart.stop(); err != nil {
 		t.Fatal(err)
 	}
-	note := filepath.Join(env.mountDir, "keep", "note.txt")
+	// Issue #541: wait more than five minutes after the cut (the floor the
+	// issue named, and longer than the old 5s window). rclone has no
+	// stale-on-error (rclone#1963), so --dir-cache-time is 24h and this
+	// wait stays inside it; a wait past the cache itself cannot succeed
+	// on stock rclone.
+	offlineWait := 5*time.Minute + 2*time.Second
+	dirCache, err := time.ParseDuration(vfsDirCacheTimeValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offlineWait >= dirCache {
+		t.Fatalf("offline wait %s is not inside --dir-cache-time %s", offlineWait, dirCache)
+	}
+	time.Sleep(offlineWait)
+
+	keepDir := filepath.Join(env.mountDir, "keep")
+	entries, err := os.ReadDir(keepDir)
+	if err != nil {
+		t.Fatalf("list a kept-offline folder with no network after %s: %v", offlineWait, err)
+	}
+	if len(entries) < 2 {
+		t.Fatalf("listed %d entries in the kept folder after %s, want the seeded files", len(entries), offlineWait)
+	}
+	created := filepath.Join(keepDir, "offline-create.txt")
+	if err := os.WriteFile(created, []byte("created while offline after the wait\n"), 0o644); err != nil {
+		t.Fatalf("create in a kept-offline folder with no network after %s: %v", offlineWait, err)
+	}
+	note := filepath.Join(keepDir, "note.txt")
 	got, err := readWithTimeout(note, 8*time.Second)
 	if err != nil {
-		t.Fatalf("open a kept-offline file with no network: %v", err)
+		t.Fatalf("open a kept-offline file with no network after %s: %v", offlineWait, err)
 	}
 	if len(got) != 4<<10 {
 		t.Fatalf("kept file is %d bytes, want %d: the copy was not whole", len(got), 4<<10)
@@ -122,7 +149,7 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 		"--vfs-cache-max-size", "2M",
 		"--vfs-cache-poll-interval", "1s",
 		"--vfs-cache-max-age", "24h",
-		"--dir-cache-time", "5s",
+		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--cache-dir", cacheDir,
 		"--rc", "--rc-addr", rcAddr, "--rc-no-auth")
 	// RcloneConfig never writes secret_access_key (drive#498). The secret
@@ -137,19 +164,19 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 		skipNoMount(t, "this host will not bring up the mount on %s (%s)", mountDir, mountSkipReason())
 	}
 
-	if _, err := KeepOffline(mountDir, "keep.bin"); err != nil {
+	if _, err := KeepOffline(context.Background(), mountDir, "keep.bin"); err != nil {
 		t.Fatalf("keep offline: %v", err)
 	}
 	for i := 1; i <= 4; i++ {
 		p := filepath.Join(mountDir, "other"+string(rune('0'+i))+".bin")
-		if _, err := fillReadFile(p); err != nil {
+		if _, err := fillReadFile(context.Background(), p); err != nil {
 			t.Fatalf("fill cache with %s: %v", p, err)
 		}
 	}
 	targets := fillTargets{root: mountDir, offline: []string{"keep.bin"}}
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := targets.read(false, 0); err != nil {
+		if _, err := targets.read(context.Background(), false, 0); err != nil {
 			t.Fatalf("keep-warm: %v", err)
 		}
 		time.Sleep(500 * time.Millisecond)

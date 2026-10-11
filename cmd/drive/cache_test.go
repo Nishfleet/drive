@@ -124,8 +124,8 @@ func TestSaveCacheMaxValidates(t *testing.T) {
 	}
 }
 
-// The mount carries the person's limit and the free-space floor, and the whole
-// command line, the launchd item and the systemd unit carry the same pair: the
+// The mount carries the person's limit and the free-space floor, and the
+// login item runs the product so the same pair is applied at login: the
 // limit a person typed is the one rclone enforces, on whichever platform.
 func TestMountCarriesTheCacheCap(t *testing.T) {
 	home := t.TempDir()
@@ -154,11 +154,12 @@ func TestMountCarriesTheCacheCap(t *testing.T) {
 					tc.goos, pair.flag, pair.value, p.Args())
 			}
 		}
-		// The login item runs the same argv, so the cap cannot drift between
-		// what the foreground mount does and what the mount at login does.
-		item := LoginItem(tc.goos, p)
-		if !strings.Contains(item, "5G") || !strings.Contains(item, vfsCacheMinFreeSpaceValue) {
-			t.Errorf("%s: the login item does not carry the cap:\n%s", tc.goos, item)
+		// The login item runs the product, which reads the same cache-max
+		// file this plan used, so the cap cannot drift between a foreground
+		// mount and the mount at login (drive#515).
+		item := LoginItem(tc.goos, withProductBin(p))
+		if !strings.Contains(item, "mount") || !strings.Contains(item, "--foreground") {
+			t.Errorf("%s: the login item does not run the product:\n%s", tc.goos, item)
 		}
 	}
 }

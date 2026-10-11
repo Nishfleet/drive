@@ -98,7 +98,7 @@ test("the key table shows the real delete and reach for each key", () => {
   const rows = KEY_TABLE.split("\n");
   const row = (/** @type {string} */ kind) => rows.find((line) => line.startsWith(`| ${kind} |`));
   assert.match(String(row("agent")), new RegExp(`yes, undoable for ${HIDDEN_VERSION_DAYS} day`));
-  assert.match(String(row("branch")), /your whole Drive \|$/);
+  assert.match(String(row("branch")), /your whole Storagebun \|$/);
   for (const name of ["agents.md", "security.md"]) {
     assert.ok(shipped(name).includes(String(row("agent"))), `${name} carries the key table`);
   }
@@ -110,5 +110,7 @@ test("the README says the same as the docs", () => {
     README.includes(`undoable for ${HIDDEN_VERSION_DAYS} day`),
     "the README states the undo window",
   );
-  assert.match(README, /branch key\s+reaches your whole Drive/);
+  // drive#870: the sentence reads "your whole Storagebun" in the shipped
+  // README now, beside the key table's own "your whole Storagebun" row.
+  assert.match(README, /branch key\s+reaches your whole Storagebun/);
 });

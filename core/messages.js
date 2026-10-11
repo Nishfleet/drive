@@ -31,6 +31,9 @@ export const INSTALL_COMMAND = "drive init";
 // The one top-up prompt (drive#586): the $0 pause, the low balance line, the
 // "$2 left" email and the CLI all say it in these words.
 export const TOP_UP_PROMPT = "Top up to keep adding files.";
+// Most branches one account may hold at once (drive#553). The cap counts every
+// state that still holds a copy. src/branches.js imports this same number.
+export const MAX_OPEN_BRANCHES = 10;
 
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
@@ -248,6 +251,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "A branch with that name is still open.",
     next: "Choose another name, or discard the open branch first.",
   }),
+  // Cap on branches one account may hold at once (drive#553). It says
+  // "branches", not "open branches", because a copy still held counts.
+  "branch-limit": Object.freeze({
+    what: `You have ${MAX_OPEN_BRANCHES} branches.`,
+    next: "Approve or discard one first.",
+  }),
   // An upload-request drop named a file the owner already has. Overwriting
   // that file from a public link is the bug drive#518 closes.
   "upload-name-taken": Object.freeze({
@@ -444,6 +453,13 @@ export const FAILURE_MESSAGES = Object.freeze({
   // deleted. The same words on the web, in the CLI and in an agent key error.
   "balance-empty": Object.freeze({
     what: "Your balance is $0, so uploads are paused while your files stay safe and downloads keep working.",
+    next: TOP_UP_PROMPT,
+  }),
+  // An upload that would raise size30 when the balance cannot cover one day
+  // at the new size (drive#642). The existing $0 pause covers a spent
+  // balance; this covers a raise that the next daily draw could not pay.
+  "size30-unpaid": Object.freeze({
+    what: "This upload would raise the biggest size your drive reached in the last 30 days, and your balance cannot cover one day at the new size.",
     next: TOP_UP_PROMPT,
   }),
   // Auto top-up charges the card saved by a top-up, so it cannot be turned on

@@ -152,9 +152,12 @@ export function emptyState(screen) {
 }
 
 /**
- * The upload-progress line for a queue, assembled by the module from the
- * module's own fragments, so this page and `drive status` print one line.
- * @param {{uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean}} upload
+ * The upload-progress line for a queue, assembled by the module from
+ * the module's own fragments, so this page and `drive status` print one
+ * line. Accepts the payload the queue store's read sums — a moving
+ * half beside a paused half (drive issue #865) — and a literal
+ * `paused: true` for the stopped state.
+ * @param {import("../core/queues.js").UploadQueue} upload
  * @returns {string}
  */
 export function uploadLine(upload) {
@@ -700,7 +703,10 @@ async function postSignout(step) {
   try {
     response = await fetch(SIGNIN_ENDPOINT, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
       body: JSON.stringify({ step }),
     });
   } catch (_error) {

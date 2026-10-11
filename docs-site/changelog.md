@@ -8,8 +8,41 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-09
+
+- Sign-in now bounds the whole account's emailed links to 5000 a minute, not
+  just one Cloudflare location's. The old ceiling counted each server location
+  on its own, so a flood spread over many locations was not capped; the new
+  shared counter is one row on the drive's own database, so the total is
+  capped wherever the requests come from. When the account's ceiling is full,
+  the sign-in page answers as usual and asks again in a minute.
+- "I am 18 or older" is now asked once, when an account opens — the moment
+  its emailed link is followed — not on every sign-in. A link that asks for
+  an account without the tick opens no account and the sign-in page explains
+  the rule again; an address that already has an account signs in as before,
+  ticked or not.
+
+## 2026-10-07
+
+- When this computer's storage key is a short session, the drive renews it
+  before it ends and keeps uploads that were already waiting. `drive login`
+  accepts that kind of key because that loop is running.
+- A folder kept offline stays open even after the network has been down for
+  hours, not just seconds. Before, the drive's short directory cache turned
+  the kept-folder promise off after five seconds without a link, and every
+  open in the folder said Input/output error. Listings now stay fresh only
+  while the network answers, so during an outage you work from the copy you
+  have.
+
 ## 2026-10-06
 
+- A Rewind tab in the web app lists the branches an agent worked in, names the
+  files each one changed, and puts your files back in one tap. The new
+  `drive undo` command does the same thing from the command line: it rewinds
+  the last branch an agent worked in, prints what it removes first, and says
+  when it is done. Both read the same /api/rewind route, so the screen and the
+  command cannot disagree about what a rewind undoes, and a branch stays
+  rewindable for 30 days.
 - A branch copies the files your folder held when you made the branch, not the
   files it holds when the copy runs. A file added in between is not in the
   branch, and the next branch takes it. A file that grew in between is copied in
@@ -22,12 +55,17 @@ the live site.
   the words to fix it. The storage vendor sets no limit of its own, and a
   nightly sweep removes the vendor keys of expired or revoked entries and
   records how many keys the vendor holds.
+- Opening an account now asks for a tick that you are 18 or older, and the
+  sign-in route refuses a start without it. The terms already carry the
+  rule.
 - A share link fixes on the file's version at the moment you make it. If that
   file is replaced afterwards, the link refuses with a short page instead of
   handing out the new bytes. A file on the stock known-bad hash list is
   refused when you share it and when someone drops it on an upload page.
 - Each agent tool gets its own folder at `~/Drive-agents/<tool>`, mounted on
   that tool's own key, instead of sharing the folder you use.
+- A test now fails the build if a page names a command or links to a page that
+  does not exist, so a page that promises `drive restore` cannot come back.
 - The conflict guard hashes a save where it already lives instead of keeping a
   second copy, works through a large drop a hundred files at a time, and
   `drive status` names a backlog as "conflict guard behind by N saves".
@@ -45,6 +83,9 @@ the live site.
   commands to run, the log on each system, a new laptop, a lost laptop, your
   email, and taking your files out. Linked from the 404 page and from
   `drive status`.
+- Customer pages now say only what version 1 does: no $5 roll-over, no live
+  team bill, Get drive opens the waitlist while sign-up is invite-only,
+  get-started names Mac and Linux, and a download charge is marked planned.
 
 ## 2026-10-05
 
@@ -189,7 +230,7 @@ the live site.
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),
   with `drive unmount`/`logout`/`status`/`uninstall` and unit tests for every
-  branch. A missing WinFsp is an error that points at reinstalling Drive.
+  branch. A missing WinFsp is an error that points at reinstalling Storagebun.
 - `drive unmount`, `logout` and `uninstall` on Windows now wait for WinFsp to
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported

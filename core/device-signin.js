@@ -24,6 +24,7 @@
 // its fields are copied onto the code row, so a poll on another instance can
 // name the owner without this module holding an accounts table of its own.
 import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { DAY_MS } from "./units.js";
 
 /**
  * Any device sign-in store: the shape the routes read. The in-memory
@@ -108,11 +109,9 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // days is the session TTL core/auth.js already chose, and for the same reason
 // ("the drive is reached on every visit, so signing in every week would be a
 // support ticket, not a security win"): a month bounds what a leak is worth
-// without asking a person to approve a code every few days. The number is
-// written here rather than imported so this module keeps no dependency on the
-// account store; keystore.test.js pins the two to each other, so they cannot
-// drift into two different months.
-export const DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+// without asking a person to approve a code every few days. keystore.test.js
+// pins this to the session TTL, so they cannot drift into two different months.
+export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
 /**
  * How close to its expiry a device token has to be before a request restarts
@@ -126,7 +125,7 @@ export const DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
  * bound it keeps is the same one the fixed TTL kept: a token nothing uses is
  * dead at most TTL + REFRESH after it was minted.
  */
-export const DEVICE_TOKEN_REFRESH_SECONDS = 24 * 60 * 60;
+export const DEVICE_TOKEN_REFRESH_SECONDS = DAY_MS / 1000;
 
 /**
  * The expiry a live device token carries after a request at `at`. One rule,
@@ -167,7 +166,7 @@ const USER_CODE_LENGTH = 8;
  * rejected rather than biased toward the alphabet's low end.
  * @param {() => Uint8Array} randomBytes
  */
-export function newUserCode(randomBytes) {
+function newUserCode(randomBytes) {
   const bytes = randomBytes();
   const limit = Math.floor(256 / USER_CODE_ALPHABET.length) * USER_CODE_ALPHABET.length;
   let out = "";

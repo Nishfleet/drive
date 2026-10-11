@@ -77,17 +77,15 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 		return err
 	}
 	endpoint := base + RevokePath
-	client := &http.Client{
-		Timeout: revokeTimeout,
-		// The key rides in the Authorization header, and Go's client replays
-		// that header on a redirect it follows — so a redirect is a way to put
-		// the storage secret somewhere it was never meant to go, including a
-		// downgrade from https to http on the same host. The revoke endpoint is
-		// a fixed route on a configured host and never redirects, so nothing is
-		// followed and a 3xx falls out as the non-204 it is.
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := newHTTPClient(revokeTimeout)
+	// The key rides in the Authorization header, and Go's client replays
+	// that header on a redirect it follows — so a redirect is a way to put
+	// the storage secret somewhere it was never meant to go, including a
+	// downgrade from https to http on the same host. The revoke endpoint is
+	// a fixed route on a configured host and never redirects, so nothing is
+	// followed and a 3xx falls out as the non-204 it is.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
 	if err != nil {

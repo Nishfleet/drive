@@ -676,7 +676,7 @@ test("the money graders follow the page they are handed, so the retired figures 
   const reprice = {
     vars: {
       docs_security: "The default cap is $25.",
-      docs_pricing: "Never more than $15 per TB.\n| 0.8 TB | $20 | $12.50 | $12.50 |\n",
+      docs_pricing: "Never more than $18 per TB.\n| 0.8 TB | $20 | $12.50 | $12.50 |\n",
     },
   };
   const real = gradingContext();
@@ -693,12 +693,12 @@ test("the money graders follow the page they are handed, so the retired figures 
   );
   assert.ok(passed(gradeJavascript(billGrader, "My bill is $12.50.", reprice)));
   assert.ok(
-    !passed(gradeJavascript(billGrader, "My bill is $10.", reprice)),
+    !passed(gradeJavascript(billGrader, "My bill is $15.", reprice)),
     "today's bill must fail a re-priced page",
   );
-  assert.ok(passed(gradeJavascript(ceilingGrader, "Never more than $15 per TB.", reprice)));
+  assert.ok(passed(gradeJavascript(ceilingGrader, "Never more than $18 per TB.", reprice)));
   assert.ok(
-    !passed(gradeJavascript(ceilingGrader, "Never more than $10 per TB.", reprice)),
+    !passed(gradeJavascript(ceilingGrader, "Never more than $15 per TB.", reprice)),
     "today's ceiling must fail a re-priced page",
   );
 
@@ -709,14 +709,14 @@ test("the money graders follow the page they are handed, so the retired figures 
     !passed(gradeJavascript(capGrader, "The default cap is $12.", real)),
     "the retired cap must fail the real page",
   );
-  assert.ok(passed(gradeJavascript(billGrader, "My bill is $10.", real)));
+  assert.ok(passed(gradeJavascript(billGrader, "My bill is $15.", real)));
   assert.ok(
-    !passed(gradeJavascript(billGrader, "My bill is $12.", real)),
+    !passed(gradeJavascript(billGrader, "My bill is $10.", real)),
     "the retired 800 GB bill must fail the real page",
   );
-  assert.ok(passed(gradeJavascript(ceilingGrader, "Never more than $10 per TB.", real)));
+  assert.ok(passed(gradeJavascript(ceilingGrader, "Never more than $15 per TB.", real)));
   assert.ok(
-    !passed(gradeJavascript(ceilingGrader, "Never more than $12 per TB.", real)),
+    !passed(gradeJavascript(ceilingGrader, "Never more than $10 per TB.", real)),
     "the retired ceiling must fail the real page",
   );
 });

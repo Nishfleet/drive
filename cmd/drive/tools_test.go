@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -352,8 +354,13 @@ func TestInitConnectsOnlyInstalledTools(t *testing.T) {
 		Home:   t.TempDir(),
 		Runner: runner,
 		LookPath: func(name string) (string, error) {
-			if name == "claude" {
+			switch name {
+			case "claude":
 				return "/fake/claude", nil
+			case "npx":
+				// claude is a Node application, so a machine
+				// that has it has npx too (issue #561).
+				return "/fake/npx", nil
 			}
 			return "", fmt.Errorf("not on PATH")
 		},
@@ -517,5 +524,48 @@ func TestConnectCreatesTheDriveFolderForJSONTools(t *testing.T) {
 	}
 	if st, err := os.Stat(env.DriveDir); err != nil || !st.IsDir() {
 		t.Fatalf("the drive folder was not created: %v", err)
+	}
+}
+
+// The npx gate (drive issue #561): every agent tool runs its
+// server through `npx -y @modelcontextprotocol/server-filesystem`,
+// so a machine without Node.js has tools that register but never
+// start. The check runs before anything is written, so the
+// failure is at the person's own command, naming the install
+// that fixes it, with no half-connected tool behind it.
+func TestConnectFailsBeforeWritingConfigWithoutNpx(t *testing.T) {
+	runner := &recordingRunner{}
+	env := Env{
+		Home:   t.TempDir(),
+		Runner: runner,
+		LookPath: func(name string) (string, error) {
+			if name == "npx" {
+				return "", &fs.PathError{Op: "npx", Path: "npx", Err: fs.ErrNotExist}
+			}
+			return "/fake/bin", nil
+		},
+	}.withDefaults()
+	tool, err := toolByName("cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tool.Connect(env)
+	var f *failure
+	if !errors.As(err, &f) || f.Kind != "no-node" {
+		t.Fatalf("Connect without npx = %v, want the no-node failure", err)
+	}
+	if !strings.Contains(err.Error(), "Node.js") {
+		t.Fatalf("Connect without npx = %v, want it to name Node.js", err)
+	}
+	// Nothing was written: no tool config, no drive folder,
+	// and no tool command ran.
+	if _, err := os.Stat(filepath.Join(env.Home, ".cursor", "mcp.json")); !os.IsNotExist(err) {
+		t.Errorf("the tool's config was written anyway: %v", err)
+	}
+	if _, err := os.Stat(env.DriveDir); !os.IsNotExist(err) {
+		t.Errorf("the drive folder was created anyway: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("Connect ran %q, want no tool command before the check", runner.calls)
 	}
 }
