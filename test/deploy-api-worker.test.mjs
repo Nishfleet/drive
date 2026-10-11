@@ -132,23 +132,32 @@ test("the config binds the api Worker to the drive database, the device limits, 
   );
 });
 
-test("the per-IP ceiling sits above the CLI's own poll rate and the sign-in limit", () => {
+test("the per-IP device ceiling clears the CLI's own poll rate", () => {
   // A device code is polled every DEVICE_CODE_INTERVAL_SECONDS, from one
   // connection, for as long as the person takes to approve it. The ceiling
-  // has to let a well-behaved CLI through: the sign-in binding's 10 a minute
-  // would lock a CLI polling 12 times a minute out of the flow it is already
-  // in (#168).
+  // has to let a well-behaved CLI through: a ceiling at or under the poll
+  // rate would lock a CLI out of the flow it is already in (#168).
+  //
+  // This is deliberately NOT compared against the site Worker's sign-in
+  // ceiling, which it once was. That comparison pinned DEVICE_RATE_LIMITER
+  // above SIGNIN_RATE_LIMITER, which made the sign-in number a hard ceiling
+  // on its own tuning: drive#202 measured a 200/min shared-egress peak and
+  // raised the sign-in per-IP limit to 500, and the two bindings guard
+  // different things — this one bounds short user codes on the device flow,
+  // that one bounds sign-in posts — so neither number should be derived from
+  // the other. The CLI's own poll rate is the load this ceiling has to
+  // survive, and that is what is asserted.
   const pollRate = Math.ceil(60 / DEVICE_CODE_INTERVAL_SECONDS);
   const perIp = apiConfig.env.DEVICE_RATE_LIMITER.simple;
   assert.ok(
     perIp.limit > pollRate,
     `DEVICE_RATE_LIMITER allows ${perIp.limit} a minute, which a CLI polling ${pollRate} times a minute does not fit under`,
   );
-  const signin = siteLimiters().find((entry) => entry.binding === "SIGNIN_RATE_LIMITER");
-  assert.ok(signin, "cloudflare.config.ts must declare SIGNIN_RATE_LIMITER to compare against");
+  // And headroom over that rate, not merely clearance: a person who approves
+  // from a second tab, or a CLI that retries once, must not be at the edge.
   assert.ok(
-    perIp.limit > signin.limit,
-    `DEVICE_RATE_LIMITER allows ${perIp.limit} a minute, no more headroom than sign-in's ${signin.limit}`,
+    perIp.limit >= pollRate * 2,
+    `DEVICE_RATE_LIMITER allows ${perIp.limit} a minute, under twice the ${pollRate}-a-minute poll rate it has to absorb`,
   );
   // The global one bounds the token factory: both a poll (which mints a device
   // token) and an approval (which attaches an account) are public, so it caps

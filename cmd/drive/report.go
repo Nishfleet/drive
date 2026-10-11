@@ -17,9 +17,6 @@ type QueueReport struct {
 	Paused        bool  `json:"paused"`
 }
 
-// queueReportPath is the api Worker's queue-report endpoint.
-const queueReportPath = "/v1/queue"
-
 // queueReportInterval is how often the mount's reporter ticks. It is the same
 // number the server enforces as the minimum spacing between two accepted
 // reports (core/queues.js QUEUE_REPORT_INTERVAL_SECONDS). Ten
@@ -117,7 +114,7 @@ func reportQueueOnce(ctx context.Context, c *rcClient, client *APIClient, home s
 		return nil
 	}
 	var answer map[string]any
-	if err := client.post(queueReportPath, report, &answer); err != nil {
+	if err := client.Post(queueReportPath, report, &answer); err != nil {
 		return err
 	}
 	*last = report

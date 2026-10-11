@@ -8,16 +8,16 @@
 //
 // Off unless ACCESS_AUD and ACCESS_TEAM_DOMAIN are set: with either missing the
 // route answers exactly what an unknown /api path answers (404 "Not found."),
-// so a deployment without them has no such route. The sign-up rule is the
-// email path's own (drive#387): an address with no account yet must tick the
-// card box, and the refusal is the same sentence (src/signin.js).
+// so a deployment without them has no such route. Access has already proved
+// the address, so a first sign-in creates the account, the same as the email
+// link's first follow.
 
 import { AFTER_SIGNIN_PATH, authFor } from "../core/auth.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 import { accessConfig, accessIdentity } from "./access.js";
-import { emailHasUser, refuseSignupWithoutCard, signinClosedBody } from "./signin.js";
+import { signinClosedBody } from "./signin.js";
 
 /** @typedef {import("./signin.js").SigninEnv & {ACCESS_AUD?: string, ACCESS_TEAM_DOMAIN?: string}} AccessSigninEnv */
 
@@ -53,27 +53,22 @@ function notSignedIn() {
 }
 
 /**
- * The posted card field, from JSON or a plain form post. A body that cannot be
- * read is no card, so a new address is refused rather than let through.
- * @param {Request} request
- * @returns {Promise<{card: unknown, form: boolean}>}
+ * Whether Better Auth already holds this address, so the page can say which
+ * of the two it is about to do.
+ * @param {AccessSigninEnv} env
+ * @param {string} email
+ * @returns {Promise<boolean>}
  */
-async function readCard(request) {
-  const contentType = request.headers.get("content-type") ?? "";
-  const form = contentType.includes("application/x-www-form-urlencoded");
-  try {
-    if (form) {
-      return { card: (await request.formData()).get("card"), form };
-    }
-    const body = await request.json();
-    const card =
-      typeof body === "object" && body !== null
-        ? /** @type {{card?: unknown}} */ (body).card
-        : undefined;
-    return { card, form };
-  } catch {
-    return { card: undefined, form };
+async function emailHasUser(env, email) {
+  const db = env.DRIVE_DB;
+  if (db === undefined || db === null || typeof db !== "object" || !("prepare" in db)) {
+    return false;
   }
+  const row = await /** @type {D1Database} */ (db)
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind(email)
+    .first();
+  return row !== null && row !== undefined;
 }
 
 /**
@@ -129,13 +124,9 @@ export async function handleAccessSignin(request, env) {
   if (request.method === "GET") {
     return json({ email: identity.email, hasAccount }, 200);
   }
-  const { card, form } = await readCard(request);
-  if (!hasAccount) {
-    const refused = refuseSignupWithoutCard(card);
-    if (refused !== null) {
-      return json({ error: refused }, 400);
-    }
-  }
+  const form = (request.headers.get("content-type") ?? "").includes(
+    "application/x-www-form-urlencoded",
+  );
   let signedIn;
   try {
     // The endpoint declares no body schema (it is server-only and its caller

@@ -8,11 +8,10 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { failureMessage } from "../core/messages.js";
 import { accessConfig, accessIdentity } from "../src/access.js";
 import { ACCESS_SIGNIN_PATH } from "../src/access-signin.js";
 import worker from "../src/index.js";
-import { failureMessage } from "../src/messages.js";
-import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, TEST_BASE_URL } from "./harness.mjs";
 
 /** @type {(request: Request, env?: unknown) => Promise<Response>} */
@@ -202,25 +201,12 @@ test("a good token shows who you are, then signs you in with the normal session 
   );
   assert.equal(status.status, 200, "the session opens the account gate");
 
-  // The second time the address is an account, so no card is asked for.
+  // The second time the address is already an account.
   const again = await workerFetch(accessRequest("POST", jwt, {}), env);
-  assert.equal(again.status, 200, "a returning account signs in without the card box");
+  assert.equal(again.status, 200, "a returning account signs in again");
   const shownAgain = await workerFetch(accessRequest("GET", jwt), env);
   assert.deepEqual(await shownAgain.json(), { email: "nish@example.com", hasAccount: true });
   assert.ok(certFetches >= 1, "the team's certs were fetched to verify");
-});
-
-test("a new address without the card box is refused with the email path's sentence (drive#387)", async () => {
-  const { env, made } = accessEnv();
-  const jwt = await accessJwt({ email: "nocard@example.com" });
-  for (const body of [{}, { card: false }, { card: "off" }]) {
-    const answer = await workerFetch(accessRequest("POST", jwt, body), env);
-    assert.equal(answer.status, 400);
-    assert.deepEqual(await answer.json(), { error: SIGNIN_COPY.needCard });
-    assert.equal(answer.headers.getSetCookie().length, 0);
-  }
-  const users = made.db.prepare('SELECT count(*) AS n FROM "user"');
-  assert.equal((await users.first())?.n, 0, "no account without a card");
 });
 
 test("the no-JavaScript form post signs in and lands on the drive", async () => {

@@ -114,7 +114,7 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err != nil {
 			return env, err
 		}
-		signed, err := SignIn(client, deviceName(), os.Stdout)
+		signed, err := SignIn(client, envDeviceName(env.Home), os.Stdout)
 		if err != nil {
 			return env, err
 		}
@@ -384,7 +384,7 @@ func mintToolKey(env Env, t Tool) error {
 // `drive agents revoke <tool>`.
 func runAgents(args []string) error {
 	api := os.Getenv("DRIVE_API_URL")
-	home := os.Getenv("HOME")
+	home := DefaultHome()
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]

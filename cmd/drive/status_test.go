@@ -218,6 +218,35 @@ func TestReadCostLinePrintsTheWorkersBalanceLine(t *testing.T) {
 	}
 }
 
+func TestReadCostLinePrintsSize30AndTodayDraw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var u UsageSummary
+		u.CapLine = "Cap $12.00: $4.00 counted this month, $8.00 left."
+		u.Labels.Size30 = "1.0 TB"
+		u.Labels.Size30Reached = "2026-09-10"
+		u.Labels.Size30DropsOut = "2026-10-10"
+		u.Labels.TodayDraw = "$0.50"
+		_ = json.NewEncoder(w).Encode(u)
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if reason := readCostLine(srv.URL, "dtok_test"); reason != "" {
+			t.Errorf("readCostLine said %q, want the size30 lines", reason)
+		}
+	})
+	for _, want := range []string{
+		"Biggest size in the last 30 days: 1.0 TB",
+		"Reached: 2026-09-10",
+		"Drops out: 2026-10-10",
+		"Today's draw: $0.50",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("got %q, want %q", out, want)
+		}
+	}
+}
+
 func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string
@@ -275,6 +304,22 @@ func TestParseAPIBaseRejectsAValueThatWouldBreakTheLine(t *testing.T) {
 	}
 }
 
+func TestNewAPIClientRefusesTheSameBrokenURLsAsParseAPIBase(t *testing.T) {
+	broken := []string{
+		"https://drive.example\nGET /elsewhere",
+		"https://drive.example\x00",
+		"https://user:pass@example.com",
+		"http://example.com",
+	}
+	for _, raw := range broken {
+		_, parseErr := parseAPIBase(raw)
+		_, newErr := NewAPIClient(raw, "")
+		if parseErr == nil || newErr == nil {
+			t.Errorf("%q: parseAPIBase=%v NewAPIClient=%v, want both refused", raw, parseErr, newErr)
+		}
+	}
+}
+
 func TestQueueWhySaysWhatIsWaitingAndWhy(t *testing.T) {
 	waiting := Pending{Files: 1, Bytes: 1024, Names: []string{"cut-off.bin"}}
 	got := queueWhy(false, false, false, waiting)
@@ -328,8 +373,8 @@ func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{}`))
 	}))
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	if !cacheIsFull(home, true) {
 		t.Fatal("cacheIsFull = false, want true when rclone vfs/stats says outOfSpace")
 	}
@@ -348,8 +393,8 @@ func TestCacheStateReadsTheCapAndUseFromVFSStats(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{}`))
 	}))
-	t.Setenv("DRIVE_RCLONE", c.binary)
-	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	t.Setenv("DRIVE_RCLONE", c.Binary)
+	t.Setenv("DRIVE_RC_ADDR", c.Addr)
 	capBytes, usedBytes, ok := cacheState(home, true)
 	if !ok {
 		t.Fatal("cacheState did not read vfs/stats")
@@ -482,4 +527,86 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return <-done
+}
+
+// TestStatusNamesABrokenCredentialsFileInsteadOfStopping is drive#544: a
+// machine that lost power mid-write leaves a half-written credentials.json,
+// and the command used to end there, before it printed anything. The answers
+// the command was opened for come first, and the broken file becomes one line
+// that names it and the command that writes it back.
+func TestStatusNamesABrokenCredentialsFileInsteadOfStopping(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CredentialsPath(home), []byte(`{"account_id": "acct_`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := runStatus([]string{"--home", home}); err != nil {
+			t.Fatalf("runStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "drive: not mounted") {
+		t.Errorf("the first answer is missing:\n%s", out)
+	}
+	if !strings.Contains(out, "uploads:") {
+		t.Errorf("the second answer is missing:\n%s", out)
+	}
+	var line string
+	for _, candidate := range nonEmptyLines(out) {
+		if strings.Contains(candidate, "this month: unknown") {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("the broken file is not reported as one unknown line:\n%s", out)
+	}
+	if !strings.Contains(line, CredentialsPath(home)) {
+		t.Errorf("line %q must name the file that could not be read", line)
+	}
+	if !strings.Contains(line, "drive login") {
+		t.Errorf("line %q must name the command that rewrites the file", line)
+	}
+	// The table's words, not the JSON parser's: a person reading the answer is
+	// given something to do, and no rclone or Go error text.
+	if strings.Contains(out, "unexpected end of JSON") || strings.Contains(out, "invalid character") {
+		t.Errorf("status printed the parser's error text:\n%s", out)
+	}
+}
+
+func TestStatusNamesABrokenOfflineListWithoutStopping(t *testing.T) {
+	// The other half of the file the drive wrote itself (drive#544): a
+	// truncated offline.json used to end the command, and the list is what
+	// tells the fill loop what to keep.
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(OfflineIndexPath(home), []byte(`{"paths": ["a`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := runStatus([]string{"--home", home}); err != nil {
+			t.Fatalf("runStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "uploads:") {
+		t.Errorf("the answer the command was opened for is missing:\n%s", out)
+	}
+	var line string
+	for _, candidate := range nonEmptyLines(out) {
+		if strings.Contains(candidate, "offline: unknown") {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("the broken list is not reported as one unknown line:\n%s", out)
+	}
+	if !strings.Contains(line, OfflineIndexPath(home)) || !strings.Contains(line, "drive offline") {
+		t.Errorf("line %q must name the file and the command that rebuilds it", line)
+	}
+	if strings.Contains(out, "unexpected end of JSON") {
+		t.Errorf("status printed the parser's error text:\n%s", out)
+	}
 }

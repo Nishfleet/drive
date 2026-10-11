@@ -9,8 +9,8 @@
 // drive issue #170): file_versions, usage_minutes, events_seen and
 // meter_rollup_state are customer data, so they are created by the same
 // migration directory the file index, branches and caps come from. Every file
-// in it is applied, in numeric order, so a statement the meter sends is
-// checked against the whole schema the drive database will actually have.
+// in it is applied, so a statement the meter sends is checked against the whole
+// schema the drive database will actually have.
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { BYTES_PER_GB } from "../core/meter.js";
@@ -42,6 +42,8 @@ export const orderMigrationFiles = (names) => [...names].sort();
 export const MIGRATION_FILES = Object.freeze(
   orderMigrationFiles(readdirSync(migrationsDir).filter((name) => name.endsWith(".sql"))),
 );
+// Directory-derived: `0045_file_index_staging.sql` is applied because it sits
+// in the folder, not because this list names it by hand (drive#566).
 
 /** @param {DatabaseSync} sqlite */
 export function applyMigrations(sqlite) {
@@ -94,12 +96,52 @@ function expandBoundValues(sql, bound) {
 }
 
 /**
+ * D1's write conversion table (developers.cloudflare.com/d1/worker-api/, "Type
+ * conversion"), and nothing else: null, a number, a string and a blob pass
+ * through, a boolean becomes the INTEGER 1 or 0 it reads back as, and
+ * `undefined` and every other type raise the D1_TYPE_ERROR the real binding
+ * raises.
+ *
+ * BOTH stand-ins call this, so one value cannot bind one way through the meter's
+ * adapter and another way through test/harness.mjs. node:sqlite happily stores
+ * a `Date` as NULL, which is the "the stand-in accepts what D1 refuses" bargain
+ * this table removes (drive#579): the adapter answers in D1's own words instead
+ * of writing a NULL no production query would ever write.
+ *
+ * @param {unknown} value
+ * @returns {any}
+ */
+export function d1BindValue(value) {
+  if (typeof value === "boolean") {
+    // Footnote 3 of that table: a boolean is cast to an INTEGER, 1 for true.
+    return value ? 1 : 0;
+  }
+  if (
+    value === null ||
+    typeof value === "number" ||
+    typeof value === "string" ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  ) {
+    return value;
+  }
+  // The name D1 uses, so a test that trips this reads like the production error
+  // rather than like a helper's own wording.
+  throw new TypeError(
+    `D1_TYPE_ERROR: Type '${value instanceof Date ? "Date" : typeof value}' not supported for value '${String(value)}'`,
+  );
+}
+
+/**
  * @param {string} sql
  * @param {any[]} bound
  * @returns {{sql: string, bound: any[]}}
  */
 function bindForNodeSqlite(sql, bound) {
-  return { sql: anonymousPlaceholders(sql), bound: expandBoundValues(sql, bound) };
+  return {
+    sql: anonymousPlaceholders(sql),
+    bound: expandBoundValues(sql, bound).map(d1BindValue),
+  };
 }
 
 // The StatementSync methods that take bound values. The raw handle's wrapper
@@ -134,7 +176,7 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  */
 /**
  * @typedef {D1Database & {
- *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state" | "billing_pushes" | "accounts", TableView>,
+ *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state" | "billing_pushes" | "accounts" | "file_index", TableView>,
  *   insertVersion(version: {accountId?: string, fileId: string, path?: string, sizeBytes: number, createdAt: number, hiddenAt?: number | null}): void,
  * }} MeteredD1
  */
@@ -161,8 +203,13 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  * @returns {MeteredD1}
  */
 export function d1Over(sqlite, { onQuery } = {}) {
-  const READ = /^\s*(SELECT|PRAGMA|WITH|EXPLAIN)\b/i;
-
+  /**
+   * SQLite's connection-wide change counter, prepared fresh so it is not held
+   * across another statement's `all()` on this handle.
+   * @returns {number}
+   */
+  const totalChanges = () =>
+    Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT total_changes() AS n").get()).n);
   /**
    * @param {string} sql
    * @param {any[]} bound
@@ -170,19 +217,37 @@ export function d1Over(sqlite, { onQuery } = {}) {
   function run(sql, bound) {
     const translated = bindForNodeSqlite(sql, bound);
     const statement = sqlite.prepare(translated.sql);
-    if (READ.test(sql)) {
-      return {
-        results: statement.all(...translated.bound),
-        success: true,
-        meta: { rows_written: 0, changes: 0, last_row_id: 0 },
-      };
-    }
-    const info = statement.run(...translated.bound);
-    const changes = Number(info.changes);
+    // ONE path for every statement, and it is D1's: D1 runs a query and a
+    // write through the same call and answers both with `results`. Routing a
+    // write through `run()` here answered `results: []` for an
+    // `INSERT ... RETURNING`, so every statement that returns the row it just
+    // wrote read back as no row at all - the shape src/share.js and
+    // src/waitlist.js write, and the shape a test of either would have called
+    // a miss (drive#579).
+    //
+    // `meta.changes` is the connection's `total_changes()` delta, not a guess
+    // from the SQL text: `changes()` does not reset on DDL, a `WITH ... INSERT`
+    // does not start with INSERT, and a cached prepared counter would sit on
+    // this handle while `all()` iterates. The delta is the statement's own
+    // count, so a CREATE after a write answers 0 and an INSERT OR REPLACE
+    // answers the rows it wrote.
+    const before = totalChanges();
+    const results = statement.all(...translated.bound);
+    const changes = totalChanges() - before;
     return {
-      results: [],
+      results,
       success: true,
-      meta: { changes, rows_written: changes, last_row_id: Number(info.lastInsertRowid ?? 0) },
+      meta: {
+        changes,
+        rows_written: changes,
+        last_row_id:
+          changes === 0
+            ? 0
+            : Number(
+                /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get())
+                  .n,
+              ),
+      },
     };
   }
 
@@ -239,6 +304,13 @@ export function d1Over(sqlite, { onQuery } = {}) {
         meter_rollup_state: table("meter_rollup_state", (row) => row.id),
         billing_pushes: table("billing_pushes", (row) => `${row.account_id}|${row.hour}`),
         accounts: table("accounts", (row) => row.id),
+        // The search's rows. The metered intake writes these too (drive#566),
+        // and the nightly reindex reads the accounts table above for its list.
+        file_index: table("file_index", (row) => `${row.account_id}|${row.path}`),
+        file_index_staging: table(
+          "file_index_staging",
+          (row) => `${row.account_id}|${row.generation}|${row.path}`,
+        ),
       },
       // One version row written straight into the real schema, for the shapes an
       // event cannot express (a 0-byte version, an instant that is not a whole
@@ -283,9 +355,22 @@ export function d1Over(sqlite, { onQuery } = {}) {
             onQuery?.();
             return prepared._exec();
           },
-          async first() {
+          /**
+           * D1's `first()`: the row, or the row's one column when the caller
+           * names it. The column was ignored here, so `first("id")` answered a
+           * whole row where D1 answers a scalar (drive#579).
+           * @param {string} [column]
+           */
+          async first(column) {
             onQuery?.();
-            return (await prepared._exec()).results[0] ?? null;
+            const row = (await prepared._exec()).results[0];
+            if (row === undefined || row === null) {
+              return null;
+            }
+            if (column === undefined) {
+              return row;
+            }
+            return /** @type {Row} */ (row)[column] ?? null;
           },
           async run() {
             onQuery?.();
@@ -352,7 +437,8 @@ function makeMeteredDB(onQuery) {
         }
         if (typeof property === "string" && BOUND_METHODS.includes(property)) {
           /** @param {any[]} values */
-          return (...values) => member.apply(target, expandBoundValues(sql, values));
+          return (...values) =>
+            member.apply(target, expandBoundValues(sql, values).map(d1BindValue));
         }
         return member.bind(target);
       },

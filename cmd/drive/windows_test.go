@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestWindowsPlanUsesMountAndADriveLetter(t *testing.T) {
 		"--vfs-cache-mode full",
 		"--vfs-write-back 5s",
 		"--vfs-cache-max-size 20G",
-		"--dir-cache-time 5s",
+		"--dir-cache-time " + vfsDirCacheTimeValue,
 	} {
 		if !strings.Contains(p.CommandLine(), want) {
 			t.Errorf("windows command line missing %q:\n%s", want, p.CommandLine())
@@ -116,14 +117,14 @@ func TestCheckWinFsp(t *testing.T) {
 	}); err != nil {
 		t.Errorf("CheckWinFsp with the driver present = %v, want nil", err)
 	}
-	// The driver is missing: the error says reinstall Drive, and never a winget
+	// The driver is missing: the error says reinstall Storagebun, and never a winget
 	// command (Nish, 2026-10-01: users never install WinFsp by hand).
 	err := CheckWinFsp("windows", func(string) bool { return false })
 	if err == nil {
 		t.Fatal("CheckWinFsp with no driver must fail")
 	}
-	if !strings.Contains(err.Error(), "reinstall Drive") {
-		t.Errorf("the WinFsp error must point at reinstalling Drive: %v", err)
+	if !strings.Contains(err.Error(), "reinstall Storagebun") {
+		t.Errorf("the WinFsp error must point at reinstalling Storagebun: %v", err)
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "winget") {
 		t.Errorf("the WinFsp error must not tell the user to install WinFsp by hand: %v", err)
@@ -137,13 +138,19 @@ func TestCheckWinFsp(t *testing.T) {
 }
 
 func TestWindowsTaskCommandLineCarriesThePlan(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	line := WindowsTaskCommandLine(p)
-	for _, want := range []string{`C:\rclone\rclone.exe`, "mount", "drive:drive-standin/u/1234", "Z:"} {
+	for _, want := range []string{`C:\Program Files\Drive\drive.exe`, "mount", "--foreground", "--home", `C:\Users\test`, "Z:"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("task command line missing %q:\n%s", want, line)
 		}
+	}
+	if !strings.Contains(line, `--rclone C:\rclone\rclone.exe`) {
+		t.Errorf("task command line missing --rclone of the resolved binary:\n%s", line)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(line, `"`), `C:\rclone\rclone.exe`) {
+		t.Errorf("task command line still execs rclone:\n%s", line)
 	}
 	// The drive letter is recoverable from the task's own command line, which
 	// is how `drive status` reports the letter the task chose.
@@ -202,7 +209,7 @@ func TestSchtasksArgumentVectors(t *testing.T) {
 }
 
 func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	body, err := windowsTaskXML(p, `DESKTOP\test`)
 	if err != nil {
@@ -223,10 +230,10 @@ func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
 	if doc.Version != "1.2" {
 		t.Errorf("task XML version = %q, want 1.2", doc.Version)
 	}
-	if doc.Actions.Exec.Command != `C:\rclone\rclone.exe` {
-		t.Errorf("Exec Command = %q, want the rclone path", doc.Actions.Exec.Command)
+	if doc.Actions.Exec.Command != p.productArgv()[0] {
+		t.Errorf("Exec Command = %q, want productArgv[0] %q", doc.Actions.Exec.Command, p.productArgv()[0])
 	}
-	for _, want := range []string{"mount", "drive:drive-standin/u/1234", "Z:", "--config", "rclone.conf", "--vfs-cache-mode full"} {
+	for _, want := range []string{"mount", "--foreground", "--home", `C:\Users\test`, "--drive-letter", "Z:", "--rclone", `C:\rclone\rclone.exe`} {
 		if !strings.Contains(doc.Actions.Exec.Arguments, want) {
 			t.Errorf("Exec Arguments missing %q:\n%s", want, doc.Actions.Exec.Arguments)
 		}
@@ -276,7 +283,7 @@ func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
 // API's 32 K ceiling, and a /TR in the create vector is the old failure back
 // again.
 func TestWindowsTaskXMLStaysInsideSchtasksLimits(t *testing.T) {
-	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
 	p.MountDir = "Z:"
 	xmlPath := windowsTaskXMLPath(p)
 	if len(xmlPath) > 261 {
@@ -351,11 +358,11 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	if _, err := exec.LookPath("schtasks"); err != nil {
 		t.Fatalf("schtasks is not on PATH, so the windows-latest job cannot register the task: %v", err)
 	}
-	home := t.TempDir()
+	home := `C:\Users\` + strings.Repeat("very-long-profile-name-", 12) + `\drive-home`
 	c := testStorage()
 	c.Bucket = "bucket"
 	c.Prefix = "u/" + strings.Repeat("deep-folder-name/", 12) + "1234"
-	p := BuildMountPlan("windows", home, `C:\rclone\rclone.exe`, c)
+	p := withProductBin(BuildMountPlan("windows", home, `C:\rclone\rclone.exe`, c))
 	p.MountDir = "Z:"
 	userName, err := windowsTaskUser()
 	if err != nil {
@@ -369,8 +376,11 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	// command is long enough on its own, and this prefix makes it longer
 	// still, so the case is not a near miss.
 	commandLine := WindowsTaskCommandLine(p)
+	if !strings.Contains(commandLine, p.DriveBin) {
+		t.Fatalf("the command line does not run the product: %s", commandLine)
+	}
 	if len(commandLine) <= 261 {
-		t.Fatalf("the command line is %d characters, under the 261 this test must be over: %s", len(commandLine), commandLine)
+		t.Fatalf("command line is %d characters, want over the 261 /TR limit so the XML path stays the only way to register it", len(commandLine))
 	}
 	xmlPath := windowsTaskXMLPath(p)
 	if err := WriteFileAtomic(xmlPath, []byte(body), 0o600); err != nil {
@@ -389,16 +399,12 @@ func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
 	if !ok {
 		t.Fatal("schtasks /Query /V found no Task To Run, so the XML registered a task with no command")
 	}
-	// The command schtasks renders from Command and Arguments is the same one
-	// /TR used to carry, over the limit that broke it.
-	if len(command) <= 261 {
-		t.Errorf("Task To Run is %d characters, want the same command /TR could not hold: %s", len(command), command)
-	}
+	// The command schtasks renders from Command and Arguments is the product.
 	if letter, found := windowsDriveLetterFromCommand(command); !found || letter != "Z:" {
 		t.Errorf("windowsDriveLetterFromCommand(%q) = %q, %v, want Z:", command, letter, found)
 	}
-	if !strings.Contains(command, p.RcloneBin) {
-		t.Errorf("Task To Run is missing the rclone path:\n%s", command)
+	if !strings.Contains(command, p.DriveBin) {
+		t.Errorf("Task To Run is missing the drive CLI:\n%s", command)
 	}
 }
 
@@ -458,7 +464,7 @@ func TestWindowsLoginItemIsATaskNotAFile(t *testing.T) {
 	if files := LoginItemFiles("windows", home); len(files) != 0 {
 		t.Errorf("LoginItemFiles(windows) = %v, want none", files)
 	}
-	p := BuildMountPlan("windows", home, "rclone.exe", testStorage())
+	p := withProductBin(BuildMountPlan("windows", home, "rclone.exe", testStorage()))
 	p.MountDir = "Z:"
 	if got := LoginItem("windows", p); got != WindowsTaskCommandLine(p) {
 		t.Errorf("LoginItem(windows) = %q, want the task command line %q", got, WindowsTaskCommandLine(p))
@@ -700,5 +706,318 @@ func TestLoginItemPresentFindsTheItemFile(t *testing.T) {
 	}
 	if present, err := LoginItemPresent("linux", home); err != nil || !present {
 		t.Errorf("LoginItemPresent(linux) after writing the item = %v, %v, want true, nil", present, err)
+	}
+}
+
+// TestWindowsTaskXMLCarriesAWorkingDirectory is drive#544: a scheduled task
+// with no WorkingDirectory runs its action from %WINDIR%\System32, and the
+// mount's command line was drive-relative (the home default read $HOME, which
+// Windows does not export), so the task started rclone from a folder where
+// none of its paths resolve. Task Scheduler accepts `<WorkingDirectory>` on the
+// Exec action, and the drive's own config folder is the one that exists before
+// the task is registered, because the rclone config and this XML are written
+// there.
+//
+// Since drive#515 the action is this CLI (`drive mount --foreground`), not bare
+// rclone, so the vector no longer carries rclone's own --config/--cache-dir/
+// --log-file: the product derives all three from the one --home it is handed,
+// and that derivation is what is asserted here. The invariant drive#544 found
+// is unchanged and still held — nothing the task's action reads may be
+// relative, because an action that starts in System32 cannot open a relative
+// path — so every value the vector carries is checked, and the plan's three
+// paths must be the same ones the product will derive from that home. A plan
+// that drifted from the derivation would give the mount a config, a cache or a
+// log the login task never reads.
+func TestWindowsTaskXMLCarriesAWorkingDirectory(t *testing.T) {
+	p := withProductBin(BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage()))
+	p.MountDir = "Z:"
+	body, err := windowsTaskXML(p, `DESKTOP\test`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc taskXML
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("the task XML does not parse: %v\n%s", err, body)
+	}
+	wantDir := filepath.Join(DefaultConfigDir(`C:\Users\test`))
+	if doc.Actions.Exec.WorkingDirectory != wantDir {
+		t.Errorf("WorkingDirectory = %q, want the drive's config folder %q",
+			doc.Actions.Exec.WorkingDirectory, wantDir)
+	}
+	// The plan's own paths are the ones the product derives from the home the
+	// task hands it, so the action reads the same config, cache and log the
+	// task was registered beside.
+	for name, path := range map[string]string{
+		"--config":    p.ConfigPath,
+		"--cache-dir": p.CacheDir,
+		"--log-file":  p.LogPath,
+	} {
+		var derived string
+		switch name {
+		case "--cache-dir":
+			derived = DefaultCacheDir(p.Home)
+		case "--log-file":
+			derived = filepath.Join(DefaultConfigDir(p.Home), "mount.log")
+		default:
+			derived = RcloneConfigPath(p.Home)
+		}
+		if path != derived {
+			t.Errorf("%s = %q, want the path the product derives from --home %q: %q", name, path, p.Home, derived)
+		}
+		if !strings.HasPrefix(path, `C:\Users\test`) {
+			t.Errorf("%s = %q: an absolute path under the profile, not %q", name, path, strings.TrimPrefix(path, `C:\Users\test`))
+		}
+		if strings.HasPrefix(path, `\`) || strings.HasPrefix(path, ".") {
+			t.Errorf("%s = %q is relative: the login task starts from System32", name, path)
+		}
+	}
+	// Every value the task's action carries is absolute for the same reason: a
+	// task that starts in System32 cannot open a relative one. This is the
+	// drive#544 failure shape, kept as a whole-vector check so a new path flag
+	// cannot come back relative.
+	args := p.productArgs()
+	if len(args) == 0 || args[0] != "mount" {
+		t.Fatalf("the login task runs %v, want the product's mount command", args)
+	}
+	for i, a := range args {
+		if strings.HasPrefix(a, "--") {
+			continue
+		}
+		if strings.HasPrefix(a, `\`) || strings.HasPrefix(a, ".") {
+			t.Errorf("login task argument %d (%q, after %q) is relative: the action starts from System32", i, a, args[i-1])
+		}
+	}
+	// The two paths the vector still names are absolute and reach the action
+	// quoted, which is how Task Scheduler stores them.
+	for _, flag := range []string{"--home", "--rclone"} {
+		value := flagValue(args, flag)
+		if value == "" {
+			t.Fatalf("login task arguments carry no %s: %v", flag, args)
+		}
+		if !windowsAbs(value) {
+			t.Errorf("%s %q is not an absolute path the login task can open from System32", flag, value)
+		}
+		if !strings.Contains(doc.Actions.Exec.Arguments, windowsQuoteArg(value)) {
+			t.Errorf("Exec Arguments missing %s (%s):\n%s", flag, windowsQuoteArg(value), doc.Actions.Exec.Arguments)
+		}
+	}
+}
+
+// flagValue returns the value that follows flag in args, or "" when the flag
+// carries no value or is absent.
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// windowsAbs reports a path the Windows task action can open from any working
+// directory: a drive-letter path (C:\...) or a UNC path (\\server\share).
+// filepath.IsAbs answers for the host the test runs on, which is Linux here,
+// so it says "C:\Users\test" is relative and this name says what the task
+// actually needs.
+func windowsAbs(path string) bool {
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
+		c := path[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return strings.HasPrefix(path, `\\`)
+}
+
+// The re-run fix on Windows (drive issue #817): a second `drive init` or
+// `drive mount` whose files are already on disk must not recreate and restart
+// the login task, because schtasks /F with /Run stops the running rclone and
+// unmounts a live drive letter under open files. Every Windows-only seam is
+// injected here — the WinFsp check, the schtasks verbs, the mounted probe and
+// the wait probe — so the whole Windows path runs on a Linux runner the way
+// BuildMountPlan runs with a goos string. The returned log is the schtasks
+// verbs the run took, and the returned flag is what the probe answers about
+// the drive letter, which a test can flip the way the Mac test flips its gate.
+// The shape mirrors mountTestSeams.
+func windowsMountSeams(t *testing.T, up bool) (*[]string, *bool) {
+	t.Helper()
+	var actions []string
+	mounted := up
+	origFsp, origSchtasks, origState, origProbe := winFspCheck, runSchtasks, mountState, waitProbe
+	winFspCheck = func(string, func(string) bool) error { return nil }
+	runSchtasks = func(args ...string) error {
+		actions = append(actions, strings.Join(args, " "))
+		return nil
+	}
+	mountState = func(string, string) (bool, error) { return mounted, nil }
+	waitProbe = func(string, string) (bool, error) { return true, nil }
+	t.Cleanup(func() {
+		winFspCheck, runSchtasks, mountState, waitProbe = origFsp, origSchtasks, origState, origProbe
+	})
+	return &actions, &mounted
+}
+
+// windowsMountOnce runs one `drive init`'s Mount call on the Windows path and
+// returns what it printed. The plan's own storage config is the argument, so a
+// caller can hand it a rotated secret.
+func windowsMountOnce(t *testing.T, home string, c StorageConfig) string {
+	t.Helper()
+	t.Setenv("USERDOMAIN", "DRIVE")
+	t.Setenv("USERNAME", "test")
+	return captureStdout(t, func() {
+		if err := Mount("windows", home, "rclone.exe", c, false, false, "Z:"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestWindowsMountSkipsRestartWhenNothingChanged(t *testing.T) {
+	home := t.TempDir()
+	actions, _ := windowsMountSeams(t, true)
+
+	first := windowsMountOnce(t, home, testStorage())
+	if len(*actions) != 2 {
+		t.Fatalf("the first mount took %v, want the task create and the task run", *actions)
+	}
+	if !strings.Contains(first, "Mounted at Z:") {
+		t.Fatalf("first mount printed %q, want the mounted line", first)
+	}
+	// The task XML is one of the files the unchanged check reads.
+	taskXMLPath := filepath.Join(DefaultConfigDir(home), "login-task.xml")
+	if _, err := os.Stat(taskXMLPath); err != nil {
+		t.Fatalf("the login task XML was not written: %v", err)
+	}
+
+	second := windowsMountOnce(t, home, testStorage())
+	if len(*actions) != 2 {
+		t.Fatalf("an unchanged re-run took %v, want no task action: a restart unmounts the drive letter under open files", *actions)
+	}
+	if !strings.Contains(second, "already running") {
+		t.Fatalf("re-run printed %q, want it to say the mount is already running", second)
+	}
+}
+
+func TestWindowsMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
+	home := t.TempDir()
+	actions, mounted := windowsMountSeams(t, true)
+
+	windowsMountOnce(t, home, testStorage())
+	// The drive letter is down (a reboot, a `drive unmount`): "unchanged" is
+	// not a reason to leave a mount down, so this run still starts it.
+	*mounted = false
+	windowsMountOnce(t, home, testStorage())
+	if len(*actions) != 4 {
+		t.Fatalf("a stopped drive with unchanged files took %v, want the task create and run twice", *actions)
+	}
+}
+
+func TestWindowsMountRestartsWhenThePlanChanged(t *testing.T) {
+	home := t.TempDir()
+	actions, _ := windowsMountSeams(t, true)
+
+	windowsMountOnce(t, home, testStorage())
+	// A rotated storage key rewrites rclone.env, so this run is a real
+	// change: the login task is recreated and restarted. The secret stays
+	// in that 0600 file, not in the task XML, because the item runs
+	// `drive mount --foreground` and the product reads rclone.env
+	// (drive#515), the same way the Linux unit keeps secrets out of the
+	// 0644 file.
+	rotated := testStorage()
+	rotated.SecretKey = "rotatedsecretkey"
+	windowsMountOnce(t, home, rotated)
+	if len(*actions) != 4 {
+		t.Fatalf("a changed plan took %v, want the task create and run twice: a changed plan must still restart", *actions)
+	}
+	envBody, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envBody), rotated.SecretKey) {
+		t.Fatalf("rclone.env does not carry the rotated secret after the restart:\n%s", envBody)
+	}
+	taskXMLPath := filepath.Join(DefaultConfigDir(home), "login-task.xml")
+	body, err := os.ReadFile(taskXMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), rotated.SecretKey) {
+		t.Fatalf("the task XML carries the rotated secret:\n%s", body)
+	}
+}
+
+// A probe that cannot answer is not an answer (drive#817): with the files
+// unchanged but mountState failing — a wedged WinFsp volume is what makes the
+// probe fail — the run must neither restart the login task (a restart unmounts
+// a live drive letter under open files) nor report success. It fails and names
+// the cause, the same shape as the Mac and Linux path (mount.go's mount-probe).
+func TestWindowsMountFailsWhenTheProbeCannotAnswer(t *testing.T) {
+	home := t.TempDir()
+	actions, _ := windowsMountSeams(t, true)
+	windowsMountOnce(t, home, testStorage())
+
+	probeErr := errors.New("WinFsp volume is wedged")
+	origState := mountState
+	mountState = func(string, string) (bool, error) { return false, probeErr }
+	t.Cleanup(func() { mountState = origState })
+
+	t.Setenv("USERDOMAIN", "DRIVE")
+	t.Setenv("USERNAME", "test")
+	err := Mount("windows", home, "rclone.exe", testStorage(), false, false, "Z:")
+	if err == nil {
+		t.Fatal("Mount returned nil, want a mount-probe failure when the probe errors")
+	}
+	if !strings.Contains(err.Error(), "Could not check whether the drive is mounted") || !strings.Contains(err.Error(), probeErr.Error()) {
+		t.Fatalf("Mount error = %v, want the mount-probe sentence naming the probe's cause", err)
+	}
+	if len(*actions) != 2 {
+		t.Fatalf("a probe that cannot answer took %v, want no task action: a restart unmounts the drive letter under open files", *actions)
+	}
+}
+
+// A file mode carries no meaning on Windows: the file system stores only a
+// read-only attribute and a stat answers with the mode every Unix write would
+// use, so comparing Perm() there would call every unchanged re-run a change
+// (drive#817). The bytes decide on Windows; everywhere else a drifted mode is
+// still repaired.
+func TestWindowsUnchangedCheckIgnoresTheFileMode(t *testing.T) {
+	home := t.TempDir()
+	actions, _ := windowsMountSeams(t, true)
+
+	windowsMountOnce(t, home, testStorage())
+	// The 0600 the Windows write asks for, drifted the way a Windows stat
+	// reports it back.
+	for _, path := range []string{
+		RcloneConfigPath(home),
+		filepath.Join(DefaultConfigDir(home), "login-task.xml"),
+	} {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := len(*actions)
+	second := windowsMountOnce(t, home, testStorage())
+	if len(*actions) != before {
+		t.Fatalf("a re-run whose only difference is the file mode took %v, want no task action on Windows", *actions)
+	}
+	if !strings.Contains(second, "already running") {
+		t.Fatalf("re-run printed %q, want it to say the mount is already running", second)
+	}
+	// The same drifted mode is a change on the platforms whose permission bits
+	// mean something, so the fix is Windows-only and their mount still repairs
+	// it.
+	taskXML, err := os.ReadFile(filepath.Join(DefaultConfigDir(home), "login-task.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := []mountWrite{
+		{RcloneConfigPath(home), []byte(RcloneConfig(testStorage())), 0o600},
+		{filepath.Join(DefaultConfigDir(home), "login-task.xml"), taskXML, 0o600},
+	}
+	if !mountWritesUnchanged("windows", writes) {
+		t.Error("mountWritesUnchanged(windows) = false, want true: a mode means nothing on Windows")
+	}
+	if mountWritesUnchanged("linux", writes) {
+		t.Error("mountWritesUnchanged(linux) = true, want false: a drifted mode is a change off Windows")
+	}
+	if mountWritesUnchanged("darwin", writes) {
+		t.Error("mountWritesUnchanged(darwin) = true, want false: a drifted mode is a change off Windows")
 	}
 }

@@ -569,3 +569,53 @@ test("a provider session shorter than the hour is the lifetime every renewal mea
     "the credential is refused when the provider's own session has run out",
   );
 });
+
+test("a provider that names a session is recorded on a device row, not read as forever", async () => {
+  // drive#544: `null` on the devices row is the claim that this credential
+  // never expires, and it is only true when the provider named no session
+  // either. The STS path mints sessions that die (s3-keys.js
+  // DurationSeconds), and a device row read "forever" over one is an hour of
+  // uploads failing while `drive status` reports a mount that looks healthy.
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const session = 900;
+  const store = createMemoryStore({
+    now: clock.now,
+    keyProvider: {
+      async mint() {
+        return {
+          accessKeyId: "ak_sts",
+          secret: "sk_sts",
+          sessionToken: "stok",
+          expiresIn: session,
+        };
+      },
+    },
+    deviceStore: createD1DeviceStore(db, { now: clock.now }),
+  });
+  const account = { id: "acct_sts", name: "Sts drive" };
+  const at = clock.now() / 1000;
+  const minted = await store.mintKey(account, { kind: "device", name: "laptop" });
+
+  // The row and the answer carry the provider's own window.
+  assert.equal(
+    rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at,
+    at + session,
+  );
+  assert.equal(minted.expiresAt, at + session);
+  // The credential dies when the session does, not an hour later, and a second
+  // instance over the same database agrees without sharing any memory with this
+  // one (index.js `storeFor` builds a store per request).
+  const second = storeOver(db, clock);
+  clock.advance(session - 1);
+  assert.ok(
+    await second.authenticate(minted.accessKeyId, minted.secret),
+    "the session is still open",
+  );
+  clock.advance(2);
+  assert.equal(
+    await second.authenticate(minted.accessKeyId, minted.secret),
+    null,
+    "the credential is refused once the provider's session has run out",
+  );
+});

@@ -17,9 +17,10 @@
 // provider's signature before it calls creditTopUp, so this module trusts its
 // caller about who paid and owns only the arithmetic and the rows.
 
+import { claimCardFingerprint, paymentCardFingerprint } from "./abuse-guards.js";
 import { PREPAID } from "./pricing.js";
 
-export const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
+const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
 
 /** The smallest top-up, in cents. */
 export const MIN_TOP_UP_CENTS = PREPAID.minTopUpUsd * 100;
@@ -109,6 +110,21 @@ export function usageKey(accountId, hour) {
     throw new TypeError(`usageKey needs an epoch millisecond hour, got ${String(hour)}`);
   }
   return `usage:${accountId}:${hour}`;
+}
+
+/**
+ * The draw for one account and one UTC day (drive#642). The same day always
+ * maps to the same key, so a retried daily job cannot draw it twice, and a
+ * leftover hourly key (`usage:<id>:<hour ms>`) cannot collide with it.
+ * @param {string} accountId
+ * @param {string} day YYYY-MM-DD
+ */
+export function usageDayKey(accountId, day) {
+  nonEmpty(accountId, "accountId");
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    throw new TypeError(`usageDayKey needs a YYYY-MM-DD day, got ${String(day)}`);
+  }
+  return `usage:${accountId}:day:${day}`;
 }
 
 /** @param {string} refundId */
@@ -346,13 +362,20 @@ export async function recentLedger(db, accountId, limit = 10) {
  * #532/#536) and saves the provider's customer id when the account has none
  * yet (#503), both with COALESCE so a replay changes nothing.
  *
+ * The same verified event is also the only writer of the card fingerprint
+ * (#503): the browser no longer supplies one, so the provider's payment
+ * method id is the whole record of which card an account holds, and it is
+ * claimed here, in the verified path. A second live account already holding
+ * that card is refused, which is reported in the result and logged, and never
+ * stops the credit: money that moved is credited whatever the guard says.
+ *
  * A payment for an account that no longer exists is not credited: money
  * under an id nobody can sign in as is lost to everyone. The caller logs it,
  * and the reconciliation lists it as missing, so a person refunds it.
  * @param {D1Database} db
- * @param {{accountId: string, paymentId: string, amountCents: number, grossCents?: number, customerId?: string|null, now?: number}} payment
+ * @param {{accountId: string, paymentId: string, amountCents: number, grossCents?: number, customerId?: string|null, paymentMethodId?: string|null, now?: number}} payment
  *   grossCents is what the provider took, tax included (defaults to amountCents)
- * @returns {Promise<{credited: boolean, balanceCents: number, accountFound: boolean}>}
+ * @returns {Promise<{credited: boolean, balanceCents: number, accountFound: boolean, card?: {claimed: true, fingerprint: string}|{claimed: false, error: string}}>}
  */
 export async function creditTopUp(db, payment) {
   if (typeof payment !== "object" || payment === null) {
@@ -369,11 +392,13 @@ export async function creditTopUp(db, payment) {
   if (grossCents < amountCents) {
     throw new RangeError(`a payment's total ${grossCents} is below its credit ${amountCents}`);
   }
-  const account = await db
-    .prepare("SELECT 1 AS hit FROM accounts WHERE id = ?1")
-    .bind(nonEmpty(payment.accountId, "accountId"))
-    .first();
-  if (!account) {
+  const accountRow = /** @type {{email?: unknown}|null} */ (
+    await db
+      .prepare("SELECT 1 AS hit, email FROM accounts WHERE id = ?1")
+      .bind(nonEmpty(payment.accountId, "accountId"))
+      .first()
+  );
+  if (!accountRow) {
     return { credited: false, balanceCents: 0, accountFound: false };
   }
   const at = nowMs(payment.now);
@@ -397,6 +422,21 @@ export async function creditTopUp(db, payment) {
     )
     .bind(Math.floor(at / 1000), customerId, payment.accountId)
     .run();
+  const fingerprint = paymentCardFingerprint(payment.paymentMethodId);
+  /** @type {{claimed: true, fingerprint: string}|{claimed: false, error: string}|undefined} */
+  let card;
+  if (fingerprint !== null) {
+    const claimed = await claimCardFingerprint(db, {
+      accountId: payment.accountId,
+      email: typeof accountRow.email === "string" ? accountRow.email : "",
+      fingerprint,
+      now: at,
+    });
+    card =
+      "error" in claimed
+        ? { claimed: false, error: claimed.error }
+        : { claimed: true, fingerprint };
+  }
   const balance = await balanceCents(db, payment.accountId);
   if (inserted) {
     // Money landed: a started auto top-up is finished, and a balance back over
@@ -411,7 +451,7 @@ export async function creditTopUp(db, payment) {
       .bind(balance, LOW_BALANCE_CENTS, payment.accountId)
       .run();
   }
-  return { credited: inserted, balanceCents: balance, accountFound: true };
+  return { credited: inserted, balanceCents: balance, accountFound: true, card };
 }
 
 /**

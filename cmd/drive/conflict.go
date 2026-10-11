@@ -1,8 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 // The conflict rule (drive issue #30).
@@ -92,17 +97,168 @@ func SanitizeDevice(name string) string {
 const maxDeviceNameLen = 64
 
 // DefaultDeviceName is the device this mount is on when the operator did not
-// name it: the machine's own hostname, sanitized. A mount with no hostname
-// (a container without one) falls back to "device", never to an empty name,
-// because a conflict file has to say which device lost the save.
+// name it: the machine's own hostname, sanitized, with a short machine
+// suffix added when that hostname is a stock model name every Mac of the
+// model ships with. A mount with no hostname (a container without one)
+// falls back to "device", never to an empty name, because a conflict file
+// has to say which device lost the save.
 func DefaultDeviceName() string {
 	host, err := os.Hostname()
 	if err == nil {
-		if name := SanitizeDevice(host); name != "" {
+		if name := SanitizeDevice(stockedHostname(host)); name != "" {
 			return name
 		}
 	}
 	return "device"
+}
+
+// stockHostnames are the hostnames macOS ships a new Mac with, and the
+// numbered forms macOS gives a second Mac of the same model on one
+// network. A stock name is a model, not a name a person chose, so two
+// Macs that never met both answer "MacBook-Air" and are one device in
+// the account, on the approval page and in conflict copies (issue #561).
+var stockHostnames = []string{
+	"MacBook",
+	"MacBook-Air",
+	"MacBook-Pro",
+	"iMac",
+	"Mac-mini",
+	"Mac-Studio",
+	"Mac-Pro",
+}
+
+// isStockHostname reports whether hostname is one macOS ships rather than
+// one a person chose: a bare model name, or the same name with the
+// number macOS adds when the model name is already taken on the network
+// ("MacBook-Air-2"). macOS can report the local hostname with a ".local"
+// suffix when the resolver answers with the mDNS name, so that suffix is
+// stripped before the comparison.
+func isStockHostname(hostname string) bool {
+	base := strings.ToLower(trimLocal(hostname))
+	for _, model := range stockHostnames {
+		model = strings.ToLower(model)
+		if base == model {
+			return true
+		}
+		if rest, ok := strings.CutPrefix(base, model+"-"); ok && isDigits(rest) {
+			return true
+		}
+	}
+	return false
+}
+
+// trimLocal drops the mDNS ".local" suffix whatever its case: macOS
+// hostnames are case-insensitive and a resolver can answer ".LOCAL".
+func trimLocal(hostname string) string {
+	h := strings.TrimSpace(hostname)
+	if len(h) >= len(".local") && strings.EqualFold(h[len(h)-len(".local"):], ".local") {
+		return h[:len(h)-len(".local")]
+	}
+	return h
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// stockedHostname leaves a name a person chose alone and adds a short
+// machine suffix to a stock one, so two Macs that both ship as
+// "MacBook-Air" answer "MacBook-Air-3f2a" and "MacBook-Air-9c1d"
+// (issue #561). The suffix is a disambiguator, not a credential, and
+// `drive login --device` replaces it with the name the person chose.
+func stockedHostname(hostname string) string {
+	base := trimLocal(hostname)
+	if !isStockHostname(base) {
+		return hostname
+	}
+	return base + "-" + machineSuffix()
+}
+
+// machineSuffix is the short, stable tail that tells two stock-named
+// machines apart: the first four hex digits of a hash of this machine's
+// own identifier. macOS reads that from the platform UUID, Linux from
+// /etc/machine-id; a machine with neither (a container) falls back to
+// its hostname, which is stable for this machine too. Four hex digits
+// are a display disambiguator, not a key: two machines whose ids hash
+// alike stay one name until the person names one with --device. The
+// value is memoized for the process lifetime: machineID spawns a process
+// on macOS, and every conflict copy asks for the suffix.
+var (
+	machineSuffixOnce sync.Once
+	machineSuffixID   string
+)
+
+func machineSuffix() string {
+	machineSuffixOnce.Do(func() {
+		sum := sha256.Sum256([]byte(machineID()))
+		machineSuffixID = hex.EncodeToString(sum[:])[:4]
+	})
+	return machineSuffixID
+}
+
+// machineID is this machine's own identifier, read from the OS. It is
+// not a secret: it identifies the machine to itself, for the suffix
+// above, and nothing is signed with it.
+func machineID() string {
+	if id := platformMachineID(); id != "" {
+		return id
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "drive"
+	}
+	return "host:" + host
+}
+
+// platformMachineID reads the machine identifier the OS already keeps:
+// the platform UUID on macOS, the machine id on Linux. It returns ""
+// when the OS gives this machine none, and never fails: the caller
+// falls back to the hostname.
+func platformMachineID() string {
+	switch runtime.GOOS {
+	case "darwin":
+		// ioreg is macOS's own registry reader; the platform UUID is
+		// unique to this Mac and survives a reinstall of the OS. It lives
+		// in /usr/sbin, which a minimal PATH can leave out, so the absolute
+		// path is preferred and the bare name is only a fallback.
+		iorg := "/usr/sbin/ioreg"
+		if _, err := os.Stat(iorg); err != nil {
+			iorg = "ioreg"
+		}
+		out, err := exec.Command(iorg, "-rd1", "-c", "IOPlatformExpertDevice").Output()
+		if err != nil {
+			return ""
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), `"IOPlatformUUID" = "`); ok {
+				return strings.TrimSuffix(v, `"`)
+			}
+		}
+		return ""
+	default:
+		for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+			if id := readFirstLine(path); id != "" {
+				return id
+			}
+		}
+		return ""
+	}
+}
+
+func readFirstLine(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
 }
 
 // ConflictName is the name a losing save is kept under. The marker and the

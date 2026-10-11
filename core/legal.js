@@ -6,7 +6,7 @@
 // live.
 //
 // Four facts are the owner's to decide, not a worker's: the payee's legal
-// name, the contact address, the refund rule and the VAT line on receipts.
+// name, the postal address, the refund rule and the VAT line on receipts.
 // Each one is a marked placeholder in exactly one page:
 //
 //     <mark class="to-fill" data-placeholder="<id>">[To fill: ...]</mark>
@@ -15,6 +15,10 @@
 // other page links to the page that holds the fact (the support page for the
 // address, the refunds page for the rule), so each fact is typed once.
 // test/legal.test.mjs allows no placeholder outside this list and none twice.
+// The one fact that IS decided is the support mailbox: SUPPORT_EMAIL below,
+// typed once here. The support page and the share landing page's report mail
+// import it. security.txt is a static file and cannot import, so
+// test/legal.test.mjs pins that its Contact: line is the same spelling.
 
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/
@@ -41,6 +45,12 @@ export const SUPPORT_PATH = "/support";
 /** Where a share link is reported (the report section on the acceptable-use page). */
 export const REPORT_PATH = "/acceptable-use#report";
 
+// drive#523 part 2 (drive#883): the one support mailbox, Nish's decision — a
+// mailbox on the brand's own domain. Typed once here, so no page grows a
+// second spelling and no worker invents an address.
+/** The one support mailbox a person can write to. */
+export const SUPPORT_EMAIL = "support@storagebun.com";
+
 /**
  * One fact the owner fills in, and the one page that carries it.
  * @typedef {{ id: string, file: string, what: string }} LegalPlaceholder
@@ -56,7 +66,7 @@ export const LEGAL_PLACEHOLDERS = Object.freeze([
   Object.freeze({
     id: "contact-address",
     file: "support.html",
-    what: "The address that reaches a person: an email inbox, and a postal address if the law needs one.",
+    what: "The postal address, if the law needs one. The email inbox is decided: support@storagebun.com (drive#883), already on the support page.",
   }),
   Object.freeze({
     id: "refund-rule",

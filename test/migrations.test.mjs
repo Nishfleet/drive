@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
 import { MIGRATION_FILES, orderMigrationFiles } from "./d1-sqlite.mjs";
-import { DRIVE_SCHEMA_MIGRATIONS } from "./harness.mjs";
+import { DRIVE_MIGRATIONS, DRIVE_SCHEMA_MIGRATIONS } from "./harness.mjs";
 
 /**
  * The four leading digits are a migration's identity: production tracks a file
@@ -82,16 +82,27 @@ test("the migration directory is read in full-filename order, like wrangler", ()
   );
 });
 
-test("DRIVE_SCHEMA_MIGRATIONS is generated from the folder, not hand-kept", () => {
+test("both harness migration lists ARE the folder, in apply order", () => {
+  // drive#579: the two lists test/harness.mjs hands a test used to be written
+  // out by hand, and each one had drifted - the short default skipped seven
+  // files the deploy applies, so a test could prove a thing true only of its
+  // own fixture. Both are built from the folder now, and this is the gate that
+  // says so: add a migration to `migrations/drive/` and both lists carry it
+  // with no edit, and take one file out of either list and this fails.
   const fromFolder = readdirSync(new URL("../migrations/drive/", import.meta.url))
     .filter((name) => name.endsWith(".sql"))
     .sort()
     .map((name) => `drive/${name}`);
-  assert.deepEqual(
-    [...DRIVE_SCHEMA_MIGRATIONS],
-    fromFolder,
-    "DRIVE_SCHEMA_MIGRATIONS must be the folder's list in apply order, not a hand-kept copy",
-  );
+  for (const [name, list] of [
+    ["DRIVE_MIGRATIONS", DRIVE_MIGRATIONS],
+    ["DRIVE_SCHEMA_MIGRATIONS", DRIVE_SCHEMA_MIGRATIONS],
+  ]) {
+    assert.deepEqual(
+      [...list],
+      fromFolder,
+      `${name} must be the folder's list in apply order, not a hand-kept copy`,
+    );
+  }
 });
 
 test("no new duplicate migration prefix is added", () => {

@@ -140,10 +140,9 @@ export async function storageEventsRoute(request, ctx) {
     return errorResponse(400, parsed.error);
   }
   for (const event of parsed.events) {
-    // The line the step 1 proof quotes: the event's own name, the object it
-    // names and the version the bucket created. No bytes and no secret.
+    // Event name, version and time only. The object key is a customer path.
     console.log(
-      `[api] storage event ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
+      `[api] storage event ${event.eventName} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
     );
   }
   return json({ received: parsed.events.length, events: parsed.events }, 202);

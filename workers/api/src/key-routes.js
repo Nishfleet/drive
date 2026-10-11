@@ -244,6 +244,13 @@ export async function revokeAllKeysRoute(request, ctx) {
  * The answer is the public key row, never a secret: renewing does not change
  * the credential, only the server-side window, so the tool's own MCP entry
  * keeps working untouched and there is nothing new to hand out.
+ *
+ * The one exception is a device key on a provider that names a session (the
+ * STS path, drive#749): there the renewal IS a new credential — the vendor
+ * ends the old one when its session ends — so the answer carries the fresh
+ * credential to the signed-in device that asked, the same trust the mint
+ * answer itself has (the account gate decided this caller may speak for the
+ * account). Every other kind's answer is unchanged.
  * @param {Request} request
  * @param {{store: KeyStore, account: {id: string, name: string}, params: Record<string, string>}} ctx
  */
@@ -269,7 +276,11 @@ export async function renewKeyRoute(request, ctx) {
     }
     return errorResponse(404, "No such key on this account.");
   }
-  return json(result.device);
+  return json(
+    result.credential === undefined
+      ? result.device
+      : { ...result.device, credential: result.credential },
+  );
 }
 
 /**
@@ -314,7 +325,7 @@ export async function revokePresentedKeyRoute(request, ctx) {
  * @param {Request} request
  * @returns {{accessKeyId: string, secret: string}|null}
  */
-export function basicCredentials(request) {
+function basicCredentials(request) {
   const header = request.headers.get("authorization") ?? "";
   const [scheme, encoded] = header.split(" ");
   if (scheme === undefined || encoded === undefined || scheme.toLowerCase() !== "basic") {
@@ -427,6 +438,9 @@ export async function storageWriteRoute(request, ctx) {
     return errorResponse(402, failureMessage("balance-empty"));
   }
   const body = new Uint8Array(await request.arrayBuffer());
+  if (await ctx.store.size30DayUnpaid(device, body.byteLength)) {
+    return errorResponse(402, failureMessage("size30-unpaid"));
+  }
   ctx.store.putObject(authorized.path, body);
   return json(
     { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },

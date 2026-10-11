@@ -125,6 +125,7 @@ async function linkAndRequest(db, accountId, suffix) {
     maxFiles: 100,
     digestAt: null,
     pendingUploads: "[]",
+    malwareNoticeAt: null,
   });
   return { shareToken, requestToken, links };
 }

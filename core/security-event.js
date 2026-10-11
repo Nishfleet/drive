@@ -10,10 +10,8 @@
 import { sendEmail } from "./email-send.js";
 import { SECURITY_EVENT_COPY } from "./emails.js";
 
-export { SECURITY_EVENT_COPY };
-
 /** How long a send may block the action before it is treated as a failure. */
-export const SEND_DEADLINE_MS = 8_000;
+const SEND_DEADLINE_MS = 8_000;
 
 /**
  * Races `work` against a clock. A vendor that never answers must not hold

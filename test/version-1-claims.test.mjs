@@ -19,11 +19,14 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { monthlyReceiptTemplate } from "../core/emails.js";
 import {
   NOT_OPEN,
   OUT_OF_V1_MSI_DENIALS,
   OUT_OF_V1_PLATFORM_DENIALS,
   OUT_OF_V1_PLATFORM_WORDS,
+  PLATFORMS,
   V1_PLATFORMS,
   VERSION_HISTORY,
   VERSION_HISTORY_PROMISES,
@@ -217,6 +220,230 @@ test("every surface named in the issue states the facts it is about", () => {
     read("get-started.html"),
     /not open yet/i,
     "the get-started page must say the drive is not open yet",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// drive#545: facts the surfaces kept getting wrong, each pinned to the code
+// that owns it. The four claims the rework brief names must stay gone.
+// ---------------------------------------------------------------------------
+
+test("customer pages do not sell a $5 roll-over or a live team bill", () => {
+  const leak =
+    /roll into the next|reaches \$5|chargeThreshold|unpaid_cents|one company bill split by team/;
+  for (const surface of [
+    "public/index.html",
+    "public/signin.html",
+    "public/llms.txt",
+    "src/docs.js",
+    "docs-site/faq.md",
+    "docs-site/pricing.md",
+    "docs-site/how-it-works.md",
+    "docs-site/limits.md",
+  ]) {
+    assert.doesNotMatch(read(surface), leak, `${surface} sold a $5 roll-over or a live team bill`);
+  }
+});
+
+test("every Get drive button goes to the waitlist while sign-up is invite-only", () => {
+  const index = read("public/index.html");
+  assert.doesNotMatch(index, /<a class="btn" href="\/signin">Get drive/);
+  const buttons =
+    index.match(/<a class="btn" href="#waitlist" data-waitlist-source="[^"]+">Get drive/g) ?? [];
+  assert.equal(
+    buttons.length,
+    3,
+    `three Get drive buttons to the waitlist, found ${buttons.length}`,
+  );
+  for (const source of ["nav", "hero", "footer"]) {
+    assert.match(
+      index,
+      new RegExp(`data-waitlist-source="${source}"`),
+      `the ${source} button tags its source`,
+    );
+  }
+  // The page's waitlist script already reads the tag (drive#11 form). The
+  // buttons reuse it so a click sets the hidden source field and focuses
+  // the email box, instead of only jumping to the fragment.
+  assert.match(index, /querySelectorAll\("\[data-waitlist-source\]"\)/);
+  assert.match(index, /sourceInput\.value = link\.dataset\.waitlistSource/);
+});
+
+test("get-started names Linux, not only Mac", () => {
+  const page = read("get-started.html");
+  assert.match(page, /Mac or Linux/i, "get-started must name both ready platforms");
+  assert.doesNotMatch(page, /the Mac you want the drive on/);
+});
+
+test("the platform list is the packaging code's, in the same words on the home page", () => {
+  // drive#545: the quickstart said "macOS, Linux or Windows" while the home
+  // page said Windows is not ready. The home page states the one PLATFORMS
+  // string; drive#776 holds the docs surfaces to "not in version 1".
+  assert.ok(
+    !read("docs-site/quickstart.md").match(/macOS, Linux or Windows/i),
+    "the quickstart must not list Windows as an install target",
+  );
+  const index = read("public/index.html");
+  assert.ok(index.includes(PLATFORMS), "the home page states the platform list verbatim");
+  for (const match of index.matchAll(/Windows/g)) {
+    const around = index.slice(Math.max(0, match.index - 80), match.index + 120);
+    assert.match(
+      around,
+      /not ready|not published|not yet|planned|not proven/i,
+      `a home-page Windows mention reads as available: ...${around}...`,
+    );
+  }
+});
+
+test("the step count the surfaces quote is the quickstart's own", () => {
+  // drive#545: the docs home, how-it-works, the README and llms.txt said
+  // "five steps"; the quickstart has six. The count is read from the page's
+  // numbered headings, so a step added later fails here until every surface
+  // quotes the new count.
+  const steps = (read("docs-site/quickstart.md").match(/^## \d+\./gm) ?? []).length;
+  assert.ok(steps >= 2, `the quickstart has numbered steps, found ${steps}`);
+  const words = /** @type {Record<number, string>} */ ({
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+  });
+  const word = words[steps];
+  assert.ok(word, `no word for ${steps} steps; extend the map and the surfaces together`);
+  for (const surface of [
+    "docs-site/index.md",
+    "docs-site/how-it-works.md",
+    "README.md",
+    "public/llms.txt",
+  ]) {
+    assert.match(
+      read(surface),
+      new RegExp(`\\b${word} steps\\b`),
+      `${surface} must say the quickstart is ${word} steps`,
+    );
+  }
+});
+
+test("the download charge is marked planned, not sold as live", () => {
+  // drive#545 (the #517 extension): the pricing page, the FAQ and llms.txt
+  // advertised a 1¢ per GB download charge. core/pricing.js, the published
+  // price, has no download rate, so the charge is stated as the plan, marked
+  // planned, on every surface that names it.
+  const rate = `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`;
+  const multiple = `${BILLING_CONFIG.freeDownloadMultiplier}×`;
+  const surfaces = /** @type {const} */ ([
+    ["docs-site/pricing.md", /not in the published price[\s\S]*?planned/],
+    ["public/llms.txt", /not in the published price, so they are free today/],
+    [
+      "src/docs.js",
+      /Downloads are not in the published price, so nothing is charged for them today/,
+    ],
+  ]);
+  for (const [surface, pattern] of surfaces) {
+    assert.match(read(surface), pattern, `${surface} must mark the download charge planned`);
+    // A period right after the rate, with no "(planned)", is the live sell.
+    assert.doesNotMatch(
+      read(surface),
+      /then \d+¢ per GB\./,
+      `${surface} sells the download charge as live`,
+    );
+  }
+  assert.ok(
+    read("public/llms.txt").includes(`${multiple} your stored size free, then ${rate} (planned)`),
+    "llms.txt must print the download plan from the billing config",
+  );
+  const builtPricing = shipped("pricing");
+  assert.doesNotMatch(
+    builtPricing,
+    /then \d+¢ per GB\./,
+    "the built pricing page sells the download charge as live",
+  );
+  assert.match(
+    builtPricing,
+    /not in the published price[\s\S]{0,200}\(planned\)/,
+    "the built pricing page must keep the planned marker next to the download price",
+  );
+  const builtFaq = shipped("faq");
+  assert.match(
+    builtFaq,
+    /not in the published price[\s\S]{0,220}\(planned\)/,
+    "the built FAQ must keep the planned marker next to the download price",
+  );
+});
+
+test("the monthly receipt states its facts in the customer's words", () => {
+  // drive#545: the receipt told a customer "This is min(metered, ceiling)".
+  const { subject, text, html } = monthlyReceiptTemplate({
+    billUsd: 12,
+    meteredUsd: 16,
+    ceilingUsd: 12,
+    capped: true,
+    monthIso: "2026-10-01T00:00:00.000Z",
+    replyTo: "support@drive.example",
+  });
+  for (const part of [subject, text, html]) {
+    assert.doesNotMatch(part, /min\(metered|ceiling\)/, "no code jargon on a customer receipt");
+  }
+  assert.match(
+    text,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+});
+
+test("the FAQ's Benchmarks link is a shipped docs page", () => {
+  assert.match(
+    read("docs-site/faq.md"),
+    /\[Benchmarks\]\(\/benchmarks\)/,
+    "the FAQ must send speed questions to the Benchmarks page",
+  );
+  assert.match(
+    shipped("benchmarks"),
+    /# Benchmarks/,
+    "the built Benchmarks page must exist for that FAQ link",
+  );
+});
+
+test("customer docs do not point at repository files or issue numbers", () => {
+  // drive#545: limits.md named (#154), the FAQ named docs/scoreboard.md, the
+  // security page named workers/api paths, the pricing page named
+  // monthBillCents. Those are repo internals, not customer copy.
+  const leak =
+    /(?:workers\/api\/|cmd\/drive\/[a-z]|docs\/scoreboard\.md|monthBillCents|\(issue #\d+\)|\(#\d+\))/;
+  for (const surface of [
+    "docs-site/faq.md",
+    "docs-site/limits.md",
+    "docs-site/security.md",
+    "docs-site/pricing.md",
+    "docs-site/how-it-works.md",
+    "docs-site/quickstart.md",
+    "docs-site/index.md",
+    "public/llms.txt",
+  ]) {
+    assert.doesNotMatch(read(surface), leak, `${surface} points at a repository file or issue`);
+  }
+});
+
+test("the security page's key-storage claim matches the CLI", () => {
+  // drive#545: the page used to name workers/api paths. The customer claim
+  // is that secrets stay on the machine as files only that user can read.
+  // login.go writes rclone.conf 0600; CheckSecretFileMode (in the login
+  // package the CLI extracted) refuses a looser mode before
+  // ParseRcloneConfig or parseRcloneEnvFile reads the secret.
+  assert.match(
+    read("docs-site/security.md"),
+    /The CLI keeps them on this machine as files\s+only your user can read, never inside the Drive\s+folder/,
+  );
+  const config = read("internal/login/config.go");
+  assert.match(config, /func CheckSecretFileMode/);
+  assert.match(config, /perm&0o077 != 0/);
+  assert.match(config, /ParseRcloneConfig[\s\S]*?CheckSecretFileMode\(path\)/);
+  assert.match(config, /parseRcloneEnvFile[\s\S]*?CheckSecretFileMode\(path\)/);
+  assert.match(
+    read("cmd/drive/login.go"),
+    /WriteFileAtomic\(RcloneConfigPath\(home\), \[\]byte\(RcloneConfig\(cfg\)\), 0o600\)/,
   );
 });
 

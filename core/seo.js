@@ -9,25 +9,34 @@
 // The price itself is not declared here: core/pricing.js is the one price
 // source, and BILLING below is built from PRICE so the tags, the JSON-LD and
 // llms.txt render the same numbers and sentences the page does (issue #23).
-// The rule (drive#463, Nish 2026-10-04): pay only for what you store.
+// The rule (drive#642, Nish 2026-10-05): pay for the biggest size in 30 days.
 //
-//     bill = min(2¢ x avg GB, $10 x max(1, avg TB))
+//     bill = min(2¢ x size30 GB, $15 x max(1, size30 TB))
 //
-// So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
-// bills $30. No plans, and the prepaid balance never expires (drive#586).
+// So 200 GB bills $4, 750 GB to 1 TB bills $15, 1.5 TB bills $22.50 and 4 TB
+// bills $60. No plans, and the prepaid balance never expires (drive#586).
 
 // The one site address (drive#527). cmd/drive/site.json is the single file
 // that holds it: the CLI embeds it (//go:embed in login.go), the docs config
 // imports it, and this module is where the site's own metadata reads it from.
 // test/seo.test.mjs then holds every shipped file to the value, so a domain
 // move is one edit rather than a sweep of ten files.
+//
+// drive issue #870 (Nish, 2026-10-09): the address is storagebun.com, the
+// site's own domain. The workers.dev address is still up behind Cloudflare
+// Access until the custom domain answers, but nothing customer-facing says so
+// any more.
 import site from "../cmd/drive/site.json" with { type: "json" };
 import { LEGAL_PAGES } from "./legal.js";
 import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = site.origin;
-const SITE_NAME = "Drive";
-const SITE_TITLE = `Drive — ${PRICE.titleLine}`;
+// The brand the customer reads (drive issue #870, Nish 2026-10-09): the
+// product is Storagebun. The lowercase wordmark the pages draw is the same
+// name, and the `drive` CLI command is unchanged — the command is what people
+// type, not what the product is called.
+const SITE_NAME = "Storagebun";
+const SITE_TITLE = `Storagebun — ${PRICE.titleLine}`;
 // The same sentence the page's own meta description already carries, so the
 // search result, the share card and the page agree word for word.
 const SITE_DESCRIPTION = `A Finder drive for people and their agents. ${PRICE.headline}`;

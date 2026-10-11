@@ -64,9 +64,17 @@ export default defineWorker({
     //
     // Per IP, 60 a minute, five times the 12 a well-behaved CLI already polls
     // (a device code is polled every DEVICE_CODE_INTERVAL_SECONDS = 5,
-    // core/device-signin.js) and well above the sign-in binding's
-    // 10 a minute, which would lock a polling CLI out of the flow it is in.
-    // It stays far below what a script needs to walk short user codes.
+    // core/device-signin.js). It stays far below what a script needs to walk
+    // short user codes.
+    //
+    // Sized on this flow's own load, deliberately not on the site Worker's
+    // sign-in ceiling. The two guard different things — this one bounds short
+    // user codes on the device flow, that one bounds sign-in posts — and
+    // drive#202 raised the sign-in per-IP limit from 10 to 500 after
+    // measuring a 200/min shared-egress peak, which left no room to keep this
+    // number above it. The CLI's 12-a-minute poll is the load this ceiling has
+    // to absorb (test/deploy-api-worker.test.mjs), and the two are now free to
+    // move on their own measurements.
     //
     // The global one bounds the token factory: both a poll (which mints a
     // device token) and an approval (which attaches a signed-in account) are

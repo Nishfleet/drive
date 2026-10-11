@@ -51,8 +51,8 @@ export const DODO_CHECKOUT_PATH = "/checkouts";
 /** The metadata tag that marks a Dodo payment as a drive top-up. */
 export const TOPUP_PURPOSE = "drive-topup";
 
-/** How far a webhook's timestamp may be from now, in seconds. */
-export const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
+// How far a webhook's timestamp may be from now, in seconds.
+const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
 /**
  * A whole number of cents in dollars, as the page prints it: "$12.34",
@@ -297,12 +297,25 @@ async function creditFromEvent(db, data, now, mail) {
     return json({ ok: false, ignored: "amount or currency not creditable" });
   }
   const customer = objectOrNull(data.customer);
+  // The card the payment was made with (drive#503). Dodo keys a card on
+  // `payment_method_id`, the one field core/prepaid.js also reads off the live
+  // /payment-methods call, and it is behind the signature check so a browser
+  // cannot choose it: nothing in the request body supplies a card (the sign-in
+  // form's posted fingerprint is gone, core/abuse-guards.js). An event with no
+  // payment method id records no card at all rather than guessing one from
+  // another field -- an earlier `data.method` fallback could have given every
+  // account the same id and locked the second one out with nothing to show it.
+  // Absent is loud: the "card was not recorded" line below fires once per such
+  // payment, so a field-shape change surfaces instead of passing silently.
+  const paymentMethodId =
+    typeof data.payment_method_id === "string" ? data.payment_method_id : null;
   const credited = await creditTopUp(db, {
     accountId,
     paymentId,
     amountCents,
     grossCents: total,
     customerId: typeof customer?.customer_id === "string" ? customer.customer_id : null,
+    paymentMethodId,
     now,
   });
   if (!credited.accountFound) {
@@ -315,6 +328,18 @@ async function creditFromEvent(db, data, now, mail) {
       `payment=${paymentId}`,
     );
     return json({ ok: false, ignored: "no such account" });
+  }
+  // The card is claimed server-side from the event (drive#503), and a card
+  // another live account already holds is refused. The money is credited
+  // either way: the one-account-per-card rule never holds a payment, and the
+  // line below is what says so to a person.
+  if (credited.card !== undefined && !credited.card.claimed) {
+    console.error(
+      "billing webhook: a top-up was credited but its card was not recorded",
+      `account=${accountId}`,
+      `payment=${paymentId}`,
+      credited.card.error,
+    );
   }
   if (credited.credited) {
     // A receipt only when money moved, and only once: a replayed event

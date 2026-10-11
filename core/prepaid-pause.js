@@ -139,7 +139,7 @@ export function prepaidKeyProvider(devices, accountId) {
  * @param {string} accountId
  * @returns {Promise<boolean>}
  */
-export async function accountAtCap(devices, accountId) {
+async function accountAtCap(devices, accountId) {
   if (typeof devices?.getCapUsd !== "function" || typeof devices?.monthUsage !== "function") {
     return false;
   }

@@ -161,7 +161,7 @@ export async function removeMemberRoute(request, ctx) {
  * A team row as it is stored, with nothing secret in it.
  * @param {{id: string, ownerAccountId: string, name: string, createdAt: number}} team
  */
-export function publicTeam(team) {
+function publicTeam(team) {
   return {
     id: team.id,
     name: team.name,
@@ -179,7 +179,7 @@ export function publicTeam(team) {
  * @param {{id: string, teamId: string, accountId: string, email: string, role: string, state: string, invitedAt: number, joinedAt: number|null, revokedAt: number|null}} member
  * @param {{includeEmail?: boolean}} [options]
  */
-export function publicMember(member, options = {}) {
+function publicMember(member, options = {}) {
   const includeEmail = options.includeEmail === true;
   return {
     id: member.id,

@@ -24,15 +24,17 @@
 // builds every link it mails from `baseURL`, so a deployment with neither set
 // is a deployment that is not signed in — not one with a weak session or a
 // link that points at the wrong host.
-import { passkey } from "@better-auth/passkey";
-import { betterAuth } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
-import { magicLink, twoFactor } from "better-auth/plugins";
+import { betterAuth } from "better-auth/minimal";
+import { magicLink } from "better-auth/plugins/magic-link";
+import { d1Adapter } from "./auth-d1-adapter.js";
 import { sha256Hex } from "./db.js";
 import { sendEmail } from "./email-send.js";
+import { DAY_MS } from "./units.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
+/** @typedef {typeof import("better-auth/plugins/two-factor").twoFactor} TwoFactor */
 
 /**
  * The namespace Better Auth puts in front of its cookies. `drive`, so the
@@ -66,7 +68,7 @@ export const SIGNIN_LINK_TTL_SECONDS = 600;
  * used, so signing in every week would be a support ticket rather than a
  * security win.
  */
-export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+export const SESSION_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
 /**
  * The page a signed-in person lands on after following their link.
@@ -106,7 +108,8 @@ export function safeAfterSigninPath(raw) {
   return url.pathname + url.search;
 }
 
-// ---- the return path a device-approval sign-in lands on (drive issue #558) ----
+// ---- the return path a device-approval sign-in lands on (drive issue #558),
+// ---- and the age attestation that rides along (drive#781, drive#785)
 //
 // The approve page leaves its path in a cookie of the browser that opened it,
 // so a link opened on a phone (the second device, the one that signs in) lost
@@ -115,6 +118,12 @@ export function safeAfterSigninPath(raw) {
 // `metadata` field (src/signin.js), `sendMagicLink` below stores one row keyed
 // by the link token before the mail goes out, and the verify step reads and
 // deletes the row on whichever device followed the link.
+//
+// The same row carries the 18+ attestation (drive#785): the page cannot tell
+// a first-time address from a returning one (drive#538 — refusing at the
+// start step reports which one it is), so the tick does not gate the link,
+// it travels with it. The verify step reads the row before the library opens
+// the account and refuses a first-time address whose start posted no tick.
 
 /**
  * How long a stored return path stays readable. Fifteen minutes, five minutes
@@ -126,17 +135,34 @@ export function safeAfterSigninPath(raw) {
  */
 export const SIGNIN_RETURN_TTL_SECONDS = 15 * 60;
 
+/** What one link token's row says, read back. */
+const EMPTY_SIGNIN_RETURN = Object.freeze({
+  returnPath: "",
+  email: "",
+  ageAttested: false,
+});
+
 /**
- * Stores the return path one link token must land on. The key is the token's
- * SHA-256 digest, never the raw token or the address, so two codes (or two
- * starts) never overwrite each other and the table holds no secret a row
- * could leak. The path must already have passed safeAfterSigninPath; the
- * reader validates it again anyway.
+ * Stores what one link token must land on. The key is the token's SHA-256
+ * digest, never the raw token or the address, so two codes (or two starts)
+ * never overwrite each other and the table holds no secret a row could leak.
+ * The path must already have passed safeAfterSigninPath; the reader validates
+ * it again anyway.
+ *
+ * One row for every send since drive#785: the age gate reads the address and
+ * the tick from this row at the link moment, so a plain sign-in's row carries
+ * them even when the return path is empty. On a row the gate cannot
+ * evaluate — one written by the code before the migration, whose tick
+ * defaulted to 0 and whose email it never knew — the verify step answers
+ * permissively, because a form post backed this link the same way every
+ * other one was backed.
  * @param {D1Database} db
  * @param {string} token the raw magic-link token this row belongs to
  * @param {string} returnPath a path safeAfterSigninPath already returned
+ * @param {string} email the address the start was posted for
+ * @param {boolean} ageAttested whether the start posted the age tick (drive#785)
  */
-export async function storeSigninReturn(db, token, returnPath) {
+export async function storeSigninReturn(db, token, returnPath, email, ageAttested) {
   const at = Math.floor(Date.now() / 1000);
   // Sweep-then-insert is one batch, the pattern the device-code store uses:
   // rows nobody followed give their row up after the TTL, and a token re-sent
@@ -148,25 +174,56 @@ export async function storeSigninReturn(db, token, returnPath) {
       .bind(at - SIGNIN_RETURN_TTL_SECONDS),
     db
       .prepare(
-        `INSERT INTO signin_return (token_hash, return_path, created_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT (token_hash) DO UPDATE SET return_path = ?2, created_at = ?3`,
+        `INSERT INTO signin_return (token_hash, return_path, created_at, email, age_attested)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (token_hash) DO UPDATE
+           SET return_path = ?2, created_at = ?3, email = ?4, age_attested = ?5`,
       )
-      .bind(await sha256Hex(token), returnPath, at),
+      .bind(await sha256Hex(token), returnPath, at, email, ageAttested === true),
   ]);
 }
 
 /**
- * Reads and deletes the return path one link token stored. Single use by
- * construction: the row is deleted in the same breath it is read, so a spent
- * link cannot hand out the path twice. Returns the path only if it still
- * passes safeAfterSigninPath — the writer validated it, and this side
- * validates again so a row nothing wrote can still not bounce the session
- * elsewhere. An empty string means "no stored path", and the caller falls
- * back to the after-signin cookie.
+ * Reads one link token's row without consuming it: the age gate (drive#785)
+ * has to look before the library's verify runs — once that runs, an account
+ * may already exist — and the row's return path is still spent at the
+ * consume below it, on the same token. Returns null for a token nothing
+ * stored. An email the writer never knew reads as "", and a NULL tick reads
+ * as false.
  * @param {D1Database} db
  * @param {string} token the raw magic-link token the link carried
- * @returns {Promise<string>}
+ * @returns {Promise<{returnPath: string, email: string, ageAttested: boolean}|null>}
+ */
+export async function readSigninReturn(db, token) {
+  const row = await db
+    .prepare("SELECT return_path, email, age_attested FROM signin_return WHERE token_hash = ?1")
+    .bind(await sha256Hex(token))
+    .first();
+  if (row === null || row === undefined) {
+    return null;
+  }
+  return {
+    returnPath: typeof row.return_path === "string" ? safeAfterSigninPath(row.return_path) : "",
+    email: typeof row.email === "string" ? row.email : "",
+    ageAttested: row.age_attested === 1 || row.age_attested === true,
+  };
+}
+
+/**
+ * Reads and deletes what one link token stored. Single use by construction:
+ * the row is deleted in the same breath it is read, so a spent link cannot
+ * hand out the path twice. The return path comes back only if it still passes
+ * safeAfterSigninPath — the writer validated it, and this side validates
+ * again so a row nothing wrote can still not bounce the session elsewhere.
+ * An empty return path means "no stored path", and the caller falls back to
+ * the after-signin cookie. The email and age fields come back always empty:
+ * this SELECT fetches the path only, and by the time the consume runs the
+ * gate has already decided from readSigninReturn — the fields are here so
+ * the answer keeps one shape at every call site, not to carry the attestation
+ * itself (readSigninReturn is the reader a future caller must use).
+ * @param {D1Database} db
+ * @param {string} token the raw magic-link token the link carried
+ * @returns {Promise<{returnPath: string, email: string, ageAttested: boolean}>}
  */
 export async function consumeSigninReturn(db, token) {
   const row = await db
@@ -174,13 +231,16 @@ export async function consumeSigninReturn(db, token) {
     .bind(await sha256Hex(token))
     .first();
   if (row === null || row === undefined) {
-    return "";
+    return { ...EMPTY_SIGNIN_RETURN };
   }
   await db
     .prepare("DELETE FROM signin_return WHERE token_hash = ?1")
     .bind(await sha256Hex(token))
     .run();
-  return safeAfterSigninPath(row.return_path);
+  return {
+    ...EMPTY_SIGNIN_RETURN,
+    returnPath: safeAfterSigninPath(row.return_path),
+  };
 }
 
 /**
@@ -192,12 +252,28 @@ export async function consumeSigninReturn(db, token) {
  * token and builds the link itself, so Better Auth never has to know the
  * drive's page layout.
  *
- * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} options
+ * `twoFactorPlugin` is the second factor's factory, and it is a parameter
+ * rather than an import so this module stays free of it (drive#848): the main
+ * Worker entry reaches `createAuth` on every request, so importing the factor
+ * here would put its code and its recovery-code crypto in the entry chunk.
+ * Omit the parameter and the chain has no factor; pass the factory from
+ * core/auth-two-factor.js and it does. Which one a request gets is the
+ * caller's choice — `authFor` never passes it, `twoFactorAuthFor` always does.
+ *
+ * `plugins` is the same seam for the passkey stack, which is not typed
+ * because nothing reads an endpoint off it: only `.handler()` is called, on
+ * /api/auth/passkey/* (drive#846). The typed parameter stays typed because the
+ * factor's endpoints are read off the instance by the device-approval route
+ * and the tests.
+ *
+ * @param {{database: unknown, secret: string, baseURL: string, sendLink: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>, twoFactorPlugin?: (options: {allowPasswordless: boolean}) => ReturnType<TwoFactor>, plugins?: unknown[]}} options
  */
 export function createAuth(options) {
   return betterAuth({
     appName: "drive",
-    database: options.database,
+    // Minimal Better Auth plus the D1 adapter: the full entry pulls Kysely
+    // and every unused SQL dialect into the site Worker bundle (drive#758).
+    database: d1Adapter(/** @type {D1Database} */ (options.database)),
     secret: options.secret,
     // The one address this deployment is served on. It is configuration, not
     // something read off the request, because a link mailed to a caller is
@@ -244,7 +320,7 @@ export function createAuth(options) {
       expiresIn: SESSION_TTL_SECONDS,
       // Refresh a session that is still being used, so an active person is not
       // signed out mid-week, and so an abandoned one still expires.
-      updateAge: 24 * 60 * 60,
+      updateAge: DAY_MS / 1000,
     },
     advanced: {
       cookiePrefix: AUTH_COOKIE_PREFIX,
@@ -264,6 +340,7 @@ export function createAuth(options) {
       },
     },
     plugins: [
+      accessSignin(),
       magicLink({
         expiresIn: SIGNIN_LINK_TTL_SECONDS,
         // A first-time address gets an account when it follows its link, and a
@@ -271,24 +348,27 @@ export function createAuth(options) {
         // left on: the spec's screen has no separate registration step.
         disableSignUp: false,
         // `metadata` is the library's own field for per-send state: the start
-        // step forwards the approve page's return path in it (src/signin.js,
-        // drive#558), and the mapping row is written here, before the mail
-        // goes out. A row that cannot be written is a sign-in that cannot
+        // step forwards the approve page's return path and the 18+ tick in it
+        // (src/signin.js, drive#558, drive#785), and the mapping row is
+        // written here, before the mail goes out, for every send — the age
+        // gate reads the row at the link moment even when the return path is
+        // empty, because that row is the only record of whether the tick
+        // travelled. A row that cannot be written is a sign-in that cannot
         // keep its promise, so the failure propagates and the route answers
         // 503 rather than mailing a link whose landing page is already lost.
         sendMagicLink: async ({ email, token, metadata }, ctx) => {
-          const returnPath = safeAfterSigninPath(
+          const meta =
             metadata && typeof metadata === "object"
-              ? /** @type {{returnPath?: unknown}} */ (metadata).returnPath
-              : undefined,
+              ? /** @type {{returnPath?: unknown, age?: unknown}} */ (metadata)
+              : undefined;
+          const returnPath = safeAfterSigninPath(meta?.returnPath);
+          await storeSigninReturn(
+            /** @type {D1Database} */ (options.database),
+            token,
+            returnPath,
+            email,
+            meta?.age === true,
           );
-          if (returnPath !== "") {
-            await storeSigninReturn(
-              /** @type {D1Database} */ (options.database),
-              token,
-              returnPath,
-            );
-          }
           // Which browser or device asked, out of the library's own request
           // context: src/signin.js forwards this Worker request's user-agent
           // to the magic-link endpoint, so this is the header the person's
@@ -303,7 +383,6 @@ export function createAuth(options) {
           });
         },
       }),
-      accessSignin(),
       // The second factor (drive#524): a TOTP code in an authentication app,
       // with one-time recovery codes the library encrypts at rest and hands
       // back exactly once, at the moment they are generated. Enrollment is
@@ -316,21 +395,40 @@ export function createAuth(options) {
       // The tables this needs are migration 0034 (migrations/drive/), and the
       // pin in test/auth.test.mjs fails when the shipped files and the
       // library's expected schema drift apart.
-      twoFactor({
-        allowPasswordless: true,
-      }),
-      // Passkeys on the same account, over the library's stock WebAuthn
-      // plugin: registration and authentication options, the credential rows
-      // (table `passkey`, same migration) and the verify endpoints. The
-      // relying-party id is the deployment's own host, derived from the same
-      // configured base URL the sign-in links are built on, so a passkey is
-      // bound to the one address the deployment is served on — never to a
-      // Host header a caller chose.
-      passkey({
-        rpID: new URL(options.baseURL).hostname,
-        rpName: "drive",
-        origin: new URL(options.baseURL).origin,
-      }),
+      //
+      // The plugin factory is injected rather than imported here (drive#848):
+      // this module is reachable from the main Worker entry, and a static
+      // import of `better-auth/plugins/two-factor` would put the whole plugin
+      // — and the recovery-code crypto it alone pulls in — in every request's
+      // entry chunk. The base instance built here omits the factor; the
+      // /api/auth/two-factor/* routes get an instance that has it, from
+      // core/auth-two-factor.js, which the bundler loads on demand. An
+      // instance with no factor answers 404 on those paths, which is what the
+      // base instance is for: it serves every request that is not a
+      // second-factor one.
+      ...(options.twoFactorPlugin === undefined
+        ? []
+        : [
+            options.twoFactorPlugin({
+              allowPasswordless: true,
+            }),
+          ]),
+      // Passkeys are not in this list either, for the same reason as the
+      // factor above (drive#846): the plugin pulls ~590 KB of WebAuthn code
+      // into the Worker entry, and nearly every request never touches a
+      // passkey. core/auth-passkey.js adds it; authForPasskey loads that
+      // module only for `/api/auth/passkey/*`. Extra plugins stay an option
+      // so that module can call this factory rather than copy it.
+      //
+      // The cast to `[]` is what keeps `Auth` a usable type: TypeScript cannot
+      // see through a spread of an untyped array, so without it the inferred
+      // instance type is an error rather than a shape. With it, `Auth` names
+      // the magic-link endpoints off the chain above and carries nothing off
+      // these two options — which is the honest story this file now tells. The
+      // base instance has no second factor and no passkey on its type; the
+      // two instances that do carry them name those by hand, in
+      // core/auth-two-factor.js and in test/two-factor.test.mjs.
+      .../** @type {[]} */ (options.plugins ?? []),
     ],
   });
 }
@@ -386,7 +484,7 @@ function accessSignin() {
  * @param {string} baseURL the deployment's public address
  * @returns {string}
  */
-export function signinLink(token, baseURL) {
+function signinLink(token, baseURL) {
   return `${baseURL.replace(/\/$/, "")}${SIGNIN_LINK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
@@ -400,9 +498,20 @@ export function signinLink(token, baseURL) {
  * The box is kept stable so `authFor` can update the mailer each time it is
  * called with a new env object sharing the same binding — the test pattern
  * where env is rebuilt per request while the database stays alive.
- * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>}
+ * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth, passkeyAuth?: Auth}>}
  */
 const AUTH_CACHE = new WeakMap();
+
+/**
+ * The second cache, keyed the same way, for the instance that carries the
+ * second factor (drive#848). It is a separate box because the factor is a
+ * different plugin chain: building one without the factor and then handing
+ * that instance to a second-factor route would answer those routes from a
+ * chain the plugin never registered, and building one per request would
+ * recompile the chain on every arming.
+ * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>}
+ */
+const TWO_FACTOR_AUTH_CACHE = new WeakMap();
 
 /**
  * The auth instance for this request's environment, or null when the
@@ -418,6 +527,46 @@ const AUTH_CACHE = new WeakMap();
  * @returns {Auth|null}
  */
 export function authFor(env) {
+  return cachedAuth(AUTH_CACHE, env, undefined);
+}
+
+/**
+ * The auth instance that carries the second factor, or null when the
+ * deployment cannot have a session at all — the same closed door `authFor`
+ * documents, checked before anything is imported, so a deployment with no
+ * sign-in configuration never loads the factor's code to learn that.
+ *
+ * This is the instance only the /api/auth/two-factor/* routes may use, and
+ * the api Worker's device approval, which verifies a TOTP or a recovery code
+ * (workers/api/src/device-routes.js). Every other request is answered by
+ * `authFor`, whose instance does not carry the factor and is smaller for it
+ * (drive#848).
+ *
+ * It is a promise because the factor's module is loaded on demand: the main
+ * Worker entry reaches this module on every request, so importing the factor
+ * here at the top would put it back in the entry chunk this exists to keep
+ * it out of. The first second-factor request in an isolate pays the import
+ * and every later one reads the module cache and the instance cache.
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @returns {Promise<Auth|null>}
+ */
+export async function twoFactorAuthFor(env) {
+  const ready = readyForAuth(env);
+  if (ready === null) {
+    return null;
+  }
+  const module = await import("./auth-two-factor.js");
+  return cachedAuth(TWO_FACTOR_AUTH_CACHE, env, module.twoFactorPlugin);
+}
+
+/**
+ * The closed-door check `authFor` and `twoFactorAuthFor` share: the three
+ * settings a session cannot exist without, or null. Split out so the two
+ * entry points cannot drift on what "no sign-in configuration" means.
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string}} env
+ * @returns {{database: object, secret: string, baseURL: string}|null}
+ */
+function readyForAuth(env) {
   const database = env.DRIVE_DB;
   const secret = env.BETTER_AUTH_SECRET;
   const baseURL = env.BETTER_AUTH_URL;
@@ -432,7 +581,29 @@ export function authFor(env) {
   ) {
     return null;
   }
-  const cached = AUTH_CACHE.get(database);
+  return { database, secret, baseURL };
+}
+
+/**
+ * The instance for one cache box, built once per (database, secret, URL).
+ *
+ * `twoFactorPlugin` is what separates the two boxes: `authFor` passes nothing
+ * and gets the chain without the second factor, `twoFactorAuthFor` passes the
+ * plugin factory the on-demand module exported. Same WeakMap discipline, same
+ * env box, one function, so the two instances cannot disagree about the
+ * secret, the address or the mailer.
+ * @param {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>} cache
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @param {((options: {allowPasswordless: boolean}) => ReturnType<TwoFactor>)|undefined} twoFactorPlugin
+ * @returns {Auth|null}
+ */
+function cachedAuth(cache, env, twoFactorPlugin) {
+  const ready = readyForAuth(env);
+  if (ready === null) {
+    return null;
+  }
+  const { database, secret, baseURL } = ready;
+  const cached = cache.get(database);
   if (cached !== undefined && cached.secret === secret && cached.baseURL === baseURL) {
     cached.env.env = env;
     return cached.auth;
@@ -443,9 +614,51 @@ export function authFor(env) {
     secret,
     baseURL,
     sendLink: (link) => sendSigninLink(box.env, link),
+    twoFactorPlugin,
   });
-  AUTH_CACHE.set(database, { secret, baseURL, env: box, auth });
+  cache.set(database, { secret, baseURL, env: box, auth });
   return auth;
+}
+
+/**
+ * The auth instance that can answer `/api/auth/passkey/*`, or null when the
+ * deployment cannot have a session at all. Same closed door as authFor: no
+ * database, no signing secret or no public address.
+ *
+ * The passkey plugin is loaded here, on this path only, so the Worker entry
+ * does not parse @simplewebauthn/server (and the asn1/x509 stack it pulls)
+ * until a passkey request arrives (drive#846). The instance is cached on the
+ * same database key as authFor, with the same mailer box, so a later passkey
+ * call does not rebuild the plugin chain.
+ *
+ * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string, userAgent: string|null, deviceApproval?: boolean}) => Promise<unknown>}} env
+ * @returns {Promise<Auth|null>}
+ */
+export async function authForPasskey(env) {
+  const auth = authFor(env);
+  if (!auth) {
+    return null;
+  }
+  const database = env.DRIVE_DB;
+  if (database === undefined || database === null || typeof database !== "object") {
+    throw new Error("authForPasskey: authFor returned an instance without a database key");
+  }
+  const cached = AUTH_CACHE.get(database);
+  if (cached === undefined) {
+    throw new Error("authForPasskey: authFor returned an instance without a cache entry");
+  }
+  cached.env.env = env;
+  if (cached.passkeyAuth !== undefined) {
+    return cached.passkeyAuth;
+  }
+  const { createAuthWithPasskey } = await import("./auth-passkey.js");
+  cached.passkeyAuth = createAuthWithPasskey({
+    database,
+    secret: cached.secret,
+    baseURL: cached.baseURL,
+    sendLink: (link) => sendSigninLink(cached.env.env, link),
+  });
+  return cached.passkeyAuth;
 }
 
 /**
@@ -484,12 +697,8 @@ async function sendSigninLink(env, link) {
  */
 export const IGNORING_SENTENCE = "If you did not ask for this, ignore it.";
 
-/** The device line's unknown half: the words a request without a readable
- * user-agent gets, so the sentence still names a device. One string, so
- * every mail this code sends carries the same words in the same place.
- * @type {string}
- */
-export const UNKNOWN_DEVICE_NAME = "an unknown device";
+// Words a request without a readable user-agent gets, so the mail still names a device.
+const UNKNOWN_DEVICE_NAME = "an unknown device";
 
 /**
  * Product names this repo spells out, in the order they win: Edge, Opera,

@@ -122,7 +122,7 @@ ledger tone that the buyer's comparison actually needs.
 
 ## Audit (design-polish pass) and live proof
 
-Run against the deployed page, `https://drive-pricing.nishant345.workers.dev`,
+Run against the deployed page, `https://storagebun.com`,
 with headless Chrome (Playwright, real network, `networkidle`).
 
 | Check | Result |

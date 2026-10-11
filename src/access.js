@@ -23,10 +23,10 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 /** The header Cloudflare Access puts the signed identity in. */
-export const ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
+const ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 
 /** Where an Access team publishes the keys its JWTs are signed with. */
-export const ACCESS_CERTS_PATH = "/cdn-cgi/access/certs";
+const ACCESS_CERTS_PATH = "/cdn-cgi/access/certs";
 
 /**
  * @typedef {{aud: string, issuer: string}} AccessConfig

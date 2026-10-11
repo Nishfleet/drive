@@ -44,7 +44,58 @@ import {
   readSnapshot,
   snapshotKey,
 } from "../src/branches.js";
+import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 import { createTestD1, createTestKv } from "./harness.mjs";
+
+// The schema the proofs below that name `branches.snapshot` need: a branch
+// row that still has the column the code stopped reading, and every column the
+// current `src/branches.js` reads. `0017_drop_branches_snapshot.sql` has
+// shipped, so the harness default - the whole folder, which is what production
+// has (drive#579) - carries no `snapshot` column at all, and those proofs would
+// fail at prepare on a schema production does not have.
+//
+// So this is a SUBSET, and it says which two ends it is built from: the folder
+// up to and not including the drop, plus the files after it that today's reader
+// names a column of. Nothing here is a copy of a migration list, so the order
+// and the SQL are the folder's own and cannot drift from what the deploy
+// applies; `READER_DEPENDS_ON` is a list of NAMES that must sort after the
+// drop (a name at or before it throws, so it cannot double-apply or run out
+// of folder order), and a reader that starts to need a later migration fails
+// these proofs with `no such column` until its name goes in. That failure is
+// the point: it is the next run's edit, not a silently passing proof of nothing.
+//
+// The proofs are kept because what they measure is the reader's rule (drive#329:
+// the namespace the pointer names is the only source), and that rule has to hold
+// for a row written before the drop.
+const LEFTOVER_COLUMN_DROP = "0017_drop_branches_snapshot.sql";
+const READER_DEPENDS_ON = [
+  "0019_abuse_guards.sql",
+  "0030_branch_jobs.sql",
+  "0040_branch_reserved_bytes.sql",
+];
+const leftoverDropAt = MIGRATION_FILES.indexOf(LEFTOVER_COLUMN_DROP);
+if (leftoverDropAt < 0) {
+  throw new Error(
+    `${LEFTOVER_COLUMN_DROP} is not in migrations/drive/; the leftover-column subset cannot be built`,
+  );
+}
+const extraAfterDrop = READER_DEPENDS_ON.map((name) => {
+  const at = MIGRATION_FILES.indexOf(name);
+  if (at < 0) {
+    throw new Error(`${name} is not in migrations/drive/; add it under its real filename`);
+  }
+  if (at <= leftoverDropAt) {
+    throw new Error(
+      `${name} sorts at or before ${LEFTOVER_COLUMN_DROP}; READER_DEPENDS_ON is only files after the drop`,
+    );
+  }
+  return name;
+});
+const WITH_LEFTOVER_COLUMN = Object.freeze(
+  [...MIGRATION_FILES.slice(0, leftoverDropAt), ...extraAfterDrop]
+    .sort()
+    .map((name) => `drive/${name}`),
+);
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 
@@ -105,7 +156,7 @@ test("the row limit is the file count, not the branch's bytes, and it is read of
   // has no row length limit of its own, which is why the ladder below stores
   // every size — and why the pinned number is the snapshot the product
   // produces, against the limit D1 applies to it.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const insert = db.prepare(
     "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
       "VALUES (?1,?2,?3,?4,?5,'open',?6,?7)",
@@ -154,7 +205,7 @@ test("a 100,000-file branch lands: the value goes to the namespace and the row s
   // A store that silently wrote the JSON back into the column would fail (2);
   // a store that wrote the row without the value would fail (1). Neither can
   // pass by accident.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
   const store = scopeStore(createMemoryStore(), ACCOUNT);
@@ -259,7 +310,7 @@ test("an empty pointer is not filled from the leftover column", async () => {
   // hold its JSON there (the drop is the next phase), but `readSnapshot` does
   // not consult it, so an empty pointer reads empty. That is the only source
   // left: the namespace the pointer names.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
   const store = scopeStore(createMemoryStore(), ACCOUNT);
@@ -308,7 +359,7 @@ test("listBranches never fills an empty pointer from the leftover column", async
   // is 1 added + 1 changed (count 2). Against an empty map every copy file is
   // "added" (count 3). drive#329 has one source, so the empty-pointer row must
   // land on 3 — if it landed on 2, the column was still being read.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
   await store.write("/Photos/b.txt", new Blob(["b"]).stream(), "text/plain");
@@ -370,7 +421,7 @@ test("a branch of a folder under the row limit is still stored whole", async () 
   // The other side of the measurement: the boundary is the file count, not the
   // branch's byte size, so an 8,800-file branch (~1,005 KiB) is written and
   // read back byte for byte — here into the namespace, which holds it whole.
-  const db = createTestD1();
+  const db = createTestD1({ migrations: WITH_LEFTOVER_COLUMN });
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
   const json = snapshotJson(8800);

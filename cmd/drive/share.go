@@ -409,7 +409,7 @@ func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 		request.Header.Set("authorization", "Bearer "+deviceToken)
 	}
 	request.Header.Set("user-agent", userAgent())
-	client := &http.Client{Timeout: linkTimeout}
+	client := newHTTPClient(linkTimeout)
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, endpoint, err)

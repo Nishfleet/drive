@@ -48,13 +48,13 @@ func TestTheCLINamesItselfOnEveryAPICall(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out map[string]any
-	if err := client.post("/v1/device/code", map[string]string{"name": "test"}, &out); err != nil {
+	if err := client.Post("/v1/device/code", map[string]string{"name": "test"}, &out); err != nil {
 		t.Fatalf("post: %v", err)
 	}
 	if got := <-seen; got != userAgent() {
 		t.Errorf("do() sent User-Agent %q, want %q", got, userAgent())
 	}
-	resp, err := client.doRaw(http.MethodDelete, "/v1/keys/k1", nil)
+	resp, err := client.DoRaw(http.MethodDelete, "/v1/keys/k1", nil)
 	if err != nil {
 		t.Fatalf("doRaw: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestAFourTwoSixPrintsTheUpdateSentence(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out map[string]any
-	err = client.post("/v1/device/code", map[string]string{"name": "test"}, &out)
+	err = client.Post("/v1/device/code", map[string]string{"name": "test"}, &out)
 	if err == nil {
 		t.Fatal("a 426 answer must be an error")
 	}
