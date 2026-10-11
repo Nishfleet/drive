@@ -68,7 +68,7 @@ func TestAccessRedirectGetsATokenFromCloudflaredAndRetries(t *testing.T) {
 	client := &APIClient{Base: server.URL, HTTP: &http.Client{Transport: transport}}
 
 	var out map[string]any
-	if err := client.post("/v1/device/code", map[string]string{"name": "mac"}, &out); err != nil {
+	if err := client.Post("/v1/device/code", map[string]string{"name": "mac"}, &out); err != nil {
 		t.Fatalf("post behind Access: %v", err)
 	}
 	if out["ok"] != true {
@@ -86,7 +86,7 @@ func TestAccessRedirectGetsATokenFromCloudflaredAndRetries(t *testing.T) {
 
 	// The token is cached: the next call sends it at once, with no cloudflared.
 	before := fake.tokens.Load()
-	if err := client.post("/v1/device/code", map[string]string{"name": "mac"}, &out); err != nil {
+	if err := client.Post("/v1/device/code", map[string]string{"name": "mac"}, &out); err != nil {
 		t.Fatalf("second post: %v", err)
 	}
 	if fake.tokens.Load() != before || fake.logins.Load() != 1 {
@@ -100,7 +100,7 @@ func TestAccessUsesAnExistingCloudflaredTokenWithoutALogin(t *testing.T) {
 	fake := &fakeCloudflared{token: "already", signedIn: true}
 	fake.install(transport)
 	client := &APIClient{Base: server.URL, HTTP: &http.Client{Transport: transport}}
-	if err := client.post("/v1/device/code", map[string]string{}, nil); err != nil {
+	if err := client.Post("/v1/device/code", map[string]string{}, nil); err != nil {
 		t.Fatalf("post: %v", err)
 	}
 	if fake.logins.Load() != 0 {
@@ -117,7 +117,7 @@ func TestAccessWithoutCloudflaredSaysHowToInstallIt(t *testing.T) {
 		return "", nil
 	}
 	client := &APIClient{Base: server.URL, HTTP: &http.Client{Transport: transport}}
-	err := client.post("/v1/device/code", map[string]string{}, nil)
+	err := client.Post("/v1/device/code", map[string]string{}, nil)
 	var f *failure
 	if !errors.As(err, &f) || f.Kind != "access-cloudflared-missing" {
 		t.Fatalf("err = %v, want the access-cloudflared-missing failure", err)
@@ -134,7 +134,7 @@ func TestAccessLoginThatGivesNoTokenFails(t *testing.T) {
 	transport.run = func(string, ...string) (string, error) { return "", errors.New("exit status 1") }
 	transport.login = func(string, ...string) error { return nil }
 	client := &APIClient{Base: server.URL, HTTP: &http.Client{Transport: transport}}
-	err := client.post("/v1/device/code", map[string]string{}, nil)
+	err := client.Post("/v1/device/code", map[string]string{}, nil)
 	var f *failure
 	if !errors.As(err, &f) || f.Kind != "access-login-failed" {
 		t.Fatalf("err = %v, want access-login-failed", err)
@@ -162,7 +162,7 @@ func TestNoAccessRedirectNeverRunsCloudflared(t *testing.T) {
 		return "", nil
 	}
 	client := &APIClient{Base: server.URL, HTTP: &http.Client{Transport: transport}}
-	if err := client.post("/v1/device/code", map[string]string{}, nil); err != nil {
+	if err := client.Post("/v1/device/code", map[string]string{}, nil); err != nil {
 		t.Fatalf("post: %v", err)
 	}
 	// An ordinary redirect is followed as before, not taken for Access.
