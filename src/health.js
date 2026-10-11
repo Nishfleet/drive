@@ -108,6 +108,12 @@ import { meterFreshness } from "../core/meter.js";
 //   - The email binding. Only the token-gated internal send route uses it
 //     (core/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
+//   - `DODO_PAYMENTS_API_KEY`, the Dodo push's key (drive issue #51). It is a
+//     secret, so the argument above holds, and it adds a second reason of its
+//     own: the billing push runs on a cron, and no probe can roll a metered
+//     hour to feed it. A missing key leaves the Dodo calls closed
+//     (core/dodo.js), so what the key protects is a Dodo call that did not
+//     happen, not a route that fails closed by name.
 //   - The reindex queue (drive#566). Only the nightly cron produces on it,
 //     a customer request cannot observe whether it answers, and a probe
 //     would have to enqueue a real reindex walk to find out; a cron that

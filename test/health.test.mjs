@@ -877,6 +877,9 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   const NOT_CHECKED = new Set([
     "EMAIL",
     "METER_EVENT_TOKEN",
+    // A secret like the event token: no probe can feed the Dodo calls, and a
+    // missing key leaves them closed (src/health.js).
+    "DODO_PAYMENTS_API_KEY",
     "HEALTH_RATE_LIMITER",
     "REINDEX_QUEUE",
     "METER_JOBS",
