@@ -127,6 +127,13 @@ function billingConfig(config) {
 // each spell it their own way.
 export const USAGE_ENDPOINT = "/api/usage";
 
+// The one size a "you saved" line may be quoted at or above: a usual plan
+// charges the same $15 a TB our maximum does from 1 TB up, so a cheaper-than
+// comparison is false from there. Declared from PRICE.usualPlan.includedTb
+// rather than typed, so a plan that moves the included size moves this floor
+// with it (drive#642).
+const USUAL_PLAN_TB = PRICE.usualPlan.includedTb;
+
 // The public savings calculator (drive issue #14): a size in, this month's
 // bill, our maximum and the usual 1 TB plan out. Public on purpose — it quotes
 // the price, not an account — and monthBillCents() is the only arithmetic, so
@@ -314,7 +321,12 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   }
   const bill = monthlyBillForStoredTb(size, config);
   const planUsd = usualPlanMonthlyUsd(size);
-  const savedUsd = Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100);
+  // drive#642: no saving is quoted for 1 TB and above. The usual plan is $15
+  // for 1 TB and $6 for each extra 500 GB, so at $15 a TB we are dearer than a
+  // plan from 1.5 TB up; a saving there is a cheaper-than claim that is false.
+  const savedUsd = savingAllowed(size30BytesFromTb(size))
+    ? Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100)
+    : 0;
   return Object.freeze({
     tb: size,
     storageUsd: bill.storageUsd,
@@ -647,6 +659,11 @@ export function monthBillCents(month) {
   });
 }
 
+/** @param {number|bigint} size30Bytes */
+function savingAllowed(size30Bytes) {
+  return BigInt(size30Bytes) < size30BytesFromTb(USUAL_PLAN_TB);
+}
+
 /**
  * The "you saved $X" line (drive#463), from a monthBillCents() result:
  *   - against our maximum: a capped month (metered over the maximum) saved
@@ -656,8 +673,13 @@ export function monthBillCents(month) {
  *   - against the usual 1 TB plan for the same average size, when that plan
  *     costs more: "You saved $X against a usual 1 TB plan."
  * Both sentences ride in `copy`, one after the other. `null` means "no line to
- * show": an empty month (a $0 bill is not a saving against anything) or no
- * saving at all.
+ * show": an empty month (a $0 bill is not a saving against anything), no
+ * saving at all, or a size30 of 1 TB and above, where drive#642 turned the
+ * comparison against a usual plan negative and every cheaper-than claim off.
+ *
+ * The 1 TB floor is one shared answer (`savingAllowed`), read by
+ * quoteForStoredTb too, so the calculator and this line cannot disagree about
+ * where a saving may be quoted.
  * @param {unknown} bill a monthBillCents() result
  * @param {number|bigint} size30Bytes the same size30 the bill was worked from
  * @returns {{usd: number, planUsd: number, copy: string}|null}
@@ -673,7 +695,7 @@ export function savedLine(bill, size30Bytes) {
   const storage = checked(fields.storageCents, "bill.storageCents");
   const bytes = checkedBytes(size30Bytes, "size30Bytes");
   const size30Tb = Number(bytes) / (GB_PER_TB * BYTES_PER_GB);
-  if (storage === 0) {
+  if (storage === 0 || !savingAllowed(bytes)) {
     return null;
   }
   const capped = metered > maximum;

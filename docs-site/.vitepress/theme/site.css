@@ -1,4 +1,4 @@
-/* Drive docs: the home page's palette and type (public/site.css --drive-*
+/* Storagebun docs: the home page's palette and type (public/site.css --drive-*
    and --font-*, drive#152 / #458), so the docs are part of the site rather
    than a section pasted from somewhere else. The tokens are copied because
    VitePress cannot import a served asset; test/docs.test.mjs checks each

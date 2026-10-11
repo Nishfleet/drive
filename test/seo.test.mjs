@@ -302,7 +302,7 @@ test("robots.txt allows the crawl and points at the sitemap", () => {
 test("llms.txt describes the drive and the current price rule", () => {
   const llms = read("llms.txt");
   // The llmstxt.org shape: an H1 name, a blockquote summary, then sections.
-  assert.match(llms, /^# Drive$/m);
+  assert.match(llms, /^# Storagebun$/m);
   assert.match(llms, /^> /m);
   assert.ok(llms.includes(BILLING.headline), "llms.txt must state the headline from config");
   assert.ok(llms.includes(BILLING.rule), "llms.txt must state the rule from config");

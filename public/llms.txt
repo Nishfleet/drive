@@ -1,11 +1,11 @@
-# Drive
+# Storagebun
 
 > A Finder drive for people and their agents: plain files in object storage,
 > mounted with stock rclone, and billed at 2¢ per GB-month for the biggest size in the last 30 days.
 > Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
 > No plans. Your balance never expires.
 
-Drive is a mounted folder (macOS and Linux) where your files live in object
+Storagebun is a mounted folder (macOS and Linux) where your files live in object
 storage; what is on your disk is the parts you have opened, held in a cache
 capped at 20G with 1G of your disk always kept free. Libraries bigger than the
 laptop open on demand. Agents read and write the same files through the folder
@@ -44,7 +44,7 @@ Worked examples, each the biggest size in the last 30 days, with a usual 1 TB pl
   offline stay, are never evicted, and count toward that limit.
 - Saves upload after the file is closed and appear on the other machines. How
   long a save takes to cross between two real machines is not yet measured.
-  The [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md)
+  The [Benchmarks](https://storagebun.com/docs/benchmarks.md)
   page carries the rows that do and do not have a figure.
 - A spending cap you set; at the cap the drive goes read-only and nothing is
   deleted.
@@ -57,19 +57,19 @@ Worked examples, each the biggest size in the last 30 days, with a usual 1 TB pl
 ## Docs
 
 Every page below is one plain-words page about the drive, also served as
-Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
+Markdown: add `.md` to the address. [llms-full.txt](https://storagebun.com/docs/llms-full.txt)
 holds all ten in one file.
 
-- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): six steps from nothing to a mounted drive.
-- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
-- [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
-- [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the maximum and four worked sizes.
-- [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
-- [When something goes wrong](https://drive-pricing.nishant345.workers.dev/docs/troubleshooting.md): what to run first, the log on each system, a lost laptop, your files out.
-- [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits.md): what version 1 does not do, in plain words.
-- [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md): measured speed, including where we lose.
-- [Security](https://drive-pricing.nishant345.workers.dev/docs/security.md): who can see your files, and what we cannot claim.
-- [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog.md): one line per shipped thing.
+- [Quickstart](https://storagebun.com/docs/quickstart.md): six steps from nothing to a mounted drive.
+- [How it works](https://storagebun.com/docs/how-it-works.md): plain files, and how the bill is counted.
+- [Agents](https://storagebun.com/docs/agents.md): `drive init`, and what an agent key cannot do.
+- [Pricing and your bill](https://storagebun.com/docs/pricing.md): the rate, the maximum and four worked sizes.
+- [FAQ](https://storagebun.com/docs/faq.md): the questions we can answer with a measured number.
+- [When something goes wrong](https://storagebun.com/docs/troubleshooting.md): what to run first, the log on each system, a lost laptop, your files out.
+- [Limits](https://storagebun.com/docs/limits.md): what version 1 does not do, in plain words.
+- [Benchmarks](https://storagebun.com/docs/benchmarks.md): measured speed, including where we lose.
+- [Security](https://storagebun.com/docs/security.md): who can see your files, and what we cannot claim.
+- [Changelog](https://storagebun.com/docs/changelog.md): one line per shipped thing.
 
 ## Not yet
 
@@ -79,5 +79,5 @@ the waitlist, so joining is the only step that reaches a new person.
 
 ## Links
 
-- Pricing page (canonical): https://drive-pricing.nishant345.workers.dev/
-- Sitemap: https://drive-pricing.nishant345.workers.dev/sitemap.xml
+- Pricing page (canonical): https://storagebun.com/
+- Sitemap: https://storagebun.com/sitemap.xml

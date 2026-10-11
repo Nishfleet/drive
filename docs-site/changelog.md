@@ -8,8 +8,25 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-09
+
+- Sign-in now bounds the whole account's emailed links to 5000 a minute, not
+  just one Cloudflare location's. The old ceiling counted each server location
+  on its own, so a flood spread over many locations was not capped; the new
+  shared counter is one row on the drive's own database, so the total is
+  capped wherever the requests come from. When the account's ceiling is full,
+  the sign-in page answers as usual and asks again in a minute.
+- "I am 18 or older" is now asked once, when an account opens — the moment
+  its emailed link is followed — not on every sign-in. A link that asks for
+  an account without the tick opens no account and the sign-in page explains
+  the rule again; an address that already has an account signs in as before,
+  ticked or not.
+
 ## 2026-10-07
 
+- When this computer's storage key is a short session, the drive renews it
+  before it ends and keeps uploads that were already waiting. `drive login`
+  accepts that kind of key because that loop is running.
 - A folder kept offline stays open even after the network has been down for
   hours, not just seconds. Before, the drive's short directory cache turned
   the kept-folder promise off after five seconds without a link, and every
@@ -213,7 +230,7 @@ the live site.
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),
   with `drive unmount`/`logout`/`status`/`uninstall` and unit tests for every
-  branch. A missing WinFsp is an error that points at reinstalling Drive.
+  branch. A missing WinFsp is an error that points at reinstalling Storagebun.
 - `drive unmount`, `logout` and `uninstall` on Windows now wait for WinFsp to
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported

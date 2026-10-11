@@ -36,7 +36,7 @@ export default defineConfig({
   // so both sit under /docs/ and both resolve (drive#527). Nothing is exempt
   // any more, so the check stays on for every real page.
   ignoreDeadLinks: [`${SITE_ORIGIN}/`],
-  title: "Drive docs",
+  title: "Storagebun docs",
   description:
     "A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month for the biggest size in the last 30 days.",
   lang: "en",
@@ -101,7 +101,7 @@ export default defineConfig({
       domain: SITE_ORIGIN,
     },
     footer: {
-      message: "Drive is not open yet — sign-ups go to a waitlist on the pricing page.",
+      message: "Storagebun is not open yet — sign-ups go to a waitlist on the pricing page.",
     },
   },
   vite: {

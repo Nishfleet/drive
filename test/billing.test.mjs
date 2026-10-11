@@ -17,7 +17,10 @@
 // #53) are in test/usage.test.mjs.
 
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   BILLING_CONFIG,
   capStatus,
@@ -28,6 +31,7 @@ import {
   monthBillCents,
   monthlyMaximumUsd,
   monthlyStorageBillUsd,
+  quoteForStoredTb,
   SAVED_COPY,
   savedLine,
   storedGb,
@@ -187,13 +191,6 @@ test("the bill is the meter below the maximum, the maximum above it", () => {
 });
 
 test("the 'you saved' lines: against our maximum and against a usual 1 TB plan", () => {
-  // 2 TB: metered $40, maximum $30. The usual plan is $27, which we pass, so
-  // the plan line hides (drive#642).
-  const capped = savedLine(monthBillCents({ size30Bytes: bytes(2000) }), bytes(2000));
-  assert.ok(capped);
-  assert.equal(capped.usd, 10);
-  assert.equal(capped.planUsd, 0);
-  assert.equal(capped.copy, "Our maximum saved you $10.00.");
   // 300 GB: bill $6 under the $15 maximum and the $15 plan.
   const uncapped = savedLine(monthBillCents({ size30Bytes: bytes(300) }), bytes(300));
   assert.ok(uncapped);
@@ -205,16 +202,64 @@ test("the 'you saved' lines: against our maximum and against a usual 1 TB plan",
   );
   // At 750 GB the meter is exactly the maximum and the plan, so nothing shows.
   assert.equal(savedLine(monthBillCents({ size30Bytes: bytes(750) }), bytes(750)), null);
-  // At 1 TB the usual-plan line hides (same $15). The maximum still saved $5
-  // against the uncapped meter.
-  const oneTb = savedLine(monthBillCents({ size30Bytes: bytes(1000) }), bytes(1000));
-  assert.ok(oneTb);
-  assert.equal(oneTb.planUsd, 0);
-  assert.equal(oneTb.usd, 5);
-  assert.equal(oneTb.copy, "Our maximum saved you $5.00.");
   assert.equal(savedLine(monthBillCents({ size30Bytes: 0 }), 0), null);
   assert.match(SAVED_COPY.plan, /\{plan\}/);
   assert.throws(() => savedLine(null, 0), TypeError);
+});
+
+test("no 'you saved' line is shown at 1 TB and above", () => {
+  // drive#642: at $15 a TB our bill is a usual plan's $15 at 1 TB and passes it
+  // above ($30 against $27 at 2 TB, $60 against $51 at 4 TB). A saving there
+  // is a cheaper-than claim that is false, so savedLine() answers null for
+  // every size from 1 TB up - including the "against our maximum" form, which
+  // is a saving of metered - storage on a capped month and not a price
+  // comparison at all. The usage page and the calculator read this function,
+  // so null is what both of them show.
+  for (const gb of [1000, 1001, 1500, 2000, 4000, 12000]) {
+    const bill = monthBillCents({ size30Bytes: bytes(gb) });
+    assert.equal(savedLine(bill, bytes(gb)), null, `${gb} GB shows no saving`);
+  }
+  // Just below the floor the line is still there, so the floor is the plan's
+  // included size and not "any big drive".
+  const under = savedLine(monthBillCents({ size30Bytes: bytes(999) }), bytes(999));
+  assert.ok(under, "999 GB still shows its saving");
+  assert.ok(under.planUsd > 0 || under.usd > 0);
+  // The savings calculator's own number obeys the same floor: /api/quote is a
+  // public surface, so a saving it quoted would be a claim on the page.
+  for (const tb of [1, 1.5, 2, 4]) {
+    assert.equal(quoteForStoredTb(tb).savedUsd, 0, `${tb} TB quotes no saving`);
+  }
+  assert.ok(quoteForStoredTb(0.2).savedUsd > 0, "200 GB still quotes its saving");
+  // The bill itself is untouched by the copy floor: 1 TB still bills $15.
+  assert.equal(quoteForStoredTb(1).billUsd, 15);
+});
+
+test("the mutate command names every test that calls quoteForStoredTb or billing savedLine", () => {
+  const conf = JSON.parse(readFileSync(new URL("../stryker.conf.json", import.meta.url), "utf8"));
+  const listed = new Set(conf.commandRunner.command.match(/test\/\S+\.mjs/g));
+  /** @type {string[]} */
+  const missing = [];
+  /**
+   * @param {string} abs
+   * @param {string} rel
+   */
+  const walk = (abs, rel) => {
+    for (const name of readdirSync(abs)) {
+      const child = join(abs, name);
+      const childRel = `${rel}${name}`;
+      if (statSync(child).isDirectory()) {
+        walk(child, `${childRel}/`);
+        continue;
+      }
+      if (!name.endsWith(".mjs")) continue;
+      const text = readFileSync(child, "utf8");
+      if (!/from ["'](?:\.\.\/)+core\/billing\.js["']/.test(text)) continue;
+      if (!/\b(?:quoteForStoredTb|savedLine)\b/.test(text)) continue;
+      if (!listed.has(childRel)) missing.push(childRel);
+    }
+  };
+  walk(fileURLToPath(new URL("./", import.meta.url)), "test/");
+  assert.deepEqual(missing, [], "a new quote or savedLine test belongs on the mutate command");
 });
 
 test("the cap counts min(metered, maximum), and bites only past the cap", () => {
@@ -414,7 +459,7 @@ test("the Worker routes the usage read to the handler", async () => {
 });
 
 test("every line is integer cents, whatever the meter recorded", () => {
-  for (const size30Bytes of [0, 1, 37, 21900, 43800, 1234567, 99999999]) {
+  for (const size30Bytes of [1, 37, 21900, 43800, 1234567, 99999999]) {
     {
       const bill = monthBillCents({
         size30Bytes,
@@ -469,6 +514,19 @@ test("a size30 above 2^53 bills and formats the exact integer", () => {
   assert.equal(summary.billCents.storageMillicents, Number(expectedMilli));
   assert.equal(summary.labels.size30, formatBytes(huge));
   assert.equal(Number.isFinite(summary.billUsd), true);
+});
+
+test("the usage read answers for an empty size30 month: 200, not a broken page", async () => {
+  // drive#642: a month the meter has not filled yet is an empty month.
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    { id: "1", name: "Your drive" },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).billUsd, 0);
 });
 
 test("the retired inputs fail loudly: peak, first month, month number", () => {
@@ -548,4 +606,87 @@ test("a card-less month shows no charge, and the money is untouched", () => {
   // flag: a card-less account is shown no charge while its cap line is
   // untouched (see the usage endpoint's own test).
   assert.equal(usageSummary({ ...usage, cardOnFile: true }).labels.cost, usd(800));
+});
+
+test("the bill is refused unless the month carries its size30 bill", () => {
+  // A bill is never guessed from a month that did not say what it stored.
+  for (const notAMonth of [null, undefined, 42, "2026-10", true]) {
+    assert.throws(
+      () => monthBillCents(notAMonth),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /^monthBillCents needs a month object/);
+        return true;
+      },
+    );
+  }
+  assert.throws(
+    () => monthBillCents({}),
+    /^TypeError: month\.size30Bytes is the bill \(drive#642\): the charge follows the biggest size in the last 30 days$/,
+  );
+  assert.throws(() => monthBillCents({ peakBytes: bytes(100) }), /month\.size30Bytes is the bill/);
+  assert.throws(
+    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: -1 }),
+    /^TypeError: month\.downloadBytes must be a number of 0 or more, got -1$/,
+  );
+  assert.throws(
+    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: 1.5 }),
+    /^TypeError: month\.downloadBytes must be 0 or more whole bytes, got 1\.5$/,
+  );
+});
+
+test("the usage summary is refused unless the usage carries its size30 bill", () => {
+  for (const usage of [null, undefined, 12, "2026-10"]) {
+    assert.throws(
+      () => usageSummary(usage),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /^usageSummary needs a usage object/);
+        return true;
+      },
+    );
+  }
+  assert.throws(
+    () => usageSummary({ storedGb: 0, storedDaily: [], downloadBytes: 0, capUsd: 5 }),
+    /^TypeError: usage\.size30Bytes is the bill \(drive#642\)$/,
+  );
+  assert.throws(
+    () =>
+      usageSummary({
+        size30Bytes: bytes(100),
+        storedGb: 100,
+        storedDaily: [],
+        downloadBytes: 0,
+        capUsd: 5,
+        size30ReachedDay: "2026-02-30",
+      }),
+    /^TypeError: usage\.size30ReachedDay must be a real YYYY-MM-DD date, got 2026-02-30$/,
+  );
+  assert.throws(
+    () =>
+      usageSummary({
+        size30Bytes: bytes(100),
+        storedGb: 100,
+        storedDaily: [],
+        downloadBytes: 0,
+        capUsd: 5,
+        todayDrawMillicents: -5,
+      }),
+    /^TypeError: usage\.todayDrawMillicents must be a number of 0 or more, got -5$/,
+  );
+});
+
+test("the maximum is the whole bill above the meter's rate, at 900 GB and at 12 TB", () => {
+  // 900 GB metered is $18 and the $15 per TB maximum is lower, so the maximum
+  // is the bill. 12 TB metered is $240 against a $180 maximum.
+  const nineHundred = monthBillCents({ size30Bytes: bytes(900) });
+  assert.equal(nineHundred.meteredCents, 1800, "the meter's own rate at 900 GB is $18");
+  assert.equal(nineHundred.maximumCents, 1500);
+  assert.equal(nineHundred.storageCents, 1500, "the maximum is the bill");
+  assert.equal(nineHundred.totalCents, 1500);
+
+  const twelveTb = monthBillCents({ size30Bytes: bytes(12_000) });
+  assert.equal(twelveTb.meteredCents, 24_000, "the meter's own rate at 12 TB is $240");
+  assert.equal(twelveTb.maximumCents, 18_000);
+  assert.equal(twelveTb.storageCents, 18_000);
 });

@@ -19,9 +19,13 @@ import { test } from "node:test";
 import vm from "node:vm";
 import {
   BILLING_CONFIG,
+  dailyDrawMillicents,
   gbMonths,
   handleUsageRequest,
+  monthBillCents,
+  monthlyBillForStoredTb,
   SAVED_COPY,
+  size30DropsOutDay,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
   usageSummary,
@@ -78,7 +82,10 @@ const MONTH_MINUTES = 30 * 1440;
 function month(storedGb, overrides = {}) {
   const days = [];
   for (let index = USAGE_HISTORY_DAYS; index > 0; index -= 1) {
-    days.push({ day: `2026-09-${String(index).padStart(2, "0")}`, gb: storedGb });
+    days.push({
+      day: `2026-09-${String(index).padStart(2, "0")}`,
+      gb: storedGb,
+    });
   }
   return {
     ...usageSummary({
@@ -165,7 +172,10 @@ test("the stored series is the last 30 days, oldest first", () => {
   for (let day = 1; day <= 40; day += 1) {
     const month = day <= 9 ? "09" : "08";
     const date = day <= 9 ? day : day - 9;
-    entries.push({ day: `2026-${month}-${String(date).padStart(2, "0")}`, gb: day });
+    entries.push({
+      day: `2026-${month}-${String(date).padStart(2, "0")}`,
+      gb: day,
+    });
   }
   entries.reverse();
   const summary = usageSummary({
@@ -243,11 +253,33 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
 test("both saved sentences come from the one table in core/billing.js", () => {
   const plan = (/** @type {string} */ amount) =>
     SAVED_COPY.plan.replace("{amount}", amount).replace("{plan}", "a usual 1 TB plan");
-  const capped = month(2000);
+  // drive#642: 1 TB and above states no saving at all. A usual plan is $15 for
+  // the first TB and $6 for each extra 500 GB, which is the same $15 a TB our
+  // maximum charges from 1 TB up, so every cheaper-than claim is false there.
+  assert.equal(month(2000).saved, null);
+  assert.equal(month(1000).saved, null);
+  assert.equal(month(1500).saved, null);
+  // Under the floor, when the month is capped: the metered month sat over our
+  // maximum, so the maximum sentence names what it saved. The floor is the
+  // usual plan comparison, so this is under 1 TB with a plan that costs more.
+  const capped = usageSummary(
+    {
+      size30Bytes: 300 * 1e9,
+      storedGb: 300,
+      storedDaily: [],
+      downloadBytes: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+    },
+    { ...BILLING_CONFIG, maxUsdPerTb: 5 },
+  );
   assert.ok(capped.saved);
-  assert.equal(capped.saved.usd, 10);
-  assert.equal(capped.saved.planUsd, 0);
-  assert.equal(capped.saved.copy, SAVED_COPY.capped.replace("{amount}", "$10.00"));
+  assert.equal(capped.saved.usd, 1);
+  assert.equal(capped.saved.planUsd, 10);
+  assert.equal(
+    capped.saved.copy,
+    `${SAVED_COPY.capped.replace("{amount}", "$1.00")} ${plan("$10.00")}`,
+  );
   const uncapped = month(300);
   assert.ok(uncapped.saved);
   assert.equal(uncapped.saved.usd, 9);
@@ -377,9 +409,72 @@ test("an account with a card on file is shown the bill it is charged", async () 
   assert.equal(withCard.billCents.totalCents, 0, "the one bill function's own total");
 });
 
+test("the usage page's four size30 numbers come from monthBillCents and the window alone", async () => {
+  // drive#642: the page, `drive usage` and `drive status` print the size, the
+  // day it was reached, the day it drops out and today's draw. Each is the one
+  // bill function's own number, so no surface has an arithmetic of its own:
+  // the drop-out day is size30DropsOutDay() of the reached day, and today's
+  // draw is dailyDrawMillicents() over monthBillCents()'s total, the same
+  // total core/prepaid.js draws from.
+  const size30Tb = 1.5;
+  const reachedDay = "2026-10-04";
+  const body = await (
+    await handleUsageRequest(
+      new Request("https://drive.test/api/usage"),
+      {
+        ...account,
+        capUsd: BILLING_CONFIG.defaultCapUsd,
+        usage: {
+          size30Bytes: size30Tb * 1000 * 1e9,
+          storedGb: size30Tb * 1000,
+          storedDaily: [],
+          downloadBytes: 0,
+          capUsd: BILLING_CONFIG.defaultCapUsd,
+          cardAdded: true,
+          size30ReachedDay: reachedDay,
+          // The store's own field, the same value core/devices.js monthUsage()
+          // writes for the route: size30DropsOutDay() of the reached day, so the
+          // page and the CLI cannot each work a drop-out date out for themselves.
+          size30DropsOutDay: size30DropsOutDay(reachedDay),
+        },
+      },
+      null,
+      null,
+      MONTH_ISO,
+    )
+  ).json();
+  assert.equal(body.size30Gb, 1500);
+  assert.equal(body.size30ReachedDay, reachedDay);
+  assert.equal(body.size30DropsOutDay, size30DropsOutDay(reachedDay));
+  assert.equal(body.labels.size30DropsOut, size30DropsOutDay(reachedDay));
+  assert.equal(
+    body.todayDrawMillicents,
+    dailyDrawMillicents(monthBillCents({ size30Bytes: body.size30Bytes }).totalMillicents, 0)
+      .drawMillicents,
+  );
+  assert.equal(
+    body.billUsd,
+    monthlyBillForStoredTb(size30Tb).billUsd,
+    "the bill is the quote's own",
+  );
+  assert.equal(body.maximumUsd, monthlyBillForStoredTb(size30Tb).maximumUsd);
+  // The page renders these strings, so none of them may be NaN or undefined.
+  for (const value of [
+    body.labels.size30,
+    body.labels.size30Reached,
+    body.labels.size30DropsOut,
+    body.labels.todayDraw,
+  ]) {
+    assert.equal(typeof value, "string");
+    assert.doesNotMatch(value, /NaN|undefined/);
+  }
+});
+
 test("the Worker routes the usage read and the page's endpoint is that route", async () => {
   assert.equal(USAGE_ENDPOINT, "/api/usage");
-  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  };
   for (const path of ["/api/usage", "/api/usage/"]) {
     // The route reaches the handler and the gate answers 401: with no sign-in
     // flow yet no request can prove an account, so the Worker's read shows
@@ -444,7 +539,11 @@ test("the upload line rides the usage answer beside capLine", async () => {
   // A queue handed in is checked by uploadProgress(), which throws on a value
   // that is not a queue, so a broken report fails the read rather than printing
   // a plausible line about bytes nobody counted.
-  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const queue = {
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    files: 3,
+  };
   const reported = await handleUsageRequest(
     new Request("https://drive.test/api/usage"),
     account,
@@ -1279,7 +1378,12 @@ test("the usage page shows the queue a device reported, through the Worker's own
 
   // One device reports its queue; the usage read carries the same finished
   // line the first-run page draws from the same numbers.
-  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  const queue = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
   assert.equal((await store.record(signedInAccount.id, queue)).stored, true);
   const after = await (await read()).json();
   assert.equal(
@@ -1299,10 +1403,6 @@ test("the usage page shows the queue a device reported, through the Worker's own
   // A paused queue renders the paused line, so the page never shows bytes that
   // are not leaving as "Uploading".
   await made.db
-    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
-    .bind(signedInAccount.id)
-    .run();
-  await made.db
     .prepare("UPDATE device_queue_reports SET paused = 1 WHERE account_id = ?")
     .bind(signedInAccount.id)
     .run();
@@ -1320,12 +1420,33 @@ test("the usage page shows the queue a device reported, through the Worker's own
   assert.equal(cardless.cardOnFile, false);
   assert.equal(cardless.labels.cost, PRICE.noChargeYet);
 
+  // Two devices on one account are two rows (drive#516): the second device's
+  // report lands on its own row rather than 429ing against the first, and the
+  // read keeps each device's own truth apart (drive#865), so the paused
+  // device's queue is held beside the moving one, never over it. The account's
+  // own row is paused at this point in the test (the UPDATE above), so both
+  // rows read as paused: nothing is leaving, and the paused line is still the
+  // count of both devices' rows summed (3 + 1).
+  const second = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(signedInAccount.id, second, "device-b")).stored, true);
+  const both = await (await read()).json();
+  assert.equal(
+    both.uploadLine,
+    uploadProgress({
+      files: queue.files + second.files,
+      uploadedBytes: queue.uploadedBytes + second.uploadedBytes,
+      totalBytes: queue.totalBytes + second.totalBytes,
+      paused: true,
+    }).label,
+    "two paused devices on one account did not read as one paused queue",
+  );
+  assert.ok(
+    both.uploadLine.includes("4 files waiting"),
+    `line ${both.uploadLine} is not both devices' queue`,
+  );
+
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.
-  await made.db
-    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
-    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
-    .run();
   await made.db
     .prepare("UPDATE device_queue_reports SET reported_at = ? WHERE account_id = ?")
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
@@ -1416,7 +1537,9 @@ test("the export route answers 200 for a signed-in account with no api binding (
     .run();
 
   const response = await workerFetch(
-    new Request(`https://drive.test${EXPORT_ENDPOINT}`, { headers: { cookie } }),
+    new Request(`https://drive.test${EXPORT_ENDPOINT}`, {
+      headers: { cookie },
+    }),
     env,
   );
   assert.equal(response.status, 200, "a signed-in export must answer 200 without the api binding");
@@ -1451,4 +1574,61 @@ test("the export route answers 200 for a signed-in account with no api binding (
   const nextBody = await nextPage.json();
   assert.equal(nextBody.files.length, 0, "a cursor past the last file repeats nothing");
   assert.equal(nextBody.complete, true);
+});
+
+test("the usage line names the bytes still leaving when another device is paused", async () => {
+  // Drive issue #865 on the second surface: one account, one device uploading,
+  // one paused. The account summed to `paused: true`, so this page told the
+  // person their uploads had stopped while the other device was still sending.
+  // The read keeps the two halves apart (core/queues.js `sumLiveQueues`), so
+  // the same sentence the first-run page draws names the bytes that are
+  // leaving, then the pause beside them.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account: signedInAccount } = await signIn(made, "mixed-usage@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1QueueStore(made.db);
+  const read = () =>
+    workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env);
+
+  const uploading = {
+    files: 3,
+    uploadedBytes: 300_000_000,
+    totalBytes: 1_200_000_000,
+    paused: false,
+  };
+  const paused = { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true };
+  assert.equal((await store.record(signedInAccount.id, uploading, "device-a")).stored, true);
+  assert.equal((await store.record(signedInAccount.id, paused, "device-b")).stored, true);
+
+  const body = await (await read()).json();
+  assert.ok(
+    body.uploadLine.startsWith("Uploading 3 files: 300 MB of 1.2 GB (25%)"),
+    `line ${body.uploadLine} reads as paused while bytes are leaving`,
+  );
+  assert.ok(
+    body.uploadLine.includes("Paused: 1 file waiting (4.1 KB left)"),
+    `line ${body.uploadLine} does not name the paused device`,
+  );
+  // The same sentence the first-run page draws from the same payload, so the
+  // two surfaces cannot disagree about an account with a device paused.
+  assert.equal(
+    body.uploadLine,
+    uploadLine({
+      ...uploading,
+      pausedFiles: 1,
+      pausedUploadedBytes: 0,
+      pausedTotalBytes: 4096,
+    }),
+    "the usage line is not the first-run page's line for the same account",
+  );
+  // With the uploading device gone, the line is the paused one it has always
+  // been: the halves are additive, not a new third state.
+  await store.remove(signedInAccount.id, "device-a");
+  const oneLeft = await (await read()).json();
+  assert.equal(oneLeft.uploadLine, uploadProgress(paused).label);
 });

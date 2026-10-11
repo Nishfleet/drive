@@ -7,20 +7,27 @@
 // which are plain data too: `scopeStore` applies the account prefix to the
 // listing and refuses a version from outside it, and `accountPrefix` builds
 // the storage key the event intake stores, so a row this reconciler inserts
-// and a row an event inserted are one shape (drive issue #59). The key
+// and a row an event inserted are one shape (drive issue #59). And the index's
+// own one statement for a create (`core/file-index.js`): the search owns the table
+// and the row shape, so the intake writes through the module that owns it
+// rather than a second copy of the same INSERT (drive issue #566). The key
 // decoder is the api Worker's one notification-key reader
 // (core/event-routes.js): the bucket's own event and the api
 // Worker's own event route are the same bytes, and reading them two ways is
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
 import { decodeNotificationKey } from "./event-routes.js";
+import { eventIndexStatement } from "./file-index.js";
 import { accountPrefix, scopeStore } from "./files.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
 import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
-//      `events_seen`: a storage event becomes one row in `file_versions`.
+//      `events_seen`: a storage event becomes one row in `file_versions`,
+//      and a create also upserts the one `file_index` row the search reads,
+//      so a file a desktop mount wrote is searchable when the event lands
+//      instead of at the next night's rebuild (drive#566).
 //      Events arrive in any order (a provider redelivers, and a hide can
 //      outrun its own create), so the version row is built from the events'
 //      own times, never from arrival order: `created_at` is the earliest
@@ -1643,10 +1650,17 @@ export function validateEvent(input) {
 }
 
 /**
- * The two statements one event needs, in the order they must run: the dedup
- * row first, then the version row. D1's batch is one transaction, so the pair
- * lands together or not at all, and two concurrent deliveries of the same
- * event cannot both insert (the second INSERT OR IGNORE writes nothing).
+ * The statements one event needs, in the order they must run: the dedup row
+ * first, then the version row, then the search index row the create names.
+ * D1's batch is one transaction, so they land together or not at all, and two
+ * concurrent deliveries of the same event cannot both insert (the second
+ * INSERT OR IGNORE writes nothing).
+ *
+ * The index row is the search module's own statement and it is not always
+ * there: an event that names no indexable file gets two statements and no log
+ * line beyond the one the statement itself writes (drive#566). Because the
+ * count of statements per event is no longer fixed, `recordEvents` below reads
+ * the dedup row's own offset instead of multiplying the event's index by two.
  *
  * The version upsert runs on EVERY delivery, not only the first: a D1 batch
  * executes every statement it is handed, so there is no conditional execution
@@ -1659,7 +1673,12 @@ export function validateEvent(input) {
  * @param {number} receivedAt
  */
 function eventStatements(db, event, receivedAt) {
-  return [
+  if (event.error !== undefined) {
+    // The intake validates before it stores, so an invalid event reaching here
+    // is a programming error: fail loudly rather than write half an event.
+    throw new TypeError(`the meter cannot store an event that failed validation: ${event.error}`);
+  }
+  const statements = [
     db
       .prepare("INSERT OR IGNORE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
       .bind(event.eventId, receivedAt),
@@ -1686,6 +1705,11 @@ function eventStatements(db, event, receivedAt) {
         event.effect,
       ),
   ];
+  const index = eventIndexStatement(db, event, receivedAt);
+  if (index) {
+    statements.push(index);
+  }
+  return statements;
 }
 
 /**
@@ -1706,14 +1730,15 @@ export async function recordEvent(db, event, now = Date.now()) {
 }
 
 // How many events from one request share a batch. Each event is two
-// statements. A provider's retry replays the whole request; the batches
+// statements, or three when the event names an indexable file (drive#566).
+// A provider's retry replays the whole request; the batches
 // already committed are made of repeats the dedup drops, so a retry after a
 // mid-request failure costs a re-read and never a second version row. The
 // batch is chunked because a very large batch (thousands of statements) can
 // hit D1's 30-second invocation timeout and per-statement execution limits.
-// 50 events = 100 statements is a safe, tested bound that reduces a
-// thousand-event request from ~1000 transactions to ~20.
-export const EVENTS_PER_BATCH = 50;
+// 32 events = 96 statements at three per create, under the 100-statement
+// bound the two-statement events used to sit on.
+export const EVENTS_PER_BATCH = 32;
 
 /**
  * Stores a whole request's valid events, one batch per EVENTS_PER_BATCH
@@ -1735,12 +1760,16 @@ async function recordEvents(db, events, now = Date.now()) {
   for (let start = 0; start < events.length; start += EVENTS_PER_BATCH) {
     const group = events.slice(start, start + EVENTS_PER_BATCH);
     const statements = [];
+    /** Where each event's dedup row landed, because an event is two or three
+     * statements and the count is no longer a function of the index (drive#566). */
+    const dedupAt = [];
     for (const event of group) {
+      dedupAt.push(statements.length);
       statements.push(...eventStatements(db, event, receivedAt));
     }
     const results = await db.batch(statements);
     for (let i = 0; i < group.length; i += 1) {
-      if ((results?.[i * 2]?.meta?.rows_written ?? 0) > 0) {
+      if ((results?.[dedupAt[i]]?.meta?.rows_written ?? 0) > 0) {
         stored += 1;
       }
     }

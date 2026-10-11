@@ -58,7 +58,17 @@ export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_HEARTBEAT_SECONDS;
  * One report as the store holds it: the queue shape `uploadProgress()` and
  * the first-run page's `uploadLine()` read (core/status.js), plus the row's
  * own clock. `null` is "no queue to report", never a zero-byte queue.
- * @typedef {{uploadedBytes: number, totalBytes: number, files: number, paused: boolean}} UploadQueue
+ *
+ * The fields are the side of the account's queue that is still leaving. On
+ * an account with a paused device beside an uploading one (drive issue
+ * #865), the files that device is holding ride beside them as `pausedFiles`
+ * with their own `pausedUploadedBytes` and `pausedTotalBytes`, so one read
+ * can name both halves. `paused` is true only when nothing is leaving at
+ * all, so a mixed account reads as `paused: false` with the held half named
+ * beside the moving one. `paused` and `files` are optional; only a literal
+ * `true` pauses, and a missing or non-positive `files` acts like no count.
+ * @typedef {{uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean,
+ *   pausedFiles?: number, pausedUploadedBytes?: number, pausedTotalBytes?: number}} UploadQueue
  */
 
 /**
@@ -93,7 +103,9 @@ export function uploadQueueFromRow(row, at) {
   ) {
     // A row that cannot be a queue is refused rather than rendered: the same
     // rule `uploadProgress()` holds a live payload to.
-    throw new TypeError(`device_queues row ${r.account_id} is not a queue: ${JSON.stringify(row)}`);
+    throw new TypeError(
+      `device_queue_reports row ${r.account_id} is not a queue: ${JSON.stringify(row)}`,
+    );
   }
   return {
     uploadedBytes,
@@ -104,9 +116,83 @@ export function uploadQueueFromRow(row, at) {
 }
 
 /**
- * The D1-backed queue store. Writes go to `device_queue_reports` (account +
- * device) and dual-write the 0014 `device_queues` table so a previous reader
- * still sees a row. Reads prefer the per-device table and fall back.
+ * One account's live reports as the one queue its pages render, with each
+ * device's own truth kept apart (drive issue #865).
+ *
+ * The fields are the side that is still leaving. A paused device's own count
+ * and bytes are summed back beside them (`pausedFiles`, `pausedUploadedBytes`,
+ * `pausedTotalBytes`), so a line can name both halves: the bytes still leaving
+ * and the files the pause is holding. A paused device alone is the whole queue
+ * again, as it has always been, and the extra fields stay off it.
+ *
+ * The one field that matters most is `paused`, and it is no longer any paused
+ * row's flag: it is true only when nothing on the account is leaving at all.
+ * One paused device beside one uploading one summed its `true` over the
+ * uploading device's live bytes, so both the status and the usage page told
+ * the person their uploads were paused while bytes from the other device were
+ * still going up. Now that account reads as moving, with the pause named
+ * beside the progress instead of over it.
+ *
+ * A row with no bytes and no files is neither side: it adds nothing to either
+ * sum, so an empty report beside a paused one reads as paused, and an empty
+ * report beside an uploading one reads as that one's queue. When no side has
+ * anything, `paused` still follows the reports' own flags, so an account whose
+ * devices report an empty, unpaused queue reads as up to date and not paused.
+ * @param {UploadQueue[]} live
+ * @returns {UploadQueue}
+ */
+function sumLiveQueues(live) {
+  const moving = { files: 0, uploadedBytes: 0, totalBytes: 0 };
+  const held = { files: 0, uploadedBytes: 0, totalBytes: 0 };
+  let anyPaused = false;
+  for (const queue of live) {
+    if (queue.paused === true) {
+      anyPaused = true;
+      held.files += queue.files ?? 0;
+      held.uploadedBytes += queue.uploadedBytes ?? 0;
+      held.totalBytes += queue.totalBytes ?? 0;
+    } else {
+      moving.files += queue.files ?? 0;
+      moving.uploadedBytes += queue.uploadedBytes ?? 0;
+      moving.totalBytes += queue.totalBytes ?? 0;
+    }
+  }
+  // Nothing is leaving: the queue is what it is holding. `paused` is the
+  // reports' own flag only here, and it stays false for an empty, unpaused
+  // account, so an account whose devices report nothing left to move reads as
+  // up to date rather than paused.
+  if (moving.totalBytes === 0 && moving.files === 0) {
+    return {
+      files: held.files,
+      uploadedBytes: held.uploadedBytes,
+      totalBytes: held.totalBytes,
+      paused: anyPaused,
+    };
+  }
+  const queue = {
+    files: moving.files,
+    uploadedBytes: moving.uploadedBytes,
+    totalBytes: moving.totalBytes,
+    paused: false,
+  };
+  // Bytes are leaving and files are held: both halves stay on the queue, and
+  // `uploadProgress()` names them in that order.
+  if (held.files > 0 || held.totalBytes > 0) {
+    return {
+      ...queue,
+      pausedFiles: held.files,
+      pausedUploadedBytes: held.uploadedBytes,
+      pausedTotalBytes: held.totalBytes,
+    };
+  }
+  return queue;
+}
+
+/**
+ * The D1-backed queue store. Reads and writes use only `device_queue_reports`
+ * (account + device): the contract step (drive#743) removed the dual-write
+ * to the account-only 0014 `device_queues` table and migration 0044 dropped
+ * that table, so the per-device rows are the one store.
  * @param {D1Database} db
  * @param {{now?: () => number}} [options]
  */
@@ -151,26 +237,6 @@ export function createD1QueueStore(db, options = {}) {
         /** @type {{meta?: {changes?: number}}} */ (written)?.meta?.changes ?? 0,
       );
       if (changed > 0) {
-        await run(
-          db,
-          `INSERT INTO device_queues
-             (account_id, file_count, total_bytes, uploaded_bytes, paused, reported_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-           ON CONFLICT(account_id) DO UPDATE SET
-             file_count = excluded.file_count,
-             total_bytes = excluded.total_bytes,
-             uploaded_bytes = excluded.uploaded_bytes,
-             paused = excluded.paused,
-             reported_at = excluded.reported_at
-           WHERE device_queues.reported_at <= ?7`,
-          accountId,
-          queue.files,
-          queue.totalBytes,
-          queue.uploadedBytes,
-          queue.paused ? 1 : 0,
-          at,
-          at - QUEUE_REPORT_INTERVAL_SECONDS,
-        );
         return { stored: true, reportedAt: at };
       }
       const row = /** @type {Record<string, unknown>|null} */ (
@@ -207,19 +273,10 @@ export function createD1QueueStore(db, options = {}) {
           live.push(queue);
         }
       }
-      if (live.length > 0) {
-        return live.reduce(
-          (sum, q) => ({
-            files: sum.files + q.files,
-            uploadedBytes: sum.uploadedBytes + q.uploadedBytes,
-            totalBytes: sum.totalBytes + q.totalBytes,
-            paused: sum.paused || q.paused,
-          }),
-          { files: 0, uploadedBytes: 0, totalBytes: 0, paused: false },
-        );
+      if (live.length === 0) {
+        return null;
       }
-      const row = await first(db, "SELECT * FROM device_queues WHERE account_id = ?1", accountId);
-      return uploadQueueFromRow(row, at);
+      return sumLiveQueues(live);
     },
 
     /**
@@ -229,12 +286,8 @@ export function createD1QueueStore(db, options = {}) {
      */
     async sweep(at = nowSeconds(now())) {
       const cutoff = at - QUEUE_FRESHNESS_SECONDS;
-      const next = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
-      const prev = await run(db, "DELETE FROM device_queues WHERE reported_at < ?1", cutoff);
-      return (
-        Number(/** @type {{meta?: {changes?: number}}} */ (next)?.meta?.changes ?? 0) +
-        Number(/** @type {{meta?: {changes?: number}}} */ (prev)?.meta?.changes ?? 0)
-      );
+      const gone = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
+      return Number(/** @type {{meta?: {changes?: number}}} */ (gone)?.meta?.changes ?? 0);
     },
 
     /**
@@ -251,14 +304,6 @@ export function createD1QueueStore(db, options = {}) {
         accountId,
         deviceId,
       );
-      const leftover = await first(
-        db,
-        "SELECT account_id FROM device_queue_reports WHERE account_id = ?1 LIMIT 1",
-        accountId,
-      );
-      if (leftover === null || leftover === undefined) {
-        await run(db, "DELETE FROM device_queues WHERE account_id = ?1", accountId);
-      }
     },
   };
 }

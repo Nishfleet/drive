@@ -32,14 +32,14 @@ const windowsDefaultLetter = "D:"
 
 // winFspReinstall is what `drive mount` prints when WinFsp is missing. WinFsp
 // is the driver that turns an rclone mount into a Windows drive letter; the
-// Drive installer (drive#154) brings it in, so the fix is to reinstall Drive.
+// Drive installer (drive#154) brings it in, so the fix is to reinstall Storagebun.
 // The driver is never installed silently, and a hand-installed driver is not
 // the product's instruction to give.
 // winFspReinstall is what `drive mount` prints when WinFsp is missing. The
 // sentence keeps its semicolon: the no-semicolon rule is for replies and PR
 // text a person reads in a review, not for a failure string a user reads at a
 // terminal, where one sentence with a semicolon is the clearer instruction.
-const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter; reinstall Drive, which installs WinFsp for you"
+const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter; reinstall Storagebun, which installs WinFsp for you"
 
 // winFspDLLs are the driver files WinFsp's own installer writes. The official
 // installer puts them in <ProgramFiles(x86)>\WinFsp\bin and adds that
@@ -62,7 +62,7 @@ func winFspDLLs() []string {
 	}
 }
 
-// CheckWinFsp returns the reinstall-Drive sentence when goos is Windows and
+// CheckWinFsp returns the reinstall-Storagebun sentence when goos is Windows and
 // none of WinFsp's driver files is present, and nil on every other platform.
 // exists is the file probe, injected so a test can answer without a Windows
 // machine.
@@ -138,8 +138,8 @@ func windowsVolumeMounted(letter string) bool {
 
 // windowsRcloneMountLetters is the set of letters that an rclone process on
 // this machine mounts at, as reported by the running rclone processes. This is
-// the only identification of "a Drive mount" that the platform itself offers:
-// an every-volume stat cannot tell a WinFsp volume that Drive attached from a
+// the only identification of "a Storagebun mount" that the platform itself offers:
+// an every-volume stat cannot tell a WinFsp volume that Storagebun attached from a
 // USB stick, an optical drive or another FUSE/FAT volume that happened to land
 // on a letter between D: and Z:, and `tasklist`'s command line is where rclone
 // carries the mount point it was started with.
@@ -179,13 +179,13 @@ func windowsVolumeRoot(letter string) string {
 }
 
 // WindowsTaskCommandLine is the login task's command as one command-line
-// string: the same rclone argument vector the launchd plist and the systemd
-// unit carry, quoted the way CreateProcess splits it. The task itself stores
-// the plan as an Exec action's Command and Arguments (the XML, drive#368),
-// and `schtasks /Query` renders that pair back as one command line, so this
-// is the display form and the string the letter-finding reads.
+// string: this CLI in the foreground, quoted the way CreateProcess splits it
+// (drive#515). The task itself stores the plan as an Exec action's Command
+// and Arguments (the XML, drive#368), and `schtasks /Query` renders that pair
+// back as one command line, so this is the display form and the string the
+// letter-finding reads.
 func WindowsTaskCommandLine(p MountPlan) string {
-	parts := append([]string{p.RcloneBin}, windowsMountArgs(p)...)
+	parts := p.productArgv()
 	for i, a := range parts {
 		parts[i] = windowsQuoteArg(a)
 	}
@@ -313,21 +313,25 @@ func windowsTaskXMLPath(p MountPlan) string {
 
 // windowsTaskXML is the login task as Task Scheduler XML. The Exec action
 // carries the plan split the way Task Scheduler stores it: Command is the
-// rclone path, Arguments is the same quoted argument vector the /TR string
-// used to carry, so `schtasks /Query`'s "Task To Run" still reads as one
-// command line and every reader of it (the drive letter, the stop path) is
-// unchanged. userName is the login user the trigger fires for, in the
-// DOMAIN\user form Task Scheduler requires.
+// first element of productArgv (this CLI for the device mount, rclone for
+// an agent path), Arguments is the rest, so `schtasks /Query`'s "Task To
+// Run" still reads as one command line and every reader of it (the drive
+// letter, the stop path) is unchanged. userName is the login user the
+// trigger fires for, in the DOMAIN\user form Task Scheduler requires.
 func windowsTaskXML(p MountPlan, userName string) (string, error) {
-	quoted := make([]string, 0, len(p.Args())+2)
-	for _, a := range windowsMountArgs(p) {
+	argv := p.productArgv()
+	if len(argv) == 0 {
+		return "", fmt.Errorf("login task has no command")
+	}
+	quoted := make([]string, 0, len(argv)-1)
+	for _, a := range argv[1:] {
 		quoted = append(quoted, windowsQuoteArg(a))
 	}
 	doc := taskXML{
 		Version: "1.2",
 		XMLNS:   "http://schemas.microsoft.com/windows/2004/02/mit/task",
 		RegistrationInfo: taskRegInfoXML{
-			Description: "Mounts the Drive at logon (created by drive).",
+			Description: "Mounts the Storagebun folder at logon (created by drive).",
 		},
 		Triggers: taskTriggersXML{
 			// The trigger /SC ONLOGON used to set: start at this user's logon.
@@ -368,7 +372,7 @@ func windowsTaskXML(p MountPlan, userName string) (string, error) {
 		Actions: taskActionsXML{
 			Context: "Author",
 			Exec: taskExecXML{
-				Command:   p.RcloneBin,
+				Command:   argv[0],
 				Arguments: strings.Join(quoted, " "),
 				// The drive's own config folder: it exists
 				// before the task is registered (the rclone
@@ -547,18 +551,6 @@ var winFspCheck = CheckWinFsp
 // task with /F and running it again would unmount a live drive letter under
 // open files. The same unchanged check skips the permission bits on Windows,
 // where a file's mode carries no meaning (drive#817).
-func windowsMountArgs(p MountPlan) []string {
-	args := p.Args()
-	// The task XML is mode 0600 (windows.go WriteFileAtomic). Task Scheduler
-	// has no EnvironmentFile, so the storage secret is rclone's own
-	// --s3-secret-access-key on that 0600 file rather than an Environment=
-	// line in a world-readable unit (drive#498).
-	if p.SecretKey != "" {
-		args = append(args, "--s3-secret-access-key", p.SecretKey)
-	}
-	return args
-}
-
 func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun bool) error {
 	if err := winFspCheck(p.GOOS, fileExists); err != nil {
 		return err

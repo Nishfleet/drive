@@ -35,6 +35,7 @@ import { downloadUrlFor, signGrant } from "./grant.js";
 import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
+  bucketForKeyPrefix,
   CAPABILITIES_BY_KIND,
   KEY_COUNT_CAP,
   KEY_KINDS,
@@ -125,7 +126,7 @@ function liveKeyCountInMap(devices, accountId, atSeconds) {
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off. `size30DayUnpaid` is the size30 raise
  * check (drive#642).
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -558,9 +559,19 @@ export function createMemoryStore(options = {}) {
      * (`renewKeyWindow`), so a renewal cannot lengthen a key's life beyond
      * what its mint was given, and it reads no request field at all — the
      * powers on the row are not something a renew can touch.
+     * A device key on a provider that names a session renews by re-minting
+     * (drive#749): the vendor ends the credential when its session ends,
+     * whatever the row says, so the renewal is a fresh credential minted
+     * inside the row's own scope under the same row id, and the fresh
+     * credential rides the answer to the signed-in device that asked. The
+     * old session is left working until the vendor ends it, so a mint that
+     * fails here is named at the caller rather than hidden by a moved
+     * window. This memory path is the stand-in twin of the D1 store's
+     * branch (devices.js `renewDeviceCredentialRow`); with a D1 store bound,
+     * the delegation above already answered.
      * @param {{id: string}} account
      * @param {string} keyId
-     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}
+     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>}
      */
     async renewKey(account, keyId) {
       if (deviceStore?.renewKey) {
@@ -574,6 +585,38 @@ export function createMemoryStore(options = {}) {
         return { error: "revoked" };
       }
       const at = nowSeconds(now());
+      // The device session re-mint (drive#749), the stand-in twin of the D1
+      // store's branch: the row here is the store, so the swap is three
+      // field writes and the two map entries the old access key sat behind.
+      if (device.kind === "device" && providerNamesSessions && keyProvider !== undefined) {
+        const minted = await keyProvider.mint({
+          prefix: device.prefix,
+          capabilities: /** @type {import("./keyprovider.js").KeyScope["capabilities"]} */ ([
+            ...device.capabilities,
+          ]),
+          bucket: bucketForKeyPrefix(device.accountId, device.prefix),
+        });
+        const ttl = mintTtlSeconds(device.kind, minted.expiresIn ?? null);
+        const oldAccessKeyId = device.accessKeyId;
+        device.accessKeyId = minted.accessKeyId;
+        device.secretHash = await sha256Hex(minted.secret);
+        device.ttlSeconds = ttl;
+        device.expiresAt = ttl === null ? null : at + ttl;
+        device.lastSeenAt = at;
+        byAccessKeyId.delete(oldAccessKeyId);
+        byAccessKeyId.set(device.accessKeyId, device.id);
+        return {
+          renewed: true,
+          device: publicDevice(device),
+          credential: {
+            accessKeyId: minted.accessKeyId,
+            secret: minted.secret,
+            sessionToken: minted.sessionToken ?? null,
+            expiresIn: minted.expiresIn ?? null,
+            expiresAt: device.expiresAt,
+          },
+        };
+      }
       device.lastSeenAt = at;
       const before = device.expiresAt ?? null;
       device.expiresAt = renewKeyWindow(device, at).expiresAt;

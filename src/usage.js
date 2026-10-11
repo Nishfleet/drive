@@ -59,7 +59,7 @@ export const USAGE_LABELS = Object.freeze({
   // and the one sentence that says how that zone works.
   monthZone: "UTC",
   monthNote:
-    "Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
+    "Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
   // A drive that has stored nothing this month, said in the "This month" area
   // (drive issue #427). The status slot there is reserved from the first paint
   // (drive#225), so a new account's first look at the page was a blank box over

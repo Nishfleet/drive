@@ -253,3 +253,104 @@ test("pendingDrawDays walks every UTC day from the last draw through the newest 
   ]);
   assert.deepEqual(pendingDrawDays(["2026-10-05"], "2026-10-05", "2026-10-05"), ["2026-10-05"]);
 });
+
+test("the draw helpers refuse every number they cannot count, by name", () => {
+  // A month bill the carry is taken from.
+  const monthly = billGb(200).storageMillicents;
+
+  assert.throws(
+    () => dailyDrawMillicents(-1),
+    /^TypeError: monthlyMillicents must be 0 or more whole millicents, got -1$/,
+  );
+  assert.throws(
+    () => dailyDrawMillicents(1.5),
+    /^TypeError: monthlyMillicents must be 0 or more whole millicents, got 1\.5$/,
+  );
+  assert.throws(
+    () => dailyDrawMillicents(Number.NaN),
+    /monthlyMillicents must be 0 or more whole millicents, got NaN$/,
+  );
+  assert.throws(() => dailyDrawMillicents("4"), /monthlyMillicents/);
+
+  // A carry one day short of a whole carry: 29 is the last legal remainder.
+  assert.equal(dailyDrawMillicents(3000, 29).drawMillicents, 100);
+  assert.throws(
+    () => dailyDrawMillicents(monthly, DRAW_DAYS),
+    new RegExp(
+      `^TypeError: remainderMillicents must be a carried remainder in 0\\.\\.${DRAW_DAYS - 1}, got ${DRAW_DAYS}$`,
+    ),
+  );
+  assert.throws(() => dailyDrawMillicents(monthly, -1), /remainderMillicents/);
+  assert.throws(() => dailyDrawMillicents(monthly, 0.5), /remainderMillicents/);
+  // Nothing to bill is a legal draw of nothing, not a refusal.
+  assert.deepEqual(dailyDrawMillicents(0, 0), { drawMillicents: 0, remainderMillicents: 0 });
+
+  // A posted-cent draw of nothing is legal: an account that stores nothing
+  // still runs the draw path each day.
+  assert.deepEqual(centsFromDrawnMillicents(0, 0), { drawCents: 0, unpostedMillicents: 0 });
+  assert.throws(
+    () => centsFromDrawnMillicents(-1),
+    /^TypeError: drawMillicents must be 0 or more whole millicents, got -1$/,
+  );
+  assert.throws(() => centsFromDrawnMillicents(1.5), /drawMillicents/);
+  assert.throws(
+    () => centsFromDrawnMillicents(1000, MILLICENTS_PER_CENT),
+    new RegExp(
+      `^TypeError: unpostedMillicents must be 0\\.\\.${MILLICENTS_PER_CENT - 1}, got ${MILLICENTS_PER_CENT}$`,
+    ),
+  );
+  assert.throws(() => centsFromDrawnMillicents(1000, -1), /unpostedMillicents/);
+  assert.equal(centsFromDrawnMillicents(999, 999).drawCents, 1);
+  assert.equal(centsFromDrawnMillicents(999, 999).unpostedMillicents, 998);
+});
+
+test("pack and unpack are each other's inverse over every legal pair", () => {
+  for (let thirtyRemainder = 0; thirtyRemainder < DRAW_DAYS; thirtyRemainder += 1) {
+    for (let unposted = 0; unposted < MILLICENTS_PER_CENT; unposted += 37) {
+      const packed = packDrawRemainder(thirtyRemainder, unposted);
+      assert.deepEqual(unpackDrawRemainder(packed), {
+        thirtyRemainder,
+        unpostedMillicents: unposted,
+      });
+    }
+  }
+
+  // The edges the old single-number storage could not tell apart: a row that
+  // stored only 0..29 unpacks with no unposted millicents.
+  assert.equal(
+    packDrawRemainder(0, MILLICENTS_PER_CENT - 1),
+    (MILLICENTS_PER_CENT - 1) * DRAW_DAYS,
+  );
+  assert.deepEqual(unpackDrawRemainder((MILLICENTS_PER_CENT - 1) * DRAW_DAYS + DRAW_DAYS - 1), {
+    thirtyRemainder: DRAW_DAYS - 1,
+    unpostedMillicents: MILLICENTS_PER_CENT - 1,
+  });
+  assert.deepEqual(unpackDrawRemainder(0), { thirtyRemainder: 0, unpostedMillicents: 0 });
+
+  assert.throws(
+    () => packDrawRemainder(DRAW_DAYS, 0),
+    new RegExp(`^TypeError: thirtyRemainder must be 0\\.\\.${DRAW_DAYS - 1}, got ${DRAW_DAYS}$`),
+  );
+  assert.throws(() => packDrawRemainder(-1, 0), /thirtyRemainder/);
+  assert.throws(
+    () => packDrawRemainder(0, MILLICENTS_PER_CENT),
+    new RegExp(
+      `^TypeError: unpostedMillicents must be 0\\.\\.${MILLICENTS_PER_CENT - 1}, got ${MILLICENTS_PER_CENT}$`,
+    ),
+  );
+  assert.throws(() => packDrawRemainder(0, -1), /unpostedMillicents/);
+  assert.throws(
+    () => unpackDrawRemainder(-1),
+    /^TypeError: packed draw remainder must be 0 or more, got -1$/,
+  );
+  assert.throws(() => unpackDrawRemainder(1.5), /packed draw remainder must be 0 or more/);
+});
+
+test("the size30 window is exactly thirty UTC days of milliseconds", () => {
+  const day = 24 * 60 * 60 * 1000;
+  assert.equal(
+    SIZE30_MS,
+    DRAW_DAYS * day,
+    "SIZE30_MS is 30 x 24h, so a peak drops out after 30 days",
+  );
+});

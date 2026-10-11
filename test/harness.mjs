@@ -20,6 +20,12 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { AUTH_COOKIE_PREFIX, createAuth } from "../core/auth.js";
+// The on-demand module's factory, imported statically here because this is
+// test code: the harness is never bundled into the Worker entry, so importing
+// it costs nothing the entry would pay (drive#848). What it proves is the
+// shape a test asks for — `twoFactor: true` — matches what the on-demand
+// module the Worker imports at runtime actually exports.
+import { twoFactorPlugin as twoFactorPluginFactory } from "../core/auth-two-factor.js";
 import { applyMigrations, d1BindValue, MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
@@ -280,6 +286,24 @@ export function createTestD1(options = {}) {
 }
 
 /**
+ * Every row the known-bad hash table holds, read off the database itself.
+ *
+ * The check that proves a load landed as real data rather than as a value a
+ * helper handed back (drive issue #826). It lives here, on the harness every
+ * D1 test already imports, because the two files that load the stock feed
+ * each had a copy of it and a second copy of a read is a second thing to drift
+ * from the query it stands for.
+ * @param {import("./harness.mjs").TestD1} db
+ * @returns {Array<{sha256: string, seenAt: number}>}
+ */
+export function knownBadHashRows(db) {
+  return db.sqlite
+    .prepare("SELECT sha256, seen_at AS seenAt FROM known_bad_hashes ORDER BY sha256")
+    .all()
+    .map((row) => ({ sha256: String(row.sha256), seenAt: Number(row.seenAt) }));
+}
+
+/**
  * A Better Auth instance over a fresh customer database, and the list its
  * sign-in links land in.
  *
@@ -292,13 +316,19 @@ export function createTestD1(options = {}) {
  * there was none, so a test can read what the mail would name. `deviceApproval`
  * is true when the start stored a return path for the approve page (drive#558).
  * @typedef {{to: string, url: string, userAgent?: string|null, deviceApproval?: boolean}} SentLink
- * @param {{migrations?: readonly string[]}} [options]
+ * @param {{migrations?: readonly string[], twoFactor?: boolean}} [options]
  * @returns {{auth: import("../core/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);
   /** @type {SentLink[]} */
   const sent = [];
+  // `twoFactor: true` builds the instance the way the /api/auth/two-factor/*
+  // routes get (drive#848): same createAuth, with the factor's factory handed
+  // in from the on-demand module. Off by default, so a test that only signs in
+  // gets the same factorless instance the main Worker entry builds and the
+  // entry-chunk saving this change is for is not quietly tested away.
+  const twoFactorPlugin = options.twoFactor ? twoFactorPluginFactory : undefined;
   const auth = createAuth({
     database: db,
     secret: TEST_SECRET,
@@ -306,6 +336,7 @@ export function createTestAuth(options = {}) {
     sendLink: async (link) => {
       sent.push(link);
     },
+    twoFactorPlugin,
   });
   return { auth, db, sent };
 }

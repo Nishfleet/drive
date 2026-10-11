@@ -368,7 +368,7 @@ still fails as itself and the good records beside it are stored.
 
 ## How we know it is up (the outage alert)
 
-North star "Reliable" (Nish, 2026-09-30): we hear about an outage before customers do. The outside monitor is issue #36: one free, stock external uptime monitor (UptimeRobot or Better Stack free tier, no card) checking the URLs below every few minutes, alerting Nish by phone push or email. The site origin is pinned in `src/seo.js` (`SITE.origin`, `https://drive-pricing.nishant345.workers.dev` today) and `test/seo.test.mjs` holds it there, so this table names the source rather than a second copy.
+North star "Reliable" (Nish, 2026-09-30): we hear about an outage before customers do. The outside monitor is issue #36: one free, stock external uptime monitor (UptimeRobot or Better Stack free tier, no card) checking the URLs below every few minutes, alerting Nish by phone push or email. The site origin is pinned in `src/seo.js` (`SITE.origin`, `https://storagebun.com` today) and `test/seo.test.mjs` holds it there, so this table names the source rather than a second copy.
 
 | URL | What it is | Built |
 |---|---|---|

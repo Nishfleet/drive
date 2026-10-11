@@ -243,18 +243,12 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	}
 }
 
-// TestLoginRefusesADeviceKeyWithAnHourOnIt is drive#544. The api records a
-// provider's own session lifetime on the key's row now, so a deployment whose
-// STS provider mints sessions that die answers a device mint with an hour on
-// it. A device key is the one credential the CLI stores and never renews, so
-// storing one would leave storage settings on disk that stop signing requests
-// an hour later while the person sees a mount that looks healthy. Nothing is
-// written before the refusal: the files on disk stay the ones that worked.
-func TestLoginRefusesADeviceKeyWithAnHourOnIt(t *testing.T) {
+// TestLoginStoresADeviceKeyWithAnHourOnIt is drive#749 on top of drive#544.
+// The api records a provider's own session on the key's row, so a device mint
+// can answer with an hour on it. The renew loop rewrites rclone.conf before
+// that session ends, so login stores the expiry instead of refusing the key.
+func TestLoginStoresADeviceKeyWithAnHourOnIt(t *testing.T) {
 	api := newFakeAPI()
-	// The hour this deployment's provider named. It is held here so the
-	// assertion below can check the message names it, rather than the words
-	// "an hour", which the api no longer promises (drive#544).
 	mintedAt := time.Now().Add(time.Hour).Unix()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == keysPath && r.Method == http.MethodPost {
@@ -276,28 +270,18 @@ func TestLoginRefusesADeviceKeyWithAnHourOnIt(t *testing.T) {
 	t.Cleanup(func() { openURL = origOpen })
 
 	home := t.TempDir()
-	if err := Login(home, server.URL, "", io.Discard); err == nil {
-		t.Fatal("login must refuse a device credential with an expiry")
-	} else {
-		if !strings.Contains(err.Error(), "minted this device's key") {
-			t.Errorf("got %v, want device-key-expiring", err)
-		}
-		// The message names the expiry it was handed: any session length, not an
-		// hour the api did not promise.
-		if !strings.Contains(err.Error(), expiryLabel(&mintedAt)) {
-			t.Errorf("message %v must name when the key dies", err)
-		}
-		if !strings.Contains(err.Error(), "Next:") {
-			t.Errorf("the failure must say what to do next:\n%v", err)
-		}
+	if err := Login(home, server.URL, "", io.Discard); err != nil {
+		t.Fatal(err)
 	}
-	// Nothing is written by a login that was refused: the files on disk stay
-	// the ones that worked.
-	if _, err := os.Stat(CredentialsPath(home)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("credentials were written before the refusal: %v", err)
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(RcloneConfigPath(home)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("rclone.conf was written before the refusal: %v", err)
+	if creds.KeyExpiresAt != mintedAt {
+		t.Fatalf("KeyExpiresAt = %d, want the mint's %d", creds.KeyExpiresAt, mintedAt)
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Fatalf("rclone.conf was not written: %v", err)
 	}
 }
 

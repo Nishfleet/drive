@@ -137,8 +137,8 @@ test("every kind renders a subject and both body parts", () => {
 test("every email carries one sign-off, in both parts", () => {
   for (const kind of EMAIL_KINDS) {
     const { text, html } = renderEmail(kind, dataFor(kind));
-    assert.equal(text.split("-- Drive").length - 1, 1, `${kind} text sign-off`);
-    assert.equal(html.split("-- Drive").length - 1, 1, `${kind} html sign-off`);
+    assert.equal(text.split("-- Storagebun").length - 1, 1, `${kind} text sign-off`);
+    assert.equal(html.split("-- Storagebun").length - 1, 1, `${kind} html sign-off`);
   }
 });
 
@@ -165,7 +165,7 @@ test("the reminder names the real window, and due once the window has passed", (
     purgeOn: "3 Nov (UTC)",
     replyTo: REPLY_TO,
   });
-  assert.equal(onTime.subject, "Your Drive files will be deleted in 5 days");
+  assert.equal(onTime.subject, "Your Storagebun files will be deleted in 5 days");
   assert.match(onTime.text, /in 5 days, on 3 Nov \(UTC\)/);
 
   const late = accountCloseReminderTemplate({
@@ -175,7 +175,7 @@ test("the reminder names the real window, and due once the window has passed", (
     due: true,
     replyTo: REPLY_TO,
   });
-  assert.equal(late.subject, "Your Drive files are due to be deleted");
+  assert.equal(late.subject, "Your Storagebun files are due to be deleted");
   assert.match(late.text, /due to be deleted/);
   assert.doesNotMatch(late.text, /in 5 days/);
 });
@@ -473,10 +473,10 @@ test("the receipt names the month it bills, and says the month is UTC", () => {
   // the month the numbers belong to, and the one sentence under it says that
   // the month is a UTC month.
   const { subject, text, html } = monthlyReceiptTemplate(receiptData());
-  assert.match(subject, /Your Drive receipt: October 2026, UTC$/);
-  assert.match(text, /Your Drive bill for October 2026, UTC is \$12\.00\./);
+  assert.match(subject, /Your Storagebun receipt: October 2026, UTC$/);
+  assert.match(text, /Your Storagebun bill for October 2026, UTC is \$12\.00\./);
   // The UTC rule in one sentence, the same words the usage page states.
-  assert.match(text, /Drive bills whole months in UTC:/);
+  assert.match(text, /Storagebun bills whole months in UTC:/);
   assert.match(text, /00:00 on the 1st/);
   assert.match(html, /October 2026, UTC/);
   // A different month is named as itself, not offset or rolled: the label comes
@@ -1061,8 +1061,8 @@ test("the route sends each of the five kinds through the one lane", async () => 
       env.EMAIL.sent[0]
     );
     assert.equal(message.from.email, MAIL_FROM);
-    assert.ok(message.text.includes("-- Drive"), `kind: ${kind} text sign-off`);
-    assert.ok(message.html.includes("-- Drive"), `kind: ${kind} html sign-off`);
+    assert.ok(message.text.includes("-- Storagebun"), `kind: ${kind} text sign-off`);
+    assert.ok(message.html.includes("-- Storagebun"), `kind: ${kind} html sign-off`);
   }
 });
 
@@ -1077,7 +1077,7 @@ test("a top-up receipt names the money added and the balance it left", () => {
     auto: false,
     replyTo: REPLY_TO,
   });
-  assert.equal(manual.subject, "Your Drive receipt: $25.00 added");
+  assert.equal(manual.subject, "Your Storagebun receipt: $25.00 added");
   assert.match(manual.text, /You added \$25\.00/);
   assert.match(manual.text, /balance is now \$31\.50\. It never expires\./);
   const auto = renderEmail("top-up-receipt", {
@@ -1103,7 +1103,7 @@ test("the low-balance email says what happens at $0, or that auto top-up covers 
     autoTopUpUsd: null,
     replyTo: REPLY_TO,
   });
-  assert.equal(off.subject, "Your Drive balance is $1.80");
+  assert.equal(off.subject, "Your Storagebun balance is $1.80");
   assert.match(off.text, /Top up to keep adding files\./);
   assert.match(off.text, /nothing is deleted/);
   const on = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: 25, replyTo: REPLY_TO });

@@ -45,6 +45,7 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
+import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
 import {
   createTestAuth,
   DRIVE_MIGRATIONS,
@@ -433,67 +434,75 @@ test("every new-account path still cannot open an account through OAuth (drive#4
   assert.equal(made.sent.length, 2);
 });
 
-test("a start without the age box is refused and mails nothing (drive#781)", async () => {
+test("a first-time address that did not tick is stopped at the link (drive#785)", async () => {
   const made = dispatchEnv();
   const response = await workerFetch(
     post({ step: "start", method: "email", email: "young@example.com", age: false }),
     made.env,
   );
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 0, "a refused start mails nothing");
+  assert.equal(response.status, 202, "the start still mails the link for any address");
+  assert.equal(made.sent.length, 1, "exactly one link went out");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302, "the link answers with a redirect, not a session");
+  assert.match(String(followed.headers.get("location")), /error=need-age/);
+  assert.equal(followed.headers.getSetCookie().length, 0, "no session was minted");
+  const user = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("young@example.com")
+    .first();
+  assert.equal(user, null, "no account opened behind an unattested link");
 });
 
-test("a returning address without the age box is refused the same way (drive#781)", async () => {
+test("an older account signs in with no tick (drive#785)", async () => {
   const made = dispatchEnv();
   await signIn(made, "known@example.com");
   const response = await workerFetch(
     post({ step: "start", method: "email", email: "known@example.com", age: false }),
     made.env,
   );
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(
-    made.sent.length,
-    1,
-    "the refused start mailed nothing more than the earlier sign-in",
-  );
+  assert.equal(response.status, 202, "the start mails the link as any other would");
+  assert.equal(made.sent.length, 2, "the returning start mailed its own link");
+  const followed = await workerFetch(new Request(made.sent[1].url), made.env);
+  assert.equal(followed.status, 302, "the link signs the account in");
+  assert.equal(followed.headers.get("location"), "/files");
+  assert.ok(followed.headers.getSetCookie()[0], "a session was minted");
 });
 
-test("a start with no age field is refused (drive#781)", async () => {
+test("a start with no age field mails the link (drive#785)", async () => {
   const made = dispatchEnv();
   const response = await workerFetch(
     post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
     made.env,
   );
-  assert.equal(response.status, 400, "a start with no age field is refused");
-  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 0, "a refused start mails nothing");
-  const row = await made.db
-    .prepare('select id from "user" where email = ?')
-    .bind("new@example.com")
-    .first();
-  assert.equal(row, null, "no user row was written for a refused start");
+  assert.equal(response.status, 202, "a start with no age field mails like any other");
+  assert.equal(made.sent.length, 1, "the link leaves by email");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.match(
+    String(followed.headers.get("location")),
+    /error=need-age/,
+    "the gate still holds at the link, because no tick travelled with it",
+  );
 });
 
-test("the age box is what mails the link (drive#781)", async () => {
+test("an attested link opens the account (drive#785)", async () => {
   const made = dispatchEnv();
-  const off = await workerFetch(
-    post({ step: "start", method: "email", email: "new@example.com", age: "off" }),
-    made.env,
-  );
-  assert.equal(off.status, 400);
-  assert.deepEqual(await off.json(), { error: SIGNIN_COPY.needAge });
-  const withAge = await workerFetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "new@example.com", age: true }),
     made.env,
   );
-  assert.equal(withAge.status, 202, "the age box is what mails the link");
-  assert.equal((await withAge.json()).ok, true);
-  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+  assert.equal(response.status, 202, "the start mails the link");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302, "the link signs the new account in");
+  assert.equal(followed.headers.get("location"), "/files");
+  assert.ok(followed.headers.getSetCookie()[0], "a session was minted");
+  const user = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.ok(user, "the account opened");
 });
 
-test("the form path is refused with no age box (drive#781)", async () => {
+test("the form path mails a link with no age box (drive#785)", async () => {
   const made = dispatchEnv();
   const form = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/signin`, {
@@ -510,9 +519,14 @@ test("the form path is refused with no age box (drive#781)", async () => {
     }),
     made.env,
   );
-  assert.equal(form.status, 400, "the form path is refused with no age box");
-  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needAge });
-  assert.equal(made.sent.length, 0, "the refused form post mailed nothing");
+  assert.equal(form.status, 202, "the form path mails like any other start");
+  assert.equal(made.sent.length, 1, "the form path's link leaves by email");
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
+  assert.match(
+    String(followed.headers.get("location")),
+    /error=need-age/,
+    "a url-encoded start carries no tick, so the gate holds at the link",
+  );
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -983,6 +997,91 @@ test("a counter that cannot be written answers that no link went out", async () 
   });
   const response = await workerFetch(
     post({ step: "start", method: "email", email: "broken@b.co" }),
+    made.env,
+  );
+  assert.equal(response.status, 503, "a counter that cannot be written is not a 202");
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
+  assert.equal(made.sent.length, 0, "no link went out");
+});
+
+// --------------------------------------- the account-wide send bound (drive#878)
+
+// The counter the edge bindings cannot be: one row on the customer database,
+// shared by every caller in every Cloudflare location, where a rate-limit key
+// would be counted once per location. The asks below come from fresh
+// addresses on fresh client IPs (the same walk helper the address tests use),
+// because the bound this section proves is the one that holds when the per-IP
+// and per-address guards both let the ask through.
+
+test("a mailed link spends the account-wide counter, keyed on the one constant row", async () => {
+  const made = dispatchEnv();
+  await askSixTimes(made);
+  assert.equal(made.sent.length, 5, "the address guard let five through");
+  const row = await made.db
+    .prepare('SELECT "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+    .bind("account")
+    .first();
+  assert.ok(row !== null, "the account row exists after the first mailed link");
+  assert.equal(row.count, 5, "each mailed link spent one account slot");
+});
+
+test("an ask the address guard refused never moves the account counter", async () => {
+  // Narrow-first, the order the edge limits run in (the per-IP bucket before
+  // the service-wide one): the account's counter only moves for asks the
+  // address guard let through, so retries against one flooded inbox cannot
+  // crowd the rest of the account's mail out.
+  const made = dispatchEnv();
+  await askSixTimes(made, "flooded@b.co");
+  assert.equal(made.sent.length, 5);
+  const row = await made.db
+    .prepare('SELECT "count" FROM "signin_account_sends" WHERE "counter" = ?1')
+    .bind("account")
+    .first();
+  assert.ok(row !== null);
+  assert.equal(row.count, 5, "the sixth ask spent an address slot, not an account slot");
+});
+
+test("the account-wide bound refuses the account's 5001st start from a fresh address and a fresh IP", async () => {
+  // The bound the issue asks for, measured on the real dispatch: a walk with
+  // a fresh address per request and a different IP per request clears the
+  // per-IP limit and the per-address limit, so this is the only guard left.
+  // The counter is filled to two under its ceiling, three asks arrive from
+  // three addresses on three IPs, and the third is the account's 5001st:
+  // answered like a sent link, and no mail.
+  const made = dispatchEnv();
+  await made.db
+    .prepare(
+      'insert into "signin_account_sends" ("counter", "window_start", "count") values (?1, ?2, ?3)',
+    )
+    .bind("account", Math.floor(Date.now() / 1000), SIGNIN_ACCOUNT_SEND_MAX - 2)
+    .run();
+  for (let ask = 0; ask < 3; ask += 1) {
+    const answer = await askForLink(made, `walk${ask}@b.co`);
+    assert.equal(answer.status, 202, `ask #${ask + 1} is answered`);
+    assert.deepEqual(answer.body, sentLinkBody, `ask #${ask + 1} is answered as a sent link is`);
+  }
+  assert.equal(made.sent.length, 2, "two links go out; the account's ceiling refuses the third");
+  const spentAddress = await made.db
+    .prepare('SELECT "hour_count" FROM "signin_address_sends" WHERE "address" = ?1')
+    .bind("walk2@b.co")
+    .first();
+  assert.ok(spentAddress !== null);
+  assert.equal(
+    spentAddress.hour_count,
+    1,
+    "the refused ask had already spent its address's slot: it did reach for a send",
+  );
+});
+
+test("an account counter that cannot be written answers that no link went out", async () => {
+  // The address guard's rule again (drive#431): a counter that failed is a
+  // deployment problem, not a caller over a ceiling, so the public answer is
+  // the mail-failure body and the reason travels to the log only.
+  const made = dispatchEnv({
+    migrations: DRIVE_MIGRATIONS.filter((name) => !name.includes("0047_signin_account_sends")),
+  });
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "broken-account@b.co" }),
     made.env,
   );
   assert.equal(response.status, 503, "a counter that cannot be written is not a 202");
@@ -1944,9 +2043,11 @@ test("the page states the spec's two promises: a card at sign-up, and the member
 });
 
 test("the page states the age rule and labels the age box in short (drive#781)", () => {
-  // The terms carry the rule; this page must show it once and carry the box
-  // that agrees to it. The server refuses a start without the box with the
-  // same sentence, so the page, the terms and the route cannot drift.
+  // The terms carry the rule; this page shows it once and carries the box
+  // that agrees to it. The box is optional since drive#785: the gate holds
+  // at the link for a first-time address and never re-asks an older one, so
+  // the page is the same one for both (drive#538) and the tick travels with
+  // the link.
   const terms = readFileSync(new URL("../public/terms.html", import.meta.url), "utf8");
   assert.ok(terms.includes(SIGNIN_COPY.needAge), "the terms must carry the same age sentence");
   assert.ok(page.includes(SIGNIN_COPY.needAge), "the page must say the age rule");
@@ -1957,9 +2058,19 @@ test("the page states the age rule and labels the age box in short (drive#781)",
   );
   assert.ok(page.includes(`for="age"`), "the page carries a label for the age checkbox");
   assert.ok(page.includes(SIGNIN_COPY.ageConsent), "the age box is labelled in short");
+  assert.match(
+    page,
+    /<input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence"/,
+    "the page posts the age box the route reads",
+  );
+  assert.equal(
+    /<input id="age" name="age"[^>]*required/.test(page),
+    false,
+    "the age box is optional: an older account must not attest again",
+  );
   assert.ok(
-    page.includes('<input id="age" name="age" type="checkbox" value="on" required'),
-    "the page posts the required age box the route reads",
+    page.includes('errorParam === "need-age"'),
+    "the page answers an unattested link with its own age rule",
   );
 });
 

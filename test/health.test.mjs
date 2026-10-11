@@ -866,7 +866,10 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // email binding can only be exercised by really sending mail (only the
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
-  // absence fails closed at the intake (core/meter.js) instead of at the probe.
+  // absence fails closed at the intake (core/meter.js) instead of at the probe,
+  // and the reindex queue is only produced on by the nightly cron (drive#566),
+  // whose failure is a failed trigger rather than a customer request that
+  // could answer 503; a probe would have to enqueue a real walk to find out.
   // The meter's queue (drive#519) and the branch-jobs producer (drive#563)
   // are optional on purpose: without them the work runs in-process, and a
   // producer binding cannot be probed without sending a real job. Both
@@ -875,9 +878,14 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
     "EMAIL",
     "METER_EVENT_TOKEN",
     "HEALTH_RATE_LIMITER",
+    "REINDEX_QUEUE",
     "METER_JOBS",
     "BRANCH_JOBS",
   ]);
+  assert.ok(
+    !REQUIRED_BINDINGS.includes("REINDEX_QUEUE"),
+    "REINDEX_QUEUE is a documented exception, not a required binding",
+  );
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,
