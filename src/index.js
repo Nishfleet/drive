@@ -12,12 +12,8 @@ import {
   QUOTE_ENDPOINT,
   USAGE_ENDPOINT,
 } from "../core/billing.js";
-import {
-  CAP_ENDPOINT,
-  capStateForAccount,
-  handleCapRequest,
-  runCapEnforcement,
-} from "../core/cap.js";
+import { runCapEnforcement } from "../core/cap.js";
+import { CAP_ENDPOINT, capStateForAccount, handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { unbillableAccounts } from "../core/dodo.js";
