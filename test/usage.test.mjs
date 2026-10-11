@@ -21,15 +21,14 @@ import {
   BILLING_CONFIG,
   dailyDrawMillicents,
   gbMonths,
-  handleUsageRequest,
   monthBillCents,
   monthlyBillForStoredTb,
   SAVED_COPY,
   size30DropsOutDay,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
-  usageSummary,
 } from "../core/billing.js";
+import { handleUsageRequest, usageSummary } from "../core/billing-report.js";
 import { CAP_ENDPOINT } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { EXPORT_ENDPOINT, EXPORT_FILENAME } from "../core/export.js";

@@ -339,15 +339,15 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
     // source must still carry it, so a rename in either fails here instead of
     // misleading an operator.
     const sourceText = readRepo(source);
-    const runbookText = readRepo("docs/runbooks/" + runbook);
+    const runbookText = readRepo(`docs/runbooks/${runbook}`);
     for (const symbol of symbols) {
       assert.ok(
         runbookText.includes(symbol),
-        runbook + " must name " + symbol + " (it cites " + source + ")",
+        `${runbook} must name ${symbol} (it cites ${source})`,
       );
       assert.ok(
         sourceText.includes(symbol),
-        source + " must still carry the " + symbol + " the runbook cites",
+        `${source} must still carry the ${symbol} the runbook cites`,
       );
     }
   }

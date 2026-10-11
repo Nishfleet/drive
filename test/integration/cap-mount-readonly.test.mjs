@@ -752,7 +752,7 @@ test("the straddling month really does straddle the cap", async () => {
   // it. If a pricing change moved the maximum, that would silently stop being
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
-  const { capStatus } = await import("../../core/billing.js");
+  const { capStatus } = await import("../../core/billing-report.js");
   assert.equal(capStatus(STRADDLING_MONTH.size30Bytes, CAP_BEFORE).state, "read_only");
   assert.equal(capStatus(STRADDLING_MONTH.size30Bytes, CAP_AFTER).state, "active");
 });

@@ -23,7 +23,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../core/billing.js";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { capLine, capStatus, handleUsageRequest } from "../core/billing-report.js";
 import {
   applyCapSwap,
   capSwapPlan,

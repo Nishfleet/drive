@@ -10,12 +10,12 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   GB_PER_TB,
-  handleQuoteRequest,
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
   QUOTE_ENDPOINT,
   quoteForStoredTb,
 } from "../core/billing.js";
+import { handleQuoteRequest } from "../core/billing-report.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import worker from "../src/index.js";

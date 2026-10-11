@@ -9,14 +9,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import fc from "fast-check";
-import {
-  billingConfigFor,
-  fairUseCheck,
-  fairUseLimitBytes,
-  fairUseLine,
-  monthlyBillForStoredTb,
-  payAfterFeeCents,
-} from "../core/billing.js";
+import { billingConfigFor, monthlyBillForStoredTb, payAfterFeeCents } from "../core/billing.js";
+import { fairUseCheck, fairUseLimitBytes, fairUseLine } from "../core/billing-report.js";
 import { UPLOAD_FILE_MAX_BYTES } from "../core/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {

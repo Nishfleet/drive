@@ -23,9 +23,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   BILLING_CONFIG,
-  capStatus,
   downloadCostUsd,
-  handleUsageRequest,
   meteredMonthlyBillUsd,
   minutesInMonth,
   monthBillCents,
@@ -33,10 +31,9 @@ import {
   monthlyStorageBillUsd,
   quoteForStoredTb,
   SAVED_COPY,
-  savedLine,
   storedGb,
-  usageSummary,
 } from "../core/billing.js";
+import { capStatus, handleUsageRequest, savedLine, usageSummary } from "../core/billing-report.js";
 import { PRICE } from "../core/pricing.js";
 import { formatBytes } from "../core/status.js";
 import worker from "../src/index.js";

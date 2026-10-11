@@ -21,7 +21,7 @@
 // hourly cap walk and `drive cap` run this again after they decide, so a
 // later raise still finds the pause record on the live row and restores.
 
-import { usageSummary } from "./billing.js";
+import { usageSummary } from "./billing-report.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { balanceCents } from "./ledger.js";
 
