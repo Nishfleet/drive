@@ -85,8 +85,7 @@ within that day; we reply and put it back. {{AGENT_DELETE}} See
 
 ## How the bill is counted
 
-The meter counts every GB you keep, by the minute. At the end of the month the
-rate is {{RATE}} on the month's GB-months, and the bill is never more than
+You pay for the biggest size your drive reached in the last 30 days. The rate is {{RATE}} a month, and the bill is never more than
 {{MAX_PER_TB}} for each TB. {{NO_PLANS}} {{VERSION_MINIMUM}} Downloads are
 counted separately. The numbers worked out for four sizes are on
 [Pricing and your bill](/pricing).

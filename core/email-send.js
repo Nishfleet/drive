@@ -258,10 +258,10 @@ export async function handleSendEmailRequest(request, env) {
     });
   }
   if (!isAuthorizedSend(request, env?.EMAIL_SEND_TOKEN)) {
-    return json({ error: "Drive emails are only sent from the drive service." }, 403);
+    return json({ error: "Storagebun emails are only sent from the Storagebun service." }, 403);
   }
   if (!isSameOriginRequest(request)) {
-    return json({ error: "Drive emails are only sent from the drive service." }, 403);
+    return json({ error: "Storagebun emails are only sent from the Storagebun service." }, 403);
   }
   let body;
   try {

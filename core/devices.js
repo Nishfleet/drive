@@ -13,13 +13,13 @@
 // is the whole of the withdrawal there.
 
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
-import { BILLING_CONFIG, gbMonths, minutesInMonth, storedGb } from "./billing.js";
+import { BILLING_CONFIG, size30DropsOutDay, size30Window, storedGb } from "./billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "./cap.js";
 import { all, batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
-import { monthStart, monthUsageThrough } from "./meter.js";
+import { monthStart, monthUsageThrough, size30Through } from "./meter.js";
 
 const CLOSE_CRON_LIMIT = 100;
 
@@ -134,6 +134,55 @@ function deviceFromRow(row) {
  */
 function changesOf(result) {
   return Number(/** @type {{meta?: {changes?: number}}} */ (result)?.meta?.changes ?? 0);
+}
+
+/**
+ * A device session re-mint's row write (drive#749): the fresh credential's
+ * access key and secret hash replace the old ones, and `expires_at` is the
+ * new session's end. Unlike `renewKeyRow`'s keep-later window rule, this SET
+ * is the fresh truth: after the swap exactly one credential is live, and the
+ * row must name the session IT carries — the old credential dies at the
+ * vendor when the vendor's session ends, so a row that outlived it would be
+ * the drive#713 lie again. The `revoked_at IS NULL` guard is the same race
+ * guard `renewKeyRow` has: a key revoked between the caller's read and this
+ * write is not revived by it, and the row count is how the caller proves the
+ * write landed.
+ *
+ * @param {D1Database} db
+ * @param {string} keyId
+ * @param {string} accessKeyId
+ * @param {string} secretHash
+ * @param {number|null} ttlSeconds the lifetime the fresh mint gave, or null
+ *   for a session-less provider (never reached on this path today)
+ * @param {number|null} expiresAt the fresh session's end
+ * @param {number} lastSeenAt
+ * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
+ *   caller proves a write landed
+ */
+function renewDeviceCredentialRow(
+  /** @type {D1Database} */ db,
+  /** @type {string} */ keyId,
+  /** @type {string} */ accessKeyId,
+  /** @type {string} */ secretHash,
+  /** @type {number|null} */ ttlSeconds,
+  /** @type {number|null} */ expiresAt,
+  /** @type {number} */ lastSeenAt,
+) {
+  return run(
+    db,
+    `UPDATE devices SET last_seen_at = ?1,
+       b2_key_id = ?2,
+       secret_hash = ?3,
+       ttl_seconds = ?4,
+       expires_at = ?5
+     WHERE id = ?6 AND revoked_at IS NULL`,
+    lastSeenAt,
+    accessKeyId,
+    secretHash,
+    ttlSeconds,
+    expiresAt,
+    keyId,
+  );
 }
 
 /**
@@ -1246,9 +1295,22 @@ export function createD1DeviceStore(db, options = {}) {
      * An expired key can be renewed: the credential is dead, but the row is
      * not cancelled and the caller is the signed-in device, so this is the
      * one route by which a tool that sat idle for an hour comes back.
+     *
+     * A device key on a provider that names a session (the STS path) renews
+     * differently (drive#749): the vendor ends the credential when its
+     * session ends, whatever the row says, so the renewal is a fresh
+     * credential minted inside the row's own scope under the same row id —
+     * the cap-swap shape (`swapToReadOnly` above) minus the revoke and minus
+     * the capability change. The old session is left alone: whatever called
+     * this is still using it, and the vendor ends it on its own schedule, so
+     * a mint that fails here leaves the key working until its hour runs out
+     * — the same failure a moved window would hide, but named at the caller
+     * instead. The fresh credential rides the answer to the signed-in device
+     * that asked, the same trust the mint answer itself has: the account
+     * gate decided this caller may speak for the account.
      * @param {{id: string}} account
      * @param {string} keyId
-     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}
+     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>}
      */
     async renewKey(account, keyId) {
       const row = await first(
@@ -1265,6 +1327,55 @@ export function createD1DeviceStore(db, options = {}) {
         return { error: "revoked" };
       }
       const at = nowSeconds(now());
+      // The device session re-mint (drive#749): a provider that names a
+      // session bounds the credential at the vendor, so a renewal mints a
+      // fresh one inside the row's own scope and swaps the row onto it.
+      // A provider that names no session (the key-pair path) falls through
+      // to the window move below, which is the whole renewal such a row has
+      // ever needed.
+      if (device.kind === "device" && providerNamesSessions) {
+        // Cap first: a mint then a capped refusal would swap the row onto a
+        // credential nobody holds. Device rows are never capped today, so
+        // this is the same read the window move makes rather than a second
+        // rule, but the order still has to refuse before it writes.
+        const capped = await enforceAgentCaps({ ...device, lastSeenAt: at });
+        if (capped.capped) {
+          return { error: "capped" };
+        }
+        const credential = await mintCredential({
+          prefix: device.prefix,
+          capabilities: /** @type {KeyScope["capabilities"]} */ ([...device.capabilities]),
+          bucket: bucketForKeyPrefix(account.id, device.prefix),
+        });
+        const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
+        const expiresAt = ttl === null ? null : at + ttl;
+        // The row count proves the write landed, so a key revoked between
+        // the read and this write is reported rather than renewed
+        // (`renewDeviceCredentialRow`).
+        const changed = await renewDeviceCredentialRow(
+          db,
+          device.id,
+          credential.accessKeyId,
+          await sha256Hex(credential.secret),
+          ttl,
+          expiresAt,
+          at,
+        );
+        if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
+          return { error: "revoked" };
+        }
+        return {
+          renewed: true,
+          device: publicDevice({ ...device, lastSeenAt: at, expiresAt }),
+          credential: {
+            accessKeyId: credential.accessKeyId,
+            secret: credential.secret,
+            sessionToken: credential.sessionToken,
+            expiresIn: credential.expiresIn,
+            expiresAt,
+          },
+        };
+      }
       const renewed = renewKeyWindow(device, at);
       const before = device.expiresAt ?? null;
       // `revoked_at IS NULL` repeats the read above, and the row count is what
@@ -1406,23 +1517,19 @@ export function createD1DeviceStore(db, options = {}) {
     async monthUsage(accountId, options) {
       const at = now();
       const month = await monthUsageThrough(db, accountId, at);
-      // The peak is the size the drive holds now (the page's "stored now"). The
-      // bill itself reads only the GB-minutes (drive#463), and the average the
-      // free download allowance follows is the month's own average, worked out
-      // from the GB-minutes over that month's minutes (`gbMonths`, billing.js)
-      // rather than read out of monthUsageThrough: averaging the hour's
-      // stored-bytes marks counted a file saved six times inside one hour six
-      // times (drive#535), and no two callers could be held to one figure.
-      const peakGb = storedGb(month.peakBytes);
-      const averageGb = gbMonths(month.gbMinutes, minutesInMonth(at));
+      const window = size30Window(at);
+      const size30 = await size30Through(db, accountId, window.from, at);
+      const reachedDay =
+        size30.reachedHour === null
+          ? null
+          : new Date(size30.reachedHour).toISOString().slice(0, 10);
       return {
-        gbMinutes: month.gbMinutes,
-        // The month this read's minutes fell in sets the divisor (drive#531).
-        monthMinutes: minutesInMonth(at),
-        storedGb: peakGb,
+        size30Bytes: size30.size30Bytes,
+        size30ReachedDay: reachedDay,
+        size30DropsOutDay: reachedDay === null ? null : size30DropsOutDay(reachedDay),
+        storedGb: storedGb(month.peakBytes),
         storedDaily: [],
-        downloadBytes: month.downloadBytes,
-        averageStoredGb: averageGb,
+        downloadBytes: size30.downloadBytes,
         capUsd: options.capUsd,
         cardAdded: true,
         // The display stamp only, forwarded from the same accounts row

@@ -7,7 +7,10 @@
 // which are plain data too: `scopeStore` applies the account prefix to the
 // listing and refuses a version from outside it, and `accountPrefix` builds
 // the storage key the event intake stores, so a row this reconciler inserts
-// and a row an event inserted are one shape (drive issue #59). The key
+// and a row an event inserted are one shape (drive issue #59). And the index's
+// own one statement for a create (`core/file-index.js`): the search owns the table
+// and the row shape, so the intake writes through the module that owns it
+// rather than a second copy of the same INSERT (drive issue #566). The key
 // decoder is the api Worker's one notification-key reader
 // (core/event-routes.js): the bucket's own event and the api
 // Worker's own event route are the same bytes, and reading them two ways is
@@ -16,6 +19,7 @@
 import { fairUseCheck } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { decodeNotificationKey } from "./event-routes.js";
+import { eventIndexStatement } from "./file-index.js";
 import { accountPrefix, scopeStore } from "./files.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
 import { STORAGE } from "./pricing.js";
@@ -23,7 +27,10 @@ import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //
 // Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
-//      `events_seen`: a storage event becomes one row in `file_versions`.
+//      `events_seen`: a storage event becomes one row in `file_versions`,
+//      and a create also upserts the one `file_index` row the search reads,
+//      so a file a desktop mount wrote is searchable when the event lands
+//      instead of at the next night's rebuild (drive#566).
 //      Events arrive in any order (a provider redelivers, and a hide can
 //      outrun its own create), so the version row is built from the events'
 //      own times, never from arrival order: `created_at` is the earliest
@@ -85,7 +92,8 @@ import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 //   - The hour's stored bytes land in usage_minutes.stored_bytes
 //     (migrations/drive/0006_usage_stored_bytes.sql): the month's PEAK is the
 //     largest of those marks (drive issue #163), which is what the bill's
-//     ceiling max($12, $8 x peak TB) is worked out from.
+//     ceiling was once worked out from (drive#642 now bills size30, the
+//     biggest size in the last 30 days, at 2 cents per GB, never more than $15 per TB).
 //
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
@@ -437,7 +445,7 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 //
 // The second number one closed hour answers with, and the one the monthly bill
 // cannot do without (drive issue #163): how BIG the account's drive was during
-// the hour. The ceiling is max($12, $8 x peak TB) - a peak, so the meter has
+// the hour. The old ceiling was max($12, $8 x peak TB), now replaced by $15 per TB on size30 (drive#642) - a peak, so the meter has
 // to record the size and not only for how long, which
 // usage_minutes.gb_minutes_live never could.
 //
@@ -875,7 +883,7 @@ export function monthStart(at) {
 /**
  * The month's PEAK, read from the rollup the meter's own trigger wrote: the
  * largest stored_bytes mark in the month (drive issue #163), which is the
- * second half of the ceiling max($12, $8 x peak TB) and the only part of the
+ * the size the drive#642 bill is read from (size30, never more than $15 per TB) and the only part of the
  * month's storage figures this module owns.
  *
  * MAX over the hour rows IS the peak - it is one SQL read, not arithmetic done
@@ -1025,6 +1033,79 @@ export async function monthUsageThrough(db, accountId, through) {
     gbMinutes,
     peakBytes,
     downloadBytes,
+  });
+}
+
+// size30 (drive#642): the largest stored_bytes mark in the trailing 30 UTC
+// days, and the earliest hour that mark was reached. One statement, so there
+// is no second peak to drift from. A window with no rows is an empty drive
+// (size30 0), not a guessed charge. A stored_bytes value that does not parse
+// is refused, never billed.
+export const SIZE30_SQL = `SELECT
+    COALESCE(MAX(stored_bytes), 0) AS size30_bytes,
+    CASE WHEN COALESCE(MAX(stored_bytes), 0) = 0 THEN NULL ELSE MIN(hour) END AS reached_hour,
+    COUNT(*) AS hours,
+    SUM(CASE WHEN typeof(stored_bytes) != 'integer' THEN 1 ELSE 0 END) AS bad_rows
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= ?2
+    AND hour <= ?3
+    AND stored_bytes = (
+      SELECT COALESCE(MAX(stored_bytes), 0) FROM usage_minutes
+      WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3
+    )`;
+
+const SIZE30_DOWNLOADS_SQL = `SELECT COALESCE(SUM(download_bytes), 0) AS download_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1 AND hour >= ?2 AND hour <= ?3`;
+
+/**
+ * size30 for one account as of `through`: the largest stored_bytes mark in
+ * `[from, through]`. `from` is the start of the trailing window the caller
+ * computed (billing.js size30Window). Missing or unparseable rows refuse
+ * rather than guess a charge.
+ * @param {D1Database} db
+ * @param {unknown} accountId
+ * @param {number} from
+ * @param {number} through
+ * @returns {Promise<{size30Bytes: number, reachedHour: number|null, downloadBytes: number, hours: number}>}
+ */
+export async function size30Through(db, accountId, from, through) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`size30Through needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(through) || from > through) {
+    throw new TypeError(
+      `size30Through needs a from..through window in epoch ms, got ${from}..${through}`,
+    );
+  }
+  const row = await db.prepare(SIZE30_SQL).bind(accountId, from, through).first();
+  if (Number(row?.bad_rows ?? 0) > 0) {
+    throw new TypeError(
+      `size30 for ${accountId} has a stored_bytes value that does not parse, so no draw is made`,
+    );
+  }
+  const size30Bytes = Number(row?.size30_bytes ?? 0);
+  const hours = Number(row?.hours ?? 0);
+  const reachedHour = row?.reached_hour == null ? null : Number(row.reached_hour);
+  if (!Number.isSafeInteger(size30Bytes) || size30Bytes < 0) {
+    throw new TypeError(`size30_bytes must be 0 or more whole bytes, got ${row?.size30_bytes}`);
+  }
+  if (reachedHour !== null && (!Number.isFinite(reachedHour) || reachedHour < 0)) {
+    throw new TypeError(`size30 reached_hour does not parse, got ${row?.reached_hour}`);
+  }
+  const downloads = await db.prepare(SIZE30_DOWNLOADS_SQL).bind(accountId, from, through).first();
+  const downloadBytes = Number(downloads?.download_bytes ?? 0);
+  if (!Number.isSafeInteger(downloadBytes) || downloadBytes < 0) {
+    throw new TypeError(
+      `download_bytes must be 0 or more whole bytes, got ${downloads?.download_bytes}`,
+    );
+  }
+  return Object.freeze({
+    size30Bytes,
+    reachedHour,
+    downloadBytes,
+    hours,
   });
 }
 
@@ -1572,10 +1653,17 @@ export function validateEvent(input) {
 }
 
 /**
- * The two statements one event needs, in the order they must run: the dedup
- * row first, then the version row. D1's batch is one transaction, so the pair
- * lands together or not at all, and two concurrent deliveries of the same
- * event cannot both insert (the second INSERT OR IGNORE writes nothing).
+ * The statements one event needs, in the order they must run: the dedup row
+ * first, then the version row, then the search index row the create names.
+ * D1's batch is one transaction, so they land together or not at all, and two
+ * concurrent deliveries of the same event cannot both insert (the second
+ * INSERT OR IGNORE writes nothing).
+ *
+ * The index row is the search module's own statement and it is not always
+ * there: an event that names no indexable file gets two statements and no log
+ * line beyond the one the statement itself writes (drive#566). Because the
+ * count of statements per event is no longer fixed, `recordEvents` below reads
+ * the dedup row's own offset instead of multiplying the event's index by two.
  *
  * The version upsert runs on EVERY delivery, not only the first: a D1 batch
  * executes every statement it is handed, so there is no conditional execution
@@ -1588,7 +1676,12 @@ export function validateEvent(input) {
  * @param {number} receivedAt
  */
 function eventStatements(db, event, receivedAt) {
-  return [
+  if (event.error !== undefined) {
+    // The intake validates before it stores, so an invalid event reaching here
+    // is a programming error: fail loudly rather than write half an event.
+    throw new TypeError(`the meter cannot store an event that failed validation: ${event.error}`);
+  }
+  const statements = [
     db
       .prepare("INSERT OR IGNORE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
       .bind(event.eventId, receivedAt),
@@ -1615,6 +1708,11 @@ function eventStatements(db, event, receivedAt) {
         event.effect,
       ),
   ];
+  const index = eventIndexStatement(db, event, receivedAt);
+  if (index) {
+    statements.push(index);
+  }
+  return statements;
 }
 
 /**
@@ -1635,14 +1733,15 @@ export async function recordEvent(db, event, now = Date.now()) {
 }
 
 // How many events from one request share a batch. Each event is two
-// statements. A provider's retry replays the whole request; the batches
+// statements, or three when the event names an indexable file (drive#566).
+// A provider's retry replays the whole request; the batches
 // already committed are made of repeats the dedup drops, so a retry after a
 // mid-request failure costs a re-read and never a second version row. The
 // batch is chunked because a very large batch (thousands of statements) can
 // hit D1's 30-second invocation timeout and per-statement execution limits.
-// 50 events = 100 statements is a safe, tested bound that reduces a
-// thousand-event request from ~1000 transactions to ~20.
-export const EVENTS_PER_BATCH = 50;
+// 32 events = 96 statements at three per create, under the 100-statement
+// bound the two-statement events used to sit on.
+export const EVENTS_PER_BATCH = 32;
 
 /**
  * Stores a whole request's valid events, one batch per EVENTS_PER_BATCH
@@ -1664,12 +1763,16 @@ async function recordEvents(db, events, now = Date.now()) {
   for (let start = 0; start < events.length; start += EVENTS_PER_BATCH) {
     const group = events.slice(start, start + EVENTS_PER_BATCH);
     const statements = [];
+    /** Where each event's dedup row landed, because an event is two or three
+     * statements and the count is no longer a function of the index (drive#566). */
+    const dedupAt = [];
     for (const event of group) {
+      dedupAt.push(statements.length);
       statements.push(...eventStatements(db, event, receivedAt));
     }
     const results = await db.batch(statements);
     for (let i = 0; i < group.length; i += 1) {
-      if ((results?.[i * 2]?.meta?.rows_written ?? 0) > 0) {
+      if ((results?.[dedupAt[i]]?.meta?.rows_written ?? 0) > 0) {
         stored += 1;
       }
     }

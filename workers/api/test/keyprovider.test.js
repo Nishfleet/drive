@@ -185,10 +185,14 @@ test("the kind's hour is the ceiling: a shorter provider session wins, a longer 
   // A kind with no hour of its own takes the provider's session, which is the
   // only lifetime such a credential has: the STS provider mints sessions that
   // die (s3-keys.js), and a device row read "never expires" over one would be
-  // a claim the api cannot keep (drive#544).
+  // a claim the api cannot keep (drive#544). Renewal (drive#749) remints
+  // before that session ends, so a 15-minute session is recorded as 15
+  // minutes, not stretched and not shrunk.
   assert.equal(mintTtlSeconds("device", 43200), 43200);
+  assert.equal(mintTtlSeconds("device", 900), 900);
   // Nothing named a session, so the kind's own answer stands.
   assert.equal(mintTtlSeconds("device", null), null);
+  assert.equal(mintTtlSeconds("device", undefined), null);
   // A provider that named a lifetime which cannot be true is refused, not
   // rounded up: for a device key the kind's own answer IS "never expires", so
   // folding a broken number into the ceiling would put the one claim this row

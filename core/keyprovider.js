@@ -174,7 +174,10 @@ export function keyTtlSeconds(kind) {
  * that read "never expires" over a credential that stops signing requests
  * would be a lie (drive#544). A provider answer that is neither null nor a
  * positive finite number is refused, not folded into the ceiling: folding
- * one in is how a broken answer becomes "never expires" on the row.
+ * one in is how a broken answer becomes "never expires" on the row. Renewal
+ * (drive#749) then mints a fresh credential under the same row id before
+ * that session ends — not a moved window, because no window keeps a vendor
+ * session alive.
  * @param {KeyKind} kind
  * @param {number|null|undefined} providerExpiresIn the provider session's own
  *   seconds, when it names one

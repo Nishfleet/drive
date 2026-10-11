@@ -112,6 +112,21 @@ export function usageKey(accountId, hour) {
   return `usage:${accountId}:${hour}`;
 }
 
+/**
+ * The draw for one account and one UTC day (drive#642). The same day always
+ * maps to the same key, so a retried daily job cannot draw it twice, and a
+ * leftover hourly key (`usage:<id>:<hour ms>`) cannot collide with it.
+ * @param {string} accountId
+ * @param {string} day YYYY-MM-DD
+ */
+export function usageDayKey(accountId, day) {
+  nonEmpty(accountId, "accountId");
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    throw new TypeError(`usageDayKey needs a YYYY-MM-DD day, got ${String(day)}`);
+  }
+  return `usage:${accountId}:day:${day}`;
+}
+
 /** @param {string} refundId */
 export function refundKey(refundId) {
   return `refund:${nonEmpty(refundId, "refundId")}`;

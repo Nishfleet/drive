@@ -626,6 +626,7 @@ async function rcloneWrite(input) {
     putObject: (path) => {
       stored.push(path);
     },
+    size30DayUnpaid: async () => false,
   };
   const url = new URL("https://api.drive.test/v1/storage/object?path=u/acct/file.bin");
   /** @type {Record<string, string>} */

@@ -1,7 +1,7 @@
 // The fair-use pause tables on the real D1 rows (drive#364).
 //
 // A mocked binding cannot see the schema. This file applies every file under
-// migrations/drive/ and proves the 0035 migration's WRITE and READ: a
+// migrations/drive/ and proves the 0048 migration's WRITE and READ: a
 // decision row lands, and the notice stamp is a nullable column on accounts.
 
 import assert from "node:assert/strict";
@@ -13,7 +13,7 @@ const NOW = Date.parse("2026-10-06T00:00:00.000Z");
 const ACCOUNT = "acct-fair-use";
 
 test("the real migration adds the decisions table and a nullable notice column", () => {
-  assert.ok(MIGRATION_FILES.includes("0035_fair_use.sql"), "0035_fair_use.sql is missing");
+  assert.ok(MIGRATION_FILES.includes("0048_fair_use.sql"), "0048_fair_use.sql is missing");
   const { sqlite } = makeMeteredDB();
   const stamp = sqlite
     .prepare("SELECT * FROM pragma_table_info('accounts') WHERE name = ?1")
@@ -27,7 +27,7 @@ test("the real migration adds the decisions table and a nullable notice column",
   assert.ok(table, "fair_use_decisions is missing");
 
   const sql = readFileSync(
-    new URL("../../migrations/drive/0035_fair_use.sql", import.meta.url),
+    new URL("../../migrations/drive/0048_fair_use.sql", import.meta.url),
     "utf8",
   ).replace(/--[^\n]*/g, "");
   assert.match(sql, /CREATE TABLE IF NOT EXISTS fair_use_decisions/);

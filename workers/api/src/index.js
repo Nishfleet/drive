@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { methodNotAllowed } from "hono/method-not-allowed";
 
-import { authFor } from "../../../core/auth.js";
+import { twoFactorAuthFor } from "../../../core/auth.js";
 import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
 import { createD1DeviceStore } from "../../../core/devices.js";
 import { bearerToken, errorResponse } from "../../../core/http.js";
@@ -13,7 +13,7 @@ import {
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
 import { fairUseUploadCheck } from "../../../core/meter.js";
-import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
+import { prepaidPauseOn, size30DayUnpaid, writesPaused } from "../../../core/prepaid.js";
 import { fairUseRefuseOn } from "../../../core/pricing.js";
 import { createD1QueueStore } from "../../../core/queues.js";
 import { signedInAccount } from "../../../core/status.js";
@@ -528,6 +528,10 @@ function storeFor(env) {
             from: typeof env.MAIL_FROM === "string" ? env.MAIL_FROM : "",
           })
         : undefined,
+      size30DayUnpaid:
+        env.DRIVE_DB && prepaidPauseOn(env)
+          ? (accountId, extraBytes) => size30DayUnpaid(env.DRIVE_DB, accountId, extraBytes)
+          : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }
@@ -549,12 +553,22 @@ export default {
       db: env.DRIVE_DB,
       store,
       // The same sign-in gate the site Worker's account routes resolve
-      // (core/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
+      // (core/auth.js, over the same DRIVE_DB), so one session cookie
       // is one account in both Workers and the approval page needs no second
       // session system of its own. No database, secret or address is the closed
-      // door `authFor` already documents: null, and every account route 401s.
+      // door that resolver documents: null, and every account route 401s.
+      //
+      // This one is the two-factor instance, not the plain one: approving a
+      // device for an account that armed the factor verifies a TOTP or a
+      // recovery code through the library's own endpoints (device-routes.js),
+      // and those endpoints only exist on a chain the plugin registered
+      // (drive#848). It is awaited here rather than only on the approval path
+      // because this middleware builds `accounts` once per request; after the
+      // first call that is a module-cache read plus a WeakMap lookup, and the
+      // plugin itself is already loaded into this isolate by any earlier
+      // request, so no request after the first pays for loading it.
       /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
-      accounts: authFor(env),
+      accounts: await twoFactorAuthFor(env),
       // The queue report's row lives on the same database the key store
       // and the team store live on, so a report written on one instance
       // is the row the next one reads (drive#318). Without a database

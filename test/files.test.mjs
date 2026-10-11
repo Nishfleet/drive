@@ -501,9 +501,15 @@ function stubTag(tag) {
   return el;
 }
 
-/** The page's own script, loaded with enough browser stubbed to run. */
-/** @returns {{sandbox: Record<string, any>, listed: StubElement}} */
-function loadFilesPage() {
+/**
+ * The page's own script, loaded with enough browser stubbed to run. The page
+ * reads the clock for "written today" (whenLabel), so the sandbox gets a Date
+ * whose no-argument form and Date.now() answer a fixed instant: a test never
+ * depends on the day it runs on.
+ * @param {number} [clock] The instant the page's own clock shows; defaults to the file's fixed `now`.
+ * @returns {{sandbox: Record<string, any>, listed: StubElement}}
+ */
+function loadFilesPage(clock = now) {
   const listed = stubTag("ul");
   /** @type {Map<string, StubElement>} */
   const elements = new Map();
@@ -519,6 +525,16 @@ function loadFilesPage() {
   /** @type {Record<string, any>} */
   const sandbox = {
     console,
+    Date: class FixedDate extends Date {
+      /** @param {any[]} args */
+      constructor(...args) {
+        if (args.length === 0) super(clock);
+        else super(.../** @type {[number]} */ (/** @type {unknown} */ (args)));
+      }
+      static now() {
+        return clock;
+      }
+    },
     document: {
       getElementById: (/** @type {string} */ id) => elements.get(id) ?? stub(id),
       createElement: (/** @type {string} */ tag) => stubTag(tag),
@@ -555,11 +571,15 @@ test("a row rendered in the browser's own zone shows the local day", () => {
   // page writes the words, so one file saved just after midnight UTC is the
   // previous day in New York and that day in London: the hour and the day a
   // person reads are the ones their own clock shows.
-  const { sandbox, listed } = loadFilesPage();
-  // 01:30 UTC on the 9th of this year: New York is still on the 8th and London
-  // is on the 9th, whatever the daylight saving season, and both are this
-  // year, which is the day-and-month shape the page writes.
-  const instant = Date.UTC(new Date().getFullYear(), 9, 9, 1, 30);
+  // The page's clock is fixed at the file's `now` (30 Sep 2026), so no run
+  // depends on the day it happens on; it was the real clock, and the test
+  // failed for a day when the real "today" was the 8th or 9th of October.
+  const { sandbox, listed } = loadFilesPage(now);
+  // 01:30 UTC on the 9th of October in the page clock's year: New York is
+  // still on the 8th and London is on the 9th, whatever the daylight saving
+  // season, and neither is the page clock's day, so the page writes the
+  // day-and-month shape rather than the time of day.
+  const instant = Date.UTC(new Date(now).getUTCFullYear(), 9, 9, 1, 30);
   const row = fileRows([
     { name: "note.txt", path: "/note.txt", kind: "text", size: 5, modified: instant },
   ])[0];

@@ -24,6 +24,7 @@ import {
   MINUTE_MS as BILLING_MINUTE_MS,
   meteredMonthlyBillUsd,
 } from "../core/billing.js";
+import { fileRow } from "../core/file-index.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import {
   BYTES_PER_GB,
@@ -66,7 +67,8 @@ import {
 } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
-import { REINDEX_SCHEDULE } from "../src/search.js";
+import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
+import { REINDEX_SCHEDULE, searchDrive } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 // The Worker entrypoint as these tests drive it: `fetch` and `scheduled` are
@@ -179,9 +181,10 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
     total += versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, monthEnd);
   }
   assert.equal(total, freeGb * MONTH_MINUTES, "a whole month of whole minutes is exact");
-  // And that total, through the ONE function the invoice reads, is the $1
-  // free credit: the meter and the bill cannot disagree about the free month.
-  assert.equal(meteredMonthlyBillUsd(total, MONTH_MINUTES), BILLING_CONFIG.freeMonthlyUsd);
+  // And that size, through the ONE function the invoice reads, is the $1
+  // free credit: 50 GB of size30 at 2¢ is $1. The meter still books GB-minutes;
+  // the bill follows size30 (drive#642).
+  assert.equal(meteredMonthlyBillUsd(Math.round(freeGb * GB)), BILLING_CONFIG.freeMonthlyUsd);
   // The rolled-up total for the same month (the integer-unit sum the SQL
   // stores, one version at a time) agrees, so a month's billing is the same
   // whether the invoice reads the rollup or the per-version arithmetic.
@@ -571,6 +574,117 @@ test("a repeated event is dropped, and the version row survives the first one", 
   const stored = db.tables.file_versions.get(`abc123|file-1`);
   assert.equal(stored.size_bytes, GB);
   assert.equal(stored.hidden_at, null);
+});
+
+test("a storage event makes the file it names searchable, with no walk (drive#566)", async () => {
+  // The account the search is run for: search takes the same account shape
+  // the drive's own handlers pass, id and display name.
+  const ACCOUNT = { id: "acct-1", name: "Account one" };
+  const { db } = makeMeteredDB();
+  // A desktop mount or a write straight into the bucket never passes through
+  // the Worker's write path, so before drive#566 the index held it only after
+  // the nightly walk — the job a crash could leave broken for good. The intake
+  // now writes the index row in the same batch as the version row.
+  const created = createEvent("acct-1", {
+    path: "/u/acct-1/Desk Notes/report.pdf",
+    b2FileId: "file-desktop",
+    sizeBytes: 4096,
+  });
+  const event = validateEvent(created);
+  assert.equal(event.error, undefined, event.error);
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: true });
+
+  const row = db.tables.file_index.get("acct-1|/Desk Notes/report.pdf");
+  assert.equal(row.name, "report.pdf");
+  assert.equal(row.parent, "/Desk Notes", "the folder is in the row, so the result can name it");
+  assert.equal(row.size_bytes, 4096);
+  const found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 1, "the new file is searchable the minute its event lands");
+  assert.equal(found.results[0].path, "/Desk Notes/report.pdf");
+
+  // A redelivered event is the normal case, and it must not add a second row.
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: false });
+  assert.equal(db.tables.file_index.size, 1, "the dedup ate the replay, so the row count held");
+});
+
+test("an out-of-range timestamp stores a null date instead of throwing (drive#566)", async () => {
+  const row = fileRow({ id: "acct-1" }, "/huge.txt", { size: 12, modified: 1e300 }, Date.now());
+  assert.equal(row.modified_at, null);
+  assert.equal(row.size_bytes, 12);
+  const { db } = makeMeteredDB();
+  const event = validateEvent(
+    createEvent("acct-1", {
+      path: "/u/acct-1/huge.txt",
+      b2FileId: "file-huge-date",
+      sizeBytes: 12,
+      createdAt: 1e300,
+    }),
+  );
+  assert.equal(event.error, undefined, event.error);
+  assert.deepEqual(await recordEvent(db, event, midnight()), { stored: true });
+  const stored = db.tables.file_index.get("acct-1|/huge.txt");
+  assert.equal(stored.size_bytes, 12);
+  assert.equal(stored.modified_at, null);
+});
+
+test("the meter refuses to store an event that failed validation (drive#566)", async () => {
+  const { db } = makeMeteredDB();
+  await assert.rejects(
+    () => recordEvent(db, { error: "The event is missing a path." }, midnight()),
+    /failed validation/,
+  );
+  assert.equal(db.tables.file_index.size, 0);
+  assert.equal(db.tables.file_versions.size, 0);
+});
+
+test("a hide never removes a live index row; the nightly rebuild owns the live set (drive#566)", async () => {
+  const ACCOUNT = { id: "acct-1", name: "Account one" };
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "acct-1", {
+    path: "/u/acct-1/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+  });
+  assert.equal(db.tables.file_index.size, 1, "the create indexed the path");
+  // A hide says a version stopped being visible. Search keeps one row per
+  // path, and a replacement version may take the path over, so the intake
+  // leaves the row alone: the walk that reads the live tree is what removes a
+  // path that is really gone.
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-hide",
+      keyName: "/u/acct-1/",
+      path: "/u/acct-1/notes.md",
+      b2FileId: "file-1",
+      action: "hidden",
+      hiddenAt: midnight() + MINUTE_MS,
+      sizeBytes: GB,
+      eventTimestamp: midnight() + MINUTE_MS,
+    }),
+    midnight() + MINUTE_MS,
+  );
+  assert.equal(db.tables.file_index.size, 1, "the hide left the row for the rebuild to settle");
+  assert.equal((await searchDrive(db, ACCOUNT, "notes")).count, 1);
+
+  // A hide for a path the index never saw writes no row at all: there is no
+  // row shape a hide could claim, so it is refused silently and the walk
+  // decides the live set.
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-hide-new",
+      keyName: "/u/acct-1/",
+      path: "/u/acct-1/never-indexed.md",
+      b2FileId: "file-2",
+      action: "hidden",
+      hiddenAt: midnight() + MINUTE_MS,
+      sizeBytes: GB,
+      eventTimestamp: midnight() + MINUTE_MS,
+    }),
+    midnight() + MINUTE_MS,
+  );
+  assert.equal(db.tables.file_index.size, 1, "a hide adds no row of its own");
 });
 
 test("the same version, hidden later, is one row that stops counting", async () => {
@@ -2641,7 +2755,11 @@ test("the nightly size row counts the tables once a day, and a retry rewrites th
   assert.equal(sizes.fileVersionRows, 1);
   assert.equal(sizes.fileVersionBytes, GB);
   assert.equal(sizes.usageMinuteRows, 1);
-  assert.equal(sizes.fileIndexRows, 0);
+  assert.equal(
+    sizes.fileIndexRows,
+    1,
+    "the create's event also upserted the search row (drive#566)",
+  );
 
   // A retried run in the same UTC day rewrites the day's row - the size row
   // is a reading of today, not an event that happened.
@@ -2659,7 +2777,7 @@ test("the nightly size row counts the tables once a day, and a retry rewrites th
       file_version_rows: 1,
       file_version_bytes: GB,
       usage_minute_rows: 1,
-      file_index_rows: 0,
+      file_index_rows: 1,
     },
   ]);
 
@@ -2686,12 +2804,18 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   // took 05:00 in the same nightly window, so the close cron runs at 06:00,
   // after the purge.
   assert.equal(CLOSE_SCHEDULE, "0 6 * * *");
+  // The known-bad feed's own trip (drive#826). It runs at 07:00, after the
+  // close cron: it is the only trip that talks to an outside host, so it goes
+  // last of the nightly jobs and nothing that touches customer files waits on
+  // it.
+  assert.equal(KNOWN_BAD_FEED_SCHEDULE, "0 7 * * *");
   const schedules = [
     METER_CRON,
     METER_RECONCILE_SCHEDULE,
     REINDEX_SCHEDULE,
     TRASH_PURGE_SCHEDULE,
     CLOSE_SCHEDULE,
+    KNOWN_BAD_FEED_SCHEDULE,
   ];
   assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
@@ -2712,9 +2836,15 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.notEqual(CLOSE_SCHEDULE, TRASH_PURGE_SCHEDULE, "the close cron is not the trash purge");
   assert.notEqual(CLOSE_SCHEDULE, REINDEX_SCHEDULE, "the close cron is not the reindex");
   assert.notEqual(CLOSE_SCHEDULE, METER_CRON, "the close cron is not the hourly rollup");
-  // The config spells the same five strings the modules export, so a changed
+  assert.notEqual(CLOSE_SCHEDULE, KNOWN_BAD_FEED_SCHEDULE, "the close cron is not the feed load");
+  assert.notEqual(
+    KNOWN_BAD_FEED_SCHEDULE,
+    TRASH_PURGE_SCHEDULE,
+    "the feed load is not the trash purge",
+  );
+  // The config spells the same strings the modules export, so a changed
   // schedule cannot drift from the trigger that runs it: src/index.js tells
-  // the five trips apart by the cron string the platform hands it.
+  // the six trips apart by the cron string the platform hands it.
   //
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
@@ -2728,8 +2858,15 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   );
   assert.deepEqual(
     declared,
-    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE, TRASH_PURGE_SCHEDULE, CLOSE_SCHEDULE],
-    "cloudflare.config.ts declares the schedules the meter, the index, the purge and the close cron export",
+    [
+      METER_CRON,
+      METER_RECONCILE_SCHEDULE,
+      REINDEX_SCHEDULE,
+      TRASH_PURGE_SCHEDULE,
+      CLOSE_SCHEDULE,
+      KNOWN_BAD_FEED_SCHEDULE,
+    ],
+    "cloudflare.config.ts declares the schedules the meter, the index, the purge, the close cron and the feed load export",
   );
 
   // The gate that stops drive#432 coming back: an import of the Worker's own

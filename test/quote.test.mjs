@@ -58,13 +58,13 @@ test("quoteForStoredTb is monthBillCents for a size held all month, plus the max
   const twoHundredGb = quoteForStoredTb(0.2);
   assert.equal(twoHundredGb.billUsd, 4);
   assert.equal(twoHundredGb.labels.bill, "$4.00");
-  assert.equal(twoHundredGb.labels.maximum, "$10.00");
+  assert.equal(twoHundredGb.labels.maximum, "$15.00");
   assert.equal(twoHundredGb.labels.plan, "$15.00");
   const eightHundredGb = quoteForStoredTb(0.8);
-  assert.equal(eightHundredGb.billUsd, 10);
-  assert.equal(eightHundredGb.maximumUsd, 10);
+  assert.equal(eightHundredGb.billUsd, 15);
+  assert.equal(eightHundredGb.maximumUsd, 15);
   const threeTb = quoteForStoredTb(3);
-  assert.equal(threeTb.billUsd, 30);
+  assert.equal(threeTb.billUsd, 45);
   assert.equal(threeTb.planUsd, 39);
 });
 

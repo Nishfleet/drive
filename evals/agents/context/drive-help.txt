@@ -18,6 +18,7 @@ Usage:
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
   drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
+  drive renew [flags]      renew this device's storage key before the vendor session ends
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive doctor [flags]     print the one block to paste into a support message
@@ -64,7 +65,7 @@ DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
 the mount's own log.
 
 When something goes wrong, the docs have a page for it:
-  https://drive-pricing.nishant345.workers.dev/docs/troubleshooting
+  https://storagebun.com/docs/troubleshooting
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)

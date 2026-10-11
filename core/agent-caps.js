@@ -7,8 +7,8 @@
 //
 //   - the key's own `agent_caps` row, whose request counter is stamped with the
 //     UTC day it belongs to, and
-//   - the account's metered month (`monthUsageThrough`, core/meter.js), which is
-//     the same `usage_minutes` the usage page and the account cap read.
+//   - the account's size30 (`size30Through`, core/meter.js), which is the same
+//     peak the bill, the usage page and the account cap read (drive#642).
 //
 // No second money rule and no second ledger. The two columns migration 0004
 // wrote for this — `month_key` and `month_spend_cents` — are deliberately left
@@ -26,8 +26,9 @@
 // should show.
 
 import { agentCapPlan, agentCapStatus, asMillis, dayKey } from "./agentcaps.js";
+import { size30Window } from "./billing.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
-import { monthUsageThrough } from "./meter.js";
+import { size30Through } from "./meter.js";
 
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
 // key is an integration and a `branch` key is the app's own undo credential:
@@ -136,10 +137,10 @@ export async function stampAgentRequest(db, accountId, keyId, at) {
  * counter itself: over-counting a request that was not served, never letting a
  * served request through uncounted.
  *
- * The month's metered usage is read per request rather than cached: it is one
- * indexed aggregate over `usage_minutes` (the same query the usage page runs),
- * and a cached month would mean a key stays uncapped for as long as the cache
- * lived, which is the failure these caps exist to stop.
+ * size30 is read per request rather than cached: it is one indexed aggregate
+ * over `usage_minutes` (the same query the bill runs), and a cached peak would
+ * mean a key stays uncapped for as long as the cache lived, which is the
+ * failure these caps exist to stop.
  *
  * @param {D1Database} db
  * @param {{accountId: string, id: string, kind?: string}} device
@@ -153,11 +154,11 @@ export async function agentCapGate(db, device, at) {
   const time = asMillis(at);
   const caps = await readAgentCaps(db, device.accountId, device.id);
   const today = await stampAgentRequest(db, device.accountId, device.id, time);
-  const usage = await monthUsageThrough(db, device.accountId, time);
+  const window = size30Window(time);
+  const size30 = await size30Through(db, device.accountId, window.from, time);
   return agentCapStatus({
-    // The bill reads only the month's GB-minutes (drive#463), so that is
-    // all the cap counts.
-    usage: { gbMinutes: usage.gbMinutes },
+    // The bill reads size30 (drive#642), so that is all the cap counts.
+    usage: { size30Bytes: size30.size30Bytes, downloadBytes: size30.downloadBytes },
     caps: caps ?? undefined,
     requestsToday: today.requests,
     // The day the count belongs to, so the decision can tell this day's count

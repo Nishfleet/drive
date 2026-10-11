@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — usage</title>
+  <title>Storagebun — usage</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
   <meta name="robots" content="noindex">
@@ -487,7 +487,7 @@ h2 {
 <body>
   <a class="skip-link" href="#month-heading">Skip to this month's usage</a>
   <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>drive</span>
+    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/files">Your files</a>
     <a href="/">Pricing</a>
@@ -540,7 +540,7 @@ h2 {
            zone the rollup is measured in. "This month" is what a browser with
            no script reads; the slot under it is the sentence that says which
            month a UTC rollup means, and it is readable with no script too. -->
-      <p class="hint" id="month-note">Drive bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>
+      <p class="hint" id="month-note">Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.</p>
       <p class="saved" id="saved" hidden></p>
       <!-- The reserved slot (drive#225): the status is hidden until a read
            lands, and this holds the box it will land in, so nothing below it
@@ -619,8 +619,20 @@ h2 {
             <dd id="stored-now"></dd>
           </div>
           <div class="pair">
-            <dt>GB-months so far</dt>
-            <dd id="gb-months"></dd>
+            <dt>Biggest size in the last 30 days</dt>
+            <dd id="size30"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size was reached</dt>
+            <dd id="size30-reached"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size drops out</dt>
+            <dd id="size30-drops-out"></dd>
+          </div>
+          <div class="pair">
+            <dt>Today's draw</dt>
+            <dd id="today-draw"></dd>
           </div>
           <div class="pair">
             <dt>Cost so far</dt>
@@ -638,7 +650,7 @@ h2 {
             <dd id="downloads-line"></dd>
           </div>
         </dl>
-        <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
+        <p class="hint" id="downloads-hint">Free up to 3× the biggest size in the last 30 days</p>
       </section>
 
       <section aria-labelledby="links-heading">
@@ -721,7 +733,7 @@ h2 {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
-    <p>Pay from your balance, metered by the minute. <a href="/">See the price</a>.</p>
+    <p>Pay from your balance for the biggest size your drive reached in the last 30 days. <a href="/">See the price</a>.</p>
   </footer>
 
   <script>
@@ -799,7 +811,10 @@ const chartLine = document.getElementById("chart-line");
 const chartFigureEl = document.getElementById("chart-figure");
 const storageEmptyEl = document.getElementById("storage-empty");
 const storedNowEl = document.getElementById("stored-now");
-const gbMonthsEl = document.getElementById("gb-months");
+const size30El = document.getElementById("size30");
+const size30ReachedEl = document.getElementById("size30-reached");
+const size30DropsOutEl = document.getElementById("size30-drops-out");
+const todayDrawEl = document.getElementById("today-draw");
 const costEl = document.getElementById("cost");
 const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
@@ -1010,7 +1025,7 @@ function drawChart(series) {
 // line prints), and every one is required: a payload missing any label is as
 // unusable as no answer, and setting it would put "undefined" on the page,
 // which is the failure this check exists for.
-const LABEL_KEYS = ["storedNow", "gbMonths", "downloads", "cost", "cap", "accountCap"];
+const LABEL_KEYS = ["storedNow", "size30", "size30Reached", "size30DropsOut", "todayDraw", "downloads", "cost", "cap", "accountCap"];
 
 // A payload that is not the summary shape is as unusable as no answer, so it
 // leaves the numbers on the page alone and says the service was unreachable.
@@ -1085,7 +1100,10 @@ function render(summary) {
 
   drawChart(summary.storedDaily);
   storedNowEl.textContent = labels.storedNow;
-  gbMonthsEl.textContent = labels.gbMonths;
+  size30El.textContent = labels.size30;
+  size30ReachedEl.textContent = labels.size30Reached;
+  size30DropsOutEl.textContent = labels.size30DropsOut;
+  todayDrawEl.textContent = labels.todayDraw;
   costEl.textContent = labels.cost;
   billLinesEl.replaceChildren();
   for (const line of summary.billCents.lines) {

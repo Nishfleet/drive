@@ -59,7 +59,7 @@ test("each security event renders one mail with the device name and a revoke lin
     assert.match(rendered.text, /https:\/\/[^ ]*usage\.html/, event);
     assert.match(rendered.html, /office laptop/, event);
     assert.match(rendered.html, /href="https:\/\/[^"]*usage\.html"/, event);
-    assert.equal(rendered.text.split("-- Drive").length - 1, 1, event);
+    assert.equal(rendered.text.split("-- Storagebun").length - 1, 1, event);
   }
 });
 
@@ -203,6 +203,7 @@ test("minting a share or upload-request link sends one mail, and a failure still
     {
       now,
       token: "AAAAAAAAAAAAAAAAAAAAAA",
+      db: null,
       limiter: {
         async limit() {
           return { success: true };
@@ -230,6 +231,7 @@ test("minting a share or upload-request link sends one mail, and a failure still
   const fromBrowser = await handleShareRequest(browserReq, files, links, account, {
     now,
     token: "CCCCCCCCCCCCCCCCCCCCCC",
+    db: null,
     limiter: {
       async limit() {
         return { success: true };
