@@ -152,6 +152,7 @@ import {
 } from "./signin.js";
 import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
+import { handleSignedStorageEventRequest, SIGNED_STORAGE_EVENTS_PATH } from "./storage-events.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -199,6 +200,11 @@ const API_PATH_PREFIX = "/v1";
 //   - /api/storage-events: the storage provider's event rule posts here with
 //     its own shared token in a header (core/meter.js handleStorageEventRequest),
 //     not a session. The token is the gate.
+//   - /api/storage-events/signed: the same intake behind a Standard Webhooks
+//     signature (src/storage-events.js), the door a provider that can sign
+//     uses so a stored event also enqueues its object's index row (#831). With
+//     STORAGE_EVENTS_WEBHOOK_SECRET unset it answers 503, a closed door, and
+//     the bucket's notifications stay on the token door.
 //   - /api/emails/send: the meter's cap emails and the billing webhook; closed
 //     with no EMAIL_SEND_TOKEN set (core/email-send.js), so its gate is a
 //     deployment secret rather than a session.
@@ -227,6 +233,7 @@ const AUTH_FAMILY = "/api/auth/*";
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
+  SIGNED_STORAGE_EVENTS_PATH,
   AUTH_FAMILY,
   SEND_EMAIL_PATH,
   HEALTH_PATH,
@@ -249,6 +256,23 @@ function dodoEnv(env) {
   return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string}} */ (
     /** @type {unknown} */ (env)
   );
+}
+
+/**
+ * The secret the signed storage-event intake verifies (#831). Not a declared
+ * binding and not in cloudflare.config.ts: DODO_WEBHOOK_SECRET above is also
+ * undeclared, because a declared `bindings.secret()` that no value backs fails
+ * every deploy, and this one's live value arrives with the bucket
+ * notifications the orchestrator registers, not before. While it is unset the
+ * route answers 503 (a closed door), which is the state it ships in.
+ * @param {Env} env
+ * @returns {string|undefined}
+ */
+function storageEventsSecret(env) {
+  // Env has no field for an undeclared secret, so the Worker type cannot name
+  // this binding. The unknown cast is that gap, not a missing check.
+  return /** @type {{STORAGE_EVENTS_WEBHOOK_SECRET?: string}} */ (/** @type {unknown} */ (env))
+    .STORAGE_EVENTS_WEBHOOK_SECRET;
 }
 
 /** @param {string} pathname */
@@ -1160,6 +1184,20 @@ export function createApp() {
   // The meter's event intake (issue #6), behind the provider's shared token.
   app.post("/api/storage-events", (c) =>
     handleStorageEventRequest(c.req.raw, c.env.METER_DB, c.env.METER_EVENT_TOKEN),
+  );
+
+  // The signed door on the same intake (#831). A provider whose rule can sign
+  // the body posts here, and every event it stores for the first time also gets
+  // its own index job; the token door above stays as it is for a vendor that
+  // cannot sign. Both are 503 with no secret configured, which is where this
+  // route sits until the bucket notifications are registered.
+  app.post(SIGNED_STORAGE_EVENTS_PATH, (c) =>
+    handleSignedStorageEventRequest(c.req.raw, {
+      db: c.env.METER_DB,
+      secret: storageEventsSecret(c.env),
+      queue: meterJobsQueue(c.env),
+      now: () => Date.now(),
+    }),
   );
 
   // The sign-in screen's two steps (build step 9, issue #10; Better Auth over
@@ -2084,6 +2122,11 @@ const handler = {
           ...(prepaidPauseFromEnv(env) ?? {}),
         },
         store,
+        // The file index database, the one the single-object job writes (the
+        // row a signed storage event's key names, #831). Both bindings point at
+        // drive-data in practice; the meter's own rows stay on METER_DB and the
+        // index rows stay here, the way every other index writer names them.
+        searchDb: env.DRIVE_DB,
       }),
     );
   },
