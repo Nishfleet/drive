@@ -1,0 +1,10 @@
+# Runs fleet-ops' ratchet from fleet-ops main (fleet-ops#9627); required as `ratchet / ratchet`.
+name: Ratchet
+on:
+  pull_request:
+  merge_group:
+permissions:
+  contents: read
+jobs:
+  ratchet:
+    uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
