@@ -38,7 +38,8 @@ import {
   usageKey,
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
-import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
+import { HOUR_MS, hourStart } from "./meter.js";
+import { monthStart, size30Through } from "./meter-usage.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";

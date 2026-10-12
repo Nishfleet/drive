@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createMemoryStore } from "../../core/files.js";
-import { METER_RECONCILE_SCHEDULE } from "../../core/meter.js";
+import { METER_RECONCILE_SCHEDULE } from "../../core/meter-fair-use.js";
 import worker from "../../src/index.js";
 import {
   purgeExpiredSigninSends,

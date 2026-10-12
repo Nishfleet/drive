@@ -19,7 +19,7 @@ import { all, batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
-import { monthStart, monthUsageThrough, size30Through } from "./meter.js";
+import { monthStart, monthUsageThrough, size30Through } from "./meter-usage.js";
 
 const CLOSE_CRON_LIMIT = 100;
 

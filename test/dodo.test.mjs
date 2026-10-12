@@ -25,13 +25,9 @@ import {
   unbillableAccounts,
   unpushedBillingHours,
 } from "../core/dodo.js";
-import {
-  BYTES_PER_GB,
-  METER_CRON,
-  MINUTE_MS,
-  monthUsageThrough,
-  recordUsage,
-} from "../core/meter.js";
+import { BYTES_PER_GB, MINUTE_MS } from "../core/meter.js";
+import { METER_CRON } from "../core/meter-events.js";
+import { monthUsageThrough, recordUsage } from "../core/meter-usage.js";
 import workerModule from "../src/index.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 

@@ -13,7 +13,7 @@ import {
   handleFilesRequest,
   scopeStore,
 } from "../core/files.js";
-import { downloadRecorder } from "../core/meter.js";
+import { downloadRecorder } from "../core/meter-usage.js";
 import {
   handleShareFileRequest,
   newLinkToken,
