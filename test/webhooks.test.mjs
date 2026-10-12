@@ -35,10 +35,18 @@ function recorder(status = 200) {
 
 test("only a public https address can be an endpoint", () => {
   assert.equal(endpointUrlProblem(URL_OK), null);
+  assert.equal(endpointUrlProblem("https://hooks.example.com:8443/x"), null);
+  assert.equal(endpointUrlProblem("https://api2.example.co.uk/x"), null);
   for (const bad of [
     "http://hooks.example.com/x",
     "https://user:pw@hooks.example.com/x",
     "https://127.0.0.1/x",
+    "https://0x7f.1/x",
+    "https://0x7f000001/x",
+    "https://2130706433/x",
+    "https://017700000001/x",
+    "https://10.0.0.1./x",
+    "https://hooks.0x7f/x",
     "https://[::1]/x",
     "https://localhost/x",
     "https://printer.local/x",
