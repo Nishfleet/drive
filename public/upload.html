@@ -106,7 +106,14 @@ h1 {
   background: var(--accent-soft, #e6ecf3);
 }
 
+/* Until the link answers, the box keeps its space but is not painted, so the
+   status line under it does not jump when it appears (Lighthouse CLS gate).
+   A closed link takes the space back. */
 .drop[hidden] {
+  visibility: hidden;
+}
+
+.drop.gone[hidden] {
   display: none;
 }
 
@@ -291,6 +298,7 @@ function closePage(reason) {
   // One shape for every closed state: the link is unknown, revoked, expired,
   // or the owner's drive is read-only at its cap. The endpoint sends its own
   // sentence, so the page never invents a second reason.
+  drop.classList.add("gone");
   drop.hidden = true;
   closed.hidden = false;
   closedBody.textContent = reason;
