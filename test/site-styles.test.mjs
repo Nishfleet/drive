@@ -220,7 +220,10 @@ test("the shared stylesheet declares every token once, with the reviewed values"
     // or --font-* token.
     if (values.length > 1) {
       // The dark block (polish gap 3) is a third declaration, a plain colour.
-      assert.ok(values.length <= 3, `${token} is declared at most three times (:root, html.drive, dark)`);
+      assert.ok(
+        values.length <= 3,
+        `${token} is declared at most three times (:root, html.drive, dark)`,
+      );
       assert.match(
         values[1],
         /^(?:var\(--(?:drive|font)-|#[0-9a-f]{6}$)/,
