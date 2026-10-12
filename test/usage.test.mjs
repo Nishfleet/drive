@@ -29,7 +29,7 @@ import {
   USAGE_HISTORY_DAYS,
 } from "../core/billing.js";
 import { handleUsageRequest, usageSummary } from "../core/billing-report.js";
-import { CAP_ENDPOINT } from "../core/cap.js";
+import { CAP_ENDPOINT } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { EXPORT_ENDPOINT, EXPORT_FILENAME } from "../core/export.js";
 import { PRICE } from "../core/pricing.js";

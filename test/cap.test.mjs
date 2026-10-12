@@ -29,13 +29,12 @@ import {
   applyCapSwap,
   capSwapPlan,
   enforceCap,
-  handleCapRequest,
   isWriteCapable,
-  parseCapUsd,
   READ_ONLY_CAPABILITIES,
   SPEND_CAP_REASON,
   WRITE_SCOPE_BY_KIND,
 } from "../core/cap.js";
+import { handleCapRequest, parseCapUsd } from "../core/cap-request.js";
 import { failureMessage as tableMessage } from "../core/messages.js";
 import worker from "../src/index.js";
 

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../core/auth.js";
 import { handleUsageRequest } from "../core/billing-report.js";
-import { handleCapRequest } from "../core/cap.js";
+import { handleCapRequest } from "../core/cap-request.js";
 import { renderEmail, SECURITY_EVENT_COPY } from "../core/emails.js";
 import {
   createMemoryStore as createFileStore,

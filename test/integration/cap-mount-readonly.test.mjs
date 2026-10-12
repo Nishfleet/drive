@@ -56,7 +56,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { dollarsToCapCents, enforceCap } from "../../core/cap.js";
+import { enforceCap } from "../../core/cap.js";
+import { dollarsToCapCents } from "../../core/cap-request.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { bucketForAccount } from "../../core/keyprovider.js";
 import { createS3Client, provisionBucket } from "../../core/s3.js";

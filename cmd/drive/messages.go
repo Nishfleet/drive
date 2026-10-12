@@ -48,6 +48,10 @@ type failure struct {
 	detail  error  // kept for DRIVE_DEBUG and for errors.As callers
 }
 
+// TableFailure marks a failure that already carries message-table words, so
+// the api client passes it through instead of calling it "offline".
+func (f *failure) TableFailure() {}
+
 // withService attaches the api Worker's own sentence (docs/api.md: errors are
 // {error: <sentence>}). That sentence is the product's own words, written for
 // a person, so it is shown between what happened and the next step; the raw
@@ -296,6 +300,17 @@ var messageTable = map[string][2]string{
 	"import-failed": {
 		"rclone could not copy those files into the drive.",
 		"Run `rclone config` to check the remote, then run `drive import` again.",
+	},
+	// The api address is behind Cloudflare Access (the live test address,
+	// drive#342), and the stock tool that gets an Access token is missing.
+	"access-cloudflared-missing": {
+		"This drive address is behind Cloudflare Access, and cloudflared is not installed.",
+		"Install cloudflared: brew install cloudflared",
+	},
+	// cloudflared ran but handed back no token for the address.
+	"access-login-failed": {
+		"The Cloudflare Access sign-in for {1} did not finish.",
+		"Run `cloudflared access login {1}`, then run the drive command again.",
 	},
 	"import-cache-full": {
 		"The import did not start: the drive's cache is full, so new saves can't upload.",
