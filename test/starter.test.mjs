@@ -230,7 +230,7 @@ test("readStarterRequest accepts only the create action", () => {
 });
 
 test("the starter endpoint is registered and classified", async () => {
-  const index = await import("../src/index.js");
+  const index = await import("../src/index-app.js");
   const app = index.createApp();
   const paths = app.routes.map((r) => r.path);
   assert.ok(paths.includes(STARTER_ENDPOINT), `${STARTER_ENDPOINT} routed`);
