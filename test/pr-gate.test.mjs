@@ -26,6 +26,7 @@ import { STATUS_ENDPOINT } from "../core/status.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 /** @param {string} path @returns {string} */
@@ -265,14 +266,14 @@ const ROUTES = [
 
 test("gate 1: every route is in the table, and the gated one answers 401", async () => {
   // Hono is the proven router for every Worker (drive#94).
-  const index = srcFile("index.js");
+  const index = readIndexSource();
   assert.match(index, /import \{ Hono \} from "hono"/, "Hono is the router");
   assert.match(index, /new Hono\(/, "Hono app is created");
   assert.match(index, /methodNotAllowed/, "405 comes from the library");
   assert.match(index, /trimTrailingSlash/, "trailing slashes come from the library");
   assert.match(index, /secureHeaders/, "secure headers come from the library");
   assert.match(index, /createApp/, "createApp exports the app builder");
-  const { createApp } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
   const app = createApp();
   const registered = app.routes
     .filter((r) => r.method !== "ALL")

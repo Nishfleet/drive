@@ -4,7 +4,6 @@
 // request path and a skipped nightly trigger, not a quiet empty Map.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
@@ -16,6 +15,7 @@ import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 
 const workerFetch =
   /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
@@ -28,7 +28,7 @@ const workerScheduled =
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 test("src/index.js never builds the in-memory files store", () => {
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const source = readIndexSource();
   assert.doesNotMatch(
     source,
     /createMemoryStore\s*\(/,

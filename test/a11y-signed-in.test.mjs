@@ -26,7 +26,8 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { createMemoryStore } from "../core/files-memory.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import {
   createTestAuth,
   DRIVE_SCHEMA_MIGRATIONS,

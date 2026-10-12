@@ -18,6 +18,7 @@ import {
   sentrySender,
   withCronCheckIn,
 } from "../src/monitoring.js";
+import { readIndexSource } from "./index-source.mjs";
 
 /** A fake Sentry seam recording every call. @returns {import("../src/monitoring.js").Sentry & {calls: {method: string, args: any[]}[]}} */
 function fakeSentry() {
@@ -133,7 +134,7 @@ test("captureError reports the error with the job that failed, for the fingerpri
 // a duplicate slug would fold two schedules into one monitor and a missed
 // run of one could pass as the other's.
 test("every scheduled branch runs in its own check-in with a unique slug", () => {
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   const branches = [
     ["METER_CRON", "meter-hourly-rollup"],
     ["KNOWN_BAD_FEED_SCHEDULE", "known-bad-feed"],
@@ -219,7 +220,7 @@ test("the nightly close cron reports its resolved purge failures, not only rejec
   // check-in, so a rejection fails the trigger and marks the monitor `error`.
   // A resolved purge-failure count is the half that would stay silent, so the
   // branch hands it to reportPurgeFailures.
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   const start = src.indexOf("if (event.cron === CLOSE_SCHEDULE)");
   assert.ok(start !== -1, "the close cron has its own branch");
   const block = src.slice(start, src.indexOf("\n    }\n", start));
@@ -447,7 +448,7 @@ test("a DSN with a path prefix and a secret key still resolves its ingest endpoi
 test("the SDK is gone from the source and the manifest, so it cannot reach the bundle", () => {
   // The whole point of #847: @sentry/cloudflare was a static import in the
   // entry every request passes through. Pin it out so a re-add is deliberate.
-  const index = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const index = readIndexSource();
   assert.doesNotMatch(index, /from "@sentry\//, "no Sentry import in the entry");
   // The word survives only in the comment that records why there is no wrap,
   // so the pin is on the call, not on the prose.
@@ -503,7 +504,7 @@ function callText(src, name, from = 0) {
 }
 
 test("every monitoring call in the entry passes the deployment's own sender", () => {
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   // The module's own exports are declared here too, so a definition is not a
   // call site: `const sentryFor = (env) => ...` and the import statement are
   // the only places these names appear without a sender argument.

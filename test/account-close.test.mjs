@@ -30,7 +30,8 @@ import {
   purgeOnDate,
   runAccountCloseCron,
 } from "../src/account-close.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
@@ -1361,6 +1362,7 @@ test("a failing store write for one account leaves the next account's mail done"
   }
   world.email.sent.length = 0;
   const broken = {
+    // biome-ignore lint/nursery/noMisusedPromises: the store is a plain object; the unstable rule misreads its spread-built type
     ...world.devices,
     /**
      * @param {string} id
