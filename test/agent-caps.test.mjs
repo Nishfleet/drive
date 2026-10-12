@@ -16,7 +16,8 @@ import {
   dayKey,
   monthKey,
 } from "../core/agentcaps.js";
-import { BILLING_CONFIG, capStatus } from "../core/billing.js";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { capStatus } from "../core/billing-report.js";
 import { READ_ONLY_CAPABILITIES } from "../core/cap.js";
 
 // One pinned instant, so a day boundary is a fact of the test. Midday UTC,

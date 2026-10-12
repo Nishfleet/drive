@@ -16,7 +16,7 @@
 // Worker's own event route are the same bytes, and reading them two ways is
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
-import { fairUseCheck } from "./billing.js";
+import { fairUseCheck } from "./billing-report.js";
 import { sendEmail } from "./email-send.js";
 import { decodeNotificationKey } from "./event-routes.js";
 import { eventIndexStatement } from "./file-index.js";

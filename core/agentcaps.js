@@ -35,7 +35,8 @@
 // Worker. The caller (core/agent-caps.js) reads the row, counts the
 // request and hands the numbers here. That split is what lets the decision be
 // tested as plain data while the reading is tested against the real schema.
-import { BILLING_CONFIG, capStatus } from "./billing.js";
+import { BILLING_CONFIG } from "./billing.js";
+import { capStatus } from "./billing-report.js";
 import { capSwapPlan } from "./cap.js";
 
 // The ceilings an agent key gets when its row says nothing about its own.

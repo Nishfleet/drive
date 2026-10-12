@@ -20,7 +20,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { handleUsageRequest, USAGE_ENDPOINT } from "../core/billing.js";
+import { USAGE_ENDPOINT } from "../core/billing.js";
+import { handleUsageRequest } from "../core/billing-report.js";
 import { CAP_ENDPOINT } from "../core/cap-request.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT } from "../core/export.js";

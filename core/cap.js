@@ -45,7 +45,7 @@
 // implements swapToReadOnly() is used for the cap swap rather than this module
 // re-doing revoke-then-mint by hand.
 
-import { usageSummary } from "./billing.js";
+import { usageSummary } from "./billing-report.js";
 import { sendEmail } from "./email-send.js";
 import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 

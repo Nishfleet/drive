@@ -325,7 +325,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // every other account route (issue #73): the one gate, so a request that
   // cannot prove an account is a 401 rather than an empty month.
   assert.match(
-    productFile("billing.js"),
+    productFile("billing-report.js"),
     /export function handleUsageRequest\(\s*request,\s*account,\s*upload = null,\s*balanceLine = null,\s*monthIso = "",?\s*\)/,
   );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);

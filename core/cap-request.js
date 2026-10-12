@@ -2,7 +2,7 @@
 // /api/cap route (GET the state, PUT a new cap). Split out of core/cap.js so
 // that module stays the enforcement walk (drive#617); the walk's
 // `enforceCap` is the one thing this one needs back from it.
-import { capLine, usageSummary } from "./billing.js";
+import { capLine, usageSummary } from "./billing-report.js";
 import { enforceCap } from "./cap.js";
 import { failureMessage } from "./messages.js";
 import { notifySecurityEvent } from "./security-event.js";

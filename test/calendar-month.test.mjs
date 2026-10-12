@@ -4,13 +4,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  capStatus,
-  gbMonths,
-  minutesInMonth,
-  monthBillCents,
-  size30Window,
-} from "../core/billing.js";
+import { gbMonths, minutesInMonth, monthBillCents, size30Window } from "../core/billing.js";
+import { capStatus } from "../core/billing-report.js";
 
 const MONTHS = Object.freeze([
   { at: "2026-02-14T12:00:00.000Z", days: 28 },

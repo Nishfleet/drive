@@ -63,7 +63,7 @@ const OTHER_SECRETS = new Set([
  */
 const jobsOf = (text) => {
   const lines = text.split("\n");
-  const start = lines.findIndex((line) => line === "jobs:");
+  const start = lines.indexOf("jobs:");
   if (start === -1) return [];
   /** @type {{ id: string, body: string[] }[]} */
   const jobs = [];
