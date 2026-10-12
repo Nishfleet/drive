@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — usage</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
@@ -486,6 +488,7 @@ h2 {
 </head>
 <body>
   <a class="skip-link" href="#month-heading">Skip to this month's usage</a>
+  <!-- shell:app-header current="/usage" -->
   <header class="masthead">
     <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
@@ -512,6 +515,7 @@ h2 {
       <button type="button" id="nav-signout" hidden>Sign out</button>
       <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
+  <!-- /shell:app-header -->
 
   <!-- The pending-close banner (drive issue #424). Hidden until
        GET /api/account/close says this account is closing, then
@@ -1498,6 +1502,16 @@ navSignoutAll.addEventListener("click", () => {
     when.className = "when";
     when.textContent = typeof line.at === "string" ? line.at.slice(0, 10) : "";
     item.append(what, amount, when);
+    // A top-up has a printable receipt (core/receipts.js); only a same-origin
+    // /api/receipts path is ever linked, whatever the payload says.
+    if (typeof line.receipt_url === "string" && /^\/api\/receipts\/[0-9]+$/.test(line.receipt_url)) {
+      const receipt = document.createElement("a");
+      receipt.href = line.receipt_url;
+      receipt.target = "_blank";
+      receipt.rel = "noopener";
+      receipt.textContent = "Receipt";
+      item.append(receipt);
+    }
     return item;
   }
 

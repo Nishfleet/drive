@@ -8,6 +8,8 @@
   <!-- drive#546: the one served favicon, so no tab asks for /favicon.ico and
        gets the 404 page. -->
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <!-- drive#584: a trust page. src/legal.js lists these pages, and
        test/legal.test.mjs and test/seo.test.mjs pin the tags below against
        src/seo.js. The page's rules live in public/site.css (body.policy). -->
@@ -61,13 +63,16 @@ body {
 </head>
 <body class="policy">
   <a class="skip-link" href="#policy-heading">Skip to the page</a>
+  <!-- shell:public-header -->
   <header class="masthead">
     <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/">Pricing</a>
     <a href="/docs/">Docs</a>
+    <a href="/get-started">Get started</a>
     <a href="/signin">Sign in</a>
   </header>
+  <!-- /shell:public-header -->
 
   <main>
     <h1 id="policy-heading">Accessibility</h1>
@@ -106,6 +111,7 @@ body {
     </section>
   </main>
 
+  <!-- shell:footer -->
   <footer class="footer">
     <nav class="legal-links" aria-label="Legal">
       <a href="/terms">Terms</a>
@@ -118,5 +124,6 @@ body {
     </nav>
     <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
+  <!-- /shell:footer -->
 </body>
 </html>

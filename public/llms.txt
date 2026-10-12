@@ -58,7 +58,7 @@ Worked examples, each the biggest size in the last 30 days, with a usual 1 TB pl
 
 Every page below is one plain-words page about the drive, also served as
 Markdown: add `.md` to the address. [llms-full.txt](https://storagebun.com/docs/llms-full.txt)
-holds all ten in one file.
+holds all eleven in one file.
 
 - [Quickstart](https://storagebun.com/docs/quickstart.md): six steps from nothing to a mounted drive.
 - [How it works](https://storagebun.com/docs/how-it-works.md): plain files, and how the bill is counted.
@@ -67,6 +67,7 @@ holds all ten in one file.
 - [FAQ](https://storagebun.com/docs/faq.md): the questions we can answer with a measured number.
 - [When something goes wrong](https://storagebun.com/docs/troubleshooting.md): what to run first, the log on each system, a lost laptop, your files out.
 - [Limits](https://storagebun.com/docs/limits.md): what version 1 does not do, in plain words.
+- [API reference](https://storagebun.com/docs/api.md): every route behind the `drive` command, with a curl example for each.
 - [Benchmarks](https://storagebun.com/docs/benchmarks.md): measured speed, including where we lose.
 - [Security](https://storagebun.com/docs/security.md): who can see your files, and what we cannot claim.
 - [Changelog](https://storagebun.com/docs/changelog.md): one line per shipped thing.

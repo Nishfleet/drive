@@ -23,17 +23,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { MINUTE_MS, rollupHour } from "../../core/meter.js";
 import {
-  listMeteredAccounts,
-  MINUTE_MS,
-  pruneHiddenVersions,
   recordEvent,
-  recordNightlySizes,
-  rollupHour,
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../../core/meter.js";
+} from "../../core/meter-events.js";
+import { pruneHiddenVersions, recordNightlySizes } from "../../core/meter-fair-use.js";
+import { listMeteredAccounts } from "../../core/meter-usage.js";
 import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 // Migration files and order come from test/d1-sqlite.mjs (`MIGRATION_FILES`),

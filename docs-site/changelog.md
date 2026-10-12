@@ -285,8 +285,8 @@ the live site.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
 - These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
-  When something goes wrong, Limits, Benchmarks, Security and this changelog,
-  each also served as Markdown.
+  When something goes wrong, Limits, API reference, Benchmarks, Security and this
+  changelog, each also served as Markdown.
 - The FAQ page: it publishes an answer only once the scoreboard row under it
   is a measured win, so a line we have not measured yet stays off it.
 

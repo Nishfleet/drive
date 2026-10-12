@@ -106,6 +106,7 @@ function summary(overrides = {}) {
         amount: "$15.00",
         window_start: null,
         reason: null,
+        receipt_url: "/api/receipts/7",
         at: "2026-10-04T09:00:00.000Z",
       },
     ],
@@ -193,6 +194,12 @@ test("the page shows the balance, its line and the recent ledger lines", async (
   assert.match(lines[1], /Top-up/);
   assert.match(lines[1], /\+\$15\.00/);
   assert.equal(elements.get("ledger-empty").hidden, true);
+  // Only the top-up carries a receipt link, and it is the Worker's own path.
+  const [usage, topUp] = elements.get("ledger-list").appended;
+  assert.equal(usage.appended.length, 4 - 1);
+  const link = topUp.appended.at(-1);
+  assert.equal(link.href, "/api/receipts/7");
+  assert.equal(link.textContent, "Receipt");
 });
 
 test("the presets are $10, $25 and $50, and the custom amount starts at $10", async () => {

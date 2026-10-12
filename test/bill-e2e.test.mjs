@@ -37,17 +37,9 @@ import {
 } from "../core/billing.js";
 import { handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import {
-  gbMinutesInHour,
-  MINUTE_MS,
-  monthStart,
-  monthUsageRollup,
-  recordEvent,
-  rollupHour,
-  runMeterCron,
-  toVersion,
-  validateEvent,
-} from "../core/meter.js";
+import { gbMinutesInHour, MINUTE_MS, rollupHour, toVersion } from "../core/meter.js";
+import { recordEvent, runMeterCron, validateEvent } from "../core/meter-events.js";
+import { monthStart, monthUsageRollup } from "../core/meter-usage.js";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
 
 const TB = 1000 * GB;

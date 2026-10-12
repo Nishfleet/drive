@@ -7,13 +7,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
-import { downloadRecorder } from "../core/meter.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
+import { downloadRecorder } from "../core/meter-usage.js";
 import { newLinkToken, SHARE_LINK_PREFIX } from "../src/share.js";
 import { handleShareFileRequest } from "../src/share-routes.js";
 import { newShareRecord } from "../src/share-store.js";

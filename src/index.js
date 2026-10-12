@@ -1,5 +1,5 @@
 import { createD1DeviceStore } from "../core/devices.js";
-import { scopeStore } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";
 import { BRANCH_QUEUE_KINDS, branchJob, branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";

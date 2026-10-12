@@ -38,7 +38,8 @@
 
 import { monthBillCents, size30Window } from "./billing.js";
 import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
-import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
+import { HOUR_MS, hourStart } from "./meter.js";
+import { monthStart, size30Through } from "./meter-usage.js";
 
 // The two hosts Dodo serves its API on, named once because the check that
 // guards the bearer key is an exact match against them and nothing else

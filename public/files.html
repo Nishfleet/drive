@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Storagebun — your files</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
@@ -169,13 +171,13 @@ main {
 
 .status[data-kind="error"] {
   color: var(--bad);
-  background: #fbeae7;
+  background: color-mix(in srgb, var(--bad) 12%, var(--paper));
   font-weight: 600;
 }
 
 .status[data-kind="done"] {
   color: var(--good);
-  background: #e8f2ea;
+  background: color-mix(in srgb, var(--good) 12%, var(--paper));
   font-weight: 600;
 }
 
@@ -439,7 +441,7 @@ dialog.viewer::backdrop {
   width: 100%;
   margin: 0;
   padding: 12px;
-  background: #f3efe5;
+  background: var(--paper-raised);
   border: 1px solid var(--rule);
   border-radius: 6px;
   font-family: var(--mono);
@@ -505,6 +507,7 @@ dialog.viewer::backdrop {
 <body>
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
   <div class="topbar">
+    <!-- shell:app-header current="/files" -->
     <header class="masthead">
       <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
       <span class="tagline">A Finder drive for people and their agents.</span>
@@ -514,23 +517,24 @@ dialog.viewer::backdrop {
       <a href="/usage">Usage</a>
       <a href="/devices">Devices</a>
       <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- Not Django: POST /api/signin refuses a cross-site post
-             (isSameOriginRequest). A token in the markup would protect nothing. -->
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+        <noscript>
+          <!-- Not Django: POST /api/signin refuses a cross-site post
+               (isSameOriginRequest). A token in the markup would protect nothing. -->
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button type="button" id="nav-signout" hidden>Sign out</button>
+        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
     </header>
+    <!-- /shell:app-header -->
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
   </div>
 
