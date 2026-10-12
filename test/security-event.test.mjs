@@ -14,7 +14,8 @@ import {
 } from "../core/files.js";
 import { createMemoryStore } from "../core/keystore.js";
 import { mailFromEnv, notifySecurityEvent, sessionLabel } from "../core/security-event.js";
-import { createD1LinkStore, handleRequestRequest, handleShareRequest } from "../src/share.js";
+import { handleRequestRequest, handleShareRequest } from "../src/share-routes.js";
+import { createD1LinkStore } from "../src/share-store.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { mintTeamKeyRoute } from "../workers/api/src/team-routes.js";
 import { createTestD1 } from "./harness.mjs";

@@ -127,19 +127,15 @@ import {
   SEARCH_ENDPOINT,
   withIndex,
 } from "./search.js";
+import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "./share.js";
+import { handleShareLinkVisit } from "./share-page.js";
 import {
-  createD1LinkStore,
   handleRequestInfoRequest,
   handleRequestRequest,
-  handleRequestUploadRequest,
   handleShareRequest,
-  purgeStaleLinks,
-  REQUEST_ENDPOINT,
-  SHARE_ENDPOINT,
-  SHARE_LINK_PREFIX,
-  sendArrivalDigests,
-} from "./share.js";
-import { handleShareLinkVisit } from "./share-page.js";
+} from "./share-routes.js";
+import { createD1LinkStore, purgeStaleLinks, sendArrivalDigests } from "./share-store.js";
+import { handleRequestUploadRequest } from "./share-upload.js";
 import {
   handleSigninLinkVerify,
   handleSigninRequest,
