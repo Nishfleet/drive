@@ -26,6 +26,7 @@ import {
 } from "../core/billing.js";
 import { fileRow } from "../core/file-index.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+
 import {
   BYTES_PER_GB,
   EVENT_ACTIONS,
@@ -2256,7 +2257,7 @@ test("a move whose successor event arrives late is corrected, not billed twice",
 // test as in production. The real provider's field mapping is #60's to
 // confirm; this fake is the listing the reconciler is defined against.
 /**
- * @param {Record<string, import("../core/files.js").StorageVersion[]>} versionsByPrefix
+ * @param {Record<string, import("../core/files-scope.js").StorageVersion[]>} versionsByPrefix
  * @returns {import("../core/files.js").FileStore}
  */
 function providerStore(versionsByPrefix) {

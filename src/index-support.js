@@ -6,12 +6,9 @@ import { capStateForAccount } from "../core/cap-request.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { isSameOriginRequest } from "../core/email-send.js";
-import {
-  createS3Store,
-  handleFilesRequest,
-  storageBucketForKey,
-  storageVarsFromEnv,
-} from "../core/files.js";
+import { createS3Store, handleFilesRequest } from "../core/files.js";
+import { storageBucketForKey, storageVarsFromEnv } from "../core/files-memory.js";
+
 import { bearerToken, errorResponse } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";
@@ -185,7 +182,7 @@ const missingFilesStoreLogged = new WeakSet();
  * Worker can read the buckets a minted key writes to, plus the older
  * FILES_S3_* stand-in pair a local `rclone serve s3` still uses. The typedef's
  * one definition is core/files.js's, beside the one reader of the vars.
- * @typedef {import("../core/files.js").StorageEnv} StorageEnv
+ * @typedef {import("../core/files-memory.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */

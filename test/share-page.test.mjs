@@ -12,12 +12,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
+import { FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { LEGAL_PAGES, SUPPORT_EMAIL } from "../core/legal.js";
 import { failureMessage } from "../core/messages.js";
 import worker from "../src/index.js";

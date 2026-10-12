@@ -10,9 +10,10 @@ import {
   joinPath,
   preChargeStoredBytes,
   safeFileName,
-  scopeStore,
   validatePath,
 } from "../core/files.js";
+
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";

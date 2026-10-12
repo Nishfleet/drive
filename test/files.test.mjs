@@ -15,11 +15,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 import {
-  accountStorageKey,
-  ChangedUnderUsError,
   CONTROL_OR_BACKSLASH,
   CONTROL_OR_SLASH,
-  createMemoryStore,
   createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
@@ -41,14 +38,11 @@ import {
   previewContentType,
   previewCopy,
   previewDisposition,
-  purgeExpiredTrash,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   safeFileName,
-  scopeStore,
   sortEntries,
   splitEntries,
-  storageBucketForKey,
   TRASH_PATH,
   TRASH_PURGE_SCHEDULE,
   trashName,
@@ -59,6 +53,15 @@ import {
   validatePath,
   withoutTrash,
 } from "../core/files.js";
+
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+
+import {
+  accountStorageKey,
+  ChangedUnderUsError,
+  purgeExpiredTrash,
+  scopeStore,
+} from "../core/files-scope.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
@@ -2528,7 +2531,8 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
   // the escaped text, and the read and delete that followed it asked S3 for a
   // key that does not exist. Every step below goes through one fake bucket
   // that answers exactly the XML a real one answers.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   const name = "a&b <c> 'd'.txt";
   const key = `u/acct/${name}`;
   const escapedKey = "u/acct/a&amp;b &lt;c&gt; &apos;d&#39;.txt";
@@ -2587,7 +2591,7 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
 });
 
 test("the in-memory store keeps the version history the reconciler reads", async () => {
-  const { createMemoryStore } = await import("../core/files.js");
+  const { createMemoryStore } = await import("../core/files-memory.js");
   const store = createMemoryStore();
   await store.write("u/1/a.txt", "one", "text/plain");
   await store.write("u/1/a.txt", "two", "text/plain");
@@ -2794,7 +2798,8 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   // The bucket is one namespace for every account, so this is the layer where
   // a missing prefix would actually cross accounts (drive issue #73). The fake
   // fetch records the URLs, and the assertion is on the storage keys in them.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   /** @type {Array<{url: string, method: string}>} */
   const urls = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3150,7 +3155,8 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // 100,000-file drive indexed 20,000 of them (drive issue #18). The fake
   // storage here answers two pages, so the test fails on a store that stops at
   // the first one.
-  const { createS3Store, nextContinuationToken } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files.js");
+  const { nextContinuationToken } = await import("../core/files.js");
   /** @param {string[]} names @param {string|null} next */
   const page = (names, next) => {
     const contents = names
@@ -3500,7 +3506,8 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   // `drive branch` calls FileStore.copy (build step 7): on the real store that
   // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
   // The header form is the one proven against `rclone serve s3` on 2026-10-01.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   /** @type {Array<{method: string, url: string, headers: Record<string, string>}>} */
   const calls = [];
   /** @type {typeof fetch} */
@@ -3630,7 +3637,8 @@ test("a copy the storage refuses as too big becomes a multipart copy, even with 
   // source over its 5 GiB single-copy ceiling is the signal, and the byte
   // length comes from the source's own HEAD. Without that answer the copy is a
   // named failure, not a copy that silently moved nothing.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   const sixGb = 6 * 1024 ** 3;
   /** @type {string[]} */
   const seen = [];
@@ -3683,7 +3691,8 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
   // Every S3-shaped provider bills the parts of an unfinished multipart upload,
   // and `drive branch` copies whole folders: a copy that gave up halfway must
   // not leave that bill behind, and must say which part failed.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   /** @type {string[]} */
   const seen = [];
   /** @type {typeof fetch} */
@@ -4260,7 +4269,7 @@ test("removeBatch refuses a 200 answer that carries per-key errors", async () =>
 });
 
 test("a scoped purge cursor cannot reach outside the account's own prefix", async () => {
-  const { createMemoryStore } = await import("../core/files.js");
+  const { createMemoryStore } = await import("../core/files-memory.js");
   const store = createMemoryStore();
   await scopeStore(store, { id: "acct_a" }).write("/a.txt", "mine", "text/plain");
   await scopeStore(store, { id: "acct_b" }).write("/b.txt", "theirs", "text/plain");

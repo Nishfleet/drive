@@ -33,7 +33,8 @@
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
 
-import { RECENTLY_DELETED_DAYS, scopeStore } from "../core/files.js";
+import { RECENTLY_DELETED_DAYS } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";

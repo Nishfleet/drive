@@ -1,4 +1,6 @@
-import { etagMatches, previewContentType, previewDisposition, scopeStore } from "../core/files.js";
+import { previewContentType, previewDisposition } from "../core/files.js";
+import { etagMatches } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json, readJsonObject } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";

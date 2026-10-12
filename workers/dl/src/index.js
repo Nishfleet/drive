@@ -41,8 +41,8 @@
 // (core/meter.js) in a `waitUntil`, after the response is handed back.
 
 import { Hono } from "hono";
-
-import { createS3Store, storageBucketForKey, storageVarsFromEnv } from "../../../core/files.js";
+import { createS3Store } from "../../../core/files.js";
+import { storageBucketForKey, storageVarsFromEnv } from "../../../core/files-memory.js";
 import { GRANT_SEGMENT, readGrant } from "../../../core/grant.js";
 import { failureMessage } from "../../../core/messages.js";
 import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
@@ -73,7 +73,7 @@ import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
  * `IDRIVE_S3_*` (or `FILES_S3_*`) four are the storage master credential the
  * site Worker reads too, and `DL_SIGNING_SECRET` is the grant secret the api
  * Worker signs with.
- * @typedef {import("../../../core/files.js").StorageEnv & {DRIVE_DB?: D1Database, DL_SIGNING_SECRET?: string}} DlEnv
+ * @typedef {import("../../../core/files-memory.js").StorageEnv & {DRIVE_DB?: D1Database, DL_SIGNING_SECRET?: string}} DlEnv
  */
 
 /** How a download is served: an attachment, with the file's own bytes. */
@@ -265,7 +265,7 @@ export async function handleDownload(request, ctx) {
   }
 
   const range = request.headers.get("range");
-  /** @type {import("../../../core/files.js").FileRead} */
+  /** @type {import("../../../core/files-scope.js").FileRead} */
   let object;
   try {
     object = await ctx.store.read(named.key, range ? { range } : {});
