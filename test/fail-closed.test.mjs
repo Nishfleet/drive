@@ -12,7 +12,7 @@ import {
   TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
 import { failureMessage } from "../core/messages.js";
-import { METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { METER_RECONCILE_SCHEDULE } from "../core/meter-fair-use.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";

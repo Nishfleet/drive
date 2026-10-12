@@ -257,7 +257,7 @@ test("the privacy policy names every company that handles data, with the storage
   assert.match(privacy, /bytes stored and bytes transferred/);
   assert.match(privacy, /card fingerprint/);
   assert.match(readRepo("core/devices-rows.js"), /name: String\(r\.name/);
-  assert.match(readRepo("core/meter.js"), /downloadBytes/);
+  assert.match(readRepo("core/meter-usage.js"), /downloadBytes/);
   assert.match(readRepo("core/ledger.js"), /fingerprint/);
 });
 
@@ -348,7 +348,7 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
     ["restore.md", "core/files.js", "purgeExpiredTrash"],
     ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
-    ["secrets-rotation.md", "core/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "core/meter-events.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
     ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];

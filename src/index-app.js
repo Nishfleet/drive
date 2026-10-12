@@ -16,12 +16,9 @@ import { FILES_ENDPOINT, scopeStore } from "../core/files.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
-import {
-  downloadRecorder,
-  fairUseSnapshot,
-  handleStorageEventRequest,
-  monthStart,
-} from "../core/meter.js";
+import { handleStorageEventRequest } from "../core/meter-events.js";
+import { fairUseSnapshot } from "../core/meter-fair-use.js";
+import { downloadRecorder, monthStart } from "../core/meter-usage.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   handleAutoTopUpRequest,

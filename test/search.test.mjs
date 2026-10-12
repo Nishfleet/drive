@@ -15,7 +15,8 @@ import {
   scopeStore,
   TRASH_PURGE_SCHEDULE,
 } from "../core/files.js";
-import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { METER_CRON } from "../core/meter-events.js";
+import { METER_RECONCILE_SCHEDULE } from "../core/meter-fair-use.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";

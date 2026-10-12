@@ -28,7 +28,8 @@ import { enforceCap, READ_ONLY_CAPABILITIES, SPEND_CAP_REASON } from "../../core
 import { dollarsToCapCents, handleCapRequest } from "../../core/cap-request.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { failureMessage } from "../../core/messages.js";
-import { MINUTE_MS, monthStart } from "../../core/meter.js";
+import { MINUTE_MS } from "../../core/meter.js";
+import { monthStart } from "../../core/meter-usage.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**

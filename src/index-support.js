@@ -15,7 +15,8 @@ import {
 import { bearerToken, errorResponse } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";
-import { downloadRecorder, fairUseUploadCheck } from "../core/meter.js";
+import { fairUseUploadCheck } from "../core/meter-fair-use.js";
+import { downloadRecorder } from "../core/meter-usage.js";
 import { prepaidPauseOn, size30DayUnpaid } from "../core/prepaid.js";
 import { fairUseRefuseOn } from "../core/pricing.js";
 import { createD1QueueStore } from "../core/queues.js";
