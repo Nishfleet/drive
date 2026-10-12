@@ -35,7 +35,8 @@ import {
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import { writesPaused } from "../core/prepaid.js";
-import workerModule, { TEST_FILES_STORE } from "../src/index.js";
+import workerModule from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { REQUEST_ENDPOINT } from "../src/share.js";
 import { createD1LinkStore, newRequestRecord } from "../src/share-store.js";
 import { handleRequestUploadRequest } from "../src/share-upload.js";
