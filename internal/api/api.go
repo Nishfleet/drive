@@ -246,6 +246,13 @@ func (c *Client) send(method, path string, body, out any) (bool, error) {
 	}
 	response, err := client.Do(request)
 	if err != nil {
+		// A step in the transport (the Cloudflare Access step in cmd/drive,
+		// drive#342) can fail with its own message-table words, such as the
+		// cloudflared install step; keep them.
+		var tableFailure interface{ TableFailure() }
+		if errors.As(err, &tableFailure) {
+			return false, err
+		}
 		return false, wrapFail("offline", err)
 	}
 	defer response.Body.Close()

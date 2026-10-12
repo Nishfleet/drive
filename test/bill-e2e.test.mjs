@@ -35,7 +35,7 @@ import {
   monthlyMaximumUsd,
   storedGb,
 } from "../core/billing.js";
-import { handleCapRequest } from "../core/cap.js";
+import { handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import {
   gbMinutesInHour,

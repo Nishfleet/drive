@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { minutesInMonth } from "../core/billing.js";
-import { dollarsToCapCents, handleCapRequest } from "../core/cap.js";
+import { dollarsToCapCents, handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { monthStart } from "../core/meter.js";

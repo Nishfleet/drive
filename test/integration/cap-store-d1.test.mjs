@@ -24,13 +24,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { minutesInMonth } from "../../core/billing.js";
-import {
-  dollarsToCapCents,
-  enforceCap,
-  handleCapRequest,
-  READ_ONLY_CAPABILITIES,
-  SPEND_CAP_REASON,
-} from "../../core/cap.js";
+import { enforceCap, READ_ONLY_CAPABILITIES, SPEND_CAP_REASON } from "../../core/cap.js";
+import { dollarsToCapCents, handleCapRequest } from "../../core/cap-request.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { failureMessage } from "../../core/messages.js";
 import { MINUTE_MS, monthStart } from "../../core/meter.js";
