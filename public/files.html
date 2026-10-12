@@ -169,13 +169,13 @@ main {
 
 .status[data-kind="error"] {
   color: var(--bad);
-  background: #fbeae7;
+  background: color-mix(in srgb, var(--bad) 12%, var(--paper));
   font-weight: 600;
 }
 
 .status[data-kind="done"] {
   color: var(--good);
-  background: #e8f2ea;
+  background: color-mix(in srgb, var(--good) 12%, var(--paper));
   font-weight: 600;
 }
 
@@ -439,7 +439,7 @@ dialog.viewer::backdrop {
   width: 100%;
   margin: 0;
   padding: 12px;
-  background: #f3efe5;
+  background: var(--paper-raised);
   border: 1px solid var(--rule);
   border-radius: 6px;
   font-family: var(--mono);
