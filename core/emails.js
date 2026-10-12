@@ -10,6 +10,7 @@
 // core/pricing.js and core/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { emailShell } from "./email-layout.js";
 import { escapeHtml } from "./escape-html.js";
 import { INSTALL_COMMAND, SIGN_IN_COMMAND, TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
@@ -561,18 +562,15 @@ function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME
     `Reply to this email and it reaches us: ${address}`,
     "",
   ].join("\n");
-  const htmlLines = ["<!doctype html>", '<html lang="en">', "<body>"];
-  for (const line of html_lines) {
-    htmlLines.push(line);
-  }
-  htmlLines.push(
-    `<p>${link.label}: <a href="${link.url}">${link.url}</a></p>`,
-    `<p>${SIGN_OFF}</p>`,
-    `<p>Reply to this email and it reaches us: ${address}</p>`,
-    "</body>",
-    "</html>",
-  );
-  return { subject, text, html: htmlLines.join("\n"), saved };
+  const html = emailShell({
+    subject,
+    // The first line of the message is what an inbox shows beside the subject.
+    preheader: lines.find((line) => line.trim() !== "") ?? subject,
+    bodyHtml: html_lines.join("\n"),
+    button: link,
+    footerHtml: `<p style="margin:0 0 6px">${SIGN_OFF}</p><p style="margin:0">Reply to this email and it reaches us: ${address}</p>`,
+  });
+  return { subject, text, html, saved };
 }
 
 // ---------------------------------------------------------------------------

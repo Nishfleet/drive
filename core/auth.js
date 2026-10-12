@@ -30,6 +30,7 @@ import { betterAuth } from "better-auth/minimal";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { d1Adapter } from "./auth-d1-adapter.js";
 import { sha256Hex } from "./db.js";
+import { emailShell } from "./email-layout.js";
 import { sendEmail } from "./email-send.js";
 import { DAY_MS } from "./units.js";
 
@@ -832,7 +833,13 @@ export function signinLinkEmail(url, rawUserAgent, when = new Date(), deviceAppr
   return {
     subject: "Your drive sign-in link",
     text: `Sign in to your drive: ${url}\n\n${approvalNote}The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}`,
-    html: `<p><a href="${url}">Sign in to your drive</a></p><p>${approvalNote}The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}</p>`,
+    html: emailShell({
+      subject: "Your drive sign-in link",
+      preheader: `Your sign-in link is good for ${minutes} minutes and works once.`,
+      bodyHtml: `<p>${approvalNote}The link is good for ${minutes} minutes and works once. ${asked} ${ignoring}</p>`,
+      button: { label: "Sign in to your drive", url },
+      footerHtml: '<p style="margin:0">-- Storagebun</p>',
+    }),
     saved: null,
   };
 }
