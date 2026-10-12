@@ -464,3 +464,31 @@ mark.to-fill {
   outline: 2px dashed var(--drive-orange-ink);
   padding: 0 4px;
 }
+
+/* Motion with purpose (high-end gaps item 10): short, never blocking, and
+   switched off below. A press sinks a button a pixel; colour changes ease in
+   under 200 ms. */
+a,
+button {
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    transform 100ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* One reset for every page that links this file. It is spelled with
+   !important on purpose: it has to beat a page's own rule on specificity. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
