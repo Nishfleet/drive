@@ -18,9 +18,14 @@ import {
   handleBranchJobs,
 } from "../src/branch-jobs.js";
 import { BRANCH_JOB_BATCH_FILES, createKvSnapshotStore, snapshotKey } from "../src/branches.js";
-import { diffBranch, getBranch } from "../src/branches-p2.js";
-import { processBranchJob } from "../src/branches-p5.js";
-import { approveBranch, createBranch, discardBranch, handleBranchesRequest } from "../src/branches-p6.js";
+import { processBranchJob } from "../src/branches-jobs.js";
+import {
+  approveBranch,
+  createBranch,
+  discardBranch,
+  handleBranchesRequest,
+} from "../src/branches-routes.js";
+import { diffBranch, getBranch } from "../src/branches-snapshot.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { handleRewindRequest, rewindBranch } from "../src/rewind.js";
 import { createTestD1, createTestKv } from "./harness.mjs";

@@ -1,22 +1,19 @@
-// Split out of src/branches-p2.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-import { ACTIVE_STATE_LIST, BRANCHES_ENDPOINT, BRANCHES_ROOT, BRANCH_ACTIVE_STATES, BRANCH_DELETE_BATCH, BRANCH_FILE_LIMIT, BRANCH_JOB_BATCH_FILES, NAMED_FILES_LIMIT, PLAN_LIST_NAMES, approvePlanKey, approvePlanSliceKey, approveWalkKey, clearScratch, createPartsKey, createWalkKey, errorText, frozenSnapshotKey, plain, resolvedSnapshotKey, snapshotKey } from "./branches.js";
-import { BRANCH_COLUMNS, NO_RESERVATION_YET, accountActiveBranchCount, branchCopyBlocked, bytesOf, copiedFileCount, copyFolder, diffBranch, diffFromListings, fileFingerprint, fingerprintMapFromObject, fingerprintMapToObject, folderState, getBranch, listFiles, listFilesPage, parseJobCursor, readJsonBody, readSnapshot, readSnapshotObject, sameFile, storedBytesUnder, toBranch, writeJobProgress } from "./branches-p2.js";
-import { MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { PRE_CHARGE_STORAGE_LIMIT_BYTES } from "../core/abuse-guards.js";
-import { checkedBranchName } from "../core/keyprovider.js";
-import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
-import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
 import { json } from "../core/http.js";
-import { scopeStore, validatePath } from "../core/files.js";
-import { unauthorizedResponse } from "../core/status.js";
+import {
+  BRANCH_JOB_BATCH_FILES,
+  createPartsKey,
+  errorText,
+  resolvedSnapshotKey,
+} from "./branches.js";
+import { BRANCH_COLUMNS, bytesOf, readSnapshot, toBranch } from "./branches-snapshot.js";
 
-/** @typedef {import("./branches-p2.js").FileStore} FileStore */
-/** @typedef {import("./branches-p2.js").Fingerprint} Fingerprint */
-/** @typedef {import("./branches-p2.js").Branch} Branch */
-/** @typedef {import("./branches-p2.js").BranchQueue} BranchQueue */
-/** @typedef {import("./branches-p2.js").BranchJobResult} BranchJobResult */
-/** @typedef {import("./branches-p2.js").SnapshotStore} SnapshotStore */
-/** @typedef {import("./branches-p2.js").PlanLists} PlanLists */
+/** @typedef {import("./branches-snapshot.js").FileStore} FileStore */
+/** @typedef {import("./branches-snapshot.js").Fingerprint} Fingerprint */
+/** @typedef {import("./branches-snapshot.js").Branch} Branch */
+/** @typedef {import("./branches-snapshot.js").BranchQueue} BranchQueue */
+/** @typedef {import("./branches-snapshot.js").BranchJobResult} BranchJobResult */
+/** @typedef {import("./branches-snapshot.js").SnapshotStore} SnapshotStore */
+/** @typedef {import("./branches-snapshot.js").PlanLists} PlanLists */
 
 /**
  * @param {{send?: Function, sendBatch?: Function}|null|undefined} queue

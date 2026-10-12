@@ -11,11 +11,30 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../core/files.js";
 import { failureMessage } from "../core/messages.js";
-import { BRANCHES_ENDPOINT, BRANCHES_ROOT, createKvSnapshotStore, MAX_OPEN_BRANCHES, snapshotKey } from "../src/branches.js";
-import { diffBranch, getBranch, readSnapshot, readSnapshotObject, relativePath, sameFile } from "../src/branches-p2.js";
-import { removePrefixFiles } from "../src/branches-p4.js";
-import { runBranchJobToEnd } from "../src/branches-p5.js";
-import { approveBranch, createBranch, discardBranch, handleBranchesRequest, listBranches } from "../src/branches-p6.js";
+import {
+  BRANCHES_ENDPOINT,
+  BRANCHES_ROOT,
+  createKvSnapshotStore,
+  MAX_OPEN_BRANCHES,
+  snapshotKey,
+} from "../src/branches.js";
+import { runBranchJobToEnd } from "../src/branches-jobs.js";
+import { removePrefixFiles } from "../src/branches-plans.js";
+import {
+  approveBranch,
+  createBranch,
+  discardBranch,
+  handleBranchesRequest,
+  listBranches,
+} from "../src/branches-routes.js";
+import {
+  diffBranch,
+  getBranch,
+  readSnapshot,
+  readSnapshotObject,
+  relativePath,
+  sameFile,
+} from "../src/branches-snapshot.js";
 import { REQUIRED_BINDINGS } from "../src/health.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 

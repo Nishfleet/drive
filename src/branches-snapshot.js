@@ -1,13 +1,12 @@
 // Split out of src/branches.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-import { ACTIVE_STATE_LIST, BRANCHES_ENDPOINT, BRANCHES_ROOT, BRANCH_ACTIVE_STATES, BRANCH_DELETE_BATCH, BRANCH_FILE_LIMIT, BRANCH_JOB_BATCH_FILES, NAMED_FILES_LIMIT, PLAN_LIST_NAMES, approvePlanKey, approvePlanSliceKey, approveWalkKey, clearScratch, createPartsKey, createWalkKey, errorText, frozenSnapshotKey, plain, resolvedSnapshotKey, snapshotKey } from "./branches.js";
-import { MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { accountFirstChargedAt, accountStoredBytes, PRE_CHARGE_STORAGE_LIMIT_BYTES, preChargeUploadBlocked } from "../core/abuse-guards.js";
-import { checkedBranchName } from "../core/keyprovider.js";
-import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
-import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { json } from "../core/http.js";
-import { scopeStore, validatePath } from "../core/files.js";
-import { unauthorizedResponse } from "../core/status.js";
+
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  preChargeUploadBlocked,
+} from "../core/abuse-guards.js";
+import { failureMessage } from "../core/messages.js";
+import { ACTIVE_STATE_LIST, BRANCHES_ROOT, errorText } from "./branches.js";
 
 /** @typedef {import("./branches.js").FileStore} FileStore */
 /** @typedef {import("./branches.js").Fingerprint} Fingerprint */

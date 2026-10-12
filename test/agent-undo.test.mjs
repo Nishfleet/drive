@@ -35,7 +35,7 @@ import {
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { decodeEntities } from "../core/s3-listing.js";
 import { createKvSnapshotStore, snapshotKey } from "../src/branches.js";
-import { createBranch, handleBranchesRequest } from "../src/branches-p6.js";
+import { createBranch, handleBranchesRequest } from "../src/branches-routes.js";
 import {
   handleRewindRequest,
   REWIND_ENDPOINT,

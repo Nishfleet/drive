@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
 import { FAILURE_MESSAGES, failureMessage, SIGN_IN_COMMAND } from "../core/messages.js";
 import { BRANCHES_ENDPOINT, createMemorySnapshotStore } from "../src/branches.js";
-import { handleBranchesRequest } from "../src/branches-p6.js";
+import { handleBranchesRequest } from "../src/branches-routes.js";
 import { readSigninRequest } from "../src/signin.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");

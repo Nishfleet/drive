@@ -35,8 +35,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../../core/files.js";
 import { createKvSnapshotStore, snapshotKey } from "../../src/branches.js";
-import { diffBranch, readSnapshot } from "../../src/branches-p2.js";
-import { approveBranch, createBranch, listBranches } from "../../src/branches-p6.js";
+import { approveBranch, createBranch, listBranches } from "../../src/branches-routes.js";
+import { diffBranch, readSnapshot } from "../../src/branches-snapshot.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };

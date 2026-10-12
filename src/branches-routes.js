@@ -1,22 +1,51 @@
-// Split out of src/branches-p5.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-import { ACTIVE_STATE_LIST, BRANCHES_ENDPOINT, BRANCHES_ROOT, BRANCH_ACTIVE_STATES, clearScratch, errorText, frozenSnapshotKey, plain, snapshotKey } from "./branches.js";
-import { BRANCH_COLUMNS, NO_RESERVATION_YET, accountActiveBranchCount, branchCopyBlocked, bytesOf, diffBranch, fingerprintMapToObject, folderState, getBranch, listFiles, readJsonBody, readSnapshotObject, toBranch } from "./branches-p2.js";
-import { MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { PRE_CHARGE_STORAGE_LIMIT_BYTES } from "../core/abuse-guards.js";
-import { checkedBranchName } from "../core/keyprovider.js";
-import { clearFrozenListing, enqueueJob, saveSnapshot, writeFrozenWindows } from "./branches-p3.js";
-import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
-import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { json } from "../core/http.js";
-import { publicJobResult, runBranchJobToEnd } from "./branches-p5.js";
-import { removePrefixFiles } from "./branches-p4.js";
-import { scopeStore, validatePath } from "../core/files.js";
-import { unauthorizedResponse } from "../core/status.js";
+// Split out of src/branches-jobs.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 
-/** @typedef {import("./branches-p5.js").FileStore} FileStore */
-/** @typedef {import("./branches-p5.js").Branch} Branch */
-/** @typedef {import("./branches-p5.js").BranchQueue} BranchQueue */
-/** @typedef {import("./branches-p5.js").SnapshotStore} SnapshotStore */
+import { PRE_CHARGE_STORAGE_LIMIT_BYTES } from "../core/abuse-guards.js";
+import { scopeStore, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
+import { checkedBranchName } from "../core/keyprovider.js";
+import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
+import { unauthorizedResponse } from "../core/status.js";
+import {
+  ACTIVE_STATE_LIST,
+  BRANCH_ACTIVE_STATES,
+  BRANCHES_ENDPOINT,
+  BRANCHES_ROOT,
+  clearScratch,
+  errorText,
+  frozenSnapshotKey,
+  plain,
+  snapshotKey,
+} from "./branches.js";
+import {
+  clearFrozenListing,
+  enqueueJob,
+  saveSnapshot,
+  writeFrozenWindows,
+} from "./branches-frozen.js";
+import { publicJobResult, runBranchJobToEnd } from "./branches-jobs.js";
+import { removePrefixFiles } from "./branches-plans.js";
+import {
+  accountActiveBranchCount,
+  BRANCH_COLUMNS,
+  branchCopyBlocked,
+  bytesOf,
+  diffBranch,
+  fingerprintMapToObject,
+  folderState,
+  getBranch,
+  listFiles,
+  NO_RESERVATION_YET,
+  readJsonBody,
+  readSnapshotObject,
+  toBranch,
+} from "./branches-snapshot.js";
+
+/** @typedef {import("./branches-jobs.js").FileStore} FileStore */
+/** @typedef {import("./branches-jobs.js").Branch} Branch */
+/** @typedef {import("./branches-jobs.js").BranchQueue} BranchQueue */
+/** @typedef {import("./branches-jobs.js").SnapshotStore} SnapshotStore */
 
 /**
  * `drive branch <folder>`: the server-side copy into `.branches/<name>/` and
@@ -586,10 +615,6 @@ export async function discardBranch(db, snapshots, store, account, name, options
   }
   return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
 }
-
-
-
-
 
 // ---------------------------------------------------------------- the route
 

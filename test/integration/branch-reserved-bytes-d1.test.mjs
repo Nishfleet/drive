@@ -13,9 +13,9 @@ import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../../core/files.js";
 import { failureMessage } from "../../core/messages.js";
 import { createKvSnapshotStore } from "../../src/branches.js";
-import { getBranch } from "../../src/branches-p2.js";
-import { runBranchJobToEnd } from "../../src/branches-p5.js";
-import { createBranch } from "../../src/branches-p6.js";
+import { runBranchJobToEnd } from "../../src/branches-jobs.js";
+import { createBranch } from "../../src/branches-routes.js";
+import { getBranch } from "../../src/branches-snapshot.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 import { createTestKv } from "../harness.mjs";
 

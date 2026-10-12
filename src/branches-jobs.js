@@ -1,24 +1,48 @@
-// Split out of src/branches-p4.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-import { ACTIVE_STATE_LIST, BRANCHES_ENDPOINT, BRANCHES_ROOT, BRANCH_ACTIVE_STATES, BRANCH_DELETE_BATCH, BRANCH_FILE_LIMIT, BRANCH_JOB_BATCH_FILES, NAMED_FILES_LIMIT, approvePlanKey, approveWalkKey, clearScratch, errorText, frozenSnapshotKey, plain, snapshotKey } from "./branches.js";
-import { BRANCH_COLUMNS, NO_RESERVATION_YET, accountActiveBranchCount, branchCopyBlocked, bytesOf, diffBranch, diffFromListings, fileFingerprint, fingerprintMapFromObject, fingerprintMapToObject, folderState, getBranch, listFiles, listFilesPage, parseJobCursor, readJsonBody, readSnapshotObject, sameFile, toBranch, writeJobProgress } from "./branches-p2.js";
-import { MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { PRE_CHARGE_STORAGE_LIMIT_BYTES } from "../core/abuse-guards.js";
-import { checkedBranchName } from "../core/keyprovider.js";
-import { clearApprovePlan, failJob, planListSizes, processCreateBatch, readApprovePlanList, readApprovePlanSlice, removePrefixFiles, startedPlanList, stringList, writeApprovePlan } from "./branches-p4.js";
-import { clearFrozenListing, dropCreateParts, enqueueJob, loadJobRow, saveSnapshot, writeFrozenWindows } from "./branches-p3.js";
-import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
-import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
-import { json } from "../core/http.js";
-import { scopeStore, validatePath } from "../core/files.js";
-import { unauthorizedResponse } from "../core/status.js";
+import { failureMessage } from "../core/messages.js";
+import {
+  ACTIVE_STATE_LIST,
+  approvePlanKey,
+  approveWalkKey,
+  BRANCH_DELETE_BATCH,
+  BRANCH_FILE_LIMIT,
+  BRANCH_JOB_BATCH_FILES,
+  clearScratch,
+  errorText,
+  NAMED_FILES_LIMIT,
+  snapshotKey,
+} from "./branches.js";
+import { dropCreateParts, loadJobRow, saveSnapshot } from "./branches-frozen.js";
+import {
+  clearApprovePlan,
+  failJob,
+  planListSizes,
+  processCreateBatch,
+  readApprovePlanList,
+  readApprovePlanSlice,
+  removePrefixFiles,
+  startedPlanList,
+  stringList,
+  writeApprovePlan,
+} from "./branches-plans.js";
+import {
+  diffFromListings,
+  fileFingerprint,
+  fingerprintMapFromObject,
+  fingerprintMapToObject,
+  listFilesPage,
+  parseJobCursor,
+  readSnapshotObject,
+  sameFile,
+  writeJobProgress,
+} from "./branches-snapshot.js";
 
-/** @typedef {import("./branches-p4.js").FileStore} FileStore */
-/** @typedef {import("./branches-p4.js").Fingerprint} Fingerprint */
-/** @typedef {import("./branches-p4.js").Branch} Branch */
-/** @typedef {import("./branches-p4.js").BranchQueue} BranchQueue */
-/** @typedef {import("./branches-p4.js").BranchJobResult} BranchJobResult */
-/** @typedef {import("./branches-p4.js").SnapshotStore} SnapshotStore */
-/** @typedef {import("./branches-p4.js").PlanLists} PlanLists */
+/** @typedef {import("./branches-plans.js").FileStore} FileStore */
+/** @typedef {import("./branches-plans.js").Fingerprint} Fingerprint */
+/** @typedef {import("./branches-plans.js").Branch} Branch */
+/** @typedef {import("./branches-plans.js").BranchQueue} BranchQueue */
+/** @typedef {import("./branches-plans.js").BranchJobResult} BranchJobResult */
+/** @typedef {import("./branches-plans.js").SnapshotStore} SnapshotStore */
+/** @typedef {import("./branches-plans.js").PlanLists} PlanLists */
 
 /**
  * One approve batch: the first call diffs once and stores the path lists in
