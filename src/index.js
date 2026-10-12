@@ -14,16 +14,11 @@ import { createD1DeviceStore } from "../core/devices.js";
 import { unbillableAccounts } from "../core/dodo.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
-import {
-  createS3Store,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  purgeExpiredTrash,
-  scopeStore,
-  storageBucketForKey,
-  storageVarsFromEnv,
-  TRASH_PURGE_SCHEDULE,
-} from "../core/files.js";
+import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { storageBucketForKey, storageVarsFromEnv } from "../core/files-memory.js";
+import { createS3Store } from "../core/files-s3.js";
+import { purgeExpiredTrash, scopeStore } from "../core/files-scope.js";
 import { bearerToken, errorResponse } from "../core/http.js";
 import { runKeySweep } from "../core/key-sweep.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
@@ -282,7 +277,7 @@ const missingFilesStoreLogged = new WeakSet();
  * Worker can read the buckets a minted key writes to, plus the older
  * FILES_S3_* stand-in pair a local `rclone serve s3` still uses. The typedef's
  * one definition is core/files.js's, beside the one reader of the vars.
- * @typedef {import("../core/files.js").StorageEnv} StorageEnv
+ * @typedef {import("../core/files-memory.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */

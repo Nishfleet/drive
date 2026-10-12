@@ -57,17 +57,16 @@ import {
 import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { sendEmail } from "../core/email-send.js";
 import {
-  etagMatches,
-  fairUseRefuseResponse,
-  joinPath,
   preChargeStoredBytes,
   previewContentType,
   previewDisposition,
   safeFileName,
-  scopeStore,
   TRASH_PATH,
   validatePath,
 } from "../core/files.js";
+import { fairUseRefuseResponse, joinPath } from "../core/files-handlers.js";
+import { etagMatches } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json, readJsonObject } from "../core/http.js";
 import { balanceCents } from "../core/ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";

@@ -15,7 +15,8 @@ import {
   size30Window,
 } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
-import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
+import { handleFilesRequest } from "../../core/files-handlers.js";
+import { createMemoryStore } from "../../core/files-memory.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
 import {
   appendLedgerEntry,

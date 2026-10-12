@@ -17,13 +17,10 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { monthBillCents, USAGE_ENDPOINT } from "../core/billing.js";
-import {
-  createMemoryStore,
-  createS3Store,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  storageBucketForKey,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+import { createS3Store } from "../core/files-s3.js";
 import { FAILURE_MESSAGES } from "../core/messages.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
 import { HEALTH_PATH } from "../src/health.js";
@@ -227,10 +224,10 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   /** @type {Array<[string, RegExp]>} */
   const required = [
     ["core/status.js", /export async function signedInAccount\(request, store\)/],
-    ["core/files.js", /export function createS3Store\(config\)/],
+    ["core/files-s3.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
-    ["core/files.js", /const toKey = \(path\) => \{/],
+    ["core/files-scope.js", /const toKey = \(path\) => \{/],
     ["core/billing.js", /export function monthBillCents\(/],
     ["core/messages.js", /export function failureMessage\(key\)/],
   ];

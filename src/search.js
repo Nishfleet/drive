@@ -48,7 +48,8 @@
 // `reconcileIndex` is reached from the nightly cron, one queue message per
 // account, and never from a request.
 import { deleteStatement, fileRow, locate, upsertStatements } from "../core/file-index.js";
-import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { TRASH_PATH, validatePath } from "../core/files.js";
+import { drivePathFromKey } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 

@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { minutesInMonth } from "../core/billing.js";
 import { runCapEnforcement } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import { createMemoryStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import { HOUR_MS, hourStart, METER_CRON, monthStart } from "../core/meter.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { createD1LinkStore, newRequestRecord } from "../src/share.js";

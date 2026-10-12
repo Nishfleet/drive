@@ -52,7 +52,8 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
-import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
+import { BRANCHES_PATH, validatePath } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
 import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";

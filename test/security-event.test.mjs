@@ -7,11 +7,9 @@ import { AUTH_COOKIE_PREFIX } from "../core/auth.js";
 import { handleUsageRequest } from "../core/billing-report.js";
 import { handleCapRequest } from "../core/cap-request.js";
 import { renderEmail, SECURITY_EVENT_COPY } from "../core/emails.js";
-import {
-  createMemoryStore as createFileStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore as createFileStore } from "../core/files-memory.js";
 import { createMemoryStore } from "../core/keystore.js";
 import { mailFromEnv, notifySecurityEvent, sessionLabel } from "../core/security-event.js";
 import { createD1LinkStore, handleRequestRequest, handleShareRequest } from "../src/share.js";

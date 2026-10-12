@@ -33,7 +33,7 @@ import {
   signinDeviceName,
   signinLinkEmail,
 } from "../core/auth.js";
-import { createMemoryStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import {
   createTestAuth,

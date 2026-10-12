@@ -7,12 +7,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { downloadRecorder } from "../core/meter.js";
 import {
   handleShareFileRequest,

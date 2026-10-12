@@ -25,12 +25,10 @@ import { handleUsageRequest } from "../core/billing-report.js";
 import { CAP_ENDPOINT } from "../core/cap-request.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT } from "../core/export.js";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
