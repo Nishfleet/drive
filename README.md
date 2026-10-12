@@ -21,7 +21,7 @@ write the same folder.
   still works inside your own Storagebun, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
   No plans. Your balance never expires.
-- **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
+- **A card on your first top-up.** There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 

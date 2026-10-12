@@ -195,7 +195,7 @@ export function buildPrice({
     // `card_added_at` (accounts.row) is the record a card is on file; real
     // capture waits on the Dodo key (#325).
     noChargeYet: "No charge has been made. There is no card on file yet.",
-    needCard: `We need a card at sign-up because there is no free tier. Your first $${PREPAID.minTopUpUsd} top-up opens storage. 20 GB draws about ${centsWords(20 * rateCents)} a month from your balance.`,
+    needCard: `There is no free tier. Your first $${PREPAID.minTopUpUsd} top-up opens storage and puts a card on file. 20 GB draws about ${centsWords(20 * rateCents)} a month from your balance.`,
     // The whole rule in words, for the examples note, the offer description
     // and llms.txt.
     rule: `${size30Line} ${centsWords(rateCents)} per GB a month, never more than $${max} per TB.`,

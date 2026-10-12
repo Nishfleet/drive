@@ -106,9 +106,11 @@ test("no plans and a balance that never expires sit under the headline", () => {
 });
 
 test("the card line says the first top-up opens storage, with no old minimum", () => {
-  // drive#586: a card is needed, and the first $10 top-up opens storage. The
-  // old "There is no minimum" claim is false once a top-up is $10 or more.
-  assert.ok(PRICE.needCard.includes(`Your first $${PREPAID.minTopUpUsd} top-up opens storage.`));
+  // drive#586: the first $10 top-up opens storage and puts a card on file;
+  // sign-up itself asks for no card (drive#538, #503). The old "There is no
+  // minimum" claim is false once a top-up is $10 or more.
+  assert.ok(PRICE.needCard.includes(`Your first $${PREPAID.minTopUpUsd} top-up opens storage`));
+  assert.doesNotMatch(PRICE.needCard, /at sign-up/);
   assert.doesNotMatch(PRICE.needCard, /no minimum/i);
   assert.match(PRICE.needCard, /no free tier/);
 });

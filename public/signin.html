@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — sign in</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <meta name="description" content="Sign in to your drive: one link by email. We need a card at sign-up because there is no free tier.">
+  <meta name="description" content="Sign in to your drive: one link by email. There is no free tier.">
   <meta name="robots" content="noindex">
   <!-- drive issue #10: the sign-in screen from docs/build-spec.md's "Screens"
        table. The copy and the endpoints live in src/signin.js, the single
@@ -199,7 +199,7 @@ button:disabled {
          The emailed link claims a test stand-in; a real card waits on
          the Dodo key (drive#417, drive#325). test/signin.test.mjs fails
          CI when a second copy of the sentence comes back. -->
-    <p class="free">We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
+    <p class="free">There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.</p>
 
     <div class="card">
       <!-- Not Django: this is a static asset, and the route it posts to is not
