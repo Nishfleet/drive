@@ -42,6 +42,7 @@ import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
+import { emitEvent } from "./webhooks.js";
 
 // The env value that turns the pause on. Anything else leaves it off.
 const PREPAID_PAUSE_ON = "on";
@@ -667,6 +668,18 @@ async function sendLowBalanceOnce(db, accountId, balance, autoCents, row, deps, 
       .run();
     throw error;
   }
+  // The crossing is claimed and mailed once, so the account's webhook
+  // endpoints hear about it once too (drive#901). emitEvent never throws.
+  await emitEvent(
+    db,
+    accountId,
+    "balance.low",
+    {
+      balance_cents: Math.max(0, balance),
+      auto_topup_cents: autoCents,
+    },
+    { fetch: deps.fetch, now },
+  );
   return true;
 }
 

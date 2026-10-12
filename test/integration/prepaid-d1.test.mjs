@@ -46,6 +46,7 @@ import {
   signWebhook,
   TOPUP_PURPOSE,
 } from "../../core/topup.js";
+import { createEndpoint } from "../../core/webhooks.js";
 import { storageWriteRoute } from "../../workers/api/src/key-routes.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
@@ -436,6 +437,49 @@ test("the $2 email goes out once per crossing, and a top-up re-arms it", async (
   assert.ok((await balanceCents(db, ACCOUNT)) <= LOW_BALANCE_CENTS);
   assert.equal((await settleBalance(db, ACCOUNT, deps)).lowBalanceSent, true, "a new crossing");
   assert.equal(email.sent.length, 2);
+});
+
+test("the low-balance crossing is sent once to the account's webhook endpoints (drive#901)", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const made = await createEndpoint(db, ACCOUNT, { url: "https://hooks.example.com/low" });
+  assert.ok("endpoint" in made);
+  /** @type {string[]} */
+  const bodies = [];
+  const fetchDouble = /** @type {typeof fetch} */ (
+    /** @type {unknown} */ (
+      async (/** @type {string} */ _url, /** @type {{body: string}} */ init) => {
+        bodies.push(init.body);
+        return new Response(null, { status: 200 });
+      }
+    )
+  );
+  const deps = {
+    email: fakeEmail(),
+    mailFrom: MAIL_FROM,
+    fetch: fetchDouble,
+    now: Date.parse("2026-10-05T12:00:00Z"),
+  };
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_w",
+    amountCents: 1000,
+    now: deps.now,
+  });
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "usage",
+    amountCents: -850,
+    idempotencyKey: usageKey(ACCOUNT, 0),
+    windowStart: 0,
+    now: deps.now,
+  });
+  await settleBalance(db, ACCOUNT, deps);
+  await settleBalance(db, ACCOUNT, deps);
+  assert.equal(bodies.length, 1, "one event for one crossing");
+  const event = JSON.parse(bodies[0]);
+  assert.equal(event.type, "balance.low");
+  assert.equal(event.data.balance_cents, 150);
 });
 
 test("a low-balance email that fails to send is tried again on the next run", async () => {
