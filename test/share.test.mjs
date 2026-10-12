@@ -44,16 +44,9 @@ import {
 } from "../src/malware.js";
 import {
   base64url,
-  createD1LinkStore,
   DAY_MS,
   DEFAULT_LINK_DAYS,
   folderDisplayName,
-  folderExists,
-  handleRequestInfoRequest,
-  handleRequestRequest,
-  handleRequestUploadRequest,
-  handleShareFileRequest,
-  handleShareRequest,
   LINK_RETENTION_DAYS,
   linkExpiry,
   linkIsOpen,
@@ -62,9 +55,6 @@ import {
   MALWARE_NOTICE_QUIET_MS,
   MAX_OPEN_LINKS,
   newLinkToken,
-  newRequestRecord,
-  newShareRecord,
-  purgeStaleLinks,
   REQUEST_ENDPOINT,
   REQUEST_FILE_MAX_BYTES,
   REQUEST_MAX_FILES,
@@ -84,6 +74,20 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
+import {
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+} from "../src/share-routes.js";
+import {
+  createD1LinkStore,
+  folderExists,
+  newRequestRecord,
+  newShareRecord,
+  purgeStaleLinks,
+} from "../src/share-store.js";
+import { handleRequestUploadRequest } from "../src/share-upload.js";
 import { createTestD1, knownBadHashRows } from "./harness.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 

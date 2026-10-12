@@ -14,12 +14,9 @@ import {
   scopeStore,
 } from "../core/files.js";
 import { downloadRecorder } from "../core/meter-usage.js";
-import {
-  handleShareFileRequest,
-  newLinkToken,
-  newShareRecord,
-  SHARE_LINK_PREFIX,
-} from "../src/share.js";
+import { newLinkToken, SHARE_LINK_PREFIX } from "../src/share.js";
+import { handleShareFileRequest } from "../src/share-routes.js";
+import { newShareRecord } from "../src/share-store.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 const OWNER = { id: "acct_owner", name: "Owner" };

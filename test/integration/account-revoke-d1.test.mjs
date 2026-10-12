@@ -20,7 +20,8 @@ import { createD1DeviceSigninStore } from "../../core/device-signin.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { createMemoryStore } from "../../core/keystore.js";
 import { failureMessage } from "../../core/messages.js";
-import { createD1LinkStore, linkState } from "../../src/share.js";
+import { linkState } from "../../src/share.js";
+import { createD1LinkStore } from "../../src/share-store.js";
 import { dispatch } from "../../workers/api/src/index.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
