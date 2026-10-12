@@ -1498,6 +1498,16 @@ navSignoutAll.addEventListener("click", () => {
     when.className = "when";
     when.textContent = typeof line.at === "string" ? line.at.slice(0, 10) : "";
     item.append(what, amount, when);
+    // A top-up has a printable receipt (core/receipts.js); only a same-origin
+    // /api/receipts path is ever linked, whatever the payload says.
+    if (typeof line.receipt_url === "string" && /^\/api\/receipts\/[0-9]+$/.test(line.receipt_url)) {
+      const receipt = document.createElement("a");
+      receipt.href = line.receipt_url;
+      receipt.target = "_blank";
+      receipt.rel = "noopener";
+      receipt.textContent = "Receipt";
+      item.append(receipt);
+    }
     return item;
   }
 
