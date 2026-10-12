@@ -538,6 +538,10 @@ function loadFilesPage(clock = now) {
     document: {
       getElementById: (/** @type {string} */ id) => elements.get(id) ?? stub(id),
       createElement: (/** @type {string} */ tag) => stubTag(tag),
+      // The page listens for drops on the document and marks the body while a
+      // file is dragged over it; neither is exercised here.
+      addEventListener() {},
+      body: { classList: { add() {}, remove() {} } },
     },
     location: { search: "" },
     navigator: { onLine: true },
