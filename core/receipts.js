@@ -48,7 +48,7 @@ export function receiptNumber(ledgerId) {
  * @param {number} ledgerId
  * @returns {Promise<Receipt|null>}
  */
-export async function receiptFor(db, accountId, ledgerId) {
+async function receiptFor(db, accountId, ledgerId) {
   const row = /** @type {Record<string, unknown>|null} */ (
     await db
       .prepare(

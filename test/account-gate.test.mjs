@@ -18,7 +18,6 @@
 //   4. One CSRF middleware refuses a cross-site write on every account POST.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { USAGE_ENDPOINT } from "../core/billing.js";
 import { handleUsageRequest } from "../core/billing-report.js";
@@ -40,13 +39,15 @@ import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { DEVICES_ENDPOINT } from "../src/devices-page.js";
 import { HEALTH_PATH } from "../src/health.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
@@ -220,7 +221,8 @@ test("every route src/index.js registers is either public or behind the gate", a
   // as public or account-gated, and a new route that is not classified fails
   // the walk, so it cannot ship unclassified. The `registered` list is the
   // same table the deny-by-default probe below walks.
-  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
+  const { PUBLIC_ROUTES: exportedPublic } = await import("../src/index-support.js");
   // The app closes over no env and no request, so the walk builds it bare and
   // reads the registry the Worker really serves.
   const app = createApp();
@@ -369,7 +371,8 @@ test("deny by default, walked from Hono's own route table: every registered non-
   // above classifies), skips the routes the export declares public, and asks
   // every remaining one directly, so a route that shipped without being
   // added to the hand list still has to answer 401 before a handler runs.
-  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
+  const { PUBLIC_ROUTES: exportedPublic } = await import("../src/index-support.js");
   const app = createApp();
   for (const { method, path } of app.routes.filter((r) => r.method !== "ALL")) {
     // A public route declared as a prefix (the share-link wildcard) exempts
@@ -411,7 +414,8 @@ test("the one forwarded /api/* route frames the hole the deny-by-default gate le
   // the site must forward it unchanged with the Basic header still on the
   // request. A second /api/* route forwarded past the gate fails the first
   // two checks, so it cannot join this one quietly.
-  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
+  const { PUBLIC_ROUTES: exportedPublic } = await import("../src/index-support.js");
   const app = createApp();
   const forwarded = app.routes.filter((r) => r.method === "ALL" && r.path === REVOKE_PATH);
   assert.equal(
@@ -744,7 +748,7 @@ test("an anonymous files request never reaches the store", async () => {
   // (src/index.js). A store that throws if touched proves the order rather
   // than asserting it in a comment.
   const { default: isolated } = await import("../src/index.js");
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const source = readIndexSource();
   assert.match(
     source,
     /account \? withIndex\(storeFor\(c\.env\), c\.env\.DRIVE_DB, account\) : null/,
