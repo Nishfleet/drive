@@ -75,7 +75,7 @@ test("the account's email is escaped", () => {
     { id: 1, creditCents: 1000, paidCents: null, paymentId: null, createdAt: 0 },
     { email: '"><script>x</script>@e.co' },
   );
-  assert.doesNotMatch(html, /<script>/);
+  assert.ok(!html.toLowerCase().includes("<script"), "no raw tag from the email");
 });
 
 test("a stranger, another account's top-up and a bad id get no receipt", async () => {
