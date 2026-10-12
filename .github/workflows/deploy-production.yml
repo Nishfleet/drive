@@ -214,8 +214,7 @@ jobs:
         # has a domain (cloudflare.config.ts). A stranger must get a redirect
         # to the Access sign-in, never the site. The redirect must go to our
         # own Access team host exactly, so a lookalike URL cannot pass
-        # (drive #159). Both the old team name (nish345) and the new one
-        # (storagebun) pass while the Access team domain is renamed.
+        # (drive #159).
         run: |
           out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
           echo "workers.dev answered: ${out%%\?*}"
