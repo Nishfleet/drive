@@ -9,47 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BILLING_WEBHOOK_PATH, signWebhook, TOPUP_PURPOSE } from "../core/topup.js";
-import { chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
+import { accountId, browserSignIn, chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
 import { TEST_BASE_URL } from "./harness.mjs";
 
 const OPTIONS = { timeout: 180_000, skip: chromeSkip };
-
-/**
- * Signs `email` in the way a visitor does: type it, tick the age box, submit,
- * then open the emailed link. The account's billing row is made by that real
- * route, which the test harness's shortcut sign-in does not run.
- */
-async function browserSignIn(
-  /** @type {import("puppeteer-core").Browser} */ browser,
-  /** @type {Awaited<ReturnType<typeof startSite>>} */ site,
-  /** @type {string} */ email,
-) {
-  const page = await browser.newPage();
-  page.setDefaultTimeout(60_000);
-  const before = site.mail.length;
-  await page.goto(`${site.origin}/signin`, { waitUntil: "load" });
-  await page.click("#age");
-  await page.type('input[type="email"]', email);
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(() => /check your email|sent/i.test(document.body.innerText));
-  assert.equal(site.mail.length, before + 1, "one sign-in link was mailed");
-  const link = new URL(site.mail[before].url);
-  await page.goto(`${site.origin}${link.pathname}${link.search}`, { waitUntil: "load" });
-  return page;
-}
-
-/** The account id behind an email, read from the database. */
-async function accountId(
-  /** @type {Awaited<ReturnType<typeof startSite>>} */ site,
-  /** @type {string} */ email,
-) {
-  const row = await site.made.db
-    .prepare("SELECT id FROM accounts WHERE email = ?1")
-    .bind(email)
-    .first();
-  assert.ok(row, `an account row exists for ${email}`);
-  return String(row.id);
-}
 
 test("a visitor signs in with the emailed link and lands signed in", OPTIONS, async (t) => {
   const site = await startSite();
@@ -223,4 +186,40 @@ test("a shared link opens for a stranger with no account", OPTIONS, async (t) =>
   const text = await guest.evaluate(() => document.body.innerText);
   assert.match(text, /shared\.txt/);
   await stranger.close();
+});
+
+test("dropping files on the Files page uploads them, with a bar for each", OPTIONS, async (t) => {
+  const site = await startSite();
+  t.after(() => site.close());
+  const browser = await launchChrome(site.origin);
+  t.after(() => browser.close());
+  const page = await browserSignIn(browser, site, "dropper@example.com");
+
+  await page.goto(`${site.origin}/files`, { waitUntil: "load" });
+  await page.waitForSelector("#upload-button:not([disabled])");
+  // The hint shows while a file is held over the page and goes when it leaves.
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["one"], "first.txt", { type: "text/plain" }));
+    document.dispatchEvent(new DragEvent("dragenter", { dataTransfer: data, cancelable: true }));
+  });
+  assert.equal(await page.evaluate(() => document.body.classList.contains("is-dragging")), true);
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["one"], "first.txt", { type: "text/plain" }));
+    data.items.add(new File(["two two"], "second.txt", { type: "text/plain" }));
+    document.dispatchEvent(new DragEvent("drop", { dataTransfer: data, cancelable: true }));
+  });
+  assert.equal(await page.evaluate(() => document.body.classList.contains("is-dragging")), false);
+  await page.waitForFunction(
+    () => document.querySelectorAll("#uploads li[data-state='done']").length === 2,
+  );
+  const rows = await page.$$eval("#uploads li", (items) =>
+    items.map((item) => item.querySelector(".name")?.textContent),
+  );
+  assert.deepEqual(rows, ["first.txt", "second.txt"]);
+  await page.waitForFunction(() => {
+    const text = document.querySelector("#file-list")?.textContent ?? "";
+    return text.includes("first.txt") && text.includes("second.txt");
+  });
 });

@@ -7,6 +7,7 @@
 // (DRIVE_CHROME, else /usr/bin/google-chrome) through puppeteer-core, which is
 // already a devDependency; the suite skips when Chrome is not installed.
 
+import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname } from "node:path";
@@ -154,6 +155,43 @@ export async function startSite(options = {}) {
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+/**
+ * Signs `email` in the way a visitor does: type it, tick the age box, submit,
+ * then open the emailed link. The account's billing row is made by that real
+ * route, which the test harness's shortcut sign-in does not run.
+ */
+export async function browserSignIn(
+  /** @type {import("puppeteer-core").Browser} */ browser,
+  /** @type {Awaited<ReturnType<typeof startSite>>} */ site,
+  /** @type {string} */ email,
+) {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(60_000);
+  const before = site.mail.length;
+  await page.goto(`${site.origin}/signin`, { waitUntil: "load" });
+  await page.click("#age");
+  await page.type('input[type="email"]', email);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => /check your email|sent/i.test(document.body.innerText));
+  assert.equal(site.mail.length, before + 1, "one sign-in link was mailed");
+  const link = new URL(site.mail[before].url);
+  await page.goto(`${site.origin}${link.pathname}${link.search}`, { waitUntil: "load" });
+  return page;
+}
+
+/** The account id behind an email, read from the database. */
+export async function accountId(
+  /** @type {Awaited<ReturnType<typeof startSite>>} */ site,
+  /** @type {string} */ email,
+) {
+  const row = await site.made.db
+    .prepare("SELECT id FROM accounts WHERE email = ?1")
+    .bind(email)
+    .first();
+  assert.ok(row, `an account row exists for ${email}`);
+  return String(/** @type {{id: unknown}} */ (row).id);
 }
 
 /**
