@@ -8,7 +8,8 @@
 // Plain data and functions, no Worker-only import: node --test exercises the
 // statements against a real SQLite engine (test/d1-sqlite.mjs).
 
-import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
+import { TRASH_PATH, validatePath } from "./files.js";
+import { drivePathFromKey } from "./files-scope.js";
 
 /** One row of the file index, as it is written to D1.
  * @typedef {{account_id: string, path: string, name: string, parent: string,

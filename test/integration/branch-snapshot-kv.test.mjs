@@ -33,7 +33,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../../core/files.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { scopeStore } from "../../core/files-scope.js";
 import { createKvSnapshotStore, snapshotKey } from "../../src/branches.js";
 import { approveBranch, createBranch, listBranches } from "../../src/branches-routes.js";
 import { diffBranch, readSnapshot } from "../../src/branches-snapshot.js";

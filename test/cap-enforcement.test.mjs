@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { minutesInMonth } from "../core/billing.js";
 import { runCapEnforcement } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import { createMemoryStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import { HOUR_MS, hourStart } from "../core/meter.js";
 import { METER_CRON } from "../core/meter-events.js";
 import { monthStart } from "../core/meter-usage.js";

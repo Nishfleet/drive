@@ -24,14 +24,13 @@ import { handleUsageRequest } from "../core/billing-report.js";
 import { CAP_ENDPOINT } from "../core/cap-request.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT } from "../core/export.js";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
+import { RECEIPT_ENDPOINT } from "../core/receipts.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
@@ -167,6 +166,8 @@ const ACCOUNT_ROUTES = [
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
   `${AUTO_TOPUP_ENDPOINT}`,
+  // Polish gap 13: a top-up's printable receipt names the account's payment.
+  `${RECEIPT_ENDPOINT}/:id`,
   // drive#575: the billing portal, where the account's card is updated. It
   // names the account's own customer and billing page, so it is behind the
   // account gate exactly like the balance read beside it, and the walk
@@ -256,6 +257,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
         path.startsWith(DEVICES_ENDPOINT) ||
+        path.startsWith(RECEIPT_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
         path.startsWith(STARTER_ENDPOINT) ||

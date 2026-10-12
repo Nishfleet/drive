@@ -1,7 +1,8 @@
 // Split out of src/branches-jobs.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 
 import { PRE_CHARGE_STORAGE_LIMIT_BYTES } from "../core/abuse-guards.js";
-import { scopeStore, validatePath } from "../core/files.js";
+import { validatePath } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
 import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";

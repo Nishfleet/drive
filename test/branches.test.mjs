@@ -9,7 +9,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../core/files.js";
+import { BRANCHES_FOLDER, withoutTrash } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { failureMessage } from "../core/messages.js";
 import {
   BRANCHES_ENDPOINT,

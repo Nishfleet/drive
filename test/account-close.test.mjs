@@ -11,7 +11,8 @@ import { test } from "node:test";
 import { createD1DeviceStore } from "../core/devices.js";
 import { replyToFor } from "../core/email-send.js";
 import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
-import { createMemoryStore as createFileStore, scopeStore } from "../core/files.js";
+import { createMemoryStore as createFileStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { createMemoryStore as createKeyStore } from "../core/keystore.js";
 import {
   CLOSE_CANCEL_ENDPOINT,

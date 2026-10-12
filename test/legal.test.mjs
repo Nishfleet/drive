@@ -346,7 +346,7 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
-    ["restore.md", "core/files.js", "purgeExpiredTrash"],
+    ["restore.md", "core/files-scope.js", "purgeExpiredTrash"],
     ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
     ["secrets-rotation.md", "core/meter-events.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],

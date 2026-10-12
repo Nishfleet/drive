@@ -9,7 +9,9 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import { FAILURE_MESSAGES, failureMessage, SIGN_IN_COMMAND } from "../core/messages.js";
 import { BRANCHES_ENDPOINT, createMemorySnapshotStore } from "../src/branches.js";
 import { handleBranchesRequest } from "../src/branches-routes.js";

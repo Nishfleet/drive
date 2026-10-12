@@ -1,7 +1,8 @@
 // Split out of core/meter-fair-use.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 
 import { fairUseCheck } from "./billing-report.js";
-import { accountPrefix, scopeStore } from "./files.js";
+import { accountPrefix } from "./files.js";
+import { scopeStore } from "./files-scope.js";
 import { hourStart, toMillis } from "./meter.js";
 import { REROLL_QUEUE_SQL, ROLLED_THROUGH_READ_SQL, stampMillis } from "./meter-events.js";
 import {

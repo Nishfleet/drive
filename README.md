@@ -48,6 +48,8 @@ agents.
   the three commands, the log on each system, a lost laptop, your files out
 - [Limits](https://storagebun.com/docs/limits) — what
   version 1 does not do
+- [API reference](https://storagebun.com/docs/api) — every
+  route behind the `drive` command, with a curl example
 - [Benchmarks](https://storagebun.com/docs/benchmarks) —
   measured speed, including where we lose
 - [Security](https://storagebun.com/docs/security) — who
