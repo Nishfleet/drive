@@ -687,7 +687,7 @@ test("preChargeStoredBytes refuses toward the limit when the branch store cannot
 });
 
 test("a reconciled branch copy is counted once, not twice (drive#800, in-run review)", async () => {
-  // core/meter.js reconcileAccount folds the branch copy into file_versions
+  // core/meter-reconcile.js reconcileAccount folds the branch copy into file_versions
   // AND the store still holds it, so without dedup the number would charge the
   // copy twice and wrongly refuse an honest account. The rows are 300 under
   // the limit, the reconciled branch is 200 in the rows and 200 in the store:
@@ -707,7 +707,7 @@ test("a reconciled branch copy is counted once, not twice (drive#800, in-run rev
   await scoped.write("/work/x.bin", "x".repeat(200), "text/plain");
   await scoped.copy("/work/x.bin", `${BRANCHES_PATH}/b/x.bin`);
   // The nightly reconcile's row for that same copy: the path shape is the
-  // account prefix with no leading slash, matching core/meter.js.
+  // account prefix with no leading slash, matching core/meter-reconcile.js.
   db.insertVersion({
     accountId,
     fileId: "br-x",

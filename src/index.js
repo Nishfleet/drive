@@ -38,11 +38,11 @@ const handler = {
   // tells them apart, so no trigger spends another's work:
   //   - The meter's hourly rollup (issue #6): roll every closed UTC hour that
   //     has not been rolled yet into usage_minutes, oldest first
-  //     (core/meter.js runMeterCron). A D1 failure throws, so Cloudflare
+  //     (core/meter-events.js runMeterCron). A D1 failure throws, so Cloudflare
   //     records the trigger as failed and retries, and the catch-up takes
   //     the next one over - a failed rollup must never read as a quiet zero.
   //     The schedule string lives in cloudflare.config.ts, pinned to
-  //     core/meter.js's METER_CRON by test/meter.test.mjs. The same trip
+  //     core/meter-events.js's METER_CRON by test/meter.test.mjs. The same trip
   //     also enforces the 1 TB pre-charge storage limit on mounts
   //     (core/abuse-guards.js runPreChargeLimitCron, drive#536): an
   //     over-limit unpaid account's keys are taken read-only through the

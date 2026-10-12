@@ -1,4 +1,7 @@
-// Split out of core/meter-usage.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+// Split out of core/meter.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+//
+// The storage-event intake, the hourly cron, the freshness read and the dedup
+// table's retention. It imports core/meter.js and core/meter-usage.js.
 
 import { eventIndexStatement } from "./file-index.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";

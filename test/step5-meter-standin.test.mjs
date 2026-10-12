@@ -434,7 +434,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   );
   assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
   // The dead-letter table was an earlier design that was replaced by the
-  // per-event rejection in the intake (core/meter.js recordEvents). The test
+  // per-event rejection in the intake (core/meter-events.js recordEvent). The test
   // keeps the assertion as a gate: the name must not appear in the schema.
   assert.ok(
     !Object.hasOwn(db.tables, "event_dead_letters"),

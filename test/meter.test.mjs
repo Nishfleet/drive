@@ -1,4 +1,4 @@
-// Tests for the meter (drive issue #6, build step 5). Two halves:
+// Tests for the meter (drive issue #6, build step 5). Three halves:
 //
 // 1. The arithmetic in core/meter.js: the GB-minutes a version books into
 //    each hour, the 1-hour minimum, and the property the done-when
@@ -10,13 +10,15 @@
 //    the dedup that drops a repeated event, the version upsert, the
 //    rollup write, and the two handlers (the intake POST and the hourly
 //    trigger).
+// 3. The module graph drive#617 left behind: five files, each under 800
+//    lines, importing each other one way only.
 //
 // No fake D1: the adapter is the real thing - node:sqlite is in the
 // standard library, so the repo needs no new dependency to test its
 // migrations.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   BYTES_PER_GB as BILLING_BYTES_PER_GB,
@@ -2855,8 +2857,8 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   // The config cannot import them. @cloudflare/config executes the config to
   // read it, and every plain import it follows becomes a `server.fs.deny`
   // entry in `cf dev`, which makes Vite refuse to read that file - so an
-  // import of core/meter.js or src/search.js pulls the whole shared Worker
-  // graph behind it and `npm run dev` dies before it prints a route
+  // import of core/meter-events.js or src/search.js pulls the whole shared
+  // Worker graph behind it and `npm run dev` dies before it prints a route
   // (drive#432). The pin below is what keeps two spellings of one schedule
   // honest.
   const declared = [...config.matchAll(/triggers\.scheduled\(\{ schedule: "([^"]+)" \}\)/g)].map(
@@ -3086,4 +3088,66 @@ test("meterFreshness: a watermark ahead of the last closed hour is not stale", a
   const answer = await meterFreshness(db, at("2026-09-30T01:05:00.000Z"));
   assert.equal(answer.stale, false);
   assert.match(answer.detail, /self-corrects/);
+});
+
+// drive#617 split the one meter into five modules. The split only holds while
+// the graph between them stays a one-way street, so the order below is pinned
+// here: a module reaching for a name in a later one is a cycle, and while a
+// cycle whose names are only read inside a function body loads silently today,
+// the first module-level read in one is a ReferenceError at boot. That is not a
+// theory: planting meter.js -> meter-reconcile.js here failed the suite on
+// "Cannot access 'NOT_TRASH_SQL' before initialization" in meter-usage.js. The
+// 800-line rule is the split's own finish line, so the same walk asserts it.
+const METER_MODULES = Object.freeze([
+  "meter.js",
+  "meter-usage.js",
+  "meter-events.js",
+  "meter-fair-use.js",
+  "meter-reconcile.js",
+]);
+
+test("the five meter modules are each under 800 lines and import each other one way only", () => {
+  /** @type {Map<string, readonly string[]>} */
+  const meterImports = new Map();
+  for (const name of METER_MODULES) {
+    const url = new URL(`../core/${name}`, import.meta.url);
+    const text = readFileSync(url, "utf8");
+    const lines = text.split("\n").length;
+    assert.ok(
+      lines < 800,
+      `core/${name} is ${lines} lines, and the 800-line rule is what the split is held to (drive#617)`,
+    );
+    /** @type {string[]} */
+    const deps = [];
+    for (const spec of [...text.matchAll(/(?:from|import)\s*["'](\.[^"']+)["']/g)].map(
+      (m) => m[1],
+    )) {
+      // Every relative import must resolve, so a name that moved between the
+      // five files leaves a dead path behind that fails here rather than at
+      // load time in the Worker.
+      assert.ok(
+        existsSync(new URL(spec, url)),
+        `core/${name} imports ${spec}, which is not a file that exists`,
+      );
+      if (spec.startsWith("./meter")) deps.push(spec.replace(/^\.\//, ""));
+    }
+    meterImports.set(name, deps);
+  }
+  // The order the split put them in: a module may import any earlier one, never
+  // a later one, because that later one already imports it. `rank` refuses a
+  // name outside the five rather than letting -1 sort as "earliest".
+  /** @param {string} name */
+  const rank = (name) => {
+    const index = METER_MODULES.indexOf(name);
+    assert.ok(index !== -1, `${name} is not one of the five meter modules`);
+    return index;
+  };
+  for (const [name, deps] of meterImports) {
+    for (const dep of deps) {
+      assert.ok(
+        rank(dep) < rank(name),
+        `core/${name} imports ${dep}, which is later in the split's order, so the graph is no longer one way`,
+      );
+    }
+  }
 });

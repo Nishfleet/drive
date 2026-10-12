@@ -759,7 +759,7 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  * One version of one stored file, in the provider's own listing: the version
  * id the meter keys `file_versions` on, the key it lives at, its size in
  * bytes, and the instants its life begins and stops. The meter's reconciler
- * (core/meter.js `reconcileMeter`) reads this shape, and `listVersions` below
+ * (core/meter-reconcile.js `reconcileMeter`) reads this shape, and `listVersions` below
  * is the one call a store makes to answer it, so the reconciler never knows
  * which provider it is fixing.
  * @typedef {object} FileStore
@@ -1394,7 +1394,7 @@ export function createMemoryStore() {
      * Every version of every file under one drive path. The recursive walk is
      * the same prefix scan `list` does at one level, one level down, so an
      * account's whole history comes back in the shape the reconciler reads
-     * (core/meter.js StorageVersion). `includeHidden` is accepted for the
+     * (core/meter-reconcile.js). `includeHidden` is accepted for the
      * interface's sake; the stand-in has no hard-delete step, so every version
      * it kept is returned either way.
      * @param {string} path

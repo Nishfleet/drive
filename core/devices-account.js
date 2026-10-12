@@ -98,7 +98,7 @@ export function createAccountMethods(ctx) {
       /**
        * The account's month so far, in the shape usageSummary() reads, for the
        * cap swap `drive cap` runs and the hourly enforcement walk
-       * (drive#496). It is `monthUsageThrough` (core/meter.js) and nothing else:
+       * (drive#496). It is `monthUsageThrough` (core/meter-usage.js) and nothing else:
        * the one SUM/MAX/AVG the Dodo push reads (src/dodo.js), so the cap, the
        * invoice and the enforcement walk cannot count three different months.
        * That read carries the download bytes too, which the half of it that

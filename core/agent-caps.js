@@ -7,7 +7,7 @@
 //
 //   - the key's own `agent_caps` row, whose request counter is stamped with the
 //     UTC day it belongs to, and
-//   - the account's size30 (`size30Through`, core/meter.js), which is the same
+//   - the account's size30 (`size30Through`, core/meter-usage.js), which is the same
 //     peak the bill, the usage page and the account cap read (drive#642).
 //
 // No second money rule and no second ledger. The two columns migration 0004

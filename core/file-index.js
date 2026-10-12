@@ -2,7 +2,7 @@
 // migration 0002) and the row shape; this module is the one INSERT both feeds
 // go through, so a file a desktop mount wrote and a file the web upload wrote
 // land as the same row. It lives in core/ because the metered storage-event
-// intake (core/meter.js) writes the create's row in the same batch as the
+// intake (core/meter-events.js) writes the create's row in the same batch as the
 // version row, and core/ cannot import the site Worker's src/ (drive#616).
 //
 // Plain data and functions, no Worker-only import: node --test exercises the

@@ -26,7 +26,7 @@
 //
 //   4. **The account comes from the path, and the bucket from the account.**
 //      `u/<id>/…` is the storage key, the account is its first segment
-//      (`folderAccount`, core/meter.js), and the bucket is that account's own
+//      (`folderAccount`, core/meter-usage.js), and the bucket is that account's own
 //      `drv-<id>` (`storageBucketForKey`, core/files.js; drive#371). A path
 //      cannot climb into another account's folder: `..` is refused and a
 //      second `u/<id>/` is part of the file's own name.
@@ -38,7 +38,7 @@
 //
 // The counter is `usage_minutes.download_bytes` for the current UTC hour
 // (migrations/drive/0005_meter.sql), written by `recordDownloadBytes`
-// (core/meter.js) in a `waitUntil`, after the response is handed back.
+// (core/meter-usage.js) in a `waitUntil`, after the response is handed back.
 
 import { Hono } from "hono";
 

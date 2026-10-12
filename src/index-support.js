@@ -97,7 +97,7 @@ export const API_PATH_PREFIX = "/v1";
 //
 //   - /api/waitlist: sign-ups, before accounts exist.
 //   - /api/storage-events: the storage provider's event rule posts here with
-//     its own shared token in a header (core/meter.js handleStorageEventRequest),
+//     its own shared token in a header (core/meter-events.js handleStorageEventRequest),
 //     not a session. The token is the gate.
 //   - /api/emails/send: the meter's cap emails and the billing webhook; closed
 //     with no EMAIL_SEND_TOKEN set (core/email-send.js), so its gate is a

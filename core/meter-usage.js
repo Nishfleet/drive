@@ -1,4 +1,7 @@
 // Split out of core/meter.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+//
+// The month and size30 reads, the download recorder and the plain notification
+// record parsers. It imports core/meter.js and nothing later in the graph.
 
 import { decodeNotificationKey } from "./event-routes.js";
 import {
@@ -550,7 +553,12 @@ export async function listMeteredAccounts(db) {
   });
 }
 
-// --- Event intake -------------------------------------------------------
+// --- Notification records -------------------------------------------------
+//
+// The plain parsers and tables the event intake in core/meter-events.js reads a
+// storage notification through. They live here, not there, because none of them
+// touches a binding or a request: the intake is the Worker half, this is the
+// data half, and `node --test` exercises every branch below without a runtime.
 
 /**
  * The account id in a key or path under `/u/<id>/`. That prefix is what

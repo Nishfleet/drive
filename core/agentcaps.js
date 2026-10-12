@@ -19,7 +19,7 @@
 //     ceiling is asked with the account cap's own function (`capStatus` in
 //     core/billing.js), so the number that decides "this is over" is the number
 //     the usage page shows. No second money rule and no second ledger: the read
-//     is `size30Through` (core/meter.js), the same peak the account
+//     is `size30Through` (core/meter-usage.js), the same peak the account
 //     cap and the usage page read, and `agent_caps.month_spend_cents` is left
 //     unread so there is nowhere else for a spend total to live.
 //   - The daily half is the key's own requests to the drive's API, counted on

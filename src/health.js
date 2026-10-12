@@ -171,7 +171,7 @@ const LIVENESS_QUERY = "SELECT 1";
  * public upload-request route fail closed without them (src/waitlist.js,
  * src/signin.js, src/share.js). METER_DB is on it because the
  * meter's event intake and the hourly rollup both fail closed without it
- * (core/meter.js), and a deploy that lost it would silently stop billing.
+ * (core/meter-events.js), and a deploy that lost it would silently stop billing.
  * DRIVE_DB is on it because a deploy that lost it
  * would serve every page and sign-up while every file, search and branch
  * request failed, which is exactly the outage this endpoint exists to catch

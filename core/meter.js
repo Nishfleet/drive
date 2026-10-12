@@ -1,6 +1,21 @@
-import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
+// The meter (drive issue #6, build step 5). Plain data and arithmetic first,
+// D1 statements second, both free of Worker-only imports so `node --test`
+// exercises every branch without a running runtime, the same split
+// src/waitlist.js uses.
 //
-// Three jobs, in the order the issue lists them:
+// drive#617 split the one 3,091-line meter into five modules under 800 lines
+// each. This one is the base of that graph: it holds the time maths and the
+// hourly rollup's SQL, and its one import is core/units.js. The other four
+// import it and nothing points back - meter-usage.js (month and size30 reads,
+// downloads, notification records), meter-events.js (the storage-event intake,
+// the cron, freshness, retention), meter-fair-use.js (ghost bytes, the fair-use
+// check and snapshot, nightly sizes) and meter-reconcile.js (the nightly
+// reconcile). test/meter.test.mjs pins that layering, so a module reaching for a
+// name in a later one fails there rather than loading as a cycle.
+//
+// The meter's three jobs, in the order the issue lists them, are now spread
+// across those five modules; the rules below are the ones every one of them
+// implements:
 //   1. Event intake in the api Worker, with de-duplication through
 //      `events_seen`: a storage event becomes one row in `file_versions`,
 //      and a create also upserts the one `file_index` row the search reads,
@@ -75,6 +90,8 @@ import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 // (Date.parse), so a webhook holding an ISO timestamp needs no conversion, and
 // a value that parses to nothing is a loud TypeError rather than a NaN that
 // quietly bills nothing.
+import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
+
 /**
  * @param {number|Date|string} value
  * @param {string} field

@@ -1,4 +1,7 @@
-// Split out of core/meter-fair-use.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+// Split out of core/meter.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+//
+// The nightly reconcile: the re-roll of hours a late hide changed, and the fair-use
+// decision row. It is the last module in the graph and imports the other four.
 
 import { fairUseCheck } from "./billing-report.js";
 import { accountPrefix, scopeStore } from "./files.js";

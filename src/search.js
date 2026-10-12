@@ -7,7 +7,7 @@
 //
 //   * the write path — `withIndex(store, db, account)` wraps a FileStore so
 //     every upload, delete and restore keeps the one row current, and the
-//     metered storage-event intake (core/meter.js) upserts the one row for a
+//     metered storage-event intake (core/meter-events.js) upserts the one row for a
 //     file an event names, so the two feeds a file can arrive on both end in
 //     this table (drive#566); and
 //   * the nightly reconciler — `reconcileIndex(db, store, account)` walks the

@@ -1,4 +1,7 @@
-// Split out of core/meter-events.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+// Split out of core/meter.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
+//
+// Ghost bytes, the fair-use check and snapshot, the nightly sizes and the fair-use
+// notices. It imports core/meter.js, core/meter-usage.js and core/meter-events.js.
 
 import { fairUseCheck } from "./billing-report.js";
 import { sendEmail } from "./email-send.js";
