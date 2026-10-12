@@ -151,7 +151,7 @@ func TestUnauthenticatedConfigDumpIsRejectedOnALiveMount(t *testing.T) {
 	}
 	_ = standinEnv(t, home, cfg)
 	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:"+freePort(t))
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, _ := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	conf, err := os.ReadFile(RcloneConfigPath(home))
@@ -192,7 +192,7 @@ func TestTwoStandinMountsDoNotCollideOnRC(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = standinEnv(t, home, cfg)
-		_, stop := startStandinMount(t, home, mountDir, cfg)
+		_, stop, _ := startStandinMount(t, home, mountDir, cfg)
 		t.Cleanup(stop)
 		addr := storedRCAddr(t, home)
 		addrs[i] = addr

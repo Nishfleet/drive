@@ -12,7 +12,7 @@
 // viewer downloads — and none of the three leaves the page.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,9 +31,28 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url));
 // drives on the same self-hosted runner, so the test needs no new tool.
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 
+/** @param {string} name @param {string} reason */
+function reportSkip(name, reason) {
+  const report = process.env.DRIVE_PROOF_REPORT;
+  if (report) appendFileSync(report, `${name}: ${reason}\n`);
+}
+
+/**
+ * node:test's `skip` accepts a function, and this one counts the named proof
+ * on the way past (drive#582): CI fails on chrome-file-click skipping, because
+ * Chrome is installed on the self-hosted runners, so the skip is a number in
+ * the build log instead of a silence.
+ * @returns {false | string}
+ */
+function skipIfNoChrome() {
+  if (existsSync(CHROME)) return false;
+  reportSkip("chrome-file-click", "Chrome is not installed");
+  return "Chrome is not installed";
+}
+
 test("a click on a file name previews, downloads, and never shows raw JSON", {
   timeout: 180_000,
-  skip: existsSync(CHROME) ? false : "Chrome is not installed",
+  skip: skipIfNoChrome(),
 }, async (t) => {
   // A real account over the real Worker: the D1 test database with the shipped
   // migrations, one signed-in session, and the in-memory store tests inject
@@ -323,7 +342,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
 
 test("signed in, the files menu shows Sign out and signing out ends the session", {
   timeout: 180_000,
-  skip: existsSync(CHROME) ? false : "Chrome is not installed",
+  skip: skipIfNoChrome(),
 }, async (t) => {
   // drive#423: the top menu said Sign in while signed in. This is the real
   // browser run of the changed flow: a signed-in files page shows Sign out,

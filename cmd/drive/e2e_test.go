@@ -108,7 +108,7 @@ func TestStandinMountProof(t *testing.T) {
 
 	var current *exec.Cmd
 	mount := func() *exec.Cmd {
-		cmd, _ := startStandinMount(t, home, mountDir, cfg)
+		cmd, _, _ := startStandinMount(t, home, mountDir, cfg)
 		current = cmd
 		return cmd
 	}
@@ -821,21 +821,34 @@ func storedRCAddr(t *testing.T, home string) string {
 // through the environment, never argv: a command line is world-readable in
 // `ps` for the life of the process. A host that refuses the mount skips the
 // calling test naming why (an unprivileged FUSE mount on Linux, the
-// passwordless sudo macOS's NFS mount needs on a Mac); an rclone that exits
-// before mounting is still a real failure.
+// passwordless sudo macOS's NFS mount needs on a Mac), with the mount's own
+// log tail alongside, so the skip names the host's real cause and not a
+// guess; an rclone that exits before mounting is still a real failure.
+//
+// The mount's remote control binds a loopback port of its own (DRIVE_RC_ADDR,
+// a free port picked here unless the caller set one), not the shipped default
+// (fill_run.go's loopbackRCAddr): these runners are shared hosts where a
+// stray listener on the default address would otherwise turn every mount
+// into a skip (drive#582). The caller reads the address from the third
+// result whenever it drives the mount's remote control.
 //
 // The mount is the same code path on both platforms: BuildMountPlan picks
 // `nfsmount` on darwin (the issue: "run on macOS using rclone nfsmount, no
 // macFUSE") and `mount` on Linux, so the proof on a Mac exercises the plan a
 // Mac user's login item runs.
-func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (*exec.Cmd, func()) {
+func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (*exec.Cmd, func(), string) {
 	t.Helper()
+	rcAddr := os.Getenv("DRIVE_RC_ADDR")
+	if rcAddr == "" {
+		rcAddr = "127.0.0.1:" + freePort(t)
+	}
 	cmd := exec.Command(driveBin(t), "mount",
 		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
 		"--prefix", cfg.Prefix, "--foreground")
 	cmd.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+		"DRIVE_RC_ADDR="+rcAddr,
 	)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -844,11 +857,17 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 	stop := func() { stopStandinProcess(cmd, mountDir) }
 	if !waitForMount(t, cmd, mountDir) {
 		stop()
+		// The mount's own log is the real reason, not a guess: a reader of
+		// this skip needs to know whether the host refused FUSE or the mount
+		// had a bad argument (the same tail the conflict proof logs).
+		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
+			t.Logf("mount log:\n%s", tailLines(string(log), 6))
+		}
 		skipNoMount(t, "this host will not bring up the mount on %s (%s): the proof needs "+
 			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
 			"NFS mount", mountDir, mountSkipReason())
 	}
-	return cmd, stop
+	return cmd, stop, rcAddr
 }
 
 // mountSkipReason is the one-line reason this host's mount did not come up, so
@@ -1082,7 +1101,7 @@ func TestOpenTimeColdAndWarm(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = standinEnv(t, home, cfg)
-			_, stop := startStandinMount(t, home, mountDir, cfg)
+			_, stop, _ := startStandinMount(t, home, mountDir, cfg)
 			fb, open, err := timeOpen(filepath.Join(mountDir, f.name), f.page)
 			if err != nil {
 				stop()
@@ -1136,12 +1155,12 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = standinEnv(t, home, cfg)
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, rcAddr := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, rcAddr, RemoteFor(cfg))
 	before, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)
@@ -1208,7 +1227,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = standinEnv(t, home, cfg)
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, rcAddr := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	openPath := filepath.Join(mountDir, openName)
@@ -1229,7 +1248,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, rcAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
 		_, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{fillName}}, 0, 0)
@@ -1363,7 +1382,7 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 	// proof binds its own loopback port. The client below reads that same
 	// address, or the stats call would talk to the other mount.
 	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:"+freePort(t))
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, _ := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
