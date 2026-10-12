@@ -28,7 +28,7 @@ import {
   loadKnownBadFeed,
   parseKnownBadFeed,
 } from "../../src/malware.js";
-import { createD1LinkStore, newRequestRecord } from "../../src/share.js";
+import { createD1LinkStore, newRequestRecord } from "../../src/share-store.js";
 import { createTestD1, DRIVE_MIGRATIONS, knownBadHashRows } from "../harness.mjs";
 
 /** The instant every load in this file is stamped with (epoch millis). */
