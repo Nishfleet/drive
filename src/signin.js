@@ -64,7 +64,7 @@ import {
 } from "../core/auth.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import { provisionAccountBucket } from "../core/files.js";
+import { provisionAccountBucket } from "../core/files-memory.js";
 import { json } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";

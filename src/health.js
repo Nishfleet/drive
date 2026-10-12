@@ -1,4 +1,4 @@
-import { storageVarsFromEnv } from "../core/files.js";
+import { storageVarsFromEnv } from "../core/files-memory.js";
 import { meterFreshness } from "../core/meter.js";
 
 // The health endpoint the outage alert watches (drive issue #96, north star
@@ -469,7 +469,7 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   // (src/files.js storageVarsFromEnv is the one reader this and storeFor use).
   // That drive forgets everything on redeploy, so it fails here by name
   // rather than serving a silently empty Files page.
-  const storageEnv = /** @type {import("../core/files.js").StorageEnv} */ (
+  const storageEnv = /** @type {import("../core/files-memory.js").StorageEnv} */ (
     /** @type {unknown} */ (env)
   );
   if (storageVarsFromEnv(storageEnv).endpoint === undefined) {

@@ -10,7 +10,8 @@
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
 
-import { fairUseRefuseResponse, UPLOAD_FILE_MAX_BYTES } from "../../../core/files.js";
+import { UPLOAD_FILE_MAX_BYTES } from "../../../core/files.js";
+import { fairUseRefuseResponse } from "../../../core/files-handlers.js";
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { authorizePath, KeyCountCapError } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";

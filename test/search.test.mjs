@@ -8,13 +8,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileRow, upsertStatements } from "../core/file-index.js";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-  TRASH_PURGE_SCHEDULE,
-} from "../core/files.js";
+import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
