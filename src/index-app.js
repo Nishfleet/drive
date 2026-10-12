@@ -30,6 +30,7 @@ import {
   size30DayUnpaid,
 } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { handleReceiptRequest, RECEIPT_ENDPOINT } from "../core/receipts.js";
 import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
@@ -383,6 +384,9 @@ export function createApp() {
     handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
       pauseOn: prepaidPauseOn(c.env),
     }),
+  );
+  app.get(`${RECEIPT_ENDPOINT}/:id`, (c) =>
+    handleReceiptRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, c.req.param("id")),
   );
   app.post(AUTO_TOPUP_ENDPOINT, (c) =>
     handleAutoTopUpRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
