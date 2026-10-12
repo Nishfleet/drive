@@ -34,6 +34,7 @@ import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
+import { WEBHOOK_ENDPOINT } from "../core/webhook-routes.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { DEVICES_ENDPOINT } from "../src/devices-page.js";
@@ -167,6 +168,11 @@ const ACCOUNT_ROUTES = [
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
   `${AUTO_TOPUP_ENDPOINT}`,
+  // Drive#901: the account's webhook endpoints, their test send and log.
+  `${WEBHOOK_ENDPOINT}`,
+  `${WEBHOOK_ENDPOINT}/:id`,
+  `${WEBHOOK_ENDPOINT}/:id/test`,
+  `${WEBHOOK_ENDPOINT}/:id/deliveries`,
   // drive#575: the billing portal, where the account's card is updated. It
   // names the account's own customer and billing page, so it is behind the
   // account gate exactly like the balance read beside it, and the walk
@@ -256,6 +262,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
         path.startsWith(DEVICES_ENDPOINT) ||
+        path.startsWith(WEBHOOK_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
         path.startsWith(STARTER_ENDPOINT) ||
