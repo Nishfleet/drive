@@ -601,6 +601,9 @@ export async function balanceSummary(db, accountId, options = {}) {
     top_up_presets_usd: [...PREPAID.topUpPresetsUsd],
     recent: recent.map((line) => ({
       kind: line.kind,
+      // A top-up has a printable receipt (core/receipts.js, which imports this
+      // file, so the path is spelled here rather than imported).
+      receipt_url: line.kind === "topup" ? `/api/receipts/${line.id}` : null,
       amount_cents: line.amountCents,
       amount: formatCents(line.amountCents),
       window_start: line.windowStart,

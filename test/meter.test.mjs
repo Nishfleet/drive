@@ -25,46 +25,53 @@ import {
   meteredMonthlyBillUsd,
 } from "../core/billing.js";
 import { fileRow } from "../core/file-index.js";
-import { createS3Store, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { createS3Store } from "../core/files-s3.js";
 import {
   BYTES_PER_GB,
-  EVENT_ACTIONS,
-  EVENT_TOKEN_HEADER,
-  EVENTS_PER_BATCH,
-  EVENTS_SEEN_RETENTION_MS,
-  fairUseSnapshot,
-  folderAccount,
   gbMinutesInHour,
   HOUR_GB_MINUTES_SQL,
   HOUR_MS,
-  handleStorageEventRequest,
   hourStart,
   isTrashPath,
-  listMeteredAccounts,
-  looksLikeNotificationRecord,
-  MAX_CATCHUP_HOURS,
-  METER_CRON,
-  METER_RECONCILE_SCHEDULE,
-  METER_STALE_AFTER_HOURS,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
-  meterFreshness,
-  monthUsageRollup,
-  notificationRecord,
-  notificationRecords,
-  pruneHiddenVersions,
-  reconcileMeter,
-  recordEvent,
-  recordNightlySizes,
-  recordUsage,
   rollupHour,
-  runMeterCron,
   toMillis,
   toVersion,
-  validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
 } from "../core/meter.js";
+import {
+  EVENT_TOKEN_HEADER,
+  EVENTS_PER_BATCH,
+  EVENTS_SEEN_RETENTION_MS,
+  handleStorageEventRequest,
+  MAX_CATCHUP_HOURS,
+  METER_CRON,
+  METER_STALE_AFTER_HOURS,
+  meterFreshness,
+  recordEvent,
+  runMeterCron,
+  validateEvent,
+} from "../core/meter-events.js";
+import {
+  fairUseSnapshot,
+  METER_RECONCILE_SCHEDULE,
+  pruneHiddenVersions,
+  recordNightlySizes,
+} from "../core/meter-fair-use.js";
+import { reconcileMeter } from "../core/meter-reconcile.js";
+import {
+  EVENT_ACTIONS,
+  folderAccount,
+  listMeteredAccounts,
+  looksLikeNotificationRecord,
+  monthUsageRollup,
+  notificationRecord,
+  notificationRecords,
+  recordUsage,
+} from "../core/meter-usage.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import { KNOWN_BAD_FEED_SCHEDULE } from "../src/malware.js";
@@ -2256,7 +2263,7 @@ test("a move whose successor event arrives late is corrected, not billed twice",
 // test as in production. The real provider's field mapping is #60's to
 // confirm; this fake is the listing the reconciler is defined against.
 /**
- * @param {Record<string, import("../core/files.js").StorageVersion[]>} versionsByPrefix
+ * @param {Record<string, import("../core/files-scope.js").StorageVersion[]>} versionsByPrefix
  * @returns {import("../core/files.js").FileStore}
  */
 function providerStore(versionsByPrefix) {

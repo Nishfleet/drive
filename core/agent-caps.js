@@ -28,7 +28,7 @@
 import { agentCapPlan, agentCapStatus, asMillis, dayKey } from "./agentcaps.js";
 import { size30Window } from "./billing.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
-import { size30Through } from "./meter.js";
+import { size30Through } from "./meter-usage.js";
 
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
 // key is an integration and a `branch` key is the app's own undo credential:

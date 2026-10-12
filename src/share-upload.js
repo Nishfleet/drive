@@ -5,14 +5,9 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "../core/abuse-guards.js";
-import {
-  fairUseRefuseResponse,
-  joinPath,
-  preChargeStoredBytes,
-  safeFileName,
-  scopeStore,
-  validatePath,
-} from "../core/files.js";
+import { preChargeStoredBytes, safeFileName, validatePath } from "../core/files.js";
+import { fairUseRefuseResponse, joinPath } from "../core/files-handlers.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";

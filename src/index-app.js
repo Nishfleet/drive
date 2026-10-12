@@ -12,16 +12,14 @@ import { CAP_ENDPOINT, handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
-import { FILES_ENDPOINT, scopeStore } from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
-import {
-  downloadRecorder,
-  fairUseSnapshot,
-  handleStorageEventRequest,
-  monthStart,
-} from "../core/meter.js";
+import { handleStorageEventRequest } from "../core/meter-events.js";
+import { fairUseSnapshot } from "../core/meter-fair-use.js";
+import { downloadRecorder, monthStart } from "../core/meter-usage.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   handleAutoTopUpRequest,
@@ -29,6 +27,7 @@ import {
   size30DayUnpaid,
 } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { handleReceiptRequest, RECEIPT_ENDPOINT } from "../core/receipts.js";
 import { mailFromEnv, sessionLabel } from "../core/security-event.js";
 import {
   handleFirstRunStatusRequest,
@@ -406,6 +405,9 @@ export function createApp() {
       id: c.req.param("id"),
       action: "deliveries",
     }),
+  );
+  app.get(`${RECEIPT_ENDPOINT}/:id`, (c) =>
+    handleReceiptRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, c.req.param("id")),
   );
   app.post(AUTO_TOPUP_ENDPOINT, (c) =>
     handleAutoTopUpRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),

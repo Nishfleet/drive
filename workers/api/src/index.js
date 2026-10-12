@@ -12,7 +12,7 @@ import {
 } from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
-import { fairUseUploadCheck } from "../../../core/meter.js";
+import { fairUseUploadCheck } from "../../../core/meter-fair-use.js";
 import { prepaidPauseOn, size30DayUnpaid, writesPaused } from "../../../core/prepaid.js";
 import { fairUseRefuseOn } from "../../../core/pricing.js";
 import { createD1QueueStore } from "../../../core/queues.js";
