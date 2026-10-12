@@ -229,3 +229,18 @@ test("the shipped page lists kind and last used, and posts revoke to the route",
   assert.match(page, /if \(response\.status === 401\)/);
   assert.match(page, /showSessionNav\(false\)/);
 });
+
+test("the page speaks plainly and every load failure has a Try again button (high-end gaps 4 and 11)", () => {
+  assert.match(page, /Devices and agents that can use your drive\. Turn any off with one click\./);
+  assert.match(page, /<th scope="col">Turn off<\/th>/);
+  assert.match(page, /const REVOKE_LABEL = "Turn off"/);
+  assert.doesNotMatch(page, /Reload the page to try again/);
+  assert.match(page, /<button type="button" id="devices-retry" hidden>Try again<\/button>/);
+  // Every call that says the load failed asks for the button.
+  const sayings = page
+    .split("\n")
+    .filter((line) => line.includes("sayStatus(") && line.includes("LOAD_FAILED"));
+  assert.ok(sayings.length >= 4, `found ${sayings.length}`);
+  for (const line of sayings) assert.match(line, /, true\);/, line);
+  assert.match(page, /retryEl\.addEventListener\("click"/);
+});
