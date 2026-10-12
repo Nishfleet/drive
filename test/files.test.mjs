@@ -3270,10 +3270,8 @@ test("the page wears the site's header, with room for the view strip", () => {
   // the header.
   const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
   assert.ok(masthead, "the page carries the shared masthead header");
-  assert.match(
-    masthead[0],
-    /<span class="tagline">A Finder drive for people and their agents\.<\/span>/,
-  );
+  // The tagline lives in the hero and the footer only (high-end gaps item 11).
+  assert.doesNotMatch(masthead[0], /class="tagline"/);
   assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
   assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
   // The static label is gone, and no script is left reading it. The words are
