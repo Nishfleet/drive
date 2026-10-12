@@ -256,7 +256,7 @@ test("the privacy policy names every company that handles data, with the storage
   assert.match(privacy, /Device names/);
   assert.match(privacy, /bytes stored and bytes transferred/);
   assert.match(privacy, /card fingerprint/);
-  assert.match(readRepo("core/devices.js"), /name: String\(r\.name/);
+  assert.match(readRepo("core/devices-rows.js"), /name: String\(r\.name/);
   assert.match(readRepo("core/meter.js"), /downloadBytes/);
   assert.match(readRepo("core/ledger.js"), /fingerprint/);
 });
