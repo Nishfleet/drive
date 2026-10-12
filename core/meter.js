@@ -14,8 +14,9 @@
 // name in a later one fails there rather than loading as a cycle.
 //
 // The meter's three jobs, in the order the issue lists them, are now spread
-// across those five modules; the rules below are the ones every one of them
-// implements:
+// across those five modules. The rules below are the ones the intake and the
+// hourly rollup implement; meter-fair-use.js and meter-reconcile.js carry the
+// rest, and each module's own header says which:
 //   1. Event intake in the api Worker, with de-duplication through
 //      `events_seen`: a storage event becomes one row in `file_versions`,
 //      and a create also upserts the one `file_index` row the search reads,

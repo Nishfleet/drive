@@ -3117,9 +3117,14 @@ test("the five meter modules are each under 800 lines and import each other one 
       lines < 800,
       `core/${name} is ${lines} lines, and the 800-line rule is what the split is held to (drive#617)`,
     );
+    // Comments are stripped before the import scan, because a comment that
+    // names an import must not read as an edge, and `from` on its own line
+    // still has to be seen: `\s*` crosses the newline a wrapped import puts
+    // there, so the walk does not go blind on the next multi-line import.
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
     /** @type {string[]} */
     const deps = [];
-    for (const spec of [...text.matchAll(/(?:from|import)\s*["'](\.[^"']+)["']/g)].map(
+    for (const spec of [...code.matchAll(/(?:from|import)\s*["'](\.[^"']+)["']/g)].map(
       (m) => m[1],
     )) {
       // Every relative import must resolve, so a name that moved between the

@@ -1,7 +1,7 @@
 // Split out of core/meter.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 //
 // The month and size30 reads, the download recorder and the plain notification
-// record parsers. It imports core/meter.js and nothing later in the graph.
+// record parsers. It imports core/meter.js and no later meter module.
 
 import { decodeNotificationKey } from "./event-routes.js";
 import {
