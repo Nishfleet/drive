@@ -274,3 +274,57 @@ test("the upload page's Choose files button still opens the file picker", {
     await chrome.close();
   }
 });
+
+// Dark mode (polish gap 3): every page on the html.drive alias follows the
+// visitor's device, so the same axe rules run again with the dark scheme
+// emulated. A colour that passed on paper and fails on dark paper is caught
+// here, not by a visitor. The home page keeps its orange field in both
+// modes and is covered by the light-and-dark pass above.
+const DARK_PAGES = [
+  "/signin.html",
+  "/privacy.html",
+  "/terms.html",
+  "/refunds.html",
+  "/acceptable-use.html",
+  "/support.html",
+  "/accessibility.html",
+  "/status.html",
+  "/404.html",
+  "/500.html",
+  "/starter.html",
+];
+
+test("the pages on the html.drive alias carry no axe violation in dark mode", {
+  timeout: 240_000,
+  skip: chromeSkip,
+}, async (t) => {
+  const site = await servePublic();
+  t.after(site.close);
+  const browser = await launch(t);
+  for (const path of DARK_PAGES) {
+    const chrome = await browser.newPage();
+    chrome.setDefaultTimeout(120_000);
+    try {
+      await chrome.setViewport({ width: 1280, height: 900 });
+      await chrome.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "dark" }]);
+      await chrome.goto(`${site.origin}${path}`, { waitUntil: "networkidle0" });
+      const scheme = await chrome.evaluate(
+        () => getComputedStyle(document.documentElement).colorScheme,
+      );
+      assert.equal(scheme, "dark", `${path}: the dark values did not apply`);
+      const found = await runAxe(chrome, axeSource);
+      assert.equal(
+        found.length,
+        0,
+        `${path} (dark): axe found ${found
+          .map(
+            (violation) =>
+              `${violation.id} at ${violation.targets.map((target) => target.join(" ")).join("; ")}`,
+          )
+          .join(" | ")}`,
+      );
+    } finally {
+      await chrome.close();
+    }
+  }
+});

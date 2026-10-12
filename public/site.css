@@ -83,6 +83,27 @@ html.drive {
   --mono: var(--font-code);
 }
 
+/* Dark mode (polish gap 3). Pages on the html.drive alias follow the visitor's
+   device: the same names, dark values, so no page restates a colour. The
+   accent is a lighter orange here because the paper-mode orange ink does not
+   reach AA on dark paper (#ff8e63 on #171410 is about 8:1). The home page
+   reads the --drive-* tokens directly and keeps its orange field in both modes. */
+@media (prefers-color-scheme: dark) {
+  html.drive {
+    color-scheme: dark;
+    --paper: #171410;
+    --paper-raised: #211d17;
+    --ink: #f3ecdf;
+    --ink-soft: #cdc3b1;
+    --ink-faint: #b8ae9b;
+    --rule: #3b342a;
+    --accent: #ff8e63;
+    --accent-soft: #3b2214;
+    --good: #7fd1a0;
+    --bad: #ff9b9b;
+  }
+}
+
 /* The three faces, latin subset, only the weights the home page sets. swap
    shows the fallback at once and swaps when the file lands, so text is never
    invisible; the home page preloads the 900 display face its price uses. */
@@ -459,8 +480,8 @@ body.policy .footer {
 /* A fact the owner still has to fill in (src/legal.js LEGAL_PLACEHOLDERS).
    Loud on purpose, so an unfilled one cannot pass for real words. */
 mark.to-fill {
-  background: var(--drive-orange-wash);
+  background: var(--accent-soft);
   color: var(--ink);
-  outline: 2px dashed var(--drive-orange-ink);
+  outline: 2px dashed var(--accent);
   padding: 0 4px;
 }
