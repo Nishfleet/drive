@@ -26,7 +26,8 @@ import {
   handleBranchesRequest,
 } from "../src/branches-routes.js";
 import { diffBranch, getBranch } from "../src/branches-snapshot.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { handleRewindRequest, rewindBranch } from "../src/rewind.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
 

@@ -29,7 +29,8 @@ import {
   purgeOnDate,
   runAccountCloseCron,
 } from "../src/account-close.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 

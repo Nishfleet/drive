@@ -28,7 +28,8 @@ import {
 } from "../core/files.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
-import worker, { createApp } from "../src/index.js";
+import worker from "../src/index.js";
+import { createApp } from "../src/index-app.js";
 import {
   EICAR_BODY,
   EICAR_SHA256,
@@ -89,6 +90,7 @@ import {
 } from "../src/share-store.js";
 import { handleRequestUploadRequest } from "../src/share-upload.js";
 import { createTestD1, knownBadHashRows } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
@@ -757,7 +759,7 @@ test("every route that can hit the list binds everything a refusal needs", () =>
   // and answer 200s in production, because the handler would simply have no
   // database to read. So the wiring is read out of src/index.js beside them,
   // in the style test/monitoring.test.mjs already uses for its crons.
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   /**
    * Every `app.<verb>(...)` registration in src/index.js, as its own block
    * with the comment lines stripped. The strip is the point: a route that

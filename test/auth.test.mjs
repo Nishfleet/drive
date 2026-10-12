@@ -34,7 +34,8 @@ import {
   signinLinkEmail,
 } from "../core/auth.js";
 import { createMemoryStore } from "../core/files.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import {
   createTestAuth,
   createTestD1,
