@@ -260,7 +260,8 @@ jobs:
           echo "health ok"
           # The email part is reported beside ok, never as it (drive#522), so
           # a live drive that cannot send mail is a warning here, not a rollback.
-          if printf '%s' "$body" | node -e 'process.exit(JSON.parse(require("fs").readFileSync(0,"utf8")).email==="not-ready"?0:1)'; then
+          # deploy-smoke.js wrote the body to DRIVE_SMOKE_BODY_FILE on success.
+          if printf '%s' "$(cat "$DRIVE_SMOKE_BODY_FILE" 2>/dev/null || true)" | node -e 'process.exit(JSON.parse(require("fs").readFileSync(0,"utf8")).email==="not-ready"?0:1)' 2>/dev/null; then
             echo "::warning title=Email not ready::/api/health reports email not-ready: customer email fails until MAIL_FROM is set (drive#667, drive#752)"
           fi
         env:
@@ -269,6 +270,7 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           PREVIOUS_VERSION: ${{ steps.live.outputs.version_id }}
+          DRIVE_SMOKE_BODY_FILE: ${{ runner.temp }}/smoke-body.json
       - name: Roll back the Worker version
         # Stock Workers rollback: a new deployment of the previous version at
         # 100%. Runs when any step after the live version was read failed,

@@ -10,6 +10,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +80,31 @@ test("a healthy Worker: the Access headers reach the route and the smoke exits 0
   });
   assert.equal(result.code, 0, `the smoke failed where it should have passed: ${result.stderr}`);
   assert.match(result.stdout, /ok/, "the smoke says what it saw");
+});
+
+test("a healthy response writes its body to DRIVE_SMOKE_BODY_FILE for the deploy's email check", async (t) => {
+  const bodyFile = `${tmpdir()}/drive-smoke-body-${Date.now()}.json`;
+  t.after(() => {
+    try {
+      unlinkSync(bodyFile);
+    } catch {
+      /* already gone */
+    }
+  });
+  const server = await stubHealth();
+  t.after(() => server.close());
+  const { address, port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+
+  const result = await runSmoke({
+    HEALTH_URL: `http://${address}:${port}/api/health`,
+    DRIVE_SMOKE_BODY_FILE: bodyFile,
+    DRIVE_SMOKE_ATTEMPTS: "1",
+    DRIVE_SMOKE_RETRY_DELAY_MS: "10",
+  });
+  assert.equal(result.code, 0, `the smoke failed where it should have passed: ${result.stderr}`);
+  // The body — {"ok":true} — was written to the file the deploy step reads.
+  const written = readFileSync(bodyFile, "utf8");
+  assert.equal(JSON.parse(written).ok, true, "the body was written to DRIVE_SMOKE_BODY_FILE");
 });
 
 test("a failing Worker: a stubbed 500 exits non-zero even after the retries", async (t) => {

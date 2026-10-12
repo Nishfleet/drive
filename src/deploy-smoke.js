@@ -17,9 +17,15 @@
 // Nothing here is a secret: the token is never printed, logged or
 // echoed, and the headers travel in the request only.
 
+import fs from "node:fs";
+
 /** The health route the deploy smokes, overridable for a test stub. */
 const HEALTH_URL =
   process.env.HEALTH_URL ?? "https://drive-pricing.nishant345.workers.dev/api/health";
+
+/** The body is written to this file on a healthy response, so the deploy
+ * step can warn on email==="not-ready" without rolling back (drive#582). */
+const BODY_FILE = process.env.DRIVE_SMOKE_BODY_FILE;
 
 /** Attempts and pause, the same shape the curl flags carried. */
 const ATTEMPTS = Number(process.env.DRIVE_SMOKE_ATTEMPTS ?? 5);
@@ -75,6 +81,11 @@ async function probe() {
   }
   if (parsed?.ok !== true) {
     return { ok: false, detail: `health route answered 200 but is not ok` };
+  }
+  // drive#582: write the body to DRIVE_SMOKE_BODY_FILE so the deploy step
+  // can still warn on email==="not-ready" without rolling back.
+  if (BODY_FILE) {
+    fs.writeFileSync(BODY_FILE, body);
   }
   return { ok: true, detail: "health route answered 200 with ok:true" };
 }
