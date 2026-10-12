@@ -18,7 +18,7 @@ import {
   ghostFromVersions,
   pruneHiddenVersions,
   sendFairUsePauseIfDue,
-} from "../core/meter.js";
+} from "../core/meter-fair-use.js";
 import {
   buildPrice,
   FAIR_USE_REFUSE_ON,

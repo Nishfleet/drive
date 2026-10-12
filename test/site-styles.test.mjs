@@ -219,10 +219,14 @@ test("the shared stylesheet declares every token once, with the reviewed values"
     // the only second declaration allowed, and it must point at a --drive-*
     // or --font-* token.
     if (values.length > 1) {
-      assert.equal(values.length, 2, `${token} is declared at most twice (:root and html.drive)`);
+      // The dark block (polish gap 3) is a third declaration, a plain colour.
+      assert.ok(
+        values.length <= 3,
+        `${token} is declared at most three times (:root, html.drive, dark)`,
+      );
       assert.match(
         values[1],
-        /^var\(--(?:drive|font)-/,
+        /^(?:var\(--(?:drive|font)-|#[0-9a-f]{6}$)/,
         `${token}'s second declaration is the html.drive alias onto a --drive-* or --font-* token`,
       );
     }

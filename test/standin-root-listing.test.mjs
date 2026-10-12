@@ -26,7 +26,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createS3Store, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createS3Store } from "../core/files-s3.js";
+import { scopeStore } from "../core/files-scope.js";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 // The two ways in, so the skip and the startup read the same values: real

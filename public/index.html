@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — 2¢ per GB, never more than $15 per TB</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
@@ -1257,6 +1259,57 @@ a {
   color: var(--drive-ink-soft);
 }
 
+.peak-chart {
+  margin: 28px 0 0;
+}
+
+.peak-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.peak-chart .axis {
+  stroke: var(--drive-line);
+  stroke-width: 1;
+}
+
+.peak-chart .stored {
+  fill: none;
+  stroke: var(--drive-ink-soft);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+
+.peak-chart .billed {
+  fill: none;
+  stroke: var(--drive-orange);
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+
+.peak-chart .billed-fill {
+  fill: var(--drive-orange);
+  opacity: 0.14;
+}
+
+.peak-chart text {
+  fill: var(--drive-ink);
+  font-family: var(--font-body);
+  font-size: 12px;
+}
+
+.peak-chart .dim {
+  fill: var(--drive-ink-soft);
+}
+
+.peak-chart figcaption {
+  margin: 10px 0 0;
+  font-size: 15px;
+  color: var(--drive-ink-soft);
+}
+
 .examples-list {
   margin: 0;
   border-top: 2px solid var(--drive-ink);
@@ -2124,6 +2177,27 @@ details p {
             <span class="strip-empty">empty &middot; $0</span>
           </div>
           <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes $15 per TB.</p>
+          <figure class="peak-chart">
+            <svg viewBox="0 0 600 230" role="img" aria-labelledby="peak-title peak-desc">
+              <title id="peak-title">A bill that stays at its peak for 30 days</title>
+              <desc id="peak-desc">A drive holds 100 GB and bills $2 a month. On day 10 it grows to 400 GB, so the bill rises to $8. On day 20 the files are deleted and the drive is back to 100 GB. The bill stays at $8 until day 50, when the peak leaves the last 30 days, then falls back to $2.</desc>
+              <line class="axis" x1="40" y1="190" x2="580" y2="190"/>
+              <polygon class="billed-fill" points="130,190 130,20 490,20 490,190"/>
+              <polyline class="stored" points="40,147.5 130,147.5 130,20 220,20 220,147.5 580,147.5"/>
+              <polyline class="billed" points="40,147.5 130,147.5 130,20 490,20 490,147.5 580,147.5"/>
+              <text x="44" y="140" class="dim">100 GB, $2</text>
+              <text x="134" y="14">400 GB peak, $8</text>
+              <text x="224" y="140" class="dim">files deleted on day 20</text>
+              <text x="494" y="140">$2 again</text>
+              <text x="40" y="208" class="dim">day 0</text>
+              <text x="130" y="208" class="dim" text-anchor="middle">10</text>
+              <text x="220" y="208" class="dim" text-anchor="middle">20</text>
+              <text x="490" y="208" class="dim" text-anchor="middle">50</text>
+              <text x="580" y="208" class="dim" text-anchor="end">60</text>
+              <text x="310" y="226" class="dim" text-anchor="middle">The peak stays in the bill for 30 days after the delete</text>
+            </svg>
+            <figcaption>The dashed line is what you store. The orange line is what you pay: the biggest size in the last 30 days, so a short spike costs a month, never more.</figcaption>
+          </figure>
         </div>
         <div>
           <dl class="examples-list">

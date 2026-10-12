@@ -1,7 +1,7 @@
 // Split out of core/devices.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { BILLING_CONFIG, size30DropsOutDay, size30Window, storedGb } from "./billing.js";
 import { first, run } from "./db.js";
-import { monthStart, monthUsageThrough, size30Through } from "./meter.js";
+import { monthStart, monthUsageThrough, size30Through } from "./meter-usage.js";
 
 /** @typedef {import("./devices-rows.js").DeviceStoreContext} DeviceStoreContext */
 /** @typedef {import("./devices-rows.js").Device} Device */

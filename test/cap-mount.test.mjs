@@ -30,7 +30,7 @@ import { minutesInMonth } from "../core/billing.js";
 import { dollarsToCapCents, handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { bucketForAccount } from "../core/keyprovider.js";
-import { monthStart } from "../core/meter.js";
+import { monthStart } from "../core/meter-usage.js";
 import { createS3Client, provisionBucket } from "../core/s3.js";
 import { createS3KeyProvider } from "../core/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
