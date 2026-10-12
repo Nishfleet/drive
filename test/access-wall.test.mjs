@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const ACCESS_LOGIN = /^https:\/\/nish345\.cloudflareaccess\.com\//;
+const ACCESS_LOGIN = /^https:\/\/(nish345|storagebun)\.cloudflareaccess\.com\//;
 const WORKERS_DEV = "https://drive-pricing.nishant345.workers.dev/";
 const CUSTOM = "https://storagebun.com/";
 
