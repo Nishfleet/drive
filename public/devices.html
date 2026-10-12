@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — devices</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <meta name="description" content="The keys on your account: each device or agent, when it was last used, and a button that revokes it.">
+  <meta name="description" content="The devices and agents that can use your drive, when each was last used, and a button that turns it off.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
   <style>
@@ -148,8 +148,7 @@ th {
     <section aria-labelledby="devices-heading">
       <h1 id="devices-heading">Devices</h1>
       <p class="lede">
-        Every key on this account: the device or agent that holds it, when it
-        was last used, and a button that turns it off at the storage provider.
+        Devices and agents that can use your drive. Turn any off with one click.
       </p>
     </section>
 
@@ -158,19 +157,20 @@ th {
       <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
+        <p><button type="button" id="devices-retry" hidden>Try again</button></p>
       </div>
       <div class="empty" id="devices-empty" hidden>
-        <p class="what">No live keys on this account.</p>
-        <p class="next">Run drive login on a machine to mint one.</p>
+        <p class="what">No devices or agents yet.</p>
+        <p class="next">Run drive login on a computer to add one.</p>
       </div>
       <table id="keys" hidden>
-        <caption>Live keys</caption>
+        <caption>Devices and agents</caption>
         <thead>
           <tr>
             <th scope="col">Name</th>
             <th scope="col">Kind</th>
             <th scope="col">Last used</th>
-            <th scope="col">Revoke</th>
+            <th scope="col">Turn off</th>
           </tr>
         </thead>
         <tbody id="keys-body"></tbody>
@@ -192,13 +192,15 @@ th {
 const DEVICES_ENDPOINT = "/api/devices";
 const SIGNIN_ENDPOINT = "/api/signin";
 const NEVER = "Never";
-const REVOKE_LABEL = "Revoke";
-const REVOKE_CONFIRM = "Revoke this key? It will stop working at once.";
+const LOAD_FAILED = "We could not load your devices. Check your connection and try again.";
+const REVOKE_LABEL = "Turn off";
+const REVOKE_CONFIRM = "Turn this off? It stops working at once.";
 
 const statusEl = document.getElementById("devices-status");
 const emptyEl = document.getElementById("devices-empty");
 const tableEl = document.getElementById("keys");
 const bodyEl = document.getElementById("keys-body");
+const retryEl = document.getElementById("devices-retry");
 const navSignin = document.getElementById("nav-signin");
 const navSignout = document.getElementById("nav-signout");
 const navSignoutAll = document.getElementById("nav-signout-all");
@@ -209,10 +211,11 @@ function showSessionNav(signedIn) {
   navSignoutAll.hidden = !signedIn;
 }
 
-function sayStatus(text) {
+function sayStatus(text, retry) {
   const parts = String(text).split(". ");
   statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
   statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  retryEl.hidden = !retry;
   statusEl.hidden = false;
   emptyEl.hidden = true;
   tableEl.hidden = true;
@@ -253,7 +256,7 @@ async function readKeys() {
   try {
     response = await fetch(DEVICES_ENDPOINT, { headers: { accept: "application/json" } });
   } catch (_error) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     showSessionNav(false);
     return;
   }
@@ -265,7 +268,7 @@ async function readKeys() {
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok || !payload || !Array.isArray(payload.keys)) {
-    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : LOAD_FAILED, true);
     return;
   }
   showSessionNav(true);
@@ -285,7 +288,7 @@ async function revokeKey(keyId, button) {
     });
   } catch (_error) {
     button.disabled = false;
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     return;
   }
   if (response.status === 401) {
@@ -300,7 +303,7 @@ async function revokeKey(keyId, button) {
   }
   button.disabled = false;
   const payload = await response.json().catch(() => null);
-  sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
+  sayStatus(payload && typeof payload.error === "string" ? payload.error : LOAD_FAILED, true);
 }
 
 async function postSignout(step) {
@@ -314,13 +317,13 @@ async function postSignout(step) {
       body: JSON.stringify({ step }),
     });
   } catch (_error) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     navSignout.disabled = false;
     navSignoutAll.disabled = false;
     return;
   }
   if (!response.ok) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     navSignout.disabled = false;
     navSignoutAll.disabled = false;
     return;
@@ -333,6 +336,9 @@ navSignout.addEventListener("click", () => {
 });
 navSignoutAll.addEventListener("click", () => {
   postSignout("signout-all");
+});
+retryEl.addEventListener("click", () => {
+  readKeys();
 });
 readKeys();
   </script>
