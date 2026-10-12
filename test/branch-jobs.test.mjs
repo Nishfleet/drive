@@ -17,18 +17,10 @@ import {
   branchJobsQueue,
   handleBranchJobs,
 } from "../src/branch-jobs.js";
-import {
-  approveBranch,
-  BRANCH_JOB_BATCH_FILES,
-  createBranch,
-  createKvSnapshotStore,
-  diffBranch,
-  discardBranch,
-  getBranch,
-  handleBranchesRequest,
-  processBranchJob,
-  snapshotKey,
-} from "../src/branches.js";
+import { BRANCH_JOB_BATCH_FILES, createKvSnapshotStore, snapshotKey } from "../src/branches.js";
+import { diffBranch, getBranch } from "../src/branches-p2.js";
+import { processBranchJob } from "../src/branches-p5.js";
+import { approveBranch, createBranch, discardBranch, handleBranchesRequest } from "../src/branches-p6.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { handleRewindRequest, rewindBranch } from "../src/rewind.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
