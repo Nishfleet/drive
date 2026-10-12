@@ -17,14 +17,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { DAY_MS, LINK_RETENTION_DAYS } from "../../src/share.js";
 import {
   createD1LinkStore,
-  DAY_MS,
-  LINK_RETENTION_DAYS,
   newRequestRecord,
   newShareRecord,
   purgeStaleLinks,
-} from "../../src/share.js";
+} from "../../src/share-store.js";
 import { MIGRATION_FILES } from "../d1-sqlite.mjs";
 import { createTestD1, DRIVE_SCHEMA_MIGRATIONS } from "../harness.mjs";
 

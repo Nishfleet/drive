@@ -29,19 +29,21 @@ import { createMemoryStore } from "../../core/files-memory.js";
 import { scopeStore } from "../../core/files-scope.js";
 import { failureMessage } from "../../core/messages.js";
 import {
-  createD1LinkStore,
   DAY_MS,
   expiresAtIso,
-  handleRequestInfoRequest,
-  handleRequestRequest,
-  handleRequestUploadRequest,
-  handleShareFileRequest,
-  handleShareRequest,
   REQUEST_ENDPOINT,
   REQUEST_FILE_MAX_BYTES,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
 } from "../../src/share.js";
+import {
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+} from "../../src/share-routes.js";
+import { createD1LinkStore } from "../../src/share-store.js";
+import { handleRequestUploadRequest } from "../../src/share-upload.js";
 import { createTestD1 } from "../harness.mjs";
 
 const now = Date.parse("2026-10-01T09:00:00.000Z");

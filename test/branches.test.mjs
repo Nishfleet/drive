@@ -14,25 +14,29 @@ import { createMemoryStore } from "../core/files-memory.js";
 import { scopeStore } from "../core/files-scope.js";
 import { failureMessage } from "../core/messages.js";
 import {
-  approveBranch,
   BRANCHES_ENDPOINT,
   BRANCHES_ROOT,
-  createBranch,
   createKvSnapshotStore,
-  diffBranch,
+  MAX_OPEN_BRANCHES,
+  snapshotKey,
+} from "../src/branches.js";
+import { runBranchJobToEnd } from "../src/branches-jobs.js";
+import { removePrefixFiles } from "../src/branches-plans.js";
+import {
+  approveBranch,
+  createBranch,
   discardBranch,
-  getBranch,
   handleBranchesRequest,
   listBranches,
-  MAX_OPEN_BRANCHES,
+} from "../src/branches-routes.js";
+import {
+  diffBranch,
+  getBranch,
   readSnapshot,
   readSnapshotObject,
   relativePath,
-  removePrefixFiles,
-  runBranchJobToEnd,
   sameFile,
-  snapshotKey,
-} from "../src/branches.js";
+} from "../src/branches-snapshot.js";
 import { REQUIRED_BINDINGS } from "../src/health.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 

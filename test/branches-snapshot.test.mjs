@@ -37,14 +37,9 @@ import { test } from "node:test";
 import { createMemoryStore } from "../core/files-memory.js";
 import { scopeStore } from "../core/files-scope.js";
 import { failureMessage } from "../core/messages.js";
-import {
-  createBranch,
-  createKvSnapshotStore,
-  diffBranch,
-  listBranches,
-  readSnapshot,
-  snapshotKey,
-} from "../src/branches.js";
+import { createKvSnapshotStore, snapshotKey } from "../src/branches.js";
+import { createBranch, listBranches } from "../src/branches-routes.js";
+import { diffBranch, readSnapshot } from "../src/branches-snapshot.js";
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 import { createTestD1, createTestKv } from "./harness.mjs";
 

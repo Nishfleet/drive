@@ -31,12 +31,8 @@ import { createS3Store } from "../core/files-s3.js";
 import { scopeStore } from "../core/files-scope.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { decodeEntities } from "../core/s3-listing.js";
-import {
-  createBranch,
-  createKvSnapshotStore,
-  handleBranchesRequest,
-  snapshotKey,
-} from "../src/branches.js";
+import { createKvSnapshotStore, snapshotKey } from "../src/branches.js";
+import { createBranch, handleBranchesRequest } from "../src/branches-routes.js";
 import {
   handleRewindRequest,
   REWIND_ENDPOINT,

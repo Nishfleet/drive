@@ -32,13 +32,8 @@
 import { escapeHtml } from "../core/escape-html.js";
 import { fileKind, previewDisposition } from "../core/files.js";
 import { LEGAL_PAGES, REPORT_PATH, SUPPORT_EMAIL } from "../core/legal.js";
-import {
-  admitShareLink,
-  expiresAtIso,
-  handleShareFileRequest,
-  liveShareObject,
-  SHARE_LINK_PREFIX,
-} from "./share.js";
+import { expiresAtIso, SHARE_LINK_PREFIX } from "./share.js";
+import { admitShareLink, handleShareFileRequest, liveShareObject } from "./share-routes.js";
 
 /** The query flag that reads the bytes as the page's own media source. */
 const EMBED_FLAG = "embed";

@@ -39,13 +39,8 @@ import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
 import { DAY_MS } from "../core/units.js";
-import {
-  diffBranch,
-  discardBranch,
-  listBranches,
-  readSnapshot,
-  readSnapshotObject,
-} from "./branches.js";
+import { discardBranch, listBranches } from "./branches-routes.js";
+import { diffBranch, readSnapshot, readSnapshotObject } from "./branches-snapshot.js";
 
 /** The route family the rewind screen and the CLI read. */
 export const REWIND_ENDPOINT = "/api/rewind";

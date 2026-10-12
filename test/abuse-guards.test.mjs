@@ -32,12 +32,9 @@ import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import { writesPaused } from "../core/prepaid.js";
 import workerModule, { TEST_FILES_STORE } from "../src/index.js";
-import {
-  createD1LinkStore,
-  handleRequestUploadRequest,
-  newRequestRecord,
-  REQUEST_ENDPOINT,
-} from "../src/share.js";
+import { REQUEST_ENDPOINT } from "../src/share.js";
+import { createD1LinkStore, newRequestRecord } from "../src/share-store.js";
+import { handleRequestUploadRequest } from "../src/share-upload.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestAuth, createTestD1, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 

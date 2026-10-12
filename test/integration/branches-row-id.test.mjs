@@ -9,12 +9,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore } from "../../core/files-memory.js";
 import { scopeStore } from "../../core/files-scope.js";
-import {
-  approveBranch,
-  createBranch,
-  createKvSnapshotStore,
-  getBranch,
-} from "../../src/branches.js";
+import { createKvSnapshotStore } from "../../src/branches.js";
+import { approveBranch, createBranch } from "../../src/branches-routes.js";
+import { getBranch } from "../../src/branches-snapshot.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };

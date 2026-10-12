@@ -19,14 +19,9 @@ import { scopeStore } from "../core/files-scope.js";
 import { LEGAL_PAGES, SUPPORT_EMAIL } from "../core/legal.js";
 import { failureMessage } from "../core/messages.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
-import {
-  createD1LinkStore,
-  DAY_MS,
-  linkIsOpen,
-  newShareRecord,
-  SHARE_LINK_PREFIX,
-} from "../src/share.js";
+import { DAY_MS, linkIsOpen, SHARE_LINK_PREFIX } from "../src/share.js";
 import { handleShareLinkVisit } from "../src/share-page.js";
+import { createD1LinkStore, newShareRecord } from "../src/share-store.js";
 import { createTestD1 } from "./harness.mjs";
 
 const now = Date.parse("2026-10-01T09:00:00.000Z");

@@ -13,12 +13,10 @@ import { test } from "node:test";
 import { createMemoryStore } from "../../core/files-memory.js";
 import { scopeStore } from "../../core/files-scope.js";
 import { failureMessage } from "../../core/messages.js";
-import {
-  createBranch,
-  createKvSnapshotStore,
-  getBranch,
-  runBranchJobToEnd,
-} from "../../src/branches.js";
+import { createKvSnapshotStore } from "../../src/branches.js";
+import { runBranchJobToEnd } from "../../src/branches-jobs.js";
+import { createBranch } from "../../src/branches-routes.js";
+import { getBranch } from "../../src/branches-snapshot.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 import { createTestKv } from "../harness.mjs";
 

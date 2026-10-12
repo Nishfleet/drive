@@ -80,13 +80,10 @@ import {
   runAccountCloseCron,
 } from "./account-close.js";
 import { BRANCH_QUEUE_KINDS, branchJob, branchJobsQueue, handleBranchJobs } from "./branch-jobs.js";
-import {
-  BRANCHES_ENDPOINT,
-  createKvSnapshotStore,
-  failJob,
-  handleBranchesRequest,
-  processBranchJob,
-} from "./branches.js";
+import { BRANCHES_ENDPOINT, createKvSnapshotStore } from "./branches.js";
+import { processBranchJob } from "./branches-jobs.js";
+import { failJob } from "./branches-plans.js";
+import { handleBranchesRequest } from "./branches-routes.js";
 import { DEVICES_ENDPOINT, handleDevicesRequest } from "./devices-page.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 // The known-bad feed's own module: the schedule string cloudflare.config.ts
@@ -122,19 +119,15 @@ import {
   SEARCH_ENDPOINT,
   withIndex,
 } from "./search.js";
+import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "./share.js";
+import { handleShareLinkVisit } from "./share-page.js";
 import {
-  createD1LinkStore,
   handleRequestInfoRequest,
   handleRequestRequest,
-  handleRequestUploadRequest,
   handleShareRequest,
-  purgeStaleLinks,
-  REQUEST_ENDPOINT,
-  SHARE_ENDPOINT,
-  SHARE_LINK_PREFIX,
-  sendArrivalDigests,
-} from "./share.js";
-import { handleShareLinkVisit } from "./share-page.js";
+} from "./share-routes.js";
+import { createD1LinkStore, purgeStaleLinks, sendArrivalDigests } from "./share-store.js";
+import { handleRequestUploadRequest } from "./share-upload.js";
 import {
   handleSigninLinkVerify,
   handleSigninRequest,
