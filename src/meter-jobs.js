@@ -30,7 +30,8 @@
 // changes.
 
 import { enforceAccountCap } from "../core/cap.js";
-import { reconcileAccount, toMillis } from "../core/meter.js";
+import { toMillis } from "../core/meter.js";
+import { reconcileAccount } from "../core/meter-reconcile.js";
 import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { captureError, reportFairUseVendorGap } from "./monitoring.js";

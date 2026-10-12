@@ -10,7 +10,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../../core/files.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { scopeStore } from "../../core/files-scope.js";
 import { failureMessage } from "../../core/messages.js";
 import { createKvSnapshotStore } from "../../src/branches.js";
 import { runBranchJobToEnd } from "../../src/branches-jobs.js";

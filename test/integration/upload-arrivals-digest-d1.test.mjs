@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";
-import { createMemoryStore } from "../../core/files.js";
+import { createMemoryStore } from "../../core/files-memory.js";
 import { createD1LinkStore, newRequestRecord, sendArrivalDigests } from "../../src/share-store.js";
 import { handleRequestUploadRequest } from "../../src/share-upload.js";
 import { MIGRATION_FILES } from "../d1-sqlite.mjs";

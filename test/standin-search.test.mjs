@@ -45,7 +45,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createS3Store, scopeStore } from "../core/files.js";
+import { createS3Store } from "../core/files-s3.js";
+import { scopeStore } from "../core/files-scope.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
 import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 

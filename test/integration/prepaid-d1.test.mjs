@@ -15,7 +15,8 @@ import {
   size30Window,
 } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
-import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
+import { handleFilesRequest } from "../../core/files-handlers.js";
+import { createMemoryStore } from "../../core/files-memory.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
 import {
   appendLedgerEntry,
@@ -26,7 +27,8 @@ import {
   usageKey,
 } from "../../core/ledger.js";
 import { failureMessage } from "../../core/messages.js";
-import { BYTES_PER_GB, MINUTE_MS, recordUsage, size30Through } from "../../core/meter.js";
+import { BYTES_PER_GB, MINUTE_MS } from "../../core/meter.js";
+import { recordUsage, size30Through } from "../../core/meter-usage.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,

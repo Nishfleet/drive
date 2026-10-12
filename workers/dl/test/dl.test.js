@@ -11,10 +11,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../../core/devices.js";
-import { parseByteRange } from "../../../core/files.js";
+import { parseByteRange } from "../../../core/files-memory.js";
 import { readGrant, signGrant } from "../../../core/grant.js";
 import { createMemoryStore } from "../../../core/keystore.js";
-import { MINUTE_MS, recordUsage } from "../../../core/meter.js";
+import { MINUTE_MS } from "../../../core/meter.js";
+import { recordUsage } from "../../../core/meter-usage.js";
 import { makeMeteredDB, midnight } from "../../../test/d1-sqlite.mjs";
 import {
   downloadKey,
