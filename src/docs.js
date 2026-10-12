@@ -205,7 +205,7 @@ export const FAQ = Object.freeze([
     answer: [
       "{{HEADLINE}}",
       "{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB.",
-      "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
+      "{{NO_PLANS}} There is no free tier. Your first top-up opens storage and puts a card on file.",
       "{{VERSION_MINIMUM}} You add money first, and what you store is drawn from your balance as it is metered.",
       "Downloads are not in the published price, so nothing is charged for them today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}} (planned).",
       "There are no plans to pick, and nothing you are given expires.",

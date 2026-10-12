@@ -18,7 +18,7 @@ and gives that tool its own key.
 - The rule: You pay for the biggest size your drive reached in the last 30 days. 2 cents per GB a month, never more than $15 per TB.
 - No plans. Your balance never expires.
 - The bill follows the biggest size your drive reached in the last 30 days, not how often you save.
-- We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
+- There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.
 - Downloads: not in the published price, so they are free today. The plan is 3× your stored size free, then 1¢ per GB (planned).
 - Version history is not in version 1.
 - A 1 TB drive kept 60% full bills $12 a month.

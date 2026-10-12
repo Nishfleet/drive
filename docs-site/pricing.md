@@ -28,7 +28,7 @@ your cap the drive goes read-only: nothing is deleted and the bill stops there.
 
 ## Sign-up
 
-We need a card at sign-up because there is no free tier.
+There is no free tier. Your first top-up opens storage and puts a card on file.
 
 ## Downloads
 

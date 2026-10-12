@@ -561,7 +561,7 @@ test("the three methods the spec's screen names are the three it accepts", () =>
     "the spec's sign-in screen sentence has changed; update this test and the copy",
   );
   assert.ok(
-    spec.includes("A card is needed at sign-up"),
+    spec.includes("the first top-up opens storage and puts a card on file"),
     "the card sentence has changed; update this test and the copy",
   );
   assert.deepEqual([...SIGNIN_METHODS], ["email", "google", "github"]);
