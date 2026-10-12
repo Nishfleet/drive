@@ -9,6 +9,8 @@
   <!-- drive#546: the one served favicon, so no tab asks for /favicon.ico and
        gets the 404 page. -->
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <!-- The site's own 5xx page (drive#584). src/index.js serves this file from
        app.onError when a page request fails, so a browser gets the site's
        chrome instead of a bare JSON body. Same chrome, palette and type as the
