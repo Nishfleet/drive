@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en" class="drive">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storagebun — webhooks</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <meta name="description" content="Send signed events to your own server when your balance changes, with a test button and a log of what was sent.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+body {
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+}
+
+.skip-link:focus {
+  z-index: 10;
+}
+
+.masthead {
+  max-width: 940px;
+}
+
+.wordmark {
+  font-size: 28px;
+}
+
+main {
+  max-width: 940px;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+section {
+  padding: clamp(28px, 5vh, 48px) 0 0;
+}
+
+.status {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.status .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+th {
+  font-weight: 600;
+}
+
+.secret {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  overflow-wrap: anywhere;
+}
+
+.secret code {
+  font-family: var(--mono);
+}
+
+form.add {
+  display: grid;
+  gap: 12px;
+  max-width: 560px;
+}
+
+form.add input[type="url"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+}
+
+form.add fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.empty .what {
+  margin: 0;
+}
+
+.empty .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+.footer {
+  max-width: 940px;
+  margin: 48px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#endpoints-heading">Skip to your endpoints</a>
+  <header class="masthead">
+    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+    <span class="tagline">A Finder drive for people and their agents.</span>
+    <a href="/files">Your files</a>
+    <a href="/">Pricing</a>
+    <a href="/get-started">Get started</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
+    <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+  </header>
+
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </div>
+  <main>
+    <section aria-labelledby="webhooks-heading">
+      <h1 id="webhooks-heading">Webhooks</h1>
+      <p class="lede">
+        Storagebun can call a web address you own when something happens on your
+        account. Each call is signed, so your server can check it came from us.
+        The scheme is the one Standard Webhooks libraries already speak.
+      </p>
+    </section>
+
+    <section aria-labelledby="add-heading">
+      <h2 id="add-heading">Add an endpoint</h2>
+      <form class="add" id="add-form">
+        <label for="add-url">Address (https only)</label>
+        <input id="add-url" name="url" type="url" required placeholder="https://example.com/storagebun" autocomplete="off">
+        <fieldset>
+          <legend>Events (none ticked means all of them)</legend>
+          <div id="add-events"></div>
+        </fieldset>
+        <div><button type="submit">Add endpoint</button></div>
+      </form>
+      <div class="secret" id="secret" role="status" hidden>
+        <p>Signing secret. Copy it now: it is shown once.</p>
+        <p><code id="secret-value"></code></p>
+      </div>
+    </section>
+
+    <section aria-labelledby="endpoints-heading">
+      <h2 id="endpoints-heading" tabindex="-1">Endpoints</h2>
+      <div class="status" id="hooks-status" role="status" aria-live="polite" hidden>
+        <p class="what"></p>
+        <p class="next"></p>
+      </div>
+      <div class="empty" id="hooks-empty" hidden>
+        <p class="what">No endpoints yet.</p>
+        <p class="next">Add one above to start receiving events.</p>
+      </div>
+      <table id="hooks" hidden>
+        <caption>Endpoints</caption>
+        <thead>
+          <tr>
+            <th scope="col">Address</th>
+            <th scope="col">Events</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="hooks-body"></tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="log-heading" id="log-section" hidden>
+      <h2 id="log-heading" tabindex="-1">Last deliveries</h2>
+      <p id="log-for"></p>
+      <table id="log">
+        <caption>Deliveries, newest first</caption>
+        <thead>
+          <tr>
+            <th scope="col">When</th>
+            <th scope="col">Event</th>
+            <th scope="col">Result</th>
+          </tr>
+        </thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </section>
+  </main>
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+  </footer>
+  <script>
+const ENDPOINT = "/api/webhooks";
+const SIGNIN_ENDPOINT = "/api/signin";
+const UNREACHABLE = "Could not reach the webhooks list just now. Reload the page to try again.";
+const REMOVE_CONFIRM = "Remove this endpoint and its log?";
+
+const statusEl = document.getElementById("hooks-status");
+const emptyEl = document.getElementById("hooks-empty");
+const tableEl = document.getElementById("hooks");
+const bodyEl = document.getElementById("hooks-body");
+const secretEl = document.getElementById("secret");
+const secretValueEl = document.getElementById("secret-value");
+const formEl = document.getElementById("add-form");
+const urlEl = document.getElementById("add-url");
+const eventsEl = document.getElementById("add-events");
+const logSectionEl = document.getElementById("log-section");
+const logForEl = document.getElementById("log-for");
+const logBodyEl = document.getElementById("log-body");
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+function sayStatus(text) {
+  const parts = String(text).split(". ");
+  statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
+  statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  statusEl.hidden = false;
+}
+
+function errorText(payload) {
+  return payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;
+}
+
+async function call(path, init) {
+  let response;
+  try {
+    response = await fetch(path, { headers: { accept: "application/json", ...(init && init.body ? { "content-type": "application/json" } : {}) }, ...init });
+  } catch (_error) {
+    sayStatus(UNREACHABLE);
+    return null;
+  }
+  if (response.status === 401) {
+    const payload = await response.json().catch(() => null);
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Sign in to manage webhooks.");
+    showSessionNav(false);
+    return null;
+  }
+  showSessionNav(true);
+  const payload = response.status === 204 ? {} : await response.json().catch(() => null);
+  return { response, payload };
+}
+
+function button(label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.addEventListener("click", () => onClick(b));
+  return b;
+}
+
+function resultText(delivery) {
+  if (delivery.ok) return `Delivered (${delivery.statusCode})`;
+  return delivery.error || "Failed";
+}
+
+async function showLog(endpoint) {
+  const answer = await call(`${ENDPOINT}/${encodeURIComponent(endpoint.id)}/deliveries`);
+  if (!answer) return;
+  if (!answer.response.ok || !answer.payload || !Array.isArray(answer.payload.deliveries)) {
+    sayStatus(errorText(answer.payload));
+    return;
+  }
+  logForEl.textContent = endpoint.url;
+  logBodyEl.replaceChildren(
+    ...answer.payload.deliveries.map((delivery) => {
+      const tr = document.createElement("tr");
+      const when = document.createElement("td");
+      when.textContent = new Date(delivery.at).toLocaleString();
+      const event = document.createElement("td");
+      event.textContent = delivery.event;
+      const result = document.createElement("td");
+      result.textContent = resultText(delivery);
+      tr.append(when, event, result);
+      return tr;
+    }),
+  );
+  logSectionEl.hidden = false;
+  document.getElementById("log-heading").focus();
+}
+
+async function sendTest(endpoint, b) {
+  b.disabled = true;
+  const answer = await call(`${ENDPOINT}/${encodeURIComponent(endpoint.id)}/test`, { method: "POST" });
+  b.disabled = false;
+  if (!answer) return;
+  if (!answer.response.ok || !answer.payload) {
+    sayStatus(errorText(answer.payload));
+    return;
+  }
+  sayStatus(answer.payload.ok ? "Test delivered. Your server answered with a success code." : `Test failed. ${answer.payload.error || "Your server did not answer with a success code."}`);
+  await showLog(endpoint);
+}
+
+async function removeEndpoint(endpoint, b) {
+  if (!window.confirm(REMOVE_CONFIRM)) return;
+  b.disabled = true;
+  const answer = await call(`${ENDPOINT}/${encodeURIComponent(endpoint.id)}`, { method: "DELETE" });
+  if (!answer) {
+    b.disabled = false;
+    return;
+  }
+  if (answer.response.status !== 204) {
+    b.disabled = false;
+    sayStatus(errorText(answer.payload));
+    return;
+  }
+  logSectionEl.hidden = true;
+  await readEndpoints();
+}
+
+function endpointRow(endpoint) {
+  const tr = document.createElement("tr");
+  const url = document.createElement("td");
+  url.textContent = endpoint.url;
+  const events = document.createElement("td");
+  events.textContent = endpoint.events.length === 0 ? "All events" : endpoint.events.join(", ");
+  const actions = document.createElement("td");
+  const box = document.createElement("div");
+  box.className = "actions";
+  box.append(
+    button("Send test", (b) => sendTest(endpoint, b)),
+    button("Log", () => showLog(endpoint)),
+    button("Remove", (b) => removeEndpoint(endpoint, b)),
+  );
+  actions.append(box);
+  tr.append(url, events, actions);
+  return tr;
+}
+
+function renderEvents(names) {
+  eventsEl.replaceChildren(
+    ...names
+      .filter((name) => name !== "webhook.test")
+      .map((name) => {
+        const label = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.value = name;
+        label.append(box, ` ${name}`);
+        const row = document.createElement("div");
+        row.append(label);
+        return row;
+      }),
+  );
+}
+
+async function readEndpoints() {
+  const answer = await call(ENDPOINT);
+  if (!answer) return;
+  if (!answer.response.ok || !answer.payload || !Array.isArray(answer.payload.endpoints)) {
+    sayStatus(errorText(answer.payload));
+    return;
+  }
+  statusEl.hidden = true;
+  if (eventsEl.childElementCount === 0 && Array.isArray(answer.payload.events)) {
+    renderEvents(answer.payload.events);
+  }
+  bodyEl.replaceChildren(...answer.payload.endpoints.map(endpointRow));
+  tableEl.hidden = answer.payload.endpoints.length === 0;
+  emptyEl.hidden = answer.payload.endpoints.length > 0;
+}
+
+formEl.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const events = [...eventsEl.querySelectorAll("input:checked")].map((box) => box.value);
+  const answer = await call(ENDPOINT, { method: "POST", body: JSON.stringify({ url: urlEl.value, events }) });
+  if (!answer) return;
+  if (answer.response.status !== 201 || !answer.payload || !answer.payload.endpoint) {
+    sayStatus(errorText(answer.payload));
+    return;
+  }
+  secretValueEl.textContent = answer.payload.endpoint.secret;
+  secretEl.hidden = false;
+  urlEl.value = "";
+  await readEndpoints();
+});
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  const answer = await call(SIGNIN_ENDPOINT, { method: "POST", body: JSON.stringify({ step }) });
+  if (!answer || !answer.response.ok) {
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
+readEndpoints();
+  </script>
+  <script type="module" src="/close-banner.js"></script>
+</body>
+</html>

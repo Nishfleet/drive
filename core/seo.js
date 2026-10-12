@@ -115,6 +115,8 @@ export const PAGES = Object.freeze([
   // files and usage. A crawler that reached it would see the heading and a
   // signed-out status, never another account's keys.
   Object.freeze({ path: "/devices.html", indexable: false }),
+  // The webhooks page (drive#901): one account's endpoints, noindex like devices.
+  Object.freeze({ path: "/webhooks.html", indexable: false }),
   // The upload-request page is a stranger's one-folder drop box, reached only
   // from a link the owner minted: noindex so a crawler never finds one
   // (issue #19). It carries its own title and description rather than
