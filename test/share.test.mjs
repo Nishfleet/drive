@@ -18,14 +18,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { run } from "../core/db.js";
-import {
-  createMemoryStore,
-  createS3Store,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-  storageBucketForKey,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+import { createS3Store } from "../core/files-s3.js";
+import { scopeStore } from "../core/files-scope.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
 import worker from "../src/index.js";

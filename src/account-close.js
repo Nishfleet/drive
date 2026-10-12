@@ -8,7 +8,7 @@
 // `closed`. Nothing here applies a migration to production D1.
 
 import { sendEmail } from "../core/email-send.js";
-import { scopeStore } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { DAY_MS } from "../core/units.js";

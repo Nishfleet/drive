@@ -5,12 +5,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  TRASH_PURGE_SCHEDULE,
-} from "../core/files.js";
+import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import { failureMessage } from "../core/messages.js";
 import { METER_RECONCILE_SCHEDULE } from "../core/meter.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";

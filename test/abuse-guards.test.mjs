@@ -24,14 +24,10 @@ import {
 import { BILLING_CONFIG, GB_PER_TB } from "../core/billing.js";
 import { applyCapSwap, capSwapPlan, PRE_CHARGE_LIMIT_REASON } from "../core/cap.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import {
-  BRANCHES_PATH,
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  preChargeStoredBytes,
-  scopeStore,
-} from "../core/files.js";
+import { BRANCHES_PATH, FILES_ENDPOINT, preChargeStoredBytes } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { BYTES_PER_GB, METER_CRON } from "../core/meter.js";
 import { writesPaused } from "../core/prepaid.js";
