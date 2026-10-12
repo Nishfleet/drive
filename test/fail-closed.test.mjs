@@ -9,7 +9,7 @@ import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
 import { createMemoryStore } from "../core/files-memory.js";
 import { failureMessage } from "../core/messages.js";
-import { METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { METER_RECONCILE_SCHEDULE } from "../core/meter-fair-use.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";

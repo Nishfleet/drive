@@ -1,5 +1,5 @@
 import { storageVarsFromEnv } from "../core/files-memory.js";
-import { meterFreshness } from "../core/meter.js";
+import { meterFreshness } from "../core/meter-events.js";
 
 // The health endpoint the outage alert watches (drive issue #96, north star
 // "Reliable": we hear about an outage before customers do). `GET /api/health`

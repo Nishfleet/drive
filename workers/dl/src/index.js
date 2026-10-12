@@ -46,7 +46,7 @@ import { storageBucketForKey, storageVarsFromEnv } from "../../../core/files-mem
 import { createS3Store } from "../../../core/files-s3.js";
 import { GRANT_SEGMENT, readGrant } from "../../../core/grant.js";
 import { failureMessage } from "../../../core/messages.js";
-import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
+import { folderAccount, recordDownloadBytes } from "../../../core/meter-usage.js";
 
 /**
  * The storage the Worker streams from: the same `FileStore` the site Worker

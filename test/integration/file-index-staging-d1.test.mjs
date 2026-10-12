@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { eventIndexStatement } from "../../core/file-index.js";
 import { createMemoryStore } from "../../core/files-memory.js";
-import { recordEvent, validateEvent } from "../../core/meter.js";
+import { recordEvent, validateEvent } from "../../core/meter-events.js";
 import { reconcileIndex, searchDrive } from "../../src/search.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 
