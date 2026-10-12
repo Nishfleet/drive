@@ -22,7 +22,7 @@ There are three kinds of route.
 - **Key.** The storage routes take a storage key with HTTP Basic auth: the
   access key id is the user and the secret is the password.
 
-```sh
+```shell
 export DEVICE_TOKEN=...   # from POST /v1/device/token
 export KEY_ID=...         # accessKeyId from POST /v1/keys
 export KEY_SECRET=...     # secret from POST /v1/keys
@@ -54,7 +54,7 @@ a person.
 
 Public. Answers when the API is up.
 
-```sh
+```shell
 curl https://storagebun.com/v1/health
 ```
 
@@ -72,7 +72,7 @@ secret goes through the address bar.
 Public. Starts a sign-in. The optional `name` is shown on the approval page and
 in the device list, so two laptops can be told apart.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/device/code \
   -H 'content-type: application/json' \
   -d '{"name":"work-laptop"}'
@@ -86,7 +86,7 @@ Answers `deviceCode`, `userCode`, `verificationUri`, `verificationUriComplete`,
 
 Public. Poll this every `interval` seconds with the `deviceCode`.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/device/token \
   -H 'content-type: application/json' \
   -d '{"device_code":"..."}'
@@ -101,7 +101,7 @@ so; ask for a new code.
 
 Signed in. Revokes the token that made the request, which signs this device out.
 
-```sh
+```shell
 curl -X DELETE https://storagebun.com/v1/device/token \
   -H "authorization: Bearer $DEVICE_TOKEN"
 ```
@@ -115,7 +115,7 @@ the key is made, and is never stored.
 
 Signed in. Lists the account's keys, without secrets.
 
-```sh
+```shell
 curl https://storagebun.com/v1/keys -H "authorization: Bearer $DEVICE_TOKEN"
 ```
 
@@ -126,7 +126,7 @@ Signed in. Makes a key. `kind` is one of `device`, `agent`, `s3` or `branch`
 `accessKeyId`, `secret`, and, when the key expires, `expiresAt`. An account has
 a cap on live keys; past it the answer is a 409.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/keys \
   -H "authorization: Bearer $DEVICE_TOKEN" \
   -H 'content-type: application/json' \
@@ -138,7 +138,7 @@ curl -X POST https://storagebun.com/v1/keys \
 Signed in. Restarts the hour of a key that expires. A revoked key cannot be
 renewed (409).
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/keys/KEY_ID/renew \
   -H "authorization: Bearer $DEVICE_TOKEN"
 ```
@@ -147,7 +147,7 @@ curl -X POST https://storagebun.com/v1/keys/KEY_ID/renew \
 
 Signed in. Revokes one key. It stops working from the next request. Answers 204.
 
-```sh
+```shell
 curl -X DELETE https://storagebun.com/v1/keys/KEY_ID \
   -H "authorization: Bearer $DEVICE_TOKEN"
 ```
@@ -157,7 +157,7 @@ curl -X DELETE https://storagebun.com/v1/keys/KEY_ID \
 Signed in. Revokes every key and every device token on the account, including the
 one that asked. Answers 204.
 
-```sh
+```shell
 curl -X DELETE https://storagebun.com/v1/keys -H "authorization: Bearer $DEVICE_TOKEN"
 ```
 
@@ -166,7 +166,7 @@ curl -X DELETE https://storagebun.com/v1/keys -H "authorization: Bearer $DEVICE_
 Public. A key revokes itself: send the key's own id and secret as Basic auth.
 This is what `drive logout` does. Answers 204.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/api/keys/revoke -u "$KEY_ID:$KEY_SECRET"
 ```
 
@@ -179,7 +179,7 @@ folder. A path outside it is a 403.
 
 Lists what is under `path` (the key's folder when you leave it out).
 
-```sh
+```shell
 curl -u "$KEY_ID:$KEY_SECRET" 'https://storagebun.com/v1/storage/list?path=/docs'
 ```
 
@@ -190,7 +190,7 @@ Answers `prefix`, `path` and `objects`.
 Writes the request body to `path`. A write is refused with a 402 when the
 balance is empty, in the words the web app uses.
 
-```sh
+```shell
 curl -X PUT -u "$KEY_ID:$KEY_SECRET" \
   --data-binary @report.pdf \
   'https://storagebun.com/v1/storage/object?path=/docs/report.pdf'
@@ -207,7 +207,7 @@ team you are not in is a 404.
 
 Signed in. Body `{ "name": "..." }`. Answers `201` with `team`.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/teams \
   -H "authorization: Bearer $DEVICE_TOKEN" \
   -H 'content-type: application/json' -d '{"name":"Design"}'
@@ -217,7 +217,7 @@ curl -X POST https://storagebun.com/v1/teams \
 
 Signed in. Answers `teams`, the ones you belong to.
 
-```sh
+```shell
 curl https://storagebun.com/v1/teams -H "authorization: Bearer $DEVICE_TOKEN"
 ```
 
@@ -226,7 +226,7 @@ curl https://storagebun.com/v1/teams -H "authorization: Bearer $DEVICE_TOKEN"
 Signed in. Invites a member by email. Body `{ "email": "...", "role": "..." }`
 (`role` is optional). Answers `201` with `member`.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/teams/TEAM_ID/members \
   -H "authorization: Bearer $DEVICE_TOKEN" \
   -H 'content-type: application/json' -d '{"email":"sam@example.com"}'
@@ -236,7 +236,7 @@ curl -X POST https://storagebun.com/v1/teams/TEAM_ID/members \
 
 Signed in. Lists the team's members.
 
-```sh
+```shell
 curl https://storagebun.com/v1/teams/TEAM_ID/members \
   -H "authorization: Bearer $DEVICE_TOKEN"
 ```
@@ -246,7 +246,7 @@ curl https://storagebun.com/v1/teams/TEAM_ID/members \
 Signed in. Removes a member and revokes their keys, which stop on the next
 request.
 
-```sh
+```shell
 curl -X DELETE https://storagebun.com/v1/teams/TEAM_ID/members/MEMBER_ID \
   -H "authorization: Bearer $DEVICE_TOKEN"
 ```
@@ -256,7 +256,7 @@ curl -X DELETE https://storagebun.com/v1/teams/TEAM_ID/members/MEMBER_ID \
 Signed in. Makes a key for the team folder. Body `{ "name": "..." }` is
 optional. Answers `201` like `POST /v1/keys`.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/teams/TEAM_ID/key \
   -H "authorization: Bearer $DEVICE_TOKEN"
 ```
@@ -272,7 +272,7 @@ Signed in. Body: `files`, `uploadedBytes`, `totalBytes` (whole numbers) and
 Answers `reported` and `reportedAt`. Reports faster than the allowed interval
 get a 429 with a retry-after.
 
-```sh
+```shell
 curl -X POST https://storagebun.com/v1/queue \
   -H "authorization: Bearer $DEVICE_TOKEN" \
   -H 'content-type: application/json' \
@@ -283,7 +283,7 @@ curl -X POST https://storagebun.com/v1/queue \
 
 Signed in. Clears the report. Answers `{ "cleared": true }`.
 
-```sh
+```shell
 curl -X DELETE https://storagebun.com/v1/queue -H "authorization: Bearer $DEVICE_TOKEN"
 ```
 
@@ -294,7 +294,7 @@ curl -X DELETE https://storagebun.com/v1/queue -H "authorization: Bearer $DEVICE
 Signed in. Your own data: the account, its keys, the file-name index and the
 version history. Nothing of anyone else's.
 
-```sh
+```shell
 curl https://storagebun.com/v1/export -H "authorization: Bearer $DEVICE_TOKEN" -o drive-export.json
 ```
 
