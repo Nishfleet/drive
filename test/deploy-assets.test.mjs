@@ -401,7 +401,7 @@ test("the site Worker mounts the api registry's own family", async () => {
   // route cannot drift from the routes the api Worker actually serves. Hono's
   // own registry is read here, the way test/account-gate.test.mjs reads it,
   // rather than matched as source text.
-  const { createApp } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
   const mounted = createApp()
     .routes.map((route) => route.path)
     .filter((path) => path.startsWith(`${API_PREFIX}/`));
@@ -650,7 +650,7 @@ test("this Worker mounts one /api/* route ahead of the gate, and it is the revok
   // exactly one more, and that one is the api registry's single route outside
   // its /v1 family. Hono runs the first matching handler, so the order is the
   // security property and this walk is what keeps the two apart.
-  const { createApp } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
   const routes = createApp().routes;
   // The account lane's own mounts: the gate, the browser-CSRF one and the one
   // forwarded route. Compared as paths, because that is the table that decides

@@ -78,7 +78,7 @@ test("every route in the registry is reachable on the one host that fronts both 
   // the modules themselves — the site Worker's own route table and this
   // registry — so the path here cannot drift from the one `drive logout`
   // posts (cmd/drive/revoke.go RevokePath).
-  const site = await import("../../../src/index.js");
+  const site = await import("../../../src/index-app.js");
   const siteRoutes = site.createApp().routes;
   assert.ok(
     siteRoutes.some((route) => route.method === "ALL" && route.path === "/api/keys/revoke"),

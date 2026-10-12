@@ -18,7 +18,8 @@ import { createMemoryStore } from "../core/files.js";
 import { HOUR_MS, hourStart } from "../core/meter.js";
 import { METER_CRON } from "../core/meter-events.js";
 import { monthStart } from "../core/meter-usage.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { createD1LinkStore, newRequestRecord } from "../src/share-store.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
