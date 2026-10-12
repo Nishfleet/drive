@@ -20,17 +20,10 @@ name: Auto-merge arm
 # The App is a real actor (push workflows still fire) but not Nish, so the
 # failure emails stop reaching him.
 #
-# Graceful before the rollout completes (fleet-ops#4303): the App secrets
-# (NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY) are not yet
-# org-wide. On a repo where they are absent this check exits 0 with a notice
-# — the PR's own opener already armed it (worker/openers call
-# `gh pr merge --auto --squash`), so failing loud here would paint every PR
-# red over a non-blocker (fleet-ops#1081). Where the secrets ARE set the
-# App token is minted and the merge is armed under it; a configured-but-broken
-# App (bad key, not installed) fails LOUD so the PR waits for a human — the
-# correct fallback. This lets the canonical switch now, ahead of the
-# org-wide secret rollout, without breaking PAT-less repos. A human can
-# always arm or merge via the green button.
+# Where the App secrets (NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY) are
+# absent this check exits 0 with a notice: the opener already armed the PR (fleet-ops#4303).
+# A configured-but-broken App (bad key, not installed) fails LOUD so the PR waits for a
+# human, who can always arm or merge via the green button.
 
 on:
   pull_request:
