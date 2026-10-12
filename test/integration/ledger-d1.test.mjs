@@ -28,6 +28,7 @@ import {
   signWebhook,
   TOPUP_PURPOSE,
 } from "../../core/topup.js";
+import { createEndpoint } from "../../core/webhooks.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const SECRET = `whsec_${Buffer.from("drive-ledger-d1-test-key").toString("base64")}`;
@@ -457,4 +458,40 @@ test("the reconciliation compares the ledger with the provider's payments", asyn
   assert.deepEqual(result, { ok: false, missing: ["pay_3"], unknown: [], mismatched: [] });
   await handleBillingWebhook(await signedEvent("msg_3", paymentEvent("pay_3", 5000)), deps);
   assert.equal(reconcileTopUps(await ledgerTopUps(db), provider).ok, true);
+});
+
+test("a credited top-up is sent to the account's webhook endpoints, signed, and a replay sends nothing (drive#901)", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const made = await createEndpoint(db, ACCOUNT, { url: "https://hooks.example.com/in" });
+  assert.ok("endpoint" in made);
+  /** @type {Array<{url: string, body: string}>} */
+  const sent = [];
+  const fetchDouble = /** @type {typeof fetch} */ (
+    /** @type {unknown} */ (
+      async (/** @type {string} */ url, /** @type {{body: string}} */ init) => {
+        sent.push({ url, body: init.body });
+        return new Response(null, { status: 200 });
+      }
+    )
+  );
+  const deps = { db, secret: SECRET, now: NOW, fetch: fetchDouble };
+  const first = await handleBillingWebhook(
+    await signedEvent("msg_hook_1", paymentEvent("pay_hook", 1500)),
+    deps,
+  );
+  assert.equal(first.status, 200);
+  assert.equal(sent.length, 1);
+  const event = JSON.parse(sent[0].body);
+  assert.equal(event.type, "balance.topped_up");
+  assert.equal(event.data.payment_id, "pay_hook");
+  assert.equal(event.data.amount_cents, 1500);
+  assert.equal(event.data.balance_cents, 1500);
+  const replay = await handleBillingWebhook(
+    await signedEvent("msg_hook_1", paymentEvent("pay_hook", 1500)),
+    deps,
+  );
+  assert.equal(replay.status, 200);
+  assert.equal(sent.length, 1, "a replayed payment credits nothing and sends nothing");
+  assert.equal(ledgerRows(sqlite).length, 1);
 });

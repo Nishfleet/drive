@@ -43,6 +43,7 @@ import {
   handleTopUpRequest,
   TOPUP_ENDPOINT,
 } from "../core/topup.js";
+import { handleWebhookRequest, WEBHOOK_ENDPOINT } from "../core/webhook-routes.js";
 import { ACCESS_SIGNIN_PATH, handleAccessSignin } from "./access-signin.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
@@ -380,6 +381,29 @@ export function createApp() {
   app.get(BALANCE_ENDPOINT, (c) =>
     handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
       pauseOn: prepaidPauseOn(c.env),
+    }),
+  );
+  // Outbound webhooks (drive#901): the account's endpoints, a test send and the
+  // delivery log. Session-cookie routes like the balance beside them.
+  app.get(WEBHOOK_ENDPOINT, (c) =>
+    handleWebhookRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
+  app.post(WEBHOOK_ENDPOINT, (c) =>
+    handleWebhookRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
+  app.delete(`${WEBHOOK_ENDPOINT}/:id`, (c) =>
+    handleWebhookRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, { id: c.req.param("id") }),
+  );
+  app.post(`${WEBHOOK_ENDPOINT}/:id/test`, (c) =>
+    handleWebhookRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
+      id: c.req.param("id"),
+      action: "test",
+    }),
+  );
+  app.get(`${WEBHOOK_ENDPOINT}/:id/deliveries`, (c) =>
+    handleWebhookRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
+      id: c.req.param("id"),
+      action: "deliveries",
     }),
   );
   app.get(`${RECEIPT_ENDPOINT}/:id`, (c) =>
