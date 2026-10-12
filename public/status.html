@@ -75,7 +75,7 @@ body {
   <main>
     <h1 id="policy-heading">Status</h1>
     <p class="lede">The current state of the Storagebun site, read live from its own health check.</p>
-    <p class="updated">Last updated 6 October 2026.</p>
+    <p class="updated">Last updated 12 October 2026.</p>
 
     <section>
       <h2>Right now</h2>
@@ -91,9 +91,13 @@ body {
       <p>The <a href="/">pricing page</a>, the <a href="/docs/">docs</a> and this page are served from the asset layer, so they stay up when the API is down. If none of them loads, the problem may be your own connection.</p>
     </section>
 
-    <section>
-      <h2>What is not here yet</h2>
-      <p>This page reports the health route; it is not a history of past incidents. We do not have a public incident log yet, and we will add one before the drive is generally available.</p>
+    <section aria-labelledby="history-heading">
+      <h2 id="history-heading">Past incidents</h2>
+      <p id="history-line">Loading the incident history.</p>
+      <ol id="history-list" class="incidents" hidden></ol>
+      <noscript>
+        <p>The history needs JavaScript. The same list is the file <a href="/incidents.json">incidents.json</a>.</p>
+      </noscript>
     </section>
   </main>
 
@@ -143,6 +147,44 @@ fetch("/api/health", { headers: { accept: "application/json" } })
   .catch(() => {
     line.textContent =
       "We could not reach the health route from this page. Try again in a moment, or open /api/health.";
+  });
+
+// The incident history: public/incidents.json, newest first. One entry per
+// incident {id, title, started, resolved, summary}; `resolved` is null while
+// it is still going on. The list is written by hand after an incident, so
+// this page never invents a record: an empty list says so plainly.
+const historyLine = document.getElementById("history-line");
+const historyList = document.getElementById("history-list");
+
+function incidentItem(incident) {
+  const item = document.createElement("li");
+  const title = document.createElement("strong");
+  title.textContent = incident.title;
+  const when = document.createElement("span");
+  const ongoing = incident.resolved === null;
+  when.textContent = ongoing
+    ? ` Started ${incident.started}. Still going on.`
+    : ` ${incident.started}, resolved ${incident.resolved}.`;
+  const summary = document.createElement("p");
+  summary.textContent = incident.summary;
+  item.append(title, when, summary);
+  return item;
+}
+
+fetch("/incidents.json", { headers: { accept: "application/json" } })
+  .then((response) => response.json())
+  .then((history) => {
+    const incidents = Array.isArray(history.incidents) ? history.incidents : [];
+    if (incidents.length === 0) {
+      historyLine.textContent = `No incidents have been recorded. Last checked ${history.updated}.`;
+      return;
+    }
+    historyLine.textContent = `Last updated ${history.updated}.`;
+    historyList.replaceChildren(...incidents.map(incidentItem));
+    historyList.hidden = false;
+  })
+  .catch(() => {
+    historyLine.textContent = "The incident history could not be loaded. Open incidents.json to read it.";
   });
   </script>
 </body>
