@@ -26,7 +26,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sha256Hex } from "../../core/db.js";
-import { createD1DeviceStore, renewKeyRow } from "../../core/devices.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { renewKeyRow } from "../../core/devices-rows.js";
 import { AGENT_KEY_TTL_SECONDS } from "../../core/keyprovider.js";
 import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
