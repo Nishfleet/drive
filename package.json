@@ -25,7 +25,9 @@
     "test": "npm run docs:build && node --test --test-skip-pattern 'a search returns in under one second and reads only its matches|the index search is under a second' && node --test --test-concurrency=1 --test-name-pattern 'a search returns in under one second and reads only its matches|the index search is under a second' test/search.test.mjs test/standin-search.test.mjs",
     "eval:agents:install": "python3 -m venv evals/agents/.venv && evals/agents/.venv/bin/pip install -q -r evals/agents/requirements.txt",
     "eval:agents:endstate": "node src/render-docs.js && evals/agents/.venv/bin/inspect eval evals/agents/endstate.py",
-    "mutate": "stryker run"
+    "mutate": "stryker run",
+    "shell:sync": "node src/render-shell.js",
+    "shell:check": "node src/render-shell.js --check"
   },
   "engines": {
     "node": ">=24"
