@@ -1361,6 +1361,7 @@ test("a failing store write for one account leaves the next account's mail done"
   }
   world.email.sent.length = 0;
   const broken = {
+    // biome-ignore lint/nursery/noMisusedPromises: the store is a plain object; the unstable rule misreads its spread-built type
     ...world.devices,
     /**
      * @param {string} id
