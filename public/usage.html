@@ -549,6 +549,7 @@ h2 {
         <div class="status" id="usage-status" data-state="unreachable" role="status" aria-live="polite" hidden>
           <p class="what"></p>
           <p class="next"></p>
+          <p><button type="button" id="usage-retry" hidden>Try again</button></p>
         </div>
       </div>
     </section>
@@ -805,6 +806,11 @@ const MONTH_EMPTY = {
 const savedEl = document.getElementById("saved");
 const monthHeadingEl = document.getElementById("month-heading");
 const statusEl = document.getElementById("usage-status");
+const retryEl = document.getElementById("usage-retry");
+retryEl.addEventListener("click", () => {
+  retryEl.hidden = true;
+  readMonth();
+});
 const bodyEl = document.getElementById("usage-body");
 const chartEl = document.getElementById("chart");
 const chartLine = document.getElementById("chart-line");
@@ -929,6 +935,7 @@ function sayUnreachable() {
   statusEl.dataset.state = "unreachable";
   statusEl.querySelector(".what").textContent = UNREACHABLE.what;
   statusEl.querySelector(".next").textContent = UNREACHABLE.next;
+  retryEl.hidden = false;
   // Reveal before the text is set: a role="status" region populated while
   // hidden is not announced by every screen reader, so showing it first is
   // what makes the sentence actually read out.
@@ -941,6 +948,7 @@ function sayUnreachable() {
 // sent, so this page carries no second copy of the sign-in message.
 function saySignedOut(message) {
   statusEl.dataset.state = "signed-out";
+  retryEl.hidden = true;
   statusEl.querySelector(".what").textContent = message;
   statusEl.querySelector(".next").textContent = "";
   statusEl.hidden = false;
@@ -964,6 +972,7 @@ function sayReachable() {
   // so only this call's own state — a fresh `sayMonthEmpty` when the month is
   // empty, nothing at all when it has history — is what the markup carries.
   statusEl.dataset.state = "";
+  retryEl.hidden = true;
   // A read that succeeded proves the account is there, so the cap controls
   // the signed-out state disabled are usable again.
   setCapControlsDisabled(false);
@@ -979,6 +988,7 @@ function sayReachable() {
 // the month is empty, said in the month's own words, in the month's own area.
 function sayMonthEmpty() {
   statusEl.dataset.state = "empty";
+  retryEl.hidden = true;
   statusEl.querySelector(".what").textContent = MONTH_EMPTY.what;
   statusEl.querySelector(".next").textContent = MONTH_EMPTY.next;
   statusEl.hidden = false;
