@@ -179,6 +179,23 @@ main {
   color: var(--ink-soft);
 }
 
+.earlier {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.earlier li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 0;
+}
+
 .row[hidden] {
   display: none;
 }
@@ -633,6 +650,8 @@ const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
 const RESTORE_ENDPOINT = "/api/files/restore";
+const VERSIONS_ENDPOINT = "/api/files/versions";
+const RESTORE_VERSION_ENDPOINT = "/api/files/restore-version";
 // The rewind read and the one-click rewind (drive#774). src/rewind.js owns the
 // route, so the page names it once and never builds a path of its own.
 const REWIND_ENDPOINT = "/api/rewind";
@@ -964,6 +983,12 @@ function rowFor(row) {
     download.textContent = "Download";
     actions.append(download);
 
+    const earlier = document.createElement("button");
+    earlier.type = "button";
+    earlier.textContent = "Earlier copies";
+    earlier.addEventListener("click", () => showEarlierCopies(row, li));
+    actions.append(earlier);
+
     const del = document.createElement("button");
     del.type = "button";
     del.className = "danger";
@@ -973,6 +998,64 @@ function rowFor(row) {
   }
   li.append(actions);
   return li;
+}
+
+// Overwrite undo (delight item 1). A save over a file hides the old bytes in
+// the bucket for a while; this lists them under the row and puts one back.
+// Putting one back is a save, so the copy it replaces shows up here next.
+const EARLIER_COPY = {
+  none: "No earlier copies of this file. A copy shows up here after you save over it.",
+  restore: "Put this one back",
+  restored: "Put back. The copy it replaced is under Earlier copies if you want it again.",
+};
+
+async function showEarlierCopies(row, li) {
+  const open = li.querySelector(".earlier");
+  if (open) {
+    open.remove();
+    return;
+  }
+  let found;
+  try {
+    found = await api(`${VERSIONS_ENDPOINT}?path=${encodeURIComponent(row.path)}`);
+  } catch (error) {
+    reportFailure(error);
+    return;
+  }
+  const box = document.createElement("ul");
+  box.className = "earlier";
+  const copies = Array.isArray(found.versions) ? found.versions : [];
+  if (copies.length === 0) {
+    const none = document.createElement("li");
+    none.textContent = EARLIER_COPY.none;
+    box.append(none);
+  }
+  for (const copy of copies) {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = `Saved ${whenLabel(copy.savedAt)} · replaced ${whenLabel(copy.replacedAt)} · until ${whenLabel(copy.restorableUntil)}`;
+    const put = document.createElement("button");
+    put.type = "button";
+    put.textContent = EARLIER_COPY.restore;
+    put.addEventListener("click", async () => {
+      put.disabled = true;
+      try {
+        await api(RESTORE_VERSION_ENDPOINT, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: row.path, versionId: copy.versionId }),
+        });
+        say(EARLIER_COPY.restored, "done");
+        refresh(true);
+      } catch (error) {
+        put.disabled = false;
+        reportFailure(error);
+      }
+    });
+    item.append(label, put);
+    box.append(item);
+  }
+  li.append(box);
 }
 
 function trashRowFor(row) {

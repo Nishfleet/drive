@@ -3466,8 +3466,8 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   assert.ok(script.includes("if (!keepStatus)"));
   assert.equal(
     (script.match(/refresh\(true\);/g) || []).length,
-    4,
-    "delete, restore, upload and rewind all reload under their own result line",
+    5,
+    "delete, restore, put-back-an-earlier-copy, upload and rewind all reload under their own result line",
   );
   // An upload failure says what happened; it never reads as done.
   assert.ok(script.includes("The upload did not finish. Try again."));
