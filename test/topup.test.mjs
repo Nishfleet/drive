@@ -231,3 +231,15 @@ test("the balance answer says paused only while the pause is switched on", async
   assert.equal(on.paused, true);
   assert.equal(on.balance_line, failureMessage("balance-empty"));
 });
+
+test("the balance answer carries a runway line only when the size is known", async () => {
+  const db = await dbWithAccount();
+  const request = new Request(`${ORIGIN}/api/balance`);
+  const none = await (await handleBalanceRequest(request, ACCOUNT, db)).json();
+  assert.equal(none.runway_line, null);
+  // An empty balance has no runway to state, however big the drive is.
+  const empty = await (
+    await handleBalanceRequest(request, ACCOUNT, db, { size30Bytes: 100_000_000_000 })
+  ).json();
+  assert.equal(empty.runway_line, null);
+});
