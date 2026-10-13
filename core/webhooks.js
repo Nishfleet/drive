@@ -54,7 +54,11 @@ export function endpointUrlProblem(value) {
     return "Leave the user name and password out of the address.";
   }
   const host = url.hostname.toLowerCase();
-  const isAddress = /^[0-9.]+$/.test(host) || host.includes(":");
+  // A last label that is all digits or 0x-hex is a number the network stack
+  // reads as an address (0x7f.1, 017700000001, 2130706433), so it is refused
+  // like a dotted quad. A real top-level domain is never numeric.
+  const isAddress =
+    /^[0-9.]+$/.test(host) || host.includes(":") || /(^|\.)(0x[0-9a-f]*|[0-9]+)$/.test(host);
   const isLocal = !host.includes(".") || /\.(local|localhost|internal|lan|home|corp)$/.test(host);
   if (isAddress || isLocal) return "Use a public host name, not an IP address or a local name.";
   return null;
