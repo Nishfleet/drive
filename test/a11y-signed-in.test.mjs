@@ -42,6 +42,7 @@ const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 const PAGES = Object.freeze([
   { name: "files.html", ready: "#file-list li:not(.is-shell)" },
   { name: "usage.html", ready: "#usage-body:not([hidden])" },
+  { name: "webhooks.html", ready: "#hooks-empty:not([hidden])" },
 ]);
 
 /**
