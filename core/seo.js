@@ -109,6 +109,9 @@ export const PAGES = Object.freeze([
   Object.freeze({ path: "/get-started.html", indexable: false, root: true }),
   // The Web Files page is one person's drive, so it is noindex: a crawler that
   // reached it would see an empty listing, never a public page (issue #31).
+  // The signed-in home (high-end gap 2): one account's balance, storage and
+  // devices, so noindex like the pages it summarises.
+  Object.freeze({ path: "/home.html", indexable: false }),
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
   // The devices page (drive#525): one account's keys, so it is noindex like
