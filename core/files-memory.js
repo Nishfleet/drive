@@ -20,7 +20,7 @@ export function createMemoryStore() {
   // a remove) hid it. This is the in-memory stand-in's answer to the
   // provider's own version listing, so `listVersions` is exercisable with no
   // bucket and the reconciler is testable through the real store interface.
-  /** @type {Map<string, Array<{id: string, createdAt: number, hiddenAt: number|null, sizeBytes: number}>>} */
+  /** @type {Map<string, Array<{id: string, createdAt: number, hiddenAt: number|null, sizeBytes: number, object?: {body: Uint8Array, contentType: string, modified: number, etag: string}}>>} */
   const versions = new Map();
   let nextVersionId = 1;
   /** The versions of one key, hiding the live one at `at`.
@@ -34,6 +34,18 @@ export function createMemoryStore() {
     history.push({ id: `mem-${nextVersionId}`, createdAt: at, hiddenAt: null, sizeBytes });
     nextVersionId += 1;
     versions.set(key, history);
+  };
+  /** Remember the bytes of the version just started, so an old one can be
+   * restored by id (`copy` with `versionId`), as the provider's versioning
+   * lets a hidden version be copied back.
+   * @param {string} key */
+  const keepLive = (key) => {
+    const history = versions.get(key);
+    const live = history?.[history.length - 1];
+    const object = objects.get(key);
+    if (live && object) {
+      live.object = object;
+    }
   };
   /** Hide the live version of one key at `at`, if it has one.
    * @param {string} key @param {number} at */
@@ -196,6 +208,7 @@ export function createMemoryStore() {
         modified: now,
         etag: await memoryEtag(bytes),
       });
+      keepLive(path);
     },
     async writeIfAbsent(path, body, contentType) {
       // The bytes are read first, then two exists-checks bracket the etag:
@@ -217,6 +230,7 @@ export function createMemoryStore() {
       const now = Date.now();
       startVersion(path, bytes.byteLength, now);
       objects.set(path, { body: bytes, contentType, modified: now, etag });
+      keepLive(path);
       return true;
     },
     async remove(path, { ifMatch } = {}) {
@@ -272,11 +286,11 @@ export function createMemoryStore() {
      * it kept is returned either way.
      * @param {string} path
      */
-    async listVersions(path) {
+    async listVersions(path, options = {}) {
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const found = [];
       for (const [key, history] of versions) {
-        if (!key.startsWith(prefix)) {
+        if (options.exact ? key !== path : !key.startsWith(prefix)) {
           continue;
         }
         for (const version of history) {
@@ -293,7 +307,9 @@ export function createMemoryStore() {
       return found.sort((a, b) => a.path.localeCompare(b.path) || a.createdAt - b.createdAt);
     },
     async copy(from, to, _size, options = {}) {
-      const value = objects.get(from);
+      const value = options.versionId
+        ? versions.get(from)?.find((version) => version.id === options.versionId)?.object
+        : objects.get(from);
       if (!value) {
         // A copy of a file that is not there is a real failure (S3 answers
         // 404), not a silent no-op: `drive branch` must never report success
@@ -310,6 +326,7 @@ export function createMemoryStore() {
       const now = Date.now();
       startVersion(to, value.body.byteLength, now);
       objects.set(to, { ...value, modified: now });
+      keepLive(to);
       return value.etag;
     },
   };

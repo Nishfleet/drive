@@ -1,0 +1,103 @@
+// Overwrite undo (delight item 1): the earlier copies of one file, and the
+// call that puts one back. The bucket is versioned, so a save over a file
+// hides the old bytes instead of destroying them (core/s3.js
+// HIDDEN_VERSION_DAYS keeps them for that long). These two handlers read that
+// history through the store's own version listing and copy a chosen version
+// back over the live file. Putting one back is itself a save, so the copy it
+// replaced becomes a hidden version in turn: an undo can be undone.
+//
+//   GET  /api/files/versions?path=/a.txt   -> { versions: [...] } newest first
+//   POST /api/files/restore-version        { path, versionId }
+
+import { json, readJsonObject } from "./http.js";
+import { failureMessage } from "./messages.js";
+import { HIDDEN_VERSION_DAYS } from "./s3.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** @typedef {import("./files-scope.js").FileStore} FileStore */
+
+/**
+ * The earlier copies of one file that can still be restored.
+ * @param {FileStore} store the account's scoped store
+ * @param {string} path a validated drive path
+ * @param {number} now
+ */
+async function earlierCopies(store, path, now) {
+  const all = await store.listVersions(path, { exact: true });
+  return all
+    .filter(
+      (version) =>
+        version.path === path &&
+        version.hiddenAt !== null &&
+        version.deletedAt == null &&
+        now < version.hiddenAt + HIDDEN_VERSION_DAYS * DAY_MS,
+    )
+    .sort((a, b) => Number(b.hiddenAt) - Number(a.hiddenAt));
+}
+
+/**
+ * @param {Request} request
+ * @param {URL} url
+ * @param {FileStore} store
+ * @param {number} now
+ * @param {(value: string) => {error?: string, path: string}} validate
+ * @returns {Promise<Response>}
+ */
+export async function versionsRequest(request, url, store, now, validate) {
+  if (request.method !== "GET") {
+    return json({ error: "Method not allowed. GET the file's versions." }, 405);
+  }
+  const checked = validate(url.searchParams.get("path") || "");
+  if (checked.error) {
+    return json({ error: checked.error }, 400);
+  }
+  const copies = await earlierCopies(store, checked.path, now);
+  return json({
+    path: checked.path,
+    versions: copies.map((version) => ({
+      versionId: version.b2FileId,
+      size: version.sizeBytes,
+      savedAt: new Date(version.createdAt).toISOString(),
+      replacedAt: new Date(Number(version.hiddenAt)).toISOString(),
+      restorableUntil: new Date(
+        Number(version.hiddenAt) + HIDDEN_VERSION_DAYS * DAY_MS,
+      ).toISOString(),
+    })),
+  });
+}
+
+/**
+ * @param {Request} request
+ * @param {FileStore} store
+ * @param {number} now
+ * @param {(value: string) => {error?: string, path: string}} validate
+ * @returns {Promise<Response>}
+ */
+export async function restoreVersionRequest(request, store, now, validate) {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed. POST the version to restore." }, 405);
+  }
+  const read = await readJsonObject(request);
+  if ("error" in read) {
+    return json({ error: failureMessage("json-object-needed") }, 400);
+  }
+  const { body } = read;
+  const checked = validate(String(body.path ?? ""));
+  if (checked.error) {
+    return json({ error: checked.error }, 400);
+  }
+  const versionId = typeof body.versionId === "string" ? body.versionId : "";
+  const wanted = (await earlierCopies(store, checked.path, now)).find(
+    (version) => version.b2FileId === versionId,
+  );
+  if (!wanted) {
+    return json({ error: failureMessage("file-not-found") }, 404);
+  }
+  try {
+    await store.copy(checked.path, checked.path, wanted.sizeBytes, { versionId });
+  } catch (cause) {
+    return json({ error: `We could not restore that copy: ${String(cause)}` }, 500);
+  }
+  return json({ ok: true, path: checked.path, size: wanted.sizeBytes });
+}

@@ -141,7 +141,7 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   One delete call for up to 1,000 paths. More is refused: 1,000 is the
  *   provider's own per-call ceiling, and a caller that chunks by it stays
  *   inside the run's subrequest budget (drive#565).
- * @property {(from: string, to: string, size?: number, options?: {ifAbsent?: boolean}) => Promise<string|void>} copy
+ * @property {(from: string, to: string, size?: number, options?: {ifAbsent?: boolean, versionId?: string}) => Promise<string|void>} copy
  *   A copy the storage itself makes, no bytes through this Worker: `drive
  *   branch` (build step 7) is a folder copy, and a copy that streamed every
  *   byte through us would make a 10 GB branch a 10 GB download and upload.
@@ -156,7 +156,9 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
  *   No options means the plain copy `drive branch` makes. The copy resolves to
  *   the destination's new ETag when the store knows it (a copy of a multipart
  *   upload does not keep the source's ETag), otherwise to nothing.
- * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
+ *   `options.versionId` copies that hidden version of the source instead of
+ *   the live one: how an overwritten file is put back.
+ * @property {(path: string, options?: {includeHidden?: boolean, exact?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
  *   returns the versions behind it, hidden ones included, so the reconciler
@@ -353,12 +355,12 @@ export function scopeStore(store, account) {
       const [source, dest] = toKeys(from, to);
       return store.copy(source, dest, size, options);
     },
-    async listVersions(path) {
+    async listVersions(path, options) {
       // The versions come back under this account's own keys, so each one's
       // path is rewritten like any other listing: a version the store
       // returned from outside the prefix is a bug and is thrown on, and no
       // reconciler ever reads another account's version.
-      const versions = await store.listVersions(toKey(path));
+      const versions = await store.listVersions(toKey(path), options);
       return versions.map((version) => ({
         ...version,
         path: toDrivePath(version.path),
