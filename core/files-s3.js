@@ -521,11 +521,16 @@ export function createS3Store(config) {
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
-     * @param {{ifAbsent?: boolean}} [options]
+     * @param {{ifAbsent?: boolean, versionId?: string}} [options]
      */
     async copy(from, to, size, options = {}) {
       if (options.ifAbsent) await assertDestinationEmpty(request, urlFor, to);
-      const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
+      // A hidden version is copied back by naming its id on the source, the
+      // stock S3 way to restore an overwritten file.
+      const versioned = options.versionId
+        ? `?versionId=${encodeURIComponent(options.versionId)}`
+        : "";
+      const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}${versioned}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
         return multipartCopy(request, urlFor, source, to, size, options);
       }
@@ -582,10 +587,11 @@ export function createS3Store(config) {
      * returns the same facts under its own tags; the real provider's field
      * names are #60's to confirm (build-spec.md, open questions).
      * @param {string} path
+     * @param {{exact?: boolean}} [options] `exact` lists the versions of the one file at `path`, not the folder under it
      * @returns {Promise<import("./files-scope.js").StorageVersion[]>}
      */
-    async listVersions(path) {
-      const prefix = path.endsWith("/") ? path : `${path}/`;
+    async listVersions(path, options = {}) {
+      const prefix = options.exact || path.endsWith("/") ? path : `${path}/`;
       const versions = [];
       /** @type {Array<{path: string, at: number}>} */
       const markers = [];
