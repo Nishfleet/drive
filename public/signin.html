@@ -178,7 +178,16 @@ button:disabled {
 .footer a {
   color: var(--ink-soft);
 }
-  </style>
+  .fine {
+  margin: 20px 0 0;
+}
+
+.fine p {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+</style>
 </head>
 <body>
   <a class="skip-link" href="#signin-heading">Skip to sign in</a>
@@ -191,18 +200,6 @@ button:disabled {
   <main>
     <h1 id="signin-heading">Sign in</h1>
     <p class="lede">One link by email.</p>
-    <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
-    <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
-    <p class="free">No plans. Your balance never expires.</p>
-    <!-- drive#420: the one place this page says why a card is needed
-         (SIGNIN_COPY.needCard, src/signin.js). A tick box on this form
-         made every returning customer consent again and was how a
-         stranger learned whether an address was new (drive#538).
-         The emailed link claims a test stand-in; a real card waits on
-         the Dodo key (drive#417, drive#325). test/signin.test.mjs fails
-         CI when a second copy of the sentence comes back. -->
-    <p class="free">There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.</p>
-
     <div class="card">
       <!-- Not Django: this is a static asset, and the route it posts to is not
            a cookie-authenticated form handler that trusts the browser.
@@ -218,17 +215,17 @@ button:disabled {
              optional here and the route holds the tick against the link when
              the account opens (drive#785): an older account signs in without
              attesting again. -->
-        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
-        <label class="hint" for="age">
-          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence">
-          I am 18 or older
-        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
                  placeholder="you@example.com" autocomplete="email" spellcheck="false">
           <button class="primary" id="email-button" type="submit">Email me a link</button>
         </div>
+        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
+        <label class="hint" for="age">
+          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence">
+          I am 18 or older
+        </label>
         <p class="hint">We email a link that signs you in. No password to remember.</p>
         <p class="hint">We use this address to send that sign-in link. Read the <a href="/privacy">privacy policy</a>.</p>
         <p class="hint">Signing up means you agree to the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
@@ -250,6 +247,20 @@ button:disabled {
 
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
     </div>
+
+    <div class="fine" id="signin-fine">
+    <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
+    <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
+    <p class="free">No plans. Your balance never expires.</p>
+    <!-- drive#420: the one place this page says why a card is needed
+         (SIGNIN_COPY.needCard, src/signin.js). A tick box on this form
+         made every returning customer consent again and was how a
+         stranger learned whether an address was new (drive#538).
+         The emailed link claims a test stand-in; a real card waits on
+         the Dodo key (drive#417, drive#325). test/signin.test.mjs fails
+         CI when a second copy of the sentence comes back. -->
+    <p class="free">There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.</p>
+    </div>
   </main>
 
   <!-- shell:footer -->
@@ -263,6 +274,7 @@ button:disabled {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
+    <p>A Finder drive for people and their agents.</p>
     <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
   <!-- /shell:footer -->

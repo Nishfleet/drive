@@ -42,6 +42,7 @@ import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { PREPAID } from "./pricing.js";
 import { unauthorizedResponse } from "./status.js";
+import { emitEvent } from "./webhooks.js";
 
 export const TOPUP_ENDPOINT = "/api/topup";
 export const BALANCE_ENDPOINT = "/api/balance";
@@ -202,7 +203,7 @@ function objectOrNull(value) {
  * stops retrying them. Answers 409 only for a refund whose payment has not
  * been credited yet, so Dodo retries it after the payment lands.
  * @param {Request} request
- * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} deps
+ * @param {{db?: D1Database, secret?: string, now?: number, fetch?: typeof fetch, email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} deps
  * @returns {Promise<Response>}
  */
 export async function handleBillingWebhook(request, deps) {
@@ -257,7 +258,7 @@ export async function handleBillingWebhook(request, deps) {
  * @param {D1Database} db
  * @param {Record<string, unknown>} data
  * @param {number} now
- * @param {{email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} mail
+ * @param {{email?: unknown, mailFrom?: string, fetch?: typeof fetch, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} mail
  */
 async function creditFromEvent(db, data, now, mail) {
   const metadata = objectOrNull(data.metadata);
@@ -351,6 +352,19 @@ async function creditFromEvent(db, data, now, mail) {
       auto: metadata.source === "auto",
       mail,
     });
+    // The customer's own webhook endpoints hear about it too (drive#901).
+    // emitEvent never throws and gives each endpoint a few seconds at most.
+    await emitEvent(
+      db,
+      /** @type {string} */ (accountId),
+      "balance.topped_up",
+      {
+        payment_id: paymentId,
+        amount_cents: amountCents,
+        balance_cents: credited.balanceCents,
+      },
+      { fetch: mail.fetch },
+    );
   }
   // The prepaid pause restore (drive#589): a credit that brings the
   // balance above $0 swaps the mount and device keys back to writes.

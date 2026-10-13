@@ -9,6 +9,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { signinLinkEmail } from "../core/auth.js";
 import { BILLING_CONFIG } from "../core/billing.js";
 import {
   handleSendEmailRequest,
@@ -134,6 +135,31 @@ test("every kind renders a subject and both body parts", () => {
     assert.ok(html.includes("<html"), `${kind} needs an HTML part`);
     assert.ok(html.includes(`<p>`), `${kind}'s HTML needs paragraphs`);
   }
+});
+
+test("every email wears the one branded frame, with a preview line and a button (high-end gap 18)", () => {
+  for (const kind of EMAIL_KINDS) {
+    const { html, text } = renderEmail(kind, dataFor(kind));
+    assert.match(html, /<title>[^<]+<\/title>/, `${kind} has a title`);
+    assert.match(html, /display:none;max-height:0[^>]*>[^<]+<\/div>/, `${kind} has a preview line`);
+    assert.match(html, /<body style="[^"]*background:#f4efe6/, `${kind} uses the site paper`);
+    assert.match(html, /prefers-color-scheme: dark/, `${kind} has a dark twin`);
+    // A double quote inside a style attribute ends it early and drops the font.
+    assert.doesNotMatch(html, /style="[^"]*"[A-Za-z]/, `${kind} has a broken style attribute`);
+    assert.match(html, /background:#ff4f12[^>]*>[^<]+<\/a>/, `${kind} has one button`);
+    assert.ok(text.length > 0, `${kind} keeps its text twin`);
+  }
+});
+
+test("the sign-in link email is branded too, and escapes what it prints", () => {
+  const { html, text } = signinLinkEmail(
+    "https://storagebun.com/api/signin/verify?token=a&b=1",
+    'Mozilla"><script>',
+  );
+  assert.match(html, /prefers-color-scheme: dark/);
+  assert.match(html, /Sign in to your drive<\/a>/);
+  assert.ok(!html.toLowerCase().includes("<script"), "the user agent never becomes markup");
+  assert.ok(text.includes("Sign in to your drive:"));
 });
 
 test("every email carries one sign-off, in both parts", () => {
