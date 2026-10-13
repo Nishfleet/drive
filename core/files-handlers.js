@@ -26,6 +26,7 @@ import {
   UPLOAD_FILE_MAX_BYTES,
   validatePath,
 } from "./files.js";
+import { restoreVersionRequest, versionsRequest } from "./files-history.js";
 import { fileRows, plain, trashRows } from "./files-s3.js";
 import { accountStorageKey, ChangedUnderUsError, etagMismatch, scopeStore } from "./files-scope.js";
 import { json, readJsonObject } from "./http.js";
@@ -77,7 +78,8 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   const stateChanging =
     route === `${FILES_ENDPOINT}/upload` ||
     route === `${FILES_ENDPOINT}/delete` ||
-    route === `${FILES_ENDPOINT}/restore`;
+    route === `${FILES_ENDPOINT}/restore` ||
+    route === `${FILES_ENDPOINT}/restore-version`;
   // The cap makes the whole web write lane read-only (drive#496). The account
   // row's own `state`, saved by the hourly walk (src/cap.js), is the rule: at
   // the cap it is `read_only` and a signed-in person cannot write through the
@@ -123,6 +125,12 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   if (route === `${FILES_ENDPOINT}/restore`) {
     return restoreRequest(request, scoped, account, now);
+  }
+  if (route === `${FILES_ENDPOINT}/versions`) {
+    return versionsRequest(request, url, scoped, now, validatePath);
+  }
+  if (route === `${FILES_ENDPOINT}/restore-version`) {
+    return restoreVersionRequest(request, scoped, now, validatePath);
   }
   return plain("Not found.", 404);
 }
