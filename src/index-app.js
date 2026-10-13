@@ -378,11 +378,27 @@ export function createApp() {
   // The prepaid balance (drive#586): the balance and recent ledger lines, and
   // a top-up's checkout. The balance is credited only by the signed webhook
   // below, never by this route or the checkout's redirect.
-  app.get(BALANCE_ENDPOINT, (c) =>
-    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB, {
+  app.get(BALANCE_ENDPOINT, async (c) => {
+    const account = c.get("account");
+    // The size the bill is worked from, for the "your balance lasts" line.
+    // A read that fails leaves the line out; it never fails the balance.
+    let size30Bytes;
+    if (account && c.env.DRIVE_DB) {
+      try {
+        const store = createD1DeviceStore(c.env.DRIVE_DB);
+        const month = /** @type {Record<string, unknown>} */ (
+          await store.monthUsage(account.id, { capUsd: await store.getCapUsd(account.id) })
+        );
+        size30Bytes = month.size30Bytes;
+      } catch (error) {
+        await captureError(error, "balance runway", sentryFor(c.env));
+      }
+    }
+    return handleBalanceRequest(c.req.raw, account, c.env.DRIVE_DB, {
       pauseOn: prepaidPauseOn(c.env),
-    }),
-  );
+      size30Bytes,
+    });
+  });
   // Outbound webhooks (drive#901): the account's endpoints, a test send and the
   // delivery log. Session-cookie routes like the balance beside them.
   app.get(WEBHOOK_ENDPOINT, (c) =>

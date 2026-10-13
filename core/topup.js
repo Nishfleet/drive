@@ -41,6 +41,7 @@ import {
 import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { PREPAID } from "./pricing.js";
+import { runwayLine } from "./runway.js";
 import { unauthorizedResponse } from "./status.js";
 import { emitEvent } from "./webhooks.js";
 
@@ -580,7 +581,7 @@ export function isDodoCheckoutUrl(value) {
  * The balance as the account page and `drive status` read it.
  * @param {D1Database} db
  * @param {string} accountId
- * @param {{pauseOn?: boolean}} [options] pauseOn is false while the $0 pause is switched off, so the page never says uploads are paused when they are not
+ * @param {{pauseOn?: boolean, size30Bytes?: unknown}} [options] pauseOn is false while the $0 pause is switched off, so the page never says uploads are paused when they are not; size30Bytes, when known, adds the runway line
  */
 export async function balanceSummary(db, accountId, options = {}) {
   const pauseOn = options.pauseOn !== false;
@@ -595,6 +596,8 @@ export async function balanceSummary(db, accountId, options = {}) {
     balance_cents: balance,
     balance: formatCents(balance),
     balance_line: balanceLine(balance, { pauseOn }),
+    runway_line:
+      options.size30Bytes === undefined ? null : runwayLine(balance, options.size30Bytes),
     low_balance: balance > 0 && balance <= LOW_BALANCE_CENTS,
     paused: pauseOn && balance <= 0,
     min_top_up_usd: PREPAID.minTopUpUsd,
@@ -618,7 +621,7 @@ export async function balanceSummary(db, accountId, options = {}) {
  * @param {Request} request
  * @param {{id: string}|null} account
  * @param {D1Database|undefined} db
- * @param {{pauseOn?: boolean}} [options]
+ * @param {{pauseOn?: boolean, size30Bytes?: unknown}} [options]
  * @returns {Promise<Response>}
  */
 export async function handleBalanceRequest(request, account, db, options = {}) {

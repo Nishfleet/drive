@@ -1527,7 +1527,11 @@ navSignoutAll.addEventListener("click", () => {
   function render(summary) {
     minTopUpUsd = summary.min_top_up_usd;
     amountEl.textContent = summary.balance;
-    lineEl.textContent = summary.balance_line;
+    // The runway sentence (delight item 4) rides on the same line when the
+    // endpoint sends one.
+    lineEl.textContent = summary.runway_line
+      ? `${summary.balance_line} ${summary.runway_line}`
+      : summary.balance_line;
     lineEl.dataset.state = summary.paused ? "paused" : summary.low_balance ? "low" : "ok";
     presetsEl.replaceChildren(
       ...summary.top_up_presets_usd.map((dollars) => {
