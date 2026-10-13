@@ -746,6 +746,7 @@ const PAGE_IDS = Object.freeze([
   "saved",
   "month-heading",
   "usage-status",
+  "usage-retry",
   "usage-body",
   "chart",
   "chart-line",
@@ -1688,4 +1689,11 @@ test("the usage line names the bytes still leaving when another device is paused
   await store.remove(signedInAccount.id, "device-a");
   const oneLeft = await (await read()).json();
   assert.equal(oneLeft.uploadLine, uploadProgress(paused).label);
+});
+
+test("an unreachable read offers a Try again button that other states hide", async () => {
+  const down = runPage({}, { ok: false });
+  await settle();
+  assert.equal(down.elements.get("usage-retry")?.hidden, false);
+  assert.match(page, /id="usage-retry"[^>]*>Try again</);
 });
