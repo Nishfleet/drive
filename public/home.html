@@ -77,6 +77,20 @@ h1 {
   color: var(--ink-soft);
 }
 
+.checklist {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist li {
+  margin: 6px 0;
+}
+
+.checklist li[data-done="true"] {
+  color: var(--ink-muted, inherit);
+}
+
 .next-step {
   margin: 16px 0 0;
   border-color: var(--drive-orange, currentColor);
@@ -181,6 +195,11 @@ code {
       </section>
     </div>
 
+    <section class="tile" id="checklist" aria-labelledby="checklist-title" hidden>
+      <h2 id="checklist-title">Get started</h2>
+      <ol class="checklist" id="checklist-items"></ol>
+    </section>
+
     <section class="tile" id="agents" aria-labelledby="agents-title" hidden>
       <h2 id="agents-title">What your agents did</h2>
       <p class="big" id="agents-what"></p>
@@ -215,6 +234,7 @@ const BALANCE_ENDPOINT = "/api/balance";
 const USAGE_ENDPOINT = "/api/usage";
 const DEVICES_ENDPOINT = "/api/devices";
 const REWIND_ENDPOINT = "/api/rewind";
+const FILES_ENDPOINT = "/api/files";
 const SIGNIN_ENDPOINT = "/api/signin";
 const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
 const SIGNED_OUT = "Sign in to see your drive.";
@@ -314,12 +334,45 @@ async function read() {
   link.textContent = step.label;
   nextEl.hidden = false;
   gridEl.setAttribute("aria-busy", "false");
+  readChecklist(devices.payload.keys);
   readAgents();
 }
 
 // The newest agent session, in one line: who, how many files, and whether
 // Rewind can still put them back. The tile is left out when there is none or
 // the read fails, because it is a bonus on this page and never its error.
+async function readChecklist(keys) {
+  let hasFile = false;
+  try {
+    const answer = await getJson(FILES_ENDPOINT);
+    if (answer.ok) hasFile = (answer.payload?.rows ?? []).length > 0;
+    else if (answer.status !== 404) return;
+  } catch (_error) {
+    return;
+  }
+  const steps = [
+    { text: "Add a computer", href: "/get-started", done: keys.some((key) => key.kind === "device") },
+    { text: "Add your first file", href: "/files", done: hasFile },
+    { text: "Connect an agent", href: "/get-started#agents", done: keys.some((key) => key.kind === "agent") },
+  ];
+  const list = document.getElementById("checklist-items");
+  list.textContent = "";
+  for (const step of steps) {
+    const item = document.createElement("li");
+    item.dataset.done = String(step.done);
+    if (step.done) {
+      item.textContent = `Done: ${step.text}`;
+    } else {
+      const link = document.createElement("a");
+      link.href = step.href;
+      link.textContent = step.text;
+      item.append(link);
+    }
+    list.append(item);
+  }
+  document.getElementById("checklist").hidden = steps.every((step) => step.done);
+}
+
 async function readAgents() {
   let rewinds;
   try {
