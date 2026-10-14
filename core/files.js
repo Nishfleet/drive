@@ -604,10 +604,11 @@ export function findTrashName(entries, path) {
  * Whether a deleted file is still inside the window the page promises.
  * @param {number} deletedAt epoch milliseconds
  * @param {number} now epoch milliseconds
+ * @param {number} [days] the account's window; 3 unless it chose a longer history
  */
-export function isRestorable(deletedAt, now = Date.now()) {
+export function isRestorable(deletedAt, now = Date.now(), days = RECENTLY_DELETED_DAYS) {
   const age = now - deletedAt;
-  return age >= 0 && age <= RECENTLY_DELETED_DAYS * DAY_MS;
+  return age >= 0 && age <= days * DAY_MS;
 }
 
 /**
@@ -647,9 +648,10 @@ export const TRASH_PURGE_SCHEDULE = "0 5 * * *";
  * before its own window opens.
  * @param {number} deletedAt epoch milliseconds, from parseTrashName
  * @param {number} now epoch milliseconds
+ * @param {number} [days] the account's window
  */
-export function isTrashExpired(deletedAt, now = Date.now()) {
-  return now - deletedAt > RECENTLY_DELETED_DAYS * DAY_MS;
+export function isTrashExpired(deletedAt, now = Date.now(), days = RECENTLY_DELETED_DAYS) {
+  return now - deletedAt > days * DAY_MS;
 }
 
 /**
